@@ -201,7 +201,7 @@ pub fn find_and_delete_file(instance_dir: &Path, filename: &str) -> bool {
 const MIN_DISK_SPACE_BYTES: u64 = 500_000_000;
 
 #[cfg(target_os = "windows")]
-fn available_disk_space_bytes(path: &Path) -> Option<u64> {
+pub fn available_disk_space_bytes(path: &Path) -> Option<u64> {
     let root = path.ancestors().last()?;
     let output = std::process::Command::new("fsutil")
         .args(["volume", "diskfree"])
@@ -218,8 +218,16 @@ fn available_disk_space_bytes(path: &Path) -> Option<u64> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn available_disk_space_bytes(_path: &Path) -> Option<u64> {
+pub fn available_disk_space_bytes(_path: &Path) -> Option<u64> {
     None
+}
+
+pub fn check_disk_space_for(path: &Path, required_bytes: u64) -> LauncherResult<()> {
+    let required_with_headroom = required_bytes.saturating_add(MIN_DISK_SPACE_BYTES);
+    if available_disk_space_bytes(path).is_some_and(|free| free < required_with_headroom) {
+        return Err(LauncherError::DiskFull);
+    }
+    Ok(())
 }
 
 pub fn check_disk_space(instance_dir: &Path) -> LauncherResult<()> {

@@ -477,6 +477,14 @@ pub async fn launch_instance_with_recovery(
     }
 
     let ctx = crate::core_context(&app)?;
+    if !agora_core::instance_service::InstanceService::new(ctx.clone())
+        .resolve_direct_launch(&sanitized, true)?
+    {
+        return Err(LauncherError::Generic {
+            code: "ERR_INSTANCE_DELEGATED_ONLY".into(),
+            message: "This imported instance requires delegated launch through the official Minecraft Launcher.".into(),
+        });
+    }
     let (started_tx, started_rx) = oneshot::channel::<LauncherResult<u32>>();
     {
         let mut shared = state.lock().await;
@@ -553,6 +561,14 @@ pub async fn launch_instance_direct(
     }
 
     let ctx = crate::core_context(&app)?;
+    if !agora_core::instance_service::InstanceService::new(ctx.clone())
+        .resolve_direct_launch(&sanitized, true)?
+    {
+        return Err(LauncherError::Generic {
+            code: "ERR_INSTANCE_DELEGATED_ONLY".into(),
+            message: "This imported instance requires delegated launch through the official Minecraft Launcher.".into(),
+        });
+    }
     let (started_tx, started_rx) = oneshot::channel::<LauncherResult<u32>>();
     {
         let mut shared = state.lock().await;
@@ -1363,6 +1379,63 @@ pub async fn pick_open_file(
     }
     let picked = dialog.pick_file().await;
     Ok(picked.map(|h| h.path().to_string_lossy().to_string()))
+}
+
+/// Open a native directory picker for a launcher data root.
+#[tauri::command]
+pub async fn pick_directory(title: String) -> LauncherResult<Option<String>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title(&title)
+        .pick_folder()
+        .await;
+    Ok(picked.map(|handle| handle.path().to_string_lossy().to_string()))
+}
+
+/// Detect importable Prism, CurseForge, and Modrinth launcher instances.
+#[tauri::command]
+pub async fn discover_launcher_imports(
+    app: tauri::AppHandle,
+    custom_root: Option<String>,
+) -> LauncherResult<agora_core::launcher_import_service::LauncherImportDiscovery> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::launcher_import_service::LauncherImportService::new(ctx)
+            .discover(custom_root.map(std::path::PathBuf::from))
+    })
+    .await
+    .map_err(|error| LauncherError::Generic {
+        code: "ERR_IMPORT_DISCOVERY".into(),
+        message: error.to_string(),
+    })
+}
+
+/// Build a read-only, provenance-aware launcher import plan.
+#[tauri::command]
+pub async fn plan_launcher_imports(
+    app: tauri::AppHandle,
+    selections: Vec<agora_core::launcher_import_service::ImportSelection>,
+) -> LauncherResult<agora_core::launcher_import_service::LauncherImportPlan> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::launcher_import_service::LauncherImportService::new(ctx).plan(selections)
+    })
+    .await
+    .map_err(|error| LauncherError::Generic {
+        code: "ERR_IMPORT_PLAN".into(),
+        message: error.to_string(),
+    })?
+}
+
+/// Execute a reviewed launcher import plan. Items commit independently.
+#[tauri::command]
+pub async fn execute_launcher_imports(
+    app: tauri::AppHandle,
+    plan: agora_core::launcher_import_service::LauncherImportPlan,
+) -> LauncherResult<agora_core::launcher_import_service::LauncherImportBatchResult> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::launcher_import_service::LauncherImportService::new(ctx)
+        .execute(plan)
+        .await
 }
 
 /// Export an instance as a shareable pack file (Â§6.5c).

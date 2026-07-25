@@ -47,6 +47,8 @@ pub mod java;
 pub mod launch;
 pub mod launch_planner;
 pub mod launch_service;
+pub mod launcher_import;
+pub mod launcher_import_service;
 pub mod launcher_profiles;
 pub mod lkg;
 pub mod loader_manifests;

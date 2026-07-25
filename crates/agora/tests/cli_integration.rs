@@ -872,6 +872,9 @@ fn create_vanilla_instance(data_dir: &Path, instance_id: &str, version: &str) {
             created_at: chrono::Utc::now().to_rfc3339(),
             java_path: None,
             java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
         },
     )
     .unwrap();
@@ -1673,6 +1676,9 @@ fn create_loader_instance(data_dir: &std::path::Path, id: &str, mod_names: &[&st
             created_at: chrono::Utc::now().to_rfc3339(),
             java_path: None,
             java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
         },
     )
     .unwrap();

@@ -286,7 +286,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     shortTitle: 'Instances',
     category: 'Play',
     description: 'Create isolated setups, edit their content, lock stable builds, and manage their lifecycle.',
-    keywords: ['instance', 'create', 'edit', 'delete', 'lock', 'memory'],
+    keywords: ['instance', 'create', 'import', 'prism', 'curseforge', 'modrinth', 'edit', 'delete', 'lock', 'memory'],
     basic: {
       summary: 'An instance is a self-contained Minecraft setup. Separate instances let you keep different game versions, mod loaders, packs, and play styles without mixing their files.',
       outcomes: [
@@ -304,6 +304,16 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Keep the suggested loader version unless a project requires another.',
             'Start with a moderate memory allocation and adjust only when needed.',
             'Create the instance, then use Edit to add content.',
+          ],
+        },
+        {
+          title: 'Import from another launcher',
+          body: 'Select Import Instances on My Instances to detect Prism Launcher, CurseForge, and Modrinth App profiles. Nothing is selected automatically: choose the instances you want, review disk use, loader support, and launch settings, then approve the batch once.',
+          steps: [
+            'Close Minecraft in the source launcher before copying a world.',
+            'Review any unsupported loader or custom-component warning; Agora never substitutes a nearby version.',
+            'Agora copies game data and leaves the source instance untouched. Accounts, credentials, and launch hooks are never imported.',
+            'Successful instances remain imported even if another selected instance is skipped or fails.',
           ],
         },
         {
@@ -350,6 +360,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             title: 'Kill is a last resort',
             text: 'Terminating a running process can lose unsaved game data. Exit Minecraft normally whenever possible.',
           },
+        },
+        {
+          title: 'Update a prior import safely',
+          body: 'Importing the same source again updates the existing Agora copy only while its imported files and launch settings still match the last-import baseline. If you changed mods, configs, saves, screenshots, or settings in Agora, the importer offers a separately named copy instead of merging or overwriting your work.',
         },
       ],
     },

@@ -15,8 +15,9 @@ import {
 import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
+import { LauncherImportWizard } from '../components/LauncherImportWizard';
 
-type Step = 'welcome' | 'services' | 'java' | 'github' | 'registry';
+type Step = 'welcome' | 'services' | 'java' | 'github' | 'registry' | 'import';
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -79,7 +80,10 @@ export function Onboarding({ onComplete }: OnboardingProps) {
             <GithubStep onContinue={() => setStep('registry')} onBack={() => setStep('java')} />
           )}
           {step === 'registry' && (
-            <RegistryStep onFinish={finish} onBack={() => setStep('github')} hasAutoDownloaded={registryAutoDownloaded} />
+            <RegistryStep onFinish={() => setStep('import')} onBack={() => setStep('github')} hasAutoDownloaded={registryAutoDownloaded} />
+          )}
+          {step === 'import' && (
+            <ImportStep onFinish={finish} onBack={() => setStep('registry')} />
           )}
         </div>
       </div>
@@ -98,6 +102,7 @@ function Stepper({ current }: { current: Step }) {
     { id: 'java', label: 'Java' },
     { id: 'github', label: 'GitHub' },
     { id: 'registry', label: 'Registry' },
+    { id: 'import', label: 'Import' },
   ];
   const currentIndex = steps.findIndex((s) => s.id === current);
   return (
@@ -121,6 +126,52 @@ function Stepper({ current }: { current: Step }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function ImportStep({ onFinish, onBack }: { onFinish: () => void; onBack: () => void }) {
+  const [showImport, setShowImport] = useState(false);
+  return (
+    <div>
+      <Stepper current="import" />
+      <h2 className="text-2xl font-bold mb-2">Bring Your Instances</h2>
+      <p className="text-muted-foreground mb-6">
+        Agora can detect Prism Launcher, CurseForge, and Modrinth App instances, then copy the
+        instances you choose without changing the originals.
+      </p>
+      <div className="rounded-xl border border-border bg-card p-4">
+        <p className="text-sm font-medium">Import from another launcher</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Review versions, loaders, disk usage, and launch settings before anything is copied.
+          Accounts and launcher credentials are never imported.
+        </p>
+        <button
+          onClick={() => setShowImport(true)}
+          className="mt-4 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Find My Instances
+        </button>
+      </div>
+      <div className="mt-8 flex justify-between">
+        <button
+          onClick={onBack}
+          className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
+        >
+          Back
+        </button>
+        <button
+          onClick={onFinish}
+          className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
+        >
+          Skip for now
+        </button>
+      </div>
+      <LauncherImportWizard
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onComplete={() => setShowImport(false)}
+      />
     </div>
   );
 }

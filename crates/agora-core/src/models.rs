@@ -24,6 +24,19 @@ pub struct InstanceRow {
     /// Default: false (0).
     #[serde(default)]
     pub java_incompatible_override: bool,
+    /// Agora-owned local icon path. Source launcher paths are never exposed here.
+    #[serde(default)]
+    pub icon_path: Option<String>,
+    /// Per-instance launch policy: `auto`, `direct`, or `delegated`.
+    #[serde(default = "default_launch_mode_override")]
+    pub launch_mode_override: String,
+    /// Local-only provenance label populated from `instance_imports`.
+    #[serde(default)]
+    pub import_source: Option<String>,
+}
+
+fn default_launch_mode_override() -> String {
+    "auto".to_string()
 }
 
 /// JVM configuration assembled from instance settings (see §8.5).

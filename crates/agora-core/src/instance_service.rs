@@ -91,6 +91,30 @@ impl InstanceService {
         Ok(Some(InstanceDetail { row, manifest }))
     }
 
+    /// Resolve the effective launch mode after applying an instance override.
+    pub fn resolve_direct_launch(
+        &self,
+        instance_id: &str,
+        requested_direct: bool,
+    ) -> LauncherResult<bool> {
+        let instance_id = self.validate_id(instance_id)?;
+        let conn = self.connection()?;
+        let row = crate::db::get_instance(&conn, &instance_id)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found"),
+            })?;
+        Ok(match row.launch_mode_override.as_str() {
+            "direct" => true,
+            "delegated" => false,
+            _ => requested_direct,
+        })
+    }
+
     pub fn lock(&self, instance_id: &str) -> LauncherResult<()> {
         self.set_locked(instance_id, true)
     }
@@ -526,6 +550,9 @@ impl InstanceService {
             created_at: now,
             java_path: source_row.java_path.clone(),
             java_incompatible_override: source_row.java_incompatible_override,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
         };
         let new_manifest = InstanceManifest {
             instance_id: new_id.clone(),
@@ -901,6 +928,9 @@ fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRo
         created_at: chrono::Utc::now().to_rfc3339(),
         java_path: None,
         java_incompatible_override: false,
+        icon_path: None,
+        launch_mode_override: "auto".into(),
+        import_source: None,
     }
 }
 

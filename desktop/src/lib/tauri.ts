@@ -339,6 +339,9 @@ export interface InstanceRow {
   created_at: string;
   java_path: string | null;
   java_incompatible_override: boolean;
+  icon_path: string | null;
+  launch_mode_override: 'auto' | 'direct' | 'delegated';
+  import_source: string | null;
 }
 
 export interface InstalledMod {
@@ -767,6 +770,124 @@ export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack'
 
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });
+
+export type LauncherKind = 'prism' | 'curse_forge' | 'modrinth';
+export type CandidateStatus = 'ready' | 'needs_review' | { unsupported: { reasons: string[] } };
+
+export interface LoaderTuple {
+  loader: string;
+  loader_version: string;
+  minecraft_version: string;
+}
+
+export interface LaunchSettingsPreview {
+  memory_mb: number | null;
+  java_path: string | null;
+  jvm_args: string[];
+}
+
+export interface ContentInventory {
+  payload_root: string;
+  total_files: number;
+  total_bytes: number;
+  has_mods: boolean;
+  has_resourcepacks: boolean;
+  has_shaderpacks: boolean;
+  has_datapacks: boolean;
+  has_saves: boolean;
+}
+
+export interface LauncherImportCandidate {
+  source_key: string;
+  launcher: LauncherKind;
+  launcher_installation_key: string;
+  display_name: string;
+  icon_path: string | null;
+  payload_root: string;
+  inventory: ContentInventory;
+  loader_tuple: LoaderTuple | null;
+  last_played: string | null;
+  launch_strategy: 'normal' | 'delegated';
+  settings_preview: LaunchSettingsPreview;
+  status: CandidateStatus;
+  warnings: string[];
+}
+
+export interface DetectedLauncherImport {
+  installation_key: string;
+  kind: LauncherKind;
+  display_name: string;
+  config_root: string;
+  instances_dir: string;
+  instance_count: number;
+  detection_warnings: string[];
+}
+
+export interface LauncherDiscovery {
+  launcher: DetectedLauncherImport | null;
+  candidates: LauncherImportCandidate[];
+}
+
+export interface LauncherImportDiscovery {
+  prism: LauncherDiscovery;
+  curseforge: LauncherDiscovery;
+  modrinth: LauncherDiscovery;
+}
+
+export interface ImportSelection {
+  source_key: string;
+  launcher_kind: LauncherKind;
+  installation_key: string;
+  destination_name: string | null;
+  preserve_settings: boolean;
+}
+
+export interface LauncherImportItemPlan {
+  fingerprint: string;
+  destination_id: string;
+  destination_name: string;
+  action: 'new' | 'update' | 'unchanged';
+  source_key: string;
+  launcher_kind: LauncherKind;
+  installation_key: string;
+  source_path: string;
+  loader_tuple: LoaderTuple | null;
+  total_bytes: number;
+  total_files: number;
+  preserve_settings: boolean;
+  sanitized_settings: LaunchSettingsPreview;
+  existing_import: unknown | null;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface LauncherImportPlan {
+  batch_fingerprint: string;
+  items: LauncherImportItemPlan[];
+  peak_bytes: number;
+  total_files: number;
+  batch_blockers: string[];
+}
+
+export type LauncherImportOutcome =
+  | { status: 'imported'; instance_id: string; warnings: string[] }
+  | { status: 'updated'; instance_id: string; warnings: string[] }
+  | { status: 'skipped'; reason: string }
+  | { status: 'failed'; error: string; warnings: string[] }
+  | { status: 'cancelled'; reason: string };
+
+export interface LauncherImportBatchResult {
+  outcomes: LauncherImportOutcome[];
+}
+
+export const pickDirectory = (title: string) =>
+  invoke<string | null>('pick_directory', { title });
+export const discoverLauncherImports = (customRoot?: string | null) =>
+  invoke<LauncherImportDiscovery>('discover_launcher_imports', { customRoot: customRoot ?? null });
+export const planLauncherImports = (selections: ImportSelection[]) =>
+  invoke<LauncherImportPlan>('plan_launcher_imports', { selections });
+export const executeLauncherImports = (plan: LauncherImportPlan) =>
+  invoke<LauncherImportBatchResult>('execute_launcher_imports', { plan });
 
 export const importInstancePack = (sourcePath: string) =>
   invoke<string>('import_instance_pack', { sourcePath });

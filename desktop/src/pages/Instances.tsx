@@ -24,6 +24,7 @@ import {
 import type { InstallIntent } from '../lib/installFlow';
 import { type ProcessState } from '../lib/useProcessController';
 import { InstallFlow } from '../components/InstallFlow';
+import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import {
   Dialog,
   DialogContent,
@@ -61,6 +62,7 @@ export function Instances({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   // Load direct launch mode once
   const [directLaunch, setDirectLaunch] = useState(false);
@@ -140,19 +142,27 @@ export function Instances({
 
   return (
     <div className="space-y-6">
-      <section className="flex items-center justify-between">
+      <section className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-bold mb-2">My Instances</h2>
           <p className="text-muted-foreground">
             Isolated modpack profiles, custom instances, and launch history.
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          + Create Instance
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setShowImport(true)}
+            className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            Import Instances
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            + Create Instance
+          </button>
+        </div>
       </section>
 
       {error && (
@@ -193,7 +203,11 @@ export function Instances({
                 isRunning={isRunning}
                 runningPid={isRunning ? processState.pid : null}
                 launchBusy={isLaunchBusy}
-                onLaunch={() => onStartLaunch(instance.instance_id, directLaunch)}
+                onLaunch={() => onStartLaunch(
+                  instance.instance_id,
+                  instance.launch_mode_override === 'direct'
+                    || (instance.launch_mode_override !== 'delegated' && directLaunch),
+                )}
                 onKill={onKillProcess}
                 controllerError={processState.phase === 'failed' ? processState.error : null}
                 controllerRecoverableIssue={isCurrentFailed ? processState.recoverableIssue : null}
@@ -224,6 +238,12 @@ export function Instances({
           }}
         />
       )}
+
+      <LauncherImportWizard
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onComplete={refresh}
+      />
 
       {pasteLog && (
         <PasteLogModal
@@ -355,6 +375,13 @@ function InstanceCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold">{instance.name}</h3>
+          {instance.import_source && (
+            <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
+                ? 'CurseForge'
+                : instance.import_source === 'prism' ? 'Prism Launcher' : 'Modrinth App'}
+            </span>
+          )}
           <p className="text-xs text-muted-foreground">
             {instance.loader} {instance.loader_version} · MC {instance.minecraft_version}
           </p>
@@ -369,7 +396,9 @@ function InstanceCard({
           </p>
         </div>
         <span className="text-xs uppercase tracking-wide text-muted-foreground">
-          {instance.is_locked ? 'Locked' : 'Unlocked'}
+          {instance.launch_mode_override === 'delegated'
+            ? 'Delegated only'
+            : instance.is_locked ? 'Locked' : 'Unlocked'}
         </span>
       </div>
 

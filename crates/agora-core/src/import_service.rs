@@ -320,6 +320,9 @@ impl ImportService {
             created_at: chrono::Utc::now().to_rfc3339(),
             java_path: None,
             java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
         };
 
         let conn = match crate::db::local_state_connection(&self.ctx.paths.local_state_db()) {

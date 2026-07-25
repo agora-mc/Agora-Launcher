@@ -297,6 +297,11 @@
 
 ## Phase 6 — Polish & Hardening
 
+- [x] **One-click launcher instance migration**
+  - **Short:** Detect and copy selected Prism Launcher, CurseForge, and Modrinth App instances from onboarding or My Instances.
+  - **Detail:** Read-only source adapters handle Prism `instance.cfg`/`mmc-pack.json`, CurseForge custom roots and `minecraftinstance.json`, and both current Modrinth `app.db` content-set metadata and legacy `profile.json`. Imports use reviewed batch plans, per-instance atomic staging, loader/health preparation, SHA-256 provenance baselines, crash-recovery journals, partial-batch success, cancellation, and safe repeat-import updates only while the Agora copy is unchanged. Source files, accounts, credentials, hooks, and launcher-owned Java runtimes are never moved or imported.
+  - **Acceptance:** The import wizard selects nothing by default, reports unsupported loaders before copying, preserves compatible launch settings, leaves source trees unchanged, imports successful siblings when another fails, and offers a fresh copy instead of overwriting an Agora-modified prior import.
+
 - [x] **Error envelope shape** (§4.5)
   - **Short:** Custom `Serialize` impl on `LauncherError` outputs `{code, message, details, suggested_action}` flat envelope. Implemented in `desktop/src-tauri/src/error.rs` + `desktop/src/lib/tauri.ts`.
   - **Detail:** Replaced `#[derive(Serialize)]` with manual `impl Serialize` producing `{"code": "...", "message": "...", "details": null, "suggested_action": "..."}`. `suggested_action` populated for `MojangNotFound`, `HashMismatch`, `NetworkOffline`, `AuthRequired`; null for all others. `formatError` in `tauri.ts` updated to handle new envelope shape with backward compat for old Tauri tagged-variant shape.

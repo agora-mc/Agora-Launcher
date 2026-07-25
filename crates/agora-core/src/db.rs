@@ -1,10 +1,10 @@
 use crate::models::InstanceRow;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 5;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 7;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -286,6 +286,75 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
     }
 
+    // Migration v6: launcher migration provenance, per-instance launch policy,
+    // and crash-recoverable import jobs.
+    if current < 6 {
+        let _ = conn.execute("ALTER TABLE user_instances ADD COLUMN icon_path TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE user_instances ADD COLUMN launch_mode_override TEXT NOT NULL DEFAULT 'auto'",
+            [],
+        );
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS instance_imports (
+                 instance_id TEXT PRIMARY KEY,
+                 launcher_kind TEXT NOT NULL,
+                 installation_key TEXT NOT NULL,
+                 source_instance_key TEXT NOT NULL,
+                 source_path TEXT NOT NULL,
+                 source_metadata_json TEXT NOT NULL DEFAULT '{}',
+                 imported_settings_json TEXT NOT NULL DEFAULT '{}',
+                 source_fingerprint TEXT NOT NULL,
+                 imported_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 last_result TEXT NOT NULL DEFAULT 'imported',
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS instance_import_files (
+                 instance_id TEXT NOT NULL,
+                 relative_path TEXT NOT NULL,
+                 sha256 TEXT NOT NULL,
+                 size INTEGER NOT NULL,
+                 source_modified_ns INTEGER,
+                 PRIMARY KEY (instance_id, relative_path),
+                 FOREIGN KEY (instance_id) REFERENCES instance_imports(instance_id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS instance_import_jobs (
+                 job_id TEXT PRIMARY KEY,
+                 instance_id TEXT NOT NULL,
+                 launcher_kind TEXT NOT NULL,
+                 source_instance_key TEXT NOT NULL,
+                 staging_path TEXT NOT NULL,
+                 final_path TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 plan_fingerprint TEXT NOT NULL,
+                 error TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_import_source
+                 ON instance_imports (launcher_kind, installation_key, source_instance_key);
+             CREATE INDEX IF NOT EXISTS idx_instance_import_jobs_state
+                 ON instance_import_jobs (state);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (6)",
+            [],
+        )?;
+    }
+
+    // Migration v7: persist the exact update quarantine so crash recovery
+    // never has to guess among similarly named directories.
+    if current < 7 {
+        let _ = conn.execute(
+            "ALTER TABLE instance_import_jobs ADD COLUMN quarantine_path TEXT",
+            [],
+        );
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (7)",
+            [],
+        )?;
+    }
+
     if current > target {
         anyhow::bail!("local_state.db schema version {current} is newer than supported {target}");
     }
@@ -350,8 +419,8 @@ pub fn upsert_instance(conn: &Connection, row: &InstanceRow) -> anyhow::Result<(
              instance_id, name, minecraft_version, loader, loader_version,
              is_modpack, is_locked, last_launched_at,
              jvm_memory_mb, jvm_gc, jvm_custom_args, jvm_always_pre_touch, created_at,
-             java_path, java_incompatible_override
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+              java_path, java_incompatible_override, icon_path, launch_mode_override
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(instance_id) DO UPDATE SET
              name = excluded.name,
              minecraft_version = excluded.minecraft_version,
@@ -365,7 +434,9 @@ pub fn upsert_instance(conn: &Connection, row: &InstanceRow) -> anyhow::Result<(
              jvm_custom_args = excluded.jvm_custom_args,
              jvm_always_pre_touch = excluded.jvm_always_pre_touch,
              java_path = excluded.java_path,
-             java_incompatible_override = excluded.java_incompatible_override",
+              java_incompatible_override = excluded.java_incompatible_override,
+              icon_path = excluded.icon_path,
+              launch_mode_override = excluded.launch_mode_override",
         rusqlite::params![
             row.instance_id,
             row.name,
@@ -382,6 +453,8 @@ pub fn upsert_instance(conn: &Connection, row: &InstanceRow) -> anyhow::Result<(
             row.created_at,
             row.java_path,
             row.java_incompatible_override as i64,
+            row.icon_path,
+            normalized_launch_mode(&row.launch_mode_override),
         ],
     )?;
     Ok(())
@@ -470,8 +543,10 @@ pub fn list_instances(conn: &Connection) -> anyhow::Result<Vec<InstanceRow>> {
         "SELECT instance_id, name, minecraft_version, loader, loader_version,
                 is_modpack, is_locked, last_launched_at,
                 jvm_memory_mb, jvm_gc, jvm_custom_args, jvm_always_pre_touch, created_at,
-                java_path, java_incompatible_override
-         FROM user_instances
+                 java_path, java_incompatible_override, icon_path, launch_mode_override,
+                 (SELECT launcher_kind FROM instance_imports
+                  WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1)
+          FROM user_instances
          ORDER BY last_launched_at DESC NULLS LAST, created_at DESC",
     )?;
     let rows = stmt.query_map([], row_to_instance)?;
@@ -488,8 +563,10 @@ pub fn get_instance(conn: &Connection, instance_id: &str) -> anyhow::Result<Opti
         "SELECT instance_id, name, minecraft_version, loader, loader_version,
                 is_modpack, is_locked, last_launched_at,
                 jvm_memory_mb, jvm_gc, jvm_custom_args, jvm_always_pre_touch, created_at,
-                java_path, java_incompatible_override
-         FROM user_instances
+                 java_path, java_incompatible_override, icon_path, launch_mode_override,
+                 (SELECT launcher_kind FROM instance_imports
+                  WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1)
+          FROM user_instances
          WHERE instance_id = ?1",
     )?;
     let mut rows = stmt.query_map([instance_id], row_to_instance)?;
@@ -660,7 +737,254 @@ fn row_to_instance(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceRow> {
         created_at: row.get(12)?,
         java_path: row.get(13)?,
         java_incompatible_override: row.get::<_, i64>(14)? != 0,
+        icon_path: row.get(15)?,
+        launch_mode_override: row.get(16)?,
+        import_source: row.get(17)?,
     })
+}
+
+fn normalized_launch_mode(value: &str) -> &str {
+    match value {
+        "direct" => "direct",
+        "delegated" => "delegated",
+        _ => "auto",
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceImportRecord {
+    pub instance_id: String,
+    pub launcher_kind: String,
+    pub installation_key: String,
+    pub source_instance_key: String,
+    pub source_path: String,
+    pub source_metadata_json: String,
+    pub imported_settings_json: String,
+    pub source_fingerprint: String,
+    pub imported_at: String,
+    pub updated_at: String,
+    pub last_result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceImportFileRecord {
+    pub relative_path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub source_modified_ns: Option<i64>,
+}
+
+pub fn get_instance_import(
+    conn: &Connection,
+    instance_id: &str,
+) -> anyhow::Result<Option<InstanceImportRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT instance_id, launcher_kind, installation_key, source_instance_key,
+                source_path, source_metadata_json, imported_settings_json,
+                source_fingerprint, imported_at, updated_at, last_result
+         FROM instance_imports WHERE instance_id = ?1",
+    )?;
+    let mut rows = stmt.query([instance_id])?;
+    Ok(rows.next()?.map(row_to_instance_import).transpose()?)
+}
+
+pub fn find_instance_import_by_source(
+    conn: &Connection,
+    launcher_kind: &str,
+    installation_key: &str,
+    source_instance_key: &str,
+) -> anyhow::Result<Option<InstanceImportRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT instance_id, launcher_kind, installation_key, source_instance_key,
+                source_path, source_metadata_json, imported_settings_json,
+                source_fingerprint, imported_at, updated_at, last_result
+         FROM instance_imports
+         WHERE launcher_kind = ?1 AND installation_key = ?2 AND source_instance_key = ?3
+         ORDER BY updated_at DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![
+        launcher_kind,
+        installation_key,
+        source_instance_key
+    ])?;
+    Ok(rows.next()?.map(row_to_instance_import).transpose()?)
+}
+
+fn row_to_instance_import(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceImportRecord> {
+    Ok(InstanceImportRecord {
+        instance_id: row.get(0)?,
+        launcher_kind: row.get(1)?,
+        installation_key: row.get(2)?,
+        source_instance_key: row.get(3)?,
+        source_path: row.get(4)?,
+        source_metadata_json: row.get(5)?,
+        imported_settings_json: row.get(6)?,
+        source_fingerprint: row.get(7)?,
+        imported_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        last_result: row.get(10)?,
+    })
+}
+
+pub fn list_instance_import_files(
+    conn: &Connection,
+    instance_id: &str,
+) -> anyhow::Result<Vec<InstanceImportFileRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT relative_path, sha256, size, source_modified_ns
+         FROM instance_import_files WHERE instance_id = ?1 ORDER BY relative_path",
+    )?;
+    let rows = stmt.query_map([instance_id], |row| {
+        Ok(InstanceImportFileRecord {
+            relative_path: row.get(0)?,
+            sha256: row.get(1)?,
+            size: row.get::<_, i64>(2)? as u64,
+            source_modified_ns: row.get(3)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn replace_instance_import(
+    conn: &Connection,
+    record: &InstanceImportRecord,
+    files: &[InstanceImportFileRecord],
+) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO instance_imports (
+             instance_id, launcher_kind, installation_key, source_instance_key,
+             source_path, source_metadata_json, imported_settings_json,
+             source_fingerprint, imported_at, updated_at, last_result
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(instance_id) DO UPDATE SET
+             launcher_kind = excluded.launcher_kind,
+             installation_key = excluded.installation_key,
+             source_instance_key = excluded.source_instance_key,
+             source_path = excluded.source_path,
+             source_metadata_json = excluded.source_metadata_json,
+             imported_settings_json = excluded.imported_settings_json,
+             source_fingerprint = excluded.source_fingerprint,
+             updated_at = excluded.updated_at,
+             last_result = excluded.last_result",
+        rusqlite::params![
+            record.instance_id,
+            record.launcher_kind,
+            record.installation_key,
+            record.source_instance_key,
+            record.source_path,
+            record.source_metadata_json,
+            record.imported_settings_json,
+            record.source_fingerprint,
+            record.imported_at,
+            record.updated_at,
+            record.last_result,
+        ],
+    )?;
+    tx.execute(
+        "DELETE FROM instance_import_files WHERE instance_id = ?1",
+        [record.instance_id.as_str()],
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO instance_import_files
+                 (instance_id, relative_path, sha256, size, source_modified_ns)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for file in files {
+            stmt.execute(rusqlite::params![
+                record.instance_id,
+                file.relative_path,
+                file.sha256,
+                file.size as i64,
+                file.source_modified_ns,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceImportJob {
+    pub job_id: String,
+    pub instance_id: String,
+    pub launcher_kind: String,
+    pub source_instance_key: String,
+    pub staging_path: String,
+    pub final_path: String,
+    pub quarantine_path: Option<String>,
+    pub state: String,
+    pub plan_fingerprint: String,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+pub fn upsert_instance_import_job(
+    conn: &Connection,
+    job: &InstanceImportJob,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO instance_import_jobs (
+             job_id, instance_id, launcher_kind, source_instance_key,
+             staging_path, final_path, quarantine_path, state, plan_fingerprint, error,
+             created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(job_id) DO UPDATE SET
+             state = excluded.state,
+             error = excluded.error,
+             updated_at = excluded.updated_at",
+        rusqlite::params![
+            job.job_id,
+            job.instance_id,
+            job.launcher_kind,
+            job.source_instance_key,
+            job.staging_path,
+            job.final_path,
+            job.quarantine_path,
+            job.state,
+            job.plan_fingerprint,
+            job.error,
+            job.created_at,
+            job.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_instance_import_job(conn: &Connection, job_id: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM instance_import_jobs WHERE job_id = ?1",
+        [job_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_instance_import_jobs(conn: &Connection) -> anyhow::Result<Vec<InstanceImportJob>> {
+    let mut statement = conn.prepare(
+        "SELECT job_id, instance_id, launcher_kind, source_instance_key,
+                staging_path, final_path, quarantine_path, state, plan_fingerprint, error,
+                created_at, updated_at
+         FROM instance_import_jobs ORDER BY created_at",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(InstanceImportJob {
+            job_id: row.get(0)?,
+            instance_id: row.get(1)?,
+            launcher_kind: row.get(2)?,
+            source_instance_key: row.get(3)?,
+            staging_path: row.get(4)?,
+            final_path: row.get(5)?,
+            quarantine_path: row.get(6)?,
+            state: row.get(7)?,
+            plan_fingerprint: row.get(8)?,
+            error: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,6 +1475,79 @@ mod tests {
         assert_eq!(results[1].confirm_count, 1);
     }
 
+    #[test]
+    fn test_schema_v6_import_provenance_roundtrip_and_cascade() {
+        let (conn, _path) = test_db();
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, LOCAL_STATE_SCHEMA_VERSION);
+
+        let row = InstanceRow {
+            instance_id: "imported-instance".into(),
+            name: "Imported Instance".into(),
+            minecraft_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.9".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: Some("instance-icon.png".into()),
+            launch_mode_override: "delegated".into(),
+            import_source: None,
+        };
+        upsert_instance(&conn, &row).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let record = InstanceImportRecord {
+            instance_id: row.instance_id.clone(),
+            launcher_kind: "prism".into(),
+            installation_key: "prism:test".into(),
+            source_instance_key: "source".into(),
+            source_path: "C:/Prism/instances/source/minecraft".into(),
+            source_metadata_json: "{}".into(),
+            imported_settings_json: "{}".into(),
+            source_fingerprint: "fingerprint".into(),
+            imported_at: now.clone(),
+            updated_at: now,
+            last_result: "imported".into(),
+        };
+        let files = vec![InstanceImportFileRecord {
+            relative_path: "mods/example.jar".into(),
+            sha256: "abc".into(),
+            size: 3,
+            source_modified_ns: None,
+        }];
+        replace_instance_import(&conn, &record, &files).unwrap();
+        assert_eq!(
+            find_instance_import_by_source(&conn, "prism", "prism:test", "source")
+                .unwrap()
+                .unwrap()
+                .instance_id,
+            row.instance_id
+        );
+        assert_eq!(
+            list_instance_import_files(&conn, &row.instance_id).unwrap(),
+            files
+        );
+
+        delete_instance(&conn, &row.instance_id).unwrap();
+        assert!(get_instance_import(&conn, &row.instance_id)
+            .unwrap()
+            .is_none());
+        assert!(list_instance_import_files(&conn, &row.instance_id)
+            .unwrap()
+            .is_empty());
+    }
+
     // -----------------------------------------------------------------------
     // Schema v4 migration and java columns
     // -----------------------------------------------------------------------
@@ -1224,6 +1621,9 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             java_path: None,
             java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
         };
         upsert_instance(&conn, &row).unwrap();
 
@@ -1269,6 +1669,9 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             java_path: Some("/opt/java21/bin/java".into()),
             java_incompatible_override: true,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
         };
         upsert_instance(&conn, &row).unwrap();
 

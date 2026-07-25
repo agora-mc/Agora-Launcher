@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
+import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import type { BatchInstallItem, InstallIntent } from '../lib/installFlow';
 import {
   getInstanceDetail,
@@ -171,7 +172,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   // Import state (Phase 6)
   const [importBusy, setImportBusy] = useState(false);
-  const [symlinkSaves, setSymlinkSaves] = useState(true);
+  const [launcherImportOpen, setLauncherImportOpen] = useState(false);
   const [lockfileText, setLockfileText] = useState('');
   const [lockfileBusy, setLockfileBusy] = useState<'export' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
   const [lockfileReport, setLockfileReport] = useState<LockfileDriftReport | null>(null);
@@ -1602,27 +1603,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
       {activeTab === 'import' && (
         <section className="rounded-xl border border-border bg-card p-4 space-y-4">
-          <h3 className="font-semibold text-sm">Import from file</h3>
+          <h3 className="font-semibold text-sm">Import a new instance</h3>
           <p className="text-xs text-muted-foreground">
-            Import a Modrinth pack (.mrpack) or a ZIP archive as a new instance.
+            Copy instances from Prism Launcher, CurseForge, or Modrinth App, or import a
+            Modrinth pack (.mrpack) or ZIP archive from disk.
           </p>
-          <div className="flex items-center justify-between">
-            <span className="text-sm">Symlink saves (recommended)</span>
-            <button
-              onClick={() => setSymlinkSaves(!symlinkSaves)}
-              className={[
-                'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
-                symlinkSaves ? 'bg-primary' : 'bg-border',
-              ].join(' ')}
-            >
-              <span
-                className={[
-                  'inline-block h-3.5 w-3.5 rounded-full bg-primary-foreground transition-transform',
-                  symlinkSaves ? 'translate-x-[18px]' : 'translate-x-[3px]',
-                ].join(' ')}
-              />
-            </button>
-          </div>
+          <button
+            onClick={() => setLauncherImportOpen(true)}
+            className="w-full rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            Import from Installed Launchers
+          </button>
           <button
             onClick={async () => {
               setImportBusy(true);
@@ -1630,7 +1621,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               try {
                 const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
                 if (path === null) { setImportBusy(false); return; }
-                const result = await importInstance(path, symlinkSaves);
+                const result = await importInstance(path, false);
                 if (onOpenInstanceEditor) {
                   onOpenInstanceEditor(result.instance_id);
                 } else {
@@ -1647,8 +1638,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           >
             {importBusy ? 'Importing…' : 'Select File & Import'}
           </button>
+          <p className="text-xs text-muted-foreground">
+            Agora always copies imported data. Source instances and saves are never linked or modified.
+          </p>
         </section>
       )}
+
+      <LauncherImportWizard
+        open={launcherImportOpen}
+        onClose={() => setLauncherImportOpen(false)}
+        onComplete={() => setLauncherImportOpen(false)}
+      />
 
       {activeTab === 'export' && (
         <section className="space-y-4">

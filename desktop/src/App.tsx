@@ -11,7 +11,7 @@ import AiChatPage from './pages/AiChatPage';
 import { Onboarding } from './pages/Onboarding';
 import { ModDetail } from './pages/ModDetail';
 import { InstanceEditor } from './pages/InstanceEditor';
-import { getSetting } from './lib/tauri';
+import { getInstanceDetail, getSetting } from './lib/tauri';
 import { OfflineBanner } from './components/offline-banner';
 import { HealthDialog } from './components/HealthDialog';
 import { CrashInvestigator } from './components/CrashInvestigator';
@@ -367,6 +367,9 @@ export default function App() {
     let directLaunch = false;
     try {
       directLaunch = (await getSetting('launch_mode')) === 'direct';
+      const detail = await getInstanceDetail(instanceId);
+      if (detail?.row.launch_mode_override === 'delegated') directLaunch = false;
+      if (detail?.row.launch_mode_override === 'direct') directLaunch = true;
     } catch {
       // Delegated launch is the safe default when the setting is unavailable.
     }

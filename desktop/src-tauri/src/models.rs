@@ -19,6 +19,20 @@ pub struct InstanceRow {
     pub jvm_custom_args: String,
     pub jvm_always_pre_touch: bool,
     pub created_at: String,
+    #[serde(default)]
+    pub java_path: Option<String>,
+    #[serde(default)]
+    pub java_incompatible_override: bool,
+    #[serde(default)]
+    pub icon_path: Option<String>,
+    #[serde(default = "default_launch_mode_override")]
+    pub launch_mode_override: String,
+    #[serde(default)]
+    pub import_source: Option<String>,
+}
+
+fn default_launch_mode_override() -> String {
+    "auto".to_string()
 }
 
 /// JVM configuration assembled from instance settings (see §8.5).

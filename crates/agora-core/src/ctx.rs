@@ -142,6 +142,9 @@ impl CoreContext {
                 message: msg,
             }
         })?;
+        warnings.extend(crate::launcher_import_service::recover_interrupted_jobs(
+            &paths,
+        ));
 
         // 3. Validate cached registry schema version (warning only — the
         //    cached db may be absent or stale, which is recoverable).
