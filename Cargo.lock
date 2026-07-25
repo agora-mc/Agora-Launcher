@@ -87,6 +87,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "toml 0.8.2",
  "urlencoding",
  "uuid",
  "zip 0.6.6",
