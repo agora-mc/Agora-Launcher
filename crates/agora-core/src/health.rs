@@ -1276,6 +1276,105 @@ mod tests {
     }
 
     #[test]
+    fn health_jarjar_bundles_satisfy_create_and_gml_capabilities() {
+        let dir = fresh_instance("jarjar_reported_bundles");
+        let flywheel = jar_bytes(&[(
+            "META-INF/neoforge.mods.toml",
+            br#"modId="flywheel"
+version="1.0"
+"#,
+        )]);
+        let ponder = jar_bytes(&[(
+            "META-INF/neoforge.mods.toml",
+            br#"modId="ponder"
+version="1.0"
+"#,
+        )]);
+        write_binary_jar(
+            &dir.join("mods"),
+            "create.jar",
+            &[
+                (
+                    "META-INF/neoforge.mods.toml",
+                    br#"modId="create"
+version="1.0"
+[[dependencies.create]]
+modId="flywheel"
+type="required"
+[[dependencies.create]]
+modId="ponder"
+type="required"
+"#,
+                ),
+                (
+                    "META-INF/jarjar/metadata.json",
+                    br#"{"jars":[{"identifier":{"group":"example","artifact":"flywheel"},"version":{"artifactVersion":"1.0"},"path":"META-INF/jarjar/flywheel.jar"},{"identifier":{"group":"example","artifact":"ponder"},"version":{"artifactVersion":"1.0"},"path":"META-INF/jarjar/ponder.jar"}]}"#,
+                ),
+                ("META-INF/jarjar/flywheel.jar", &flywheel),
+                ("META-INF/jarjar/ponder.jar", &ponder),
+            ],
+        );
+
+        let common_library = jar_bytes(&[(
+            "META-INF/neoforge.mods.toml",
+            br#"modId="commongroovylibrary"
+version="1.0"
+"#,
+        )]);
+        write_binary_jar(
+            &dir.join("mods"),
+            "gml.jar",
+            &[
+                (
+                    "META-INF/neoforge.mods.toml",
+                    br#"modId="gml"
+version="1.0"
+[[dependencies.gml]]
+modId="commongroovylibrary"
+type="required"
+"#,
+                ),
+                (
+                    "META-INF/jarjar/metadata.json",
+                    br#"{"jars":[{"identifier":{"group":"example","artifact":"commongroovylibrary"},"version":{"artifactVersion":"1.0"},"path":"META-INF/jarjar/common.jar"}]}"#,
+                ),
+                ("META-INF/jarjar/common.jar", &common_library),
+            ],
+        );
+
+        let manifest = tracked_manifest(&[("create.jar", "create"), ("gml.jar", "gml")]);
+        let report = health(&dir, &manifest, None);
+        assert!(
+            !report
+                .blockers
+                .iter()
+                .any(|blocker| { blocker.kind == BlockerKind::MissingRequiredDependency }),
+            "JarJar dependencies were not inventoried: {report:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_missing_external_dependency_remains_blocking() {
+        let dir = fresh_instance("missing_external_dependency");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"genuine-external":"*"}}"#,
+            )],
+        );
+        let manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.iter().any(|blocker| {
+            blocker.kind == BlockerKind::MissingRequiredDependency
+                && blocker.mod_id.as_deref() == Some("genuine-external")
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn health_unconditional_breaks_blocks_launch() {
         // A breaks B with "*" (unconditional) and both installed => BLOCKER.
         let dir = fresh_instance("unconditional_breaks");
