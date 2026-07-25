@@ -975,6 +975,36 @@ impl Resolver {
         parsed.has_native_metadata.then_some(parsed.metadata)
     }
 
+    fn native_dependency_project_mappings(
+        &self,
+        metadata: &crate::dependency_ops::JarDeps,
+    ) -> std::collections::HashMap<String, String> {
+        let mut mappings = std::collections::HashMap::new();
+        let Ok(connection) = open_registry_db(&self.ctx.paths.registry_db()) else {
+            return mappings;
+        };
+        let aliases = registry::get_all_mod_aliases(&connection)
+            .map(|pairs| AliasMap::from_pairs(&pairs))
+            .unwrap_or_else(|_| AliasMap::from_pairs(&[]));
+        for loader_id in metadata
+            .depends_on
+            .iter()
+            .chain(metadata.optional_deps.iter())
+        {
+            let registry_id = aliases.resolve_or_self(loader_id);
+            let Some(project_id) = registry::get_item_by_id(&connection, &registry_id)
+                .ok()
+                .flatten()
+                .and_then(|item| item.modrinth_id)
+                .filter(|id| !id.trim().is_empty())
+            else {
+                continue;
+            };
+            mappings.insert(loader_id.to_ascii_lowercase(), project_id);
+        }
+        mappings
+    }
+
     async fn resolve_raw_modrinth_deps(
         &self,
         manifest: &InstanceManifest,
@@ -985,9 +1015,25 @@ impl Resolver {
             .filter_map(|item| item.modrinth_id.as_ref())
             .map(|id| id.to_ascii_lowercase())
             .collect();
+        let installed_loader_ids: HashSet<String> = all_installed(manifest)
+            .flat_map(|item| {
+                item.mod_jar_id
+                    .iter()
+                    .chain(item.provided_mod_ids.iter())
+                    .map(|id| id.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
+        let native_project_mappings = root_native_metadata
+            .map(|metadata| self.native_dependency_project_mappings(metadata))
+            .unwrap_or_default();
         let mut queue = VecDeque::new();
-        for dep in effective_raw_modrinth_dependencies(root, root_native_metadata) {
+        for dep in effective_raw_modrinth_dependencies(
+            root,
+            root_native_metadata,
+            &native_project_mappings,
+        ) {
             let requirement = match dep.dependency_type.as_str() {
                 "required" => Requirement::Required,
                 "optional" => Requirement::Optional,
@@ -1002,6 +1048,46 @@ impl Resolver {
         while let Some((project_id, version_id, requirement)) = queue.pop_front() {
             let Some(pid) = project_id else {
                 let identity = version_id.unwrap_or_else(|| "unknown-version".into());
+                if let Some(loader_id) = identity.strip_prefix("loader-id:") {
+                    let loader_key = loader_id.to_ascii_lowercase();
+                    if installed_loader_ids.contains(&loader_key) {
+                        let installed = all_installed(manifest).find(|item| {
+                            item.mod_jar_id
+                                .iter()
+                                .chain(item.provided_mod_ids.iter())
+                                .any(|id| id.eq_ignore_ascii_case(loader_id))
+                        });
+                        resolved.insert(
+                            loader_key,
+                            ResolvedDep {
+                                mod_jar_id: loader_id.to_string(),
+                                requirement,
+                                source: DepSource::Jar,
+                                disposition: DepDisposition::ReuseExisting {
+                                    mod_jar_id: loader_id.to_string(),
+                                    installed_filename: installed
+                                        .map(effective_installed_filename)
+                                        .unwrap_or_else(|| "installed".into()),
+                                },
+                            },
+                        );
+                    } else {
+                        resolved.insert(
+                            loader_key,
+                            ResolvedDep {
+                                mod_jar_id: loader_id.to_string(),
+                                requirement,
+                                source: DepSource::Jar,
+                                disposition: DepDisposition::Unresolved {
+                                    reason: format!(
+                                        "No enabled artifact provides loader capability '{loader_id}'."
+                                    ),
+                                },
+                            },
+                        );
+                    }
+                    continue;
+                }
                 resolved.insert(
                     identity.clone(),
                     ResolvedDep {
@@ -1063,9 +1149,14 @@ impl Resolver {
                         Ok(candidate) => {
                             let native_metadata =
                                 self.native_loader_metadata(manifest, candidate).await;
+                            let child_mappings = native_metadata
+                                .as_ref()
+                                .map(|metadata| self.native_dependency_project_mappings(metadata))
+                                .unwrap_or_default();
                             let children = effective_raw_modrinth_dependencies(
                                 candidate,
                                 native_metadata.as_ref(),
+                                &child_mappings,
                             );
                             match raw_modrinth_artifact(&pid, candidate) {
                                 Ok(artifact) => {
@@ -1234,30 +1325,48 @@ impl Resolver {
 fn effective_raw_modrinth_dependencies(
     candidate: &RawModrinthVersionCandidate,
     native_metadata: Option<&crate::dependency_ops::JarDeps>,
+    native_project_mappings: &std::collections::HashMap<String, String>,
 ) -> Vec<RawModrinthDep> {
+    let mut merged = candidate.dependencies.clone();
     let Some(metadata) = native_metadata else {
-        return candidate.dependencies.clone();
+        return merged;
     };
 
-    metadata
+    for (loader_id, dependency_type) in metadata
         .depends_on
         .iter()
-        .map(|project_id| RawModrinthDep {
-            project_id: Some(project_id.clone()),
-            version_id: None,
-            dependency_type: "required".into(),
-        })
-        .chain(
-            metadata
-                .optional_deps
-                .iter()
-                .map(|project_id| RawModrinthDep {
-                    project_id: Some(project_id.clone()),
-                    version_id: None,
-                    dependency_type: "optional".into(),
-                }),
-        )
-        .collect()
+        .map(|id| (id, "required"))
+        .chain(metadata.optional_deps.iter().map(|id| (id, "optional")))
+    {
+        if let Some(existing) = merged.iter_mut().find(|dependency| {
+            dependency
+                .project_id
+                .as_deref()
+                .is_some_and(|project_id| project_id.eq_ignore_ascii_case(loader_id))
+        }) {
+            if dependency_type == "required" {
+                existing.dependency_type = "required".into();
+            }
+        } else if let Some(project_id) =
+            native_project_mappings.get(&loader_id.to_ascii_lowercase())
+        {
+            merged.push(RawModrinthDep {
+                project_id: Some(project_id.clone()),
+                version_id: None,
+                dependency_type: dependency_type.into(),
+            });
+        } else {
+            // Native IDs are loader capabilities, not Modrinth project IDs.
+            // Keep them as unresolved evidence unless a Modrinth edge already
+            // supplied a real project ID for the same textual identity.
+            merged.push(RawModrinthDep {
+                project_id: None,
+                version_id: Some(format!("loader-id:{loader_id}")),
+                dependency_type: dependency_type.into(),
+            });
+        }
+    }
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -2097,7 +2206,7 @@ mod tests {
     }
 
     #[test]
-    fn native_loader_dependencies_replace_unscoped_modrinth_route_dependencies() {
+    fn native_loader_dependencies_merge_without_project_guessing() {
         let candidate = RawModrinthVersionCandidate {
             version: "1.0".into(),
             version_id: "version".into(),
@@ -2120,16 +2229,23 @@ mod tests {
         };
         let native_fabric = crate::dependency_ops::JarDeps {
             mod_jar_id: Some("swingthrough".into()),
+            depends_on: vec!["native-only".into()],
             ..Default::default()
         };
 
-        assert!(effective_raw_modrinth_dependencies(&candidate, Some(&native_fabric)).is_empty());
-        assert_eq!(
-            effective_raw_modrinth_dependencies(&candidate, None)[0]
-                .project_id
-                .as_deref(),
-            Some("connector")
+        let merged = effective_raw_modrinth_dependencies(
+            &candidate,
+            Some(&native_fabric),
+            &std::collections::HashMap::new(),
         );
+        assert!(merged
+            .iter()
+            .any(|dependency| { dependency.project_id.as_deref() == Some("connector") }));
+        let native_only = merged
+            .iter()
+            .find(|dependency| dependency.version_id.as_deref() == Some("loader-id:native-only"))
+            .expect("native-only loader evidence");
+        assert!(native_only.project_id.is_none());
     }
 
     #[test]
