@@ -1,7 +1,7 @@
 use crate::db;
 use crate::dependency_ops::{AliasMap, JarDeps};
-use crate::jar_metadata::parse_jar_metadata_for_loader;
-use crate::models::InstanceManifest;
+use crate::jar_metadata::{parse_jar_metadata_for_loader_with_status, ParseStatus};
+use crate::models::{InstalledMod, InstanceManifest};
 use crate::registry;
 use crate::version_match;
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,8 @@ pub struct Warning {
 #[serde(rename_all = "snake_case")]
 pub enum WarningKind {
     MissingOptionalDependency,
+    MissingRequiredDependencyUnverified,
+    InventoryIncomplete,
     DuplicateModId,
     UnknownMod,
     /// A JAR-declared hard incompatibility (`breaks` / Forge `incompatible`)
@@ -80,6 +82,14 @@ pub struct HealthReport {
 struct InstalledJar {
     filename: String,
     jar: JarDeps,
+    status: ParseStatus,
+    diagnostics: Vec<crate::jar_metadata::ParseDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct CapabilityProvider {
+    owner_filename: String,
+    version: Option<String>,
 }
 
 /// Alias-resolve a loader-ID -> physical-JAR-files index while retaining each
@@ -104,15 +114,84 @@ fn resolve_id_file_index(
     resolved
 }
 
+fn manifest_fallback_metadata(installed: &InstalledMod) -> JarDeps {
+    JarDeps {
+        java_packages: installed.java_packages.clone(),
+        mod_jar_id: installed.mod_jar_id.clone(),
+        depends_on: installed.depends_on.clone(),
+        optional_deps: installed.optional_deps.clone(),
+        incompatible_deps: installed.incompatible_deps.clone(),
+        incompatibility_decls: Vec::new(),
+        mod_version: installed.version.clone(),
+        provided_mods: installed
+            .provided_mod_ids
+            .iter()
+            .map(|mod_id| crate::dependency_ops::ProvidedMod {
+                mod_id: mod_id.clone(),
+                version: installed.version.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn resolve_capability_providers(
+    jars: &[InstalledJar],
+    aliases: &AliasMap,
+) -> HashMap<String, Vec<CapabilityProvider>> {
+    let mut providers = HashMap::new();
+    for installed in jars {
+        let mut ids = Vec::new();
+        if let Some(id) = installed.jar.mod_jar_id.as_deref() {
+            ids.push((id, installed.jar.mod_version.clone()));
+        }
+        ids.extend(
+            installed
+                .jar
+                .provided_mods
+                .iter()
+                .map(|provided| (provided.mod_id.as_str(), provided.version.clone())),
+        );
+        for (id, version) in ids {
+            let canonical = aliases.resolve_or_self(id).to_lowercase();
+            let entries = providers.entry(canonical).or_insert_with(Vec::new);
+            if !entries
+                .iter()
+                .any(|provider: &CapabilityProvider| provider.owner_filename == installed.filename)
+            {
+                entries.push(CapabilityProvider {
+                    owner_filename: installed.filename.clone(),
+                    version,
+                });
+            }
+        }
+    }
+    providers
+}
+
+fn provider_files(
+    providers: &HashMap<String, Vec<CapabilityProvider>>,
+) -> HashMap<String, Vec<String>> {
+    providers
+        .iter()
+        .map(|(id, values)| {
+            (
+                id.clone(),
+                values
+                    .iter()
+                    .map(|provider| provider.owner_filename.clone())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 fn dependency_id_key(id: &str) -> String {
-    let key = id
-        .chars()
-        .filter(|character| *character != '-' && *character != '_')
-        .collect::<String>()
-        .to_lowercase();
-    match key.as_str() {
-        "clothconfig2" => "clothconfig".into(),
-        _ => key,
+    match id.to_ascii_lowercase().as_str() {
+        // Curated, loader-specific historical identities. Do not generalize
+        // this into punctuation stripping: loader IDs and registry IDs are
+        // separate identity domains.
+        "cloth-config2" | "cloth_config" => "clothconfig".into(),
+        other => other.to_string(),
     }
 }
 
@@ -143,12 +222,31 @@ pub fn health(
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("jar") {
-                    let jar = parse_jar_metadata_for_loader(&path, &manifest.loader);
                     let filename = path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    jars.push(InstalledJar { filename, jar });
+                    let manifest_entry =
+                        manifest.mods.iter().find(|item| item.filename == filename);
+                    if manifest_entry.is_some_and(|item| !item.enabled) {
+                        continue;
+                    }
+                    let parsed = parse_jar_metadata_for_loader_with_status(&path, &manifest.loader);
+                    let mut jar = parsed.metadata;
+                    if parsed.status == ParseStatus::Failed {
+                        if let Some(installed) = manifest_entry {
+                            // Existing manifest evidence is only a lower-confidence
+                            // fallback for this physical file; it never marks the
+                            // live parse complete.
+                            jar = manifest_fallback_metadata(installed);
+                        }
+                    }
+                    jars.push(InstalledJar {
+                        filename,
+                        jar,
+                        status: parsed.status,
+                        diagnostics: parsed.diagnostics,
+                    });
                 }
             }
         }
@@ -163,20 +261,8 @@ pub fn health(
     //   only sound input for the user-actionable duplicate-JAR warning. Two
     //   different mods bundling or providing the same library/alias is normal;
     //   asking the user to disable one would be incorrect.
-    let mut presence_id_to_files: HashMap<String, Vec<String>> = HashMap::new();
     let mut primary_id_to_files: HashMap<String, Vec<String>> = HashMap::new();
     for ij in &jars {
-        let mut ids_seen_in_file: HashSet<String> = HashSet::new();
-        for id in ij.jar.all_mod_ids() {
-            let id_lower = id.to_lowercase();
-            if !ids_seen_in_file.insert(id_lower) {
-                continue;
-            }
-            let files = presence_id_to_files.entry(id.to_string()).or_default();
-            if !files.contains(&ij.filename) {
-                files.push(ij.filename.clone());
-            }
-        }
         if let Some(primary_id) = ij.jar.mod_jar_id.as_ref() {
             let files = primary_id_to_files.entry(primary_id.clone()).or_default();
             if !files.contains(&ij.filename) {
@@ -186,12 +272,6 @@ pub fn health(
     }
 
     // 3. Also build from manifest's installed mod list (modrinth_id / registry_id)
-    let manifest_mod_ids: HashSet<String> = manifest
-        .mods
-        .iter()
-        .filter_map(|m| m.registry_id.clone())
-        .collect();
-
     let mut warnings = Vec::new();
     let mut blockers = Vec::new();
 
@@ -229,7 +309,8 @@ pub fn health(
     // Rebuild both indexes with alias-resolved keys. Crucially, provided and
     // nested IDs remain exclusively in the presence index—they never leak into
     // duplicate-JAR warnings.
-    let presence_id_to_files = resolve_id_file_index(presence_id_to_files, &aliases);
+    let capability_providers = resolve_capability_providers(&jars, &aliases);
+    let presence_id_to_files = provider_files(&capability_providers);
     let primary_id_to_files = resolve_id_file_index(primary_id_to_files, &aliases);
     let dependency_presence_keys: HashSet<String> = presence_id_to_files
         .keys()
@@ -242,37 +323,26 @@ pub fn health(
             .iter()
             .any(|id| id == "forgifiedfabricapi");
 
-    // Build alias-resolved mod_id -> mod_version map for the version-matching
-    // step below. The parser populates `JarDeps.mod_version` from
-    // fabric.mod.json's `version`, Forge's `version=` in `[[mods]]`, or
-    // `META-INF/MANIFEST.MF`'s `Implementation-Version`.
-    let id_to_version: HashMap<String, String> = {
-        let mut m: HashMap<String, String> = HashMap::new();
-        for ij in &jars {
-            if let (Some(id), Some(ver)) = (&ij.jar.mod_jar_id, &ij.jar.mod_version) {
-                let canonical = aliases.resolve_or_self(id).to_lowercase();
-                // Replace an unresolved placeholder, but never overwrite a
-                // concrete version with weaker metadata.
-                if !m.contains_key(&canonical)
-                    || matches!(m.get(&canonical), Some(existing) if existing.starts_with("${"))
-                {
-                    m.insert(canonical, ver.clone());
-                }
-            }
-            for provided in &ij.jar.provided_mods {
-                let Some(ver) = &provided.version else {
-                    continue;
-                };
-                let canonical = aliases.resolve_or_self(&provided.mod_id).to_lowercase();
-                if !m.contains_key(&canonical)
-                    || matches!(m.get(&canonical), Some(existing) if existing.starts_with("${"))
-                {
-                    m.insert(canonical, ver.clone());
-                }
-            }
+    let inventory_incomplete = jars.iter().any(|jar| jar.status != ParseStatus::Complete);
+    for jar in &jars {
+        if jar.status != ParseStatus::Complete {
+            let detail = jar
+                .diagnostics
+                .first()
+                .map(|diagnostic| format!(" {}", diagnostic.message))
+                .unwrap_or_default();
+            warnings.push(Warning {
+                kind: WarningKind::InventoryIncomplete,
+                mod_id: jar.jar.mod_jar_id.clone(),
+                filename: Some(jar.filename.clone()),
+                message: format!(
+                    "Agora could not fully inventory '{}'.{}",
+                    jar.filename, detail
+                ),
+                suggested_action: None,
+            });
         }
-        m
-    };
+    }
 
     // 4. Duplicate physical top-level JAR primary-ID check.
     for (id, files) in &primary_id_to_files {
@@ -298,33 +368,41 @@ pub fn health(
         let source = &ij.filename;
         for dep in &ij.jar.depends_on {
             let dep_resolved = aliases.resolve_or_self(dep).to_lowercase();
-            let dep_present = presence_id_to_files.contains_key(&dep_resolved)
+            let dep_present = capability_providers.contains_key(&dep_resolved)
                 || dependency_presence_keys.contains(&dependency_id_key(&dep_resolved))
-                || (connector_bridge_present && is_fabric_api_module(&dep_resolved))
-                || manifest_mod_ids.iter().any(|id| {
-                    let resolved = aliases.resolve_or_self(id).to_lowercase();
-                    resolved == dep_resolved
-                        || dependency_id_key(&resolved) == dependency_id_key(&dep_resolved)
-                });
+                || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
                 } else {
                     dep.clone()
                 };
-                blockers.push(Blocker {
-                    kind: BlockerKind::MissingRequiredDependency,
-                    mod_id: Some(display_name.clone()),
-                    filename: None, // dependency is not installed
-                    message: format!(
-                        "'{}' requires '{}' but it is not installed.",
-                        source, display_name
-                    ),
-                    suggested_action: Some(format!(
-                        "Install '{}' to resolve this dependency.",
-                        display_name
-                    )),
-                });
+                if inventory_incomplete {
+                    warnings.push(Warning {
+                        kind: WarningKind::MissingRequiredDependencyUnverified,
+                        mod_id: Some(display_name.clone()),
+                        filename: Some(source.clone()),
+                        message: format!(
+                            "'{}' requires '{}', but Agora could not verify every enabled JAR.",
+                            source, display_name
+                        ),
+                        suggested_action: None,
+                    });
+                } else {
+                    blockers.push(Blocker {
+                        kind: BlockerKind::MissingRequiredDependency,
+                        mod_id: Some(display_name.clone()),
+                        filename: None,
+                        message: format!(
+                            "'{}' requires '{}' but no enabled artifact provides it.",
+                            source, display_name
+                        ),
+                        suggested_action: Some(format!(
+                            "Install '{}' to resolve this dependency.",
+                            display_name
+                        )),
+                    });
+                }
             }
         }
     }
@@ -384,16 +462,16 @@ pub fn health(
         for decl in effective_decls {
             let incompat_resolved = aliases.resolve_or_self(&decl.mod_id).to_lowercase();
 
-            // Self-conflict guard: a mod never conflicts with itself.
-            if source_resolved.as_deref() == Some(incompat_resolved.as_str()) {
-                continue;
-            }
-
-            let incompat_present = presence_id_to_files.contains_key(&incompat_resolved)
-                || manifest_mod_ids
-                    .iter()
-                    .any(|id| aliases.resolve_or_self(id).to_lowercase() == incompat_resolved);
-            if !incompat_present {
+            let target_providers: Vec<&CapabilityProvider> = capability_providers
+                .get(&incompat_resolved)
+                .into_iter()
+                .flatten()
+                .filter(|provider| provider.owner_filename != *source)
+                .collect();
+            if target_providers.is_empty() {
+                // The target is either absent or supplied only by this same
+                // physical artifact. Nested capabilities are not removable
+                // installation candidates, so there is no user action here.
                 continue;
             }
 
@@ -425,91 +503,89 @@ pub fn health(
                 continue;
             }
 
-            // Version evaluation is shared by hard and soft paths.
-            //
-            // When the target mod's version is known AND the declaration
-            // carries an explicit range, we evaluate whether the installed
-            // version falls inside it:
-            //   - Matched (range covers the installed version):
-            //       hard → blocker; soft → warning.
-            //   - Unconditional (no range at all — e.g. `"*"`):
-            //       hard → blocker; soft → warning.
-            //   - NotMatched (range explicitly excludes the installed version):
-            //       NO finding at all. If a mod says "I break versions <2.0"
-            //       and the installed target is 2.5, the incompatibility simply
-            //       does not apply — surfacing a warning would be noise.
-            //
-            // When the target version is unknown, we can't evaluate: unconditional
-            // declarations still fire (safety default); conditional ones are
-            // dropped (better silence than a possibly-wrong warning).
-            let target_version = id_to_version.get(&incompat_resolved);
-            let vmatch = match target_version {
-                Some(ver) => crate::version_match::evaluate_version_match(
-                    &decl.version_ranges,
-                    ver,
-                    decl.source.is_fabric_grammar(),
-                ),
-                None => {
-                    if is_unconditional(&decl.version_ranges) {
-                        version_match::VersionMatch::Unconditional
-                    } else {
-                        // Unknown version + conditional range: can't confirm, so
-                        // skip rather than risk a false-positive warning.
+            for target_provider in target_providers {
+                // Version evaluation is shared by hard and soft paths.
+                //
+                // When the target mod's version is known AND the declaration
+                // carries an explicit range, we evaluate whether the installed
+                // version falls inside it:
+                //   - Matched (range covers the installed version):
+                //       hard → blocker; soft → warning.
+                //   - Unconditional (no range at all — e.g. `"*"`):
+                //       hard → blocker; soft → warning.
+                //   - NotMatched (range explicitly excludes the installed version):
+                //       NO finding at all. If a mod says "I break versions <2.0"
+                //       and the installed target is 2.5, the incompatibility simply
+                //       does not apply — surfacing a warning would be noise.
+                //
+                // When the target version is unknown, we can't evaluate: unconditional
+                // declarations still fire (safety default); conditional ones are
+                // dropped (better silence than a possibly-wrong warning).
+                let target_version = target_provider.version.as_deref();
+                let vmatch = match target_version {
+                    Some(ver) => crate::version_match::evaluate_version_match(
+                        &decl.version_ranges,
+                        ver,
+                        decl.source.is_fabric_grammar(),
+                    ),
+                    None => {
+                        if is_unconditional(&decl.version_ranges) {
+                            version_match::VersionMatch::Unconditional
+                        } else {
+                            // Unknown version + conditional range: can't confirm, so
+                            // skip rather than risk a false-positive warning.
+                            continue;
+                        }
+                    }
+                };
+
+                match vmatch {
+                    version_match::VersionMatch::NotMatched => {
+                        // Installed version is outside the declared incompatible
+                        // range → the declaration does not apply. No finding.
                         continue;
                     }
-                }
-            };
-
-            match vmatch {
-                version_match::VersionMatch::NotMatched => {
-                    // Installed version is outside the declared incompatible
-                    // range → the declaration does not apply. No finding.
-                    continue;
-                }
-                version_match::VersionMatch::Matched
-                | version_match::VersionMatch::Unconditional
-                    if decl.source.is_hard() =>
-                {
-                    let version_detail = incompatibility_version_detail(
-                        &decl.version_ranges,
-                        target_version.map(String::as_str),
-                    );
-                    blockers.push(Blocker {
+                    version_match::VersionMatch::Matched
+                    | version_match::VersionMatch::Unconditional
+                        if decl.source.is_hard() =>
+                    {
+                        let version_detail =
+                            incompatibility_version_detail(&decl.version_ranges, target_version);
+                        blockers.push(Blocker {
                         kind: BlockerKind::IncompatibleMod,
                         mod_id: Some(decl.mod_id.clone()),
-                        filename: Some(source.clone()), // disable the source mod
+                        filename: Some(source.clone()),
                         message: format!(
-                            "'{}' declares an incompatibility with '{}'{} and both are installed.",
-                            source, decl.mod_id, version_detail
+                            "'{}' declares an incompatibility with '{}' in '{}'{}, and both are installed.",
+                            source, decl.mod_id, target_provider.owner_filename, version_detail
                         ),
                         suggested_action: Some(format!(
                             "Remove '{}' or '{}' to resolve the conflict.",
-                            source, decl.mod_id
+                            source, target_provider.owner_filename
                         )),
                     });
-                }
-                version_match::VersionMatch::Matched
-                | version_match::VersionMatch::Unconditional => {
-                    // Soft incompatibility (Fabric `conflicts`, NeoForge
-                    // `discouraged`, or legacy backfilled entries) whose range
-                    // matches or is unconditional: warning, never a blocker.
-                    let version_detail = incompatibility_version_detail(
-                        &decl.version_ranges,
-                        target_version.map(String::as_str),
-                    );
-                    warnings.push(Warning {
+                    }
+                    version_match::VersionMatch::Matched
+                    | version_match::VersionMatch::Unconditional => {
+                        // Soft incompatibility (Fabric `conflicts`, NeoForge
+                        // `discouraged`, or legacy backfilled entries) whose range
+                        // matches or is unconditional: warning, never a blocker.
+                        let version_detail =
+                            incompatibility_version_detail(&decl.version_ranges, target_version);
+                        warnings.push(Warning {
                         kind: WarningKind::IncompatibleModSoft,
                         mod_id: Some(decl.mod_id.clone()),
                         filename: Some(source.clone()),
                         message: format!(
-                            "'{}' may conflict with '{}'{} (soft incompatibility). The mod may still function; review before launch.",
-                            source, decl.mod_id, version_detail
+                            "'{}' may conflict with '{}' in '{}'{}, (soft incompatibility). The mod may still function; review before launch.",
+                            source, decl.mod_id, target_provider.owner_filename, version_detail
                         ),
                         suggested_action: Some(format!(
                             "If you experience issues, remove '{}' or '{}'.",
-                            source, decl.mod_id
+                            source, target_provider.owner_filename
                         )),
                     });
+                    }
                 }
             }
         }
@@ -524,6 +600,7 @@ pub fn health(
                     let installed_registry_ids: HashSet<&str> = manifest
                         .mods
                         .iter()
+                        .filter(|m| m.enabled)
                         .filter_map(|m| m.registry_id.as_deref())
                         .collect();
 
@@ -576,14 +653,9 @@ pub fn health(
         let source = &ij.filename;
         for dep in &ij.jar.optional_deps {
             let dep_resolved = aliases.resolve_or_self(dep).to_lowercase();
-            let dep_present = presence_id_to_files.contains_key(&dep_resolved)
+            let dep_present = capability_providers.contains_key(&dep_resolved)
                 || dependency_presence_keys.contains(&dependency_id_key(&dep_resolved))
-                || (connector_bridge_present && is_fabric_api_module(&dep_resolved))
-                || manifest_mod_ids.iter().any(|id| {
-                    let resolved = aliases.resolve_or_self(id).to_lowercase();
-                    resolved == dep_resolved
-                        || dependency_id_key(&resolved) == dependency_id_key(&dep_resolved)
-                });
+                || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
                     dep_resolved.clone()
@@ -1077,6 +1149,129 @@ mod tests {
             .expect("two physical JARs with the same primary ID must warn");
         assert_eq!(duplicate.mod_id.as_deref(), Some("real_duplicate"));
         assert_eq!(report.score, HealthScore::Yellow);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_same_owner_incompatibility_is_not_user_actionable() {
+        let dir = fresh_instance("same_owner_incompatibility");
+        let nested = jar_bytes(&[(
+            "fabric.mod.json",
+            br#"{"id":"fabric-models-v0","version":"1.0"}"#,
+        )]);
+        write_binary_jar(
+            &dir.join("mods"),
+            "fabric-api.jar",
+            &[
+                (
+                    "fabric.mod.json",
+                    br#"{"id":"fabric-api","version":"1.0","breaks":{"fabric-models-v0":"*"},"jars":[{"file":"META-INF/jars/models.jar"}]}"#,
+                ),
+                ("META-INF/jars/models.jar", &nested),
+            ],
+        );
+        let manifest = tracked_manifest(&[("fabric-api.jar", "fabric-api")]);
+        let report = health(&dir, &manifest, None);
+        assert!(
+            report.blockers.is_empty(),
+            "same-owner conflict: {report:?}"
+        );
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|warning| warning.mod_id.as_deref() == Some("fabric-models-v0")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_same_owner_incompatibility_still_checks_external_provider() {
+        let dir = fresh_instance("same_owner_plus_external_incompatibility");
+        let nested = jar_bytes(&[("fabric.mod.json", br#"{"id":"target","version":"1.0"}"#)]);
+        write_binary_jar(
+            &dir.join("mods"),
+            "source.jar",
+            &[
+                (
+                    "fabric.mod.json",
+                    br#"{"id":"source","version":"1.0","breaks":{"target":"*"},"jars":[{"file":"META-INF/jars/target.jar"}]}"#,
+                ),
+                ("META-INF/jars/target.jar", &nested),
+            ],
+        );
+        write_jar(
+            &dir.join("mods"),
+            "external-target.jar",
+            &[("fabric.mod.json", r#"{"id":"target","version":"1.0"}"#)],
+        );
+        let manifest =
+            tracked_manifest(&[("source.jar", "source"), ("external-target.jar", "target")]);
+        let report = health(&dir, &manifest, None);
+        assert_eq!(
+            report.blockers.len(),
+            1,
+            "external conflict lost: {report:?}"
+        );
+        assert!(report.blockers[0]
+            .suggested_action
+            .as_deref()
+            .is_some_and(|action| action.contains("external-target.jar")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_disabled_provider_does_not_satisfy_dependency() {
+        let dir = fresh_instance("disabled_provider");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"provider":"*"}}"#,
+            )],
+        );
+        write_jar(
+            &dir.join("mods"),
+            "provider.jar",
+            &[("fabric.mod.json", r#"{"id":"provider"}"#)],
+        );
+        let mut manifest =
+            tracked_manifest(&[("consumer.jar", "consumer"), ("provider.jar", "provider")]);
+        manifest.mods[1].enabled = false;
+        let report = health(&dir, &manifest, None);
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_incomplete_inventory_downgrades_missing_dependency() {
+        let dir = fresh_instance("incomplete_inventory");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"realdep":"*"}}"#,
+            )],
+        );
+        std::fs::write(dir.join("mods").join("broken.jar"), b"not-a-jar")
+            .expect("write malformed fixture");
+        let manifest = tracked_manifest(&[("consumer.jar", "consumer"), ("broken.jar", "broken")]);
+        let report = health(&dir, &manifest, None);
+        assert!(report
+            .blockers
+            .iter()
+            .all(|blocker| { blocker.kind != BlockerKind::MissingRequiredDependency }));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| { warning.kind == WarningKind::MissingRequiredDependencyUnverified }));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == WarningKind::InventoryIncomplete));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
