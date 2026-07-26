@@ -1,6 +1,8 @@
 use crate::db;
-use crate::dependency_ops::{AliasMap, JarDeps};
-use crate::jar_metadata::{parse_jar_metadata_for_loader_with_status, ParseStatus};
+use crate::dependency_ops::{AliasMap, JarDeps, ProvidedModSource};
+use crate::jar_metadata::{
+    parse_jar_metadata_for_loader_with_status, ParseDiagnostic, ParseStatus,
+};
 use crate::models::{InstalledMod, InstanceManifest};
 use crate::registry;
 use crate::version_match;
@@ -36,6 +38,7 @@ pub enum WarningKind {
     MissingOptionalDependency,
     MissingRequiredDependencyUnverified,
     InventoryIncomplete,
+    ManifestDrift,
     DuplicateModId,
     UnknownMod,
     /// A JAR-declared hard incompatibility (`breaks` / Forge `incompatible`)
@@ -78,18 +81,26 @@ pub struct HealthReport {
     pub blockers: Vec<Blocker>,
 }
 
-/// Per-JAR parsed metadata indexed by filename.
-struct InstalledJar {
-    filename: String,
-    jar: JarDeps,
-    status: ParseStatus,
-    diagnostics: Vec<crate::jar_metadata::ParseDiagnostic>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactInventory {
+    pub filename: String,
+    pub metadata: JarDeps,
+    pub status: ParseStatus,
+    pub diagnostics: Vec<ParseDiagnostic>,
+    pub manifest_fallback_used: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceInventory {
+    pub artifacts: Vec<ArtifactInventory>,
+    pub missing_enabled_manifest_files: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 struct CapabilityProvider {
     owner_filename: String,
     version: Option<String>,
+    is_nested: bool,
 }
 
 /// Alias-resolve a loader-ID -> physical-JAR-files index while retaining each
@@ -129,29 +140,31 @@ fn manifest_fallback_metadata(installed: &InstalledMod) -> JarDeps {
             .map(|mod_id| crate::dependency_ops::ProvidedMod {
                 mod_id: mod_id.clone(),
                 version: installed.version.clone(),
+                source: ProvidedModSource::InstanceManifestFallback,
+                nested_path: None,
             })
             .collect(),
     }
 }
 
 fn resolve_capability_providers(
-    jars: &[InstalledJar],
+    jars: &[ArtifactInventory],
     aliases: &AliasMap,
 ) -> HashMap<String, Vec<CapabilityProvider>> {
     let mut providers = HashMap::new();
     for installed in jars {
         let mut ids = Vec::new();
-        if let Some(id) = installed.jar.mod_jar_id.as_deref() {
-            ids.push((id, installed.jar.mod_version.clone()));
+        if let Some(id) = installed.metadata.mod_jar_id.as_deref() {
+            ids.push((id, installed.metadata.mod_version.clone(), false));
         }
-        ids.extend(
-            installed
-                .jar
-                .provided_mods
-                .iter()
-                .map(|provided| (provided.mod_id.as_str(), provided.version.clone())),
-        );
-        for (id, version) in ids {
+        ids.extend(installed.metadata.provided_mods.iter().map(|provided| {
+            (
+                provided.mod_id.as_str(),
+                provided.version.clone(),
+                provided.source == ProvidedModSource::NestedJar,
+            )
+        }));
+        for (id, version, is_nested) in ids {
             let canonical = aliases.resolve_or_self(id).to_lowercase();
             let entries = providers.entry(canonical).or_insert_with(Vec::new);
             if !entries
@@ -161,11 +174,145 @@ fn resolve_capability_providers(
                 entries.push(CapabilityProvider {
                     owner_filename: installed.filename.clone(),
                     version,
+                    is_nested,
                 });
             }
         }
     }
     providers
+}
+
+fn insert_capability_provider(
+    providers: &mut HashMap<String, Vec<CapabilityProvider>>,
+    capability: &str,
+    provider: CapabilityProvider,
+) {
+    let entries = providers.entry(capability.to_string()).or_default();
+    if !entries
+        .iter()
+        .any(|existing| existing.owner_filename == provider.owner_filename)
+    {
+        entries.push(provider);
+    }
+}
+
+fn apply_explicit_capability_mappings(
+    providers: &mut HashMap<String, Vec<CapabilityProvider>>,
+    artifacts: &[ArtifactInventory],
+    manifest: &InstanceManifest,
+) {
+    const CONNECTOR_MODRINTH_PROJECT_ID: &str = "u58R1TMW";
+    let loader = manifest.loader.to_ascii_lowercase();
+    if matches!(loader.as_str(), "forge" | "neoforge") {
+        for installed in manifest.mods.iter().filter(|item| {
+            item.enabled && item.modrinth_id.as_deref() == Some(CONNECTOR_MODRINTH_PROJECT_ID)
+        }) {
+            let Some(artifact) = artifacts
+                .iter()
+                .find(|artifact| artifact.filename == installed.filename)
+            else {
+                continue;
+            };
+            for capability in ["connector", "connectormod"] {
+                insert_capability_provider(
+                    providers,
+                    capability,
+                    CapabilityProvider {
+                        owner_filename: installed.filename.clone(),
+                        version: artifact
+                            .metadata
+                            .mod_version
+                            .clone()
+                            .or_else(|| installed.version.clone()),
+                        is_nested: false,
+                    },
+                );
+            }
+        }
+    }
+
+    // Monocle's native metadata explicitly requires both Iris and Embeddium;
+    // its locator adapts Iris's Sodium-facing integration to Embeddium.
+    let has_monocle_bridge = loader == "neoforge"
+        && artifacts.iter().any(|artifact| {
+            let supplies_monocle = artifact.metadata.mod_jar_id.as_deref() == Some("monocle")
+                || artifact
+                    .metadata
+                    .provided_mods
+                    .iter()
+                    .any(|provided| provided.mod_id == "monocle");
+            let dependencies: HashSet<&str> = artifact
+                .metadata
+                .depends_on
+                .iter()
+                .map(String::as_str)
+                .collect();
+            supplies_monocle && dependencies.contains("iris") && dependencies.contains("embeddium")
+        });
+    if has_monocle_bridge {
+        if let Some(embeddium) = providers
+            .get("embeddium")
+            .and_then(|candidates| candidates.first())
+            .cloned()
+        {
+            insert_capability_provider(providers, "sodium", embeddium);
+        }
+    }
+}
+
+pub fn inventory(instance_dir: &Path, manifest: &InstanceManifest) -> InstanceInventory {
+    let mods_dir = instance_dir.join("mods");
+    let mut artifacts = Vec::new();
+    let mut physical_filenames = HashSet::new();
+    if mods_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&mods_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("jar") {
+                    continue;
+                }
+                let filename = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                physical_filenames.insert(filename.clone());
+                let manifest_entry = manifest.mods.iter().find(|item| item.filename == filename);
+                if manifest_entry.is_some_and(|item| !item.enabled) {
+                    continue;
+                }
+                let parsed = parse_jar_metadata_for_loader_with_status(&path, &manifest.loader);
+                let mut metadata = parsed.metadata;
+                let mut manifest_fallback_used = false;
+                if parsed.status == ParseStatus::Failed {
+                    if let Some(installed) = manifest_entry {
+                        metadata = manifest_fallback_metadata(installed);
+                        manifest_fallback_used = true;
+                    }
+                }
+                artifacts.push(ArtifactInventory {
+                    filename,
+                    metadata,
+                    status: parsed.status,
+                    diagnostics: parsed.diagnostics,
+                    manifest_fallback_used,
+                });
+            }
+        }
+    }
+    artifacts.sort_by(|left, right| left.filename.cmp(&right.filename));
+    let mut missing_enabled_manifest_files: Vec<String> = manifest
+        .mods
+        .iter()
+        .filter(|item| item.enabled && item.content_type == "mod")
+        .filter(|item| !physical_filenames.contains(&item.filename))
+        .map(|item| item.filename.clone())
+        .collect();
+    missing_enabled_manifest_files.sort();
+    missing_enabled_manifest_files.dedup();
+    InstanceInventory {
+        artifacts,
+        missing_enabled_manifest_files,
+    }
 }
 
 fn provider_files(
@@ -199,6 +346,34 @@ fn is_fabric_api_module(id: &str) -> bool {
     id.starts_with("fabric-") || id.starts_with("fabric_")
 }
 
+fn compatibility_bridge_present(
+    jars: &[ArtifactInventory],
+    aliases: &AliasMap,
+    declaring_capability: &str,
+    target_capability: &str,
+    declaring_owner: &str,
+    loader: &str,
+) -> bool {
+    if !loader.eq_ignore_ascii_case("neoforge")
+        || declaring_capability != "iris"
+        || target_capability != "embeddium"
+    {
+        return false;
+    }
+    jars.iter().any(|artifact| {
+        if artifact.filename == declaring_owner {
+            return false;
+        }
+        let required: HashSet<String> = artifact
+            .metadata
+            .depends_on
+            .iter()
+            .map(|dependency| aliases.resolve_or_self(dependency).to_ascii_lowercase())
+            .collect();
+        required.contains(declaring_capability) && required.contains(target_capability)
+    })
+}
+
 /// Run the pre-launch health scan on an instance.
 ///
 /// Scans every JAR in `mods/`, parses declared dependencies, cross-references
@@ -213,44 +388,10 @@ pub fn health(
     manifest: &InstanceManifest,
     registry_db_path: Option<&std::path::Path>,
 ) -> HealthReport {
-    let mods_dir = instance_dir.join("mods");
-
-    // 1. Scan all JARs
-    let mut jars: Vec<InstalledJar> = Vec::new();
-    if mods_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&mods_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("jar") {
-                    let filename = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let manifest_entry =
-                        manifest.mods.iter().find(|item| item.filename == filename);
-                    if manifest_entry.is_some_and(|item| !item.enabled) {
-                        continue;
-                    }
-                    let parsed = parse_jar_metadata_for_loader_with_status(&path, &manifest.loader);
-                    let mut jar = parsed.metadata;
-                    if parsed.status == ParseStatus::Failed {
-                        if let Some(installed) = manifest_entry {
-                            // Existing manifest evidence is only a lower-confidence
-                            // fallback for this physical file; it never marks the
-                            // live parse complete.
-                            jar = manifest_fallback_metadata(installed);
-                        }
-                    }
-                    jars.push(InstalledJar {
-                        filename,
-                        jar,
-                        status: parsed.status,
-                        diagnostics: parsed.diagnostics,
-                    });
-                }
-            }
-        }
-    }
+    // 1. Scan all enabled physical JARs and retain manifest drift.
+    let instance_inventory = inventory(instance_dir, manifest);
+    let missing_enabled_manifest_files = instance_inventory.missing_enabled_manifest_files;
+    let jars = instance_inventory.artifacts;
 
     // 2. Build separate indexes for two distinct questions:
     //
@@ -263,7 +404,7 @@ pub fn health(
     //   asking the user to disable one would be incorrect.
     let mut primary_id_to_files: HashMap<String, Vec<String>> = HashMap::new();
     for ij in &jars {
-        if let Some(primary_id) = ij.jar.mod_jar_id.as_ref() {
+        if let Some(primary_id) = ij.metadata.mod_jar_id.as_ref() {
             let files = primary_id_to_files.entry(primary_id.clone()).or_default();
             if !files.contains(&ij.filename) {
                 files.push(ij.filename.clone());
@@ -274,6 +415,33 @@ pub fn health(
     // 3. Also build from manifest's installed mod list (modrinth_id / registry_id)
     let mut warnings = Vec::new();
     let mut blockers = Vec::new();
+    if !missing_enabled_manifest_files.is_empty() {
+        let examples = missing_enabled_manifest_files
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remaining = missing_enabled_manifest_files.len().saturating_sub(5);
+        let suffix = if remaining == 0 {
+            String::new()
+        } else {
+            format!(" and {remaining} more")
+        };
+        warnings.push(Warning {
+            kind: WarningKind::ManifestDrift,
+            mod_id: None,
+            filename: None,
+            message: format!(
+                "The instance manifest tracks {} enabled mod file(s) that are absent from mods/: {examples}{suffix}.",
+                missing_enabled_manifest_files.len()
+            ),
+            suggested_action: Some(
+                "Repair or reinstall the modpack before treating dependent mods as installed."
+                    .into(),
+            ),
+        });
+    }
 
     // 3a. Load aliases and curated deps from the registry for alias resolution
     //     in subsequent checks. (registry.db, optional — Phase 3 decoupling)
@@ -309,7 +477,8 @@ pub fn health(
     // Rebuild both indexes with alias-resolved keys. Crucially, provided and
     // nested IDs remain exclusively in the presence index—they never leak into
     // duplicate-JAR warnings.
-    let capability_providers = resolve_capability_providers(&jars, &aliases);
+    let mut capability_providers = resolve_capability_providers(&jars, &aliases);
+    apply_explicit_capability_mappings(&mut capability_providers, &jars, manifest);
     let presence_id_to_files = provider_files(&capability_providers);
     let primary_id_to_files = resolve_id_file_index(primary_id_to_files, &aliases);
     let dependency_presence_keys: HashSet<String> = presence_id_to_files
@@ -333,7 +502,7 @@ pub fn health(
                 .unwrap_or_default();
             warnings.push(Warning {
                 kind: WarningKind::InventoryIncomplete,
-                mod_id: jar.jar.mod_jar_id.clone(),
+                mod_id: jar.metadata.mod_jar_id.clone(),
                 filename: Some(jar.filename.clone()),
                 message: format!(
                     "Agora could not fully inventory '{}'.{}",
@@ -366,7 +535,7 @@ pub fn health(
     // 5. Required dependency checks (alias-aware)
     for ij in &jars {
         let source = &ij.filename;
-        for dep in &ij.jar.depends_on {
+        for dep in &ij.metadata.depends_on {
             let dep_resolved = aliases.resolve_or_self(dep).to_lowercase();
             let dep_present = capability_providers.contains_key(&dep_resolved)
                 || dependency_presence_keys.contains(&dependency_id_key(&dep_resolved))
@@ -430,7 +599,7 @@ pub fn health(
     // warning, never a blocker — to avoid reintroducing false-positive blockers.
     for ij in &jars {
         let source = &ij.filename;
-        let source_mod_id = ij.jar.mod_jar_id.as_deref();
+        let source_mod_id = ij.metadata.mod_jar_id.as_deref();
         // Canonicalize the SOURCE id through aliases BEFORE lookup so curated
         // overrides keyed by the registry id still match a raw jar id.
         let source_resolved = source_mod_id.map(|id| aliases.resolve_or_self(id).to_lowercase());
@@ -439,19 +608,20 @@ pub fn health(
         // flat-list ids that are not already represented in the structured
         // decls (legacy parses).
         let mut effective_decls: Vec<&crate::dependency_ops::IncompatibilityDecl> =
-            ij.jar.incompatibility_decls.iter().collect();
+            ij.metadata.incompatibility_decls.iter().collect();
         let structured_ids: HashSet<String> = ij
-            .jar
+            .metadata
             .incompatibility_decls
             .iter()
             .map(|d| d.mod_id.to_lowercase())
             .collect();
         let legacy_backfilled: Vec<crate::dependency_ops::IncompatibilityDecl> = ij
-            .jar
+            .metadata
             .incompatible_deps
             .iter()
             .filter(|id| !structured_ids.contains(&id.to_lowercase()))
             .map(|id| crate::dependency_ops::IncompatibilityDecl {
+                declaring_mod_id: source_mod_id.map(str::to_string),
                 mod_id: id.clone(),
                 version_ranges: Vec::new(),
                 source: crate::dependency_ops::IncompatibilitySource::ForgeDiscouraged,
@@ -461,12 +631,44 @@ pub fn health(
 
         for decl in effective_decls {
             let incompat_resolved = aliases.resolve_or_self(&decl.mod_id).to_lowercase();
+            let declaring_capability = decl
+                .declaring_mod_id
+                .as_deref()
+                .or(source_mod_id)
+                .map(|id| aliases.resolve_or_self(id).to_ascii_lowercase());
 
-            let target_providers: Vec<&CapabilityProvider> = capability_providers
+            if declaring_capability.as_deref().is_some_and(|declaring| {
+                compatibility_bridge_present(
+                    &jars,
+                    &aliases,
+                    declaring,
+                    &incompat_resolved,
+                    source,
+                    &manifest.loader,
+                )
+            }) {
+                continue;
+            }
+
+            let all_target_providers: Vec<&CapabilityProvider> = capability_providers
                 .get(&incompat_resolved)
                 .into_iter()
                 .flatten()
+                .collect();
+            let same_owner_compatible = all_target_providers.iter().any(|provider| {
+                provider.owner_filename == *source
+                    && provider.version.as_deref().is_some_and(|version| {
+                        crate::version_match::evaluate_version_match(
+                            &decl.version_ranges,
+                            version,
+                            decl.source.is_fabric_grammar(),
+                        ) == version_match::VersionMatch::NotMatched
+                    })
+            });
+            let target_providers: Vec<&CapabilityProvider> = all_target_providers
+                .into_iter()
                 .filter(|provider| provider.owner_filename != *source)
+                .filter(|provider| !(same_owner_compatible && provider.is_nested))
                 .collect();
             if target_providers.is_empty() {
                 // The target is either absent or supplied only by this same
@@ -651,7 +853,7 @@ pub fn health(
     // 8. Optional dependency warnings (alias-aware)
     for ij in &jars {
         let source = &ij.filename;
-        for dep in &ij.jar.optional_deps {
+        for dep in &ij.metadata.optional_deps {
             let dep_resolved = aliases.resolve_or_self(dep).to_lowercase();
             let dep_present = capability_providers.contains_key(&dep_resolved)
                 || dependency_presence_keys.contains(&dependency_id_key(&dep_resolved))
@@ -683,7 +885,7 @@ pub fn health(
         if !manifest_filenames.contains(ij.filename.as_str()) {
             warnings.push(Warning {
                 kind: WarningKind::UnknownMod,
-                mod_id: ij.jar.mod_jar_id.clone(),
+                mod_id: ij.metadata.mod_jar_id.clone(),
                 filename: Some(ij.filename.clone()),
                 message: format!(
                     "'{}' is in the mods folder but not tracked in the instance manifest.",
@@ -945,6 +1147,41 @@ mod tests {
             worlds: vec![],
             user_preferences: serde_json::json!({}),
         }
+    }
+
+    #[test]
+    fn health_reports_enabled_manifest_files_missing_from_disk() {
+        let dir = fresh_instance("manifest_drift");
+        let manifest = tracked_manifest(&[("missing-provider.jar", "provider")]);
+        let report = health(&dir, &manifest, None);
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.kind == WarningKind::ManifestDrift)
+            .expect("missing tracked files must be visible in health output");
+        assert!(warning.message.contains("missing-provider.jar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inventory_marks_manifest_fallback_and_ignores_disabled_missing_files() {
+        let dir = fresh_instance("inventory_fallback");
+        std::fs::write(dir.join("mods").join("broken.jar"), b"not a zip")
+            .expect("write malformed jar");
+        let mut manifest = tracked_manifest(&[
+            ("broken.jar", "fallback_id"),
+            ("disabled-missing.jar", "disabled"),
+        ]);
+        manifest.mods[1].enabled = false;
+        let result = inventory(&dir, &manifest);
+        assert_eq!(result.artifacts.len(), 1);
+        assert!(result.artifacts[0].manifest_fallback_used);
+        assert_eq!(
+            result.artifacts[0].metadata.mod_jar_id.as_deref(),
+            Some("fallback_id")
+        );
+        assert!(result.missing_enabled_manifest_files.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1215,6 +1452,149 @@ mod tests {
             .suggested_action
             .as_deref()
             .is_some_and(|action| action.contains("external-target.jar")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_fabric_nested_solver_ignores_shadowed_old_nested_provider() {
+        let dir = fresh_instance("fabric_nested_candidate_selection");
+        let current_models = jar_bytes(&[(
+            "fabric.mod.json",
+            br#"{"id":"fabric-models-v0","version":"0.4.1"}"#,
+        )]);
+        write_binary_jar(
+            &dir.join("mods"),
+            "fabric-api.jar",
+            &[
+                (
+                    "fabric.mod.json",
+                    br#"{"id":"fabric-api","version":"0.92.7","breaks":{"fabric-models-v0":"<0.4.0"},"jars":[{"file":"META-INF/jars/models.jar"}]}"#,
+                ),
+                ("META-INF/jars/models.jar", &current_models),
+            ],
+        );
+        let old_models = jar_bytes(&[(
+            "fabric.mod.json",
+            br#"{"id":"fabric-models-v0","version":"0.3.35"}"#,
+        )]);
+        write_binary_jar(
+            &dir.join("mods"),
+            "coroutil.jar",
+            &[
+                (
+                    "fabric.mod.json",
+                    br#"{"id":"coroutil","version":"1.3.7","jars":[{"file":"META-INF/jars/models.jar"}]}"#,
+                ),
+                ("META-INF/jars/models.jar", &old_models),
+            ],
+        );
+        let manifest = tracked_manifest(&[
+            ("fabric-api.jar", "fabric-api"),
+            ("coroutil.jar", "coroutil"),
+        ]);
+        let report = health(&dir, &manifest, None);
+        assert!(
+            report.blockers.is_empty(),
+            "Fabric Loader can select the compatible nested candidate: {report:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_monocle_bridges_iris_and_embeddium() {
+        let dir = fresh_instance("monocle_bridge");
+        let mods_dir = dir.join("mods");
+        write_jar(
+            &mods_dir,
+            "iris.jar",
+            &[(
+                "META-INF/neoforge.mods.toml",
+                r#"[[mods]]
+modId="iris"
+version="1.8.12"
+[[dependencies.iris]]
+modId="sodium"
+type="REQUIRED"
+[[dependencies.iris]]
+modId="embeddium"
+type="INCOMPATIBLE"
+versionRange="[0.0.1,)"
+"#,
+            )],
+        );
+        write_jar(
+            &mods_dir,
+            "embeddium.jar",
+            &[(
+                "META-INF/neoforge.mods.toml",
+                r#"[[mods]]
+modId="embeddium"
+version="1.0.15"
+"#,
+            )],
+        );
+        write_jar(
+            &mods_dir,
+            "monocle.jar",
+            &[(
+                "META-INF/neoforge.mods.toml",
+                r#"[[mods]]
+modId="monocle_locator"
+version="0.2.2"
+[[mods]]
+modId="monocle"
+version="0.2.2"
+[[dependencies.monocle]]
+modId="iris"
+type="REQUIRED"
+[[dependencies.monocle]]
+modId="embeddium"
+type="REQUIRED"
+"#,
+            )],
+        );
+        let manifest = tracked_manifest_for_loader(
+            "neoforge",
+            &[
+                ("iris.jar", "iris"),
+                ("embeddium.jar", "embeddium"),
+                ("monocle.jar", "monocle_locator"),
+            ],
+        );
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.is_empty(), "Monocle bridge: {report:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_connector_project_mapping_supplies_connectormod() {
+        let dir = fresh_instance("connector_project_mapping");
+        let mods_dir = dir.join("mods");
+        write_jar(&mods_dir, "connector.jar", &[("META-INF/MANIFEST.MF", "")]);
+        write_jar(
+            &mods_dir,
+            "extras.jar",
+            &[(
+                "META-INF/mods.toml",
+                r#"[[mods]]
+modId="connectorextras"
+version="1.0"
+[[dependencies.connectorextras]]
+modId="connectormod"
+mandatory=true
+"#,
+            )],
+        );
+        let mut manifest = tracked_manifest_for_loader(
+            "forge",
+            &[
+                ("connector.jar", "connector"),
+                ("extras.jar", "connectorextras"),
+            ],
+        );
+        manifest.mods[0].modrinth_id = Some("u58R1TMW".into());
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.is_empty(), "Connector mapping: {report:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1903,6 +2283,7 @@ type="required"
     #[test]
     fn incompatibility_decl_serializes() {
         let decl = IncompatibilityDecl {
+            declaring_mod_id: None,
             mod_id: "optifine".into(),
             version_ranges: vec!["<2.0".into()],
             source: IncompatibilitySource::FabricBreaks,

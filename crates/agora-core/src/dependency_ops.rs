@@ -139,6 +139,10 @@ impl IncompatibilitySource {
 /// any `"*"` entry means *unconditional* (any installed version matches).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncompatibilityDecl {
+    /// Loader capability that declared the incompatibility. Nested modules keep
+    /// their own identity even though the outer physical JAR owns them.
+    #[serde(default)]
+    pub declaring_mod_id: Option<String>,
     /// The TARGET mod id (the dependency being declared incompatible), NOT the
     /// owner mod that owns the metadata file.
     pub mod_id: String,
@@ -146,6 +150,16 @@ pub struct IncompatibilityDecl {
     pub version_ranges: Vec<String>,
     /// Severity / origin of the declaration.
     pub source: IncompatibilitySource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvidedModSource {
+    #[default]
+    ProvidesAlias,
+    AdditionalNativeMod,
+    NestedJar,
+    InstanceManifestFallback,
 }
 
 /// An additional mod ID satisfied by the same physical JAR.
@@ -159,6 +173,10 @@ pub struct ProvidedMod {
     pub mod_id: String,
     #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub source: ProvidedModSource,
+    #[serde(default)]
+    pub nested_path: Option<String>,
 }
 
 /// Jar dependency metadata extracted from a mod JAR file.
@@ -758,6 +776,7 @@ mod tests {
         let incompatibility_decls = incompatible_deps
             .iter()
             .map(|id| IncompatibilityDecl {
+                declaring_mod_id: None,
                 mod_id: id.clone(),
                 version_ranges: Vec::new(),
                 source: IncompatibilitySource::FabricBreaks,

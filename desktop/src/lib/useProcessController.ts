@@ -291,7 +291,7 @@ export function useProcessController(): ProcessController {
       const pid = await launchInstanceWithRecovery(current.instanceId, {
         type: 'ProvisionJava',
         major: javaIssue.major,
-      });
+      }, current.healthReport !== null);
       const newState = launchedState(current.instanceId, true, pid);
       setState(newState);
     } catch (e) {
@@ -340,7 +340,7 @@ export function useProcessController(): ProcessController {
       await updateInstanceJava(current.instanceId, chosen, false);
 
       // Retry direct launch
-      const newState = await executeLaunch(current.instanceId, true);
+      const newState = await executeLaunch(current.instanceId, true, current.healthReport !== null);
       setState(newState);
     } catch (e) {
       const parsed = parseLauncherError(e);
@@ -429,7 +429,7 @@ export function useProcessController(): ProcessController {
           return false;
         }
 
-        const newState = await executeLaunch(instanceId, directLaunch);
+        const newState = await executeLaunch(instanceId, directLaunch, false);
         setState(newState);
         return true;
       } catch (e) {
@@ -456,7 +456,7 @@ export function useProcessController(): ProcessController {
       setState((prev) => ({ ...prev, phase: 'launching', error: null }));
 
       try {
-        const newState = await executeLaunch(current.instanceId, current.directLaunch);
+        const newState = await executeLaunch(current.instanceId, current.directLaunch, true);
         setState(newState);
         return null;
       } catch (e) {
@@ -531,7 +531,7 @@ export function useProcessController(): ProcessController {
       // Single coarse backend call — repair + retry in the same operation
       const pid = await launchInstanceWithRecovery(current.instanceId, {
         type: 'RepairLoader',
-      });
+      }, current.healthReport !== null);
       const newState = launchedState(current.instanceId, true, pid);
       setState(newState);
     } catch (e) {
@@ -566,7 +566,7 @@ export function useProcessController(): ProcessController {
 
     try {
       // Use delegated launch (bypasses direct profile adoption).
-      await launchInstance(current.instanceId);
+      await launchInstance(current.instanceId, current.healthReport !== null);
       setState({
         phase: 'delegated',
         instanceId: current.instanceId,
@@ -643,12 +643,13 @@ function launchedState(
 async function executeLaunch(
   instanceId: string,
   directLaunch: boolean,
+  allowHealthBlockers: boolean,
 ): Promise<ProcessState> {
   if (directLaunch) {
-    const pid = await launchInstanceDirect(instanceId);
+    const pid = await launchInstanceDirect(instanceId, allowHealthBlockers);
     return launchedState(instanceId, true, pid);
   } else {
-    await launchInstance(instanceId);
+    await launchInstance(instanceId, allowHealthBlockers);
     return launchedState(instanceId, false, null);
   }
 }

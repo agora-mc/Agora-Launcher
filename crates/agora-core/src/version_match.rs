@@ -34,8 +34,23 @@ pub enum VersionMatch {
 /// (unless all remaining segments are zero/empty, in which case they're equal).
 /// SemVer build metadata after `+` is ignored for precedence.
 pub fn compare_versions(a: &str, b: &str) -> Ordering {
-    let seg_a = split_version_segments(strip_build_metadata(a));
-    let seg_b = split_version_segments(strip_build_metadata(b));
+    let a = strip_build_metadata(a);
+    let b = strip_build_metadata(b);
+    if let (Some((a_prefix, a_suffix)), Some((b_prefix, b_suffix))) =
+        (a.split_once('-'), b.split_once('-'))
+    {
+        let prefix_order = compare_version_segments(a_prefix, b_prefix);
+        if prefix_order != Ordering::Equal {
+            return prefix_order;
+        }
+        return compare_version_segments(a_suffix, b_suffix);
+    }
+    compare_version_segments(a, b)
+}
+
+fn compare_version_segments(a: &str, b: &str) -> Ordering {
+    let seg_a = split_version_segments(a);
+    let seg_b = split_version_segments(b);
     let max = seg_a.len().max(seg_b.len());
     for i in 0..max {
         let sa = *seg_a.get(i).unwrap_or(&"");
@@ -356,6 +371,10 @@ mod tests {
         );
         assert_eq!(compare_versions("0.6.0+mc1.21.1", "0.6.0"), Ordering::Equal);
         assert_eq!(compare_versions("1.0.0", "1.0.0"), Ordering::Equal);
+        assert_eq!(
+            compare_versions("1.21.1-3.15.6", "1.21-3.4.4"),
+            Ordering::Greater
+        );
     }
 
     #[test]
@@ -463,6 +482,7 @@ mod tests {
         assert!(maven_range_matches("(,2.0]", "1.0"));
         assert!(maven_range_matches("(,2.0]", "2.0"));
         assert!(!maven_range_matches("(,2.0]", "2.1"));
+        assert!(!maven_range_matches("(,1.21-3.4.4]", "1.21.1-3.15.6"));
     }
 
     #[test]

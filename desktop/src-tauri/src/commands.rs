@@ -316,11 +316,41 @@ pub async fn revert_instance(
 /// orchestration to core [`LaunchService`] and runs the outcome monitoring
 /// in a background task.  LKG outcome recording and retention happen in core;
 /// the desktop adapter only emits Tauri UI events.
+fn health_policy_for_approval(
+    allow_health_blockers: Option<bool>,
+) -> agora_core::launch_service::HealthPolicy {
+    if allow_health_blockers.unwrap_or(false) {
+        agora_core::launch_service::HealthPolicy::WarnOnly
+    } else {
+        agora_core::launch_service::HealthPolicy::BlockOnRed
+    }
+}
+
+#[cfg(test)]
+mod health_policy_tests {
+    use super::health_policy_for_approval;
+    use agora_core::launch_service::HealthPolicy;
+
+    #[test]
+    fn only_explicit_approval_downgrades_red_health_to_warning() {
+        assert_eq!(health_policy_for_approval(None), HealthPolicy::BlockOnRed);
+        assert_eq!(
+            health_policy_for_approval(Some(false)),
+            HealthPolicy::BlockOnRed
+        );
+        assert_eq!(
+            health_policy_for_approval(Some(true)),
+            HealthPolicy::WarnOnly
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn launch_instance(
     app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
+    allow_health_blockers: Option<bool>,
 ) -> LauncherResult<()> {
     let sanitized = paths::sanitize_id(&instance_id);
     if sanitized.is_empty() {
@@ -350,7 +380,7 @@ pub async fn launch_instance(
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized.clone(),
         mode: agora_core::launch_service::LaunchMode::Delegated,
-        health_policy: agora_core::launch_service::HealthPolicy::BlockOnRed,
+        health_policy: health_policy_for_approval(allow_health_blockers),
     };
     let result = agora_core::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
@@ -455,6 +485,7 @@ pub async fn launch_instance_with_recovery(
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
     action: agora_core::launch_service::LaunchRecoveryAction,
+    allow_health_blockers: Option<bool>,
 ) -> LauncherResult<u32> {
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -502,7 +533,7 @@ pub async fn launch_instance_with_recovery(
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized,
         mode: agora_core::launch_service::LaunchMode::Direct,
-        health_policy: agora_core::launch_service::HealthPolicy::BlockOnRed,
+        health_policy: health_policy_for_approval(allow_health_blockers),
     };
     let task = tokio::spawn(async move {
         agora_core::launch_service::LaunchService::new(ctx)
@@ -539,6 +570,7 @@ pub async fn launch_instance_direct(
     app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
+    allow_health_blockers: Option<bool>,
 ) -> LauncherResult<u32> {
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -586,7 +618,7 @@ pub async fn launch_instance_direct(
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: progress.instance_id.clone(),
         mode: agora_core::launch_service::LaunchMode::Direct,
-        health_policy: agora_core::launch_service::HealthPolicy::BlockOnRed,
+        health_policy: health_policy_for_approval(allow_health_blockers),
     };
     let task = tokio::spawn(async move {
         agora_core::launch_service::LaunchService::new(ctx)

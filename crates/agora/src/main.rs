@@ -149,6 +149,9 @@ enum Commands {
     Health {
         instance: String,
     },
+    Inventory {
+        instance: String,
+    },
     Registry {
         #[command(subcommand)]
         action: RegistryCmd,
@@ -1866,6 +1869,67 @@ async fn run_command(
                 anyhow::bail!("Health score is {:?} (see report above)", report.score);
             }
         }
+        Commands::Inventory { instance } => {
+            let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
+            if !instance_dir.exists() {
+                anyhow::bail!("Instance '{}' not found", instance);
+            }
+            let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
+            let text = std::fs::read_to_string(&manifest_path)?;
+            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let inventory = agora_core::health::inventory(&instance_dir, &manifest);
+            if json {
+                let artifacts: Vec<_> = inventory
+                    .artifacts
+                    .iter()
+                    .map(|artifact| {
+                        serde_json::json!({
+                            "filename": artifact.filename,
+                            "status": artifact.status,
+                            "diagnostics": artifact.diagnostics,
+                            "manifestFallbackUsed": artifact.manifest_fallback_used,
+                            "primaryModId": artifact.metadata.mod_jar_id,
+                            "version": artifact.metadata.mod_version,
+                            "providedMods": artifact.metadata.provided_mods,
+                            "requiredDependencies": artifact.metadata.depends_on,
+                            "optionalDependencies": artifact.metadata.optional_deps,
+                            "incompatibilities": artifact.metadata.incompatibility_decls,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "artifacts": artifacts,
+                        "missingEnabledManifestFiles": inventory.missing_enabled_manifest_files,
+                    }))?
+                );
+            } else {
+                for artifact in &inventory.artifacts {
+                    let primary = artifact.metadata.mod_jar_id.as_deref().unwrap_or("unknown");
+                    let provided = artifact
+                        .metadata
+                        .provided_mods
+                        .iter()
+                        .map(|provided| provided.mod_id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!(
+                        "{}: {:?}; primary={}; provided=[{}]; required=[{}]; optional=[{}]; incompatible=[{}]",
+                        artifact.filename,
+                        artifact.status,
+                        primary,
+                        provided,
+                        artifact.metadata.depends_on.join(", "),
+                        artifact.metadata.optional_deps.join(", "),
+                        artifact.metadata.incompatible_deps.join(", ")
+                    );
+                }
+                for filename in &inventory.missing_enabled_manifest_files {
+                    println!("MISSING: {filename}");
+                }
+            }
+        }
         Commands::Registry { action } => match action {
             RegistryCmd::Status => {
                 let local_state = data_dir.join("local_state.db");
@@ -3093,6 +3157,16 @@ mod tests {
     };
     use agora_core::models::InstalledMod;
     use clap::Parser;
+
+    #[test]
+    fn inventory_command_parses_instance_id() {
+        let cli = Cli::try_parse_from(["agora", "inventory", "my-instance"])
+            .expect("inventory command should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Inventory { instance } if instance == "my-instance"
+        ));
+    }
 
     #[test]
     fn parses_code_and_state_from_redirect_url() {

@@ -482,11 +482,11 @@ export const openInstanceFolder = (instanceId: string) =>
   invoke<void>('open_instance_folder', { instanceId });
 export const revealPath = (path: string) =>
   invoke<void>('reveal_path', { path });
-export const launchInstance = (instanceId: string) =>
-  invoke<void>('launch_instance', { instanceId });
+export const launchInstance = (instanceId: string, allowHealthBlockers = false) =>
+  invoke<void>('launch_instance', { instanceId, allowHealthBlockers });
 
-export const launchInstanceDirect = (instanceId: string) =>
-  invoke<number>('launch_instance_direct', { instanceId });
+export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false) =>
+  invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers });
 
 /**
  * Coarse recovery action for launch_instance_with_recovery.
@@ -505,7 +505,8 @@ export type LaunchRecoveryAction =
 export const launchInstanceWithRecovery = (
   instanceId: string,
   action: LaunchRecoveryAction,
-) => invoke<number>('launch_instance_with_recovery', { instanceId, action });
+  allowHealthBlockers = false,
+) => invoke<number>('launch_instance_with_recovery', { instanceId, action, allowHealthBlockers });
 
 export const killProcess = (pid: number) =>
   invoke<void>('kill_process', { pid });

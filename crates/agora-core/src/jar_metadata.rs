@@ -1,10 +1,14 @@
-use crate::dependency_ops::{IncompatibilityDecl, IncompatibilitySource, JarDeps, ProvidedMod};
+use crate::dependency_ops::{
+    IncompatibilityDecl, IncompatibilitySource, JarDeps, ProvidedMod, ProvidedModSource,
+};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 /// Whether an artifact was fully inspected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ParseStatus {
     #[default]
     Complete,
@@ -20,7 +24,8 @@ impl ParseStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ParseDiagnosticKind {
     ArchiveOpenFailed,
     MetadataMalformed,
@@ -32,7 +37,7 @@ pub enum ParseDiagnosticKind {
     UnsupportedMetadata,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParseDiagnostic {
     pub kind: ParseDiagnosticKind,
     pub entry_path: Option<String>,
@@ -292,6 +297,8 @@ fn collect_fabric_metadata(
             *fabric_version = Some(version.to_string());
         }
     }
+    let declaring_mod_id = mod_jar_id.clone();
+    let declaration_start = incompatibility_decls.len();
     if let Some(value) = value.get("depends") {
         extract_fabric_deps(value, depends_on, None);
     }
@@ -335,6 +342,9 @@ fn collect_fabric_metadata(
                 .map(str::to_string)
         }));
     }
+    for declaration in &mut incompatibility_decls[declaration_start..] {
+        declaration.declaring_mod_id = declaring_mod_id.clone();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -363,6 +373,8 @@ fn collect_quilt_metadata(
             *quilt_version = Some(version.to_string());
         }
     }
+    let declaring_mod_id = mod_jar_id.clone();
+    let declaration_start = incompatibility_decls.len();
     if let Some(value) = loader.get("depends") {
         extract_fabric_deps(value, depends_on, None);
     }
@@ -410,6 +422,79 @@ fn collect_quilt_metadata(
                 .map(str::to_string),
         );
     }
+    for declaration in &mut incompatibility_decls[declaration_start..] {
+        declaration.declaring_mod_id = declaring_mod_id.clone();
+    }
+}
+
+fn insert_provided_mod(
+    provided: &mut BTreeMap<String, ProvidedMod>,
+    mod_id: String,
+    version: Option<String>,
+    source: ProvidedModSource,
+    nested_path: Option<String>,
+) {
+    provided
+        .entry(mod_id.clone())
+        .and_modify(|existing| {
+            if existing.version.is_none() && version.is_some() {
+                existing.version = version.clone();
+            }
+            if source == ProvidedModSource::NestedJar {
+                if version.is_some() {
+                    existing.version = version.clone();
+                }
+                existing.source = source;
+                existing.nested_path = nested_path.clone();
+            }
+        })
+        .or_insert(ProvidedMod {
+            mod_id,
+            version,
+            source,
+            nested_path,
+        });
+}
+
+fn parse_loader_json(content: &str) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_str(content).or_else(|_| {
+        let mut sanitized = String::with_capacity(content.len());
+        let mut in_string = false;
+        let mut escaped = false;
+        for character in content.chars() {
+            if in_string {
+                if escaped {
+                    sanitized.push(character);
+                    escaped = false;
+                    continue;
+                }
+                match character {
+                    '\\' => {
+                        sanitized.push(character);
+                        escaped = true;
+                    }
+                    '"' => {
+                        sanitized.push(character);
+                        in_string = false;
+                    }
+                    '\n' => sanitized.push_str("\\n"),
+                    '\r' => sanitized.push_str("\\r"),
+                    '\t' => sanitized.push_str("\\t"),
+                    character if character.is_control() => {
+                        use std::fmt::Write as _;
+                        let _ = write!(sanitized, "\\u{:04x}", character as u32);
+                    }
+                    _ => sanitized.push(character),
+                }
+            } else {
+                sanitized.push(character);
+                if character == '"' {
+                    in_string = true;
+                }
+            }
+        }
+        serde_json::from_str(&sanitized)
+    })
 }
 
 /// Generic recursive JAR metadata parser.
@@ -500,7 +585,7 @@ fn parse_from_archive<R: Read + Seek>(
         }
         if name == "fabric.mod.json" && include_fabric {
             match read_entry_utf8_bounded(archive, i, MAX_METADATA_TEXT_BYTES) {
-                Some(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Some(content) => match parse_loader_json(&content) {
                     Ok(value) => {
                         has_native_metadata = true;
                         collect_fabric_metadata(
@@ -516,12 +601,16 @@ fn parse_from_archive<R: Read + Seek>(
                             &mut fabric_jars_strs,
                         );
                     }
-                    Err(_) => {
+                    Err(error) => {
                         status.record_partial();
                         diagnostics.push(ParseDiagnostic {
                             kind: ParseDiagnosticKind::MetadataMalformed,
                             entry_path: Some(name.clone()),
-                            message: "Fabric metadata is malformed JSON.".into(),
+                            message: format!(
+                                "Fabric metadata is malformed JSON at line {} column {}.",
+                                error.line(),
+                                error.column()
+                            ),
                         });
                     }
                 },
@@ -540,7 +629,7 @@ fn parse_from_archive<R: Read + Seek>(
 
         if name == "quilt.mod.json" && include_quilt {
             match read_entry_utf8_bounded(archive, i, MAX_METADATA_TEXT_BYTES) {
-                Some(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Some(content) => match parse_loader_json(&content) {
                     Ok(value) => {
                         has_native_metadata = true;
                         collect_quilt_metadata(
@@ -555,12 +644,16 @@ fn parse_from_archive<R: Read + Seek>(
                             &mut quilt_jars_strs,
                         );
                     }
-                    Err(_) => {
+                    Err(error) => {
                         status.record_partial();
                         diagnostics.push(ParseDiagnostic {
                             kind: ParseDiagnosticKind::MetadataMalformed,
                             entry_path: Some(name.clone()),
-                            message: "Quilt metadata is malformed JSON.".into(),
+                            message: format!(
+                                "Quilt metadata is malformed JSON at line {} column {}.",
+                                error.line(),
+                                error.column()
+                            ),
                         });
                     }
                 },
@@ -577,194 +670,6 @@ fn parse_from_archive<R: Read + Seek>(
             continue;
         }
 
-        /*
-        if name == "fabric.mod.json" && include_fabric {
-            match read_entry_utf8_bounded(archive, i, MAX_METADATA_TEXT_BYTES) {
-                None => {
-                    status.record_partial();
-                    diagnostics.push(ParseDiagnostic {
-                        kind: ParseDiagnosticKind::MetadataTooLarge,
-                        entry_path: Some(name.clone()),
-                        message: "Fabric metadata could not be read within the metadata limit.".into(),
-                    });
-                }
-                Some(content_str) => {
-                    match serde_json::from_str::<serde_json::Value>(&content_str) {
-                        Err(_) => {
-                            status.record_partial();
-                            diagnostics.push(ParseDiagnostic {
-                                kind: ParseDiagnosticKind::MetadataMalformed,
-                                entry_path: Some(name.clone()),
-                                message: "Fabric metadata is malformed JSON.".into(),
-                            });
-                        }
-                        Ok(value) => {
-                    has_native_metadata = true;
-                    if let Some(id_str) = value.get("id").and_then(|v| v.as_str()) {
-                        if !id_str.is_empty() {
-                            mod_jar_id = Some(id_str.to_string());
-                        }
-                    }
-                    if let Some(ver) = value.get("version").and_then(|v| v.as_str()) {
-                        if !ver.is_empty() {
-                            mod_version = Some(ver.to_string());
-                            fabric_version = Some(ver.to_string());
-                        }
-                    }
-                    // Required deps.
-                    if let Some(val) = value.get("depends") {
-                        extract_fabric_deps(val, &mut depends_on, None);
-                    }
-                    // Optional deps (recommends + suggests both soft).
-                    for key in ["recommends", "suggests"] {
-                        if let Some(val) = value.get(key) {
-                            extract_fabric_deps(val, &mut optional_deps, None);
-                        }
-                    }
-                    // breaks -> hard incompat; conflicts -> soft incompat.
-                    if let Some(val) = value.get("breaks") {
-                        extract_fabric_deps(
-                            val,
-                            &mut incompatible_ids,
-                            Some((
-                                IncompatibilitySource::FabricBreaks,
-                                &mut incompatibility_decls,
-                            )),
-                        );
-                    }
-                    if let Some(val) = value.get("conflicts") {
-                        extract_fabric_deps(
-                            val,
-                            &mut incompatible_ids,
-                            Some((
-                                IncompatibilitySource::FabricConflicts,
-                                &mut incompatibility_decls,
-                            )),
-                        );
-                    }
-                    // Fabric `provides` array of strings.
-                    if let Some(provides) = value.get("provides").and_then(|v| v.as_array()) {
-                        for elem in provides {
-                            if let Some(s) = elem.as_str() {
-                                if !s.is_empty() {
-                                    fabric_provides_strs.push(s.to_string());
-                                }
-                            }
-                        }
-                    }
-                    // Fabric `jars` array of objects with `file` string.
-                    if let Some(jars) = value.get("jars").and_then(|v| v.as_array()) {
-                        for elem in jars {
-                            if let Some(file) = elem.get("file").and_then(|v| v.as_str()) {
-                                if !file.is_empty() {
-                                    fabric_jars_strs.push(file.to_string());
-                                }
-                            }
-                        }
-                         }
-                         }
-                     }
-                  }
-                  }
-                  }
-            continue;
-        if name == "quilt.mod.json" && include_quilt {
-            match read_entry_utf8_bounded(archive, i, MAX_METADATA_TEXT_BYTES) {
-                None => {
-                    status.record_partial();
-                    diagnostics.push(ParseDiagnostic {
-                        kind: ParseDiagnosticKind::MetadataTooLarge,
-                        entry_path: Some(name.clone()),
-                        message: "Quilt metadata could not be read within the metadata limit.".into(),
-                    });
-                }
-                Some(content_str) => {
-                    match serde_json::from_str::<serde_json::Value>(&content_str) {
-                        Err(_) => {
-                            status.record_partial();
-                            diagnostics.push(ParseDiagnostic {
-                                kind: ParseDiagnosticKind::MetadataMalformed,
-                                entry_path: Some(name.clone()),
-                                message: "Quilt metadata is malformed JSON.".into(),
-                            });
-                        }
-                        Ok(value) => {
-                    has_native_metadata = true;
-                    if let Some(ql) = value.get("quilt_loader").or(value.get("quiltLoader")) {
-                        if let Some(id_str) = ql.get("id").and_then(|v| v.as_str()) {
-                            if !id_str.is_empty() && mod_jar_id.is_none() {
-                                mod_jar_id = Some(id_str.to_string());
-                            }
-                        }
-                        if let Some(ver) = ql.get("version").and_then(|v| v.as_str()) {
-                            if !ver.is_empty() {
-                                mod_version = Some(ver.to_string());
-                                quilt_version = Some(ver.to_string());
-                            }
-                        }
-                        // Quilt deps/breaks/conflicts use the same grammar as Fabric.
-                        if let Some(val) = ql.get("depends") {
-                            extract_fabric_deps(val, &mut depends_on, None);
-                        }
-                        if let Some(val) = ql.get("breaks") {
-                            extract_fabric_deps(
-                                val,
-                                &mut incompatible_ids,
-                                Some((
-                                    IncompatibilitySource::QuiltBreaks,
-                                    &mut incompatibility_decls,
-                                )),
-                            );
-                        }
-                        if let Some(val) = ql.get("conflicts") {
-                            extract_fabric_deps(
-                                val,
-                                &mut incompatible_ids,
-                                Some((
-                                    IncompatibilitySource::QuiltConflicts,
-                                    &mut incompatibility_decls,
-                                )),
-                            );
-                        }
-                        // Quilt `quilt_loader.provides`: array of strings or objects.
-                        if let Some(provides) = ql.get("provides").and_then(|v| v.as_array()) {
-                            for elem in provides {
-                                if let Some(s) = elem.as_str() {
-                                    if !s.is_empty() {
-                                        quilt_provides.push((s.to_string(), None));
-                                    }
-                                } else if let Some(obj) = elem.as_object() {
-                                    let pid = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                    if !pid.is_empty() {
-                                        let pver = obj
-                                            .get("version")
-                                            .and_then(|v| v.as_str())
-                                            .filter(|s| !s.is_empty())
-                                            .map(|s| s.to_string());
-                                        quilt_provides.push((pid.to_string(), pver));
-                                    }
-                                }
-                            }
-                        }
-                        // Quilt `quilt_loader.jars`: array of string paths.
-                        if let Some(jars) = ql.get("jars").and_then(|v| v.as_array()) {
-                            for elem in jars {
-                                if let Some(s) = elem.as_str() {
-                                    if !s.is_empty() {
-                                        quilt_jars_strs.push(s.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        }
-                        }
-                    }
-                }
-                 }
-                 }
-                 }
-            continue;
-        */
         // NeoForge ships neoforge.mods.toml; Forge ships mods.toml. Same TOML
         // schema, so both go through the same parser. Prefer neoforge when both
         // are present (a NeoForge mod's mods.toml, if also shipped, is usually
@@ -896,36 +801,40 @@ fn parse_from_archive<R: Read + Seek>(
     }
 
     // ---- Build initial provided_mods from Fabric/Quilt provides ----
-    let mut provided_mods_map: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut provided_mods_map: BTreeMap<String, ProvidedMod> = BTreeMap::new();
 
     for id in forge_provides_strs {
         if mod_jar_id.as_deref() != Some(id.as_str()) {
-            provided_mods_map.insert(id, mod_version.clone());
+            insert_provided_mod(
+                &mut provided_mods_map,
+                id,
+                mod_version.clone(),
+                ProvidedModSource::AdditionalNativeMod,
+                None,
+            );
         }
     }
 
     for alias in fabric_provides_strs {
         let ver = fabric_version.as_ref().cloned();
-        provided_mods_map
-            .entry(alias)
-            .and_modify(|e| {
-                if e.is_none() && ver.is_some() {
-                    *e = ver.clone();
-                }
-            })
-            .or_insert(ver);
+        insert_provided_mod(
+            &mut provided_mods_map,
+            alias,
+            ver,
+            ProvidedModSource::ProvidesAlias,
+            None,
+        );
     }
 
     for (pid, explicit_ver) in quilt_provides {
         let ver = explicit_ver.or_else(|| quilt_version.clone());
-        provided_mods_map
-            .entry(pid)
-            .and_modify(|e| {
-                if e.is_none() && ver.is_some() {
-                    *e = ver.clone();
-                }
-            })
-            .or_insert(ver);
+        insert_provided_mod(
+            &mut provided_mods_map,
+            pid,
+            ver,
+            ProvidedModSource::ProvidesAlias,
+            None,
+        );
     }
 
     // ---- Validate and dedupe declared nested JAR paths ----
@@ -1034,27 +943,25 @@ fn parse_from_archive<R: Read + Seek>(
         // Add nested primary ID as ProvidedMod.
         if let Some(ref nested_id) = nested_metadata.mod_jar_id {
             let nv = nested_metadata.mod_version.clone();
-            provided_mods_map
-                .entry(nested_id.clone())
-                .and_modify(|e| {
-                    if e.is_none() && nv.is_some() {
-                        *e = nv.clone();
-                    }
-                })
-                .or_insert(nv);
+            insert_provided_mod(
+                &mut provided_mods_map,
+                nested_id.clone(),
+                nv,
+                ProvidedModSource::NestedJar,
+                Some(normalized.clone()),
+            );
         }
 
         // Aggregate nested provided_mods.
         for pm in &nested_metadata.provided_mods {
             let pv = pm.version.clone();
-            provided_mods_map
-                .entry(pm.mod_id.clone())
-                .and_modify(|e| {
-                    if e.is_none() && pv.is_some() {
-                        *e = pv.clone();
-                    }
-                })
-                .or_insert(pv);
+            insert_provided_mod(
+                &mut provided_mods_map,
+                pm.mod_id.clone(),
+                pv,
+                ProvidedModSource::NestedJar,
+                Some(normalized.clone()),
+            );
         }
 
         // Aggregate dependencies (except intra-JAR deps filtered later).
@@ -1100,10 +1007,7 @@ fn parse_from_archive<R: Read + Seek>(
     incompatibility_decls.retain(|d| !DEPENDENCY_IGNORE_LIST.contains(&d.mod_id.as_str()));
 
     // Build final ProvidedMod vec from map (already sorted by BTreeMap).
-    let provided_mods: Vec<ProvidedMod> = provided_mods_map
-        .into_iter()
-        .map(|(mod_id, version)| ProvidedMod { mod_id, version })
-        .collect();
+    let provided_mods: Vec<ProvidedMod> = provided_mods_map.into_values().collect();
 
     LoaderJarMetadata {
         metadata: JarDeps {
@@ -1215,6 +1119,7 @@ fn extract_fabric_deps(
                 out.insert(key.clone());
                 if let Some((sev, decls)) = incompat.as_mut() {
                     decls.push(IncompatibilityDecl {
+                        declaring_mod_id: None,
                         mod_id: key.clone(),
                         version_ranges: ranges,
                         source: *sev,
@@ -1236,6 +1141,7 @@ fn extract_fabric_deps(
                             None => Vec::new(),
                         };
                         decls.push(IncompatibilityDecl {
+                            declaring_mod_id: None,
                             mod_id: id.to_string(),
                             version_ranges: ranges,
                             source: *sev,
@@ -1283,6 +1189,7 @@ fn fabric_version_ranges(val: &serde_json::Value) -> Vec<String> {
 /// In-flight Forge dependency block state.
 #[derive(Clone, Default)]
 struct PendingForgeDep {
+    declaring_mod_id: Option<String>,
     /// The TARGET mod id (the dependency), read from the inner `modId` line.
     mod_id: Option<String>,
     /// NeoForge `type`.
@@ -1342,18 +1249,42 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
     }
 
     if let Some(dependencies) = document.get("dependencies") {
-        let owners = dependencies
-            .as_table()
-            .ok_or_else(|| "Forge metadata has an invalid dependencies table.".to_string())?;
-        for blocks in owners.values() {
-            let blocks = blocks.as_array().ok_or_else(|| {
-                "Forge metadata has a dependency owner that is not an array.".to_string()
-            })?;
+        if let Some(owners) = dependencies.as_table() {
+            for (owner, blocks) in owners {
+                let blocks = blocks.as_array().ok_or_else(|| {
+                    "Forge metadata has a dependency owner that is not an array.".to_string()
+                })?;
+                for block in blocks {
+                    let table = block.as_table().ok_or_else(|| {
+                        "Forge metadata contains an invalid dependency entry.".to_string()
+                    })?;
+                    parsed.dependencies.push(PendingForgeDep {
+                        declaring_mod_id: Some(owner.clone()),
+                        mod_id: table
+                            .get("modId")
+                            .and_then(toml::Value::as_str)
+                            .filter(|id| !id.trim().is_empty())
+                            .map(str::to_string),
+                        dep_type: table
+                            .get("type")
+                            .and_then(toml::Value::as_str)
+                            .map(str::to_string),
+                        mandatory: table.get("mandatory").and_then(toml::Value::as_bool),
+                        version_range: table
+                            .get("versionRange")
+                            .and_then(toml::Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+            }
+        } else if let Some(blocks) = dependencies.as_array() {
+            let declaring_mod_id = parsed.mod_ids.iter().next().cloned();
             for block in blocks {
                 let table = block.as_table().ok_or_else(|| {
                     "Forge metadata contains an invalid dependency entry.".to_string()
                 })?;
                 parsed.dependencies.push(PendingForgeDep {
+                    declaring_mod_id: declaring_mod_id.clone(),
                     mod_id: table
                         .get("modId")
                         .and_then(toml::Value::as_str)
@@ -1370,6 +1301,8 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
                         .map(str::to_string),
                 });
             }
+        } else {
+            return Err("Forge metadata has an unsupported dependencies structure.".to_string());
         }
     }
 
@@ -1463,11 +1396,12 @@ fn flush_forge_dep(
         None => Vec::new(),
     };
 
-    let effective = pending.dep_type.as_deref();
-    match effective {
+    let effective = pending.dep_type.as_deref().map(str::to_ascii_lowercase);
+    match effective.as_deref() {
         Some("incompatible") => {
             incompatible_ids_out.insert(dep_id.clone());
             incompatibility_decls_out.push(IncompatibilityDecl {
+                declaring_mod_id: pending.declaring_mod_id.clone(),
                 mod_id: dep_id,
                 version_ranges: ranges,
                 source: IncompatibilitySource::ForgeIncompatible,
@@ -1476,6 +1410,7 @@ fn flush_forge_dep(
         Some("discouraged") => {
             incompatible_ids_out.insert(dep_id.clone());
             incompatibility_decls_out.push(IncompatibilityDecl {
+                declaring_mod_id: pending.declaring_mod_id.clone(),
                 mod_id: dep_id,
                 version_ranges: ranges,
                 source: IncompatibilitySource::ForgeDiscouraged,
@@ -2312,6 +2247,74 @@ version="1.0"
         let meta = parse_jar_metadata(&jar);
         let _ = std::fs::remove_file(&jar);
         assert_eq!(meta.mod_version.as_deref(), Some("1.2.3-build.4"));
+    }
+
+    #[test]
+    fn loader_json_accepts_literal_newlines_inside_strings() {
+        let value =
+            parse_loader_json("{\"id\":\"betterend\",\"description\":\"first line\nsecond line\"}")
+                .expect("Fabric Loader accepts literal control characters in strings");
+        assert_eq!(value["id"], "betterend");
+        assert_eq!(value["description"], "first line\nsecond line");
+    }
+
+    #[test]
+    fn nested_capability_version_overrides_outer_alias_version() {
+        let mut provided = BTreeMap::new();
+        insert_provided_mod(
+            &mut provided,
+            "shared_api".into(),
+            Some("1.0".into()),
+            ProvidedModSource::ProvidesAlias,
+            None,
+        );
+        insert_provided_mod(
+            &mut provided,
+            "shared_api".into(),
+            Some("2.0".into()),
+            ProvidedModSource::NestedJar,
+            Some("META-INF/jars/shared.jar".into()),
+        );
+        let capability = provided.get("shared_api").expect("capability");
+        assert_eq!(capability.version.as_deref(), Some("2.0"));
+        assert_eq!(capability.source, ProvidedModSource::NestedJar);
+    }
+
+    #[test]
+    fn neoforge_top_level_dependencies_and_uppercase_types_are_parsed() {
+        let parsed = parse_forge_metadata(
+            r#"modLoader="javafml"
+[[mods]]
+modId="arseng"
+version="2.1.1"
+[[dependencies]]
+modId="ae2"
+type="REQUIRED"
+[[dependencies]]
+modId="old_api"
+type="INCOMPATIBLE"
+versionRange="(,2.0]"
+"#,
+        )
+        .expect("parse top-level NeoForge dependencies");
+        let mut required = BTreeSet::new();
+        let mut optional = BTreeSet::new();
+        let mut incompatible = BTreeSet::new();
+        let mut declarations = Vec::new();
+        let mut mod_id = None;
+        let mut version = None;
+        merge_forge_metadata(
+            parsed,
+            &mut required,
+            &mut optional,
+            &mut incompatible,
+            &mut declarations,
+            &mut mod_id,
+            &mut version,
+        );
+        assert!(required.contains("ae2"));
+        assert!(incompatible.contains("old_api"));
+        assert_eq!(declarations[0].declaring_mod_id.as_deref(), Some("arseng"));
     }
 
     #[test]
