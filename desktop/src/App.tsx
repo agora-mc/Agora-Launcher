@@ -479,7 +479,6 @@ export default function App() {
                   <Instances
                     onEditInstance={(id) => navigateToInstanceDetail(id)}
                     processState={processState}
-                    processLogs={processLogs}
                     onStartLaunch={startLaunch}
                     onKillProcess={killProcess}
                     onStartCrashInvestigation={setCrashInvestigation}
@@ -525,6 +524,7 @@ export default function App() {
                   onOpenModDetail={handleInstanceEditorOpenMod}
                   onOpenBrowseForInstance={navigateToBrowse}
                   onLaunch={handleInstanceEditorLaunch}
+                  processLogs={processLogs}
                 />
               </div>
             )}

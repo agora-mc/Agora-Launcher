@@ -10,7 +10,6 @@ registry.db.sig
 .DS_Store
 __pycache__
 .idea
-.vscode
 .env
 .env.*
 !.env.example

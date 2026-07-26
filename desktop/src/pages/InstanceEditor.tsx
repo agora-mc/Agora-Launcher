@@ -187,7 +187,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean> }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, processLogs }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; processLogs?: import('../lib/useProcessController').LogLine[] }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
   const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
@@ -1957,7 +1957,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <p className="text-xs text-muted-foreground">
             Live stdout/stderr from the launched Minecraft process. Logs stream here when the instance is running via Agora's direct launcher.
           </p>
-          <ConsoleView instanceId={instanceId} className="mt-2" />
+          <ConsoleView
+            instanceId={instanceId}
+            className="mt-2"
+            logBuffer={processLogs?.filter((l) => l.instance_id === instanceId)}
+          />
         </section>
       )}
 

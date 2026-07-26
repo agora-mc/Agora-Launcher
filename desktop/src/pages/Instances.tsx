@@ -40,7 +40,6 @@ import {
 export function Instances({
   onEditInstance,
   processState,
-  processLogs,
   onStartLaunch,
   onKillProcess,
   onStartCrashInvestigation,
@@ -50,7 +49,6 @@ export function Instances({
 }: {
   onEditInstance: (id: string) => void;
   processState: ProcessState;
-  processLogs: import('../lib/useProcessController').LogLine[];
   onStartLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
   onKillProcess: () => Promise<void>;
   onStartCrashInvestigation: (investigation: {
@@ -240,7 +238,6 @@ export function Instances({
             const isCurrentLaunchBusy = isLaunchBusy && processState.instanceId === instance.instance_id;
 
             const isCurrentThisInstance = processState.instanceId === instance.instance_id;
-            const instanceLogs = processLogs.filter((l) => l.instance_id === instance.instance_id);
             const packInstall = getTaskForInstance(instance.instance_id);
             const recoveryPending = snapshotReadiness[instance.instance_id] === 'pending';
             const recoveryFailed = snapshotReadiness[instance.instance_id] === 'failed';
@@ -268,7 +265,6 @@ export function Instances({
                 controllerAvailableActions={isCurrentFailed ? processState.availableActions : []}
                 runtimeProgress={isCurrentThisInstance ? processState.runtimeProgress : null}
                 onDismissError={onClearError}
-                logs={instanceLogs}
                 onRepairAndRetry={onRepairAndRetry}
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
                 repairBusy={isCurrentLaunchBusy}
@@ -353,7 +349,6 @@ function InstanceCard({
   controllerAvailableActions,
   runtimeProgress,
   onDismissError,
-  logs,
   onRepairAndRetry,
   onUseDelegatedLaunch,
   repairBusy,
@@ -379,7 +374,6 @@ function InstanceCard({
   controllerAvailableActions: LauncherAction[];
   runtimeProgress: JavaRuntimeProgressEvent | null;
   onDismissError: () => void;
-  logs?: import('../lib/useProcessController').LogLine[];
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
   repairBusy: boolean;
@@ -725,21 +719,6 @@ function InstanceCard({
           Delete
         </button>
       </div>
-
-      {isRunning && logs && logs.length > 0 && (
-        <div className="mt-3">
-          <h4 className="text-xs font-semibold text-muted-foreground mb-1 uppercase tracking-wide">
-            Console ({logs.length} lines)
-          </h4>
-          <pre className="max-h-32 overflow-y-auto rounded-lg bg-background border border-border p-2 text-[10px] font-mono leading-tight">
-            {logs.slice(-200).map((l, i) => (
-              <span key={i} className={l.stream === 'stderr' ? 'text-destructive' : ''}>
-                {l.line}{'\n'}
-              </span>
-            ))}
-          </pre>
-        </div>
-      )}
     </li>
   );
 }

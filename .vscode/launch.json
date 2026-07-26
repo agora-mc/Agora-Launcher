@@ -1,0 +1,63 @@
+{
+  // Requires the CodeLLDB extension: vadimcn.vscode-lldb
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Agora Desktop: Debug",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path=${workspaceFolder}/desktop/src-tauri/Cargo.toml",
+          "--package=agora-desktop",
+          "--bin=agora-desktop",
+          "--no-default-features"
+        ],
+        "filter": {
+          "name": "agora-desktop",
+          "kind": "bin"
+        }
+      },
+      "cwd": "${workspaceFolder}/desktop",
+      "preLaunchTask": "Agora: Vite dev server",
+      "terminal": "integrated",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "AGORA_REGISTRY_REPO": "jarjarpfeil/Agora-Launcher"
+      }
+    },
+    {
+      // Change args to the CLI command you are debugging, for example:
+      // ["health", "my-instance-id"] or ["--output", "json", "list-instances"]
+      "name": "Agora CLI: Debug",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path=${workspaceFolder}/Cargo.toml",
+          "--package=agora-cli",
+          "--bin=agora"
+        ],
+        "filter": {
+          "name": "agora",
+          "kind": "bin"
+        }
+      },
+      "cwd": "${workspaceFolder}",
+      "args": ["paths"],
+      "terminal": "integrated",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "AGORA_REGISTRY_REPO": "jarjarpfeil/Agora-Launcher"
+      }
+    },
+    {
+      "name": "Agora Desktop: Attach to running process",
+      "type": "lldb",
+      "request": "attach",
+      "pid": "${command:pickProcess}"
+    }
+  ]
+}
