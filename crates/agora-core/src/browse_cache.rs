@@ -8,6 +8,20 @@ use crate::registry::RegistryItem;
 
 pub const PAGE_SIZE: usize = 20;
 
+#[derive(Debug, Clone)]
+struct NormalizedPresentation {
+    hero_image_url: Option<String>,
+    author: Option<String>,
+    categories: Vec<String>,
+    downloads: Option<i64>,
+    follows: Option<i64>,
+    upvotes: Option<i64>,
+    downvotes: Option<i64>,
+    net_score: Option<i64>,
+    supported_versions: Vec<String>,
+    source_page_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowseItem {
@@ -137,18 +151,7 @@ fn modrinth_page_url(item: &ModrinthSearchResult) -> Option<String> {
 fn normalized_presentation(
     registry_item: Option<&RegistryItem>,
     modrinth_item: Option<&ModrinthSearchResult>,
-) -> (
-    Option<String>,
-    Option<String>,
-    Vec<String>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Vec<String>,
-    Option<String>,
-) {
+) -> NormalizedPresentation {
     let registry_gallery = registry_item.map(registry_gallery_urls).unwrap_or_default();
     let hero_image_url = modrinth_item
         .and_then(|item| item.featured_gallery.as_deref())
@@ -171,37 +174,26 @@ fn normalized_presentation(
         .and_then(normalized_https_url)
         .or_else(|| modrinth_item.and_then(modrinth_page_url));
 
-    (
+    NormalizedPresentation {
         hero_image_url,
-        modrinth_item
+        author: modrinth_item
             .map(|item| item.author.clone())
             .filter(|author| !author.is_empty()),
-        modrinth_item
+        categories: modrinth_item
             .map(|item| item.categories.clone())
             .unwrap_or_default(),
-        modrinth_item.map(|item| item.downloads),
-        modrinth_item.map(|item| item.follows),
-        registry_item.map(|item| item.upvotes),
-        registry_item.map(|item| item.downvotes),
-        registry_item.map(|item| item.net_score),
+        downloads: modrinth_item.map(|item| item.downloads),
+        follows: modrinth_item.map(|item| item.follows),
+        upvotes: registry_item.map(|item| item.upvotes),
+        downvotes: registry_item.map(|item| item.downvotes),
+        net_score: registry_item.map(|item| item.net_score),
         supported_versions,
         source_page_url,
-    )
+    }
 }
 
 pub fn item_from_modrinth(item: ModrinthSearchResult) -> BrowseItem {
-    let (
-        hero_image_url,
-        author,
-        categories,
-        downloads,
-        follows,
-        upvotes,
-        downvotes,
-        net_score,
-        supported_versions,
-        source_page_url,
-    ) = normalized_presentation(None, Some(&item));
+    let pres = normalized_presentation(None, Some(&item));
     BrowseItem {
         id: item.project_id.clone(),
         source: "modrinth".to_string(),
@@ -211,16 +203,16 @@ pub fn item_from_modrinth(item: ModrinthSearchResult) -> BrowseItem {
         icon_url: item.icon_url.clone(),
         description: Some(item.description.clone()),
         content_type: normalize_modrinth_content_type(&item.project_type).to_string(),
-        hero_image_url,
-        author,
-        categories,
-        downloads,
-        follows,
-        upvotes,
-        downvotes,
-        net_score,
-        supported_versions,
-        source_page_url,
+        hero_image_url: pres.hero_image_url,
+        author: pres.author,
+        categories: pres.categories,
+        downloads: pres.downloads,
+        follows: pres.follows,
+        upvotes: pres.upvotes,
+        downvotes: pres.downvotes,
+        net_score: pres.net_score,
+        supported_versions: pres.supported_versions,
+        source_page_url: pres.source_page_url,
     }
 }
 
@@ -242,18 +234,7 @@ pub fn merge_items(
     for mr in modrinth_results {
         if let Some(matched) = registry_by_modrinth_id.get(&mr.project_id) {
             matched_ids.insert(matched.id.clone());
-            let (
-                hero_image_url,
-                author,
-                categories,
-                downloads,
-                follows,
-                upvotes,
-                downvotes,
-                net_score,
-                supported_versions,
-                source_page_url,
-            ) = normalized_presentation(Some(matched), Some(&mr));
+            let pres = normalized_presentation(Some(matched), Some(&mr));
             merged.push(BrowseItem {
                 id: matched.id.clone(),
                 source: "curated".to_string(),
@@ -266,16 +247,16 @@ pub fn merge_items(
                     .clone()
                     .or_else(|| Some(mr.description.clone())),
                 content_type: matched.content_type.clone(),
-                hero_image_url,
-                author,
-                categories,
-                downloads,
-                follows,
-                upvotes,
-                downvotes,
-                net_score,
-                supported_versions,
-                source_page_url,
+                hero_image_url: pres.hero_image_url,
+                author: pres.author,
+                categories: pres.categories,
+                downloads: pres.downloads,
+                follows: pres.follows,
+                upvotes: pres.upvotes,
+                downvotes: pres.downvotes,
+                net_score: pres.net_score,
+                supported_versions: pres.supported_versions,
+                source_page_url: pres.source_page_url,
             });
         } else {
             merged.push(item_from_modrinth(mr));
@@ -284,18 +265,7 @@ pub fn merge_items(
 
     for ri in registry_items {
         if !matched_ids.contains(&ri.id) {
-            let (
-                hero_image_url,
-                author,
-                categories,
-                downloads,
-                follows,
-                upvotes,
-                downvotes,
-                net_score,
-                supported_versions,
-                source_page_url,
-            ) = normalized_presentation(Some(&ri), None);
+            let pres = normalized_presentation(Some(&ri), None);
             merged.push(BrowseItem {
                 id: ri.id.clone(),
                 source: "curated".to_string(),
@@ -305,16 +275,16 @@ pub fn merge_items(
                 icon_url: ri.icon_url.clone(),
                 description: ri.description.clone(),
                 content_type: ri.content_type.clone(),
-                hero_image_url,
-                author,
-                categories,
-                downloads,
-                follows,
-                upvotes,
-                downvotes,
-                net_score,
-                supported_versions,
-                source_page_url,
+                hero_image_url: pres.hero_image_url,
+                author: pres.author,
+                categories: pres.categories,
+                downloads: pres.downloads,
+                follows: pres.follows,
+                upvotes: pres.upvotes,
+                downvotes: pres.downvotes,
+                net_score: pres.net_score,
+                supported_versions: pres.supported_versions,
+                source_page_url: pres.source_page_url,
             });
         }
     }

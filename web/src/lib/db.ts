@@ -62,9 +62,12 @@ function loadRegistry(): WebRegistry {
   if (_cached) return _cached;
   const filePath = getWebJsonPath();
   if (!fs.existsSync(filePath)) {
-    throw new Error(
-      `registry-web.json not found at ${filePath}. Run "python compiler/compile.py --skip-sign" first.`
+    console.warn(
+      `registry-web.json not found at ${filePath}. Building with an empty registry. ` +
+      `Run "python compiler/compile.py --skip-sign" to populate it.`
     );
+    _cached = { schema_version: 1, generated_at: '', items: [] };
+    return _cached;
   }
   const raw = fs.readFileSync(filePath, 'utf-8');
   _cached = JSON.parse(raw) as WebRegistry;

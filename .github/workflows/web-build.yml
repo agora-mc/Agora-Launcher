@@ -41,11 +41,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Fetch registry.db from GitHub Releases
-        run: python scripts/fetch_registry_db.py .
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate registry-web.json from flat files
+        run: |
+          pip install -r compiler/requirements.txt
+          python compiler/compile.py --skip-sign --no-governance-write
+
 
       - name: Install dependencies
         working-directory: web

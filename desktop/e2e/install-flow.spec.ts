@@ -303,7 +303,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
           if (command === 'browse_search') {
             return Promise.resolve({
               items: [
-                { id: 'test-mod', source: 'curated', registryItem: { id: 'test-mod', name: 'Test Mod', content_type: 'mod', download_strategy: 'github_release', upvotes: 10, downvotes: 2, net_score: 8, velocity: 1.5 }, modrinthResult: null, name: 'Test Mod', iconUrl: null, description: 'A test mod for verifying the install flow.', contentType: 'mod' },
+                { id: 'test-mod', source: 'curated', registryItem: { id: 'test-mod', name: 'Test Mod', content_type: 'mod', download_strategy: 'github_release', upvotes: 10, downvotes: 2, net_score: 8, velocity: 1.5 }, modrinthResult: null, name: 'Test Mod', iconUrl: null, description: 'A test mod for verifying the install flow.', contentType: 'mod', heroImageUrl: null, author: null, categories: [], downloads: null, follows: null, upvotes: 10, downvotes: 2, netScore: 8, supportedVersions: [], sourcePageUrl: null },
               ],
               total: 1,
               page: 0,

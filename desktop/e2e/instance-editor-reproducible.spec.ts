@@ -179,6 +179,11 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
     }) => {
       const { detail, lockfileObject, exportReject, verifyReport, verifyReject, repairOutcome, repairReject, cloneInstanceId, cloneReject, confirmResult } = params;
 
+      // Mutable copy of manifest mods for tracking toggle state across invocations
+      const mutableMods: Record<string, unknown>[] = (
+        ((detail as any)?.manifest?.mods as Record<string, unknown>[]) ?? []
+      ).map((mod) => ({ ...mod }));
+
       const callbacks = new Map<number, (...args: unknown[]) => void>();
       let callbackId = 0;
       const commandCalls: Record<string, number> = {};
@@ -238,8 +243,6 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
           if (command.startsWith('plugin:event|')) return Promise.resolve(1);
           if (command === 'get_instance_detail') return Promise.resolve(detail);
           if (command === 'list_instance_content') {
-            const manifest = (detail as any)?.manifest;
-            if (!manifest) return Promise.resolve(null);
             const mapEntry = (entry: any) => ({
               key: `${entry.content_type ?? 'mod'}:${entry.filename}:${entry.sha256 ?? 'undefined'}`,
               filename: entry.filename,
@@ -266,8 +269,10 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
               modrinth_downloads: null,
               metadata_status: 'unavailable' as const,
             });
+            const manifest = (detail as any)?.manifest;
+            if (!manifest) return Promise.resolve(null);
             const all = [
-              ...manifest.mods.map(mapEntry),
+              ...mutableMods.map(mapEntry),
               ...manifest.resourcepacks.map(mapEntry),
               ...manifest.shaders.map(mapEntry),
               ...manifest.datapacks.map(mapEntry),
@@ -300,6 +305,19 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
           if (command === 'list_pack_mods') return Promise.resolve([]);
           if (command === 'export_instance_pack') return Promise.resolve('');
           if (command === 'import_instance_pack') return Promise.resolve('');
+          if (command === 'get_disable_plan') return Promise.resolve({ dependents: [] });
+          if (command === 'disable_instance_mod') {
+            const filename = args.filename as string;
+            const mod = mutableMods.find((m) => (m as any).filename === filename);
+            if (mod) (mod as any).enabled = false;
+            return Promise.resolve(null);
+          }
+          if (command === 'enable_instance_mod') {
+            const filename = args.filename as string;
+            const mod = mutableMods.find((m) => (m as any).filename === filename);
+            if (mod) (mod as any).enabled = true;
+            return Promise.resolve(null);
+          }
 
           // --- Reproducible tab commands ---
           if (command === 'export_lockfile') {
@@ -388,8 +406,8 @@ test('toggling a mod updates local state without refreshing detail or Modrinth m
     modrinth: (window as any).__commandCalls.fetch_modrinth_project ?? 0,
   }));
 
-  await page.getByRole('button', { name: /Disable/ }).first().click();
-  await expect(page.getByRole('button', { name: /Enable/ }).first()).toBeVisible();
+  await page.getByRole('switch', { name: /Disable/ }).first().click();
+  await expect(page.getByRole('switch', { name: /Enable/ }).first()).toBeVisible();
 
   const after = await page.evaluate(() => ({
     detail: (window as any).__commandCalls.get_instance_detail ?? 0,
