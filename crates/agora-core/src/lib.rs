@@ -28,6 +28,7 @@ pub mod governance;
 pub mod health;
 pub mod helpers;
 pub mod http_client;
+pub mod icon;
 pub mod import;
 pub mod import_service;
 pub mod install_pipeline;

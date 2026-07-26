@@ -7,6 +7,8 @@ import {
   createInstance,
   deleteInstance,
   getSetting,
+  getCustomIcon,
+  getInstanceDetail,
   listInstances,
   listLoaderVersions,
   listManifestLoaders,
@@ -62,6 +64,7 @@ export function Instances({
   const [instances, setInstances] = useState<InstanceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [instanceIcons, setInstanceIcons] = useState<Record<string, string>>({});
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const { getTaskForInstance, revision: packInstallRevision } = usePackInstall();
@@ -73,7 +76,24 @@ export function Instances({
     setLoading(true);
     setError(null);
     try {
-      setInstances(await listInstances());
+      const rows = await listInstances();
+      setInstances(rows);
+      const icons = await Promise.all(rows.map(async (row) => {
+        try {
+          const detail = await getInstanceDetail(row.instance_id);
+          const storedUrl = detail?.manifest?.user_preferences?.agora_pack_icon_url;
+          const remoteUrl = typeof storedUrl === 'string' && storedUrl.startsWith('https://')
+            ? storedUrl
+            : null;
+          const customUrl = row.icon_path
+            ? await getCustomIcon(row.instance_id, 'instance')
+            : null;
+          return [row.instance_id, customUrl ?? remoteUrl] as const;
+        } catch {
+          return [row.instance_id, null] as const;
+        }
+      }));
+      setInstanceIcons(Object.fromEntries(icons.filter((entry): entry is readonly [string, string] => entry[1] !== null)));
     } catch (e) {
       setError(formatError(e));
     } finally {
@@ -204,6 +224,7 @@ export function Instances({
               <InstanceCard
                 key={instance.instance_id}
                 instance={instance}
+                iconSrc={instanceIcons[instance.instance_id] ?? null}
                 onChanged={refresh}
                 onEdit={() => onEditInstance(instance.instance_id)}
                 onOpenCrashInvestigator={openCrashInvestigator}
@@ -285,6 +306,7 @@ const PROFILE_ISSUE_MESSAGES: Record<string, { title: string; description: strin
 
 function InstanceCard({
   instance,
+  iconSrc,
   onChanged,
   onEdit,
   onOpenCrashInvestigator,
@@ -306,6 +328,7 @@ function InstanceCard({
   packInstall,
 }: {
   instance: InstanceRow;
+  iconSrc: string | null;
   onChanged: () => void;
   onEdit: () => void;
   onOpenCrashInvestigator: (id: string) => void;
@@ -383,27 +406,36 @@ function InstanceCard({
   return (
     <li className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="font-semibold">{instance.name}</h3>
-          {instance.import_source && (
-            <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
-                ? 'CurseForge'
-                : instance.import_source === 'prism' ? 'Prism Launcher' : 'Modrinth App'}
-            </span>
+        <div className="flex min-w-0 items-start gap-3">
+          {iconSrc && (
+            <img
+              src={iconSrc}
+              alt={`${instance.name} icon`}
+              className="h-14 w-14 shrink-0 rounded-xl border border-border object-cover"
+            />
           )}
-          <p className="text-xs text-muted-foreground">
-            {instance.loader} {instance.loader_version} · MC {instance.minecraft_version}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {isRunning ? (
-              <span className="text-green-600 dark:text-green-400">● Running (PID {runningPid})</span>
-            ) : instance.last_launched_at ? (
-              `Last launched ${instance.last_launched_at}`
-            ) : (
-              'Never launched'
+          <div className="min-w-0">
+            <h3 className="font-semibold">{instance.name}</h3>
+            {instance.import_source && (
+              <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
+                  ? 'CurseForge'
+                  : instance.import_source === 'prism' ? 'Prism Launcher' : 'Modrinth App'}
+              </span>
             )}
-          </p>
+            <p className="text-xs text-muted-foreground">
+              {instance.loader} {instance.loader_version} · MC {instance.minecraft_version}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {isRunning ? (
+                <span className="text-green-600 dark:text-green-400">● Running (PID {runningPid})</span>
+              ) : instance.last_launched_at ? (
+                `Last launched ${instance.last_launched_at}`
+              ) : (
+                'Never launched'
+              )}
+            </p>
+          </div>
         </div>
         <span className="text-xs uppercase tracking-wide text-muted-foreground">
           {instance.launch_mode_override === 'delegated'

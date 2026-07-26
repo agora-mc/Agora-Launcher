@@ -378,6 +378,8 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         jvm_gc: None,
         jvm_custom_args: None,
         jvm_always_pre_touch: None,
+        is_modpack: None,
+        pack_icon_url: None,
     };
     instances::create_instance(app.clone(), req).await?;
     if let Some(mods_arr) = pack.get("mods").and_then(|m| m.as_array()) {

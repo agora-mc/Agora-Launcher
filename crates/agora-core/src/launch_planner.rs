@@ -20,11 +20,10 @@
 //!
 //! ## Loader support
 //!
-//! - Fabric / Quilt: fully supported via pinned profile JSONs from
-//!   [`crate::loader_manifests`].
-//! - Forge / NeoForge: supported via installed-profile adoption (requires the
-//!   Mojang launcher to have installed the profile first). No managed processor
-//!   execution — the official pinned installer is the single installation authority.
+//! - Fabric / Quilt / Forge / NeoForge: supported via installed-profile
+//!   adoption (requires the Mojang launcher to have installed the profile
+//!   first). No managed processor execution — the official pinned installer is
+//!   the single installation authority.
 //!
 //! Every HTTP request is gated by the caller-supplied [`NetworkPolicy`], so
 //! offline-first usage is guaranteed after first materialization.
@@ -228,6 +227,10 @@ pub struct ResolvedJava {
     pub path: PathBuf,
     pub major_version: u32,
     pub required_major_version: u32,
+    /// Native classifier width selected from this JVM's reported architecture.
+    /// Minecraft's native classifiers use `32` or `64`, not the JVM's raw
+    /// `os.arch` string.
+    pub native_arch: String,
     /// `true` when the selected Java does NOT match the required major
     /// version but was accepted because `allow_incompatible_java_override`
     /// was set in the resolve request.
@@ -251,9 +254,9 @@ pub struct ResolvedLaunchPlan {
     pub assets_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub network_policy: NetworkPolicy,
-    /// Present for Forge/NeoForge loaders whose installed profile was
-    /// successfully adopted. `None` for vanilla, Fabric, Quilt, or when
-    /// adoption paths are not provided.
+    /// Present for any supported loader whose installed profile was
+    /// successfully adopted. `None` for vanilla or when adoption paths are
+    /// not provided.
     pub adopted_profile: Option<crate::installed_profile::AdoptedProfile>,
 }
 
@@ -386,9 +389,18 @@ struct AssetObject {
 /// a denied cache miss returns the category-specific error immediately
 /// without opening any socket.
 pub async fn resolve(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPlan> {
-    // All non-vanilla loaders resolve via installed-profile adoption.
+    // All supported non-vanilla loaders resolve via installed-profile adoption.
     // Vanilla alone uses the Mojang metadata network path.
     if let Some(ref loader) = request.loader {
+        if !matches!(
+            loader.loader_type.as_str(),
+            "forge" | "neoforge" | "fabric" | "quilt"
+        ) {
+            return Err(LauncherError::Generic {
+                code: "ERR_UNSUPPORTED_LOADER".into(),
+                message: format!("Unsupported loader type: {}", loader.loader_type),
+            });
+        }
         let lt = loader.loader_type.as_str();
         if matches!(lt, "forge" | "neoforge" | "fabric" | "quilt") {
             let (minecraft_dir, receipts_root) = match (
@@ -637,7 +649,7 @@ pub async fn materialize(
             });
         }
 
-        if let Some(artifact) = resolve_native_artifact(library)? {
+        if let Some(artifact) = resolve_native_artifact(library, &resolved.java.native_arch)? {
             let path = libraries_dir.join(&artifact.path);
             let lib_category =
                 network::classify_url(&artifact.url).unwrap_or(NetworkCategory::MojangContent);
@@ -974,7 +986,7 @@ async fn materialize_adopted_profile(
             });
         }
 
-        if let Some(artifact) = resolve_native_artifact(library)? {
+        if let Some(artifact) = resolve_native_artifact(library, &resolved.java.native_arch)? {
             let path = libraries_dir.join(&artifact.path);
             let result = crate::installed_artifact::adopt_library_artifact(
                 src,
@@ -1725,6 +1737,7 @@ fn resolve_library_artifact(
 
 fn resolve_native_artifact(
     library: &launch::Library,
+    native_arch: &str,
 ) -> LauncherResult<Option<launch::LibraryArtifact>> {
     let Some(classifier_template) = library
         .natives
@@ -1733,8 +1746,7 @@ fn resolve_native_artifact(
     else {
         return Ok(None);
     };
-    let arch = if usize::BITS == 64 { "64" } else { "32" };
-    let classifier = classifier_template.replace("${arch}", arch);
+    let classifier = classifier_template.replace("${arch}", native_arch);
     let artifact = library
         .downloads
         .as_ref()
@@ -1838,7 +1850,7 @@ async fn download_sha1_atomic(
     policy: &NetworkPolicy,
     category: NetworkCategory,
 ) -> LauncherResult<()> {
-    ensure_artifact_url(url)?;
+    ensure_artifact_url_for_category(url, category)?;
     let resolved_sha1 = match expected_sha1 {
         Some(hash) => hash.to_owned(),
         None => resolve_sidecar_sha1(client, url, path, policy, category).await?,
@@ -1863,13 +1875,7 @@ async fn download_sha1_atomic(
     }
     // Verify the final response URL is from the expected category.
     let final_url = response.url().as_str();
-    ensure_artifact_url(final_url)?;
-    if let Some(final_category) = network::classify_url(final_url) {
-        if final_category != category {
-            // The redirect led outside the expected category — reject.
-            return Err(LauncherError::UntrustedSource);
-        }
-    }
+    ensure_artifact_url_for_category(final_url, category)?;
     let bytes = response
         .bytes()
         .await
@@ -1914,7 +1920,7 @@ async fn resolve_sidecar_sha1(
     }
 
     let sidecar_url = format!("{artifact_url}.sha1");
-    ensure_artifact_url(&sidecar_url)?;
+    ensure_artifact_url_for_category(&sidecar_url, category)?;
     // Cache miss: check policy before fetching the sidecar.
     policy.check(category)?;
     let response = client
@@ -1923,12 +1929,7 @@ async fn resolve_sidecar_sha1(
         .await
         .map_err(|_| LauncherError::NetworkOffline)?;
     let final_url = response.url().as_str();
-    ensure_artifact_url(final_url)?;
-    if let Some(final_category) = network::classify_url(final_url) {
-        if final_category != category {
-            return Err(LauncherError::UntrustedSource);
-        }
-    }
+    ensure_artifact_url_for_category(final_url, category)?;
     if !response.status().is_success() {
         return Err(LauncherError::Generic {
             code: "ERR_ARTIFACT_HASH_MISSING".into(),
@@ -2002,6 +2003,23 @@ fn ensure_artifact_url(raw: &str) -> LauncherResult<()> {
     }
 }
 
+/// Validate both the fixed artifact allowlist and the exact network category
+/// before a request is opened. This keeps initial requests and redirect
+/// results under the same invariant as the redirect policy.
+fn ensure_artifact_url_for_category(raw: &str, expected: NetworkCategory) -> LauncherResult<()> {
+    ensure_artifact_url(raw)?;
+    let parsed = reqwest::Url::parse(raw).map_err(|_| LauncherError::UntrustedSource)?;
+    if !redirect_target_is_safe(&parsed, expected) {
+        eprintln!(
+            "[launch-download] rejected stage=category expected={expected:?} actual={:?} url={}",
+            network::classify_url(raw),
+            network::sanitized_url_for_log(raw)
+        );
+        return Err(LauncherError::UntrustedSource);
+    }
+    Ok(())
+}
+
 fn artifact_network_category(raw: &str) -> LauncherResult<NetworkCategory> {
     ensure_artifact_url(raw)?;
     network::classify_url(raw).ok_or_else(|| {
@@ -2018,7 +2036,7 @@ fn artifact_network_category(raw: &str) -> LauncherResult<NetworkCategory> {
 // ---------------------------------------------------------------------------
 
 /// Extract native libraries from their JAR archives into a fresh staging
-/// directory, then atomically promote the staging directory to the final
+/// directory, then transactionally promote the staging directory to the final
 /// destination.
 ///
 /// # Safety properties
@@ -2029,25 +2047,40 @@ fn artifact_network_category(raw: &str) -> LauncherResult<NetworkCategory> {
 /// * `ZipFile::unix_mode()` is inspected when present: only regular files
 ///   and directories are permitted. Symlinks, FIFOs, sockets, block devices,
 ///   and character devices are rejected.
-/// * Limits enforced: 4096 entries per archive, 128 MiB per entry,
+/// * Limits enforced: 4096 entries across all archives, 128 MiB per entry,
 ///   512 MiB aggregate uncompressed size, and streamed-vs-declared byte
 ///   count must match.
 /// * Duplicate normalized output paths, case-insensitive collisions (for
 ///   cross-platform safety), and file/directory conflicts are rejected.
 /// * `META-INF/` and any configured excludes are always stripped.
 /// * On failure the staging directory is removed and the previously promoted
-///   natives directory (if any) is left intact.
+///   natives directory (if any) is restored when promotion had already moved
+///   it to a backup.
 /// * On Unix, extracted files receive conservative permissions derived from
-///   the entry's stored mode bits (owner write stripped, group/other write
-///   stripped, no setuid/setgid).
+///   the entry's stored mode bits (group/other write stripped, no
+///   setuid/setgid).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeenEntryKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone)]
+struct SeenEntry {
+    path: PathBuf,
+    kind: SeenEntryKind,
+}
+
 fn extract_natives_atomically(
     archives: &[(PathBuf, Option<launch::ExtractRules>)],
     destination: &Path,
 ) -> LauncherResult<()> {
-    let staging = destination.with_extension("staging");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(native_io_error)?;
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(native_io_error)?;
     }
+    // Never reuse a predictable staging path: another launch may be extracting
+    // the same native set concurrently.
+    let staging = atomic_temp_path(destination);
     std::fs::create_dir_all(&staging).map_err(native_io_error)?;
 
     const PER_ENTRY_LIMIT: u64 = 128 * 1024 * 1024; // 128 MiB
@@ -2055,7 +2088,9 @@ fn extract_natives_atomically(
     const MAX_ENTRIES: usize = 4096;
 
     let result = (|| {
-        let mut seen_paths: Vec<PathBuf> = Vec::new();
+        let mut seen_entries: Vec<SeenEntry> = Vec::new();
+        let mut total_entries = 0usize;
+        let mut total_size = 0u64;
 
         for (archive_path, rules) in archives {
             let file = std::fs::File::open(archive_path).map_err(native_io_error)?;
@@ -2064,10 +2099,10 @@ fn extract_natives_atomically(
                     code: "ERR_NATIVE_ARCHIVE".into(),
                     message: format!("Invalid native archive {}: {error}", archive_path.display()),
                 })?;
-            if archive.len() > MAX_ENTRIES {
+            total_entries = total_entries.saturating_add(archive.len());
+            if total_entries > MAX_ENTRIES {
                 return Err(LauncherError::ZipBomb);
             }
-            let mut total_size = 0u64;
             for index in 0..archive.len() {
                 let mut entry =
                     archive
@@ -2123,8 +2158,16 @@ fn extract_natives_atomically(
                     // permissions below). Use safe_relative_path for validation.
                     let relative = safe_relative_path(&normalized_name)?;
                     let target = staging.join(&relative);
-                    check_path_collision(&seen_paths, &normalized_name, &relative)?;
-                    seen_paths.push(relative.clone());
+                    check_path_collision(
+                        &seen_entries,
+                        &normalized_name,
+                        &relative,
+                        SeenEntryKind::Directory,
+                    )?;
+                    seen_entries.push(SeenEntry {
+                        path: relative.clone(),
+                        kind: SeenEntryKind::Directory,
+                    });
                     std::fs::create_dir_all(&target).map_err(native_io_error)?;
                     set_native_permissions(&target, entry.unix_mode().unwrap_or(0o755));
                     // Directories don't consume the per-entry byte budget;
@@ -2154,8 +2197,12 @@ fn extract_natives_atomically(
 
                 let relative = safe_relative_path(&normalized_name)?;
                 let target = staging.join(&relative);
-                check_path_collision(&seen_paths, &normalized_name, &relative)?;
-                seen_paths.push(relative.clone());
+                check_path_collision(
+                    &seen_entries,
+                    &normalized_name,
+                    &relative,
+                    SeenEntryKind::File,
+                )?;
 
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent).map_err(native_io_error)?;
@@ -2181,6 +2228,11 @@ fn extract_natives_atomically(
                 }
                 output.flush().map_err(native_io_error)?;
 
+                seen_entries.push(SeenEntry {
+                    path: relative.clone(),
+                    kind: SeenEntryKind::File,
+                });
+
                 // Set conservative file permissions on Unix.
                 set_native_permissions(&target, entry.unix_mode().unwrap_or(0o644));
             }
@@ -2193,17 +2245,40 @@ fn extract_natives_atomically(
         return Err(error);
     }
 
-    // Atomically promote staging to destination. The old destination
-    // (if any) is left untouched until this rename succeeds, so a crash
-    // or power loss between the check and rename still leaves the previous
-    // valid natives directory at destination.
-    if destination.exists() {
-        std::fs::remove_dir_all(destination).map_err(native_io_error)?;
+    // Replace the destination transactionally. Moving the old directory to a
+    // unique backup first avoids deleting a working installation before the
+    // new staging directory has been successfully promoted.
+    let backup = if destination.exists() {
+        let backup = atomic_temp_path(destination);
+        if let Err(error) = std::fs::rename(destination, &backup) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(native_io_error(error));
+        }
+        Some(backup)
+    } else {
+        None
+    };
+
+    match std::fs::rename(&staging, destination) {
+        Ok(()) => {
+            if let Some(backup) = backup {
+                let _ = std::fs::remove_dir_all(backup);
+            }
+            sync_parent_dir(destination.parent().unwrap_or_else(|| Path::new(".")));
+            Ok(())
+        }
+        Err(error) => {
+            // Do not remove a destination that may have been created by a
+            // concurrent successful extraction while promotion was failing.
+            if let Some(backup) = backup {
+                if !destination.exists() {
+                    let _ = std::fs::rename(backup, destination);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&staging);
+            Err(native_io_error(error))
+        }
     }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent).map_err(native_io_error)?;
-    }
-    std::fs::rename(&staging, destination).map_err(native_io_error)
 }
 
 /// Check if a Unix file mode corresponds to a regular file or directory.
@@ -2220,16 +2295,19 @@ fn is_allowed_unix_mode(mode: u32) -> bool {
 /// `seen` holds relative paths (without the staging prefix), and `relative`
 /// is the candidate relative path being added. This function compares only
 /// within the relative namespace so it is independent of staging directory
-/// layout.
+/// layout. Directory entries are retained as directories so a normal
+/// `directory/child` archive layout is accepted while files cannot become
+/// ancestors.
 fn check_path_collision(
-    seen: &[PathBuf],
+    seen: &[SeenEntry],
     normalized_name: &str,
     relative: &Path,
+    kind: SeenEntryKind,
 ) -> LauncherResult<()> {
-    let rel_str = relative.to_string_lossy();
+    let rel_str = relative.to_string_lossy().replace('\\', "/");
 
     // 1. Exact duplicate.
-    if seen.iter().any(|p| p.as_os_str() == relative.as_os_str()) {
+    if seen.iter().any(|entry| entry.path == relative) {
         return Err(LauncherError::Generic {
             code: "ERR_NATIVE_DUPLICATE_PATH".into(),
             message: format!(
@@ -2242,49 +2320,41 @@ fn check_path_collision(
     // 2. Case-insensitive collision (for cross-platform safety).
     let rel_lower = rel_str.to_ascii_lowercase();
     for previous in seen {
-        if previous.to_string_lossy().to_ascii_lowercase() == rel_lower {
+        let previous_str = previous.path.to_string_lossy().replace('\\', "/");
+        if previous_str.to_ascii_lowercase() == rel_lower {
             return Err(LauncherError::Generic {
                 code: "ERR_NATIVE_DUPLICATE_PATH".into(),
                 message: format!(
                     "Native archive entry '{normalized_name}' has a \
-                     case-insensitive collision with '{}'.",
-                    previous.display()
+                    case-insensitive collision with '{}'.",
+                    previous.path.display()
                 ),
             });
         }
     }
 
-    // 3. File-directory conflict: a file entry whose path is an ancestor
-    //    of a previously extracted entry, or vice versa.
+    // 3. File-directory conflict: a file entry cannot be an ancestor of
+    //    another entry. Directory ancestors are valid, including when the
+    //    directory entry appears after its child.
     for previous in seen {
-        let prev_str = previous.to_string_lossy();
-        // If `relative` is an ancestor of `previous` (e.g. relative="foo",
-        // previous="foo/bar.so").
-        if prev_str.len() > rel_str.len()
-            && prev_str.starts_with(rel_str.as_ref())
-            && prev_str.as_ref()[rel_str.len()..].starts_with('/')
+        let prev_str = previous.path.to_string_lossy().replace('\\', "/");
+        let rel_lower = rel_str.to_ascii_lowercase();
+        let prev_lower = prev_str.to_ascii_lowercase();
+        let relative_is_ancestor = prev_lower.len() > rel_lower.len()
+            && prev_lower.starts_with(&rel_lower)
+            && prev_lower[rel_lower.len()..].starts_with('/');
+        let previous_is_ancestor = rel_lower.len() > prev_lower.len()
+            && rel_lower.starts_with(&prev_lower)
+            && rel_lower[prev_lower.len()..].starts_with('/');
+
+        if (relative_is_ancestor && kind == SeenEntryKind::File)
+            || (previous_is_ancestor && previous.kind == SeenEntryKind::File)
         {
             return Err(LauncherError::Generic {
                 code: "ERR_NATIVE_DUPLICATE_PATH".into(),
                 message: format!(
-                    "Native archive entry '{normalized_name}' conflicts: a \
-                     child entry '{}' was already extracted.",
-                    previous.display()
-                ),
-            });
-        }
-        // If `previous` is an ancestor of `relative` (e.g. previous="foo",
-        // relative="foo/bar.so").
-        if rel_str.len() > prev_str.len()
-            && rel_str.starts_with(prev_str.as_ref())
-            && rel_str.as_ref()[prev_str.len()..].starts_with('/')
-        {
-            return Err(LauncherError::Generic {
-                code: "ERR_NATIVE_DUPLICATE_PATH".into(),
-                message: format!(
-                    "Native archive entry '{normalized_name}' conflicts with \
-                     parent directory '{}'.",
-                    previous.display()
+                    "Native archive entry '{normalized_name}' conflicts with '{}'.",
+                    previous.path.display()
                 ),
             });
         }
@@ -2663,6 +2733,7 @@ fn select_java(
                 path: inspected.path,
                 major_version: inspected.version,
                 required_major_version: required_major,
+                native_arch: native_arch_for_java(inspected.arch.as_deref()).into(),
                 incompatible_override: false,
             });
         }
@@ -2674,6 +2745,7 @@ fn select_java(
                 path: inspected.path,
                 major_version: inspected.version,
                 required_major_version: required_major,
+                native_arch: native_arch_for_java(inspected.arch.as_deref()).into(),
                 incompatible_override: true,
             });
         }
@@ -2715,12 +2787,33 @@ fn select_java(
             path: inst.path,
             major_version: inst.version,
             required_major_version: required_major,
+            native_arch: native_arch_for_java(inst.arch.as_deref()).into(),
             incompatible_override: false,
         }),
         None => Err(LauncherError::JavaRuntimeMissing {
             major: required_major,
             component: "required_major".into(),
         }),
+    }
+}
+
+/// Map a JVM's `os.arch` value to the classifier width used by Minecraft's
+/// native library metadata. Unknown values fall back to the current process
+/// width, preserving the previous behavior for manually supplied candidates
+/// that do not include architecture metadata.
+fn native_arch_for_java(arch: Option<&str>) -> &'static str {
+    let normalized = arch.map(|value| value.to_ascii_lowercase());
+    match normalized.as_deref() {
+        Some(
+            "x86" | "i386" | "i486" | "i586" | "i686" | "x86_32" | "arm" | "arm32" | "armv7l"
+            | "ppc" | "ppc32" | "sparc",
+        ) => "32",
+        Some(
+            "amd64" | "x86_64" | "x64" | "ia64" | "aarch64" | "arm64" | "ppc64" | "ppc64le"
+            | "sparcv9" | "s390x" | "riscv64",
+        ) => "64",
+        _ if usize::BITS == 32 => "32",
+        _ => "64",
     }
 }
 
@@ -2815,15 +2908,7 @@ async fn download_verified_inner(
     url: &str,
     category: NetworkCategory,
 ) -> LauncherResult<Vec<u8>> {
-    ensure_artifact_url(url)?;
-    let actual_category = network::classify_url(url);
-    if actual_category != Some(category) {
-        eprintln!(
-            "[launch-download] rejected stage=category expected={category:?} actual={actual_category:?} url={}",
-            network::sanitized_url_for_log(url)
-        );
-        return Err(LauncherError::UntrustedSource);
-    }
+    ensure_artifact_url_for_category(url, category)?;
     let response = client
         .get(url)
         .send()
@@ -2831,15 +2916,7 @@ async fn download_verified_inner(
         .map_err(|_| LauncherError::NetworkOffline)?;
     // Defense-in-depth: verify the final response URL is category-safe.
     let final_url = response.url().as_str();
-    let parsed = reqwest::Url::parse(final_url).map_err(|_| LauncherError::UntrustedSource)?;
-    if !redirect_target_is_safe(&parsed, category) {
-        eprintln!(
-            "[launch-download] rejected stage=final-url expected_category={category:?} actual={:?} url={}",
-            network::classify_url(final_url),
-            network::sanitized_url_for_log(final_url)
-        );
-        return Err(LauncherError::UntrustedSource);
-    }
+    ensure_artifact_url_for_category(final_url, category)?;
     if !response.status().is_success() {
         return Err(LauncherError::Generic {
             code: "ERR_DOWNLOAD_HTTP".into(),
@@ -2897,6 +2974,42 @@ mod tests {
         assert!(matches!(
             select_java(None, &candidates, 17, false),
             Err(LauncherError::JavaRuntimeMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn native_arch_uses_selected_java_architecture() {
+        assert_eq!(native_arch_for_java(Some("x86")), "32");
+        assert_eq!(native_arch_for_java(Some("amd64")), "64");
+        assert_eq!(native_arch_for_java(Some("aarch64")), "64");
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_unknown_loader_instead_of_using_vanilla() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let error = resolve(ResolveRequest {
+            instance_id: "unsupported-loader".into(),
+            base_version_id: "1.21".into(),
+            loader: Some(LoaderInfo {
+                loader_type: "unknown-loader".into(),
+                version: "1.0".into(),
+                version_url: String::new(),
+            }),
+            game_dir: tmp.path().join("game"),
+            assets_dir: tmp.path().join("assets"),
+            cache_dir: tmp.path().join("cache"),
+            java_override: None,
+            java_candidates: Vec::new(),
+            allow_incompatible_java_override: false,
+            network_policy: NetworkPolicy::all_disabled(),
+            minecraft_dir: None,
+            receipts_root: None,
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            LauncherError::Generic { ref code, .. } if code == "ERR_UNSUPPORTED_LOADER"
         ));
     }
 
@@ -3123,6 +3236,7 @@ mod tests {
                 path: PathBuf::from("java"),
                 major_version: 21,
                 required_major_version: 21,
+                native_arch: "64".into(),
                 incompatible_override: false,
             },
             version: VersionInfo::default(),
@@ -3248,8 +3362,19 @@ mod tests {
         Ok(dir)
     }
 
-    fn staging_path(destination: &Path) -> PathBuf {
-        destination.with_extension("staging")
+    fn has_native_temp_path(destination: &Path) -> bool {
+        let Some(parent) = destination.parent() else {
+            return false;
+        };
+        std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&format!(
+                    "{}.agtmp_",
+                    destination.file_name().unwrap().to_string_lossy()
+                ))
+            })
     }
 
     // -----------------------------------------------------------------------
@@ -3270,7 +3395,31 @@ mod tests {
         // META-INF must be excluded
         assert!(!natives.join("META-INF").exists());
         // Staging must be removed
-        assert!(!staging_path(&natives).exists());
+        assert!(!has_native_temp_path(&natives));
+    }
+
+    #[test]
+    fn accepts_explicit_directory_entries_with_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("natives.zip");
+        let mut bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            zip.add_directory("natives/", zip::write::FileOptions::default())
+                .unwrap();
+            zip.start_file("natives/example.dll", zip::write::FileOptions::default())
+                .unwrap();
+            zip.write_all(b"native").unwrap();
+            zip.finish().unwrap();
+        }
+        std::fs::write(&archive_path, bytes).unwrap();
+
+        let destination = dir.path().join("output");
+        extract_natives_atomically(&[(archive_path, None)], &destination).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("natives/example.dll")).unwrap(),
+            b"native"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3450,7 +3599,7 @@ mod tests {
         assert!(result.is_err());
 
         // Staging must be removed.
-        assert!(!staging_path(&natives_dir).exists());
+        assert!(!has_native_temp_path(&natives_dir));
         // Previous promoted natives must be preserved.
         assert!(natives_dir.join("old.so").is_file());
     }
@@ -3460,7 +3609,7 @@ mod tests {
         let zip_data = make_zip(&[("good.so", b"good content")]);
         let dir = extract_test_zip(&zip_data, None).unwrap();
         let natives = dir.path().join("natives");
-        assert!(!staging_path(&natives).exists());
+        assert!(!has_native_temp_path(&natives));
         assert!(natives.join("good.so").is_file());
     }
 
@@ -3577,22 +3726,38 @@ mod tests {
 
     #[test]
     fn path_collision_exact_duplicate_rejected() {
-        let seen = vec![PathBuf::from("lib.so")];
-        let result = check_path_collision(&seen, "lib.so", Path::new("lib.so"));
+        let seen = vec![SeenEntry {
+            path: PathBuf::from("lib.so"),
+            kind: SeenEntryKind::File,
+        }];
+        let result =
+            check_path_collision(&seen, "lib.so", Path::new("lib.so"), SeenEntryKind::File);
         assert!(result.is_err());
     }
 
     #[test]
     fn path_collision_case_insensitive_rejected() {
-        let seen = vec![PathBuf::from("OpenGL32.dll")];
-        let result = check_path_collision(&seen, "opengl32.dll", Path::new("opengl32.dll"));
+        let seen = vec![SeenEntry {
+            path: PathBuf::from("OpenGL32.dll"),
+            kind: SeenEntryKind::File,
+        }];
+        let result = check_path_collision(
+            &seen,
+            "opengl32.dll",
+            Path::new("opengl32.dll"),
+            SeenEntryKind::File,
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn path_collision_unique_path_accepted() {
-        let seen = vec![PathBuf::from("existing.so")];
-        let result = check_path_collision(&seen, "new.so", Path::new("new.so"));
+        let seen = vec![SeenEntry {
+            path: PathBuf::from("existing.so"),
+            kind: SeenEntryKind::File,
+        }];
+        let result =
+            check_path_collision(&seen, "new.so", Path::new("new.so"), SeenEntryKind::File);
         assert!(result.is_ok());
     }
 
@@ -3600,8 +3765,11 @@ mod tests {
     fn path_collision_ancestor_after_descendant_rejected() {
         // seen contains "foo/bar.so", then we try to add "foo" (which would
         // be a file conflicting with its parent role).
-        let seen = vec![PathBuf::from("foo/bar.so")];
-        let result = check_path_collision(&seen, "foo", Path::new("foo"));
+        let seen = vec![SeenEntry {
+            path: PathBuf::from("foo/bar.so"),
+            kind: SeenEntryKind::File,
+        }];
+        let result = check_path_collision(&seen, "foo", Path::new("foo"), SeenEntryKind::File);
         assert!(result.is_err());
     }
 
@@ -3610,9 +3778,32 @@ mod tests {
         // seen contains "foo", then we try to add "foo/bar.so" (descendant
         // of a previously-extracted file — "foo" was extracted as a file,
         // so "foo/bar.so" would require it to be a directory).
-        let seen = vec![PathBuf::from("foo")];
-        let result = check_path_collision(&seen, "foo/bar.so", Path::new("foo/bar.so"));
+        let seen = vec![SeenEntry {
+            path: PathBuf::from("foo"),
+            kind: SeenEntryKind::File,
+        }];
+        let result = check_path_collision(
+            &seen,
+            "foo/bar.so",
+            Path::new("foo/bar.so"),
+            SeenEntryKind::File,
+        );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn path_collision_allows_directory_and_child() {
+        let seen = vec![SeenEntry {
+            path: PathBuf::from("natives"),
+            kind: SeenEntryKind::Directory,
+        }];
+        let result = check_path_collision(
+            &seen,
+            "natives/example.dll",
+            Path::new("natives/example.dll"),
+            SeenEntryKind::File,
+        );
+        assert!(result.is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -4568,19 +4759,49 @@ mod tests {
 
     #[test]
     fn generated_outputs_have_no_network_fallback_in_adoption() {
-        // This is a compile-and-structural assertion: the
-        // materialize_adopted_profile code path for generated artifacts
-        // (generated_paths.contains) never calls download_library_with_pin
-        // or download_sha1_atomic — it returns SourceMissing without
-        // network fallback. We verify the logic by checking the
-        // error on an inaccessible generated path.
         let tmp = tempfile::TempDir::new().unwrap();
-        let missing = tmp.path().join("generated_output.jar");
-        let _ = missing; // Structural assertion: generated paths never reach
-                         // network download in the adopted-profile code.
-                         // If a test were to reach adoption with a generated path that is
-                         // absent from the installed source AND missing from the cache, it
-                         // returns ERR_ADOPTED_GENERATED_LIB_MISSING, not a network attempt.
+        let source_root = tmp.path().join("minecraft");
+        let source = crate::installed_artifact::InstalledArtifactSource::new(source_root);
+        let cache_path = tmp.path().join("cache/generated_output.jar");
+        let relative_path = "net/example/generated/1.0/generated-1.0.jar";
+        let mut generated = BTreeMap::new();
+        generated.insert(
+            relative_path.to_string(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        let receipt = crate::installed_profile::InstalledProfileReceipt {
+            schema_version: 3,
+            tuple: crate::installed_profile::LoaderTuple {
+                loader: "forge".into(),
+                minecraft_version: "1.21".into(),
+                loader_version: "1.0".into(),
+            },
+            source_kind: crate::installed_profile::LoaderSourceKind::InstallerJar,
+            source_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            source_url: "https://example.com/installer.jar".into(),
+            profile_id: "forge-1.21-1.0".into(),
+            profile_relative_path: "versions/forge-1.21-1.0/forge-1.21-1.0.json".into(),
+            profile_stable_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .into(),
+            base_version_id: "1.21".into(),
+            installed_at: "2026-01-01T00:00:00Z".into(),
+            installer_exit_status: 0,
+            generated_artifact_sha256: generated,
+            curated_artifact_sha256: BTreeMap::new(),
+        };
+
+        let result = crate::installed_artifact::adopt_trusted_unhashed_library(
+            &source,
+            &cache_path,
+            relative_path,
+            &receipt,
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            crate::installed_artifact::ArtifactAdoptResult::SourceMissing
+        ));
     }
 
     // -----------------------------------------------------------------------

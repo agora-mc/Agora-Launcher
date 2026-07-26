@@ -449,6 +449,8 @@ export interface CreateInstanceRequest {
   jvm_memory_mb?: number;
   jvm_gc?: string;
   jvm_custom_args?: string;
+  is_modpack?: boolean;
+  pack_icon_url?: string | null;
 }
 
 export interface PackModRow {
@@ -771,6 +773,12 @@ export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack'
 
 export const pickOpenFile = (title: string, extensions: string[]) =>
   invoke<string | null>('pick_open_file', { title, extensions });
+export const setCustomInstanceIcon = (instanceId: string, sourcePath: string) =>
+  invoke<string>('set_custom_instance_icon', { instanceId, sourcePath });
+export const setCustomModIcon = (instanceId: string, filename: string, sourcePath: string) =>
+  invoke<string>('set_custom_mod_icon', { instanceId, filename, sourcePath });
+export const getCustomIcon = (instanceId: string, target: 'instance' | 'mod', filename?: string) =>
+  invoke<string | null>('get_custom_icon', { instanceId, target, filename: filename ?? null });
 
 export type LauncherKind = 'prism' | 'curse_forge' | 'modrinth';
 export type CandidateStatus = 'ready' | 'needs_review' | { unsupported: { reasons: string[] } };
@@ -892,8 +900,11 @@ export const executeLauncherImports = (plan: LauncherImportPlan) =>
 
 export const importInstancePack = (sourcePath: string) =>
   invoke<string>('import_instance_pack', { sourcePath });
-export const importModrinthPackByUrl = (downloadUrl: string) =>
-  invoke<string>('import_modrinth_pack_by_url', { downloadUrl });
+export const importModrinthPackByUrl = (downloadUrl: string, packIconUrl?: string | null) =>
+  invoke<string>('import_modrinth_pack_by_url', {
+    downloadUrl,
+    packIconUrl: packIconUrl ?? null,
+  });
 
 // --- Raw (uncurated) Modrinth integration (§6.3) ---
 

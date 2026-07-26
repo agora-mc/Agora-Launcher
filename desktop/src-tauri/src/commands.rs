@@ -1413,6 +1413,61 @@ pub async fn pick_open_file(
     Ok(picked.map(|h| h.path().to_string_lossy().to_string()))
 }
 
+/// Copy a user-selected image into an unlocked modpack instance.
+#[tauri::command]
+pub async fn set_custom_instance_icon(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    source_path: String,
+) -> LauncherResult<String> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::icon::set_instance_icon(&ctx, &instance_id, std::path::Path::new(&source_path))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Copy a user-selected image into an unlocked instance's installed mod icons.
+#[tauri::command]
+pub async fn set_custom_mod_icon(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+    source_path: String,
+) -> LauncherResult<String> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::icon::set_mod_icon(
+            &ctx,
+            &instance_id,
+            &filename,
+            std::path::Path::new(&source_path),
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Read an Agora-owned custom icon as a data URL for the WebView.
+#[tauri::command]
+pub async fn get_custom_icon(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target: String,
+    filename: Option<String>,
+) -> LauncherResult<Option<String>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::icon::get_custom_icon(&ctx, &instance_id, &target, filename.as_deref())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// Open a native directory picker for a launcher data root.
 #[tauri::command]
 pub async fn pick_directory(title: String) -> LauncherResult<Option<String>> {
@@ -2986,13 +3041,14 @@ pub async fn import_modrinth_pack_by_url(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     download_url: String,
+    pack_icon_url: Option<String>,
 ) -> LauncherResult<String> {
     let ctx = crate::core_context(&app)?;
     let sink = std::sync::Arc::new(TauriCoreProgressSink {
         app: app.clone(),
         event_name: "pack-install-progress",
     });
-    let instance_id = agora_core::import_service::ImportService::new(ctx)
+    let instance_id = agora_core::import_service::ImportService::new(ctx.clone())
         .run_mrpack_url_with_sink(
             &download_url,
             sink,
@@ -3000,6 +3056,13 @@ pub async fn import_modrinth_pack_by_url(
         )
         .await?
         .instance_id;
+    if pack_icon_url
+        .as_deref()
+        .is_some_and(|url| url.starts_with("https://"))
+    {
+        agora_core::instance_service::InstanceService::new(ctx.clone())
+            .set_pack_icon_url(&instance_id, pack_icon_url.as_deref())?;
+    }
     // Keep downloaded packs protected by the normal lock transition. The
     // lifecycle service synchronizes the DB row and manifest together.
     instances::lock_instance(&app, &instance_id).await?;
@@ -4032,6 +4095,8 @@ pub async fn import_lockfile(
         jvm_gc: None,
         jvm_custom_args: None,
         jvm_always_pre_touch: None,
+        is_modpack: None,
+        pack_icon_url: None,
     };
     crate::instances::create_instance(app.clone(), request).await?;
 

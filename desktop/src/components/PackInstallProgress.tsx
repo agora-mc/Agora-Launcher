@@ -42,7 +42,7 @@ type PackInstallContextValue = {
   tasks: PackInstallTask[];
   getTaskForInstance: (instanceId: string) => PackInstallTask | null;
   startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string) => void;
-  startModrinthPack: (downloadUrl: string, label: string) => void;
+  startModrinthPack: (downloadUrl: string, label: string, packIconUrl?: string | null) => void;
   startPackFile: (sourcePath: string, label: string) => void;
 };
 
@@ -250,13 +250,13 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       .catch((cause) => failTask(id, formatError(cause)));
   };
 
-  const startModrinthPack = (downloadUrl: string, label: string) => {
+  const startModrinthPack = (downloadUrl: string, label: string, packIconUrl?: string | null) => {
     const id = `modrinth-pack-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setTaskMap((current) => ({
       ...current,
       [id]: initialTask(id, label, 'modrinth-pack', null, label),
     }));
-    void importModrinthPackByUrl(downloadUrl)
+    void importModrinthPackByUrl(downloadUrl, packIconUrl)
       .then((instanceId) => completeImportedTask(id, instanceId, label))
       .catch((cause) => failTask(id, formatError(cause)));
   };

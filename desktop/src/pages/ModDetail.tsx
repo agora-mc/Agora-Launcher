@@ -1146,6 +1146,7 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
         {showPackCreate && (
           <PackCreateDialog
             item={item}
+            packIconUrl={modrinthProject?.icon_url ?? item.icon_url}
             onCancel={() => setShowPackCreate(false)}
             onCreated={(newInstanceId) => {
               setShowPackCreate(false);
@@ -1664,10 +1665,12 @@ const isModrinthPack = (item: RegistryItem): boolean =>
 
 function PackCreateDialog({
   item,
+  packIconUrl,
   onCancel,
   onCreated,
 }: {
   item: RegistryItem;
+  packIconUrl: string | null;
   onCancel: () => void;
   onCreated: (instanceId: string) => void;
 }) {
@@ -1838,7 +1841,7 @@ function PackCreateDialog({
     if (!ver.download_url) {
       throw new Error('Selected version has no downloadable file.');
     }
-    startModrinthPack(ver.download_url, packName);
+    startModrinthPack(ver.download_url, packName, packIconUrl);
   };
 
   const submit = async () => {
@@ -1866,6 +1869,8 @@ function PackCreateDialog({
           loader,
           loader_version: loaderVersion,
           jvm_memory_mb: 4096,
+          is_modpack: true,
+          pack_icon_url: packIconUrl,
         };
         const result = await createInstance(request);
         const createdId = result.instance_id;

@@ -15,6 +15,9 @@ import {
   formatError,
   inspectJavaExecutable,
   pickOpenFile,
+  getCustomIcon,
+  setCustomInstanceIcon,
+  setCustomModIcon,
   importInstance,
   exportLockfile,
   verifyLockfile,
@@ -53,7 +56,7 @@ import {
   type LoadoutProfile,
   type LockfileDriftReport,
 } from '../lib/tauri';
-import { Play } from 'lucide-react';
+import { ImagePlus, Play } from 'lucide-react';
 
 function installedModKey(mod: InstalledMod): string {
   return `${mod.filename}:${mod.sha256}`;
@@ -112,6 +115,21 @@ function installedModMetadataKey(mods: InstalledMod[] | undefined): string {
     .join('|');
 }
 
+function safeIconUrl(value: unknown): string | null {
+  return typeof value === 'string' && value.startsWith('https://') ? value : null;
+}
+
+function packIconUrl(manifest: InstanceManifest | null | undefined): string | null {
+  return safeIconUrl(manifest?.user_preferences?.agora_pack_icon_url);
+}
+
+function customModIconMap(manifest: InstanceManifest | null): Record<string, unknown> {
+  const value = manifest?.user_preferences?.agora_custom_mod_icons;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 type GcMode = 'auto' | GcProfile;
 
 function storedGcMode(value: string | undefined): GcMode {
@@ -151,6 +169,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
+  const [instanceCustomIcon, setInstanceCustomIcon] = useState<string | null>(null);
+  const [modIconUrls, setModIconUrls] = useState<Record<string, string>>({});
+  const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
 
   const { advancedMode } = useAdvancedMode();
   const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
@@ -239,6 +260,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         const result = await getInstanceDetail(instanceId);
         if (!cancelled) {
           setDetail(result);
+          if (result?.row.icon_path) {
+            void getCustomIcon(instanceId, 'instance').then((icon) => {
+              if (!cancelled) setInstanceCustomIcon(icon);
+            }).catch(() => {
+              if (!cancelled) setInstanceCustomIcon(null);
+            });
+          } else {
+            setInstanceCustomIcon(null);
+          }
           setInstanceJavaPath(result?.row?.java_path ?? '');
           setInstanceJavaArgs(result?.row?.jvm_custom_args ?? '');
           setInstanceJvmMemory(result?.row?.jvm_memory_mb ?? 4096);
@@ -343,6 +373,58 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     return () => { cancelled = true; };
   }, [modMetadataKey]);
 
+  useEffect(() => {
+    const installedMods = detail?.manifest?.mods;
+    if (!installedMods) return;
+    let cancelled = false;
+    const resolveIcon = async (mod: InstalledMod): Promise<[string, string] | null> => {
+      const key = installedModKey(mod);
+      const identity = mod.modrinth_id || mod.registry_id;
+      if (!identity) return null;
+      try {
+        let iconUrl: string | null = null;
+        if (mod.registry_id) {
+          const item = await getRegistryItem(mod.registry_id);
+          iconUrl = safeIconUrl(item?.icon_url);
+          if (!iconUrl && item?.modrinth_id) {
+            iconUrl = safeIconUrl((await fetchModrinthProject(item.modrinth_id)).icon_url);
+          }
+        } else if (mod.modrinth_id) {
+          iconUrl = safeIconUrl((await fetchModrinthProject(mod.modrinth_id)).icon_url);
+        }
+        return iconUrl ? [key, iconUrl] : null;
+      } catch {
+        return null;
+      }
+    };
+    void Promise.all(installedMods.map(resolveIcon)).then((results) => {
+      if (cancelled) return;
+      setModIconUrls(Object.fromEntries(results.filter((result): result is [string, string] => result !== null)));
+    });
+    return () => { cancelled = true; };
+  }, [modMetadataKey]);
+
+  const customModIconsKey = JSON.stringify(customModIconMap(detail?.manifest ?? null));
+  useEffect(() => {
+    const installedMods = detail?.manifest?.mods;
+    const storedIcons = customModIconMap(detail?.manifest ?? null);
+    if (!installedMods) return;
+    let cancelled = false;
+    void Promise.all(installedMods.map(async (mod) => {
+      if (typeof storedIcons[mod.filename] !== 'string') return null;
+      try {
+        const icon = await getCustomIcon(instanceId, 'mod', mod.filename);
+        return icon ? [installedModKey(mod), icon] as const : null;
+      } catch {
+        return null;
+      }
+    })).then((results) => {
+      if (cancelled) return;
+      setModCustomIcons(Object.fromEntries(results.filter((result): result is readonly [string, string] => result !== null)));
+    });
+    return () => { cancelled = true; };
+  }, [instanceId, customModIconsKey, modMetadataKey]);
+
   // Load snapshots when tab becomes active
   useEffect(() => {
     if (activeTab !== 'snapshots') return;
@@ -412,6 +494,34 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           manifest: updateManifestEntryEnabled(current.manifest, mod.filename, enabled),
         };
       });
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
+  const handleSetInstanceIcon = async () => {
+    if (!row?.is_modpack || row.is_locked) return;
+    setError(null);
+    try {
+      const sourcePath = await pickOpenFile('Choose modpack icon', ['png', 'jpg', 'jpeg', 'webp', 'gif']);
+      if (!sourcePath) return;
+      const icon = await setCustomInstanceIcon(instanceId, sourcePath);
+      setInstanceCustomIcon(icon);
+      await refreshDetail();
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
+  const handleSetModIcon = async (mod: InstalledMod) => {
+    if (row?.is_locked) return;
+    setError(null);
+    try {
+      const sourcePath = await pickOpenFile('Choose mod icon', ['png', 'jpg', 'jpeg', 'webp', 'gif']);
+      if (!sourcePath) return;
+      const icon = await setCustomModIcon(instanceId, mod.filename, sourcePath);
+      setModCustomIcons((current) => ({ ...current, [installedModKey(mod)]: icon }));
+      await refreshDetail();
     } catch (e) {
       setError(formatError(e));
     }
@@ -799,8 +909,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       {/* Header */}
       <section className="rounded-xl border border-border bg-card p-6">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div>
-            <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-start gap-4">
+            {(instanceCustomIcon || packIconUrl(manifest)) && (
+              <img
+                src={instanceCustomIcon ?? packIconUrl(manifest) ?? undefined}
+                alt={`${row?.name ?? 'Modpack'} icon`}
+                className="h-16 w-16 shrink-0 rounded-xl border border-border object-cover"
+              />
+            )}
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-2xl font-bold">
                 {row?.name}
                 {' '}
@@ -864,6 +982,18 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               {row?.last_launched_at && (
                 <span className="ml-2">· Last launched {row.last_launched_at}</span>
               )}
+              {row?.is_modpack && !row.is_locked && (
+                <button
+                  type="button"
+                  onClick={handleSetInstanceIcon}
+                  className="inline-flex items-center gap-1 rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                  title="Set a custom modpack image"
+                >
+                  <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                  Set image
+                </button>
+              )}
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1125,7 +1255,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     ? 'cursor-pointer hover:border-primary/50 hover:bg-accent/60'
                     : ''
                 } ${!mod.enabled ? 'opacity-50' : ''}`}
-              >
+               >
+                {(modCustomIcons[installedModKey(mod)] || modIconUrls[installedModKey(mod)]) ? (
+                  <img
+                    src={modCustomIcons[installedModKey(mod)] || modIconUrls[installedModKey(mod)]}
+                    alt=""
+                    className="mr-3 h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
+                  />
+                ) : (
+                  <div className="mr-3 h-10 w-10 shrink-0 rounded-lg border border-dashed border-border" aria-hidden="true" />
+                )}
                 <button
                   type="button"
                   onClick={() => handleOpenInstalledMod(mod)}
@@ -1146,6 +1285,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     )}
                   </span>
                 </button>
+                {!row?.is_locked && (
+                  <button
+                    type="button"
+                    onClick={() => handleSetModIcon(mod)}
+                    className="ml-2 inline-flex items-center gap-1 text-xs text-foreground hover:text-primary whitespace-nowrap"
+                    title="Set a custom mod image"
+                  >
+                    <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                    Image
+                  </button>
+                )}
                 {!row?.is_locked && (
                   <button
                     onClick={() => handleToggleMod(mod)}

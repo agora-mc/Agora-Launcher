@@ -984,6 +984,8 @@ async fn run_command(
                     jvm_gc,
                     jvm_custom_args,
                     jvm_always_pre_touch,
+                    is_modpack: None,
+                    pack_icon_url: None,
                 };
                 let row = InstanceService::new(ctx.clone()).create(request).await?;
                 if json {

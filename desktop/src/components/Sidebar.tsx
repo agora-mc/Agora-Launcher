@@ -118,15 +118,15 @@ export function Sidebar({
               aria-current={isActive ? 'page' : undefined}
               title={collapsed ? tab.label : undefined}
               className={[
-                'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
-                collapsed ? 'justify-center px-0' : '',
+                'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors',
+                collapsed ? 'px-0' : '',
                 isActive
                   ? 'bg-primary text-primary-foreground shadow-sm'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
               ].join(' ')}
             >
               <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
-              {!collapsed && tab.label}
+              {!collapsed && <span className="min-w-0 flex-1 text-left leading-snug">{tab.label}</span>}
             </button>
           );
         })}
@@ -136,11 +136,11 @@ export function Sidebar({
         <div className="space-y-1 border-t border-border p-3">
           <button
             onClick={onOpenCommandPalette}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             aria-label="Open command palette"
           >
             <Command className="h-4 w-4" aria-hidden="true" />
-            <span>Quick actions</span>
+            <span className="min-w-0 flex-1 text-left leading-snug">Quick actions</span>
             <kbd className="ml-auto rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd>
           </button>
         </div>

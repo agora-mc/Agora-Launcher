@@ -519,6 +519,19 @@ pub fn set_locked(conn: &Connection, instance_id: &str, locked: bool) -> anyhow:
     Ok(())
 }
 
+/// Persist the relative path of an Agora-owned custom instance icon.
+pub fn set_instance_icon_path(
+    conn: &Connection,
+    instance_id: &str,
+    icon_path: Option<&str>,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE user_instances SET icon_path = ?1 WHERE instance_id = ?2",
+        rusqlite::params![icon_path, instance_id],
+    )?;
+    Ok(())
+}
+
 /// Rename an instance in the DB.
 pub fn rename_instance(conn: &Connection, instance_id: &str, new_name: &str) -> anyhow::Result<()> {
     conn.execute(

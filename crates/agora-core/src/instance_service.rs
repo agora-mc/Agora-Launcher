@@ -25,6 +25,10 @@ pub struct CreateInstanceRequest {
     pub jvm_custom_args: Option<String>,
     #[serde(default)]
     pub jvm_always_pre_touch: Option<bool>,
+    #[serde(default)]
+    pub is_modpack: Option<bool>,
+    #[serde(default)]
+    pub pack_icon_url: Option<String>,
 }
 
 /// Request used to clone an existing instance.
@@ -207,6 +211,44 @@ impl InstanceService {
                 message: error.to_string(),
             }
         })
+    }
+
+    /// Record the trusted remote icon associated with a downloaded pack.
+    pub fn set_pack_icon_url(
+        &self,
+        instance_id: &str,
+        icon_url: Option<&str>,
+    ) -> LauncherResult<()> {
+        let instance_id = self.validate_id(instance_id)?;
+        if let Some(icon_url) = icon_url {
+            if !icon_url.starts_with("https://") {
+                return Err(LauncherError::Generic {
+                    code: "ERR_ICON_URL".into(),
+                    message: "Pack icons must use HTTPS.".into(),
+                });
+            }
+        }
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
+        if !manifest.user_preferences.is_object() {
+            manifest.user_preferences = serde_json::json!({});
+        }
+        let preferences = manifest
+            .user_preferences
+            .as_object_mut()
+            .ok_or(LauncherError::InstanceCreateFailed)?;
+        match icon_url {
+            Some(icon_url) => {
+                preferences.insert(
+                    "agora_pack_icon_url".into(),
+                    serde_json::Value::String(icon_url.to_owned()),
+                );
+            }
+            None => {
+                preferences.remove("agora_pack_icon_url");
+            }
+        }
+        crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
     }
 
     /// Reconcile the official launcher profile and persistent launch history
@@ -916,7 +958,7 @@ fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRo
         minecraft_version: request.minecraft_version.clone(),
         loader: request.loader.clone(),
         loader_version: request.loader_version.clone(),
-        is_modpack: false,
+        is_modpack: request.is_modpack.unwrap_or(false),
         is_locked: false,
         last_launched_at: None,
         jvm_memory_mb: request.jvm_memory_mb.unwrap_or(4096),
@@ -935,6 +977,17 @@ fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRo
 }
 
 fn manifest_from_request(instance_id: &str, request: &CreateInstanceRequest) -> InstanceManifest {
+    let mut user_preferences = serde_json::Map::new();
+    if let Some(icon_url) = request
+        .pack_icon_url
+        .as_deref()
+        .filter(|url| url.starts_with("https://"))
+    {
+        user_preferences.insert(
+            "agora_pack_icon_url".into(),
+            serde_json::Value::String(icon_url.to_owned()),
+        );
+    }
     InstanceManifest {
         instance_id: instance_id.into(),
         name: request.name.clone(),
@@ -948,7 +1001,7 @@ fn manifest_from_request(instance_id: &str, request: &CreateInstanceRequest) -> 
         shaders: Vec::new(),
         datapacks: Vec::new(),
         worlds: Vec::new(),
-        user_preferences: serde_json::json!({}),
+        user_preferences: serde_json::Value::Object(user_preferences),
     }
 }
 
@@ -1008,6 +1061,8 @@ mod tests {
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
         };
         let row = prepare_row("test", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1055,6 +1110,8 @@ mod tests {
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
         };
         let row = prepare_row("original", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1112,6 +1169,8 @@ mod tests {
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
         };
         let row = prepare_row("locked", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1154,6 +1213,8 @@ mod tests {
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
         };
         let row = prepare_row("delop", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1204,6 +1265,8 @@ mod tests {
                 jvm_gc: None,
                 jvm_custom_args: None,
                 jvm_always_pre_touch: None,
+                is_modpack: None,
+                pack_icon_url: None,
             };
             let row = prepare_row("src", &request);
             let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
