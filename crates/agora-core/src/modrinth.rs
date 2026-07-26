@@ -236,6 +236,9 @@ pub(crate) struct ModrinthSearchHit {
     pub(crate) date_modified: Option<String>,
     pub(crate) versions: Option<Vec<String>>,
     pub(crate) license: Option<String>,
+    #[serde(default)]
+    pub(crate) gallery: Vec<String>,
+    pub(crate) featured_gallery: Option<String>,
 }
 
 /// A single Modrinth search result returned to the frontend.
@@ -255,6 +258,9 @@ pub struct ModrinthSearchResult {
     pub date_modified: Option<String>,
     pub versions: Vec<String>,
     pub license: Option<String>,
+    #[serde(default)]
+    pub gallery: Vec<String>,
+    pub featured_gallery: Option<String>,
 }
 
 /// Per-file metadata resolved from Modrinth's API for a single project file.
@@ -590,6 +596,8 @@ pub async fn search_modrinth_http(
             date_modified: h.date_modified,
             versions: h.versions.unwrap_or_default(),
             license: h.license,
+            gallery: h.gallery,
+            featured_gallery: h.featured_gallery,
         })
         .collect();
 

@@ -1420,7 +1420,7 @@ mod tests {
         let instances_root = tmp.path().join("instances");
         let result = import_prism_zip(&zip_path, &instances_root, false).unwrap();
 
-        let instance = instances_root.join("prism-configured");
+        let instance = instances_root.join("Prism-Configured");
         assert_eq!(result.imported_mods, 1);
         assert!(instance.join("mods/example.jar").exists());
         assert!(instance

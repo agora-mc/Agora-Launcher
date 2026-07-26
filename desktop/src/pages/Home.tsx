@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRegistryState } from '../lib/useRegistryState';
 import {
   checkInstanceCrash,
@@ -51,94 +51,159 @@ export function Home({
   }[]>([]);
   const [knownGoodChecked, setKnownGoodChecked] = useState(false);
   const [recommendations, setRecommendations] = useState<RegistryItem[]>([]);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const loadInFlightRef = useRef<Promise<void> | null>(null);
+  const backgroundLoadInFlightRef = useRef<Promise<void> | null>(null);
 
-  // Load instances on mount.
-  const loadData = useCallback(async () => {
-    setInstancesLoading(true);
-    setKnownGoodChecked(false);
-    try {
-      const all = await listInstances();
-      setInstances(all);
+  // Drift checks hash the tracked instance files and must not delay the first
+  // usable Home render. Keep this work in the background and share it across
+  // Strict Mode's development-only effect replay.
+  const loadBackgroundData = useCallback(async (all: InstanceRow[]) => {
+    if (backgroundLoadInFlightRef.current) return backgroundLoadInFlightRef.current;
 
-      // Check for crash on the most recently launched instance.
+    const task = (async () => {
       const launched = all.filter((i) => i.last_launched_at).sort(
         (a, b) => new Date(b.last_launched_at!).getTime() - new Date(a.last_launched_at!).getTime(),
       );
-      if (launched.length > 0) {
-        const latest = launched[0];
-        try {
-          const crash = await checkInstanceCrash(latest.instance_id);
-          if (crash) {
-            setLastCrash({ instanceId: latest.instance_id, name: latest.name, filename: crash.filename ?? undefined });
-          } else {
-            setLastCrash(null);
-          }
-        } catch { setLastCrash(null); }
+
+      const crashPromise = launched.length > 0
+        ? checkInstanceCrash(launched[0].instance_id).catch(() => null)
+        : Promise.resolve(null);
+      const lkgPromise = (async () => {
+        // Resolve exact promoted LKG pointers and current drift, never arbitrary snapshots.
+        const lkgResults: typeof knownGood = [];
+        for (const inst of all.slice(0, 5)) {
+          try {
+            const marker = await getLkgMarker(inst.instance_id);
+            const snapshotId = typeof marker?.currentLkgSnapshotId === 'string'
+              ? marker.currentLkgSnapshotId
+              : null;
+            if (!snapshotId) continue;
+            const snapList = await listSnapshots(inst.instance_id);
+            const snapshot = snapList.find((candidate) => candidate.id === snapshotId);
+            const diff = await detectDrift(inst.instance_id, snapshotId);
+            const entries = (key: 'added' | 'removed' | 'modified') => diff[key];
+            const addedEntries = entries('added');
+            const removedEntries = entries('removed');
+            const removedPaths = new Set(removedEntries.map((entry) => String(entry.path ?? '')));
+            const disabled = addedEntries.filter((entry) => {
+              const path = String(entry.path ?? '');
+              return path.endsWith('.disabled') && removedPaths.has(path.slice(0, -'.disabled'.length));
+            }).length;
+            lkgResults.push({
+              instanceId: inst.instance_id,
+              instanceName: inst.name,
+              id: snapshotId,
+              label: snapshot?.label ?? 'Last known good',
+              promotedAt: typeof marker?.lastPromotedAt === 'string' ? marker.lastPromotedAt : null,
+              added: addedEntries.length - disabled,
+              removed: removedEntries.length - disabled,
+              disabled,
+              updated: entries('modified').length,
+            });
+          } catch { /* skip */ }
+        }
+        return lkgResults;
+      })();
+
+      const [crash, lkgResults] = await Promise.all([crashPromise, lkgPromise]);
+      if (crash) {
+        setLastCrash({ instanceId: launched[0].instance_id, name: launched[0].name, filename: crash.filename ?? undefined });
       } else {
         setLastCrash(null);
       }
-
-      // Resolve exact promoted LKG pointers and current drift, never arbitrary snapshots.
-      const lkgResults: typeof knownGood = [];
-      for (const inst of all.slice(0, 5)) {
-        try {
-          const marker = await getLkgMarker(inst.instance_id);
-          const snapshotId = typeof marker?.currentLkgSnapshotId === 'string'
-            ? marker.currentLkgSnapshotId
-            : null;
-          if (!snapshotId) continue;
-          const snapList = await listSnapshots(inst.instance_id);
-          const snapshot = snapList.find((candidate) => candidate.id === snapshotId);
-          const diff = await detectDrift(inst.instance_id, snapshotId);
-          const entries = (key: 'added' | 'removed' | 'modified') => diff[key];
-          const addedEntries = entries('added');
-          const removedEntries = entries('removed');
-          const removedPaths = new Set(removedEntries.map((entry) => String(entry.path ?? '')));
-          const disabled = addedEntries.filter((entry) => {
-            const path = String(entry.path ?? '');
-            return path.endsWith('.disabled') && removedPaths.has(path.slice(0, -'.disabled'.length));
-          }).length;
-          lkgResults.push({
-            instanceId: inst.instance_id,
-            instanceName: inst.name,
-            id: snapshotId,
-            label: snapshot?.label ?? 'Last known good',
-            promotedAt: typeof marker?.lastPromotedAt === 'string' ? marker.lastPromotedAt : null,
-            added: addedEntries.length - disabled,
-            removed: removedEntries.length - disabled,
-            disabled,
-            updated: entries('modified').length,
-          });
-        } catch { /* skip */ }
-      }
       setKnownGood(lkgResults);
+      setKnownGoodChecked(true);
+    })();
 
-      if (hasCachedDb && launched[0]) {
-        const active = launched[0];
-        try {
-          const modrinthEnabled = (await getSetting('modrinth_enabled')) === true;
-          setRecommendations(await forYouItems(
-            modrinthEnabled,
-            active.minecraft_version,
-            active.loader,
-            3,
-          ));
-        } catch {
-          setRecommendations([]);
-        }
-      } else {
-        setRecommendations([]);
+    backgroundLoadInFlightRef.current = task;
+    task.then(
+      () => {
+        if (backgroundLoadInFlightRef.current === task) backgroundLoadInFlightRef.current = null;
+      },
+      () => {
+        if (backgroundLoadInFlightRef.current === task) backgroundLoadInFlightRef.current = null;
+        setKnownGoodChecked(true);
+      },
+    );
+    return task;
+  }, []);
+
+  // Load the lightweight instance list on mount. Registry status changes only
+  // affect recommendations, not the instance/drift data already loaded here.
+  const loadData = useCallback(async () => {
+    if (loadInFlightRef.current) return loadInFlightRef.current;
+
+    const task = (async () => {
+      setInstancesLoading(true);
+      setKnownGoodChecked(false);
+      try {
+        const all = await listInstances();
+        setInstances(all);
+        setInstancesLoading(false);
+        void loadBackgroundData(all);
+      } catch {
+        setInstancesLoading(false);
+        setKnownGoodChecked(true);
       }
-    } catch { /* ignore */ }
-    setKnownGoodChecked(true);
-    setInstancesLoading(false);
-  }, [hasCachedDb]);
+    })();
+
+    loadInFlightRef.current = task;
+    task.then(
+      () => {
+        if (loadInFlightRef.current === task) loadInFlightRef.current = null;
+      },
+      () => {
+        if (loadInFlightRef.current === task) loadInFlightRef.current = null;
+      },
+    );
+    return task;
+  }, [loadBackgroundData]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Recommendations are independent of crash/LKG inspection and may become
+  // available after the registry status finishes loading.
+  const sortedByLaunched = [...instances].sort(
+    (a, b) => new Date(b.last_launched_at ?? 0).getTime() - new Date(a.last_launched_at ?? 0).getTime(),
+  );
+  const lastLaunched = sortedByLaunched.find((instance) => instance.last_launched_at) ?? null;
+  const heroInstance = lastLaunched ?? sortedByLaunched[0] ?? null;
+
+  useEffect(() => {
+    if (!hasCachedDb || !lastLaunched) {
+      setRecommendations([]);
+      setRecommendationsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setRecommendationsLoading(true);
+    (async () => {
+      try {
+        const modrinthEnabled = (await getSetting('modrinth_enabled')) === true;
+        const result = await forYouItems(
+          modrinthEnabled,
+          lastLaunched.minecraft_version,
+          lastLaunched.loader,
+          3,
+        );
+        if (!cancelled) setRecommendations(result);
+      } catch {
+        if (!cancelled) setRecommendations([]);
+      } finally {
+        if (!cancelled) setRecommendationsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasCachedDb, lastLaunched?.instance_id, lastLaunched?.minecraft_version, lastLaunched?.loader]);
 
   // Track last home visit for change detection.
   useEffect(() => {
@@ -150,11 +215,6 @@ export function Home({
   }, []);
 
   // Group cards by zone.
-  const sortedByLaunched = [...instances].sort(
-    (a, b) => new Date(b.last_launched_at ?? 0).getTime() - new Date(a.last_launched_at ?? 0).getTime(),
-  );
-  const lastLaunched = sortedByLaunched[0] ?? null;
-  const heroInstance = lastLaunched ?? sortedByLaunched[0] ?? null;
   const crashKnownGood = lastCrash
     ? knownGood.find((entry) => entry.instanceId === lastCrash.instanceId) ?? null
     : null;
@@ -262,7 +322,7 @@ export function Home({
       <RecommendationsCard
         hasInstances={instances.length > 0}
         hasCachedDb={hasCachedDb}
-        loading={instancesLoading}
+        loading={recommendationsLoading}
         activeInstance={lastLaunched}
         recommendations={recommendations}
         onOpenMod={onOpenMod}

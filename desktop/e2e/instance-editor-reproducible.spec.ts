@@ -237,6 +237,44 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
           }
           if (command.startsWith('plugin:event|')) return Promise.resolve(1);
           if (command === 'get_instance_detail') return Promise.resolve(detail);
+          if (command === 'list_instance_content') {
+            const manifest = (detail as any)?.manifest;
+            if (!manifest) return Promise.resolve(null);
+            const mapEntry = (entry: any) => ({
+              key: `${entry.content_type ?? 'mod'}:${entry.filename}:${entry.sha256 ?? 'undefined'}`,
+              filename: entry.filename,
+              display_name: entry.name ?? entry.filename.replace(/\.[^.]+$/, ''),
+              version: entry.version ?? null,
+              content_type: entry.content_type ?? 'mod',
+              enabled: entry.enabled,
+              installed_at: entry.installed_at ?? '',
+              source: entry.source ?? 'unknown',
+              source_label: 'Unknown',
+              source_url: entry.source_url ?? null,
+              registry_id: entry.registry_id ?? null,
+              modrinth_id: entry.modrinth_id ?? null,
+              mod_jar_id: entry.mod_jar_id ?? null,
+              loader_mod_id: entry.mod_jar_id ?? null,
+              size_bytes: null,
+              file_present: false,
+              resolved_path: null,
+              author: null,
+              categories: ['Uncategorized'],
+              icon_url: null,
+              curation_status: 'unknown' as const,
+              agora_score: null,
+              modrinth_downloads: null,
+              metadata_status: 'unavailable' as const,
+            });
+            const all = [
+              ...manifest.mods.map(mapEntry),
+              ...manifest.resourcepacks.map(mapEntry),
+              ...manifest.shaders.map(mapEntry),
+              ...manifest.datapacks.map(mapEntry),
+              ...manifest.worlds.map(mapEntry),
+            ];
+            return Promise.resolve(all);
+          }
           if (command === 'fetch_modrinth_project') {
             return Promise.resolve({
               id: 'project-A',

@@ -224,6 +224,8 @@ impl CatalogSource for ModrinthSource {
                 date_modified: h.date_modified,
                 versions: h.versions.unwrap_or_default(),
                 license: h.license,
+                gallery: h.gallery,
+                featured_gallery: h.featured_gallery,
             })
             .map(search_result_to_item)
             .collect())
@@ -292,6 +294,8 @@ impl CatalogSource for ModrinthSource {
                         date_modified: hit.date_modified,
                         versions: hit.versions.unwrap_or_default(),
                         license: hit.license,
+                        gallery: hit.gallery,
+                        featured_gallery: hit.featured_gallery,
                     };
                     Ok(search_result_to_item(result))
                 } else {

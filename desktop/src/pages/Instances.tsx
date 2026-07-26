@@ -26,6 +26,7 @@ import {
 import type { InstallIntent } from '../lib/installFlow';
 import { type ProcessState } from '../lib/useProcessController';
 import { InstallFlow } from '../components/InstallFlow';
+import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import {
@@ -430,7 +431,7 @@ function InstanceCard({
               {isRunning ? (
                 <span className="text-green-600 dark:text-green-400">● Running (PID {runningPid})</span>
               ) : instance.last_launched_at ? (
-                `Last launched ${instance.last_launched_at}`
+                `Last launched ${formatInstalledDate(instance.last_launched_at)}`
               ) : (
                 'Never launched'
               )}

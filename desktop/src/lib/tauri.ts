@@ -967,6 +967,8 @@ export interface ModrinthSearchResult {
   date_modified: string | null;
   versions: string[];
   license: string | null;
+  gallery: string[];
+  featured_gallery: string | null;
 }
 
 export type ModrinthSort = 'relevance' | 'follows' | 'newest' | 'updated';
@@ -1526,6 +1528,16 @@ export interface BrowseItemCached {
   iconUrl: string | null;
   description: string | null;
   contentType: string;
+  heroImageUrl: string | null;
+  author: string | null;
+  categories: string[];
+  downloads: number | null;
+  follows: number | null;
+  upvotes: number | null;
+  downvotes: number | null;
+  netScore: number | null;
+  supportedVersions: string[];
+  sourcePageUrl: string | null;
 }
 
 export interface BrowsePage {

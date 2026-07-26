@@ -19,6 +19,16 @@ pub struct BrowseItem {
     pub icon_url: Option<String>,
     pub description: Option<String>,
     pub content_type: String,
+    pub hero_image_url: Option<String>,
+    pub author: Option<String>,
+    pub categories: Vec<String>,
+    pub downloads: Option<i64>,
+    pub follows: Option<i64>,
+    pub upvotes: Option<i64>,
+    pub downvotes: Option<i64>,
+    pub net_score: Option<i64>,
+    pub supported_versions: Vec<String>,
+    pub source_page_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +89,141 @@ pub fn normalize_modrinth_content_type(project_type: &str) -> &str {
     }
 }
 
+fn normalized_https_url(value: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(value).ok()?;
+    (parsed.scheme() == "https").then(|| parsed.to_string())
+}
+
+fn registry_gallery_urls(item: &RegistryItem) -> Vec<String> {
+    item.gallery_urls_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|url| normalized_https_url(&url))
+        .collect()
+}
+
+fn registry_supported_versions(item: &RegistryItem) -> Vec<String> {
+    let Some(json) = item.compatible_versions_json.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
+        return Vec::new();
+    };
+    let mut versions = Vec::new();
+    for version in entries
+        .iter()
+        .filter_map(|entry| entry.get("mc_version").and_then(|value| value.as_str()))
+    {
+        if !versions.iter().any(|existing| existing == version) {
+            versions.push(version.to_string());
+        }
+    }
+    versions
+}
+
+fn modrinth_page_url(item: &ModrinthSearchResult) -> Option<String> {
+    if item.slug.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "https://modrinth.com/{}/{}",
+            item.project_type, item.slug
+        ))
+    }
+}
+
+fn normalized_presentation(
+    registry_item: Option<&RegistryItem>,
+    modrinth_item: Option<&ModrinthSearchResult>,
+) -> (
+    Option<String>,
+    Option<String>,
+    Vec<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Vec<String>,
+    Option<String>,
+) {
+    let registry_gallery = registry_item.map(registry_gallery_urls).unwrap_or_default();
+    let hero_image_url = modrinth_item
+        .and_then(|item| item.featured_gallery.as_deref())
+        .and_then(normalized_https_url)
+        .or_else(|| registry_gallery.first().cloned())
+        .or_else(|| {
+            modrinth_item.and_then(|item| {
+                item.gallery
+                    .iter()
+                    .find_map(|url| normalized_https_url(url))
+            })
+        });
+    let supported_versions = registry_item
+        .map(registry_supported_versions)
+        .filter(|versions| !versions.is_empty())
+        .or_else(|| modrinth_item.map(|item| item.versions.clone()))
+        .unwrap_or_default();
+    let source_page_url = registry_item
+        .and_then(|item| item.page_url.as_deref())
+        .and_then(normalized_https_url)
+        .or_else(|| modrinth_item.and_then(modrinth_page_url));
+
+    (
+        hero_image_url,
+        modrinth_item
+            .map(|item| item.author.clone())
+            .filter(|author| !author.is_empty()),
+        modrinth_item
+            .map(|item| item.categories.clone())
+            .unwrap_or_default(),
+        modrinth_item.map(|item| item.downloads),
+        modrinth_item.map(|item| item.follows),
+        registry_item.map(|item| item.upvotes),
+        registry_item.map(|item| item.downvotes),
+        registry_item.map(|item| item.net_score),
+        supported_versions,
+        source_page_url,
+    )
+}
+
+pub fn item_from_modrinth(item: ModrinthSearchResult) -> BrowseItem {
+    let (
+        hero_image_url,
+        author,
+        categories,
+        downloads,
+        follows,
+        upvotes,
+        downvotes,
+        net_score,
+        supported_versions,
+        source_page_url,
+    ) = normalized_presentation(None, Some(&item));
+    BrowseItem {
+        id: item.project_id.clone(),
+        source: "modrinth".to_string(),
+        registry_item: None,
+        modrinth_result: Some(item.clone()),
+        name: item.title.clone(),
+        icon_url: item.icon_url.clone(),
+        description: Some(item.description.clone()),
+        content_type: normalize_modrinth_content_type(&item.project_type).to_string(),
+        hero_image_url,
+        author,
+        categories,
+        downloads,
+        follows,
+        upvotes,
+        downvotes,
+        net_score,
+        supported_versions,
+        source_page_url,
+    }
+}
+
 /// Merge registry items and Modrinth results, deduplicating by modrinth_id.
 pub fn merge_items(
     registry_items: Vec<RegistryItem>,
@@ -97,6 +242,18 @@ pub fn merge_items(
     for mr in modrinth_results {
         if let Some(matched) = registry_by_modrinth_id.get(&mr.project_id) {
             matched_ids.insert(matched.id.clone());
+            let (
+                hero_image_url,
+                author,
+                categories,
+                downloads,
+                follows,
+                upvotes,
+                downvotes,
+                net_score,
+                supported_versions,
+                source_page_url,
+            ) = normalized_presentation(Some(matched), Some(&mr));
             merged.push(BrowseItem {
                 id: matched.id.clone(),
                 source: "curated".to_string(),
@@ -109,24 +266,36 @@ pub fn merge_items(
                     .clone()
                     .or_else(|| Some(mr.description.clone())),
                 content_type: matched.content_type.clone(),
+                hero_image_url,
+                author,
+                categories,
+                downloads,
+                follows,
+                upvotes,
+                downvotes,
+                net_score,
+                supported_versions,
+                source_page_url,
             });
         } else {
-            merged.push(BrowseItem {
-                id: mr.project_id.clone(),
-                source: "modrinth".to_string(),
-                registry_item: None,
-                modrinth_result: Some(mr.clone()),
-                name: mr.title.clone(),
-                icon_url: mr.icon_url.clone(),
-                description: Some(mr.description.clone()),
-                // Normalize Modrinth project types to app-internal content_type values.
-                content_type: normalize_modrinth_content_type(&mr.project_type).to_string(),
-            });
+            merged.push(item_from_modrinth(mr));
         }
     }
 
     for ri in registry_items {
         if !matched_ids.contains(&ri.id) {
+            let (
+                hero_image_url,
+                author,
+                categories,
+                downloads,
+                follows,
+                upvotes,
+                downvotes,
+                net_score,
+                supported_versions,
+                source_page_url,
+            ) = normalized_presentation(Some(&ri), None);
             merged.push(BrowseItem {
                 id: ri.id.clone(),
                 source: "curated".to_string(),
@@ -136,6 +305,16 @@ pub fn merge_items(
                 icon_url: ri.icon_url.clone(),
                 description: ri.description.clone(),
                 content_type: ri.content_type.clone(),
+                hero_image_url,
+                author,
+                categories,
+                downloads,
+                follows,
+                upvotes,
+                downvotes,
+                net_score,
+                supported_versions,
+                source_page_url,
             });
         }
     }
@@ -237,6 +416,37 @@ mod tests {
             icon_url: None,
             description: None,
             content_type: "mod".into(),
+            hero_image_url: None,
+            author: None,
+            categories: Vec::new(),
+            downloads: None,
+            follows: None,
+            upvotes: None,
+            downvotes: None,
+            net_score: None,
+            supported_versions: Vec::new(),
+            source_page_url: None,
+        }
+    }
+
+    fn modrinth_item() -> ModrinthSearchResult {
+        ModrinthSearchResult {
+            project_id: "modrinth-id".into(),
+            slug: "example-project".into(),
+            title: "Example Project".into(),
+            description: "Description".into(),
+            icon_url: Some("https://cdn.modrinth.com/icon.png".into()),
+            author: "author".into(),
+            categories: vec!["fabric".into()],
+            downloads: 42,
+            follows: 7,
+            project_type: "mod".into(),
+            date_created: None,
+            date_modified: None,
+            versions: vec!["1.21.1".into()],
+            license: Some("MIT".into()),
+            gallery: vec!["https://cdn.modrinth.com/gallery.png".into()],
+            featured_gallery: Some("https://cdn.modrinth.com/featured.png".into()),
         }
     }
 
@@ -248,6 +458,31 @@ mod tests {
             "server"
         );
         assert_eq!(normalize_modrinth_content_type("shader"), "shader");
+    }
+
+    #[test]
+    fn normalizes_modrinth_presentation_without_extra_requests() {
+        let item = item_from_modrinth(modrinth_item());
+        assert_eq!(
+            item.hero_image_url.as_deref(),
+            Some("https://cdn.modrinth.com/featured.png")
+        );
+        assert_eq!(item.author.as_deref(), Some("author"));
+        assert_eq!(item.downloads, Some(42));
+        assert_eq!(item.supported_versions, vec!["1.21.1"]);
+        assert_eq!(
+            item.source_page_url.as_deref(),
+            Some("https://modrinth.com/mod/example-project")
+        );
+    }
+
+    #[test]
+    fn rejects_non_https_presentation_urls() {
+        let mut source = modrinth_item();
+        source.featured_gallery = Some("http://cdn.modrinth.com/featured.png".into());
+        source.gallery = vec!["file:///private/image.png".into()];
+        let item = item_from_modrinth(source);
+        assert!(item.hero_image_url.is_none());
     }
 
     #[tokio::test]

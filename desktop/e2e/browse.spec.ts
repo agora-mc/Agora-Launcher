@@ -19,6 +19,16 @@ const item = (id: string, name: string) => ({
   iconUrl: null,
   description: null,
   contentType: 'mod',
+  heroImageUrl: null,
+  author: null,
+  categories: [],
+  downloads: null,
+  follows: null,
+  upvotes: 0,
+  downvotes: 0,
+  netScore: 0,
+  supportedVersions: [],
+  sourcePageUrl: null,
 });
 
 async function installBrowseMock(page: Page) {
@@ -189,6 +199,81 @@ test('pagination failure is visible and retryable', async ({ page }) => {
   await expect(page.getByText('Pagination failed')).toHaveCount(0);
 });
 
+test('tile media is bounded and unmounted in list mode', async ({ page }) => {
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  const galleryItem = {
+    ...item('gallery', 'Gallery Project'),
+    heroImageUrl: 'https://cdn.modrinth.com/data/example/images/hero.png',
+    iconUrl: 'https://cdn.modrinth.com/data/example/icon.png',
+    description: 'A project with gallery artwork.',
+  };
+  await resolveCall(page, initial, { items: [galleryItem], total: 1, page: 0, hasMore: false });
+  const searchCallsBeforeLayoutChange = await page.evaluate(() => (window as any).__browseCalls.length);
+
+  await page.getByTitle('Grid view').click();
+  const tile = page.locator('.browse-tile-card');
+  await expect(tile.locator('.browse-hero-media__image')).toHaveAttribute('loading', 'lazy');
+  expect(await tile.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(330.5);
+  expect(await tile.locator('.browse-hero-media').evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(180.5);
+
+  await page.getByTitle('List view').click();
+  await expect(page.locator('.browse-hero-media__image')).toHaveCount(0);
+  await expect(page.getByTestId('browse-list-results')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).__browseCalls.length)).toBe(searchCallsBeforeLayoutChange);
+});
+
+test('list columns respond to available width and keep icons bounded', async ({ page }) => {
+  await page.setViewportSize({ width: 2200, height: 1200 });
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  const items = Array.from({ length: 10 }, (_, index) => ({
+    ...item(`responsive-${index}`, `Responsive ${index}`),
+    description: 'A detailed description that uses the additional width available in list mode.',
+    categories: index === 0 ? ['technology', 'fabric'] : [],
+    supportedVersions: index === 0
+      ? ['1.14', '1.16.5', '1.18.2', '1.19.4', '1.20.1', '1.21', '1.21.8']
+      : [],
+  }));
+  await resolveCall(page, initial, { items, total: items.length, page: 0, hasMore: false });
+
+  const wideColumns = await page.locator('.browse-list-card').evaluateAll((cards) =>
+    new Set(cards.map((card) => Math.round(card.getBoundingClientRect().left))).size,
+  );
+  expect(wideColumns).toBe(2);
+  expect(await page.locator('.browse-list-card').first().evaluate((card) => card.getBoundingClientRect().width)).toBeGreaterThan(700);
+  const iconWidth = await page.locator('.browse-list-card__icon').first().evaluate((icon) => icon.getBoundingClientRect().width);
+  expect(iconWidth).toBeGreaterThanOrEqual(48);
+  expect(iconWidth).toBeLessThanOrEqual(72);
+  await expect(page.getByText('technology', { exact: true })).toBeVisible();
+  await expect(page.getByText('MC 1.14–1.21.8 · 7 supported versions')).toBeVisible();
+
+  await page.setViewportSize({ width: 650, height: 900 });
+  const narrowColumns = await page.locator('.browse-list-card').evaluateAll((cards) =>
+    new Set(cards.map((card) => Math.round(card.getBoundingClientRect().left))).size,
+  );
+  expect(narrowColumns).toBe(1);
+});
+
+test('broken tile artwork falls back to a project initial', async ({ page }) => {
+  await page.route('https://cdn.modrinth.com/**', (route) => route.abort());
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, {
+    items: [{
+      ...item('broken-gallery', 'Gallery Failure'),
+      heroImageUrl: 'https://cdn.modrinth.com/data/example/images/missing.png',
+      iconUrl: 'https://cdn.modrinth.com/data/example/missing-icon.png',
+    }],
+    total: 1,
+    page: 0,
+    hasMore: false,
+  });
+
+  await page.getByTitle('Grid view').click();
+  await expect(page.locator('.browse-hero-media .browse-icon--placeholder')).toHaveText('G');
+});
+
 test('category lists follow the selected content type', async ({ page }) => {
   await installBrowseMock(page);
   const initial = await openBrowse(page);
@@ -304,6 +389,8 @@ async function installBrowseContextMock(page: Page) {
             recommendation_reason: null, recommendation_overlap: null,
           },
           modrinthResult: null, name, iconUrl: null, description: null, contentType: 'mod',
+          heroImageUrl: null, author: null, categories: [], downloads: null, follows: null,
+          upvotes: 5, downvotes: 0, netScore: 5, supportedVersions: ['1.21'], sourcePageUrl: null,
         };
       }
 

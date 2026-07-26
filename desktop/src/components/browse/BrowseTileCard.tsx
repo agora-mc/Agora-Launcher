@@ -1,0 +1,45 @@
+import { ExternalLink } from 'lucide-react';
+import { BrowseHeroMedia } from './BrowseHeroMedia';
+import { BrowseContextLabels, BrowseStats, BrowseVersions, CuratedBadge } from './BrowseContextLabels';
+import type { BrowseCardProps } from './types';
+
+export function BrowseTileCard({ item, context, onSelectMod }: BrowseCardProps) {
+  return (
+    <article className="browse-tile-card">
+      <BrowseHeroMedia item={item} />
+      <div className="browse-tile-card__body">
+        <div className="browse-card-title-row">
+          <h3 className="browse-card-title">{item.name}</h3>
+          {item.source === 'curated' && <CuratedBadge />}
+        </div>
+        <p className="browse-card-source">
+          {item.author ? `by ${item.author} · ` : ''}{item.source === 'curated' ? 'Agora Registry' : 'Modrinth'}
+        </p>
+        {item.description ? (
+          <p className="browse-tile-card__description">{item.description}</p>
+        ) : (
+          <p className="browse-tile-card__description browse-tile-card__description--empty">No description available.</p>
+        )}
+        <BrowseStats item={item} />
+        <BrowseVersions item={item} />
+        {item.categories.length > 0 && (
+          <div className="browse-category-list">
+            {item.categories.slice(0, 3).map((category) => <span key={category}>{category.replace(/[-_]/g, ' ')}</span>)}
+          </div>
+        )}
+        <BrowseContextLabels context={context} />
+        {context?.whyRecommended && <p className="browse-recommendation">Why: {context.whyRecommended}</p>}
+        <div className="browse-tile-card__actions">
+          <button type="button" onClick={() => onSelectMod?.(item.id)} className="browse-primary-action">
+            View Details
+          </button>
+          {item.sourcePageUrl && (
+            <a href={item.sourcePageUrl} target="_blank" rel="noopener noreferrer" className="browse-source-link">
+              View source <ExternalLink aria-hidden size={12} />
+            </a>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}

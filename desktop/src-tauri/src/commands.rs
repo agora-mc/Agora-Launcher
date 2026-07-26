@@ -3447,17 +3447,7 @@ pub async fn browse_load_more(
         let new_items: Vec<browse_cache::BrowseItem> = modrinth_page
             .results
             .into_iter()
-            .map(|mr| browse_cache::BrowseItem {
-                id: mr.project_id.clone(),
-                source: "modrinth".to_string(),
-                registry_item: None,
-                modrinth_result: Some(mr.clone()),
-                name: mr.title.clone(),
-                icon_url: mr.icon_url.clone(),
-                description: Some(mr.description.clone()),
-                content_type: browse_cache::normalize_modrinth_content_type(&mr.project_type)
-                    .to_string(),
-            })
+            .map(browse_cache::item_from_modrinth)
             .collect();
 
         if !browse_cache::append_items(

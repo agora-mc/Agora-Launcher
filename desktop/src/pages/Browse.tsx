@@ -24,6 +24,10 @@ import {
 } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
+import { BrowseListResults } from '../components/browse/BrowseListResults';
+import { BrowseTileResults } from '../components/browse/BrowseTileResults';
+import type { BrowseItemContext as ItemContext } from '../components/browse/types';
+import '../components/browse/browse-cards.css';
 import { agoraRepositoryUrl } from '../lib/brandConfig';
 import {
   DropdownMenu,
@@ -160,14 +164,51 @@ function CuratedCategoryDropdown({
 
 type BrowseItem = BrowseItemCached;
 
-interface ItemContext {
-  instanceName: string;
-  minecraftVersion: string;
-  loader: string;
-  compatibility: 'compatible' | 'major_match' | '';
-  installed: boolean;
-  updateAvailable: boolean;
-  whyRecommended: string | null;
+function parseHttpsGallery(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const values = JSON.parse(json);
+    if (!Array.isArray(values)) return [];
+    return values.filter((value): value is string => {
+      if (typeof value !== 'string') return false;
+      try { return new URL(value).protocol === 'https:'; } catch { return false; }
+    });
+  } catch {
+    return [];
+  }
+}
+
+function registryVersions(item: RegistryItem): string[] {
+  if (!item.compatible_versions_json) return [];
+  try {
+    const entries = JSON.parse(item.compatible_versions_json);
+    if (!Array.isArray(entries)) return [];
+    return [...new Set(entries.map((entry) => entry?.mc_version).filter((value): value is string => typeof value === 'string'))];
+  } catch {
+    return [];
+  }
+}
+
+function presentationFields(registryItem: RegistryItem | null, modrinthResult: ModrinthSearchResult | null) {
+  const registryGallery = registryItem ? parseHttpsGallery(registryItem.gallery_urls_json) : [];
+  const featuredGallery = modrinthResult?.featured_gallery;
+  const heroImageUrl = featuredGallery && featuredGallery.startsWith('https://')
+    ? featuredGallery
+    : registryGallery[0] ?? modrinthResult?.gallery?.find((url) => url.startsWith('https://')) ?? null;
+  const supportedVersions = registryItem ? registryVersions(registryItem) : [];
+  return {
+    heroImageUrl,
+    author: modrinthResult?.author || null,
+    categories: modrinthResult?.categories ?? [],
+    downloads: modrinthResult?.downloads ?? null,
+    follows: modrinthResult?.follows ?? null,
+    upvotes: registryItem?.upvotes ?? null,
+    downvotes: registryItem?.downvotes ?? null,
+    netScore: registryItem?.net_score ?? null,
+    supportedVersions: supportedVersions.length > 0 ? supportedVersions : modrinthResult?.versions ?? [],
+    sourcePageUrl: registryItem?.page_url
+      ?? (modrinthResult?.slug ? `https://modrinth.com/${modrinthResult.project_type}/${modrinthResult.slug}` : null),
+  };
 }
 
 // NOTE: the modrinthResults branch is currently unused (For You sort passes []).
@@ -199,6 +240,7 @@ function mergeItems(
         iconUrl: matched.icon_url ?? mr.icon_url,
         description: matched.description ?? mr.description,
         contentType: matched.content_type,
+        ...presentationFields(matched, mr),
       });
     } else {
       merged.push({
@@ -210,6 +252,7 @@ function mergeItems(
         iconUrl: mr.icon_url,
         description: mr.description,
         contentType: mr.project_type,
+        ...presentationFields(null, mr),
       });
     }
   }
@@ -225,6 +268,7 @@ function mergeItems(
         iconUrl: ri.icon_url,
         description: ri.description,
         contentType: ri.content_type,
+        ...presentationFields(ri, null),
       });
     }
   }
@@ -1051,17 +1095,9 @@ function BrowseContent({
           )}
         </div>
       ) : layout === 'grid' ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {items.map((item) => (
-            <GridCard key={item.id} item={item} context={contextFor(item)} onSelectMod={onSelectMod} />
-          ))}
-        </div>
+        <BrowseTileResults items={items} contextFor={contextFor} onSelectMod={onSelectMod} />
       ) : (
-        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {items.map((item) => (
-            <ListCard key={item.id} item={item} context={contextFor(item)} onSelectMod={onSelectMod} />
-          ))}
-        </ul>
+        <BrowseListResults items={items} contextFor={contextFor} onSelectMod={onSelectMod} />
       )}
 
       {/* Infinite scroll sentinel */}
@@ -1089,180 +1125,5 @@ function BrowseContent({
         <p className="py-4 text-center text-xs text-muted-foreground">All results loaded</p>
       )}
     </div>
-  );
-}
-
-function CuratedBadge() {
-  return (
-    <span className="shrink-0 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">
-      Curated
-    </span>
-  );
-}
-
-function ContextLabels({ item, context }: { item: BrowseItem; context: ItemContext | null }) {
-  return (
-    <div className="flex flex-wrap gap-1 text-[10px]">
-      <span className="rounded-full border border-border px-2 py-0.5 text-muted-foreground">
-        Source: {item.source === 'curated' ? 'Agora registry' : 'Modrinth'}
-      </span>
-      {context?.compatibility === 'compatible' && (
-        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-green-700 dark:text-green-300">
-          Compatible with {context.instanceName} · {context.loader} · MC {context.minecraftVersion}
-        </span>
-      )}
-      {context?.compatibility === 'major_match' && (
-        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-700 dark:text-amber-300">
-          May work with {context.instanceName} · same major Minecraft version
-        </span>
-      )}
-      {context?.installed && (
-        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">Installed</span>
-      )}
-      {context?.updateAvailable && (
-        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-700 dark:text-amber-300">Update available</span>
-      )}
-    </div>
-  );
-}
-
-function GridCard({ item, context, onSelectMod }: { item: BrowseItem; context: ItemContext | null; onSelectMod?: (id: string) => void }) {
-  return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden flex flex-col">
-      {item.iconUrl && (
-        <div className="aspect-video bg-muted flex items-center justify-center p-4">
-          <img
-            src={item.iconUrl}
-            alt={item.name}
-            className="h-full w-full object-contain"
-          />
-        </div>
-      )}
-      <div className="flex flex-col gap-2 p-4 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="font-semibold truncate">{item.name}</h3>
-          {item.source === 'curated' && <CuratedBadge />}
-        </div>
-        <ContextLabels item={item} context={context} />
-        {context?.whyRecommended && (
-          <p className="text-[10px] text-muted-foreground">Why: {context.whyRecommended}</p>
-        )}
-        {item.registryItem ? (
-          <>
-            <p className="text-xs text-muted-foreground">
-              {item.registryItem.content_type} · {item.registryItem.download_strategy}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              ↑ {item.registryItem.upvotes} · ↓ {item.registryItem.downvotes}
-            </p>
-          </>
-        ) : item.modrinthResult ? (
-          <>
-            <p className="text-xs text-muted-foreground">by {item.modrinthResult.author}</p>
-            <p className="text-xs text-muted-foreground">
-              ↓ {item.modrinthResult.downloads.toLocaleString()} · ★ {item.modrinthResult.follows.toLocaleString()}
-            </p>
-          </>
-        ) : null}
-        {item.description && (
-          <p className="text-xs text-muted-foreground line-clamp-2">{item.description}</p>
-        )}
-        {item.modrinthResult && item.modrinthResult.versions.length > 0 && (
-          <p className="text-[10px] text-muted-foreground">
-            MC: {item.modrinthResult.versions.slice(0, 3).join(', ')}
-            {item.modrinthResult.versions.length > 3 ? ` +${item.modrinthResult.versions.length - 3}` : ''}
-          </p>
-        )}
-        <div className="mt-auto pt-2">
-          <button
-            onClick={() => onSelectMod?.(item.id)}
-            className="w-full rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            View Details
-          </button>
-          {item.modrinthResult && (
-            <a
-              href={`https://modrinth.com/${item.modrinthResult.project_type}/${item.modrinthResult.slug}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block mt-1 text-[10px] text-muted-foreground hover:text-foreground text-center"
-            >
-              View on Modrinth ↗
-            </a>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ListCard({ item, context, onSelectMod }: { item: BrowseItem; context: ItemContext | null; onSelectMod?: (id: string) => void }) {
-  return (
-    <li className="rounded-xl border border-border bg-card p-4">
-      <div className="flex items-start gap-3">
-        {item.iconUrl ? (
-          <img
-            src={item.iconUrl}
-            alt={item.name}
-            className="h-12 w-12 rounded-lg border object-contain border-border"
-          />
-        ) : (
-          <div className="h-12 w-12 rounded-lg border border-dashed border-border flex items-center justify-center text-xs text-muted-foreground">
-            ?
-          </div>
-        )}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="font-semibold truncate">{item.name}</h3>
-            {item.source === 'curated' && <CuratedBadge />}
-          </div>
-          <ContextLabels item={item} context={context} />
-          {context?.whyRecommended && (
-            <p className="mt-1 text-[10px] text-muted-foreground">Why: {context.whyRecommended}</p>
-          )}
-          {item.registryItem ? (
-            <>
-              <p className="text-xs text-muted-foreground">
-                {item.registryItem.content_type} · {item.registryItem.download_strategy}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                ↑ {item.registryItem.upvotes} · ↓ {item.registryItem.downvotes} · net {item.registryItem.net_score}
-              </p>
-            </>
-          ) : item.modrinthResult ? (
-            <>
-              <p className="text-xs text-muted-foreground">by {item.modrinthResult.author}</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                ↓ {item.modrinthResult.downloads.toLocaleString()} · ★ {item.modrinthResult.follows.toLocaleString()}
-              </p>
-            </>
-          ) : null}
-          {item.modrinthResult && item.modrinthResult.versions.length > 0 && (
-            <p className="text-[10px] text-muted-foreground mt-2">
-              MC: {item.modrinthResult.versions.slice(0, 4).join(', ')}
-              {item.modrinthResult.versions.length > 4 ? ` +${item.modrinthResult.versions.length - 4}` : ''}
-            </p>
-          )}
-        </div>
-      </div>
-      <div className="mt-3">
-        <button
-          onClick={() => onSelectMod?.(item.id)}
-          className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          View Details
-        </button>
-        {item.modrinthResult && (
-          <a
-            href={`https://modrinth.com/${item.modrinthResult.project_type}/${item.modrinthResult.slug}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-2 text-[10px] text-muted-foreground hover:text-foreground"
-          >
-            View on Modrinth ↗
-          </a>
-        )}
-      </div>
-    </li>
   );
 }

@@ -64,6 +64,7 @@ import {
   type LockfileDriftReport,
 } from '../lib/tauri';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
+import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { ImagePlus, Play } from 'lucide-react';
 
 function installedModKey(mod: InstalledMod): string {
@@ -1039,27 +1040,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   Rename
                 </button>
               </h2>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!onLaunch || playBusy) return;
-                  setPlayBusy(true);
-                  setError(null);
-                  try {
-                    await onLaunch(instanceId);
-                  } catch (cause) {
-                    setError(formatError(cause));
-                  } finally {
-                    setPlayBusy(false);
-                  }
-                }}
-                disabled={!onLaunch || playBusy}
-                className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label={`Play ${row?.name ?? 'instance'}`}
-              >
-                <Play className="h-5 w-5 fill-current" aria-hidden="true" />
-                {playBusy ? 'Starting…' : 'Play'}
-              </button>
+
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               MC {row?.minecraft_version} · {manifest?.loader} {manifest?.loader_version}
@@ -1090,7 +1071,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 </>
               )}
               {row?.last_launched_at && (
-                <span className="ml-2">· Last launched {row.last_launched_at}</span>
+                <span className="ml-2">· Last launched {formatInstalledDate(row.last_launched_at)}</span>
               )}
               {row?.is_modpack && !row.is_locked && (
                 <button
@@ -1106,7 +1087,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col items-end gap-3 self-end xl:self-end">
+            <div className="flex flex-wrap justify-end gap-2">
             <button
               onClick={() => {
                 setPackInstallOpen(true);
@@ -1130,6 +1112,28 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               title="Open instance folder in file explorer"
             >
               📂 Open in Folder
+            </button>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!onLaunch || playBusy) return;
+                setPlayBusy(true);
+                setError(null);
+                try {
+                  await onLaunch(instanceId);
+                } catch (cause) {
+                  setError(formatError(cause));
+                } finally {
+                  setPlayBusy(false);
+                }
+              }}
+              disabled={!onLaunch || playBusy}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={`Play ${row?.name ?? 'instance'}`}
+            >
+              <Play className="h-5 w-5 fill-current" aria-hidden="true" />
+              {playBusy ? 'Starting…' : 'Play'}
             </button>
           </div>
         </div>
@@ -1827,7 +1831,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             />
 
             {lockfileText.trim() ? (
-              <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
                 <button
                   onClick={() => void handleVerifyLockfile()}
                   disabled={lockfileBusy !== null}
