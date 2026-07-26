@@ -379,6 +379,43 @@ export interface InstanceDetail {
   manifest: InstanceManifest | null;
 }
 
+export type CurationStatus = 'curated' | 'under_review' | 'uncurated' | 'archived' | 'unknown';
+export type MetadataStatus = 'complete' | 'partial' | 'unavailable';
+
+export interface InstalledContentRow {
+  key: string;
+  filename: string;
+  display_name: string;
+  version: string | null;
+  content_type: string;
+  enabled: boolean;
+  installed_at: string;
+  source: string;
+  source_label: string;
+  source_url: string | null;
+  registry_id: string | null;
+  modrinth_id: string | null;
+  mod_jar_id: string | null;
+  loader_mod_id: string | null;
+  size_bytes: number | null;
+  file_present: boolean;
+  resolved_path: string | null;
+  author: string | null;
+  categories: string[];
+  icon_url: string | null;
+  curation_status: CurationStatus;
+  agora_score: number | null;
+  modrinth_downloads: number | null;
+  metadata_status: MetadataStatus;
+}
+
+export interface InstalledContentMetadata {
+  key: string;
+  display_name: string | null;
+  icon_url: string | null;
+  author: string | null;
+}
+
 export interface LoaderVersionSummary {
   loader: string;
   mc_version: string;
@@ -468,6 +505,13 @@ export const listPackMods = (packId: string) =>
 export const listInstances = () => invoke<InstanceRow[]>('list_instances');
 export const getInstanceDetail = (instanceId: string) =>
   invoke<InstanceDetail | null>('get_instance_detail', { instanceId });
+export const listInstanceContent = (instanceId: string, contentType?: string) =>
+  invoke<InstalledContentRow[]>('list_instance_content', {
+    instanceId,
+    contentType: contentType ?? null,
+  });
+export const enrichInstanceContent = (instanceId: string) =>
+  invoke<InstalledContentMetadata[]>('enrich_instance_content', { instanceId });
 export const createInstance = (request: CreateInstanceRequest) =>
   invoke<InstanceRow>('create_instance', { request });
 export const deleteInstance = (instanceId: string) =>

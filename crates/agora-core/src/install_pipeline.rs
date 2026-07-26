@@ -174,6 +174,10 @@ pub struct ArtifactMetadata {
     pub registry_id: Option<String>,
     pub modrinth_id: Option<String>,
     pub content_type: String,
+    /// Human-readable release/version number. This is intentionally separate
+    /// from `ResolvedDownload.version_id`, which may be a Modrinth UUID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +428,9 @@ pub enum ResolvedOperation {
         /// every content collection for the filename.
         content_type: Option<String>,
     },
+    BatchRemove {
+        operations: Vec<ResolvedOperation>,
+    },
     BatchUpdate {
         operations: Vec<ResolvedOperation>,
     },
@@ -467,6 +474,9 @@ pub enum InstallAction {
     },
     Remove {
         filename: String,
+    },
+    BatchRemove {
+        filenames: Vec<String>,
     },
     BatchUpdate {
         items: Vec<BatchUpdateItem>,
@@ -883,6 +893,67 @@ impl InstallPipeline {
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
                             message: "A batch-update plan contained a non-update operation.".into(),
+                        }),
+                    }
+                }
+            }
+            ResolvedOperation::BatchRemove { operations } => {
+                if operations.is_empty() {
+                    blocking_errors.push(PlanError {
+                        code: "ERR_EMPTY_BATCH".into(),
+                        message: "No content was selected for removal.".into(),
+                    });
+                }
+                for operation in operations {
+                    match operation {
+                        ResolvedOperation::Remove {
+                            target_filename,
+                            reverse_dependents,
+                            content_type: hint_content_type,
+                        } => {
+                            if validate_filename(target_filename).is_err() {
+                                blocking_errors.push(PlanError {
+                                    code: "ERR_UNSAFE_FILENAME".into(),
+                                    message: format!("Unsafe removal filename: {target_filename}"),
+                                });
+                            } else if installed
+                                .iter()
+                                .any(|item| item.filename == *target_filename)
+                                || instance_dir.join("mods").join(target_filename).is_file()
+                            {
+                                let ct = hint_content_type.clone().or_else(|| {
+                                    installed
+                                        .iter()
+                                        .find(|item| item.filename == *target_filename)
+                                        .map(|item| item.content_type.clone())
+                                });
+                                files_to_remove.push(FileRemove {
+                                    filename: target_filename.clone(),
+                                    content_type: ct,
+                                });
+                            } else {
+                                blocking_errors.push(PlanError {
+                                    code: "ERR_NOT_INSTALLED".into(),
+                                    message: format!(
+                                        "{target_filename} is not installed in this instance."
+                                    ),
+                                });
+                            }
+                            for dependent in reverse_dependents {
+                                if dependent.requirement == Requirement::Required {
+                                    blocking_errors.push(PlanError {
+                                        code: "ERR_BROKEN_REVERSE_DEP".into(),
+                                        message: format!(
+                                            "Removing {target_filename} would break required dependency for {}.",
+                                            dependent.mod_jar_id
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        _ => blocking_errors.push(PlanError {
+                            code: "ERR_INVALID_BATCH_OPERATION".into(),
+                            message: "A batch-remove plan contained a non-remove operation.".into(),
                         }),
                     }
                 }
@@ -1975,7 +2046,10 @@ fn prepare_manifest(
                 ResolvedArtifact::LocalFile(_) => None,
             },
             version: match &add.artifact {
-                ResolvedArtifact::Download(download) => Some(download.version_id.clone()),
+                ResolvedArtifact::Download(download) => metadata
+                    .version
+                    .clone()
+                    .or_else(|| Some(download.version_id.clone())),
                 ResolvedArtifact::LocalFile(_) => None,
             },
             sha256,
@@ -2415,6 +2489,7 @@ mod tests {
                 registry_id: Some("fabric-api".into()),
                 modrinth_id: Some("P7dR8mSH".into()),
                 content_type: "mod".into(),
+                version: None,
             },
         });
         assert_eq!(
@@ -3617,6 +3692,7 @@ mod tests {
                 registry_id: Some(item_id.into()),
                 modrinth_id: None,
                 content_type: "mod".into(),
+                version: None,
             },
         })
     }
@@ -3763,6 +3839,7 @@ mod tests {
                         registry_id: Some("test".into()),
                         modrinth_id: None,
                         content_type: "mod".into(),
+                        version: None,
                     },
                 }),
             },

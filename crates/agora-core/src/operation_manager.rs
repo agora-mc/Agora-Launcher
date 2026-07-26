@@ -817,6 +817,7 @@ mod tests {
                         registry_id: None,
                         modrinth_id: None,
                         content_type: "mod".into(),
+                        version: None,
                     },
                 }),
             },

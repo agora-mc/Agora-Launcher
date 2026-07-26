@@ -351,6 +351,8 @@ function ReviewView({
   const needsReplan = plan.pendingChoices.length > 0;
   const actionLabel = plan.intent.action.type === 'remove'
     ? 'Remove Safely'
+    : plan.intent.action.type === 'batch-remove'
+      ? 'Remove Selected Safely'
     : plan.intent.action.type === 'batch-update'
       ? 'Apply Updates'
       : plan.intent.action.type === 'batch-install'

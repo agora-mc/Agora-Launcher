@@ -17,7 +17,16 @@ use crate::instance_service::InstanceService;
 use crate::models::{InstalledMod, InstanceManifest, InstanceRow};
 
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct CachedModrinthProjectMetadata {
+    pub project_id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub icon_url: Option<String>,
+}
 
 // --- Modrinth project full-details types ---
 
@@ -34,6 +43,134 @@ pub(crate) struct ModrinthProjectFullRaw {
     pub(crate) updated: Option<String>,
     #[serde(default)]
     pub(crate) gallery: Option<Vec<ModrinthGalleryImageRaw>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthProjectIdentity {
+    id: String,
+    title: String,
+    icon_url: Option<String>,
+    team: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModrinthProjectMetadata {
+    pub title: String,
+    pub icon_url: Option<String>,
+    pub author: Option<String>,
+}
+
+pub fn load_cached_project_metadata(
+    ctx: &Ctx,
+    cache_keys: &[String],
+) -> LauncherResult<HashMap<String, CachedModrinthProjectMetadata>> {
+    let conn = db::local_state_connection(&ctx.paths.local_state_db()).map_err(|error| {
+        LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: error.to_string(),
+        }
+    })?;
+    let mut cached = HashMap::new();
+    for chunk in cache_keys.chunks(500) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "SELECT cache_key, project_id, title, author, icon_url FROM modrinth_content_metadata_cache WHERE cache_key IN ({placeholders})"
+        );
+        let mut statement = match conn.prepare(&query) {
+            Ok(statement) => statement,
+            Err(_) => return Ok(HashMap::new()),
+        };
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    CachedModrinthProjectMetadata {
+                        project_id: row.get(1)?,
+                        title: row.get(2)?,
+                        author: row.get(3)?,
+                        icon_url: row.get(4)?,
+                    },
+                ))
+            })
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_INVALID_QUERY".into(),
+                message: error.to_string(),
+            })?;
+        for row in rows {
+            let (cache_key, metadata) = row.map_err(|error| LauncherError::Generic {
+                code: "ERR_INVALID_QUERY".into(),
+                message: error.to_string(),
+            })?;
+            cached.insert(cache_key, metadata);
+        }
+    }
+    Ok(cached)
+}
+
+pub fn store_cached_project_metadata(
+    ctx: &Ctx,
+    entries: &[(String, String, ModrinthProjectMetadata)],
+) -> LauncherResult<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let mut conn = db::local_state_connection(&ctx.paths.local_state_db()).map_err(|error| {
+        LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: error.to_string(),
+        }
+    })?;
+    let transaction = conn.transaction().map_err(|error| LauncherError::Generic {
+        code: "ERR_LOCAL_STATE_FAILED".into(),
+        message: error.to_string(),
+    })?;
+    for (cache_key, project_id, metadata) in entries {
+        transaction
+            .execute(
+                "INSERT INTO modrinth_content_metadata_cache (cache_key, project_id, title, author, icon_url, fetched_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(cache_key) DO UPDATE SET project_id = excluded.project_id, title = excluded.title, author = excluded.author, icon_url = excluded.icon_url, fetched_at = excluded.fetched_at",
+                rusqlite::params![
+                    cache_key,
+                    project_id,
+                    metadata.title,
+                    metadata.author,
+                    metadata.icon_url,
+                    chrono::Utc::now().to_rfc3339(),
+                ],
+            )
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: error.to_string(),
+        })?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthTeamMember {
+    user: ModrinthTeamUser,
+    role: String,
+    #[serde(default)]
+    ordering: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModrinthTeamUser {
+    username: Option<String>,
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1059,6 +1196,113 @@ impl ModrinthService {
                 .filter_map(|g| g.url.filter(|u| u.starts_with("https://")))
                 .collect(),
         })
+    }
+
+    /// Resolve project titles and authors for multiple Modrinth projects in one
+    /// backend operation. Project identities are fetched in batches, then
+    /// shared team IDs are deduplicated before their member lists are queried.
+    pub async fn fetch_project_metadata(
+        &self,
+        project_ids: &[String],
+    ) -> LauncherResult<HashMap<String, ModrinthProjectMetadata>> {
+        self.check_enabled()?;
+        let ids = project_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let clients = HttpClients::new()?;
+        let mut projects = Vec::new();
+        for chunk in ids.chunks(100) {
+            let encoded_ids =
+                serde_json::to_string(chunk).map_err(|error| LauncherError::Generic {
+                    code: "ERR_MODRINTH_METADATA".into(),
+                    message: error.to_string(),
+                })?;
+            let url = format!(
+                "https://api.modrinth.com/v2/projects?ids={}",
+                urlencoding::encode(&encoded_ids)
+            );
+            if let Ok(mut chunk_projects) = http_client::checked_get_json::<
+                Vec<ModrinthProjectIdentity>,
+            >(&clients, ClientCategory::Modrinth, &url)
+            .await
+            {
+                projects.append(&mut chunk_projects);
+            }
+        }
+        let mut team_ids = HashSet::new();
+        let mut project_teams = HashMap::new();
+        for project in &projects {
+            if let Some(team) = project.team.clone().filter(|team| !team.trim().is_empty()) {
+                team_ids.insert(team.clone());
+                project_teams.insert(project.id.clone(), team);
+            }
+        }
+
+        let mut team_authors = HashMap::new();
+        for team_id in team_ids {
+            let url = format!(
+                "https://api.modrinth.com/v2/team/{}/members",
+                urlencoding::encode(&team_id)
+            );
+            let members: Vec<ModrinthTeamMember> =
+                match http_client::checked_get_json(&clients, ClientCategory::Modrinth, &url).await
+                {
+                    Ok(members) => members,
+                    Err(_) => continue,
+                };
+            let author = members
+                .iter()
+                .min_by_key(|member| {
+                    let role = member.role.to_ascii_lowercase();
+                    let role_rank = if role == "owner" {
+                        0
+                    } else if role.contains("project lead") || role == "lead" {
+                        1
+                    } else if role == "admin" {
+                        2
+                    } else if role == "maintainer" {
+                        3
+                    } else {
+                        4
+                    };
+                    (role_rank, member.ordering)
+                })
+                .and_then(|member| {
+                    member
+                        .user
+                        .username
+                        .clone()
+                        .or_else(|| member.user.name.clone())
+                })
+                .filter(|author| !author.trim().is_empty());
+            if let Some(author) = author {
+                team_authors.insert(team_id, author);
+            }
+        }
+
+        let teams_by_project = project_teams;
+        Ok(projects
+            .into_iter()
+            .map(|project| {
+                let author = teams_by_project
+                    .get(&project.id)
+                    .and_then(|team_id| team_authors.get(team_id))
+                    .cloned();
+                (
+                    project.id,
+                    ModrinthProjectMetadata {
+                        title: project.title,
+                        icon_url: project.icon_url,
+                        author,
+                    },
+                )
+            })
+            .collect())
     }
 
     /// Resolve Modrinth-published per-file metadata (URL + sha1 + sha512 + size).

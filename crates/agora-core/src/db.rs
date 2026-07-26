@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 7;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 8;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -351,6 +351,27 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         );
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (7)",
+            [],
+        )?;
+    }
+
+    // Migration v8: cache installed Modrinth project metadata by the physical
+    // content identity so unchanged rows never trigger another API fetch.
+    if current < 8 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS modrinth_content_metadata_cache (
+                 cache_key TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 author TEXT,
+                 icon_url TEXT,
+                 fetched_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_modrinth_content_cache_project
+                 ON modrinth_content_metadata_cache (project_id);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (8)",
             [],
         )?;
     }

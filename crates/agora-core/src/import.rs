@@ -70,6 +70,20 @@ fn sanitize(name: &str) -> String {
 }
 
 const MAX_MRPACK_FILE_BYTES: usize = 500 * 1024 * 1024;
+const MAX_MRPACK_OVERRIDE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_MRPACK_OVERRIDE_FILES: usize = 5000;
+const ALLOWED_OVERRIDE_PREFIXES: &[&str] = &[
+    "config/",
+    "defaultconfigs/",
+    "resourcepacks/",
+    "shaderpacks/",
+    "datapacks/",
+    "kubejs/",
+];
+const BANNED_OVERRIDE_EXTENSIONS: &[&str] = &[
+    ".jar", ".class", ".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".so", ".dylib", ".msi",
+    ".dmg",
+];
 
 const MRPACK_DOWNLOAD_ALLOWLIST: &[&str] = &[
     "cdn.modrinth.com",
@@ -151,6 +165,46 @@ fn modrinth_file_identity(file: &MrpackFile) -> Option<ImportedModrinthFile> {
 
 fn manifest_path_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn mrpack_override_path(entry_name: &str, custom_prefix: &str) -> Option<PathBuf> {
+    let normalized = entry_name.replace('\\', "/");
+    let standard_prefixes = ["overrides/", "client-overrides/", "client_overrides/"];
+    let relative = standard_prefixes
+        .iter()
+        .find_map(|prefix| normalized.strip_prefix(prefix))
+        .or_else(|| {
+            let prefix = custom_prefix.trim_matches('/');
+            (!prefix.is_empty())
+                .then(|| normalized.strip_prefix(&format!("{prefix}/")))
+                .flatten()
+        })?;
+
+    if relative.is_empty()
+        || !ALLOWED_OVERRIDE_PREFIXES
+            .iter()
+            .any(|prefix| relative.starts_with(prefix))
+    {
+        return None;
+    }
+    Some(relative_archive_path(relative))
+}
+
+fn validate_override_extension(path: &Path) -> LauncherResult<()> {
+    let lower = manifest_path_key(path).to_ascii_lowercase();
+    if BANNED_OVERRIDE_EXTENSIONS
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+    {
+        return Err(import_error(
+            "ERR_SECURITY_VIOLATION",
+            format!(
+                "Pack overrides cannot contain executable files or mods: '{}'.",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn inventory_pack_content(
@@ -594,52 +648,53 @@ pub fn import_mrpack_with_progress(
             }
         }
 
-        if !index.overrides.is_empty() {
-            let override_prefix = index.overrides.trim_end_matches('/').to_string();
-            for i in 0..archive.len() {
-                let mut entry = match archive.by_index(i) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                let entry_name = entry.name().replace('\\', "/");
-                if entry_name == override_prefix
-                    || entry_name.starts_with(&format!("{override_prefix}/"))
-                {
-                    let relative = entry_name
-                        .strip_prefix(&format!("{override_prefix}/"))
-                        .unwrap_or(&entry_name);
-                    if relative.is_empty() {
-                        continue;
-                    }
-                    let relative_path = relative_archive_path(relative);
-                    assert_safe_path(target_dir, &relative_path)?;
-                    let dest = target_dir.join(&relative_path);
-                    if entry.is_dir() {
-                        fs::create_dir_all(&dest).map_err(|e| LauncherError::Generic {
-                            code: "ERR_IMPORT_MKDIR".into(),
-                            message: format!("Cannot create dir {dest:?}: {e}"),
-                        })?;
-                    } else {
-                        if let Some(parent) = dest.parent() {
-                            fs::create_dir_all(parent).map_err(|e| LauncherError::Generic {
-                                code: "ERR_IMPORT_MKDIR".into(),
-                                message: format!("Cannot create dir {parent:?}: {e}"),
-                            })?;
-                        }
-                        let mut buf = Vec::new();
-                        entry
-                            .read_to_end(&mut buf)
-                            .map_err(|e| LauncherError::Generic {
-                                code: "ERR_IMPORT_READ".into(),
-                                message: format!("Cannot read {entry_name}: {e}"),
-                            })?;
-                        fs::write(&dest, &buf).map_err(|e| LauncherError::Generic {
-                            code: "ERR_IMPORT_WRITE".into(),
-                            message: format!("Cannot write {:?}: {e}", dest),
-                        })?;
-                    }
-                }
+        let mut override_bytes = 0u64;
+        let mut override_files = 0usize;
+        for i in 0..archive.len() {
+            let mut entry = match archive.by_index(i) {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let entry_name = entry.name().replace('\\', "/");
+            let Some(relative_path) = mrpack_override_path(&entry_name, &index.overrides) else {
+                continue;
+            };
+            if entry.is_dir() {
+                continue;
             }
+            validate_override_extension(&relative_path)?;
+            assert_safe_path(target_dir, &relative_path)?;
+
+            override_files += 1;
+            override_bytes = override_bytes.saturating_add(entry.size());
+            if override_files > MAX_MRPACK_OVERRIDE_FILES
+                || override_bytes > MAX_MRPACK_OVERRIDE_BYTES
+                || entry.size() > MAX_MRPACK_FILE_BYTES as u64
+            {
+                return Err(import_error(
+                    "ERR_ZIP_BOMB",
+                    "Pack overrides exceed the extraction safety limits.",
+                ));
+            }
+
+            let dest = target_dir.join(&relative_path);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).map_err(|e| LauncherError::Generic {
+                    code: "ERR_IMPORT_MKDIR".into(),
+                    message: format!("Cannot create dir {parent:?}: {e}"),
+                })?;
+            }
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| LauncherError::Generic {
+                    code: "ERR_IMPORT_READ".into(),
+                    message: format!("Cannot read {entry_name}: {e}"),
+                })?;
+            fs::write(&dest, &buf).map_err(|e| LauncherError::Generic {
+                code: "ERR_IMPORT_WRITE".into(),
+                message: format!("Cannot write {:?}: {e}", dest),
+            })?;
         }
 
         let mods = inventory_pack_content(target_dir, "mods", "mod", &modrinth_files)?;
@@ -827,16 +882,20 @@ pub fn import_prism_zip(
                 message: format!("Read error: {e}"),
             })?;
             let entry_name = entry.name().replace('\\', "/");
-            if entry_name == "instance.cfg"
-                || entry_name == "mmc-pack.json"
-                || entry_name.starts_with("minecraft/")
-            {
+            if entry_name == "instance.cfg" || entry_name == "mmc-pack.json" {
+                continue;
+            }
+            let relative_name = entry_name
+                .strip_prefix("minecraft/")
+                .or_else(|| entry_name.strip_prefix(".minecraft/"))
+                .unwrap_or(&entry_name);
+            if relative_name.is_empty() {
                 continue;
             }
             if entry.is_dir() {
                 continue;
             }
-            let relative_path = relative_archive_path(&entry_name);
+            let relative_path = relative_archive_path(relative_name);
             assert_safe_path(target_dir, &relative_path)?;
             let dest = target_dir.join(&relative_path);
             if let Some(parent) = dest.parent() {
@@ -856,11 +915,12 @@ pub fn import_prism_zip(
                 code: "ERR_IMPORT_WRITE".into(),
                 message: format!("Cannot write {:?}: {e}", dest),
             })?;
-            if entry_name.starts_with("mods/") {
+            if relative_name.starts_with("mods/") {
                 imported_mods += 1;
             }
         }
 
+        let identities = BTreeMap::new();
         let manifest = InstanceManifest {
             instance_id: target.instance_id.clone(),
             name: name.clone(),
@@ -869,11 +929,16 @@ pub fn import_prism_zip(
             loader_version: loader_version.clone(),
             is_locked: false,
             created_from_pack: None,
-            mods: vec![],
-            resourcepacks: vec![],
-            shaders: vec![],
-            datapacks: vec![],
-            worlds: vec![],
+            mods: inventory_pack_content(target_dir, "mods", "mod", &identities)?,
+            resourcepacks: inventory_pack_content(
+                target_dir,
+                "resourcepacks",
+                "resourcepack",
+                &identities,
+            )?,
+            shaders: inventory_pack_content(target_dir, "shaderpacks", "shader", &identities)?,
+            datapacks: inventory_pack_content(target_dir, "datapacks", "datapack", &identities)?,
+            worlds: inventory_pack_content(target_dir, "saves", "world", &identities)?,
             user_preferences: serde_json::json!({}),
         };
         let manifest_path = target_dir.join("instance_manifest.json");
@@ -1259,6 +1324,112 @@ mod tests {
             fs::read(instances_root.join("keep-me").join("sentinel")).unwrap(),
             b"safe"
         );
+    }
+
+    #[test]
+    fn test_import_mrpack_extracts_standard_client_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack_path = tmp.path().join("configured-pack.mrpack");
+        let file = fs::File::create(&mrpack_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+        writer.start_file("modrinth.index.json", options).unwrap();
+        writer
+            .write_all(br#"{"name":"configured-pack","dependencies":{},"files":[]}"#)
+            .unwrap();
+        writer
+            .start_file(
+                "overrides/config/fancymenu/customization/title_screen_layout.txt",
+                options,
+            )
+            .unwrap();
+        writer.write_all(b"custom title").unwrap();
+        writer
+            .start_file("client-overrides/config/client-only.toml", options)
+            .unwrap();
+        writer.write_all(b"client=true").unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        import_mrpack(&mrpack_path, &instances_root, false).unwrap();
+
+        let instance = instances_root.join("configured-pack");
+        assert_eq!(
+            fs::read(instance.join("config/fancymenu/customization/title_screen_layout.txt"))
+                .unwrap(),
+            b"custom title"
+        );
+        assert_eq!(
+            fs::read(instance.join("config/client-only.toml")).unwrap(),
+            b"client=true"
+        );
+    }
+
+    #[test]
+    fn test_import_mrpack_rejects_executable_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack_path = tmp.path().join("unsafe-pack.mrpack");
+        let file = fs::File::create(&mrpack_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+        writer.start_file("modrinth.index.json", options).unwrap();
+        writer
+            .write_all(br#"{"name":"unsafe-pack","dependencies":{},"files":[]}"#)
+            .unwrap();
+        writer
+            .start_file("overrides/config/payload.jar", options)
+            .unwrap();
+        writer.write_all(b"not a mod").unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        let error = import_mrpack(&mrpack_path, &instances_root, false).unwrap_err();
+
+        assert_eq!(error.code(), "ERR_SECURITY_VIOLATION");
+        assert!(!instances_root.join("unsafe-pack").exists());
+    }
+
+    #[test]
+    fn test_import_prism_zip_strips_minecraft_payload_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip_path = tmp.path().join("prism.zip");
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+        writer.start_file("instance.cfg", options).unwrap();
+        writer.write_all(b"name=Prism Configured\n").unwrap();
+        writer.start_file("mmc-pack.json", options).unwrap();
+        writer
+            .write_all(
+                br#"{"components":[{"uid":"net.minecraft","version":"1.21.1"},{"uid":"net.neoforged","version":"21.1.215"}]}"#,
+            )
+            .unwrap();
+        writer
+            .start_file("minecraft/mods/example.jar", options)
+            .unwrap();
+        writer.write_all(b"fake mod").unwrap();
+        writer
+            .start_file(
+                "minecraft/config/fancymenu/customization/title.txt",
+                options,
+            )
+            .unwrap();
+        writer.write_all(b"custom title").unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        let result = import_prism_zip(&zip_path, &instances_root, false).unwrap();
+
+        let instance = instances_root.join("prism-configured");
+        assert_eq!(result.imported_mods, 1);
+        assert!(instance.join("mods/example.jar").exists());
+        assert!(instance
+            .join("config/fancymenu/customization/title.txt")
+            .exists());
+        let manifest: InstanceManifest =
+            serde_json::from_slice(&fs::read(instance.join("instance_manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.mods.len(), 1);
     }
 
     #[test]

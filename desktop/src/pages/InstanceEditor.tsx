@@ -3,14 +3,17 @@ import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { DependencyPrompt } from '../components/DependencyPrompt';
 import { PackInstallProgressBar, usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent } from '../lib/installFlow';
 import {
   getInstanceDetail,
-  getRegistryItem,
-  fetchModrinthProject,
+  listInstanceContent,
+  enrichInstanceContent,
   enableInstanceMod,
   disableInstanceMod,
+  getDisablePlan,
+  checkInstanceUpdates,
   exportInstancePack,
   formatError,
   inspectJavaExecutable,
@@ -51,11 +54,16 @@ import {
   type RegistryItem,
   type PackModRow,
   type InstalledMod,
+  type InstalledContentRow,
+  type DisablePlan,
+  type DependentInfo,
+  type UpdateInfo,
   type Snapshot,
   type SnapshotDiff,
   type LoadoutProfile,
   type LockfileDriftReport,
 } from '../lib/tauri';
+import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { ImagePlus, Play } from 'lucide-react';
 
 function installedModKey(mod: InstalledMod): string {
@@ -74,20 +82,6 @@ function installedModSourceLabel(source: string): string {
   if (normalized === 'registry' || normalized === 'curated') return 'Agora Registry';
   if (normalized.includes('manual') || normalized === 'local') return 'Manual';
   return 'Other';
-}
-
-function formatInstalledAt(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(date);
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const year = date.getFullYear();
-  const hour24 = date.getHours();
-  const hour = hour24 % 12 || 12;
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  const meridiem = hour24 < 12 ? 'AM' : 'PM';
-  return `${weekday}, ${month}/${day}/${year} ${hour}:${minute} ${meridiem}`;
 }
 
 const CONTENT_KEYS = ['mods', 'resourcepacks', 'shaders', 'datapacks', 'worlds'] as const;
@@ -113,6 +107,38 @@ function installedModMetadataKey(mods: InstalledMod[] | undefined): string {
   return (mods ?? [])
     .map((mod) => `${installedModKey(mod)}:${installedModDetailId(mod) ?? ''}`)
     .join('|');
+}
+
+function fallbackContentRows(manifest: InstanceManifest | null): InstalledContentRow[] {
+  if (!manifest) return [];
+  return manifest.mods
+    .concat(manifest.resourcepacks, manifest.shaders, manifest.datapacks, manifest.worlds)
+    .map((entry) => ({
+      key: `${entry.content_type}:${entry.filename}:${entry.sha256}`,
+      filename: entry.filename,
+      display_name: entry.filename.replace(/\.[^.]+$/, ''),
+      version: entry.version,
+      content_type: entry.content_type,
+      enabled: entry.enabled,
+      installed_at: entry.installed_at,
+      source: entry.source,
+      source_label: installedModSourceLabel(entry.source),
+      source_url: entry.source_url ?? null,
+      registry_id: entry.registry_id,
+      modrinth_id: entry.modrinth_id,
+      mod_jar_id: entry.mod_jar_id ?? null,
+      loader_mod_id: entry.mod_jar_id ?? null,
+      size_bytes: null,
+      file_present: false,
+      resolved_path: null,
+      author: null,
+      categories: ['Uncategorized'],
+      icon_url: null,
+      curation_status: 'unknown' as const,
+      agora_score: null,
+      modrinth_downloads: null,
+      metadata_status: 'unavailable' as const,
+    }));
 }
 
 function safeIconUrl(value: unknown): string | null {
@@ -162,15 +188,16 @@ function previewJavaMajor(version: string | undefined): number {
 
 export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean> }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
-  const [modDisplayNames, setModDisplayNames] = useState<Record<string, string>>({});
-  const modDisplayNameCache = useRef<Map<string, string | null>>(new Map());
-  const modDisplayNameRequests = useRef<Map<string, Promise<string | null>>>(new Map());
+  const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
+  const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
+  const [contentAuthors, setContentAuthors] = useState<Record<string, string>>({});
+  const [contentDisplayNames, setContentDisplayNames] = useState<Record<string, string>>({});
+  const [contentIcons, setContentIcons] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [instanceCustomIcon, setInstanceCustomIcon] = useState<string | null>(null);
-  const [modIconUrls, setModIconUrls] = useState<Record<string, string>>({});
   const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
 
   const { advancedMode } = useAdvancedMode();
@@ -220,6 +247,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     intent: InstallIntent;
     instanceName: string;
   } | null>(null);
+  const [disablePlanTarget, setDisablePlanTarget] = useState<{
+    rows: InstalledContentRow[];
+    candidates: { key: string; dependent: DependentInfo }[];
+  } | null>(null);
 
   // Pack install state
   const [packInstallOpen, setPackInstallOpen] = useState(false);
@@ -253,7 +284,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   }, [packDropdownOpen]);
 
   useEffect(() => {
-    setModDisplayNames({});
+    setContentRowsLoaded(false);
+    setContentAuthors({});
+    setContentDisplayNames({});
+    setContentIcons({});
     let cancelled = false;
     (async () => {
       try {
@@ -286,10 +320,82 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     return () => { cancelled = true; };
   }, [instanceId]);
 
+  const refreshContent = async () => {
+    const result = await listInstanceContent(instanceId);
+    if (!Array.isArray(result)) throw new Error('Installed content inventory was unavailable.');
+    setContentRows((current) => {
+      const existingAuthors = new Map(current.map((row) => [row.key, row.author]));
+      return result.map((row) => ({
+        ...row,
+        display_name: contentDisplayNames[row.key] ?? row.display_name,
+        icon_url: row.icon_url ?? contentIcons[row.key] ?? null,
+        author: row.author ?? contentAuthors[row.key] ?? existingAuthors.get(row.key) ?? null,
+      }));
+    });
+    setContentRowsLoaded(true);
+    try {
+      const metadata = await enrichInstanceContent(instanceId);
+      if (Array.isArray(metadata)) applyContentMetadata(metadata);
+    } catch {
+      // Local inventory remains usable when Modrinth is offline or disabled.
+    }
+  };
+
+  const applyContentMetadata = (metadata: { key: string; display_name: string | null; icon_url: string | null; author: string | null }[]) => {
+    const displayNames = Object.fromEntries(
+      metadata
+        .filter((item): item is { key: string; display_name: string; icon_url: string | null; author: string | null } => Boolean(item.display_name))
+        .map((item) => [item.key, item.display_name] as const),
+    );
+    const authors = Object.fromEntries(
+      metadata
+        .filter((item) => Boolean(item.author))
+        .map((item) => [item.key, item.author as string] as const),
+    );
+    const icons = Object.fromEntries(
+      metadata
+        .filter((item) => Boolean(item.icon_url))
+        .map((item) => [item.key, item.icon_url as string] as const),
+    );
+    setContentDisplayNames(displayNames);
+    setContentIcons(icons);
+    setContentAuthors(authors);
+    setContentRows((current) => current.map((row) => ({
+      ...row,
+      display_name: displayNames[row.key] ?? row.display_name,
+      icon_url: row.icon_url ?? icons[row.key] ?? null,
+      author: row.author ?? authors[row.key] ?? null,
+    })));
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void listInstanceContent(instanceId)
+      .then((result) => {
+        if (!cancelled && Array.isArray(result)) {
+          setContentRows(result);
+          setContentRowsLoaded(true);
+          void enrichInstanceContent(instanceId)
+            .then((metadata) => {
+              if (!cancelled && Array.isArray(metadata)) applyContentMetadata(metadata);
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {
+        // Existing manifest data remains usable when the inventory command is
+        // unavailable during an older-webview upgrade or test fixture.
+      });
+    return () => { cancelled = true; };
+  }, [instanceId]);
+
   useEffect(() => {
     if (packInstallRevision === 0) return;
     void getInstanceDetail(instanceId)
-      .then((result) => setDetail(result))
+      .then((result) => {
+        setDetail(result);
+        return refreshContent();
+      })
       .catch((cause) => setError(formatError(cause)));
   }, [instanceId, packInstallRevision]);
 
@@ -314,95 +420,6 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   }, [activeTab, detail?.row, instanceGcMode, instanceJvmMemory, instanceJavaArgs, instanceAlwaysPreTouch, instanceJavaInspected?.version]);
 
   const modMetadataKey = installedModMetadataKey(detail?.manifest?.mods);
-
-  useEffect(() => {
-    const installedMods = detail?.manifest?.mods;
-    if (!installedMods) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const resolveDisplayName = async (mod: InstalledMod): Promise<string | null> => {
-      const identity = installedModDetailId(mod);
-      if (!identity) return null;
-      if (modDisplayNameCache.current.has(identity)) {
-        return modDisplayNameCache.current.get(identity) ?? null;
-      }
-
-      const pending = modDisplayNameRequests.current.get(identity);
-      if (pending) return pending;
-
-      const request = (async () => {
-        try {
-          if (mod.registry_id || !mod.modrinth_id) {
-            const item = await getRegistryItem(identity);
-            return item?.name ?? null;
-          }
-          const project = await fetchModrinthProject(mod.modrinth_id);
-          return project.title || null;
-        } catch {
-          return null;
-        }
-      })()
-        .then((name) => {
-          modDisplayNameCache.current.set(identity, name);
-          return name;
-        })
-        .finally(() => {
-          modDisplayNameRequests.current.delete(identity);
-        });
-      modDisplayNameRequests.current.set(identity, request);
-      return request;
-    };
-
-    void Promise.all(installedMods.map(async (mod) => {
-      const name = await resolveDisplayName(mod);
-      if (name) {
-        return name ? [installedModKey(mod), name] as const : null;
-      }
-      return null;
-    })).then((results) => {
-      if (cancelled) return;
-      setModDisplayNames((previous) => ({
-        ...previous,
-        ...Object.fromEntries(results.filter((result): result is readonly [string, string] => result !== null)),
-      }));
-    });
-
-    return () => { cancelled = true; };
-  }, [modMetadataKey]);
-
-  useEffect(() => {
-    const installedMods = detail?.manifest?.mods;
-    if (!installedMods) return;
-    let cancelled = false;
-    const resolveIcon = async (mod: InstalledMod): Promise<[string, string] | null> => {
-      const key = installedModKey(mod);
-      const identity = mod.modrinth_id || mod.registry_id;
-      if (!identity) return null;
-      try {
-        let iconUrl: string | null = null;
-        if (mod.registry_id) {
-          const item = await getRegistryItem(mod.registry_id);
-          iconUrl = safeIconUrl(item?.icon_url);
-          if (!iconUrl && item?.modrinth_id) {
-            iconUrl = safeIconUrl((await fetchModrinthProject(item.modrinth_id)).icon_url);
-          }
-        } else if (mod.modrinth_id) {
-          iconUrl = safeIconUrl((await fetchModrinthProject(mod.modrinth_id)).icon_url);
-        }
-        return iconUrl ? [key, iconUrl] : null;
-      } catch {
-        return null;
-      }
-    };
-    void Promise.all(installedMods.map(resolveIcon)).then((results) => {
-      if (cancelled) return;
-      setModIconUrls(Object.fromEntries(results.filter((result): result is [string, string] => result !== null)));
-    });
-    return () => { cancelled = true; };
-  }, [modMetadataKey]);
 
   const customModIconsKey = JSON.stringify(customModIconMap(detail?.manifest ?? null));
   useEffect(() => {
@@ -478,25 +495,112 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     beginCanonicalOperation({ type: 'remove', filename });
   };
 
-  const handleToggleMod = async (mod: InstalledMod) => {
+  const handleBulkRemove = (rows: InstalledContentRow[]): boolean => {
+    const filenames = Array.from(new Set(rows.map((content) => content.filename)));
+    if (filenames.length === 0) return false;
+    const preview = filenames.length <= 3
+      ? filenames.join(', ')
+      : `${filenames.slice(0, 3).join(', ')} and ${filenames.length - 3} more`;
+    if (!confirm(`Review one safe removal plan for ${filenames.length} selected item${filenames.length === 1 ? '' : 's'} (${preview})?`)) return false;
     setError(null);
-    try {
-      const enabled = !mod.enabled;
-      if (mod.enabled) {
-        await disableInstanceMod(instanceId, mod.filename);
-      } else {
-        await enableInstanceMod(instanceId, mod.filename);
+    beginCanonicalOperation({ type: 'batch-remove', filenames });
+    return true;
+  };
+
+  const updateLocalEnabled = (filename: string, enabled: boolean) => {
+    setDetail((current) => {
+      if (!current?.manifest) return current;
+      return {
+        ...current,
+        manifest: updateManifestEntryEnabled(current.manifest, filename, enabled),
+      };
+    });
+  };
+
+  const dependentCandidates = (plans: DisablePlan[]) => {
+    const candidates = new Map<string, { key: string; dependent: DependentInfo }>();
+    plans.flatMap((plan) => plan.dependents).forEach((dependent) => {
+      const key = `${dependent.filename}:${dependent.mod_id}`;
+      if (!candidates.has(key)) candidates.set(key, { key, dependent });
+    });
+    return Array.from(candidates.values());
+  };
+
+  const handleToggleMod = async (mod: InstalledContentRow): Promise<boolean> => {
+    setError(null);
+    const enabled = !mod.enabled;
+    if (mod.enabled && mod.content_type === 'mod') {
+      const plan = await getDisablePlan(instanceId, mod.filename);
+      if (plan.dependents.length > 0) {
+        setDisablePlanTarget({ rows: [mod], candidates: dependentCandidates([plan]) });
+        return false;
       }
-      setDetail((current) => {
-        if (!current?.manifest) return current;
-        return {
-          ...current,
-          manifest: updateManifestEntryEnabled(current.manifest, mod.filename, enabled),
-        };
-      });
-    } catch (e) {
-      setError(formatError(e));
     }
+    if (mod.enabled) {
+      await disableInstanceMod(instanceId, mod.filename);
+    } else {
+      await enableInstanceMod(instanceId, mod.filename);
+    }
+    updateLocalEnabled(mod.filename, enabled);
+    await refreshContent();
+    return true;
+  };
+
+  const handleBulkToggle = async (rows: InstalledContentRow[], enabled: boolean): Promise<boolean> => {
+    setError(null);
+    const targets = rows.filter((row) => row.enabled !== enabled);
+    if (targets.length === 0) return true;
+    if (!enabled) {
+      const plans: DisablePlan[] = [];
+      for (const target of targets.filter((row) => row.content_type === 'mod')) {
+        plans.push(await getDisablePlan(instanceId, target.filename));
+      }
+      if (plans.some((plan) => plan.dependents.length > 0)) {
+        setDisablePlanTarget({ rows: targets, candidates: dependentCandidates(plans) });
+        return false;
+      }
+    }
+    try {
+      for (const target of targets) {
+        if (enabled) await enableInstanceMod(instanceId, target.filename);
+        else await disableInstanceMod(instanceId, target.filename);
+      }
+    } catch (error) {
+      await refreshDetail().catch(() => undefined);
+      throw error;
+    }
+    await refreshDetail();
+    return true;
+  };
+
+  const handleDisablePlanConfirm = async (selectedKeys: string[]) => {
+    if (!disablePlanTarget) return;
+    setError(null);
+    const selected = new Set(selectedKeys);
+    const dependentFilenames = disablePlanTarget.candidates
+      .filter((candidate) => selected.has(candidate.key))
+      .map((candidate) => candidate.dependent.filename);
+    const filenames = Array.from(new Set([
+      ...disablePlanTarget.rows.filter((row) => row.enabled).map((row) => row.filename),
+      ...dependentFilenames,
+    ]));
+    try {
+      for (const filename of filenames) {
+        await disableInstanceMod(instanceId, filename);
+      }
+      await refreshDetail();
+      setDisablePlanTarget(null);
+    } catch (error) {
+      setError(formatError(error));
+    }
+  };
+
+  const handleApplyUpdate = (row: InstalledContentRow, update: UpdateInfo) => {
+    if (row?.enabled === false || !row.mod_jar_id && !row.modrinth_id && !row.registry_id) return;
+    beginCanonicalOperation({
+      type: 'batch-update',
+      items: [{ itemId: update.mod_jar_id, targetVersion: update.target_version }],
+    });
   };
 
   const handleSetInstanceIcon = async () => {
@@ -607,6 +711,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const refreshDetail = async () => {
     const result = await getInstanceDetail(instanceId);
     setDetail(result);
+    await refreshContent();
   };
 
   const handleUnlock = async () => {
@@ -867,6 +972,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const row = detail?.row;
   const manifest = detail?.manifest;
   const mods = manifest?.mods ?? [];
+  const displayedContentRows = contentRowsLoaded ? contentRows : fallbackContentRows(manifest ?? null);
   const packInstall = getTaskForInstance(instanceId);
 
   useEffect(() => {
@@ -875,9 +981,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     }
   }, [packInstall?.error, packInstall?.status]);
 
-  const handleOpenInstalledMod = (mod: InstalledMod) => {
+  const handleOpenInstalledMod = (mod: InstalledContentRow | InstalledMod) => {
     const itemId = mod.registry_id || mod.modrinth_id || mod.mod_jar_id;
     if (itemId) onOpenModDetail?.(itemId);
+  };
+
+  const handleRevealInstalledContent = (content: InstalledContentRow) => {
+    if (content.resolved_path) void revealPath(content.resolved_path).catch((cause) => setError(formatError(cause)));
   };
 
   if (loading) {
@@ -1069,6 +1179,47 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       </div>
 
       {activeTab === 'mods' && (
+        <InstalledContentPanel
+          contentType="mod"
+          rows={displayedContentRows.filter((content) => content.content_type === 'mod')}
+          locked={!!row?.is_locked}
+          addLabel="Import Mod"
+          onAdd={handleImportMod}
+          onToggle={handleToggleMod}
+          onBulkToggle={handleBulkToggle}
+          onBulkRemove={handleBulkRemove}
+          onRemove={(content) => handleRemove(content.filename)}
+          onOpenDetails={handleOpenInstalledMod}
+          onRevealFile={handleRevealInstalledContent}
+          onCheckUpdates={() => checkInstanceUpdates(instanceId)}
+          onApplyUpdate={handleApplyUpdate}
+          onSetCustomIcon={(content) => {
+            const mod = mods.find((entry) => entry.filename === content.filename);
+            if (mod) void handleSetModIcon(mod);
+          }}
+          onError={setError}
+          onDrop={handleDrop}
+          extraActions={<button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>}
+          iconForRow={(content) => {
+            const mod = mods.find((entry) => entry.filename === content.filename);
+            return mod ? modCustomIcons[installedModKey(mod)] ?? null : null;
+          }}
+        />
+      )}
+
+      {activeTab === 'resourcepacks' && (
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+      )}
+
+      {activeTab === 'shaders' && (
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+      )}
+
+      {activeTab === 'datapacks' && (
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+      )}
+
+      {activeTab === 'mods' && (
         <>
       {/* Pack install progress */}
       {packInstallOpen && (
@@ -1215,261 +1366,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </section>
       )}
 
-      {/* Mods list */}
-      <section
-        className="rounded-xl border border-border bg-card p-4"
-        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-        onDrop={handleDrop}
-      >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-sm">Installed Mods ({mods.length})</h3>
-          <div className="flex gap-2">
-            <button
-              onClick={handleImportMod}
-              disabled={!!row?.is_locked}
-              className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-              title={row?.is_locked ? 'Unlock the instance to add mods.' : undefined}
-            >
-              📥 Import Mod
-            </button>
-          </div>
-        </div>
-        {row?.is_locked ? (
-          <p className="text-xs text-muted-foreground mb-3">
-            Instance is locked. Unlock it to add or remove mods.
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground mb-3">
-            Drag and drop a .jar mod, or a .mrpack / .agora-pack.json pack file, here to install it.
-          </p>
-        )}
-        {mods.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No mods installed.</p>
-        ) : (
-          <div className="space-y-2">
-            {mods.map((mod) => (
-              <div
-                key={mod.filename}
-                className={`group flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm transition-colors ${
-                  installedModDetailId(mod)
-                    ? 'cursor-pointer hover:border-primary/50 hover:bg-accent/60'
-                    : ''
-                } ${!mod.enabled ? 'opacity-50' : ''}`}
-               >
-                {(modCustomIcons[installedModKey(mod)] || modIconUrls[installedModKey(mod)]) ? (
-                  <img
-                    src={modCustomIcons[installedModKey(mod)] || modIconUrls[installedModKey(mod)]}
-                    alt=""
-                    className="mr-3 h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
-                  />
-                ) : (
-                  <div className="mr-3 h-10 w-10 shrink-0 rounded-lg border border-dashed border-border" aria-hidden="true" />
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleOpenInstalledMod(mod)}
-                  disabled={!installedModDetailId(mod)}
-                  className="min-w-0 flex-1 text-left disabled:cursor-default enabled:cursor-pointer"
-                  title={installedModDetailId(mod) ? 'View mod details' : 'Mod details unavailable'}
-                >
-                  <span className={`font-medium truncate block group-hover:text-primary ${!mod.enabled ? 'line-through' : ''}`}>
-                    {modDisplayNames[installedModKey(mod)] ?? mod.filename}
-                  </span>
-                  <span className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                    <span className="truncate">{mod.filename}</span>
-                    <span className="rounded-full bg-primary/10 text-primary px-1.5 py-0.5 text-[10px]">{installedModSourceLabel(mod.source)}</span>
-                    <span>Installed {formatInstalledAt(mod.installed_at)}</span>
-                    {!mod.enabled && <span className="text-yellow-600 dark:text-yellow-400 font-medium">disabled</span>}
-                    {installedModDetailId(mod) && (
-                      <span className="text-primary font-medium">View details</span>
-                    )}
-                  </span>
-                </button>
-                {!row?.is_locked && (
-                  <button
-                    type="button"
-                    onClick={() => handleSetModIcon(mod)}
-                    className="ml-2 inline-flex items-center gap-1 text-xs text-foreground hover:text-primary whitespace-nowrap"
-                    title="Set a custom mod image"
-                  >
-                    <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
-                    Image
-                  </button>
-                )}
-                {!row?.is_locked && (
-                  <button
-                    onClick={() => handleToggleMod(mod)}
-                    className="ml-2 text-xs text-foreground hover:text-primary whitespace-nowrap"
-                    title={mod.enabled ? 'Disable mod' : 'Enable mod'}
-                  >
-                    {mod.enabled ? '🔌 Disable' : '🔌 Enable'}
-                  </button>
-                )}
-                <button
-                  onClick={() => handleRemove(mod.filename)}
-                  disabled={!!row?.is_locked}
-                  className="ml-2 text-xs text-destructive hover:underline disabled:opacity-50 whitespace-nowrap"
-                  title={row?.is_locked ? 'Unlock the instance to remove mods.' : undefined}
-                >
-                  {row?.is_locked ? '🔒' : 'Remove'}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <button
-        onClick={() => onOpenBrowseForInstance?.(instanceId)}
-        disabled={!!row?.is_locked}
-        className="rounded-lg border border-dashed border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed w-full"
-        title={row?.is_locked ? 'Unlock the instance to add mods.' : undefined}
-      >
-        {row?.is_locked ? '🔒 Instance Locked' : '+ Add Mod'}
-      </button>
-
         </>
-      )}
-
-      {activeTab === 'resourcepacks' && (
-        <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-semibold text-sm mb-3">Resource Packs ({(manifest?.resourcepacks ?? []).length})</h3>
-          {(manifest?.resourcepacks ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No resource packs installed.</p>
-          ) : (
-            <div className="space-y-2">
-              {(manifest?.resourcepacks ?? []).map((rp) => (
-                <div key={rp.filename} className={`flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm ${!rp.enabled ? 'opacity-50' : ''}`}>
-                  <div className="min-w-0 flex-1">
-                    <span className={`font-medium truncate block ${!rp.enabled ? 'line-through' : ''}`}>{rp.filename}</span>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {rp.version && <span>v{rp.version}</span>}
-                      {!rp.enabled && <span className="ml-2 text-yellow-600 dark:text-yellow-400 font-medium">disabled</span>}
-                    </div>
-                  </div>
-                  {!row?.is_locked && (
-                    <button
-                      onClick={() => handleToggleMod(rp)}
-                      className="ml-2 text-xs text-foreground hover:text-primary whitespace-nowrap"
-                    >
-                      {rp.enabled ? '🔌 Disable' : '🔌 Enable'}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleRemove(rp.filename)}
-                    disabled={!!row?.is_locked}
-                    className="ml-2 text-xs text-destructive hover:underline disabled:opacity-50 whitespace-nowrap"
-                    title={row?.is_locked ? 'Unlock the instance to remove content.' : undefined}
-                  >
-                    {row?.is_locked ? '🔒' : 'Remove'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <button
-            onClick={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')}
-            disabled={!!row?.is_locked}
-            className="mt-3 rounded-lg border border-dashed border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed w-full"
-            title={row?.is_locked ? 'Unlock the instance to add resource packs.' : undefined}
-          >
-            {row?.is_locked ? '🔒 Instance Locked' : '+ Add Resource Pack'}
-          </button>
-        </section>
-      )}
-
-      {activeTab === 'shaders' && (
-        <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-semibold text-sm mb-3">Shaders ({(manifest?.shaders ?? []).length})</h3>
-          {(manifest?.shaders ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No shaders installed.</p>
-          ) : (
-            <div className="space-y-2">
-              {(manifest?.shaders ?? []).map((s) => (
-                <div key={s.filename} className={`flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm ${!s.enabled ? 'opacity-50' : ''}`}>
-                  <div className="min-w-0 flex-1">
-                    <span className={`font-medium truncate block ${!s.enabled ? 'line-through' : ''}`}>{s.filename}</span>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {s.version && <span>v{s.version}</span>}
-                      {!s.enabled && <span className="ml-2 text-yellow-600 dark:text-yellow-400 font-medium">disabled</span>}
-                    </div>
-                  </div>
-                  {!row?.is_locked && (
-                    <button
-                      onClick={() => handleToggleMod(s)}
-                      className="ml-2 text-xs text-foreground hover:text-primary whitespace-nowrap"
-                    >
-                      {s.enabled ? '🔌 Disable' : '🔌 Enable'}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleRemove(s.filename)}
-                    disabled={!!row?.is_locked}
-                    className="ml-2 text-xs text-destructive hover:underline disabled:opacity-50 whitespace-nowrap"
-                    title={row?.is_locked ? 'Unlock the instance to remove content.' : undefined}
-                  >
-                    {row?.is_locked ? '🔒' : 'Remove'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <button
-            onClick={() => onOpenBrowseForInstance?.(instanceId, 'shader')}
-            disabled={!!row?.is_locked}
-            className="mt-3 rounded-lg border border-dashed border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed w-full"
-            title={row?.is_locked ? 'Unlock the instance to add shaders.' : undefined}
-          >
-            {row?.is_locked ? '🔒 Instance Locked' : '+ Add Shader'}
-          </button>
-        </section>
-      )}
-
-      {activeTab === 'datapacks' && (
-        <section className="rounded-xl border border-border bg-card p-4">
-          <h3 className="font-semibold text-sm mb-3">Data Packs ({(manifest?.datapacks ?? []).length})</h3>
-          {(manifest?.datapacks ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No data packs installed.</p>
-          ) : (
-            <div className="space-y-2">
-              {(manifest?.datapacks ?? []).map((dp) => (
-                <div key={dp.filename} className={`flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm ${!dp.enabled ? 'opacity-50' : ''}`}>
-                  <div className="min-w-0 flex-1">
-                    <span className={`font-medium truncate block ${!dp.enabled ? 'line-through' : ''}`}>{dp.filename}</span>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {dp.version && <span>v{dp.version}</span>}
-                      {!dp.enabled && <span className="ml-2 text-yellow-600 dark:text-yellow-400 font-medium">disabled</span>}
-                    </div>
-                  </div>
-                  {!row?.is_locked && (
-                    <button
-                      onClick={() => handleToggleMod(dp)}
-                      className="ml-2 text-xs text-foreground hover:text-primary whitespace-nowrap"
-                    >
-                      {dp.enabled ? '🔌 Disable' : '🔌 Enable'}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleRemove(dp.filename)}
-                    disabled={!!row?.is_locked}
-                    className="ml-2 text-xs text-destructive hover:underline disabled:opacity-50 whitespace-nowrap"
-                    title={row?.is_locked ? 'Unlock the instance to remove content.' : undefined}
-                  >
-                    {row?.is_locked ? '🔒' : 'Remove'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <button
-            onClick={() => onOpenBrowseForInstance?.(instanceId, 'datapack')}
-            disabled={!!row?.is_locked}
-            className="mt-3 rounded-lg border border-dashed border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed w-full"
-            title={row?.is_locked ? 'Unlock the instance to add data packs.' : undefined}
-          >
-            {row?.is_locked ? '🔒 Instance Locked' : '+ Add Data Pack'}
-          </button>
-        </section>
       )}
 
       {activeTab === 'snapshots' && (
@@ -2266,6 +2163,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </section>
       )}
 
+      {disablePlanTarget && (
+        <DependencyPrompt
+          title={disablePlanTarget.rows.length > 1 ? 'Disable selected content and dependents' : 'Disable content and dependents'}
+          description="The selected content is required by other installed mods. Review the affected rows before disabling anything."
+          actionLabel="Disable selected"
+          candidates={disablePlanTarget.candidates.map(({ key, dependent }) => ({
+            key,
+            label: dependent.filename || dependent.mod_id,
+            requirement: dependent.requirement,
+            source: dependent.source,
+          }))}
+          onConfirm={handleDisablePlanConfirm}
+          onCancel={() => setDisablePlanTarget(null)}
+        />
+      )}
+
       {canonicalOperation && (
         <InstallFlow
           open
@@ -2274,10 +2187,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           background
           onBackgroundStart={(plan) => startPlan(plan, `Installing pack in ${canonicalOperation.instanceName}`, canonicalOperation.instanceName)}
           onOpenInstance={onOpenInstanceEditor}
-          onClose={() => {
-            setCanonicalOperation(null);
-            void getInstanceDetail(instanceId).then(setDetail).catch((cause) => setError(formatError(cause)));
-          }}
+           onClose={() => {
+             setCanonicalOperation(null);
+             void getInstanceDetail(instanceId)
+               .then((result) => {
+                 setDetail(result);
+                 return refreshContent();
+               })
+               .catch((cause) => setError(formatError(cause)));
+           }}
         />
       )}
     </div>

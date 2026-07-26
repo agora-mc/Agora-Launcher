@@ -153,6 +153,8 @@ pub fn run() {
             commands::fetch_triage_poll,
             commands::flag_review,
             commands::get_flag_rate_limit,
+            commands::list_instance_content,
+            commands::enrich_instance_content,
             commands::investigate_crash,
             commands::investigate_manual,
             commands::disable_mod_for_test,

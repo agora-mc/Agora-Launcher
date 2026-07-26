@@ -19,6 +19,7 @@ use crate::registry::{
 use crate::state::LauncherState;
 use crate::version_cache::{self, ModVersionPage, SharedVersionCache};
 use agora_core::browse_cache::{self, BrowseFilters, BrowsePage};
+use agora_core::installed_content::{InstalledContentMetadata, InstalledContentRow};
 use agora_core::modrinth::{ModrinthSearchParams, ModrinthSort};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -1727,6 +1728,129 @@ pub async fn get_flag_rate_limit(
     _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<agora_core::db::FlagRateLimit> {
     crate::governance::get_flag_rate_limit(&app)
+}
+
+/// Return one locally enriched inventory snapshot for an instance.
+///
+/// Registry data is optional: manifest and filesystem rows remain usable when
+/// the cached registry is absent or stale.
+#[tauri::command]
+pub async fn list_instance_content(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    content_type: Option<String>,
+) -> LauncherResult<Vec<InstalledContentRow>> {
+    tokio::task::spawn_blocking(move || {
+        let sanitized = paths::sanitize_id(&instance_id);
+        let manifest = load_manifest(&app, &sanitized)?;
+        let instance_dir = paths::instance_dir(&app, &sanitized)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let ctx = crate::core_context(&app)?;
+        let registry = agora_core::registry::RegistryService::new(ctx);
+        Ok(agora_core::installed_content::list_installed_content(
+            &instance_dir,
+            &manifest,
+            content_type.as_deref(),
+            Some(&registry),
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Enrich an already-loaded inventory with author metadata. This is a single
+/// backend operation so the frontend never performs one Modrinth request per
+/// installed row.
+#[tauri::command]
+pub async fn enrich_instance_content(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<InstalledContentMetadata>> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let inventory_app = app.clone();
+    let rows = tokio::task::spawn_blocking(move || {
+        let manifest = load_manifest(&inventory_app, &sanitized)?;
+        let instance_dir = paths::instance_dir(&inventory_app, &sanitized)
+            .map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let ctx = crate::core_context(&inventory_app)?;
+        let registry = agora_core::registry::RegistryService::new(ctx);
+        Ok::<Vec<InstalledContentRow>, LauncherError>(
+            agora_core::installed_content::list_installed_content(
+                &instance_dir,
+                &manifest,
+                None,
+                Some(&registry),
+            ),
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)??;
+
+    let ctx = crate::core_context(&app)?;
+    let cache_keys = rows.iter().map(|row| row.key.clone()).collect::<Vec<_>>();
+    let cached =
+        agora_core::modrinth::load_cached_project_metadata(&ctx, &cache_keys).unwrap_or_default();
+    let mut project_ids = std::collections::HashSet::new();
+    for row in &rows {
+        let Some(project_id) = row.modrinth_id.as_ref() else {
+            continue;
+        };
+        let cache_valid = cached
+            .get(&row.key)
+            .map(|entry| entry.project_id == *project_id)
+            .unwrap_or(false);
+        if !cache_valid {
+            project_ids.insert(project_id.clone());
+        }
+    }
+    let fetched = agora_core::modrinth::ModrinthService::new(ctx.clone())
+        .fetch_project_metadata(&project_ids.into_iter().collect::<Vec<_>>())
+        .await
+        .unwrap_or_default();
+    let cache_entries = rows
+        .iter()
+        .filter_map(|row| {
+            let project_id = row.modrinth_id.as_ref()?;
+            let metadata = fetched.get(project_id)?.clone();
+            Some((row.key.clone(), project_id.clone(), metadata))
+        })
+        .collect::<Vec<_>>();
+    let _ = agora_core::modrinth::store_cached_project_metadata(&ctx, &cache_entries);
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let cache_key = row.key.clone();
+            InstalledContentMetadata {
+                key: cache_key.clone(),
+                display_name: row.modrinth_id.as_ref().and_then(|id| {
+                    cached
+                        .get(&cache_key)
+                        .filter(|entry| entry.project_id == *id)
+                        .map(|entry| entry.title.clone())
+                        .or_else(|| fetched.get(id).map(|item| item.title.clone()))
+                }),
+                icon_url: row.modrinth_id.as_ref().and_then(|id| {
+                    cached
+                        .get(&cache_key)
+                        .filter(|entry| entry.project_id == *id)
+                        .and_then(|entry| entry.icon_url.clone())
+                        .or_else(|| fetched.get(id).and_then(|item| item.icon_url.clone()))
+                }),
+                author: row.author.or_else(|| {
+                    row.modrinth_id.as_ref().and_then(|id| {
+                        cached
+                            .get(&cache_key)
+                            .filter(|entry| entry.project_id == *id)
+                            .and_then(|entry| entry.author.clone())
+                            .or_else(|| fetched.get(id).and_then(|item| item.author.clone()))
+                    })
+                }),
+            }
+        })
+        .collect())
 }
 
 /// Load the instance manifest for the given instance_id.
@@ -4136,6 +4260,7 @@ pub async fn import_lockfile(
                 registry_id: artifact.registry_id.clone(),
                 modrinth_id: artifact.modrinth_id.clone(),
                 content_type: artifact.content_type.clone(),
+                version: artifact.version.clone(),
             },
         });
         operations.push(ResolvedOperation::Install { artifact: resolved });
@@ -4396,6 +4521,7 @@ fn resolved_lockfile_artifact(
             registry_id: artifact.registry_id.clone(),
             modrinth_id: artifact.modrinth_id.clone(),
             content_type: artifact.content_type.clone(),
+            version: artifact.version.clone(),
         },
     }))
 }

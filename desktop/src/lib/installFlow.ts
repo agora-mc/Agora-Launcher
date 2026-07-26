@@ -13,6 +13,7 @@ export type InstallAction =
   | { type: 'install'; sourceType: SourceType; itemId: string; candidateVersion?: string }
   | { type: 'update'; itemId: string; targetVersion: string }
   | { type: 'remove'; filename: string }
+  | { type: 'batch-remove'; filenames: string[] }
   | { type: 'batch-update'; items: BatchUpdateItem[] }
   | { type: 'batch-install'; items: BatchInstallItem[] }
   | { type: 'repair-lockfile'; contentHash: string };
@@ -65,6 +66,7 @@ export type ResolvedOperation =
   | { type: 'install'; artifact: ResolvedArtifact }
   | { type: 'update'; oldVersionId: string; newArtifact: ResolvedArtifact }
   | { type: 'remove'; targetFilename: string; reverseDependents: ReverseDepInfo[] }
+  | { type: 'batch-remove'; operations: ResolvedOperation[] }
   | { type: 'batch-update'; operations: ResolvedOperation[] }
   | { type: 'batch-install'; operations: ResolvedOperation[] }
   | { type: 'reconcile'; operations: ResolvedOperation[] };

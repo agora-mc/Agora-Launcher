@@ -4,7 +4,7 @@ use crate::models::InstanceManifest;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // RegistryService — core-owned typed service
@@ -36,6 +36,133 @@ impl RegistryService {
     pub fn get_item_by_id(&self, item_id: &str) -> LauncherResult<Option<RegistryItem>> {
         let conn = self.connection()?;
         get_item_by_id(&conn, item_id)
+    }
+
+    /// Fetch registry items and their category labels in one read session.
+    pub fn get_items_by_ids(
+        &self,
+        item_ids: &[String],
+    ) -> LauncherResult<HashMap<String, RegistryItem>> {
+        let conn = self.connection()?;
+        let mut items = HashMap::new();
+        if item_ids.is_empty() {
+            return Ok(items);
+        }
+        for chunk in item_ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "SELECT {REGISTRY_ITEM_COLUMNS} FROM registry_items ri WHERE ri.id IN ({placeholders})"
+            );
+            let mut statement = conn
+                .prepare(&query)
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(chunk.iter()), row_to_item)
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+            for row in rows {
+                let item = row.map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+                items.insert(item.id.clone(), item);
+            }
+        }
+        Ok(items)
+    }
+
+    /// Fetch category display names for registry items in one query.
+    pub fn get_item_categories(
+        &self,
+        item_ids: &[String],
+    ) -> LauncherResult<HashMap<String, Vec<String>>> {
+        let conn = self.connection()?;
+        let mut categories = HashMap::new();
+        if item_ids.is_empty() {
+            return Ok(categories);
+        }
+        for chunk in item_ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "SELECT ic.item_id, c.display_name FROM item_categories ic JOIN categories c ON c.id = ic.category_id WHERE ic.item_id IN ({placeholders}) ORDER BY c.display_name"
+            );
+            let mut statement = conn
+                .prepare(&query)
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+            for row in rows {
+                let (item_id, category) = row.map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+                categories
+                    .entry(item_id)
+                    .or_insert_with(Vec::new)
+                    .push(category);
+            }
+        }
+        Ok(categories)
+    }
+
+    /// Fetch curated author values when the registry was compiled with the
+    /// manifest author column. Older signed registries degrade to no authors.
+    pub fn get_item_authors(&self, item_ids: &[String]) -> LauncherResult<HashMap<String, String>> {
+        let conn = self.connection()?;
+        let mut authors = HashMap::new();
+        if item_ids.is_empty() {
+            return Ok(authors);
+        }
+        for chunk in item_ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query =
+                format!("SELECT id, author FROM registry_items WHERE id IN ({placeholders})");
+            let mut statement = match conn.prepare(&query) {
+                Ok(statement) => statement,
+                Err(_) => return Ok(HashMap::new()),
+            };
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+            for row in rows {
+                let (id, author) = row.map_err(|error| LauncherError::Generic {
+                    code: "ERR_INVALID_QUERY".to_string(),
+                    message: error.to_string(),
+                })?;
+                if let Some(author) = author.filter(|value| !value.trim().is_empty()) {
+                    authors.insert(id, author);
+                }
+            }
+        }
+        Ok(authors)
     }
 
     /// Browse registry items with typed filters.

@@ -237,7 +237,35 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
             return Promise.resolve({
               row: { instance_id: instanceId, name: 'Test Instance', minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', is_modpack: false, is_locked: false, last_launched_at: null, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-01-01T00:00:00Z' },
               manifest: { instance_id: instanceId, name: 'Test Instance', created_from_pack: null, minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', mods: [{ filename: 'installed-test-mod.jar', registry_id: null, modrinth_id: null, mod_jar_id: 'test-mod', source: 'manual_drag_drop', version: '1.0.0', sha256: 'a'.repeat(64), installed_at: '2026-07-01T00:00:00Z', enabled: true, content_type: 'mod' }], resourcepacks: [], shaders: [], datapacks: [], worlds: [], user_preferences: {} },
-            });
+             });
+          }
+          if (command === 'list_instance_content') {
+            return Promise.resolve([{
+              key: 'mod:installed-test-mod.jar:' + 'a'.repeat(64),
+              filename: 'installed-test-mod.jar',
+              display_name: 'Test Mod',
+              version: '1.0.0',
+              content_type: 'mod',
+              enabled: true,
+              installed_at: '2026-07-01T00:00:00Z',
+              source: 'manual_drag_drop',
+              source_label: 'Manual',
+              source_url: null,
+              registry_id: null,
+              modrinth_id: null,
+              mod_jar_id: 'test-mod',
+              loader_mod_id: 'test-mod',
+              size_bytes: 1234,
+              file_present: true,
+              resolved_path: 'C:/instances/test-instance/mods/installed-test-mod.jar',
+              author: null,
+              categories: ['Uncategorized'],
+              icon_url: null,
+              curation_status: 'unknown',
+              agora_score: null,
+              modrinth_downloads: null,
+              metadata_status: 'unavailable',
+            }]);
           }
           if (command === 'list_snapshots') return Promise.resolve([]);
           if (command === 'list_loadout_profiles') return Promise.resolve([]);
@@ -569,7 +597,7 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await expect(page.getByText('Test Instance').first()).toBeVisible();
     await expect(page.getByText('Test Mod', { exact: true })).toBeVisible();
-    await expect(page.getByText('Manual', { exact: true })).toBeVisible();
+    await expect(page.getByRole('table').getByText('Manual', { exact: true })).toBeVisible();
     await expect(page.getByText(/Installed /).first()).toBeVisible();
     const main = page.locator('main');
     const editorScrollTop = await main.evaluate((element) => {
@@ -582,8 +610,28 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expect(page.getByRole('heading', { name: 'Test Mod', exact: true })).toBeVisible();
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(0);
     await page.getByRole('button', { name: /Back/ }).first().click();
-    await expect(page.getByText('Installed Mods', { exact: false })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Installed Mods/ })).toBeVisible();
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(editorScrollTop);
+  });
+
+  test('bulk removal opens one safe batch-removal plan', async ({ page }) => {
+    await installFlowMock(page);
+    await page.addInitScript(() => {
+      window.history.replaceState({ __agora: { type: 'instance-detail', instanceId: 'test-instance' } }, '');
+    });
+    await page.goto('/');
+
+    await expect(page.getByRole('heading', { name: /Installed Mods/ })).toBeVisible();
+    await page.getByRole('checkbox', { name: 'Select Test Mod' }).check();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Remove selected' }).click();
+
+    const index = await lastInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((idx) => (window as any).__installCalls[idx]?.args, index);
+    expect(args.intent.action).toEqual({
+      type: 'batch-remove',
+      filenames: ['installed-test-mod.jar'],
+    });
   });
 
   test('ModDetail Back restores Browse scroll position', async ({ page }) => {

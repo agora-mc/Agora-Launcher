@@ -2510,6 +2510,14 @@ async fn adopted_profile_materialize_succeeds_offline() {
         materialized.client_jar.path.is_file(),
         "Client JAR should exist after materialization"
     );
+    assert_eq!(
+        materialized.client_jar.path,
+        cache_dir
+            .join("versions")
+            .join(&profile_id)
+            .join(format!("{profile_id}.jar")),
+        "Adopted profiles must retain the profile filename used by loader JVM ignore rules"
+    );
     assert!(
         materialized.asset_index_path.is_file(),
         "Asset index should exist"

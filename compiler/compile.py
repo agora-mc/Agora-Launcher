@@ -1598,6 +1598,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS registry_items (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
+            author TEXT,
             content_type TEXT NOT NULL,
             download_strategy TEXT NOT NULL,
             source_identifier TEXT NOT NULL,
@@ -1635,6 +1636,10 @@ def create_tables(conn: sqlite3.Connection) -> None:
             modrinth_id TEXT
         )
     """)
+    cursor.execute("PRAGMA table_info(registry_items)")
+    registry_columns = {row[1] for row in cursor.fetchall()}
+    if "author" not in registry_columns:
+        cursor.execute("ALTER TABLE registry_items ADD COLUMN author TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS categories (
@@ -1927,17 +1932,18 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
     cursor.execute(
         """
         INSERT INTO registry_items (
-            id, name, content_type, download_strategy, source_identifier, sha256,
+            id, name, author, content_type, download_strategy, source_identifier, sha256,
             upvotes, downvotes, net_score, velocity, status,
             is_immune, immunity_reason, allow_comments, immunity_cooldown_until,
             icon_url, gallery_urls_json, date_added, compatible_versions_json,
             description, body_markdown, page_url, license_id, source_updated_at,
             modrinth_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
             item["name"],
+            item.get("author"),
             item.get("content_type", "mod"),
             item["download_strategy"],
             item["source_identifier"],

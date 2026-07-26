@@ -799,17 +799,20 @@ async fn materialize_adopted_profile(
                 resolved.base_version_id
             ),
         })?;
-    let client_path = versions_dir
-        .join(&resolved.base_version_id)
-        .join(format!("{}.jar", resolved.base_version_id));
+    // Installed launcher profiles place the inherited client JAR under the
+    // loader profile ID. Forge/NeoForge also expand `${version_name}.jar` in
+    // their ignore list, so using the base-version path here exposes both the
+    // vanilla and transformed Minecraft modules to SecureJarHandler.
+    let client_version_id = &resolved.version_id;
+    let client_path = adopted_client_jar_path(versions_dir, client_version_id);
 
     let client_sha1 = client_download.sha1.as_deref();
     let client_size = client_download.size;
 
-    let client_result = crate::installed_artifact::adopt_client_jar(
+    let mut client_result = crate::installed_artifact::adopt_client_jar(
         &source,
         &client_path,
-        &resolved.base_version_id,
+        client_version_id,
         client_sha1,
         client_size,
     )
@@ -817,6 +820,27 @@ async fn materialize_adopted_profile(
         let err: LauncherError = issue.into();
         err
     })?;
+
+    // Some third-party launchers omit the inherited profile copy. The base
+    // JAR has the same Mojang hash, so it is a safe offline fallback while the
+    // destination must still retain the loader profile filename.
+    if matches!(
+        client_result,
+        crate::installed_artifact::ArtifactAdoptResult::SourceMissing
+    ) && client_version_id != &resolved.base_version_id
+    {
+        client_result = crate::installed_artifact::adopt_client_jar(
+            &source,
+            &client_path,
+            &resolved.base_version_id,
+            client_sha1,
+            client_size,
+        )
+        .map_err(|issue| {
+            let err: LauncherError = issue.into();
+            err
+        })?;
+    }
 
     match client_result {
         crate::installed_artifact::ArtifactAdoptResult::CacheHit
@@ -1210,6 +1234,12 @@ async fn materialize_adopted_profile(
         asset_index_path,
         logging_config_path,
     })
+}
+
+fn adopted_client_jar_path(versions_dir: &Path, profile_id: &str) -> PathBuf {
+    versions_dir
+        .join(profile_id)
+        .join(format!("{profile_id}.jar"))
 }
 
 /// Validate materialized files independently of command construction.
@@ -2933,6 +2963,17 @@ async fn download_verified_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopted_client_jar_uses_loader_profile_filename() {
+        let versions = Path::new("runtime").join("versions");
+        assert_eq!(
+            adopted_client_jar_path(&versions, "neoforge-21.1.215"),
+            versions
+                .join("neoforge-21.1.215")
+                .join("neoforge-21.1.215.jar")
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Java selection

@@ -239,6 +239,25 @@ impl Resolver {
                     manifest, filename, revision,
                 ))
             }
+            InstallAction::BatchRemove { filenames } => {
+                let operations = filenames
+                    .iter()
+                    .map(|filename| {
+                        crate::install_service::InstallService::prepare_removal(
+                            manifest,
+                            filename,
+                            revision.clone(),
+                        )
+                        .operation
+                    })
+                    .collect();
+                Ok(PreparedPlan {
+                    operation: ResolvedOperation::BatchRemove { operations },
+                    dependencies: Vec::new(),
+                    conflicts: Vec::new(),
+                    registry_revision: revision,
+                })
+            }
             InstallAction::BatchUpdate { items } => {
                 self.resolve_batch_update(manifest, items, revision).await
             }
@@ -1751,6 +1770,7 @@ fn curated_artifact(
             registry_id: Some(item.id.clone()),
             modrinth_id: item.modrinth_id.clone(),
             content_type: item.content_type.clone(),
+            version: Some(candidate.version.clone()),
         },
     }))
 }
@@ -1796,6 +1816,7 @@ fn raw_modrinth_artifact(
             registry_id: None,
             modrinth_id: Some(project_id.to_string()),
             content_type: "mod".into(),
+            version: Some(candidate.version.clone()),
         },
     }))
 }
@@ -1850,6 +1871,7 @@ fn resolve_manual_install(
                     registry_id: None,
                     modrinth_id: None,
                     content_type: "mod".into(),
+                    version: None,
                 },
             }),
         },
@@ -2246,6 +2268,34 @@ mod tests {
             .find(|dependency| dependency.version_id.as_deref() == Some("loader-id:native-only"))
             .expect("native-only loader evidence");
         assert!(native_only.project_id.is_none());
+    }
+
+    #[test]
+    fn raw_modrinth_artifact_keeps_display_version_separate_from_version_id() {
+        let candidate = RawModrinthVersionCandidate {
+            version: "0.6.10".into(),
+            version_id: "01J9MODRINTHVERSION".into(),
+            name: "Sodium".into(),
+            filename: "sodium-0.6.10.jar".into(),
+            download_url: "https://cdn.modrinth.com/sodium.jar".into(),
+            sha1: Some("a".repeat(40)),
+            sha512: None,
+            size: Some(100),
+            dependencies: Vec::new(),
+            mc_versions: vec!["1.21".into()],
+            loaders: vec!["fabric".into()],
+            release_date: None,
+            primary: true,
+            changelog: None,
+        };
+
+        let ResolvedArtifact::Download(artifact) =
+            raw_modrinth_artifact("sodium", &candidate).unwrap()
+        else {
+            panic!("expected a downloadable Modrinth artifact");
+        };
+        assert_eq!(artifact.version_id, "01J9MODRINTHVERSION");
+        assert_eq!(artifact.metadata.version.as_deref(), Some("0.6.10"));
     }
 
     #[test]

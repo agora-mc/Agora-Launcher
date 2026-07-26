@@ -34,6 +34,7 @@ pub mod import_service;
 pub mod install_pipeline;
 pub mod install_service;
 pub mod installed_artifact;
+pub mod installed_content;
 pub mod installed_profile;
 pub mod instance_service;
 pub mod jar_metadata;
