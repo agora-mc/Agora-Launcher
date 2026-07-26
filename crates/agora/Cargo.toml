@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Agora launcher CLI â€” standalone command-line interface for instance management, health checks, and MCP server"
+description = "Agora launcher CLI \u2014 standalone command-line interface for instance management, health checks, and MCP server"
 
 [[bin]]
 name = "agora"

@@ -2956,7 +2956,167 @@ def compile_registry(
             logger.error("Signing failed: %s", exc)
             sys.exit(1)
 
+    # ------------------------------------------------------------------
+    # Web JSON artifact: emits a registry-web.json + registry-web.json.sig
+    # with public presentation data, decoupled from the SQLite schema.
+    # ------------------------------------------------------------------
+    _web_name = output_path.name.replace(".db", "") or "registry"
+    _web_path = output_path.parent / (_web_name + "-web.json")
+    emit_web_json(output_path, _web_path, skip_sign=skip_sign)
+
     logger.info("Compile complete")
+
+
+# ---------------------------------------------------------------------------
+# Web JSON artifact
+# ---------------------------------------------------------------------------
+
+def _make_github_urls(source_identifier: str, download_strategy: str) -> tuple[str | None, str | None, str | None]:
+    """Derive GitHub repository, releases, and issues URLs from source_identifier."""
+    repo_url = None
+    releases_url = None
+    issues_url = None
+
+    if download_strategy == "github_release":
+        parts = source_identifier.split("/")
+        if len(parts) >= 2:
+            owner, repo = parts[0], parts[1]
+            repo_url = f"https://github.com/{owner}/{repo}"
+            releases_url = f"{repo_url}/releases"
+            issues_url = f"{repo_url}/issues"
+
+    return repo_url, releases_url, issues_url
+
+
+def emit_web_json(db_path: Path, web_path: Path, skip_sign: bool = False) -> None:
+    """Read the compiled registry.db and write a registry-web.json artifact.
+
+    The JSON contains only public presentation data with a stable, documented
+    schema. The website consumes this file instead of querying SQLite directly.
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM registry_items ORDER BY net_score DESC, name ASC").fetchall()
+
+        # Load curator reviews for curator_notes and top_reviews.
+        curator_notes: dict[str, str] = {}
+        top_reviews: dict[str, list[dict[str, Any]]] = {}
+        for r in conn.execute("SELECT item_id, curator_note, top_reviews_json FROM curator_reviews").fetchall():
+            curator_notes[r["item_id"]] = r["curator_note"]
+            reviews_raw = r["top_reviews_json"]
+            if reviews_raw:
+                try:
+                    top_reviews[r["item_id"]] = json.loads(reviews_raw)
+                except Exception:
+                    top_reviews[r["item_id"]] = []
+
+        # Load categories.
+        cat_map: dict[str, list[str]] = {}
+        community_cat_map: dict[str, list[str]] = {}
+        for c in conn.execute(
+            "SELECT ic.item_id, c.id, c.is_community FROM item_categories ic "
+            "JOIN categories c ON c.id = ic.category_id"
+        ).fetchall():
+            iid = c["item_id"]
+            if c["is_community"]:
+                community_cat_map.setdefault(iid, []).append(c["id"])
+            else:
+                cat_map.setdefault(iid, []).append(c["id"])
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item_id = row["id"]
+
+            # Derive source URLs.
+            modrinth_id = row["modrinth_id"]
+            modrinth_url = None
+            if modrinth_id:
+                modrinth_url = f"https://modrinth.com/mod/{modrinth_id}"
+
+            github_repo, github_releases, github_issues = _make_github_urls(
+                row["source_identifier"], row["download_strategy"]
+            )
+
+            # Gallery URLs from JSON.
+            gallery_raw = row["gallery_urls_json"]
+            gallery_urls: list[str] = []
+            if gallery_raw:
+                try:
+                    gallery_urls = json.loads(gallery_raw)
+                except Exception:
+                    pass
+
+            # Compatible versions from JSON.
+            compat_raw = row["compatible_versions_json"]
+            compatible_versions: list[dict[str, str]] = []
+            if compat_raw:
+                try:
+                    compatible_versions = json.loads(compat_raw)
+                except Exception:
+                    pass
+
+            items.append({
+                "id": item_id,
+                "name": row["name"],
+                "author": row["author"],
+                "content_type": row["content_type"],
+                "curator_note": curator_notes.get(item_id, ""),
+                "description": row["description"],
+                "body_markdown": row["body_markdown"],
+                "status": row["status"],
+                "upvotes": row["upvotes"],
+                "downvotes": row["downvotes"],
+                "net_score": row["net_score"],
+                "velocity": row["velocity"],
+                "is_immune": bool(row["is_immune"]),
+                "categories": cat_map.get(item_id, []),
+                "community_categories": community_cat_map.get(item_id, []),
+                "icon_url": row["icon_url"],
+                "gallery_urls": gallery_urls,
+                "download_strategy": row["download_strategy"],
+                "source_identifier": row["source_identifier"],
+                "sha256": row["sha256"],
+                "page_url": row["page_url"],
+                "modrinth_id": row["modrinth_id"],
+                "modrinth_url": modrinth_url,
+                "github_repository_url": github_repo,
+                "github_releases_url": github_releases,
+                "github_issues_url": github_issues,
+                "license": row["license_id"],
+                "compatible_versions": compatible_versions,
+                "date_added": row["date_added"],
+                "source_updated_at": row["source_updated_at"],
+                "top_reviews": top_reviews.get(item_id, []),
+            })
+
+    finally:
+        conn.close()
+
+    doc = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "items": items,
+    }
+
+    web_json = json.dumps(doc, indent=2, ensure_ascii=False, separators=(",", ": "))
+    web_path.parent.mkdir(parents=True, exist_ok=True)
+    web_path.write_text(web_json, encoding="utf-8")
+    logger.info("Wrote web artifact to %s (%d items)", web_path, len(items))
+
+    # Sign the web JSON too.
+    sig_path = Path(str(web_path) + ".sig")
+    web_bytes = web_json.encode("utf-8")
+    if skip_sign:
+        sig_path.write_text(PLACEHOLDER_SIGNATURE, encoding="utf-8")
+        logger.warning("--skip-sign: wrote placeholder signature to %s", sig_path)
+    else:
+        try:
+            raw_sig = sign_database(web_bytes)
+            sig_path.write_bytes(raw_sig)
+            logger.info("Wrote web signature to %s", sig_path)
+        except RuntimeError as exc:
+            logger.error("Web JSON signing failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

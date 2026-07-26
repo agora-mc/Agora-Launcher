@@ -1,0 +1,237 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Test
+  # ------------------------------------------------------------------
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            os: ubuntu-latest
+            command: cargo test --locked -p agora-core
+          - name: cli
+            os: ubuntu-latest
+            command: cargo test --locked -p agora-cli
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates -> target
+
+      - name: Test ${{ matrix.name }}
+        run: ${{ matrix.command }}
+
+  # ------------------------------------------------------------------
+  # Build Desktop
+  # ------------------------------------------------------------------
+  build-desktop:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      # Linux: Tauri needs webkit2gtk and other system deps
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libglib2.0-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Install frontend dependencies
+        run: |
+          cd desktop
+          npm install
+
+      - name: Build and release Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGORA_OAUTH_CLIENT_ID: ${{ secrets.AGORA_OAUTH_CLIENT_ID }}
+          AGORA_REGISTRY_REPO: ${{ github.repository }}
+          VITE_AGORA_REPOSITORY: ${{ github.repository }}
+          AGORA_REGISTRY_PUBKEY: ${{ secrets.AGORA_REGISTRY_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "Agora ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: |
+            ## Desktop
+            Download the installer for your platform below.
+            - Windows: `.msi` or `.exe`
+            - macOS: `.dmg`
+            - Linux: `.AppImage` or `.deb`
+
+            ## CLI
+            Standalone command-line binaries (no installer required). See `SHA256SUMS` for checksums.
+            - `agora-v*-windows-x86_64.zip`
+            - `agora-v*-linux-x86_64.tar.gz`
+            - `agora-v*-macos-x86_64.tar.gz`
+            - `agora-v*-macos-aarch64.tar.gz`
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  # ------------------------------------------------------------------
+  # Build CLI
+  # ------------------------------------------------------------------
+  build-cli:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: .exe
+            archive: zip
+            platform_name: windows-x86_64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            ext: ""
+            archive: tar.gz
+            platform_name: linux-x86_64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            ext: ""
+            archive: tar.gz
+            platform_name: macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            ext: ""
+            archive: tar.gz
+            platform_name: macos-aarch64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates -> target
+
+      - name: Install Linux cross-compile deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build CLI
+        run: cargo build --release --locked -p agora-cli --target ${{ matrix.target }}
+
+      - name: Package CLI (Windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          BIN="target/${{ matrix.target }}/release/agora${{ matrix.ext }}"
+          ARCHIVE="agora-${TAG}-${{ matrix.platform_name }}.zip"
+          7z a "$ARCHIVE" "$BIN"
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Package CLI (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          BIN="target/${{ matrix.target }}/release/agora${{ matrix.ext }}"
+          ARCHIVE="agora-${TAG}-${{ matrix.platform_name }}.tar.gz"
+          tar -czf "$ARCHIVE" -C "$(dirname "$BIN")" "$(basename "$BIN")"
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Assemble Release
+  # ------------------------------------------------------------------
+  assemble-release:
+    needs: [build-desktop, build-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: cli-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: cli-artifacts
+        run: |
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload CLI files to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          for f in cli-artifacts/*; do
+            echo "Uploading $f ..."
+            gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY" || \
+            echo "Release may already be published or could not be transitioned."

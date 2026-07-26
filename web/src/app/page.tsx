@@ -4,10 +4,16 @@ import { GITHUB_REPO_URL, GITHUB_RELEASES_URL } from '@/lib/site';
 import { DownloadButton } from '@/components/DownloadButton';
 
 export default async function HomePage() {
-  const mods = await getAllItems('mod');
-  const packs = await getAllItems('pack');
+  const allItems = await getAllItems();
+  const mods = allItems.filter((i) => i.content_type === 'mod');
+  const packs = allItems.filter((i) => i.content_type === 'pack');
   const featuredMods = mods.slice(0, 4);
   const featuredPacks = packs.slice(0, 2);
+
+  const countsByType: Record<string, number> = {};
+  for (const item of allItems) {
+    countsByType[item.content_type] = (countsByType[item.content_type] ?? 0) + 1;
+  }
 
   return (
     <div className="space-y-12">
@@ -50,12 +56,42 @@ export default async function HomePage() {
             >
               <h3 className="text-lg font-semibold">{contentTypeLabel(type as any)}</h3>
               <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-                Curated {type} entries.
+                {countsByType[type] ?? 0} curated {type} entries
               </p>
             </Link>
           ))}
         </div>
       </section>
+
+      {allItems.length < 20 && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-800 dark:bg-amber-950">
+          <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-200">
+            The registry is growing
+          </h2>
+          <p className="mt-2 text-sm text-amber-800 dark:text-amber-300">
+            Agora currently contains {allItems.length} curated items. The registry grows through
+            community review and contribution.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3 text-sm">
+            <a
+              href={`${GITHUB_REPO_URL}/blob/main/REGISTRY_CURATION_REFERENCE.md`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-amber-700 underline hover:text-amber-900 dark:text-amber-400"
+            >
+              Contribution guide
+            </a>
+            <a
+              href={`${GITHUB_REPO_URL}/issues/new?template=propose-mod.yml`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-amber-700 underline hover:text-amber-900 dark:text-amber-400"
+            >
+              Propose a project
+            </a>
+          </div>
+        </section>
+      )}
 
       {featuredPacks.length > 0 && (
         <section>
