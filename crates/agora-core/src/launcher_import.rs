@@ -235,7 +235,7 @@ fn detect_icon(candidate_path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType) -> bool {
+fn unsafe_filesystem_entry(_path: &Path, file_type: &std::fs::FileType) -> bool {
     if file_type.is_symlink() {
         return true;
     }
@@ -243,7 +243,7 @@ fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType) -> bool {
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if std::fs::symlink_metadata(path)
+        if std::fs::symlink_metadata(_path)
             .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
             .unwrap_or(true)
         {

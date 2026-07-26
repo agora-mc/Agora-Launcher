@@ -19,6 +19,7 @@ import { ToastContainer } from './components/Toast';
 import { useDestination, type Destination, type Tab } from './lib/useDestination';
 import { useProcessController } from './lib/useProcessController';
 import { BrandMark } from './components/BrandMark';
+import { PackInstallProvider } from './components/PackInstallProgress';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Landmark, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -395,7 +396,8 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
+    <PackInstallProvider>
+      <div className="flex h-screen w-screen overflow-hidden">
         <OfflineBanner />
         <Sidebar
           tabs={tabs}
@@ -547,7 +549,8 @@ export default function App() {
             )}
           />
         )}
-    </div>
+      </div>
+    </PackInstallProvider>
   );
 }
 

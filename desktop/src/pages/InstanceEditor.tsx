@@ -3,6 +3,7 @@ import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { PackInstallProgressBar, usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent } from '../lib/installFlow';
 import {
   getInstanceDetail,
@@ -12,7 +13,6 @@ import {
   disableInstanceMod,
   exportInstancePack,
   formatError,
-  importInstancePack,
   inspectJavaExecutable,
   pickOpenFile,
   importInstance,
@@ -153,6 +153,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [exportBusy, setExportBusy] = useState(false);
 
   const { advancedMode } = useAdvancedMode();
+  const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
 
   // Sub-sidebar active tab
   const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'import' | 'export' | 'console' | 'java-args'>('mods');
@@ -254,6 +255,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     })();
     return () => { cancelled = true; };
   }, [instanceId]);
+
+  useEffect(() => {
+    if (packInstallRevision === 0) return;
+    void getInstanceDetail(instanceId)
+      .then((result) => setDetail(result))
+      .catch((cause) => setError(formatError(cause)));
+  }, [instanceId, packInstallRevision]);
 
   useEffect(() => {
     if (activeTab !== 'java-args' || !detail?.row) return;
@@ -542,18 +550,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setStatus(null);
     const path = await pickOpenFile('Import Pack', ['mrpack', 'agora-pack.json', 'json']);
     if (path === null) return;
-    try {
-      const newInstance = await importInstancePack(path);
-      if (onOpenInstanceEditor) {
-        setError(null);
-        setStatus(null);
-        onOpenInstanceEditor(newInstance);
-      } else {
-        setStatus(`Imported pack: new instance created.`);
-      }
-    } catch (e) {
-      setError(formatError(e));
-    }
+    startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
+    setStatus('Pack import started in the background.');
   };
 
   const handleImportMod = async () => {
@@ -595,12 +593,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       }
       // .mrpack, .agora-pack.json, or .json → pack import
       else if (ext.endsWith('.mrpack') || ext.endsWith('.agora-pack.json') || (ext.endsWith('.json') && file.name.toLowerCase().endsWith('.json'))) {
-        const newInstance = await importInstancePack(filePath);
-        if (onOpenInstanceEditor) {
-          onOpenInstanceEditor(newInstance);
-        } else {
-          setStatus('Imported pack: new instance created.');
-        }
+        startPackFile(filePath, file.name);
+        setStatus('Pack import started in the background.');
       }
       else {
         setError('Unsupported file type. Drop a .jar mod or a .mrpack/.agora-pack.json pack.');
@@ -763,6 +757,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const row = detail?.row;
   const manifest = detail?.manifest;
   const mods = manifest?.mods ?? [];
+  const packInstall = getTaskForInstance(instanceId);
+
+  useEffect(() => {
+    if (packInstall?.status === 'failed' && packInstall.error) {
+      setError(packInstall.error);
+    }
+  }, [packInstall?.error, packInstall?.status]);
 
   const handleOpenInstalledMod = (mod: InstalledMod) => {
     const itemId = mod.registry_id || mod.modrinth_id || mod.mod_jar_id;
@@ -892,6 +893,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </button>
           </div>
         </div>
+
+        {packInstall && <PackInstallProgressBar task={packInstall} />}
 
         {error && (
           <div className="mt-4 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
@@ -2118,6 +2121,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           open
           intent={canonicalOperation.intent}
           instanceName={canonicalOperation.instanceName}
+          background
+          onBackgroundStart={(plan) => startPlan(plan, `Installing pack in ${canonicalOperation.instanceName}`, canonicalOperation.instanceName)}
           onOpenInstance={onOpenInstanceEditor}
           onClose={() => {
             setCanonicalOperation(null);

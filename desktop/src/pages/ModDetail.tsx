@@ -1,5 +1,4 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
@@ -11,7 +10,6 @@ import {
   getFlagRateLimit,
   getGithubProfile,
   getRegistryItem,
-  importModrinthPackByUrl,
   isModrinthEnabled,
   listInstances,
   listLoaderVersions,
@@ -37,6 +35,7 @@ import {
   type RawModrinthVersionCandidate,
 } from '../lib/tauri';
 import { InstallFlow } from '../components/InstallFlow';
+import { usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent, SourceType } from '../lib/installFlow';
 
 
@@ -1660,37 +1659,6 @@ type PackInstallModProgress = {
   error?: string;
 };
 
-type PackInstallProgressEvent = {
-  operationId: string;
-  phase: string;
-  message: string;
-  progress?: number | null;
-  step?: number | null;
-  totalSteps?: number | null;
-  bytesDownloaded?: number | null;
-  bytesTotal?: number | null;
-};
-
-function formatPackBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-function packProgressLabel(phase: string): string {
-  switch (phase) {
-    case 'downloading': return 'Downloading pack and mod files';
-    case 'extracting': return 'Extracting pack files';
-    case 'verifying': return 'Verifying pack metadata';
-    case 'installing': return 'Installing modloader';
-    case 'health-scan': return 'Checking pack health';
-    case 'snapshotting': return 'Creating recovery snapshot';
-    case 'done': return 'Finishing installation';
-    default: return 'Preparing installation';
-  }
-}
-
 const isModrinthPack = (item: RegistryItem): boolean =>
   item.download_strategy === 'modrinth_id' || !!item.modrinth_id;
 
@@ -1705,6 +1673,7 @@ function PackCreateDialog({
 }) {
   const isModrinth = isModrinthPack(item);
   const packName = item.name;
+  const { startModrinthPack, startPlan } = usePackInstall();
   const [name, setName] = useState(packName);
   const [mcVersion, setMcVersion] = useState('');
   const [availableLoaders, setAvailableLoaders] = useState<string[]>([]);
@@ -1718,19 +1687,6 @@ function PackCreateDialog({
   const [modProgress, setModProgress] = useState<PackInstallModProgress[]>([]);
   const [createdInstanceId, setCreatedInstanceId] = useState<string | null>(null);
   const [canonicalInstall, setCanonicalInstall] = useState<InstallIntent | null>(null);
-  const [packInstallProgress, setPackInstallProgress] = useState<PackInstallProgressEvent | null>(null);
-
-  useEffect(() => {
-    if (!isModrinth) return;
-    let disposed = false;
-    const unlisten = listen<PackInstallProgressEvent>('pack-install-progress', (event) => {
-      if (!disposed) setPackInstallProgress(event.payload);
-    });
-    return () => {
-      disposed = true;
-      void unlisten.then((remove) => remove());
-    };
-  }, [isModrinth]);
 
   // Modrinth pack version selection
   const [modrinthVersions, setModrinthVersions] = useState<RawModrinthVersionCandidate[]>([]);
@@ -1882,20 +1838,19 @@ function PackCreateDialog({
     if (!ver.download_url) {
       throw new Error('Selected version has no downloadable file.');
     }
-    const newId = await importModrinthPackByUrl(ver.download_url);
-    setCreatedInstanceId(newId);
+    startModrinthPack(ver.download_url, packName);
   };
 
   const submit = async () => {
     setBusy(true);
     setError(null);
-    setPackInstallProgress(null);
     try {
       setInstallPhase('installing');
 
       if (isModrinth) {
         await submitModrinth();
-        setInstallPhase('done');
+        onCancel();
+        return;
       } else {
         const instanceId = name
           .toLowerCase()
@@ -2049,52 +2004,9 @@ function PackCreateDialog({
             <div className="flex items-center justify-center gap-3">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <p className="text-lg font-medium">
-                {isModrinth
-                  ? packProgressLabel(packInstallProgress?.phase ?? 'resolving')
-                  : 'Installing pack mods…'}
+                Installing pack mods…
               </p>
             </div>
-            {isModrinth && packInstallProgress && (() => {
-              const bytesDownloaded = packInstallProgress.bytesDownloaded ?? 0;
-              const bytesTotal = packInstallProgress.bytesTotal ?? 0;
-              const hasBytes = bytesTotal > 0;
-              const step = packInstallProgress.step ?? 0;
-              const totalSteps = packInstallProgress.totalSteps ?? 0;
-              const hasSteps = totalSteps > 0;
-              const rawProgress = packInstallProgress.progress
-                ?? (hasBytes ? bytesDownloaded / bytesTotal : hasSteps ? step / totalSteps : null);
-              const percent = rawProgress === null
-                ? null
-                : Math.max(0, Math.min(100, Math.round(rawProgress * 100)));
-              return (
-                <div className="mt-5 space-y-2 text-left" aria-live="polite">
-                  <div
-                    className="h-2.5 overflow-hidden rounded-full bg-muted"
-                    role="progressbar"
-                    aria-label="Pack installation progress"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={percent ?? undefined}
-                  >
-                    <div
-                      className={percent === null ? 'h-full w-1/3 animate-pulse rounded-full bg-primary' : 'h-full rounded-full bg-primary transition-all duration-300'}
-                      style={percent === null ? undefined : { width: `${percent}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{percent === null ? 'Working…' : `${percent}%`}</span>
-                    {hasBytes ? (
-                      <span>{formatPackBytes(bytesDownloaded)} / {formatPackBytes(bytesTotal)}</span>
-                    ) : hasSteps ? (
-                      <span>File {Math.min(step, totalSteps)} of {totalSteps}</span>
-                    ) : null}
-                  </div>
-                  <p className="truncate text-sm font-medium" title={packInstallProgress.message}>
-                    {packInstallProgress.message}
-                  </p>
-                </div>
-              );
-            })()}
             {modProgress.length > 0 && (
               <div className="mt-4 space-y-1 max-h-64 overflow-y-auto text-left">
                 {modProgress.map((p, idx) => {
@@ -2185,10 +2097,11 @@ function PackCreateDialog({
           open
           intent={canonicalInstall}
           instanceName={name || createdInstanceId}
-          onOpenInstance={onCreated}
+          background
+          onBackgroundStart={(plan) => startPlan(plan, `Installing ${packName}`, name || createdInstanceId)}
           onClose={() => {
             setCanonicalInstall(null);
-            onCreated(createdInstanceId);
+            onCancel();
           }}
         />
       )}

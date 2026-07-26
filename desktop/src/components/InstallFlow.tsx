@@ -152,6 +152,8 @@ interface InstallFlowProps {
   instanceName: string;
   onOpenInstance?: (instanceId: string) => void;
   onClose?: () => void;
+  onBackgroundStart?: (plan: ResolvedInstallPlan) => void;
+  background?: boolean;
   open: boolean;
 }
 
@@ -164,6 +166,8 @@ export function InstallFlow({
   instanceName,
   onOpenInstance,
   onClose,
+  onBackgroundStart,
+  background = false,
   open,
 }: InstallFlowProps) {
   const [state, dispatch] = useReducer(flowReducer, { phase: 'closed' } as FlowState);
@@ -249,8 +253,14 @@ export function InstallFlow({
       dispatch({ type: 'retry' });
       return;
     }
-    dispatch({ type: 'confirm' });
-  }, [state, resolutionIntent]);
+    if (background) {
+      onBackgroundStart?.(state.plan);
+      dispatch({ type: 'close' });
+      onClose?.();
+    } else {
+      dispatch({ type: 'confirm' });
+    }
+  }, [background, onBackgroundStart, onClose, state, resolutionIntent]);
 
   const handleClose = useCallback(() => {
     dispatch({ type: 'close' });

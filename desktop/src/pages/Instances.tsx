@@ -25,6 +25,7 @@ import type { InstallIntent } from '../lib/installFlow';
 import { type ProcessState } from '../lib/useProcessController';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import {
   Dialog,
   DialogContent,
@@ -63,6 +64,7 @@ export function Instances({
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const { getTaskForInstance, revision: packInstallRevision } = usePackInstall();
 
   // Load direct launch mode once
   const [directLaunch, setDirectLaunch] = useState(false);
@@ -82,6 +84,10 @@ export function Instances({
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    if (packInstallRevision > 0) void refresh();
+  }, [packInstallRevision]);
 
   // Reactive crash detection when the tab becomes visible.
   useEffect(() => {
@@ -192,6 +198,7 @@ export function Instances({
 
             const isCurrentThisInstance = processState.instanceId === instance.instance_id;
             const instanceLogs = processLogs.filter((l) => l.instance_id === instance.instance_id);
+            const packInstall = getTaskForInstance(instance.instance_id);
 
             return (
               <InstanceCard
@@ -219,6 +226,7 @@ export function Instances({
                 onRepairAndRetry={onRepairAndRetry}
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
                 repairBusy={isCurrentLaunchBusy}
+                packInstall={packInstall}
               />
             );
           })}
@@ -295,6 +303,7 @@ function InstanceCard({
   onRepairAndRetry,
   onUseDelegatedLaunch,
   repairBusy,
+  packInstall,
 }: {
   instance: InstanceRow;
   onChanged: () => void;
@@ -315,6 +324,7 @@ function InstanceCard({
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
   repairBusy: boolean;
+  packInstall: PackInstallTask | null;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
@@ -401,6 +411,8 @@ function InstanceCard({
             : instance.is_locked ? 'Locked' : 'Unlocked'}
         </span>
       </div>
+
+      {packInstall && <PackInstallProgressBar task={packInstall} compact />}
 
       {/* ── Recoverable profile warning panel ── */}
       {controllerRecoverableIssue && issueDef && (
