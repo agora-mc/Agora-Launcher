@@ -1,16 +1,15 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use sha2::Digest;
-use zip::write::FileOptions;
-use zip::CompressionMethod;
-
 const RESTORE_MARKER: &str = ".agora_restore_in_progress";
-const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+const SNAPSHOT_PENDING_MARKER: &str = ".agora_snapshot_pending";
+const SNAPSHOT_FAILED_MARKER: &str = ".agora_snapshot_failed";
+const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 const TRACKED_ENTRIES: &[&str] = &[
     "mods",
@@ -32,6 +31,80 @@ pub struct Snapshot {
     pub size_estimate: u64,
 }
 
+/// Whether an instance's initial recovery snapshot is usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotReadiness {
+    Ready,
+    Pending,
+    Failed,
+}
+
+impl SnapshotReadiness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Pending => "pending",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+pub fn snapshot_readiness(instance_dir: &Path) -> SnapshotReadiness {
+    if instance_dir.join(SNAPSHOT_PENDING_MARKER).is_file() {
+        let owner = fs::read_to_string(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
+        let current_process = std::process::id().to_string();
+        if owner.as_deref() == Some(current_process.as_str()) {
+            SnapshotReadiness::Pending
+        } else {
+            // A previous process died while the background task was running.
+            // Do not leave the instance permanently stuck in a pending state.
+            SnapshotReadiness::Failed
+        }
+    } else if instance_dir.join(SNAPSHOT_FAILED_MARKER).is_file() {
+        SnapshotReadiness::Failed
+    } else {
+        SnapshotReadiness::Ready
+    }
+}
+
+pub fn snapshot_readiness_error(instance_dir: &Path) -> Option<String> {
+    if snapshot_readiness(instance_dir) == SnapshotReadiness::Failed
+        && instance_dir.join(SNAPSHOT_FAILED_MARKER).is_file()
+    {
+        return fs::read_to_string(instance_dir.join(SNAPSHOT_FAILED_MARKER))
+            .ok()
+            .filter(|message| !message.trim().is_empty());
+    }
+    if snapshot_readiness(instance_dir) == SnapshotReadiness::Failed
+        && instance_dir.join(SNAPSHOT_PENDING_MARKER).is_file()
+    {
+        return Some("The snapshot worker stopped before the recovery point was finalized.".into());
+    }
+    None
+}
+
+pub fn mark_snapshot_pending(instance_dir: &Path) -> Result<(), String> {
+    fs::remove_file(instance_dir.join(SNAPSHOT_FAILED_MARKER)).ok();
+    fs::write(
+        instance_dir.join(SNAPSHOT_PENDING_MARKER),
+        std::process::id().to_string(),
+    )
+    .map_err(|e| format!("failed to mark snapshot as pending: {e}"))
+}
+
+pub fn mark_snapshot_ready(instance_dir: &Path) -> Result<(), String> {
+    fs::remove_file(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
+    fs::remove_file(instance_dir.join(SNAPSHOT_FAILED_MARKER)).ok();
+    Ok(())
+}
+
+pub fn mark_snapshot_failed(instance_dir: &Path, error: &str) -> Result<(), String> {
+    fs::remove_file(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
+    fs::write(instance_dir.join(SNAPSHOT_FAILED_MARKER), error.as_bytes())
+        .map_err(|e| format!("failed to record snapshot failure: {e}"))
+}
+
 #[derive(Serialize, Deserialize)]
 struct SnapshotManifest {
     #[serde(default = "legacy_snapshot_schema_version")]
@@ -49,6 +122,10 @@ struct SnapshotFileEntry {
     /// restore computes the missing hash from the archive before mutation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sha256: Option<String>,
+    /// Schema v3 stores file contents in the shared content-addressed object
+    /// store instead of duplicating them in every snapshot archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blob_sha256: Option<String>,
 }
 
 fn legacy_snapshot_schema_version() -> u32 {
@@ -59,6 +136,33 @@ fn snapshots_dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".agora_snapshots")
 }
 
+fn snapshot_manifest_path(instance_dir: &Path, id: &str) -> PathBuf {
+    snapshots_dir(instance_dir).join(format!("{id}.json"))
+}
+
+/// The object store is shared by instances belonging to the same app data
+/// root. Tests and callers that pass a standalone directory still get a
+/// sibling object store, while normal instances resolve to `<app>/snapshot-objects`.
+fn snapshot_objects_dir(instance_dir: &Path) -> PathBuf {
+    let instances_root = instance_dir.parent().unwrap_or(instance_dir);
+    let app_root = if instances_root
+        .file_name()
+        .is_some_and(|name| name == "instances")
+    {
+        instances_root.parent().unwrap_or(instances_root)
+    } else {
+        instances_root
+    };
+    app_root.join("snapshot-objects")
+}
+
+fn snapshot_blob_path(instance_dir: &Path, hash: &str) -> PathBuf {
+    snapshot_objects_dir(instance_dir)
+        .join(&hash[..2.min(hash.len())])
+        .join(hash)
+}
+
+/// Legacy v1/v2 snapshots are retained as ZIPs and remain readable.
 fn snapshot_zip_path(instance_dir: &Path, id: &str) -> PathBuf {
     snapshots_dir(instance_dir).join(format!("{id}.zip"))
 }
@@ -75,6 +179,53 @@ pub fn snapshot_file_index(
     instance_dir: &Path,
     snapshot_id: &str,
 ) -> Result<Vec<crate::lkg::FileEntry>, String> {
+    validate_snapshot_id(snapshot_id)?;
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
+    if manifest_path.is_file() {
+        let manifest = read_manifest_file(&manifest_path, snapshot_id)?;
+        let mut result = Vec::with_capacity(manifest.files.len());
+        let mut seen = HashSet::new();
+        for indexed in &manifest.files {
+            validate_relative_path(&indexed.relative_path)?;
+            if !seen.insert(indexed.relative_path.clone()) {
+                return Err(format!(
+                    "snapshot manifest contains duplicate path {}",
+                    indexed.relative_path
+                ));
+            }
+            let blob_hash = indexed
+                .blob_sha256
+                .as_deref()
+                .or(indexed.sha256.as_deref())
+                .ok_or_else(|| {
+                    format!(
+                        "snapshot manifest has no content hash for {}",
+                        indexed.relative_path
+                    )
+                })?;
+            validate_blob_hash(blob_hash)?;
+            let contents = fs::read(snapshot_blob_path(instance_dir, blob_hash)).map_err(|e| {
+                format!(
+                    "failed to read snapshot object for {}: {e}",
+                    indexed.relative_path
+                )
+            })?;
+            verify_snapshot_bytes(
+                &indexed.relative_path,
+                indexed.size,
+                indexed.sha256.as_deref().or(Some(blob_hash)),
+                &contents,
+            )?;
+            result.push(crate::lkg::FileEntry {
+                path: indexed.relative_path.clone(),
+                sha256: sha256_hex(&contents),
+                size: indexed.size,
+            });
+        }
+        result.sort_by(|a, b| a.path.cmp(&b.path));
+        return Ok(result);
+    }
+
     let zip_path = snapshot_zip_path(instance_dir, snapshot_id);
     let file = fs::File::open(&zip_path)
         .map_err(|e| format!("failed to open snapshot {snapshot_id}: {e}"))?;
@@ -180,21 +331,20 @@ fn walk_and_hash(
     Ok(())
 }
 
-/// Create a snapshot of an instance directory, stored as a single compressed
-/// `.zip` under `<instance_dir>/.agora_snapshots/<id>.zip`.
+/// Create a snapshot of an instance directory.
+///
+/// New snapshots consist of a small immutable manifest under
+/// `<instance_dir>/.agora_snapshots/<id>.json`. File contents are streamed once
+/// into SHA-256 named objects in the shared snapshot object store. This avoids
+/// Deflate CPU cost and lets unchanged files be reused by later snapshots.
+/// Legacy ZIP snapshots are still understood by restore and listing.
 pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snapshot, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let zip_path = snapshot_zip_path(instance_dir, &id);
 
     fs::create_dir_all(snapshots_dir(instance_dir))
         .map_err(|e| format!("failed to create snapshots dir: {e}"))?;
-
-    let file =
-        fs::File::create(&zip_path).map_err(|e| format!("failed to create snapshot zip: {e}"))?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = FileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o644);
+    fs::create_dir_all(snapshot_objects_dir(instance_dir))
+        .map_err(|e| format!("failed to create snapshot object store: {e}"))?;
 
     let mut files: Vec<SnapshotFileEntry> = Vec::new();
     let mut total_size: u64 = 0;
@@ -206,32 +356,16 @@ pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snaps
         }
 
         if src.is_file() {
-            let contents =
-                fs::read(&src).map_err(|e| format!("failed to read {entry_name}: {e}"))?;
-            zip.start_file(*entry_name, options)
-                .map_err(|e| format!("failed to start zip entry {entry_name}: {e}"))?;
-            zip.write_all(&contents)
-                .map_err(|e| format!("failed to write {entry_name}: {e}"))?;
-            let sha256 = {
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(&contents);
-                format!("{:x}", hasher.finalize())
-            };
+            let (sha256, size) = store_snapshot_object(instance_dir, &src)?;
             files.push(SnapshotFileEntry {
                 relative_path: entry_name.to_string(),
-                size: contents.len() as u64,
-                sha256: Some(sha256),
+                size,
+                sha256: Some(sha256.clone()),
+                blob_sha256: Some(sha256),
             });
-            total_size += contents.len() as u64;
+            total_size += size;
         } else if src.is_dir() {
-            walk_and_zip(
-                &src,
-                entry_name,
-                &mut zip,
-                options,
-                &mut files,
-                &mut total_size,
-            )?;
+            walk_and_store(instance_dir, &src, entry_name, &mut files, &mut total_size)?;
         }
     }
 
@@ -249,24 +383,17 @@ pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snaps
         files,
     };
 
-    let manifest_json = serde_json::to_string_pretty(&manifest)
+    let manifest_json = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("failed to serialize manifest: {e}"))?;
-    zip.start_file("manifest.json", options)
-        .map_err(|e| format!("failed to start manifest entry: {e}"))?;
-    zip.write_all(manifest_json.as_bytes())
-        .map_err(|e| format!("failed to write manifest: {e}"))?;
-
-    zip.finish()
-        .map_err(|e| format!("failed to finalize snapshot zip: {e}"))?;
-
+    atomic_write(&snapshot_manifest_path(instance_dir, &id), &manifest_json)?;
+    mark_snapshot_ready(instance_dir)?;
     Ok(snapshot)
 }
 
-fn walk_and_zip(
+fn walk_and_store(
+    instance_dir: &Path,
     src: &Path,
     prefix: &str,
-    zip: &mut zip::ZipWriter<fs::File>,
-    options: FileOptions,
     files: &mut Vec<SnapshotFileEntry>,
     total_size: &mut u64,
 ) -> Result<(), String> {
@@ -283,29 +410,128 @@ fn walk_and_zip(
         let relative = format!("{prefix}/{entry_name}");
 
         if entry_type.is_dir() {
-            walk_and_zip(&src_path, &relative, zip, options, files, total_size)?;
+            walk_and_store(instance_dir, &src_path, &relative, files, total_size)?;
         } else if entry_type.is_file() {
-            let contents = fs::read(&src_path)
-                .map_err(|e| format!("failed to read {}: {e}", src_path.display()))?;
-            zip.start_file(relative.clone(), options)
-                .map_err(|e| format!("failed to start zip entry {relative}: {e}"))?;
-            zip.write_all(&contents)
-                .map_err(|e| format!("failed to write {relative}: {e}"))?;
-            let sha256 = {
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(&contents);
-                format!("{:x}", hasher.finalize())
-            };
+            let (sha256, size) = store_snapshot_object(instance_dir, &src_path)?;
             files.push(SnapshotFileEntry {
                 relative_path: relative,
-                size: contents.len() as u64,
-                sha256: Some(sha256),
+                size,
+                sha256: Some(sha256.clone()),
+                blob_sha256: Some(sha256),
             });
-            *total_size += contents.len() as u64;
+            *total_size += size;
         }
     }
 
     Ok(())
+}
+
+fn store_snapshot_object(instance_dir: &Path, source: &Path) -> Result<(String, u64), String> {
+    let objects_dir = snapshot_objects_dir(instance_dir);
+    fs::create_dir_all(&objects_dir)
+        .map_err(|e| format!("failed to create snapshot object store: {e}"))?;
+    let temp_path = objects_dir.join(format!(
+        ".{}.{}.tmp",
+        uuid::Uuid::new_v4(),
+        std::process::id()
+    ));
+    let source_file =
+        fs::File::open(source).map_err(|e| format!("failed to read {}: {e}", source.display()))?;
+    let mut reader = BufReader::new(source_file);
+    let temp_file = fs::File::create(&temp_path)
+        .map_err(|e| format!("failed to create snapshot object: {e}"))?;
+    let mut writer = BufWriter::new(temp_file);
+    let mut hasher = sha2::Sha256::new();
+    let mut size = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("failed to read {}: {e}", source.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        writer
+            .write_all(&buffer[..read])
+            .map_err(|e| format!("failed to write snapshot object: {e}"))?;
+        size += read as u64;
+    }
+    let hash = format!("{:x}", hasher.finalize());
+    writer
+        .flush()
+        .map_err(|e| format!("failed to flush snapshot object: {e}"))?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|e| format!("failed to sync snapshot object: {e}"))?;
+
+    let destination = snapshot_blob_path(instance_dir, &hash);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create snapshot object prefix: {e}"))?;
+    }
+    if destination.exists() {
+        if blob_file_matches(&destination, &hash, size) {
+            fs::remove_file(&temp_path)
+                .map_err(|e| format!("failed to discard duplicate snapshot object: {e}"))?;
+        } else {
+            fs::remove_file(&destination)
+                .map_err(|e| format!("failed to replace corrupt snapshot object: {e}"))?;
+            fs::rename(&temp_path, &destination)
+                .map_err(|e| format!("failed to replace snapshot object: {e}"))?;
+        }
+    } else if let Err(error) = fs::rename(&temp_path, &destination) {
+        if destination.exists() {
+            fs::remove_file(&temp_path).map_err(|cleanup| {
+                format!("failed to discard duplicate snapshot object: {cleanup}")
+            })?;
+        } else {
+            return Err(format!("failed to commit snapshot object: {error}"));
+        }
+    }
+    Ok((hash, size))
+}
+
+fn blob_file_matches(path: &Path, expected_hash: &str, expected_size: u64) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    if metadata.len() != expected_size {
+        return false;
+    }
+    let mut reader = BufReader::new(file);
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let Ok(read) = reader.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(expected_hash)
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let temp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("snapshot")
+    ));
+    let mut file =
+        fs::File::create(&temp).map_err(|e| format!("failed to create snapshot manifest: {e}"))?;
+    file.write_all(contents)
+        .map_err(|e| format!("failed to write snapshot manifest: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("failed to sync snapshot manifest: {e}"))?;
+    fs::rename(&temp, path).map_err(|e| format!("failed to commit snapshot manifest: {e}"))
 }
 
 /// Restore an instance to a snapshot.
@@ -324,9 +550,11 @@ fn restore_snapshot_impl(
     snapshot_id: &str,
     fail_after_promotions: Option<usize>,
 ) -> Result<(), String> {
+    validate_snapshot_id(snapshot_id)?;
     recover_interrupted_restore(instance_dir)?;
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
     let zip_path = snapshot_zip_path(instance_dir, snapshot_id);
-    if !zip_path.exists() {
+    if !manifest_path.exists() && !zip_path.exists() {
         return Err(format!("snapshot {snapshot_id} not found"));
     }
 
@@ -334,7 +562,7 @@ fn restore_snapshot_impl(
     let extract_dir = instance_dir.join(format!(".agora_restore_extract_{restore_id}"));
     fs::create_dir_all(&extract_dir).map_err(|e| format!("failed to create extract dir: {e}"))?;
 
-    let manifest = match extract_and_verify(&zip_path, snapshot_id, &extract_dir) {
+    let manifest = match extract_and_verify(instance_dir, snapshot_id, &extract_dir) {
         Ok(manifest) => manifest,
         Err(error) => {
             let _ = fs::remove_dir_all(&extract_dir);
@@ -466,10 +694,98 @@ fn recover_interrupted_restore(instance_dir: &Path) -> Result<(), String> {
 }
 
 fn extract_and_verify(
-    zip_path: &Path,
+    instance_dir: &Path,
     snapshot_id: &str,
     extract_dir: &Path,
 ) -> Result<SnapshotManifest, String> {
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
+    if manifest_path.is_file() {
+        let manifest = read_manifest_file(&manifest_path, snapshot_id)?;
+        let mut seen = HashSet::new();
+        for file_entry in &manifest.files {
+            validate_relative_path(&file_entry.relative_path)?;
+            if !seen.insert(file_entry.relative_path.clone()) {
+                return Err(format!(
+                    "snapshot manifest contains duplicate path {}",
+                    file_entry.relative_path
+                ));
+            }
+            let blob_hash = file_entry
+                .blob_sha256
+                .as_deref()
+                .or(file_entry.sha256.as_deref())
+                .ok_or_else(|| {
+                    format!(
+                        "snapshot manifest has no content hash for {}",
+                        file_entry.relative_path
+                    )
+                })?;
+            validate_blob_hash(blob_hash)?;
+            let blob_path = snapshot_blob_path(instance_dir, blob_hash);
+            let input = fs::File::open(&blob_path).map_err(|e| {
+                format!(
+                    "failed to open snapshot object for {}: {e}",
+                    file_entry.relative_path
+                )
+            })?;
+            let mut reader = BufReader::new(input);
+            let output = extract_dir.join(Path::new(&file_entry.relative_path));
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create restore staging directory: {e}"))?;
+            }
+            let output_file = fs::File::create(&output)
+                .map_err(|e| format!("failed to stage {}: {e}", file_entry.relative_path))?;
+            let mut writer = BufWriter::new(output_file);
+            let mut hasher = sha2::Sha256::new();
+            let mut size = 0u64;
+            let mut buffer = vec![0u8; 1024 * 1024];
+            loop {
+                let read = reader
+                    .read(&mut buffer)
+                    .map_err(|e| format!("failed to read snapshot object: {e}"))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                writer
+                    .write_all(&buffer[..read])
+                    .map_err(|e| format!("failed to stage {}: {e}", file_entry.relative_path))?;
+                size += read as u64;
+            }
+            writer
+                .flush()
+                .map_err(|e| format!("failed to flush {}: {e}", file_entry.relative_path))?;
+            writer
+                .get_ref()
+                .sync_all()
+                .map_err(|e| format!("failed to sync {}: {e}", file_entry.relative_path))?;
+            let actual_hash = format!("{:x}", hasher.finalize());
+            if size != file_entry.size {
+                return Err(format!(
+                    "snapshot size mismatch for {}",
+                    file_entry.relative_path
+                ));
+            }
+            if !actual_hash.eq_ignore_ascii_case(blob_hash) {
+                return Err(format!(
+                    "snapshot hash mismatch for {}: object is corrupted or modified",
+                    file_entry.relative_path
+                ));
+            }
+            if let Some(expected) = &file_entry.sha256 {
+                if !actual_hash.eq_ignore_ascii_case(expected) {
+                    return Err(format!(
+                        "snapshot hash mismatch for {}: object is corrupted or modified",
+                        file_entry.relative_path
+                    ));
+                }
+            }
+        }
+        return Ok(manifest);
+    }
+
+    let zip_path = snapshot_zip_path(instance_dir, snapshot_id);
     let file = fs::File::open(zip_path).map_err(|e| format!("failed to open snapshot zip: {e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("failed to read snapshot zip: {e}"))?;
@@ -540,6 +856,56 @@ fn extract_and_verify(
     Ok(manifest)
 }
 
+fn read_manifest_file(path: &Path, snapshot_id: &str) -> Result<SnapshotManifest, String> {
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("failed to read snapshot manifest: {e}"))?;
+    let manifest: SnapshotManifest = serde_json::from_str(&content)
+        .map_err(|e| format!("failed to parse snapshot manifest: {e}"))?;
+    validate_manifest(&manifest, snapshot_id)?;
+    Ok(manifest)
+}
+
+fn validate_manifest(manifest: &SnapshotManifest, snapshot_id: &str) -> Result<(), String> {
+    if manifest.schema_version == 0 || manifest.schema_version > SNAPSHOT_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported snapshot schema version {} (maximum supported is {})",
+            manifest.schema_version, SNAPSHOT_SCHEMA_VERSION
+        ));
+    }
+    if manifest.snapshot.id != snapshot_id {
+        return Err(format!(
+            "snapshot identity mismatch: requested {snapshot_id}, archive contains {}",
+            manifest.snapshot.id
+        ));
+    }
+    Ok(())
+}
+
+fn verify_snapshot_bytes(
+    relative_path: &str,
+    expected_size: u64,
+    expected_hash: Option<&str>,
+    contents: &[u8],
+) -> Result<(), String> {
+    if contents.len() as u64 != expected_size {
+        return Err(format!("snapshot size mismatch for {relative_path}"));
+    }
+    let actual = sha256_hex(contents);
+    if let Some(expected) = expected_hash {
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(format!("snapshot hash mismatch for {relative_path}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_blob_hash(hash: &str) -> Result<(), String> {
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("snapshot contains an invalid content hash".into());
+    }
+    Ok(())
+}
+
 fn read_manifest(
     archive: &mut zip::ZipArchive<fs::File>,
     snapshot_id: &str,
@@ -556,19 +922,7 @@ fn read_manifest(
             .map_err(|e| format!("failed to parse snapshot manifest: {e}"))?
     };
 
-    if manifest.schema_version == 0 || manifest.schema_version > SNAPSHOT_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported snapshot schema version {} (maximum supported is {})",
-            manifest.schema_version, SNAPSHOT_SCHEMA_VERSION
-        ));
-    }
-    if manifest.snapshot.id != snapshot_id {
-        return Err(format!(
-            "snapshot identity mismatch: requested {snapshot_id}, archive contains {}",
-            manifest.snapshot.id
-        ));
-    }
-
+    validate_manifest(&manifest, snapshot_id)?;
     Ok(manifest)
 }
 
@@ -605,6 +959,18 @@ fn validate_relative_path(relative_path: &str) -> Result<(), String> {
         return Err(format!(
             "snapshot file path cannot contain children: {relative_path}"
         ));
+    }
+    Ok(())
+}
+
+fn validate_snapshot_id(snapshot_id: &str) -> Result<(), String> {
+    if snapshot_id.is_empty()
+        || snapshot_id == "."
+        || snapshot_id == ".."
+        || snapshot_id.contains('/')
+        || snapshot_id.contains('\\')
+    {
+        return Err("invalid snapshot id".into());
     }
     Ok(())
 }
@@ -721,31 +1087,32 @@ pub fn list_snapshots(instance_dir: &Path) -> Result<Vec<Snapshot>, String> {
     for entry in entries {
         let entry = entry.map_err(|e| format!("failed to read entry: {e}"))?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("zip") {
-            continue;
-        }
-
-        let file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let mut archive = match zip::ZipArchive::new(file) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-
-        let mut manifest_entry = match archive.by_name("manifest.json") {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let mut content = String::new();
-        if manifest_entry.read_to_string(&mut content).is_err() {
-            continue;
-        }
-
-        if let Ok(manifest) = serde_json::from_str::<SnapshotManifest>(&content) {
-            snapshots.push(manifest.snapshot);
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("json") => {
+                let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if let Ok(manifest) = read_manifest_file(&path, id) {
+                    snapshots.push(manifest.snapshot);
+                }
+            }
+            Some("zip") => {
+                let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let file = match fs::File::open(&path) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                let mut archive = match zip::ZipArchive::new(file) {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                if let Ok(manifest) = read_manifest(&mut archive, id) {
+                    snapshots.push(manifest.snapshot);
+                }
+            }
+            _ => continue,
         }
     }
 
@@ -755,12 +1122,39 @@ pub fn list_snapshots(instance_dir: &Path) -> Result<Vec<Snapshot>, String> {
 
 /// Delete a snapshot.
 pub fn delete_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<(), String> {
+    validate_snapshot_id(snapshot_id)?;
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
     let zip_path = snapshot_zip_path(instance_dir, snapshot_id);
-    if !zip_path.exists() {
+    if !manifest_path.exists() && !zip_path.exists() {
         return Err(format!("snapshot {snapshot_id} not found"));
     }
 
-    fs::remove_file(&zip_path).map_err(|e| format!("failed to delete snapshot zip: {e}"))?;
+    let mut blobs = Vec::new();
+    if manifest_path.is_file() {
+        if let Ok(manifest) = read_manifest_file(&manifest_path, snapshot_id) {
+            blobs = manifest
+                .files
+                .iter()
+                .filter_map(|file| file.blob_sha256.as_deref().or(file.sha256.as_deref()))
+                .filter(|hash| validate_blob_hash(hash).is_ok())
+                .map(str::to_string)
+                .collect();
+        }
+        fs::remove_file(&manifest_path)
+            .map_err(|e| format!("failed to delete snapshot manifest: {e}"))?;
+    } else {
+        fs::remove_file(&zip_path).map_err(|e| format!("failed to delete snapshot zip: {e}"))?;
+    }
+
+    for hash in blobs {
+        if !blob_is_referenced_by_any_snapshot(instance_dir, &hash) {
+            let path = snapshot_blob_path(instance_dir, &hash);
+            let _ = fs::remove_file(&path);
+            if let Some(parent) = path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
 
     let dir = snapshots_dir(instance_dir);
     if dir.exists()
@@ -775,11 +1169,109 @@ pub fn delete_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<(), Str
     Ok(())
 }
 
+fn blob_is_referenced_by_any_snapshot(instance_dir: &Path, hash: &str) -> bool {
+    if validate_blob_hash(hash).is_err() {
+        return false;
+    }
+    let instances_root = instance_dir.parent().unwrap_or(instance_dir);
+    let candidates = fs::read_dir(instances_root)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path().join(".agora_snapshots"))
+        .chain(std::iter::once(snapshots_dir(instance_dir)));
+
+    candidates
+        .filter_map(|dir| fs::read_dir(dir).ok())
+        .flatten()
+        .any(|entry| {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
+                return false;
+            }
+            let path = entry.path();
+            let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            let Ok(manifest) = read_manifest_file(&path, id) else {
+                return false;
+            };
+            manifest
+                .files
+                .iter()
+                .any(|file| file.blob_sha256.as_deref().or(file.sha256.as_deref()) == Some(hash))
+        })
+}
+
+/// Return the physical storage estimate used by retention for a snapshot.
+/// Shared objects may be counted by more than one snapshot, which is
+/// intentionally conservative for a size-cap policy.
+pub fn snapshot_storage_size(instance_dir: &Path, snapshot_id: &str) -> u64 {
+    if validate_snapshot_id(snapshot_id).is_err() {
+        return 0;
+    }
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
+    if let Ok(manifest) = read_manifest_file(&manifest_path, snapshot_id) {
+        return fs::metadata(&manifest_path).map(|m| m.len()).unwrap_or(0)
+            + manifest
+                .files
+                .iter()
+                .filter_map(|file| file.blob_sha256.as_deref().or(file.sha256.as_deref()))
+                .filter(|hash| validate_blob_hash(hash).is_ok())
+                .map(|hash| {
+                    fs::metadata(snapshot_blob_path(instance_dir, hash))
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                })
+                .sum::<u64>();
+    }
+    fs::metadata(snapshot_zip_path(instance_dir, snapshot_id))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+/// Remove content-addressed objects that are no longer referenced by any
+/// instance snapshot manifest. Garbage collection is best-effort at lifecycle
+/// boundaries; restore correctness never depends on it.
+pub fn prune_unreferenced_objects(instance_dir: &Path) -> Result<(), String> {
+    let root = snapshot_objects_dir(instance_dir);
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let prefixes =
+        fs::read_dir(&root).map_err(|e| format!("failed to scan snapshot object store: {e}"))?;
+    for prefix in prefixes {
+        let prefix = prefix.map_err(|e| format!("failed to read snapshot object prefix: {e}"))?;
+        if !prefix.path().is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(prefix.path())
+            .map_err(|e| format!("failed to scan snapshot objects: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("failed to read snapshot object: {e}"))?;
+            let Some(hash) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if validate_blob_hash(&hash).is_ok()
+                && !blob_is_referenced_by_any_snapshot(instance_dir, &hash)
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        let _ = fs::remove_dir(prefix.path());
+    }
+    let _ = fs::remove_dir(root);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
     use zip::write::FileOptions;
+    use zip::CompressionMethod;
 
     fn make_instance(tmp: &TempDir) -> PathBuf {
         let dir = tmp.path().join("instance");
@@ -791,6 +1283,14 @@ mod tests {
         fs::write(dir.join("config").join("settings.toml"), b"key=value").unwrap();
         fs::write(dir.join("options.txt"), b"render_distance=12").unwrap();
         dir
+    }
+
+    fn count_snapshot_objects(instance_dir: &Path) -> usize {
+        fs::read_dir(snapshot_objects_dir(instance_dir))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|prefix| fs::read_dir(prefix.path()).unwrap().count())
+            .sum()
     }
 
     #[test]
@@ -806,6 +1306,41 @@ mod tests {
         let snaps = list_snapshots(&inst).unwrap();
         assert_eq!(snaps.len(), 1);
         assert_eq!(snaps[0].id, snap.id);
+    }
+
+    #[test]
+    fn snapshots_reuse_content_addressed_objects() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+
+        let first = create_snapshot(&inst, Some("first")).unwrap();
+        let object_count = count_snapshot_objects(&inst);
+        let second = create_snapshot(&inst, Some("second")).unwrap();
+
+        assert_ne!(first.id, second.id);
+        assert_eq!(count_snapshot_objects(&inst), object_count);
+        assert_eq!(
+            snapshot_file_index(&inst, &first.id).unwrap(),
+            snapshot_file_index(&inst, &second.id).unwrap()
+        );
+    }
+
+    #[test]
+    fn snapshot_readiness_markers_are_transitional() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+
+        assert_eq!(snapshot_readiness(&inst), SnapshotReadiness::Ready);
+        mark_snapshot_pending(&inst).unwrap();
+        assert_eq!(snapshot_readiness(&inst), SnapshotReadiness::Pending);
+        mark_snapshot_failed(&inst, "test failure").unwrap();
+        assert_eq!(snapshot_readiness(&inst), SnapshotReadiness::Failed);
+        assert_eq!(
+            snapshot_readiness_error(&inst).as_deref(),
+            Some("test failure")
+        );
+        mark_snapshot_ready(&inst).unwrap();
+        assert_eq!(snapshot_readiness(&inst), SnapshotReadiness::Ready);
     }
 
     #[test]
@@ -841,12 +1376,17 @@ mod tests {
 
         fs::write(inst.join("mods").join("test.jar"), b"changed").unwrap();
 
-        let zip_path = snapshot_zip_path(&inst, &snap.id);
-        let file = fs::File::open(&zip_path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
-        let mut entry = archive.by_name("mods/test.jar").unwrap();
-        let mut content = Vec::new();
-        entry.read_to_end(&mut content).unwrap();
+        let manifest =
+            read_manifest_file(&snapshot_manifest_path(&inst, &snap.id), &snap.id).unwrap();
+        let hash = manifest
+            .files
+            .iter()
+            .find(|file| file.relative_path == "mods/test.jar")
+            .unwrap()
+            .blob_sha256
+            .as_deref()
+            .unwrap();
+        let content = fs::read(snapshot_blob_path(&inst, hash)).unwrap();
         assert_eq!(content, b"mod content");
     }
 
@@ -856,11 +1396,12 @@ mod tests {
         let inst = make_instance(&tmp);
 
         let snap = create_snapshot(&inst, None).unwrap();
-        let zip_path = snapshot_zip_path(&inst, &snap.id);
-        assert!(zip_path.exists());
+        let manifest_path = snapshot_manifest_path(&inst, &snap.id);
+        assert!(manifest_path.exists());
 
         delete_snapshot(&inst, &snap.id).unwrap();
-        assert!(!zip_path.exists());
+        assert!(!manifest_path.exists());
+        assert_eq!(count_snapshot_objects(&inst), 0);
     }
 
     #[test]
@@ -925,11 +1466,17 @@ mod tests {
         let snapshot = create_snapshot(&inst, None).unwrap();
         fs::write(inst.join("mods").join("test.jar"), b"current safe state").unwrap();
 
-        rewrite_archive_entry(
-            &snapshot_zip_path(&inst, &snapshot.id),
-            "mods/test.jar",
-            b"bad content",
-        );
+        let manifest =
+            read_manifest_file(&snapshot_manifest_path(&inst, &snapshot.id), &snapshot.id).unwrap();
+        let hash = manifest
+            .files
+            .iter()
+            .find(|file| file.relative_path == "mods/test.jar")
+            .unwrap()
+            .blob_sha256
+            .as_deref()
+            .unwrap();
+        fs::write(snapshot_blob_path(&inst, hash), b"bad content").unwrap();
 
         let error = restore_snapshot(&inst, &snapshot.id).unwrap_err();
         assert!(error.contains("hash mismatch"));
@@ -1009,36 +1556,6 @@ mod tests {
         for (name, contents) in entries {
             zip.start_file(*name, options).unwrap();
             zip.write_all(contents).unwrap();
-        }
-        zip.finish().unwrap();
-    }
-
-    fn rewrite_archive_entry(path: &Path, target: &str, replacement: &[u8]) {
-        let mut entries = Vec::new();
-        {
-            let file = fs::File::open(path).unwrap();
-            let mut archive = zip::ZipArchive::new(file).unwrap();
-            for index in 0..archive.len() {
-                let mut entry = archive.by_index(index).unwrap();
-                if entry.is_dir() {
-                    continue;
-                }
-                let name = entry.name().to_string();
-                let mut contents = Vec::new();
-                entry.read_to_end(&mut contents).unwrap();
-                if name == target {
-                    contents = replacement.to_vec();
-                }
-                entries.push((name, contents));
-            }
-        }
-
-        let file = fs::File::create(path).unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
-        for (name, contents) in entries {
-            zip.start_file(name, options).unwrap();
-            zip.write_all(&contents).unwrap();
         }
         zip.finish().unwrap();
     }

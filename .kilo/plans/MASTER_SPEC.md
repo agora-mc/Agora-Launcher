@@ -2477,4 +2477,27 @@ ead_mod_manifest, enable_mod, search_knowledge_base) per E2 superset.
 
 ---
 
+### 19.15 Content-Addressed Recovery Snapshots
+
+The recovery snapshot implementation evolved from full Deflate ZIP archives to
+immutable per-file SHA-256 objects plus an atomic per-snapshot JSON manifest.
+Each manifest records the tracked relative path, size, and object hash. Objects
+are shared below the app data root, so unchanged mods and configuration files
+are written once across snapshots and instances. New snapshot writes stream
+through a bounded buffer, hash and persist each object once, and restore reads
+and verifies objects before the existing atomic root-swap protocol. Existing
+v1/v2 ZIP snapshots remain readable and restorable.
+
+Initial imports register the instance and then finalize their first recovery
+manifest on a blocking worker. While that worker runs, the instance reports a
+pending snapshot state: inspection is allowed, but launch and mutating
+operations are blocked. A failed worker records an actionable failed state;
+creating a manual snapshot clears the state. Launch and install backends also
+enforce the readiness check so the UI is not the security boundary.
+
+Retention accounts for manifest and referenced object storage and removes an
+object only after no remaining snapshot manifest references it.
+
+---
+
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

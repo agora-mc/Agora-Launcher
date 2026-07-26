@@ -346,7 +346,11 @@ impl ImportService {
             });
         }
 
-        check(&op, &cancel)?;
+        if let Err(error) = check(&op, &cancel) {
+            let _ = rollback();
+            let _ = crate::db::delete_instance(&conn, &result.instance_id);
+            return Err(error);
+        }
 
         // ── Phase 6: Health validation ──────────────────────────────────
         if let Ok(instance_dir) = self.ctx.paths.instance_dir(&result.instance_id) {
@@ -356,7 +360,11 @@ impl ImportService {
                     ProgressPhase::HealthScan,
                     "Running health scan…",
                 ));
-                check(&op, &cancel)?;
+                if let Err(error) = check(&op, &cancel) {
+                    let _ = rollback();
+                    let _ = crate::db::delete_instance(&conn, &result.instance_id);
+                    return Err(error);
+                }
 
                 let manifest_path = instance_dir.join("instance_manifest.json");
                 if let Ok(raw) = tokio::fs::read_to_string(&manifest_path).await {
@@ -390,23 +398,65 @@ impl ImportService {
                         }
                     }
                 }
-                check(&op, &cancel)?;
+                if let Err(error) = check(&op, &cancel) {
+                    let _ = rollback();
+                    let _ = crate::db::delete_instance(&conn, &result.instance_id);
+                    return Err(error);
+                }
             }
         }
 
         // ── Phase 7: Initial snapshot ───────────────────────────────────
+        // The instance is already fully extracted, registered, and health
+        // checked at this point. Keep it visible, but mark it read-only until
+        // its first recovery point is durable. Snapshotting is isolated on a
+        // blocking worker so browsing can begin immediately.
         if let Ok(instance_dir) = self.ctx.paths.instance_dir(&result.instance_id) {
             if instance_dir.exists() {
+                crate::snapshot::mark_snapshot_pending(&instance_dir).map_err(|error| {
+                    let _ = rollback();
+                    let _ = crate::db::delete_instance(&conn, &result.instance_id);
+                    op.clone().fail(error.clone());
+                    LauncherError::Generic {
+                        code: "ERR_SNAPSHOT_FAILED".into(),
+                        message: error,
+                    }
+                })?;
                 sink.report(ProgressEvent::new(
                     op_id.clone(),
                     ProgressPhase::Snapshotting,
-                    "Creating initial snapshot…",
+                    "Finalizing the initial recovery snapshot…",
                 ));
-                check(&op, &cancel)?;
-
-                let _ =
-                    crate::snapshot::create_snapshot(&instance_dir, Some("Initial import state"));
-                check(&op, &cancel)?;
+                if let Err(error) = check(&op, &cancel) {
+                    let _ = rollback();
+                    let _ = crate::db::delete_instance(&conn, &result.instance_id);
+                    return Err(error);
+                }
+                let snapshot_sink = sink.clone();
+                let snapshot_operation_id = op_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    match crate::snapshot::create_snapshot(
+                        &instance_dir,
+                        Some("Initial import state"),
+                    ) {
+                        Ok(_) => {
+                            let _ = crate::snapshot::mark_snapshot_ready(&instance_dir);
+                            snapshot_sink.report(ProgressEvent::new(
+                                snapshot_operation_id,
+                                ProgressPhase::Done,
+                                "Initial recovery snapshot ready",
+                            ));
+                        }
+                        Err(error) => {
+                            let _ = crate::snapshot::mark_snapshot_failed(&instance_dir, &error);
+                            snapshot_sink.report(ProgressEvent::new(
+                                snapshot_operation_id,
+                                ProgressPhase::Failed,
+                                format!("Initial recovery snapshot failed: {error}"),
+                            ));
+                        }
+                    }
+                });
             }
         }
 

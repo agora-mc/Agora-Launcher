@@ -5,6 +5,7 @@ import {
   checkInstanceCrash,
   checkInstanceUpdates,
   createInstance,
+  createSnapshot,
   deleteInstance,
   getSetting,
   getCustomIcon,
@@ -66,6 +67,8 @@ export function Instances({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [instanceIcons, setInstanceIcons] = useState<Record<string, string>>({});
+  const [snapshotReadiness, setSnapshotReadiness] = useState<Record<string, 'ready' | 'pending' | 'failed'>>({});
+  const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const { getTaskForInstance, revision: packInstallRevision } = usePackInstall();
@@ -79,7 +82,7 @@ export function Instances({
     try {
       const rows = await listInstances();
       setInstances(rows);
-      const icons = await Promise.all(rows.map(async (row) => {
+      const details = await Promise.all(rows.map(async (row) => {
         try {
           const detail = await getInstanceDetail(row.instance_id);
           const storedUrl = detail?.manifest?.user_preferences?.agora_pack_icon_url;
@@ -89,12 +92,25 @@ export function Instances({
           const customUrl = row.icon_path
             ? await getCustomIcon(row.instance_id, 'instance')
             : null;
-          return [row.instance_id, customUrl ?? remoteUrl] as const;
+          return {
+            instanceId: row.instance_id,
+            icon: customUrl ?? remoteUrl,
+            readiness: detail?.snapshot_readiness ?? 'ready',
+            error: detail?.snapshot_error ?? null,
+          };
         } catch {
-          return [row.instance_id, null] as const;
+          return { instanceId: row.instance_id, icon: null, readiness: 'ready' as const, error: null };
         }
       }));
-      setInstanceIcons(Object.fromEntries(icons.filter((entry): entry is readonly [string, string] => entry[1] !== null)));
+      setInstanceIcons(Object.fromEntries(
+        details
+          .filter((entry): entry is typeof entry & { icon: string } => entry.icon !== null)
+          .map((entry) => [entry.instanceId, entry.icon]),
+      ));
+      setSnapshotReadiness(Object.fromEntries(details.map((entry) => [entry.instanceId, entry.readiness])));
+      setSnapshotErrors(Object.fromEntries(
+        details.filter((entry) => entry.error !== null).map((entry) => [entry.instanceId, entry.error as string]),
+      ));
     } catch (e) {
       setError(formatError(e));
     } finally {
@@ -109,6 +125,12 @@ export function Instances({
   useEffect(() => {
     if (packInstallRevision > 0) void refresh();
   }, [packInstallRevision]);
+
+  useEffect(() => {
+    if (!Object.values(snapshotReadiness).some((state) => state === 'pending')) return undefined;
+    const timer = window.setInterval(() => { void refresh(); }, 1500);
+    return () => window.clearInterval(timer);
+  }, [snapshotReadiness]);
 
   // Reactive crash detection when the tab becomes visible.
   useEffect(() => {
@@ -220,6 +242,8 @@ export function Instances({
             const isCurrentThisInstance = processState.instanceId === instance.instance_id;
             const instanceLogs = processLogs.filter((l) => l.instance_id === instance.instance_id);
             const packInstall = getTaskForInstance(instance.instance_id);
+            const recoveryPending = snapshotReadiness[instance.instance_id] === 'pending';
+            const recoveryFailed = snapshotReadiness[instance.instance_id] === 'failed';
 
             return (
               <InstanceCard
@@ -249,6 +273,13 @@ export function Instances({
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
                 repairBusy={isCurrentLaunchBusy}
                 packInstall={packInstall}
+                recoveryPending={recoveryPending}
+                recoveryError={snapshotErrors[instance.instance_id] ?? null}
+                recoveryFailed={recoveryFailed}
+                onRetryRecovery={async () => {
+                  await createSnapshot(instance.instance_id, 'Initial import retry');
+                  await refresh();
+                }}
               />
             );
           })}
@@ -327,6 +358,10 @@ function InstanceCard({
   onUseDelegatedLaunch,
   repairBusy,
   packInstall,
+  recoveryPending,
+  recoveryError,
+  recoveryFailed,
+  onRetryRecovery,
 }: {
   instance: InstanceRow;
   iconSrc: string | null;
@@ -349,13 +384,19 @@ function InstanceCard({
   onUseDelegatedLaunch: () => Promise<void>;
   repairBusy: boolean;
   packInstall: PackInstallTask | null;
+  recoveryPending: boolean;
+  recoveryError: string | null;
+  recoveryFailed: boolean;
+  onRetryRecovery: () => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
   const [cancellingJava, setCancellingJava] = useState(false);
+  const [retryingRecovery, setRetryingRecovery] = useState(false);
 
   const displayError = error ?? controllerError;
   const effectiveBusy = launchBusy || repairBusy || repairing || cancellingJava;
+  const recoveryBlocked = recoveryPending || recoveryFailed || packInstall?.status === 'running';
 
   const handleCancelJavaProvisioning = async () => {
     if (!runtimeProgress) return;
@@ -364,6 +405,18 @@ function InstanceCard({
       await cancelJavaRuntime(`java-runtime-${instance.instance_id}-${runtimeProgress.major}`);
     } catch {
       // Operation may already be complete — ignore
+    }
+  };
+
+  const handleRetryRecovery = async () => {
+    setRetryingRecovery(true);
+    setError(null);
+    try {
+      await onRetryRecovery();
+    } catch (cause) {
+      setError(formatError(cause));
+    } finally {
+      setRetryingRecovery(false);
     }
   };
 
@@ -447,6 +500,29 @@ function InstanceCard({
 
       {packInstall && <PackInstallProgressBar task={packInstall} compact />}
 
+      {recoveryBlocked && (
+        <div className="mt-3 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-xs" role="status">
+          <p className="font-medium text-amber-700 dark:text-amber-300">
+            {recoveryPending ? 'Finalizing recovery snapshot…' : 'Recovery snapshot failed'}
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            {recoveryPending
+              ? 'This instance is available for inspection, but launching and changes are temporarily disabled.'
+              : recoveryError ?? 'The instance is protected from changes until a recovery snapshot is available.'}
+          </p>
+          {recoveryFailed && (
+            <button
+              type="button"
+              onClick={handleRetryRecovery}
+              disabled={retryingRecovery}
+              className="mt-2 rounded-lg border border-amber-500/50 px-3 py-1.5 font-medium hover:bg-amber-500/10 disabled:opacity-50"
+            >
+              {retryingRecovery ? 'Retrying snapshot…' : 'Retry recovery snapshot'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* ── Recoverable profile warning panel ── */}
       {controllerRecoverableIssue && issueDef && (
         <div
@@ -483,7 +559,7 @@ function InstanceCard({
             {controllerAvailableActions.includes('reinstall_loader') && (
               <button
                 onClick={handleReinstall}
-                disabled={effectiveBusy}
+                disabled={effectiveBusy || recoveryBlocked}
                 aria-label="Reinstall loader and retry launch"
                 className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
@@ -493,7 +569,7 @@ function InstanceCard({
             {controllerAvailableActions.includes('use_delegated_launch') && (
               <button
                 onClick={handleDelegatedLaunch}
-                disabled={effectiveBusy}
+                disabled={effectiveBusy || recoveryBlocked}
                 aria-label="Use delegated launch"
                 className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
               >
@@ -503,7 +579,7 @@ function InstanceCard({
             {controllerAvailableActions.includes('dismiss') && (
               <button
                 onClick={onDismissError}
-                disabled={effectiveBusy}
+                disabled={effectiveBusy || recoveryBlocked}
                 aria-label="Dismiss this error"
                 className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
               >
@@ -621,7 +697,7 @@ function InstanceCard({
         ) : (
           <button
             onClick={onLaunch}
-            disabled={effectiveBusy}
+            disabled={effectiveBusy || recoveryBlocked}
             className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {effectiveBusy && !repairing ? 'Starting…' : 'Launch'}
@@ -629,21 +705,21 @@ function InstanceCard({
         )}
         <button
           onClick={onEdit}
-          disabled={effectiveBusy}
+          disabled={effectiveBusy || recoveryBlocked}
           className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
           Edit
         </button>
         <button
           onClick={() => onOpenCrashInvestigator(instance.instance_id)}
-          disabled={effectiveBusy}
+          disabled={effectiveBusy || recoveryBlocked}
           className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
           Troubleshoot
         </button>
         <button
           onClick={remove}
-          disabled={effectiveBusy}
+          disabled={effectiveBusy || recoveryBlocked}
           className="rounded-lg border border-destructive/30 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
         >
           Delete

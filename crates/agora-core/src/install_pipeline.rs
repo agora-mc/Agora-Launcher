@@ -1185,6 +1185,25 @@ impl InstallPipeline {
             }
         };
 
+        match crate::snapshot::snapshot_readiness(instance_dir) {
+            crate::snapshot::SnapshotReadiness::Ready => {}
+            crate::snapshot::SnapshotReadiness::Pending => {
+                return fail(
+                    "The instance is still finalizing its initial recovery snapshot. Try again shortly.".into(),
+                    None,
+                    false,
+                )
+            }
+            crate::snapshot::SnapshotReadiness::Failed => {
+                return fail(
+                    crate::snapshot::snapshot_readiness_error(instance_dir)
+                        .unwrap_or_else(|| "The initial recovery snapshot failed.".into()),
+                    None,
+                    false,
+                )
+            }
+        }
+
         if !plan.is_fully_resolved() {
             return fail(
                 "Plan still has blocking errors, unresolved choices, or conflicts.".into(),

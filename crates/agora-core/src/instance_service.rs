@@ -45,6 +45,8 @@ pub struct CloneRequest {
 pub struct InstanceDetail {
     pub row: InstanceRow,
     pub manifest: Option<InstanceManifest>,
+    pub snapshot_readiness: String,
+    pub snapshot_error: Option<String>,
 }
 
 /// Core-owned preparation result for an official-launcher handoff.
@@ -92,7 +94,14 @@ impl InstanceService {
             return Ok(None);
         };
         let manifest = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?;
-        Ok(Some(InstanceDetail { row, manifest }))
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+        let readiness = crate::snapshot::snapshot_readiness(&instance_dir);
+        Ok(Some(InstanceDetail {
+            row,
+            manifest,
+            snapshot_readiness: readiness.as_str().into(),
+            snapshot_error: crate::snapshot::snapshot_readiness_error(&instance_dir),
+        }))
     }
 
     /// Resolve the effective launch mode after applying an instance override.
@@ -395,6 +404,7 @@ impl InstanceService {
                 message: error.to_string(),
             });
         }
+        let moved_to_trash = trash_fn.is_some();
         if moved && quarantine.exists() {
             if let Some(trash) = trash_fn {
                 if let Err(error) = trash(&quarantine) {
@@ -409,6 +419,9 @@ impl InstanceService {
                     message: error.to_string(),
                 })?;
             }
+        }
+        if !moved_to_trash {
+            let _ = crate::snapshot::prune_unreferenced_objects(&dir);
         }
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
             let _ = crate::launcher_profiles::remove_profile(

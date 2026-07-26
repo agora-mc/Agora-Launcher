@@ -445,13 +445,12 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
     let entries: Vec<RetentionEntry> = snapshots
         .iter()
         .map(|snapshot| {
-            let archive_size = std::fs::metadata(
-                instance_dir
-                    .join(".agora_snapshots")
-                    .join(format!("{}.zip", snapshot.id)),
-            )
-            .map(|metadata| metadata.len())
-            .unwrap_or(snapshot.size_estimate);
+            let measured = crate::snapshot::snapshot_storage_size(instance_dir, &snapshot.id);
+            let archive_size = if measured == 0 {
+                snapshot.size_estimate
+            } else {
+                measured
+            };
             RetentionEntry {
                 id: snapshot.id.clone(),
                 size_bytes: archive_size,

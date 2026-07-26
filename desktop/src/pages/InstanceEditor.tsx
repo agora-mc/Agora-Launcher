@@ -401,6 +401,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   }, [instanceId, packInstallRevision]);
 
   useEffect(() => {
+    if (detail?.snapshot_readiness !== 'pending') return undefined;
+    const timer = window.setInterval(() => {
+      void getInstanceDetail(instanceId)
+        .then((result) => setDetail(result))
+        .catch(() => {});
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [detail?.snapshot_readiness, instanceId]);
+
+  useEffect(() => {
     if (activeTab !== 'java-args' || !detail?.row) return;
     let cancelled = false;
     setGcPreviewLoading(true);
@@ -975,12 +985,23 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const mods = manifest?.mods ?? [];
   const displayedContentRows = contentRowsLoaded ? contentRows : fallbackContentRows(manifest ?? null);
   const packInstall = getTaskForInstance(instanceId);
+  const recoveryBlocked = (
+    detail?.snapshot_readiness !== undefined && detail.snapshot_readiness !== 'ready'
+  ) || packInstall?.status === 'running';
+  const recoveryPending = detail?.snapshot_readiness === 'pending';
+  const snapshotOperationPending = recoveryPending || packInstall?.status === 'running';
 
   useEffect(() => {
     if (packInstall?.status === 'failed' && packInstall.error) {
       setError(packInstall.error);
     }
   }, [packInstall?.error, packInstall?.status]);
+
+  useEffect(() => {
+    if (detail?.snapshot_readiness === 'failed' && detail.snapshot_error) {
+      setError(detail.snapshot_error);
+    }
+  }, [detail?.snapshot_error, detail?.snapshot_readiness]);
 
   const handleOpenInstalledMod = (mod: InstalledContentRow | InstalledMod) => {
     const itemId = mod.registry_id || mod.modrinth_id || mod.mod_jar_id;
@@ -1035,6 +1056,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 {' '}
                 <button
                   onClick={handleRename}
+                  disabled={recoveryBlocked}
                   className="text-xs text-muted-foreground hover:text-foreground underline"
                 >
                   Rename
@@ -1050,6 +1072,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               {row?.is_locked ? (
                 <button
                   onClick={handleUnlock}
+                  disabled={recoveryBlocked}
                   className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                 >
                   Unlock
@@ -1058,12 +1081,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <>
                   <button
                     onClick={handleLock}
+                    disabled={recoveryBlocked}
                     className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                   >
                     Lock
                   </button>
                   <button
                     onClick={handleRevert}
+                    disabled={recoveryBlocked}
                     className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                   >
                     Revert
@@ -1077,6 +1102,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <button
                   type="button"
                   onClick={handleSetInstanceIcon}
+                  disabled={recoveryBlocked}
                   className="inline-flex items-center gap-1 rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
                   title="Set a custom modpack image"
                 >
@@ -1096,12 +1122,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 setPackProgress(null);
                 setError(null);
               }}
+              disabled={recoveryBlocked}
               className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
             >
               📦 Install all mods from pack
             </button>
             <button
               onClick={handleImportPack}
+              disabled={recoveryBlocked}
               className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
             >
               📥 Import Pack
@@ -1117,7 +1145,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             <button
               type="button"
               onClick={async () => {
-                if (!onLaunch || playBusy) return;
+                if (!onLaunch || playBusy || recoveryBlocked) return;
                 setPlayBusy(true);
                 setError(null);
                 try {
@@ -1128,7 +1156,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   setPlayBusy(false);
                 }
               }}
-              disabled={!onLaunch || playBusy}
+              disabled={!onLaunch || playBusy || recoveryBlocked}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={`Play ${row?.name ?? 'instance'}`}
             >
@@ -1139,6 +1167,36 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </div>
 
         {packInstall && <PackInstallProgressBar task={packInstall} />}
+
+        {detail?.snapshot_readiness === 'pending' && (
+          <div className="mt-4 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm" role="status">
+            <p className="font-medium text-amber-700 dark:text-amber-300">Finalizing recovery snapshot…</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              You can inspect this instance while the snapshot builds. Launching and changes are temporarily disabled.
+            </p>
+          </div>
+        )}
+        {detail?.snapshot_readiness === 'failed' && (
+          <div className="mt-4 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm" role="alert">
+            <p className="font-medium text-destructive">Recovery snapshot failed</p>
+            <p className="mt-1 text-xs text-muted-foreground">{detail.snapshot_error ?? 'Create a new snapshot before changing or launching this instance.'}</p>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await createSnapshot(instanceId, 'Initial import retry');
+                  setDetail(await getInstanceDetail(instanceId));
+                  setStatus('Recovery snapshot ready.');
+                } catch (cause) {
+                  setError(formatError(cause));
+                }
+              }}
+              className="mt-2 rounded-lg border border-destructive/50 px-3 py-1.5 text-xs font-medium hover:bg-destructive/10"
+            >
+              Retry recovery snapshot
+            </button>
+          </div>
+        )}
 
         {error && (
           <div className="mt-4 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
@@ -1186,7 +1244,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         <InstalledContentPanel
           contentType="mod"
           rows={displayedContentRows.filter((content) => content.content_type === 'mod')}
-          locked={!!row?.is_locked}
+          locked={!!row?.is_locked || recoveryBlocked}
           addLabel="Import Mod"
           onAdd={handleImportMod}
           onToggle={handleToggleMod}
@@ -1203,7 +1261,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }}
           onError={setError}
           onDrop={handleDrop}
-          extraActions={<button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>}
+          extraActions={<button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked || recoveryBlocked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>}
           iconForRow={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
             return mod ? modCustomIcons[installedModKey(mod)] ?? null : null;
@@ -1212,15 +1270,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -1250,6 +1308,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <input
                   type="text"
                   value={packIdInput}
+                  disabled={recoveryBlocked}
                   onChange={(e) => {
                     setPackIdInput(e.target.value);
                     setPackDropdownOpen(true);
@@ -1278,6 +1337,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                             setPackIdInput(p.id);
                             setPackDropdownOpen(false);
                           }}
+                          disabled={recoveryBlocked}
                           className="w-full text-left px-3 py-2 text-sm hover:bg-accent border-b border-border last:border-b-0"
                         >
                           <span className="font-medium">{p.name}</span>
@@ -1289,7 +1349,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               </div>
               <button
                 onClick={handleInstallPackMods}
-                disabled={!packIdInput.trim()}
+                disabled={!packIdInput.trim() || recoveryBlocked}
                 className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 Start
@@ -1381,6 +1441,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               <input
                 type="text"
                 value={snapshotLabelInput}
+                disabled={snapshotOperationPending}
                 onChange={(e) => setSnapshotLabelInput(e.target.value)}
                 placeholder="Optional label…"
                 className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm w-48"
@@ -1398,6 +1459,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setError(formatError(e));
                   }
                 }}
+                disabled={snapshotOperationPending}
                 className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 whitespace-nowrap"
               >
                 Create Snapshot
@@ -1444,7 +1506,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                           setSnapshotBusy(null);
                         }
                       }}
-                      disabled={snapshotBusy === snap.id}
+                       disabled={snapshotBusy === snap.id}
                       className="text-xs text-primary hover:underline disabled:opacity-50"
                     >
                       Show diff
@@ -1465,7 +1527,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                           setSnapshotBusy(null);
                         }
                       }}
-                      disabled={snapshotBusy === snap.id}
+                       disabled={snapshotBusy === snap.id || snapshotOperationPending}
                       className="text-xs text-foreground hover:underline disabled:opacity-50"
                     >
                       {snapshotBusy === snap.id ? 'Restoring…' : 'Restore'}
@@ -1487,12 +1549,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                               setSnapshotBusy(null);
                             }
                           }}
-                          className="text-xs text-destructive font-medium"
+                           disabled={snapshotOperationPending}
+                           className="text-xs text-destructive font-medium disabled:opacity-50"
                         >
                           Confirm
                         </button>
                         <button
-                          onClick={() => setConfirmDeleteSnapshot(null)}
+                         onClick={() => setConfirmDeleteSnapshot(null)}
+                         disabled={snapshotOperationPending}
                           className="text-xs text-muted-foreground"
                         >
                           Cancel
@@ -1500,8 +1564,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       </div>
                     ) : (
                       <button
-                        onClick={() => setConfirmDeleteSnapshot(snap.id)}
-                        className="text-xs text-destructive hover:underline"
+                         onClick={() => setConfirmDeleteSnapshot(snap.id)}
+                         disabled={snapshotOperationPending}
+                         className="text-xs text-destructive hover:underline disabled:opacity-50"
                       >
                         Delete
                       </button>
@@ -1552,6 +1617,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               <input
                 type="text"
                 value={profileNameInput}
+                disabled={recoveryBlocked}
                 onChange={(e) => setProfileNameInput(e.target.value)}
                 placeholder="Profile name…"
                 className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm w-48"
@@ -1570,6 +1636,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setError(formatError(e));
                   }
                 }}
+                disabled={recoveryBlocked}
                 className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 whitespace-nowrap"
               >
                 Create Profile
@@ -1606,7 +1673,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                           setProfileBusy(null);
                         }
                       }}
-                      disabled={profileBusy === prof.name}
+                       disabled={profileBusy === prof.name || recoveryBlocked}
                       className="text-xs text-foreground hover:underline disabled:opacity-50"
                     >
                       {profileBusy === prof.name ? 'Applying…' : 'Apply'}
@@ -1628,12 +1695,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                               setProfileBusy(null);
                             }
                           }}
-                          className="text-xs text-destructive font-medium"
+                           disabled={recoveryBlocked}
+                           className="text-xs text-destructive font-medium disabled:opacity-50"
                         >
                           Confirm
                         </button>
                         <button
-                          onClick={() => setConfirmDeleteProfile(null)}
+                         onClick={() => setConfirmDeleteProfile(null)}
+                         disabled={recoveryBlocked}
                           className="text-xs text-muted-foreground"
                         >
                           Cancel
@@ -1641,8 +1710,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       </div>
                     ) : (
                       <button
-                        onClick={() => setConfirmDeleteProfile(prof.name)}
-                        className="text-xs text-destructive hover:underline"
+                         onClick={() => setConfirmDeleteProfile(prof.name)}
+                         disabled={recoveryBlocked}
+                         className="text-xs text-destructive hover:underline disabled:opacity-50"
                       >
                         Delete
                       </button>
@@ -1841,8 +1911,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 </button>
                 <button
                   onClick={() => void handleRepairLockfile()}
-                  disabled={lockfileBusy !== null || Boolean(row?.is_locked)}
-                  title={row?.is_locked ? 'Unlock this instance before repairing drift.' : undefined}
+                  disabled={lockfileBusy !== null || Boolean(row?.is_locked) || recoveryBlocked}
+                  title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock this instance before repairing drift.' : undefined}
                   className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium disabled:opacity-50"
                 >
                   {lockfileBusy === 'repair' ? 'Repairing…' : 'Repair'}
@@ -1909,6 +1979,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             <div className="flex gap-2">
               <input
                 value={instanceJavaPath}
+                disabled={recoveryBlocked}
                 onChange={(e) => {
                   setInstanceJavaPath(e.target.value);
                   setInstanceJavaInspected(null);
@@ -1932,6 +2003,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setInstanceJavaInspectError(formatError(e));
                   }
                 }}
+                disabled={recoveryBlocked}
                 className="rounded-lg border border-input px-3 py-2 text-sm font-medium hover:bg-accent"
               >
                 Browse…
@@ -1976,6 +2048,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   max={32768}
                   step={512}
                   value={instanceJvmMemory}
+                  disabled={recoveryBlocked}
                   onChange={(e) => setInstanceJvmMemory(Number(e.target.value))}
                   className="w-full accent-primary"
                 />
@@ -1994,6 +2067,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   aria-label="Automatic GC selection"
                   type="checkbox"
                   checked={instanceGcMode === 'auto'}
+                  disabled={recoveryBlocked}
                   onChange={(e) => setInstanceGcMode(e.target.checked ? 'auto' : 'high_efficiency')}
                   className="h-5 w-5 shrink-0 accent-primary"
                 />
@@ -2005,6 +2079,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <select
                     aria-label="Garbage collector"
                     value={instanceGcMode}
+                    disabled={recoveryBlocked}
                     onChange={(e) => setInstanceGcMode(e.target.value as GcMode)}
                     className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
                   >
@@ -2024,6 +2099,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   aria-label="Pre-touch allocated memory"
                   type="checkbox"
                   checked={instanceAlwaysPreTouch}
+                  disabled={recoveryBlocked}
                   onChange={(e) => setInstanceAlwaysPreTouch(e.target.checked)}
                   className="h-5 w-5 shrink-0 accent-primary"
                 />
@@ -2062,6 +2138,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <textarea
                     id="instance-java-args"
                     value={instanceJavaArgs}
+                    disabled={recoveryBlocked}
                     onChange={(e) => setInstanceJavaArgs(e.target.value)}
                     rows={4}
                     placeholder="-Xss1M -Dsome.setting=true"
@@ -2077,6 +2154,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <input
                     type="checkbox"
                     checked={instanceJavaAllowOverride}
+                    disabled={recoveryBlocked}
                     onChange={(e) => setInstanceJavaAllowOverride(e.target.checked)}
                     className="h-4 w-4 accent-primary"
                   />
@@ -2130,7 +2208,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setInstanceJavaSaving(false);
                   }
                 }}
-                disabled={instanceJavaSaving}
+                disabled={instanceJavaSaving || recoveryBlocked}
                 className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {instanceJavaSaving ? 'Saving…' : 'Save'}
@@ -2157,7 +2235,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     setInstanceJavaInspectError(formatError(e));
                   }
                 }}
-                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+                disabled={recoveryBlocked}
+                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
               >
                 Clear
               </button>

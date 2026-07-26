@@ -344,6 +344,22 @@ impl LaunchService {
             &format!("launch '{}'", request.instance_id),
             &request.instance_id,
         );
+        match crate::snapshot::snapshot_readiness(&request.game_dir) {
+            crate::snapshot::SnapshotReadiness::Ready => {}
+            crate::snapshot::SnapshotReadiness::Pending => {
+                return Err(LauncherError::Generic {
+                    code: "ERR_SNAPSHOT_PENDING".into(),
+                    message: "The instance is still finalizing its initial recovery snapshot. Try again shortly.".into(),
+                });
+            }
+            crate::snapshot::SnapshotReadiness::Failed => {
+                return Err(LauncherError::Generic {
+                    code: "ERR_SNAPSHOT_FAILED".into(),
+                    message: crate::snapshot::snapshot_readiness_error(&request.game_dir)
+                        .unwrap_or_else(|| "The initial recovery snapshot failed.".into()),
+                });
+            }
+        }
         progress.phase("checking-health", "Checking instance health");
 
         if request.health_policy == HealthPolicy::BlockOnRed {

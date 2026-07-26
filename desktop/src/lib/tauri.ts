@@ -377,6 +377,8 @@ export interface InstanceManifest {
 export interface InstanceDetail {
   row: InstanceRow;
   manifest: InstanceManifest | null;
+  snapshot_readiness: 'ready' | 'pending' | 'failed';
+  snapshot_error: string | null;
 }
 
 export type CurationStatus = 'curated' | 'under_review' | 'uncurated' | 'archived' | 'unknown';
