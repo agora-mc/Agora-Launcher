@@ -15594,6 +15594,16 @@
         "installer_spec": 1
       },
       {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.244",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.244/neoforge-21.1.244-installer.jar",
+        "sha256": "ac7bea8f5c8a1d64f8787d177cc890e3b9abf67ede800f999fe05386d46fcaa8",
+        "file_name": "neoforge-21.1.244-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "8b9f9a8c752551dd0a93a696440dec816086556ac9c0d9d2ac503254c7540063",
+        "installer_spec": 1
+      },
+      {
         "mc_version": "1.21.2",
         "loader_version": "21.2.0-beta",
         "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.2.0-beta/neoforge-21.2.0-beta-installer.jar",
@@ -20482,6 +20492,16 @@
         "installer_spec": 1
       },
       {
+        "mc_version": "1.21.10",
+        "loader_version": "60.1.13",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.10-60.1.13/forge-1.21.10-60.1.13-installer.jar",
+        "sha256": "4b5d1ce7e7d6e685ad2737d9f1d715655be3adce44a97f83a44a086813889c63",
+        "file_name": "forge-1.21.10-60.1.13-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "b3d545b296adffb1175b51347437a26f9e134bc30dfddfbba7f5f8bf65f61ac0",
+        "installer_spec": 1
+      },
+      {
         "mc_version": "1.21.11",
         "loader_version": "61.1.4",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.4/forge-1.21.11-61.1.4-installer.jar",
@@ -20549,6 +20569,16 @@
         "file_name": "forge-1.21.11-61.1.11-installer.jar",
         "file_type": "installer_jar",
         "version_json_sha256": "7e7a22f4b6b6ce202fb29a4d5bc9f68e6081a8a74826660544b0798f79f1070f",
+        "installer_spec": 1
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "61.1.12",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.11-61.1.12/forge-1.21.11-61.1.12-installer.jar",
+        "sha256": "a303f2319cef61e16978cff2607cb1acea0804cbc347b738d6dc4815c7e172f3",
+        "file_name": "forge-1.21.11-61.1.12-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "3ae0e916ed64212bd2ed6e8b0d0ccab878a9ff8de6d23d87fa3ad24355ce00d6",
         "installer_spec": 1
       },
       {
