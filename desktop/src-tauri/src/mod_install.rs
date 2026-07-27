@@ -67,6 +67,7 @@ pub async fn list_mod_versions_for_update(
     let instance = load_instance_info(app, instance_id)?;
     let item = load_registry_item(app, item_id)?;
     make_resolver(ctx, app)
+        .await
         .list_curated_versions_for_update(&item, &instance.minecraft_version, &instance.loader)
         .await
 }
@@ -108,16 +109,12 @@ async fn list_curated_versions_tolerant(
         .to_string())
 }
 
-fn github_token(app: &tauri::AppHandle) -> Option<String> {
-    auth::get_token(app)
-}
-
-fn make_resolver(
+async fn make_resolver(
     ctx: agora_core::ctx::Ctx,
     app: &tauri::AppHandle,
 ) -> agora_core::resolver::Resolver {
     let base = agora_core::resolver::Resolver::new(ctx);
-    match github_token(app) {
+    match auth::get_valid_access_token(app).await {
         Some(tok) => base.with_stored_github_token(tok),
         None => base,
     }
@@ -131,7 +128,7 @@ pub async fn resolve_github_releases_initial(
     loader: &str,
 ) -> LauncherResult<(Vec<ModVersionCandidate>, u32, Vec<u32>)> {
     let ctx = crate::core_context(app)?;
-    let resolver = make_resolver(ctx, app);
+    let resolver = make_resolver(ctx, app).await;
     resolver
         .fetch_github_releases_initial(&item.source_identifier, mc_version, loader)
         .await
@@ -146,7 +143,7 @@ pub async fn fetch_github_versions_batch(
     pages: &[u32],
 ) -> LauncherResult<Vec<(u32, Vec<ModVersionCandidate>)>> {
     let ctx = crate::core_context(app)?;
-    let resolver = make_resolver(ctx, app);
+    let resolver = make_resolver(ctx, app).await;
     resolver
         .fetch_github_versions_batch(source, mc_version, loader, pages)
         .await

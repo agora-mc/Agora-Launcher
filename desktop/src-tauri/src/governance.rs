@@ -19,7 +19,9 @@ use tauri::AppHandle;
 /// Searches for a "[Community Triage]" discussion matching the mod_id, then
 /// tallies reaction votes (thumbs-up/+1/hooray â†’ keep, thumbs-down/-1 â†’ remove).
 pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResult<TriagePoll> {
-    let token = auth::get_token(app).ok_or(LauncherError::AuthRequired)?;
+    let mut token = auth::get_valid_access_token(app)
+        .await
+        .ok_or(LauncherError::AuthRequired)?;
 
     let _permit = agora_core::github_ratelimit::acquire_github_permit().await;
 
@@ -49,7 +51,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         "variables": { "q": search_query },
     });
 
-    let resp = agora_core::github_ratelimit::github_client()
+    let mut resp = agora_core::github_ratelimit::github_client()
         .post("https://api.github.com/graphql")
         .header("Authorization", format!("Bearer {}", token))
         .header("User-Agent", "agora-launcher")
@@ -60,9 +62,35 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         .map_err(|_| LauncherError::NetworkOffline)?;
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        crate::auth::log_line("GitHub token expired during triage poll search; clearing token");
-        let _ = auth::clear_token(app);
-        return Err(LauncherError::AuthExpired);
+        crate::auth::log_line(
+            "GitHub token expired during triage poll search; attempting refresh",
+        );
+        if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+            .await
+            .is_ok()
+        {
+            if let Some(new_token) = crate::auth::get_token(app) {
+                token = new_token;
+                let retry_resp = agora_core::github_ratelimit::github_client()
+                    .post("https://api.github.com/graphql")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("User-Agent", "agora-launcher")
+                    .header("Content-Type", "application/json")
+                    .json(&search_body)
+                    .send()
+                    .await
+                    .map_err(|_| LauncherError::NetworkOffline)?;
+                if retry_resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+                    resp = retry_resp;
+                } else {
+                    let _ = crate::auth::clear_token(app);
+                    return Err(LauncherError::AuthExpired);
+                }
+            }
+        } else {
+            let _ = crate::auth::clear_token(app);
+            return Err(LauncherError::AuthExpired);
+        }
     }
     if agora_core::github_ratelimit::is_rate_limit_response(&resp) {
         let retry = agora_core::github_ratelimit::parse_retry_after(&resp);
@@ -134,7 +162,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         "variables": { "id": discussion.id },
     });
 
-    let resp2 = agora_core::github_ratelimit::github_client()
+    let mut resp2 = agora_core::github_ratelimit::github_client()
         .post("https://api.github.com/graphql")
         .header("Authorization", format!("Bearer {}", token))
         .header("User-Agent", "agora-launcher")
@@ -145,9 +173,35 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         .map_err(|_| LauncherError::NetworkOffline)?;
 
     if resp2.status() == reqwest::StatusCode::UNAUTHORIZED {
-        crate::auth::log_line("GitHub token expired during triage poll reactions; clearing token");
-        let _ = auth::clear_token(app);
-        return Err(LauncherError::AuthExpired);
+        crate::auth::log_line(
+            "GitHub token expired during triage poll reactions; attempting refresh",
+        );
+        if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+            .await
+            .is_ok()
+        {
+            if let Some(new_token) = crate::auth::get_token(app) {
+                token = new_token;
+                let retry_resp = agora_core::github_ratelimit::github_client()
+                    .post("https://api.github.com/graphql")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("User-Agent", "agora-launcher")
+                    .header("Content-Type", "application/json")
+                    .json(&reactions_body)
+                    .send()
+                    .await
+                    .map_err(|_| LauncherError::NetworkOffline)?;
+                if retry_resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+                    resp2 = retry_resp;
+                } else {
+                    let _ = crate::auth::clear_token(app);
+                    return Err(LauncherError::AuthExpired);
+                }
+            }
+        } else {
+            let _ = crate::auth::clear_token(app);
+            return Err(LauncherError::AuthExpired);
+        }
     }
     if agora_core::github_ratelimit::is_rate_limit_response(&resp2) {
         let retry = agora_core::github_ratelimit::parse_retry_after(&resp2);
@@ -232,7 +286,9 @@ pub async fn flag_review(
     quoted_text: String,
     reporter_login: String,
 ) -> LauncherResult<String> {
-    let token = auth::get_token(app).ok_or(LauncherError::AuthRequired)?;
+    let mut token = auth::get_valid_access_token(app)
+        .await
+        .ok_or(LauncherError::AuthRequired)?;
 
     // Rate-limit check.
     let ctx = crate::core_context(app)?;
@@ -292,7 +348,7 @@ pub async fn flag_review(
         repo = AGORA_ADMIN_ALERTS_REPO.split('/').nth(1).unwrap_or(""),
     );
 
-    let resp = agora_core::github_ratelimit::github_client()
+    let mut resp = agora_core::github_ratelimit::github_client()
         .post(&issues_url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
@@ -304,9 +360,36 @@ pub async fn flag_review(
         .map_err(|_| LauncherError::NetworkOffline)?;
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        crate::auth::log_line("GitHub token expired during flag submission; clearing token");
-        let _ = auth::clear_token(app);
-        return Err(LauncherError::AuthExpired);
+        crate::auth::log_line(
+            "GitHub token expired during flag submission; attempting refresh",
+        );
+        if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+            .await
+            .is_ok()
+        {
+            if let Some(new_token) = crate::auth::get_token(app) {
+                token = new_token;
+                let retry_resp = agora_core::github_ratelimit::github_client()
+                    .post(&issues_url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "agora-launcher")
+                    .header("Content-Type", "application/json")
+                    .json(&body_json)
+                    .send()
+                    .await
+                    .map_err(|_| LauncherError::NetworkOffline)?;
+                if retry_resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+                    resp = retry_resp;
+                } else {
+                    let _ = crate::auth::clear_token(app);
+                    return Err(LauncherError::AuthExpired);
+                }
+            }
+        } else {
+            let _ = crate::auth::clear_token(app);
+            return Err(LauncherError::AuthExpired);
+        }
     }
     if agora_core::github_ratelimit::is_rate_limit_response(&resp) {
         let retry = agora_core::github_ratelimit::parse_retry_after(&resp);

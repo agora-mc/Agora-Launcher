@@ -748,9 +748,24 @@ impl Resolver {
         // retried with the same invalid Authorization header.
         if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.github_token.is_some() {
             if self.clear_stored_github_token_on_unauthorized {
-                let _ = crate::auth::clear_token();
+                // Attempt a single token refresh before falling back to anonymous.
+                if crate::auth::try_refresh_after_401(LauncherError::AuthExpired)
+                    .await
+                    .is_ok()
+                {
+                    if let Some(new_token) = crate::auth::get_token() {
+                        let new_headers = github_auth_headers(Some(&new_token));
+                        response = self.send_github_releases_request(&url, &new_headers).await?;
+                    } else {
+                        response = self.send_github_releases_request(&url, &[]).await?;
+                    }
+                } else {
+                    let _ = crate::auth::clear_token();
+                    response = self.send_github_releases_request(&url, &[]).await?;
+                }
+            } else {
+                response = self.send_github_releases_request(&url, &[]).await?;
             }
-            response = self.send_github_releases_request(&url, &[]).await?;
         }
 
         if github_ratelimit::is_rate_limit_response(&response) {

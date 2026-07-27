@@ -1025,9 +1025,9 @@ pub async fn github_login_poll(
         device_code.len(),
         interval
     ));
-    let token = crate::auth::poll_device_flow(device_code, interval).await?;
-    if let Some(t) = token {
-        crate::auth::store_token(&app, &t)?;
+    let bundle = crate::auth::poll_device_flow(device_code, interval).await?;
+    if let Some(b) = bundle {
+        crate::auth::store_token_bundle(&app, &b)?;
         Ok(true)
     } else {
         Ok(false)

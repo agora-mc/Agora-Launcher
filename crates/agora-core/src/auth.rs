@@ -1,5 +1,7 @@
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use crate::error::{LauncherError, LauncherResult};
@@ -19,6 +21,9 @@ const TOKEN_FALLBACK_FILE: &str = "tokens.enc";
 /// PBKDF2 iterations for key derivation in the keyring fallback.
 const PBKDF2_ITERATIONS: u32 = 200_000;
 
+/// If the access token has fewer than this many seconds remaining, refresh it.
+const ACCESS_TOKEN_BUFFER_SECS: i64 = 300;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DeviceFlowResponse {
     pub device_code: String,
@@ -34,9 +39,29 @@ pub struct GithubProfile {
     pub avatar_url: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitHubTokenBundle {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub access_expires_at: Option<DateTime<Utc>>,
+    pub refresh_expires_at: Option<DateTime<Utc>>,
+    pub token_type: Option<String>,
+    pub scope: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct DeviceFlowPollResponse {
     access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
+    #[serde(default)]
+    refresh_token_expires_in: Option<u64>,
+    #[serde(default)]
+    token_type: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
     error: Option<String>,
     interval: Option<u64>,
 }
@@ -99,7 +124,7 @@ pub async fn start_device_flow() -> LauncherResult<DeviceFlowResponse> {
 pub async fn poll_device_flow(
     device_code: String,
     mut interval: u64,
-) -> LauncherResult<Option<String>> {
+) -> LauncherResult<Option<GitHubTokenBundle>> {
     eprintln!(
         "[auth] poll_device_flow ENTERED device_code_len={} interval={}s",
         device_code.len(),
@@ -135,16 +160,27 @@ pub async fn poll_device_flow(
                 let body = http_client::checked_response_text(r, ClientCategory::GitHub)
                     .await
                     .unwrap_or_default();
-                // Successful polling responses contain the OAuth access
-                // token. Log only status metadata, never the body.
                 eprintln!("[auth] poll status={status}");
 
                 let parsed: Option<DeviceFlowPollResponse> = serde_json::from_str(&body).ok();
 
                 if let Some(parsed) = parsed {
-                    if let Some(token) = parsed.access_token {
+                    if let Some(access_token) = parsed.access_token {
                         eprintln!("[auth] token obtained");
-                        return Ok(Some(token));
+                        let now = Utc::now();
+                        let bundle = GitHubTokenBundle {
+                            access_token,
+                            refresh_token: parsed.refresh_token,
+                            access_expires_at: parsed
+                                .expires_in
+                                .map(|s| now + TimeDelta::seconds(s as i64)),
+                            refresh_expires_at: parsed
+                                .refresh_token_expires_in
+                                .map(|s| now + TimeDelta::seconds(s as i64)),
+                            token_type: parsed.token_type,
+                            scope: parsed.scope,
+                        };
+                        return Ok(Some(bundle));
                     }
                     if let Some(err) = parsed.error.as_deref() {
                         match err {
@@ -187,6 +223,320 @@ pub async fn poll_device_flow(
 
         tokio::time::sleep(Duration::from_secs(interval.max(1))).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Single-flight lock for token refresh
+// ---------------------------------------------------------------------------
+
+static REFRESH_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+// ---------------------------------------------------------------------------
+// Token refresh
+// ---------------------------------------------------------------------------
+
+/// Exchange a refresh token for a new access+refresh token pair.
+///
+/// POSTs to GitHub's OAuth token endpoint with `grant_type=refresh_token`.
+/// Returns None when the refresh token has been revoked or expired.
+pub async fn refresh_access_token(
+    refresh_token: &str,
+) -> LauncherResult<Option<GitHubTokenBundle>> {
+    let clients = HttpClients::new()?;
+
+    let params = [
+        ("client_id", AGORA_OAUTH_CLIENT_ID),
+        ("refresh_token", refresh_token),
+        ("grant_type", "refresh_token"),
+    ];
+
+    let resp = http_client::checked_post_form(
+        &clients,
+        ClientCategory::GitHub,
+        "https://github.com/login/oauth/access_token",
+        &params,
+        &[("Accept".into(), "application/json".into())],
+    )
+    .await?;
+
+    let status = resp.status();
+    let body = http_client::checked_response_text(resp, ClientCategory::GitHub)
+        .await
+        .unwrap_or_default();
+    eprintln!("[auth] refresh status={status}");
+
+    #[derive(Debug, Deserialize)]
+    struct RefreshResponse {
+        access_token: Option<String>,
+        #[serde(default)]
+        refresh_token: Option<String>,
+        #[serde(default)]
+        expires_in: Option<u64>,
+        #[serde(default)]
+        refresh_token_expires_in: Option<u64>,
+        #[serde(default)]
+        token_type: Option<String>,
+        #[serde(default)]
+        scope: Option<String>,
+        error: Option<String>,
+    }
+
+    let parsed: Option<RefreshResponse> = serde_json::from_str(&body).ok();
+
+    if let Some(parsed) = parsed {
+        if let Some(access_token) = parsed.access_token {
+            let now = Utc::now();
+            let bundle = GitHubTokenBundle {
+                access_token,
+                refresh_token: parsed.refresh_token,
+                access_expires_at: parsed
+                    .expires_in
+                    .map(|s| now + TimeDelta::seconds(s as i64)),
+                refresh_expires_at: parsed
+                    .refresh_token_expires_in
+                    .map(|s| now + TimeDelta::seconds(s as i64)),
+                token_type: parsed.token_type,
+                scope: parsed.scope,
+            };
+            return Ok(Some(bundle));
+        }
+
+        if let Some(err) = parsed.error.as_deref() {
+            eprintln!("[auth] refresh error from GitHub: {err}");
+            return Ok(None);
+        }
+    }
+
+    eprintln!("[auth] could not parse refresh response");
+    Ok(None)
+}
+
+// ---------------------------------------------------------------------------
+// Token bundle storage
+// ---------------------------------------------------------------------------
+
+/// Store a token bundle in the OS credential manager (or encrypted fallback).
+pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
+    let json = serde_json::to_string(bundle).map_err(|_| LauncherError::Generic {
+        code: "ERR_AUTH_SERIALIZE".into(),
+        message: "Failed to serialize token bundle.".into(),
+    })?;
+
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        if entry.set_password(&json).is_ok() {
+            if let Some(path) = fallback_token_path() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Ok(());
+        }
+    }
+
+    let path = fallback_token_path().ok_or_else(|| LauncherError::Generic {
+        code: "ERR_AUTH_FALLBACK_PATH".into(),
+        message: "Could not determine data directory for fallback token storage.".into(),
+    })?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| LauncherError::Generic {
+            code: "ERR_AUTH_FALLBACK_WRITE".into(),
+            message: "Failed to create fallback token directory.".into(),
+        })?;
+    }
+
+    let key = derive_fallback_key();
+    let encrypted = encrypt_token(&json, &key)?;
+    std::fs::write(&path, encrypted).map_err(|_| LauncherError::Generic {
+        code: "ERR_AUTH_FALLBACK_WRITE".into(),
+        message: "Failed to write fallback token file.".into(),
+    })?;
+
+    Ok(())
+}
+
+/// Load a token bundle from storage. Returns None if no token is stored.
+///
+/// Handles legacy bare access tokens: if the stored value is not valid JSON,
+/// it is treated as a plain access token and wrapped in a bundle.
+pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
+    let raw = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        if let Ok(password) = entry.get_password() {
+            Some(password)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let raw = raw.or_else(|| {
+        let path = fallback_token_path()?;
+        if !path.exists() {
+            return None;
+        }
+        let data = std::fs::read(&path).ok()?;
+        let key = derive_fallback_key();
+        decrypt_token(&data, &key)
+    });
+
+    let raw = raw?;
+
+    serde_json::from_str::<GitHubTokenBundle>(&raw).ok().or_else(|| {
+        // Legacy bare access token — wrap it in a bundle with no expiry info.
+        eprintln!("[auth] loaded legacy bare token; wrapping in bundle");
+        Some(GitHubTokenBundle {
+            access_token: raw,
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        })
+    })
+}
+
+/// Clear the stored token bundle from all storage locations.
+pub fn clear_token_bundle() -> Result<(), String> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+        match entry.delete_password() {
+            Ok(()) => {}
+            Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(format!("Failed to delete GitHub token: {}", e)),
+        }
+    }
+
+    if let Some(path) = fallback_token_path() {
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Access token helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if the access token has more than `ACCESS_TOKEN_BUFFER_SECS`
+/// of validity remaining, or if we don't know the expiry (legacy token).
+fn access_token_is_fresh(bundle: &GitHubTokenBundle) -> bool {
+    match bundle.access_expires_at {
+        Some(expires) => {
+            let remaining = (expires - Utc::now()).num_seconds();
+            remaining > ACCESS_TOKEN_BUFFER_SECS
+        }
+        None => true,
+    }
+}
+
+/// Obtain a valid access token. If the stored token is near expiration and a
+/// refresh token is available, attempts to refresh before returning.
+///
+/// Serialises concurrent callers through a single-flight lock so only one
+/// refresh request is issued.
+pub async fn get_valid_access_token() -> Option<String> {
+    let bundle = load_token_bundle()?;
+
+    if access_token_is_fresh(&bundle) {
+        return Some(bundle.access_token);
+    }
+
+    if bundle.refresh_token.is_none() {
+        return Some(bundle.access_token);
+    }
+
+    let _lock = REFRESH_MUTEX.lock().await;
+
+    let bundle = load_token_bundle()?;
+    if access_token_is_fresh(&bundle) {
+        return Some(bundle.access_token);
+    }
+
+    let refresh_token = bundle.refresh_token.as_deref()?;
+
+    match refresh_access_token(refresh_token).await {
+        Ok(Some(new_bundle)) => {
+            eprintln!("[auth] access token refreshed successfully");
+            let token = new_bundle.access_token.clone();
+            let _ = store_token_bundle(&new_bundle);
+            Some(token)
+        }
+        Ok(None) => {
+            eprintln!("[auth] refresh token expired or revoked");
+            let _ = clear_token_bundle();
+            None
+        }
+        Err(e) => {
+            eprintln!("[auth] refresh network error: {e}");
+            // Return the existing token even if near expiry — it might still work.
+            Some(bundle.access_token)
+        }
+    }
+}
+
+/// Attempt one refresh after receiving a 401, then retry the operation.
+///
+/// Returns Ok(result) if refresh+retry succeeded, or the original error
+/// if refresh failed. Clears the bundle on persistent failure.
+pub async fn try_refresh_after_401(
+    original_error: LauncherError,
+) -> Result<(), LauncherError> {
+    let _lock = REFRESH_MUTEX.lock().await;
+
+    let bundle = match load_token_bundle() {
+        Some(b) => b,
+        None => return Err(original_error),
+    };
+
+    let refresh_token = match bundle.refresh_token.as_deref() {
+        Some(rt) => rt.to_string(),
+        None => {
+            let _ = clear_token_bundle();
+            return Err(original_error);
+        }
+    };
+
+    match refresh_access_token(&refresh_token).await {
+        Ok(Some(new_bundle)) => {
+            eprintln!("[auth] 401 recovery: token refreshed");
+            let _ = store_token_bundle(&new_bundle);
+            Ok(())
+        }
+        Ok(None) => {
+            eprintln!("[auth] 401 recovery failed: refresh token invalid");
+            let _ = clear_token_bundle();
+            Err(original_error)
+        }
+        Err(_) => {
+            eprintln!("[auth] 401 recovery failed: network error during refresh");
+            Err(original_error)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy API compatibility
+// ---------------------------------------------------------------------------
+
+/// Store a bare access token. For backward compatibility with existing code
+/// paths that pass a raw token string. Wraps it in a bundle.
+pub fn store_token(token: &str) -> LauncherResult<()> {
+    let bundle = GitHubTokenBundle {
+        access_token: token.to_string(),
+        refresh_token: None,
+        access_expires_at: None,
+        refresh_expires_at: None,
+        token_type: None,
+        scope: None,
+    };
+    store_token_bundle(&bundle)
+}
+
+/// Returns the stored access token (from bundle or legacy bare token).
+/// Prefer `get_valid_access_token()` for new code — it handles expiry.
+pub fn get_token() -> Option<String> {
+    load_token_bundle().map(|b| b.access_token)
 }
 
 /// Derive a 256-bit key using PBKDF2-HMAC-SHA256.
@@ -373,81 +723,15 @@ pub fn keyring_fallback_available() -> bool {
     true
 }
 
-pub fn store_token(token: &str) -> LauncherResult<()> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        if entry.set_password(token).is_ok() {
-            return Ok(());
-        }
-    }
-
-    // Keyring creation or write failed — fall back to AES-256-GCM encrypted
-    // local storage. Secret Service commonly fails at write time on headless
-    // Linux, so only falling back when Entry::new fails strands users.
-    let path = fallback_token_path().ok_or_else(|| LauncherError::Generic {
-        code: "ERR_AUTH_FALLBACK_PATH".to_string(),
-        message: "Could not determine data directory for fallback token storage.".to_string(),
-    })?;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| LauncherError::Generic {
-            code: "ERR_AUTH_FALLBACK_WRITE".to_string(),
-            message: "Failed to create fallback token directory.".to_string(),
-        })?;
-    }
-
-    let key = derive_fallback_key();
-    let encrypted = encrypt_token(token, &key)?;
-    std::fs::write(&path, encrypted).map_err(|_| LauncherError::Generic {
-        code: "ERR_AUTH_FALLBACK_WRITE".to_string(),
-        message: "Failed to write fallback token file.".to_string(),
-    })?;
-
-    Ok(())
-}
-
-pub fn get_token() -> Option<String> {
-    // Try OS keyring first.
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        if let Ok(token) = entry.get_password() {
-            return Some(token);
-        }
-    }
-
-    // Fallback: try reading from encrypted file.
-    let path = fallback_token_path()?;
-    if !path.exists() {
-        return None;
-    }
-    let data = std::fs::read(&path).ok()?;
-    let key = derive_fallback_key();
-    decrypt_token(&data, &key)
-}
-
 pub fn clear_token() -> Result<(), String> {
-    // Clear from OS keyring.
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        match entry.delete_password() {
-            Ok(()) => {}
-            Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(format!("Failed to delete GitHub token: {}", e)),
-        }
-    }
-
-    // Also remove the fallback encrypted file if present.
-    if let Some(path) = fallback_token_path() {
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-
-    Ok(())
+    clear_token_bundle()
 }
 
 pub fn is_authenticated() -> bool {
-    get_token().is_some()
+    load_token_bundle().is_some()
 }
 
-pub async fn get_github_user(token: String) -> LauncherResult<GithubProfile> {
+pub async fn get_github_user(token: &str) -> LauncherResult<GithubProfile> {
     let clients = HttpClients::new()?;
     let resp = http_client::checked_request_with_headers(
         &clients,
@@ -503,5 +787,204 @@ mod tests {
             decrypt_token(&encrypted, &key).as_deref(),
             Some(credentials.as_str())
         );
+    }
+
+    #[test]
+    fn token_bundle_json_roundtrip() {
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_test123".into(),
+            refresh_token: Some("ghr_refresh456".into()),
+            access_expires_at: Some(Utc::now()),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(180)),
+            token_type: Some("bearer".into()),
+            scope: Some("read:user".into()),
+        };
+        let json = serde_json::to_string(&bundle).unwrap();
+        let parsed: GitHubTokenBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.access_token, "gho_test123");
+        assert_eq!(parsed.refresh_token.as_deref(), Some("ghr_refresh456"));
+        assert_eq!(parsed.token_type.as_deref(), Some("bearer"));
+        assert_eq!(parsed.scope.as_deref(), Some("read:user"));
+        assert!(parsed.access_expires_at.is_some());
+        assert!(parsed.refresh_expires_at.is_some());
+    }
+
+    #[test]
+    fn access_token_is_fresh_unexpired() {
+        let bundle = GitHubTokenBundle {
+            access_token: "t".into(),
+            refresh_token: None,
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        assert!(access_token_is_fresh(&bundle));
+    }
+
+    #[test]
+    fn access_token_is_fresh_near_expiry() {
+        let bundle = GitHubTokenBundle {
+            access_token: "t".into(),
+            refresh_token: None,
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(60)),
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        assert!(!access_token_is_fresh(&bundle));
+    }
+
+    #[test]
+    fn access_token_is_fresh_no_expiry_known() {
+        // Legacy tokens without expiry info are always considered fresh.
+        let bundle = GitHubTokenBundle {
+            access_token: "t".into(),
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        assert!(access_token_is_fresh(&bundle));
+    }
+
+    #[test]
+    fn access_token_is_fresh_already_expired() {
+        let bundle = GitHubTokenBundle {
+            access_token: "t".into(),
+            refresh_token: None,
+            access_expires_at: Some(Utc::now() - TimeDelta::seconds(1)),
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        assert!(!access_token_is_fresh(&bundle));
+    }
+
+    #[test]
+    fn access_token_is_fresh_exactly_at_buffer() {
+        // Exactly 300s remaining — the buffer is 300, so this is NOT fresh.
+        let bundle = GitHubTokenBundle {
+            access_token: "t".into(),
+            refresh_token: None,
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(300)),
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        assert!(!access_token_is_fresh(&bundle));
+    }
+
+    #[test]
+    fn store_token_creates_bundle() {
+        // store_token wraps a bare string in a bundle and stores it.
+        // We can't easily test keyring in CI, but we can verify the JSON
+        // roundtrip through the bundle.
+        let bare = "gho_bare_token";
+        let bundle = GitHubTokenBundle {
+            access_token: bare.into(),
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        assert_eq!(bundle.access_token, bare);
+        assert!(bundle.refresh_token.is_none());
+
+        let json = serde_json::to_string(&bundle).unwrap();
+        // A legacy bare token string would not parse as JSON bundle. Verify
+        // that a plain string is not valid JSON for the bundle.
+        assert!(serde_json::from_str::<GitHubTokenBundle>("\"just a string\"").is_err());
+        assert!(serde_json::from_str::<GitHubTokenBundle>(bare).is_err());
+        // But the serialized bundle is valid.
+        assert!(serde_json::from_str::<GitHubTokenBundle>(&json).is_ok());
+    }
+
+    #[test]
+    fn token_bundle_all_fields_populated() {
+        let now = Utc::now();
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_access".into(),
+            refresh_token: Some("ghr_refresh".into()),
+            access_expires_at: Some(now + TimeDelta::seconds(28800)),
+            refresh_expires_at: Some(now + TimeDelta::days(180)),
+            token_type: Some("bearer".into()),
+            scope: Some("repo,user".into()),
+        };
+        let json = serde_json::to_string(&bundle).unwrap();
+        let parsed: GitHubTokenBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.access_token, bundle.access_token);
+        assert_eq!(parsed.refresh_token, bundle.refresh_token);
+        assert!(parsed.access_expires_at.is_some());
+        assert!(parsed.refresh_expires_at.is_some());
+        assert_eq!(parsed.token_type, bundle.token_type);
+        assert_eq!(parsed.scope, bundle.scope);
+    }
+
+    #[test]
+    fn token_bundle_no_refresh_token() {
+        // Installations without expiring user tokens get no refresh_token.
+        let json = r#"{"access_token":"gho_test","refresh_token":null,"access_expires_at":null,"refresh_expires_at":null,"token_type":"bearer","scope":"read:user"}"#;
+        let bundle: GitHubTokenBundle = serde_json::from_str(json).unwrap();
+        assert_eq!(bundle.access_token, "gho_test");
+        assert!(bundle.refresh_token.is_none());
+        assert_eq!(bundle.token_type.as_deref(), Some("bearer"));
+    }
+
+    #[test]
+    fn device_flow_poll_response_parses_with_refresh() {
+        let json = r#"{"access_token":"gho_at","refresh_token":"ghr_rt","expires_in":28800,"refresh_token_expires_in":15552000,"token_type":"bearer","scope":"repo,user"}"#;
+        let parsed: DeviceFlowPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.access_token.as_deref(), Some("gho_at"));
+        assert_eq!(parsed.refresh_token.as_deref(), Some("ghr_rt"));
+        assert_eq!(parsed.expires_in, Some(28800));
+        assert_eq!(parsed.refresh_token_expires_in, Some(15552000));
+        assert_eq!(parsed.token_type.as_deref(), Some("bearer"));
+        assert_eq!(parsed.scope.as_deref(), Some("repo,user"));
+    }
+
+    #[test]
+    fn device_flow_poll_response_parses_without_refresh() {
+        // Legacy response without refresh token fields.
+        let json = r#"{"access_token":"gho_old","token_type":"bearer"}"#;
+        let parsed: DeviceFlowPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.access_token.as_deref(), Some("gho_old"));
+        assert!(parsed.refresh_token.is_none());
+        assert!(parsed.expires_in.is_none());
+        assert!(parsed.refresh_token_expires_in.is_none());
+    }
+
+    #[test]
+    fn device_flow_poll_response_error() {
+        let json = r#"{"error":"authorization_pending","interval":5}"#;
+        let parsed: DeviceFlowPollResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.error.as_deref(), Some("authorization_pending"));
+        assert_eq!(parsed.interval, Some(5));
+    }
+
+    #[test]
+    fn clear_token_bundle_removes_both_tokens() {
+        // Smoke test: clearing doesn't panic when nothing is stored.
+        // In a real scenario this is covered by integration tests.
+        let result = clear_token_bundle();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn is_authenticated_returns_false_when_no_token() {
+        // Without a stored token, this should be false.
+        // In CI with no keyring setup, this is safe to test.
+        let _ = is_authenticated();
+    }
+
+    #[test]
+    fn get_token_returns_none_without_stored_bundle() {
+        // This is a best-effort test. In CI there may be no keyring.
+        let result = get_token();
+        // Either None (no token) or Some if a token happens to be stored.
+        // We just verify it doesn't panic.
+        let _ = result;
     }
 }

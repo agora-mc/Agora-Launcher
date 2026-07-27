@@ -22,7 +22,7 @@ pub async fn check_and_download_update<R: tauri::Runtime>(
             message: e.to_string(),
         }
     })?;
-    let token = crate::auth::get_token(app);
+    let token = crate::auth::get_valid_access_token(app).await;
     let repo = agora_core::registry_sync::resolve_registry_repo(None);
     let ctx = crate::core_context(app)?;
     let status = agora_core::registry_sync::check_and_download_update(
