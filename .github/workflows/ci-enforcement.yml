@@ -118,6 +118,10 @@ jobs:
         run: python compiler/test_compile.py -v
       - name: Compiler integration tests
         run: python compiler/test_compile_integration.py -v
+      - name: Governance unit tests
+        run: python compiler/test_governance.py -v
+      - name: Governance integration tests
+        run: python compiler/test_governance_integration.py -v
       - name: Script unit tests
         run: python scripts/test_scripts.py -v
 

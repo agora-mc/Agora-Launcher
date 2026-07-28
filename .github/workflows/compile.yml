@@ -7,8 +7,8 @@ on:
 
 permissions:
   contents: write
-  issues: write
-  discussions: write
+  issues: read
+  discussions: read
 
 jobs:
   compile:
@@ -48,6 +48,12 @@ jobs:
             registry.db
             registry.db.sig
           if-no-files-found: error
+
+      - name: Governance unit tests
+        run: python compiler/test_governance.py -v
+
+      - name: Governance integration tests
+        run: python compiler/test_governance_integration.py -v
 
       - name: Verify Code of Engagement in all required locations
         run: |

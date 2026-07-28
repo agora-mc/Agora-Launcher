@@ -44,7 +44,7 @@ jobs:
       - name: Generate registry-web.json from flat files
         run: |
           pip install -r compiler/requirements.txt
-          python compiler/compile.py --skip-sign --no-governance-write
+          python compiler/compile.py --skip-sign --governance-mode off
 
 
       - name: Install dependencies

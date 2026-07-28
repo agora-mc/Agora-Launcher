@@ -295,13 +295,16 @@ def fetch_loader_manifests(
 
 
 def compile_registry(
-    out: str, skip_sign: bool, no_governance_write: bool = False
+    out: str, skip_sign: bool, no_governance_write: bool = False,
+    governance_mode: str | None = None,
 ) -> None:
     """Run compiler/compile.py as a subprocess."""
     cmd = [sys.executable, str(COMPILE_SCRIPT), "--out", out]
     if skip_sign:
         cmd.append("--skip-sign")
-    if no_governance_write:
+    if governance_mode:
+        cmd.extend(["--governance-mode", governance_mode])
+    elif no_governance_write:
         cmd.append("--no-governance-write")
 
     logger.info("Running compiler: %s", " ".join(cmd))
@@ -366,7 +369,14 @@ def main() -> int:
     parser.add_argument(
         "--no-governance-write",
         action="store_true",
-        help="Do not append or rotate registry/governance/audit_log.json",
+        help="Do not append or rotate registry/governance/audit_log.json (legacy; use --governance-mode)",
+    )
+    parser.add_argument(
+        "--governance-mode",
+        type=str,
+        choices=["off", "read-only", "monitor"],
+        default=None,
+        help="Governance mode for the compiler subprocess (default: read-only; use 'off' to disable)",
     )
     parser.add_argument(
         "--report",
@@ -434,6 +444,7 @@ def main() -> int:
             args.out,
             args.skip_sign,
             no_governance_write=args.no_governance_write,
+            governance_mode=args.governance_mode,
         )
 
         if args.auto_versions:

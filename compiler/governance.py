@@ -88,6 +88,7 @@ class PolicyConfig:
     account_age_days: int = PRODUCTION_ACCOUNT_AGE_DAYS
     raid_threshold: int = PRODUCTION_RAID_THRESHOLD
     raid_window_minutes: int = PRODUCTION_RAID_WINDOW_MINUTES
+    use_baseline: bool = True
 
 def build_policy_config(policy: GovernancePolicy) -> PolicyConfig:
     if policy == GovernancePolicy.SANDBOX:
@@ -95,6 +96,7 @@ def build_policy_config(policy: GovernancePolicy) -> PolicyConfig:
             account_age_days=SANDBOX_ACCOUNT_AGE_DAYS,
             raid_threshold=SANDBOX_RAID_THRESHOLD,
             raid_window_minutes=SANDBOX_RAID_WINDOW_MINUTES,
+            use_baseline=False,
         )
     return PolicyConfig()
 
@@ -104,6 +106,10 @@ def build_policy_config(policy: GovernancePolicy) -> PolicyConfig:
 
 def make_event_id(item_id: str, issue_number: int, sorted_ids: list[int]) -> str:
     raw = f"{item_id}:{issue_number}:{','.join(str(i) for i in sorted_ids)}"
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def make_stable_event_id(item_id: str, issue_number: int, anomaly_detected_at: str) -> str:
+    raw = f"{item_id}:{issue_number}:anomaly:{anomaly_detected_at}"
     return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 # ---------------------------------------------------------------------------
@@ -392,17 +398,40 @@ def detect_anomaly(
     if now is None:
         now = datetime.now(timezone.utc)
     window_start = now - timedelta(minutes=policy.raid_window_minutes)
+    seven_days_ago = now - timedelta(days=7)
     recent_ids: list[int] = []
+    recent_ts_list: list[datetime] = []
+    all_7d_ids: list[int] = []
     for rid, ts in zip(downvote_ids, downvote_timestamps):
+        if ts >= seven_days_ago:
+            all_7d_ids.append(rid)
         if ts >= window_start:
             recent_ids.append(rid)
-    is_anomaly = len(recent_ids) >= policy.raid_threshold
+            recent_ts_list.append(ts)
+    is_anomaly = False
+    historical_avg = 0.0
+    baseline_ratio = 0.0
+    if policy.use_baseline:
+        num_windows_7d = max(7 * 24 * 60 / policy.raid_window_minutes, 1.0)
+        historical_avg = len(all_7d_ids) / num_windows_7d
+        baseline_ratio = len(recent_ids) / max(historical_avg, 1.0)
+        if len(recent_ids) > 20 and baseline_ratio > 5.0:
+            is_anomaly = True
+    else:
+        is_anomaly = len(recent_ids) >= policy.raid_threshold
+    # detected_at_bucket = raid_window-rounded now for stable event identity
+    window_seconds = policy.raid_window_minutes * 60
+    bucket_ts = int(now.timestamp() / window_seconds) * window_seconds
+    detected_at_bucket = datetime.fromtimestamp(bucket_ts, tz=timezone.utc).isoformat()
     return {
         "is_anomaly": is_anomaly,
         "affected_reaction_ids": sorted(recent_ids),
         "count_in_window": len(recent_ids),
         "threshold": policy.raid_threshold,
         "window_minutes": policy.raid_window_minutes,
+        "historical_avg": historical_avg,
+        "baseline_ratio": baseline_ratio,
+        "detected_at_bucket": detected_at_bucket,
     }
 
 # ---------------------------------------------------------------------------
@@ -416,14 +445,27 @@ def load_vote_issues(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {"schema_version": 1, "items": {}}
 
-def load_governance_state(path: Path | None) -> dict[str, Any]:
+def load_governance_state(path: Path | None, *, governance_repo: str | None = None, policy: str | None = None) -> dict[str, Any]:
     if path is None:
         return {"schema_version": 1, "events": []}
     try:
         with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return {"schema_version": 1, "events": []}
+    if not isinstance(data, dict):
+        return {"schema_version": 1, "events": []}
+    stored_repo = data.get("governance_repository")
+    stored_policy = data.get("policy")
+    if stored_repo and governance_repo and stored_repo != governance_repo:
+        logger.warning("State governance_repository '%s' != expected '%s'; ignoring mismatched state.", stored_repo, governance_repo)
+        return {"schema_version": 1, "events": []}
+    if stored_policy and policy and stored_policy != policy:
+        logger.warning("State policy '%s' != expected '%s'; ignoring mismatched state.", stored_policy, policy)
+        return {"schema_version": 1, "events": []}
+    if "events" not in data:
+        data["events"] = []
+    return data
 
 def save_governance_state(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -460,15 +502,6 @@ def build_discord_embed(*, mod_id: str, event_type: str, event_data: dict[str, A
             {"name": "Users", "value": str(event_data.get("user_count", 0)), "inline": True},
             {"name": "Event ID", "value": event_data.get("event_id", ""), "inline": False},
             {"name": "Decision", "value": "Pending curator review", "inline": False},
-        ]
-    elif event_type == "new_review":
-        color = 0x57F287
-        title = f"New Review: {mod_id}"
-        fields = [
-            {"name": "Item ID", "value": mod_id, "inline": True},
-            {"name": "Item Name", "value": event_data.get("item_name", ""), "inline": True},
-            {"name": "Issue URL", "value": event_data.get("issue_url", ""), "inline": False},
-            {"name": "Review Count", "value": str(event_data.get("review_count", 0)), "inline": True},
         ]
     elif event_type == "resolved":
         color = 0xFEE75C
@@ -534,9 +567,17 @@ def run_governance_pipeline(
         issue_n = entry.get("issue_number") if isinstance(entry, dict) else entry
         if isinstance(issue_n, int):
             item_issue_map[item_id.lower()] = issue_n
-    if not item_issue_map:
-        logger.info("vote_issues.json has no mapped items.")
-        return {}
+
+    # Build all known registry item IDs for independent review extraction.
+    all_registry_ids: set[str] = set()
+    immune_ids: set[str] = set()
+    for it in items:
+        iid = it.get("id", "").lower()
+        if iid:
+            all_registry_ids.add(iid)
+            gov_block = it.get("governance") or {}
+            if gov_block.get("immune") is True:
+                immune_ids.add(iid)
 
     try:
         all_issues = _fetch_issues(owner, repo_name, token=token)
@@ -544,7 +585,8 @@ def run_governance_pipeline(
         logger.warning("Failed to fetch issues: %s", exc)
         return {}
 
-    known_mod_id_set = set(item_issue_map.keys())
+    # Extract reviews for ALL registry items, not just vote-issue-mapped ones.
+    known_mod_id_set = all_registry_ids
     reviews_by_item = extract_reviews(all_issues, known_mod_id_set)
     for item_reviews in reviews_by_item.values():
         for review in item_reviews:
@@ -554,7 +596,7 @@ def run_governance_pipeline(
     known_issue_nums = set(item_issue_map.values())
 
     # Load previous state and curator decisions
-    state_data = load_governance_state(governance_state_in_path)
+    state_data = load_governance_state(governance_state_in_path, governance_repo=governance_repo, policy=policy.value)
     prev_events: list[dict[str, Any]] = state_data.get("events", [])
     prev_event_map: dict[str, dict[str, Any]] = {}
     for ev in prev_events:
@@ -569,6 +611,10 @@ def run_governance_pipeline(
         st = d.get("status", "")
         if eid and st:
             curator_decisions[eid] = st
+
+    stored_status_by_id = {
+        ev.get("event_id", ""): ev.get("status", "pending") for ev in prev_events
+    }
 
     # Override prev event statuses with curator decisions
     for ev in prev_events:
@@ -589,7 +635,42 @@ def run_governance_pipeline(
     new_events: list[dict[str, Any]] = []
     discord_notified: list[str] = []
 
+    # First pass: emit review-only results for ALL registry items
+    for item_id in all_registry_ids:
+        reviews = reviews_by_item.get(item_id, [])
+        review_count = len(reviews)
+        unique_reviewers = len({r["author"] for r in reviews})
+        vote_issue_number = item_issue_map.get(item_id, 0)
+        vote_issue_url = f"https://github.com/{governance_repo}/issues/{vote_issue_number}" if vote_issue_number else ""
+        is_immune = item_id in immune_ids
+
+        results[item_id] = {
+            "item_id": item_id,
+            "item_name": item_name_map.get(item_id, item_id),
+            "vote_issue_number": vote_issue_number,
+            "vote_issue_url": vote_issue_url,
+            "raw_upvotes": 0, "raw_downvotes": 0,
+            "counted_upvotes": 0, "counted_downvotes": 0,
+            "quarantined_upvotes": 0, "quarantined_downvotes": 0,
+            "conflicted_users": [],
+            "status_reason": "normal",
+            "registry_status": "active",
+            "review_count": review_count,
+            "unique_reviewers": unique_reviewers,
+            "event_id": None,
+            "affected_reaction_ids": [],
+            "reviews": reviews,
+            "eligible_up": 0, "eligible_down": 0,
+            "anomaly": False, "anomaly_count": 0,
+            "is_immune": is_immune,
+        }
+
+    # Second pass: vote/anomaly processing only for mapped (non-immune) items
     for item_id, issue_number in item_issue_map.items():
+        if item_id not in all_registry_ids:
+            continue
+        if item_id in immune_ids:
+            continue
         if issue_number not in known_issue_nums:
             continue
         try:
@@ -622,7 +703,20 @@ def run_governance_pipeline(
                 downvote_rids.append(rid)
                 downvote_ts.append(ts)
 
-        anomaly = detect_anomaly(downvote_rids, downvote_ts, policy_cfg)
+        rejected_rids: set[int] = set()
+        for previous in prev_events:
+            if previous.get("item_id") == item_id and previous.get("status") == "rejected":
+                rejected_rids.update(previous.get("affected_reactions") or [])
+        anomaly_pairs = [
+            (rid, timestamp)
+            for rid, timestamp in zip(downvote_rids, downvote_ts)
+            if rid not in rejected_rids
+        ]
+        anomaly = detect_anomaly(
+            [pair[0] for pair in anomaly_pairs],
+            [pair[1] for pair in anomaly_pairs],
+            policy_cfg,
+        )
 
         # Eligible counts (all non-conflict users with sufficient account age)
         eligible_cache: dict[str, bool] = {}
@@ -636,38 +730,57 @@ def run_governance_pipeline(
             if user in tally["user_down_ids"]:
                 eligible_down += 1
 
-        # Quarantined counts: which of the eligible reaction IDs are under pending/rejected events
-        quarantined_rids: set[int] = set()
+        anomaly_rids = set(anomaly["affected_reaction_ids"])
+
+        # Determine which previous events are still unresolved (pending/rejected) for this item
+        excluded_event_ids: set[str] = set()
+        pending_event_ids: set[str] = set()
         for ev in prev_events:
             if ev.get("item_id") != item_id:
                 continue
             eid = ev.get("event_id", "")
             e_status = ev.get("status", "pending")
-            if e_status in ("pending", "rejected") and e_status != "accepted":
-                affected = ev.get("affected_reactions", [])
-                if isinstance(affected, list):
-                    quarantined_rids.update(int(x) for x in affected if isinstance(x, (int, str)) and str(x).isdigit())
-        # Also apply from new anomaly if one is detected
-        anomaly_rids = set(anomaly["affected_reaction_ids"])
+            local_status = curator_decisions.get(eid, e_status)
+            if local_status in ("pending", "rejected"):
+                excluded_event_ids.add(eid)
+            if local_status == "pending":
+                pending_event_ids.add(eid)
 
-        # Quarantined up/down: reaction IDs that are in quarantined_rids OR in anomaly_rids
-        # (but NOT if the event was accepted by curator)
         excluded_rids: set[int] = set()
         for ev_entry in prev_events:
             eid = ev_entry.get("event_id", "")
-            e_status = ev_entry.get("status", "pending")
-            # Only curator "accepted" restores; pending/rejected exclude
-            local_status = curator_decisions.get(eid, e_status)
-            if local_status == "accepted":
+            if eid not in excluded_event_ids:
                 continue
             affected = ev_entry.get("affected_reactions", [])
             if isinstance(affected, list):
                 excluded_rids.update(int(x) for x in affected if str(x).isdigit())
 
-        # New anomaly IDs also excluded (unless matching an accepted event)
+        # Reuse one unresolved event per item and canonical issue so growth
+        # merges into the original event instead of generating overlapping IDs.
+        active_event = None
+        for previous in reversed(prev_events):
+            if previous.get("item_id") != item_id:
+                continue
+            try:
+                previous_details = json.loads(previous.get("details_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                previous_details = {}
+            if previous_details.get("issue_number") != issue_number:
+                continue
+            previous_status = previous.get("status", "pending")
+            if previous_status == "pending":
+                active_event = previous
+                break
+
+        # New anomaly IDs also excluded (unless the matching event was accepted).
+        stable_id = None
         if anomaly["is_anomaly"]:
-            new_anomaly_event_id = make_event_id(item_id, issue_number, sorted(anomaly_rids))
-            if new_anomaly_event_id not in curator_decisions or curator_decisions[new_anomaly_event_id] != "accepted":
+            stable_id = (
+                active_event.get("event_id")
+                if active_event is not None
+                else make_stable_event_id(item_id, issue_number, anomaly["detected_at_bucket"])
+            )
+            if stable_id not in curator_decisions or curator_decisions[stable_id] != "accepted":
                 excluded_rids.update(anomaly_rids)
 
         counted_up = 0
@@ -675,7 +788,6 @@ def run_governance_pipeline(
         quarantined_up = 0
         quarantined_down = 0
 
-        # For each eligible user, check if their reaction IDs are excluded
         for user in tally["non_conflict_pool"]:
             if not check_user_eligibility(user, policy_cfg, token=token, cache=eligible_cache):
                 continue
@@ -700,51 +812,89 @@ def run_governance_pipeline(
 
         vote_issue_url = f"https://github.com/{governance_repo}/issues/{issue_number}"
 
-        # Decide event creation
-        anomaly_event_id = make_event_id(item_id, issue_number, sorted(list(anomaly_rids)))
-        all_current_rids = sorted(all_rids)
-
-        prev_anomaly_event = prev_event_map.get(anomaly_event_id)
-
+        # Stable event identity: item+issue+anomaly-start bucket
+        detected_now = datetime.now(timezone.utc)
+        anomaly_detected_bucket = anomaly.get("detected_at_bucket", detected_now.isoformat())
+        stable_event_id = None
         event_type = None
-        status = "pending"
-
+        event_status = "pending"
         if anomaly["is_anomaly"]:
-            if prev_anomaly_event is None:
+            stable_event_id = stable_id or make_stable_event_id(
+                item_id, issue_number, anomaly_detected_bucket
+            )
+            prev_stable = prev_event_map.get(stable_event_id)
+            if prev_stable is None:
                 event_type = "vote_surge"
-                status = "pending"
+                event_status = "pending"
             else:
-                # Pre-existing event: status is from curator or previous state
-                p_status = curator_decisions.get(anomaly_event_id, prev_anomaly_event.get("status", "pending"))
-                status = p_status
+                p_status = curator_decisions.get(stable_event_id, prev_stable.get("status", "pending"))
+                event_status = p_status
                 if p_status == "pending":
                     event_type = "vote_surge"
-                elif p_status == "accepted":
-                    pass  # already resolved
                 elif p_status == "rejected":
                     event_type = "rejected"
-        else:
-            # No anomaly -- keep previous status if existed, but don't create new event
-            if prev_anomaly_event is not None:
-                p_status = curator_decisions.get(anomaly_event_id, prev_anomaly_event.get("status", "pending"))
-                if p_status == "pending":
-                    status = "pending"
-                elif p_status == "accepted":
-                    status = "accepted"
+                # accepted: no new event
 
+        # Determine registry_status (separate from status_reason)
+        has_unresolved = bool(pending_event_ids) or (
+            anomaly["is_anomaly"] and event_status == "pending"
+        )
+        registry_status = "under_review" if has_unresolved else "active"
+        status_reason = "pending_vote_quarantine" if has_unresolved else "normal"
+
+        # Compute velocity from current/historical counts
+        velocity = 0.0
+        total_recent = counted_up + counted_down
+        # If we have any counted votes, derive velocity from current vs historical distribution
+        # Use upvote/downvote timestamps from the raw reactions for velocity
+        up_ts_all: list[datetime] = []
+        down_ts_all: list[datetime] = []
+        for r in reactions:
+            if r.get("content") == "+1":
+                ts = _parse_gh_ts(r.get("created_at"))
+                if ts: up_ts_all.append(ts)
+            elif r.get("content") == "-1":
+                ts = _parse_gh_ts(r.get("created_at"))
+                if ts: down_ts_all.append(ts)
+        if up_ts_all or down_ts_all:
+            seven_d_ago = detected_now - timedelta(days=7)
+            six_h_ago = detected_now - timedelta(hours=6)
+            up_7d = [t for t in up_ts_all if seven_d_ago <= t <= detected_now]
+            down_7d = [t for t in down_ts_all if seven_d_ago <= t <= detected_now]
+            up_6h = [t for t in up_ts_all if six_h_ago <= t <= detected_now]
+            down_6h = [t for t in down_ts_all if six_h_ago <= t <= detected_now]
+            total_7d = len(up_7d) + len(down_7d)
+            historical_avg_per_6h = total_7d / 28.0
+            recent_6h_total = len(up_6h) + len(down_6h)
+            if historical_avg_per_6h < 0.5:
+                velocity = (recent_6h_total / 0.5) - 1.0
+            else:
+                velocity = (recent_6h_total - historical_avg_per_6h) / historical_avg_per_6h
+            velocity = max(-10.0, min(10.0, velocity))
+
+        # Build new event entry
         if event_type == "vote_surge":
+            event_detected_at = prev_event_map.get(stable_event_id, {}).get(
+                "detected_at", detected_now.isoformat()
+            )
+            event_affected_reactions = sorted(
+                set(prev_event_map.get(stable_event_id, {}).get("affected_reactions") or [])
+                | anomaly_rids
+            )
             ev_entry = {
-                "event_id": anomaly_event_id,
+                "event_id": stable_event_id,
                 "item_id": item_id,
                 "event_type": "vote_surge",
-                "status": status,
-                "detected_at": datetime.now(timezone.utc).isoformat(),
-                "affected_reactions": sorted(anomaly_rids),
+                "status": event_status,
+                "detected_at": event_detected_at,
+                "affected_reactions": event_affected_reactions,
                 "details_json": json.dumps({
                     "item_id": item_id,
                     "issue_number": issue_number,
                     "threshold": anomaly["threshold"],
                     "window_minutes": anomaly["window_minutes"],
+                    "historical_avg": anomaly.get("historical_avg", 0),
+                    "baseline_ratio": anomaly.get("baseline_ratio", 0),
                     "count_in_window": anomaly["count_in_window"],
                     "reaction_ids": list(anomaly_rids),
                     "raw_up": raw_up,
@@ -760,20 +910,38 @@ def run_governance_pipeline(
             }
             new_events.append(ev_entry)
 
-        # Discord notifications
+        previous_affected_for_alert: set[int] = set()
+        if stable_event_id and stable_event_id in prev_event_map:
+            previous_affected_for_alert = set(
+                prev_event_map[stable_event_id].get("affected_reactions") or []
+            )
+
+        # Update existing stable event if more reactions came in (growth merge)
+        if stable_event_id and prev_event_map.get(stable_event_id) and anomaly["is_anomaly"]:
+            prev_ev = prev_event_map[stable_event_id]
+            prev_affected = set(prev_ev.get("affected_reactions") or [])
+            new_affected = set(anomaly_rids)
+            merged_affected = sorted(prev_affected | new_affected)
+            if merged_affected != sorted(prev_affected):
+                # Update in prev_events list for state persistence
+                for pe in prev_events:
+                    if pe.get("event_id") == stable_event_id:
+                        pe["affected_reactions"] = merged_affected
+                        break
+
+        # Discord alerts: only new/grown/resolved
         if discord_webhook_url and mode == GovernanceMode.MONITOR:
             item_name = item_name_map.get(item_id, item_id)
-            is_new = anomaly["is_anomaly"] and prev_anomaly_event is None
+            is_new = anomaly["is_anomaly"] and stable_event_id and stable_event_id not in prev_event_map
             is_grown = False
-            if prev_anomaly_event is not None:
-                prev_affected = prev_anomaly_event.get("affected_reactions", [])
-                if len(anomaly_rids) > len(prev_affected):
-                    is_grown = True
-            is_resolved = False
-            if prev_anomaly_event is not None and event_type is None:
-                prev_st = curator_decisions.get(anomaly_event_id, prev_anomaly_event.get("status", "pending"))
-                if prev_st == "pending" and status == "accepted":
-                    is_resolved = True
+            if anomaly["is_anomaly"] and stable_event_id in prev_event_map:
+                is_grown = bool(anomaly_rids - previous_affected_for_alert)
+            is_resolved = any(
+                stored_status_by_id.get(event_id) == "pending"
+                and curator_decisions.get(event_id) in ("accepted", "rejected")
+                and prev_event_map.get(event_id, {}).get("item_id") == item_id
+                for event_id in stored_status_by_id
+            )
 
             if is_new:
                 discord_data = {
@@ -785,7 +953,7 @@ def run_governance_pipeline(
                         u for u in tally["non_conflict_pool"]
                         if check_user_eligibility(u, policy_cfg, token=token, cache=eligible_cache)
                     )),
-                    "event_id": anomaly_event_id,
+                    "event_id": stable_event_id,
                 }
                 embed = build_discord_embed(
                     mod_id=item_id, event_type="vote_surge",
@@ -797,14 +965,14 @@ def run_governance_pipeline(
             elif is_grown:
                 discord_data = {
                     "item_name": item_name, "issue_url": vote_issue_url,
-                    "newly_quarantined": len(anomaly_rids) - len(prev_anomaly_event.get("affected_reactions", [])),
+                    "newly_quarantined": len(anomaly_rids - previous_affected_for_alert),
                     "total_quarantined": quarantined_up + quarantined_down,
                     "before_score": f"{eligible_up - eligible_down}",
                     "user_count": len(set(
                         u for u in tally["non_conflict_pool"]
                         if check_user_eligibility(u, policy_cfg, token=token, cache=eligible_cache)
                     )),
-                    "event_id": anomaly_event_id,
+                    "event_id": stable_event_id,
                 }
                 embed = build_discord_embed(
                     mod_id=item_id, event_type="vote_surge",
@@ -813,15 +981,22 @@ def run_governance_pipeline(
                 if embed:
                     _post_discord(discord_webhook_url, embed)
                     discord_notified.append(item_id)
-
-        if review_count > 0 and (item_id not in discord_notified) and prev_anomaly_event is None and not anomaly["is_anomaly"]:
-            if discord_webhook_url and mode == GovernanceMode.MONITOR:
+            elif is_resolved:
                 discord_data = {
                     "item_name": item_name, "issue_url": vote_issue_url,
-                    "review_count": review_count,
+                    "decision": next(
+                        (
+                            curator_decisions[event_id]
+                            for event_id, old_status in stored_status_by_id.items()
+                            if old_status == "pending"
+                            and curator_decisions.get(event_id) in ("accepted", "rejected")
+                            and prev_event_map.get(event_id, {}).get("item_id") == item_id
+                        ),
+                        "resolved",
+                    ),
                 }
                 embed = build_discord_embed(
-                    mod_id=item_id, event_type="new_review",
+                    mod_id=item_id, event_type="resolved",
                     event_data=discord_data, policy=policy, mode=mode,
                 )
                 if embed:
@@ -840,23 +1015,41 @@ def run_governance_pipeline(
             "quarantined_upvotes": quarantined_up,
             "quarantined_downvotes": quarantined_down,
             "conflicted_users": conflict_users,
-            "status_reason": "vote_surge" if anomaly["is_anomaly"] else "normal",
+            "status_reason": status_reason,
+            "registry_status": registry_status,
             "review_count": review_count,
             "unique_reviewers": unique_reviewers,
-            "event_id": anomaly_event_id if anomaly["is_anomaly"] else None,
+            "event_id": stable_event_id if anomaly["is_anomaly"] else None,
             "affected_reaction_ids": sorted(anomaly_rids),
             "reviews": reviews,
             "eligible_up": eligible_up,
             "eligible_down": eligible_down,
             "anomaly": anomaly["is_anomaly"],
             "anomaly_count": anomaly["count_in_window"],
+            "is_immune": False,
+            "velocity": velocity,
         }
 
-    new_state_events = prev_events + new_events
+    # Build new state with all events, including previous unseen ones
+    # Merge new events into previous (updating existing stable events)
+    merged_events = list(prev_events)
+    for ne in new_events:
+        eid = ne["event_id"]
+        found = False
+        for i, pe in enumerate(merged_events):
+            if pe.get("event_id") == eid:
+                merged_events[i] = ne
+                found = True
+                break
+        if not found:
+            merged_events.append(ne)
+
     new_state = {
         "schema_version": 1,
+        "governance_repository": governance_repo,
+        "policy": policy.value,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "events": new_state_events,
+        "events": merged_events,
     }
 
     if mode == GovernanceMode.MONITOR:
@@ -865,9 +1058,11 @@ def run_governance_pipeline(
     results["_meta"] = {
         "mode": mode.value, "policy": policy.value, "repo": governance_repo,
         "total_items_mapped": len(item_issue_map),
+        "total_items_in_registry": len(all_registry_ids),
         "total_new_events": len(new_events),
         "total_prev_events": len(prev_events),
         "discord_notified": len(discord_notified),
+        "events": merged_events,
     }
     return results
 
@@ -922,11 +1117,9 @@ def enrich_governance_summary(conn, governance_results: dict[str, Any]) -> None:
 def enrich_governance_events(conn, governance_results: dict[str, Any]) -> None:
     if not governance_results:
         return
-    meta = governance_results.get("_meta", {})
     cursor = conn.cursor()
-    for item_id, data in governance_results.items():
-        if item_id.startswith("_") or data.get("event_id") is None:
-            continue
+    all_events = governance_results.get("_meta", {}).get("events", [])
+    for ev in all_events:
         cursor.execute(
             """
             INSERT INTO governance_events (
@@ -940,14 +1133,8 @@ def enrich_governance_events(conn, governance_results: dict[str, Any]) -> None:
                 details_json = excluded.details_json
             """,
             (
-                data["event_id"],
-                item_id,
-                "vote_surge",
-                "pending",
-                datetime.now(timezone.utc).isoformat(),
-                len(data.get("affected_reaction_ids", [])),
-                json.dumps({k: v for k, v in data.items()
-                           if k not in ("reviews", "event_id")}, separators=(",", ":")),
+                ev["event_id"], ev["item_id"], ev["event_type"], ev["status"],
+                ev["detected_at"], len(ev.get("affected_reactions", [])), ev["details_json"],
             ),
         )
 
@@ -962,12 +1149,14 @@ def enrich_registry_item_scores(item: dict[str, Any], governance_results: dict[s
     item["_governance_counted_downvotes"] = data.get("counted_downvotes", 0)
     item["_governance_net_score"] = data.get("counted_upvotes", 0) - data.get("counted_downvotes", 0)
     item["_governance_review_count"] = data.get("review_count", 0)
-    item["_governance_status"] = data.get("status_reason", "")
+    item["_governance_status_reason"] = data.get("status_reason", "")
+    item["_governance_registry_status"] = data.get("registry_status", "active")
     item["_governance_raw_upvotes"] = data.get("raw_upvotes", 0)
     item["_governance_raw_downvotes"] = data.get("raw_downvotes", 0)
     item["_governance_quarantined_upvotes"] = data.get("quarantined_upvotes", 0)
     item["_governance_quarantined_downvotes"] = data.get("quarantined_downvotes", 0)
     item["_governance_vote_issue_url"] = data.get("vote_issue_url", "")
+    item["_governance_velocity"] = data.get("velocity", 0.0)
     reviews = data.get("reviews", [])
     if reviews:
         enriched = []

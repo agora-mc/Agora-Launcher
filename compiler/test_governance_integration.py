@@ -149,11 +149,12 @@ class TestGovernanceEnrichment(unittest.TestCase):
         self.assertEqual(row[3], 1)
 
     def test_enrich_events(self):
+        event = {"event_id": "sha256:xyz", "item_id": "sodium", "event_type": "vote_surge", "status": "pending", "detected_at": "2026-07-27T00:00:00Z", "affected_reactions": [1, 2], "details_json": "{}"}
         results = {
             "sodium": {"event_id": "sha256:xyz", "vote_issue_number": 1,
                        "raw_upvotes": 10, "counted_upvotes": 8,
                        "quarantined_upvotes": 2, "conflicted_users": []},
-            "_meta": {},
+            "_meta": {"events": [event]},
         }
         gov.enrich_governance_events(self.conn, results)
         row = self.conn.execute(
@@ -170,7 +171,8 @@ class TestGovernanceEnrichment(unittest.TestCase):
                 "counted_upvotes": 5, "counted_downvotes": 2,
                 "raw_upvotes": 8, "raw_downvotes": 4,
                 "quarantined_upvotes": 1, "quarantined_downvotes": 1,
-                "status_reason": "normal", "vote_issue_url": "url",
+                "status_reason": "normal", "registry_status": "active",
+                "vote_issue_url": "url", "velocity": 1.5,
                 "review_count": 2,
                 "reviews": [{"author": "alice", "technical_review": "x"*100,
                              "item_version": "1.0.0", "minecraft_version": "1.21",
@@ -190,6 +192,8 @@ class TestGovernanceEnrichment(unittest.TestCase):
         self.assertEqual(item["_governance_raw_downvotes"], 4)
         self.assertEqual(item["_governance_quarantined_upvotes"], 1)
         self.assertEqual(item["_governance_quarantined_downvotes"], 1)
+        self.assertEqual(item["_governance_registry_status"], "active")
+        self.assertEqual(item["_governance_velocity"], 1.5)
         self.assertEqual(len(item["_governance_top_reviews"]), 1)
         tr = item["_governance_top_reviews"][0]
         self.assertEqual(tr["item_version"], "1.0.0")
@@ -197,18 +201,19 @@ class TestGovernanceEnrichment(unittest.TestCase):
         self.assertEqual(tr["evidence"], "bench")
 
     def test_enrich_tables(self):
+        event = {"event_id": "sha256:e1", "item_id": "sodium", "event_type": "vote_surge", "status": "pending", "detected_at": "2026-07-27T00:00:00Z", "affected_reactions": [1, 2, 3, 4], "details_json": "{}"}
         results = {
             "sodium": {"event_id": "sha256:e1", "vote_issue_number": 1, "vote_issue_url": "u",
                        "raw_upvotes": 3, "raw_downvotes": 1, "counted_upvotes": 2,
                        "counted_downvotes": 1, "quarantined_upvotes": 1,
                        "quarantined_downvotes": 0, "conflicted_users": [],
-                       "status_reason": "vote_surge"},
+                       "status_reason": "vote_surge", "affected_reaction_ids": [1,2,3,4]},
             "iris": {"event_id": None, "vote_issue_number": 2, "vote_issue_url": "u2",
                      "raw_upvotes": 1, "raw_downvotes": 0, "counted_upvotes": 1,
                      "counted_downvotes": 0, "quarantined_upvotes": 0,
                      "quarantined_downvotes": 0, "conflicted_users": [],
                      "status_reason": "normal"},
-            "_meta": {},
+            "_meta": {"events": [event]},
         }
         gov.enrich_governance_tables(self.conn, results)
         summary_rows = self.conn.execute("SELECT item_id, raw_upvotes FROM governance_summary ORDER BY item_id").fetchall()
@@ -264,6 +269,9 @@ class TestEndToEndMocked(unittest.TestCase):
         self.assertIn("_meta", r)
         state = gov.load_governance_state(self.gs)
         self.assertEqual(len(state["events"]), 0)  # no anomaly, no events
+        # State includes governance_repository and policy
+        self.assertIn("governance_repository", state)
+        self.assertIn("policy", state)
 
     def test_quarantine_untouched(self):
         self.vi.write_text(json.dumps({"schema_version":1,"items":{"sodium":{"issue_number":1}}}), encoding="utf-8")
@@ -273,15 +281,37 @@ class TestEndToEndMocked(unittest.TestCase):
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertEqual(self.qd.read_text(encoding="utf-8"), orig)
 
-    def test_unknown_item_in_vi_skips(self):
+    def test_unknown_item_in_vi_still_emits_reviews(self):
+        # Even with an unknown item in vote_issues, items with reviews still appear
         self.vi.write_text(json.dumps({"schema_version":1,"items":{"unknown":{"issue_number":1}}}), encoding="utf-8")
+        _body = (
+            "### Mod Registry ID\nsodium\n\n"
+            "### Registry Item ID\nsodium\n\n"
+            "### Project Version Tested\n1.0.0\n\n"
+            "### Minecraft Version\n1.21\n\n"
+            "### Loader or platform\nfabric\n\n"
+            "### Your relationship to this project\nuser\n\n"
+            "### Review focus\nperformance\n\n"
+            "### Technical Review\n" + ("x"*100) + "\n"
+        )
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [
+            {"number":1,"user":{"login":"alice"}, "body":_body,
+             "labels":[{"name":"community-review"}],"created_at":"2026-06-01T00:00:00Z"},
+        ]
+        gov.INJECTED_USER_PROFILES = {"alice": {"login":"alice","created_at":"2025-01-01T00:00:00Z"}}
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.READ_ONLY, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
-        self.assertEqual(r, {})
+        # sodium is a known registry item so it should appear with reviews
+        self.assertIn("sodium", r)
+        self.assertEqual(r["sodium"]["review_count"], 1)
+        # unknown was in vote_issues but not in items list — it won't appear
+        self.assertNotIn("unknown", r)
 
     def test_existing_accepted_state_persists(self):
         self.vi.write_text(json.dumps({"schema_version":1,"items":{"sodium":{"issue_number":1}}}), encoding="utf-8")
-        eid = gov.make_event_id("sodium", 1, [1,2,3,4,5])
-        self.gs.write_text(json.dumps({"schema_version":1,"events":[{
+        from datetime import timezone as _tz
+        detected_bucket = "2026-07-27T00:00:00+00:00"
+        eid = gov.make_stable_event_id("sodium", 1, detected_bucket)
+        self.gs.write_text(json.dumps({"schema_version":1,"governance_repository":"o/r","policy":"production","events":[{
             "event_id": eid, "item_id": "sodium", "event_type": "vote_surge",
             "status": "accepted", "detected_at": "2026-07-27T00:00:00Z",
             "affected_reactions": [1,2,3,4,5], "details_json": "{}",
@@ -292,11 +322,15 @@ class TestEndToEndMocked(unittest.TestCase):
         gov.INJECTED_USER_PROFILES = {"a": {"login":"a","created_at":"2025-01-01T00:00:00Z"}}
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertIn("sodium", r)
+        self.assertEqual(r["sodium"]["registry_status"], "active")
 
-    def test_pending_event_not_affected_if_outside_window(self):
+    def test_pending_event_keeps_under_review_after_window(self):
+        # Pending event persists and keeps item under_review even when no anomaly
         self.vi.write_text(json.dumps({"schema_version":1,"items":{"sodium":{"issue_number":1}}}), encoding="utf-8")
-        eid = gov.make_event_id("sodium", 1, [1,2,3,4,5])
-        self.gs.write_text(json.dumps({"schema_version":1,"events":[{
+        from datetime import timezone as _tz
+        detected_bucket = "2026-07-20T00:00:00+00:00"
+        eid = gov.make_stable_event_id("sodium", 1, detected_bucket)
+        self.gs.write_text(json.dumps({"schema_version":1,"governance_repository":"o/r","policy":"production","events":[{
             "event_id": eid, "item_id": "sodium", "event_type": "vote_surge",
             "status": "pending", "detected_at": "2026-07-20T00:00:00Z",
             "affected_reactions": [1,2,3,4,5], "details_json": "{}",
@@ -305,10 +339,32 @@ class TestEndToEndMocked(unittest.TestCase):
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"a","+1")]
         gov.INJECTED_USER_PROFILES = {"a": {"login":"a","created_at":"2025-01-01T00:00:00Z"}}
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
-        # Pending event persists outside window; reaction 1 is still quarantined
+        # Pending event persists; reaction 1 still quarantined; item stays under_review
         self.assertIn("sodium", r)
         self.assertEqual(r["sodium"]["quarantined_upvotes"], 1)
         self.assertEqual(r["sodium"]["counted_upvotes"], 0)
+        self.assertEqual(r["sodium"]["registry_status"], "under_review")
+        self.assertEqual(r["sodium"]["status_reason"], "pending_vote_quarantine")
+
+    def test_rejected_decision_excludes_votes_but_resolves_under_review(self):
+        self.vi.write_text(json.dumps({"schema_version":1,"items":{"sodium":{"issue_number":1}}}), encoding="utf-8")
+        eid = gov.make_stable_event_id("sodium", 1, "2026-07-20T00:00:00+00:00")
+        self.gs.write_text(json.dumps({"schema_version":1,"governance_repository":"o/r","policy":"production","events":[{
+            "event_id": eid, "item_id": "sodium", "event_type": "vote_surge",
+            "status": "pending", "detected_at": "2026-07-20T00:00:00Z",
+            "affected_reactions": [1], "details_json": json.dumps({"issue_number": 1}),
+        }]}), encoding="utf-8")
+        self.qd.write_text(json.dumps({"schema_version":1,"decisions":[{"event_id":eid,"status":"rejected"}]}), encoding="utf-8")
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: []
+        gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"a","-1")]
+        gov.INJECTED_USER_PROFILES = {"a": {"login":"a","created_at":"2025-01-01T00:00:00Z"}}
+        r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
+        self.assertEqual(r["sodium"]["quarantined_downvotes"], 1)
+        self.assertEqual(r["sodium"]["counted_downvotes"], 0)
+        self.assertEqual(r["sodium"]["registry_status"], "active")
+        self.assertEqual(r["sodium"]["status_reason"], "normal")
+        saved = json.loads(self.gs.read_text(encoding="utf-8"))
+        self.assertEqual(saved["events"][0]["status"], "rejected")
 
 
 def _reaction(rid, user, content, created="2026-07-27T00:00:00Z"):

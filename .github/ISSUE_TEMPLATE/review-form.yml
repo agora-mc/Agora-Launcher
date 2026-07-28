@@ -15,6 +15,8 @@ body:
 
         **Voting is separate:** reactions on this review do not count as registry votes. Use the item's canonical Agora voting issue when available.
 
+        **Read the repository's Code of Engagement before submitting.** All reviewers are bound by it.
+
   - type: input
     id: registry_item_id
     attributes:

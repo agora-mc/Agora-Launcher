@@ -1964,14 +1964,16 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
     _gov_upvotes = item.get("_governance_counted_upvotes")
     _gov_downvotes = item.get("_governance_counted_downvotes")
     _gov_net_score = item.get("_governance_net_score")
-    _gov_status = item.get("_governance_status")
+    _gov_registry_status = item.get("_governance_registry_status")
+    _gov_velocity = item.get("_governance_velocity")
+    social = item.get("_social_metrics")
 
     if _gov_upvotes is not None:
         _upvotes = _gov_upvotes
         _downvotes = _gov_downvotes or 0
         _net_score = _gov_net_score or 0
-        _velocity = 0.0
-        _status = _gov_status or "active"
+        _velocity = _gov_velocity if _gov_velocity is not None else 0.0
+        _status = _gov_registry_status or "active"
     elif is_immune:
         _upvotes = 0
         _downvotes = 0
@@ -1979,7 +1981,6 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
         _velocity = 0.0
         _status = "active"
     else:
-        social = item.get("_social_metrics")
         if social is not None:
             _upvotes = social.upvotes
             _downvotes = social.downvotes
@@ -2801,14 +2802,16 @@ def compile_registry(
 
     # Governance pipeline (replaces legacy Pass 1/2/3).
     # v1 safety: GitHub reads only; NEVER mutates GitHub in any mode.
-    # When governance mode is not OFF, legacy Pass 1/2 are skipped.
-    _governance_mode: GovernanceMode = GovernanceMode.READ_ONLY
+    # When governance mode is set explicitly (read-only/monitor), legacy Pass 1/2 are skipped.
+    # When mode is None (unspecified), legacy Pass 1/2 runs. Explicit OFF skips everything.
+    _governance_mode: GovernanceMode | None = None
     _governance_policy: GovernancePolicy = GovernancePolicy.PRODUCTION
     if governance_mode_str:
         try:
             _governance_mode = GovernanceMode(governance_mode_str)
         except ValueError:
-            logger.warning("Unknown governance mode '%s'; using read-only.", governance_mode_str)
+            logger.warning("Unknown governance mode '%s'; using production default.", governance_mode_str)
+            _governance_mode = None
     if governance_policy_str:
         try:
             _governance_policy = GovernancePolicy(governance_policy_str)
@@ -2819,11 +2822,13 @@ def compile_registry(
     _governance_repo = resolve_governance_repo(governance_repo_cli)
     _registry_root_for_gov = REGISTRY_DIR
     _vote_issues_path = _registry_root_for_gov / "governance" / "vote_issues.json"
-    _gov_state_out = state_out_path or REPO_ROOT / "governance-state.json"
+    # Default state path: safely namespaced under output DB directory
+    _gov_state_out = state_out_path or (output_path.parent / "governance-state.json")
     _gov_state_in = state_in_path or (_gov_state_out if _gov_state_out.exists() else None)
     _quarantine_path = _registry_root_for_gov / "governance" / "quarantine_decisions.json"
     _discord_url = os.environ.get("DISCORD_WEBHOOK_URL")
-    _use_governance = _governance_mode != GovernanceMode.OFF
+    _use_governance = _governance_mode is not None and _governance_mode != GovernanceMode.OFF
+    _mode_is_unspecified = _governance_mode is None
 
     _governance_results: dict[str, Any] = {}
     if _use_governance and _gh_token:
@@ -2843,16 +2848,19 @@ def compile_registry(
         )
         logger.info(
             "Governance pipeline complete: mode=%s, policy=%s, results=%d items",
-            _governance_mode.value, _governance_policy.value,
+            _governance_mode.value if _governance_mode else "unspecified",
+            _governance_policy.value,
             len([k for k in _governance_results if not k.startswith("_")]),
         )
     elif _use_governance:
         logger.info("GITHUB_TOKEN not set; governance pipeline skipped.")
+    elif _governance_mode == GovernanceMode.OFF:
+        logger.info("Governance mode=off; legacy Pass 1/2 also skipped. Zero governance reads.")
     else:
-        logger.info("Governance mode=off; legacy Pass 1/2 also skipped.")
+        logger.info("Governance mode unspecified; running legacy Pass 1/2.")
 
-    # Legacy Pass 1/2: only run when governance is OFF (preserving original behavior).
-    if not _use_governance and _gh_token:
+    # Legacy Pass 1/2: only run when mode is None/unspecified (preserving original behavior).
+    if _mode_is_unspecified and _gh_token:
         _hydrate_github_social_metrics([item for _, item in all_items])
         _blacklist = _load_poll_blacklist()
         _apply_trust_velocity_pass(
@@ -2950,7 +2958,7 @@ def compile_registry(
         audit_data = {"log_format_version": 1, "entries": []}
     if "log_format_version" not in audit_data:
         audit_data["log_format_version"] = 1
-    if no_governance_write or _governance_mode != GovernanceMode.MONITOR:
+    if no_governance_write or (_governance_mode is not None and _governance_mode != GovernanceMode.MONITOR):
         logger.info("Governance mode does not permit state output; leaving audit log unchanged.")
     else:
         audit_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3274,9 +3282,10 @@ def main() -> None:
         "--governance-mode",
         type=str,
         choices=["off", "read-only", "monitor"],
-        default="read-only",
+        default=None,
         help="Governance mode: off (no reads), read-only (reads + state, no mutations, no Discord), "
-             "monitor (reads + state + Discord, no mutations)",
+             "monitor (reads + state + Discord, no mutations). "
+             "Default (unspecified) preserves legacy production behavior.",
     )
     parser.add_argument(
         "--governance-state-in",

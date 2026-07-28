@@ -43,7 +43,7 @@ jobs:
             --keep-others \
             --skip-sign \
             --verify-changed-only \
-            --no-governance-write \
+            --governance-mode off \
             --report "${RUNNER_TEMP}/loader-refresh-report.json" \
             --out "${RUNNER_TEMP}/registry-validation.db"
 
