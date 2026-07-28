@@ -7,8 +7,8 @@ import {
   formatError,
   getAuthStatus,
   getCuratedAnnotation,
-  getFlagRateLimit,
-  getGithubProfile,
+  getGovernanceSummary,
+  getGovernanceConfig,
   getRegistryItem,
   isModrinthEnabled,
   listInstances,
@@ -20,12 +20,12 @@ import {
   listModVersionsLoadMore,
   listPackMods,
   listRawModrinthVersions,
-  flagReview,
   createInstance,
   fetchModrinthProject,
   type CreateInstanceRequest,
   type CuratedAnnotation,
-  type FlagRateLimit,
+  type GovernanceSummary,
+  type GovernanceConfig,
   type InstanceRow,
   type ModReview,
   type ModrinthProjectFull,
@@ -110,11 +110,10 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
   const [reviews, setReviews] = useState<ModReview[]>([]);
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [profile, setProfile] = useState<import('../lib/tauri').GithubProfile | null>(null);
-  const [rateLimit, setRateLimit] = useState<FlagRateLimit | null>(null);
-  const [flaggingId, setFlaggingId] = useState<number | null>(null);
-  const [flagResult, setFlagResult] = useState<string | null>(null);
-  const [flagError, setFlagError] = useState<string | null>(null);
+
+  // Governance summary state
+  const [governanceSummary, setGovernanceSummary] = useState<GovernanceSummary | null>(null);
+  const [governanceConfig, setGovernanceConfig] = useState<GovernanceConfig | null>(null);
   const governanceLoadedForRef = useRef<string | null>(null);
 
   // Tab state
@@ -302,28 +301,28 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
     return () => { cancelled = true; };
   }, [createLoader, item?.compatible_versions_json, createMcVersion]);
 
-  // Validate GitHub only when governance/review controls become visible.
+  // Validate GitHub and fetch governance summary when governance tab becomes visible.
   useEffect(() => {
-    if (activeTab !== 'agora' || governanceLoadedForRef.current === itemId) return;
+    if (!item || activeTab !== 'agora' || governanceLoadedForRef.current === itemId) return;
     governanceLoadedForRef.current = itemId;
     let cancelled = false;
     (async () => {
       try {
-        const [auth, prof, rl] = await Promise.all([
+        const [auth, summary, cfg] = await Promise.all([
           getAuthStatus(),
-          getGithubProfile(),
-          getFlagRateLimit(),
+          getGovernanceSummary(item.id).catch(() => null),
+          getGovernanceConfig().catch(() => null),
         ]);
         if (cancelled) return;
         setAuthed(auth);
-        setProfile(prof);
-        setRateLimit(rl);
-      } catch (e) {
-        if (!cancelled) setFlagError(formatError(e));
+        if (summary) setGovernanceSummary(summary);
+        if (cfg) setGovernanceConfig(cfg);
+      } catch {
+        // Non-fatal
       }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, itemId]);
+  }, [activeTab, itemId, item?.id]);
 
   // Load reviews when item is available
   useEffect(() => {
@@ -334,8 +333,8 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
       try {
         const revs = await listModReviews(item.id);
         if (!cancelled) setReviews(revs);
-      } catch (e) {
-        if (!cancelled) setFlagError(formatError(e));
+      } catch {
+        // Non-fatal — reviews may not be available.
       } finally {
         if (!cancelled) setReviewsLoading(false);
       }
@@ -703,38 +702,6 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
       setCreateError(formatError(e));
     } finally {
       setCreateBusy(false);
-    }
-  };
-
-  // Flag handler
-  const handleFlagReview = async (review: ModReview) => {
-    if (!authed) return;
-    if (!window.confirm(
-      `Flag this review?\n\nAuthor: ${review.author ?? 'Anonymous'}\nText: ${review.text.slice(0, 200)}${review.text.length > 200 ? '…' : ''}`
-    )) {
-      return;
-    }
-    setFlaggingId(review.issue_number);
-    setFlagResult(null);
-    setFlagError(null);
-    try {
-      const login = profile?.login ?? '';
-      const url = await flagReview({
-        modId: item.id,
-        modName: item.name,
-        issueNumber: review.issue_number,
-        author: review.author ?? 'Anonymous',
-        quotedText: review.text,
-        reporterLogin: login,
-      });
-      if (url.startsWith('https://')) {
-        window.open(url, '_blank');
-      }
-      setFlagResult(url);
-    } catch (e) {
-      setFlagError(formatError(e));
-    } finally {
-      setFlaggingId(null);
     }
   };
 
@@ -1531,6 +1498,125 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
             </div>
           )}
 
+          {/* Governance Summary */}
+          {governanceSummary && (
+            <div className="rounded-lg border border-border bg-muted p-3 space-y-3">
+              <h3 className="font-semibold text-sm">Governance Summary</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground">Counted upvotes</span>
+                  <p className="font-medium">{governanceSummary.counted_upvotes}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Counted downvotes</span>
+                  <p className="font-medium">{governanceSummary.counted_downvotes}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Net score</span>
+                  <p className="font-medium">{governanceSummary.counted_upvotes - governanceSummary.counted_downvotes}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Quarantined votes</span>
+                  <p className="font-medium">{governanceSummary.quarantined_upvotes}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Conflicted voters</span>
+                  <p className="font-medium">{governanceSummary.conflicted_users}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Raw upvotes</span>
+                  <p className="font-medium">{governanceSummary.raw_upvotes}</p>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Raw downvotes</span>
+                  <p className="font-medium">{governanceSummary.raw_downvotes}</p>
+                </div>
+              </div>
+              {governanceSummary.status_reason && (
+                <div>
+                  <span className="text-muted-foreground text-xs">Status reason</span>
+                  <p className="text-xs text-foreground mt-0.5">{governanceSummary.status_reason}</p>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {governanceSummary.vote_issue_url ? (
+                  <a
+                    href={governanceSummary.vote_issue_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Vote on GitHub
+                  </a>
+                ) : (
+                  <span className="text-xs text-muted-foreground opacity-60 cursor-default">
+                    Vote on GitHub
+                  </span>
+                )}
+                {governanceConfig && (
+                  <a
+                    href={`https://github.com/${governanceConfig.repository}/issues/new?template=review-form.yml`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Write a technical review
+                  </a>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Compiled at {new Date(governanceSummary.compiled_at).toLocaleString()}
+              </p>
+            </div>
+          )}
+
+          {/* Quarantine notice */}
+          {(governanceSummary?.quarantined_upvotes ?? 0) > 0 || (governanceSummary?.quarantined_downvotes ?? 0) > 0 ? (
+            <div
+              className="rounded-lg border px-4 py-3 text-sm"
+              style={{
+                backgroundColor: 'rgba(220, 38, 38, 0.10)',
+                borderColor: 'rgba(220, 38, 38, 0.5)',
+                color: 'rgb(220, 38, 38)',
+              }}
+            >
+              <div className="font-semibold">Quarantined</div>
+              <p className="mt-1 text-xs opacity-90">
+                This score excludes voting activity currently under review.
+              </p>
+            </div>
+          ) : null}
+
+          {/* Conflicted users notice */}
+          {(governanceSummary?.conflicted_users ?? 0) > 0 ? (
+            <div className="rounded-lg border border-amber-500/50 bg-amber-50/50 dark:bg-amber-900/10 px-4 py-3 text-sm dark:border-amber-700/50">
+              <div className="font-semibold text-amber-700 dark:text-amber-400">
+                Conflicted Voters
+              </div>
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+                {governanceSummary?.conflicted_users} voter{governanceSummary!.conflicted_users !== 1 ? 's' : ''} flagged conflicts on this item.
+              </p>
+            </div>
+          ) : null}
+
+          {/* Copy Registry Item ID */}
+          <div>
+            <h3 className="font-semibold text-sm mb-2">Registry Item ID</h3>
+            <div className="flex items-center gap-2">
+              <code className="text-xs bg-muted px-2 py-1 rounded border border-border break-all">
+                {item.id}
+              </code>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(item.id).catch(() => {});
+                }}
+                className="shrink-0 rounded border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
+              >
+                Copy ID
+              </button>
+            </div>
+          </div>
+
           <div>
             <h3 className="font-semibold text-sm mb-2">Known Conflicts</h3>
             <p className="text-sm text-muted-foreground">
@@ -1542,94 +1628,91 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
           <div>
             <h3 className="font-semibold text-sm mb-2">Curated Score</h3>
             <p className="text-xs text-muted-foreground">
-              ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
+              Upvotes: {item.upvotes} &middot; Downvotes: {item.downvotes} &middot; Net: {item.net_score} &middot; Velocity: {velocityLabel}
             </p>
           </div>
 
-          {/* Reviews */}
+          {/* Community Reviews */}
           <div className="pt-2 border-t border-border">
             <h3 className="font-semibold text-sm mb-3">Community Reviews</h3>
             {item.allow_comments ? (
               !authed ? (
-                <>
-                  <p className="text-sm text-muted-foreground mb-2">
-                    Reviews require GitHub authentication.
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Sign in to flag reviews.
-                  </p>
-                </>
+                <p className="text-sm text-muted-foreground">
+                  Reviews require GitHub authentication. Sign in to view community feedback.
+                </p>
               ) : reviewsLoading ? (
                 <div className="text-center py-2">
-                  <p className="text-sm text-muted-foreground">Loading reviews…</p>
+                  <p className="text-sm text-muted-foreground">Loading reviews...</p>
                 </div>
               ) : reviews.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   No community reviews yet.
                 </p>
               ) : (
-                <>
-                  {flagResult && (
-                    <p className="text-sm text-green-600 dark:text-green-400 mb-3">
-                      Flag submitted.{' '}
-                      <a
-                        href={flagResult}
-                        onClick={(e) => {
-                          if (!flagResult.startsWith('https://')) {
-                            e.preventDefault();
-                          }
-                        }}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline"
-                      >
-                        View admin alert ↗
-                      </a>
-                    </p>
-                  )}
-                  {flagError && (
-                    <p className="text-sm text-destructive mb-3">
-                      {flagError}
-                    </p>
-                  )}
-                  <ul className="space-y-3">
-                    {reviews.map((review) => {
-                      const rl = rateLimit;
-                      const disabledFlag = rl && !rl.can_flag;
-                      const resetTime = disabledFlag
-                        ? new Date(rl.reset_hour_at_unix * 1000).toLocaleString()
-                        : '';
-                      return (
-                        <li
-                          key={review.issue_number}
-                          className="rounded-lg border border-border px-3 py-2"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-medium text-muted-foreground">
-                              {review.author ?? 'Anonymous'}
+                <ul className="space-y-3">
+                  {reviews.map((review) => (
+                    <li
+                      key={review.issue_number}
+                      className="rounded-lg border border-border px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {review.author ?? 'Anonymous'}
+                        </span>
+                        {review.created_at && (
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(review.created_at).toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm mt-1 whitespace-pre-wrap text-foreground">
+                        {review.text}
+                      </p>
+                      {/* Structured review fields */}
+                      {(review.item_version || review.minecraft_version || review.loader) && (
+                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                          {review.item_version && <span>Version: {review.item_version}</span>}
+                          {review.minecraft_version && <span>MC: {review.minecraft_version}</span>}
+                          {review.loader && <span>Loader: {review.loader}</span>}
+                        </div>
+                      )}
+                      {review.relationship && (
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          Relationship: {review.relationship}
+                        </p>
+                      )}
+                      {review.focus && review.focus.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {review.focus.map((f, i) => (
+                            <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted border border-border">
+                              {f}
                             </span>
-                            {review.created_at && (
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(review.created_at).toLocaleString()}
-                              </span>
-                            )}
-                            <button
-                              onClick={() => handleFlagReview(review)}
-                              disabled={disabledFlag || flaggingId === review.issue_number}
-                              title={disabledFlag ? `Flag limit reached — resets at ${resetTime}` : ''}
-                              className="text-xs text-muted-foreground hover:text-destructive disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              🚩 Flag
-                            </button>
-                          </div>
-                          <p className="text-sm mt-1 whitespace-pre-wrap text-foreground">
-                            {review.text}
-                          </p>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </>
+                          ))}
+                        </div>
+                      )}
+                      {review.evidence && (
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          Evidence: {review.evidence}
+                        </p>
+                      )}
+                      {review.limitations && (
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          Limitations: {review.limitations}
+                        </p>
+                      )}
+                      {review.issue_url && (
+                        <a
+                          href={review.issue_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-1 inline-block text-xs text-primary hover:underline"
+                        >
+                          View on GitHub
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               )
             ) : (
               <p className="text-sm text-muted-foreground">

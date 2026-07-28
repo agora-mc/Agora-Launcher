@@ -1072,6 +1072,44 @@ export const getCuratedAnnotation = (modrinthId: string) =>
 
 // --- Governance / Triage ---
 
+export interface GovernanceConfig {
+  repository: string;
+  environment: 'production' | 'sandbox';
+  github_app_slug: string | null;
+  development_registry: boolean;
+}
+
+export interface GovernanceSummary {
+  item_id: string;
+  vote_issue_number: number | null;
+  vote_issue_url: string | null;
+  raw_upvotes: number;
+  raw_downvotes: number;
+  counted_upvotes: number;
+  counted_downvotes: number;
+  quarantined_upvotes: number;
+  quarantined_downvotes: number;
+  conflicted_users: number;
+  status_reason: string | null;
+  compiled_at: string;
+}
+
+export interface GovernanceEvent {
+  event_id: string;
+  item_id: string | null;
+  event_type: string;
+  status: string;
+  detected_at: string;
+  affected_reactions: number;
+  details_json: string | null;
+}
+
+export interface DiagnosticCheck {
+  id: string;
+  status: 'pass' | 'warning' | 'fail';
+  message: string;
+}
+
 export interface UnderReviewItem {
   id: string;
   name: string;
@@ -1085,6 +1123,14 @@ export interface ModReview {
   text: string;
   issue_number: number;
   created_at: string | null;
+  item_version?: string | null;
+  minecraft_version?: string | null;
+  loader?: string | null;
+  relationship?: string | null;
+  focus?: string[];
+  evidence?: string | null;
+  limitations?: string | null;
+  issue_url?: string | null;
 }
 
 export interface TriagePoll {
@@ -1093,13 +1139,19 @@ export interface TriagePoll {
   remove_votes: number;
 }
 
-export interface FlagRateLimit {
-  remaining_hour: number;
-  remaining_day: number;
-  reset_hour_at_unix: number;
-  reset_day_at_unix: number;
-  can_flag: boolean;
-}
+export const getGovernanceConfig = () =>
+  invoke<GovernanceConfig | null>('get_governance_config');
+
+export const getGovernanceSummary = (itemId: string) =>
+  invoke<GovernanceSummary | null>('get_governance_summary', { itemId });
+
+export const listGovernanceEvents = (itemId: string | null) =>
+  invoke<GovernanceEvent[]>('list_governance_events', {
+    itemId,
+  });
+
+export const runGovernanceDiagnostics = () =>
+  invoke<DiagnosticCheck[]>('run_governance_diagnostics');
 
 export const listUnderReviewItems = () =>
   invoke<UnderReviewItem[]>('list_under_review_items');
@@ -1112,18 +1164,6 @@ export const listModReviews = (itemId: string) =>
 
 export const fetchTriagePoll = (modId: string) =>
   invoke<TriagePoll>('fetch_triage_poll', { modId });
-
-export const flagReview = (params: {
-  modId: string;
-  modName: string;
-  issueNumber: number;
-  author: string;
-  quotedText: string;
-  reporterLogin: string;
-}) => invoke<string>('flag_review', params);
-
-export const getFlagRateLimit = () =>
-  invoke<FlagRateLimit>('get_flag_rate_limit');
 
 // --- Crash Investigation (guided isolation) ---
 

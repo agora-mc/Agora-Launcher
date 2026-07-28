@@ -13,6 +13,7 @@ import { ModDetail } from './pages/ModDetail';
 import { InstanceEditor } from './pages/InstanceEditor';
 import { getInstanceDetail, getSetting } from './lib/tauri';
 import { OfflineBanner } from './components/offline-banner';
+import { SandboxBanner } from './components/sandbox-banner';
 import { HealthDialog } from './components/HealthDialog';
 import { CrashInvestigator } from './components/CrashInvestigator';
 import { ToastContainer } from './components/Toast';
@@ -399,6 +400,7 @@ export default function App() {
     <PackInstallProvider>
       <div className="flex h-screen w-screen overflow-hidden">
         <OfflineBanner />
+        <SandboxBanner />
         <Sidebar
           tabs={tabs}
           activeTab={effectiveTab}
