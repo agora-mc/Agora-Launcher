@@ -1,0 +1,74 @@
+# .kilocodeignore — files Kilo Code should not access or index.
+# Standard .gitignore syntax. Patterns are relative to the repo root.
+#
+# Purpose: the semantic-search index was being flooded by huge generated/data
+# files (loader manifests, lock files, generated Tauri schemas, audit-log
+# archives), so agent searches on any Minecraft-domain query returned only
+# noise. Listing those files here drops them from the index.
+#
+# TRADEOFF: a path listed here becomes UNREADABLE and UNEDITABLE by agents
+# (IgnoreMigrator turns these into read/edit deny rules). If an agent needs a
+# listed file — most notably the two loader-manifest JSONs during loader
+# curation — temporarily comment that line out for that session.
+
+# --- Build output, dependencies, caches (carried over from .gitignore) -----
+.venv
+node_modules
+target
+dist
+.next
+*.tsbuildinfo
+*.log
+.DS_Store
+__pycache__
+.env
+.env.*
+!.env.example
+playwright-report/
+test-results/
+local_state.db
+registry.db
+registry.db.sig
+*.db
+*.db.sig
+tokens.enc
+.cache
+.pnpm-store
+.idea
+
+# --- Local caches / editor / CI dirs (not source) --------------------------
+.pytest_cache
+.codex-kilo
+.vscode
+
+# --- Large generated data that drowns out real code in semantic search ----
+
+# Loader manifest bulk data: tens of thousands of installer URLs + hash lists.
+# NOTE: deny edit here blocks loader curation — comment out when pinning a
+# new loader version, then re-enable.
+loader-manifests/loader_manifests.json
+loader-manifests/known_good_hashes.json
+
+# Generated Tauri capability/schema JSON (build output, never hand-edited).
+desktop/src-tauri/gen/
+
+# Governance audit-log archives (transactional history, not source).
+registry/governance/audit_log_archive.*.json
+
+# --- Dependency lock files (no semantic value; agents should grep, not read) 
+*.lock
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+
+# --- Native build artifacts / binaries (never source; some are hundreds of MB)
+*.pdb
+*.rlib
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.o
