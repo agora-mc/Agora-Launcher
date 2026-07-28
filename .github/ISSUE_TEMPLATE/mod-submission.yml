@@ -1,110 +1,177 @@
-name: "Submit a Mod"
-description: "Propose a new mod or asset for the curated registry."
-title: "[MOD] "
+name: "Propose a Project for the Registry"
+description: "Suggest a mod, pack, shader, resource pack, datapack, server, or world for Agora curation."
+title: "[SUBMISSION] "
+labels:
+  - "registry-submission"
 body:
   - type: markdown
     attributes:
       value: |
-        ### 📋 Mod Submission Form
-        Please fill every required field accurately. All submissions are reviewed by curators before merging.
+        ## Propose an upstream project
+
+        This form begins the curation process. It does **not** directly add content to Agora.
+
+        Submit the official project and source links you know. Accepted submissions are converted into manifests by curators or tooling. Curators determine the final registry ID, download strategy, hashes, package identities, compatibility records, and curator note.
+
+        Before submitting, search existing issues and the registry to avoid duplicates.
+
   - type: input
-    id: mod_id
+    id: project_name
     attributes:
-      label: "Registry ID"
-      description: "Lowercase, hyphenated unique slug."
-      placeholder: "e.g., my-new-mod"
+      label: "Project or asset name"
+      placeholder: "Sodium"
     validations:
       required: true
-  - type: input
-    id: name
-    attributes:
-      label: "Display Name"
-      placeholder: "e.g., My New Mod"
-    validations:
-      required: true
+
   - type: dropdown
     id: content_type
     attributes:
-      label: "Content Type"
+      label: "Content type"
       options:
-        - mod
-        - pack
-        - shader
-        - resourcepack
-        - server
-        - datapack
-        - world
+        - "Mod"
+        - "Modpack"
+        - "Shader pack"
+        - "Resource pack"
+        - "Datapack"
+        - "Server"
+        - "World"
+        - "Other"
     validations:
       required: true
+
   - type: input
     id: author
     attributes:
-      label: "Author or Organization"
+      label: "Author or organization"
+      description: "Use the name shown on the official project page."
+      placeholder: "CaffeineMC"
     validations:
       required: true
-  - type: input
-    id: license
-    attributes:
-      label: "License (SPDX identifier)"
-      placeholder: "e.g., LGPL-3.0, MIT, Apache-2.0"
-    validations:
-      required: true
+
   - type: dropdown
-    id: download_strategy
+    id: relationship
     attributes:
-      label: "Download Strategy"
-      description: "github_release is preferred; modrinth_id is a supplementary fallback."
+      label: "Your relationship to the project"
       options:
-        - github_release
-        - modrinth_id
-        - direct_hash
+        - "Independent user"
+        - "Pack developer or server administrator"
+        - "Contributor"
+        - "Maintainer or author"
+        - "Other disclosed relationship"
     validations:
       required: true
+
   - type: input
-    id: source_identifier
+    id: project_page
     attributes:
-      label: "Source Identifier"
-      description: "GitHub owner/repo, Modrinth project ID, or direct URL."
+      label: "Official project page"
+      description: "Prefer the project's official website, Modrinth page, or other primary distribution page."
+      placeholder: "https://modrinth.com/mod/sodium"
     validations:
       required: true
+
+  - type: input
+    id: source_repository
+    attributes:
+      label: "Source-code repository"
+      description: "Provide the official repository when the project is open source."
+      placeholder: "https://github.com/CaffeineMC/sodium"
+
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: "Known official distribution sources"
+      multiple: true
+      options:
+        - "GitHub Releases"
+        - "Modrinth"
+        - "Official project website"
+        - "CurseForge"
+        - "Other"
+    validations:
+      required: true
+
   - type: input
     id: modrinth_id
     attributes:
-      label: "Modrinth Project ID (if applicable)"
+      label: "Modrinth project ID or slug"
+      description: "Optional. This is the project ID/slug, not a version ID."
+      placeholder: "sodium"
+
   - type: input
-    id: sha256
+    id: license
     attributes:
-      label: "SHA-256 Hash"
-      description: "Required for direct_hash. Leave blank for github_release/modrinth_id to let the compiler populate it."
-  - type: textarea
-    id: package_signatures
-    attributes:
-      label: "Java Package Signatures"
-      description: "One package prefix per line."
-      placeholder: "com.example.mymod\nnet.example.mod"
+      label: "License"
+      description: "Use the SPDX identifier when known, otherwise link to or name the license shown upstream."
+      placeholder: "LGPL-3.0-only"
     validations:
       required: true
+
   - type: textarea
-    id: categories
+    id: supported_versions
     attributes:
-      label: "Categories"
-      description: "Comma-separated list of base and community categories."
-      placeholder: "optimization, rendering, client-only"
+      label: "Known Minecraft versions and loaders"
+      description: "A concise summary is enough. Curators will verify this against upstream metadata."
+      placeholder: |
+        Minecraft: 1.20.1, 1.21.1
+        Loaders/platforms: Fabric, Quilt
     validations:
       required: true
-  - type: textarea
-    id: curator_note
+
+  - type: dropdown
+    id: side
     attributes:
-      label: "Curator Note"
-      description: "Technical summary, compatibility notes, and why this belongs in the registry."
+      label: "Where does it run?"
+      options:
+        - "Client only"
+        - "Server only"
+        - "Client and server"
+        - "Data/resource content with no loader"
+        - "Unknown"
     validations:
       required: true
-  - type: input
-    id: icon_url
-    attributes:
-      label: "Icon URL"
+
   - type: textarea
-    id: gallery_urls
+    id: inclusion_reason
     attributes:
-      label: "Gallery URLs"
-      description: "One URL per line."
+      label: "Why should Agora curate this project?"
+      description: "Explain the project's technical value, distinct purpose, maturity, or importance. Avoid popularity-only arguments."
+      placeholder: "Describe what the project contributes and why it would improve Agora's curated catalog."
+    validations:
+      required: true
+
+  - type: textarea
+    id: technical_notes
+    attributes:
+      label: "Technical experience or evidence"
+      description: "Describe first-hand testing, benchmarks, deployment history, or other evidence supporting the proposal."
+      placeholder: |
+        Versions tested:
+        Environment:
+        Notable strengths:
+        Evidence or links:
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: "Known limitations, conflicts, or concerns"
+      description: "Disclose known incompatibilities, abandoned status, invasive behavior, licensing concerns, security history, or other curation-relevant caveats."
+      placeholder: "Write `None known` when you are unaware of any."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: "Submission confirmation"
+      options:
+        - label: "I searched the registry and open submissions for duplicates."
+          required: true
+        - label: "The links above are official upstream sources to the best of my knowledge."
+          required: true
+        - label: "I disclosed my relationship to the project and any known material concerns."
+          required: true
+        - label: "I understand that curators may reject, revise, or request more evidence before adding the project."
+          required: true

@@ -27,6 +27,15 @@ from typing import Any
 
 import requests
 
+from governance import (
+    GovernanceMode,
+    GovernancePolicy,
+    enrich_governance_tables,
+    enrich_registry_item_scores,
+    resolve_governance_repo,
+    run_governance_pipeline,
+)
+
 # Optional signing dependency. The compiler will refuse to produce a real
 # signature unless PyNaCl is installed and ED25519_PRIVATE_KEY is configured.
 try:
@@ -39,6 +48,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_DIR = REPO_ROOT / "registry"
 CRASH_SIGNATURES_DIR = REPO_ROOT / "crash-signatures"
 LOADER_MANIFESTS_DIR = REPO_ROOT / "loader-manifests"
+
+# Set by main() from --governance-repo; read by _get_registry_repo()
+_CLI_GOVERNANCE_REPO: str | None = None
+_CLI_GOVERNANCE_MODE: str = "read-only"
+_CLI_GOVERNANCE_POLICY: str = "production"
+_CLI_STATE_IN: str | None = None
+_CLI_STATE_OUT: str | None = None
+_CLI_REGISTRY_ROOT: str | None = None
 
 # ---------------------------------------------------------------------------
 # Regex DoS protection (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§2.4.1)
@@ -129,14 +146,21 @@ _load_dotenv(REPO_ROOT / ".env")
 # GITHUB_REPOSITORY is auto-set to "owner/repo" and used as fallback.
 GITHUB_API_BASE = "https://api.github.com"
 def _get_registry_repo() -> str:
-    """Return the 'owner/repo' string for the registry/governance repo."""
+    """Return the 'owner/repo' string for the registry/governance repo.
+
+    Resolution: CLI --governance-repo > AGORA_GOVERNANCE_REPO >
+    AGORA_REGISTRY_REPO > GITHUB_REPOSITORY.
+    """
     repo = (
-        os.environ.get("AGORA_REGISTRY_REPO")
+        _CLI_GOVERNANCE_REPO
+        or os.environ.get("AGORA_GOVERNANCE_REPO")
+        or os.environ.get("AGORA_REGISTRY_REPO")
         or os.environ.get("GITHUB_REPOSITORY")
     )
     if not repo:
         raise RuntimeError(
-            "AGORA_REGISTRY_REPO or GITHUB_REPOSITORY must be set to owner/repository"
+            "AGORA_REGISTRY_REPO, AGORA_GOVERNANCE_REPO, or GITHUB_REPOSITORY "
+            "must be set to owner/repository"
         )
     return repo
 GITHUB_REACTION_UPVOTES = {"+1"}
@@ -1571,7 +1595,7 @@ logger = logging.getLogger("compiler")
 # Schema setup
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 CREATE_INDEXES = [
@@ -1740,6 +1764,39 @@ def create_tables(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # Schema 7: governance_summary per-mod governance overview.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS governance_summary (
+            item_id TEXT PRIMARY KEY,
+            vote_issue_number INTEGER,
+            vote_issue_url TEXT,
+            raw_upvotes INTEGER NOT NULL DEFAULT 0,
+            raw_downvotes INTEGER NOT NULL DEFAULT 0,
+            counted_upvotes INTEGER NOT NULL DEFAULT 0,
+            counted_downvotes INTEGER NOT NULL DEFAULT 0,
+            quarantined_upvotes INTEGER NOT NULL DEFAULT 0,
+            quarantined_downvotes INTEGER NOT NULL DEFAULT 0,
+            conflicted_users INTEGER NOT NULL DEFAULT 0,
+            status_reason TEXT,
+            compiled_at TEXT NOT NULL,
+            FOREIGN KEY (item_id) REFERENCES registry_items(id)
+        )
+    """)
+
+    # Schema 7: governance_events ordered event log per mod.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS governance_events (
+            event_id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            detected_at TEXT NOT NULL,
+            affected_reactions INTEGER NOT NULL,
+            details_json TEXT,
+            FOREIGN KEY (item_id) REFERENCES registry_items(id)
+        )
+    """)
+
     # Pack membership: which mods belong to which curated packs.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pack_mods (
@@ -1901,10 +1958,21 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
         or default_compatible_versions(item)
     )
 
-    # Pass 2: pull computed social metrics when present. Immune items
-    # (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§3.1 step 9) bypass score evaluation ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â upvotes/downvotes/net_score
-    # are zero, status is "active", immunity_cooldown_until stays None.
-    if is_immune:
+    # Governance-enriched scores take precedence over social metrics.
+    # Governance module provides upvotes/downvotes/net_score via
+    # enrich_registry_item_scores (called before insertion).
+    _gov_upvotes = item.get("_governance_counted_upvotes")
+    _gov_downvotes = item.get("_governance_counted_downvotes")
+    _gov_net_score = item.get("_governance_net_score")
+    _gov_status = item.get("_governance_status")
+
+    if _gov_upvotes is not None:
+        _upvotes = _gov_upvotes
+        _downvotes = _gov_downvotes or 0
+        _net_score = _gov_net_score or 0
+        _velocity = 0.0
+        _status = _gov_status or "active"
+    elif is_immune:
         _upvotes = 0
         _downvotes = 0
         _net_score = 0
@@ -1969,10 +2037,13 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
         ),
     )
 
-    # Curator note.
+    # Curator note with governance top reviews enrichment.
     social = item.get("_social_metrics")
+    gov_top = item.get("_governance_top_reviews")
     scrubbed_reviews: list[dict[str, Any]] = []
-    if social is not None and hasattr(social, "scrubbed_reviews"):
+    if gov_top is not None:
+        scrubbed_reviews = gov_top
+    elif social is not None and hasattr(social, "scrubbed_reviews"):
         scrubbed_reviews = social.scrubbed_reviews
     cursor.execute(
         """
@@ -2680,8 +2751,17 @@ def compile_registry(
     output_path: Path,
     skip_sign: bool,
     no_governance_write: bool = False,
+    governance_mode_str: str | None = None,
+    governance_policy_str: str | None = None,
+    governance_repo_cli: str | None = None,
+    registry_root: str | None = None,
+    state_in_path: Path | None = None,
+    state_out_path: Path | None = None,
 ) -> None:
     """Build the SQLite registry database at *output_path*."""
+    global REGISTRY_DIR
+    if registry_root:
+        REGISTRY_DIR = Path(registry_root).resolve()
     logger.info("Starting nightly compile")
 
     conn = sqlite3.connect(":memory:")
@@ -2719,48 +2799,71 @@ def compile_registry(
     # lack it in the manifest (in-place, with manifest/override precedence).
     _hydrate_modrinth_versions([item for _, item in all_items])
 
-    # Hydrate GitHub social metrics (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§3.1 step 3; Pass 1: raw reactions only
-    # ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â trust filter, Sybil weighting, velocity circuit breaker, immune
-    # passthrough, and DB INSERT update arrive in Pass 2). On missing
-    # GITHUB_TOKEN this is a silent no-op (items stay metric-free ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ zeros).
-    _hydrate_github_social_metrics([item for _, item in all_items])
+    # Governance pipeline (replaces legacy Pass 1/2/3).
+    # v1 safety: GitHub reads only; NEVER mutates GitHub in any mode.
+    # When governance mode is not OFF, legacy Pass 1/2 are skipped.
+    _governance_mode: GovernanceMode = GovernanceMode.READ_ONLY
+    _governance_policy: GovernancePolicy = GovernancePolicy.PRODUCTION
+    if governance_mode_str:
+        try:
+            _governance_mode = GovernanceMode(governance_mode_str)
+        except ValueError:
+            logger.warning("Unknown governance mode '%s'; using read-only.", governance_mode_str)
+    if governance_policy_str:
+        try:
+            _governance_policy = GovernancePolicy(governance_policy_str)
+        except ValueError:
+            logger.warning("Unknown governance policy '%s'; using production.", governance_policy_str)
 
-    # Pass 2: apply ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§3.1 steps 4 (trust + Sybil), 5 (velocity circuit breaker),
-    # and 9 (immune passthrough) to compute final upvotes / downvotes /
-    # net_score / velocity / status from the raw reactions Pass 1 attached.
-    # When GITHUB_TOKEN is unset this is a no-op (metrics stay at defaults).
     _gh_token = _load_github_token()
-    if _gh_token:
+    _governance_repo = resolve_governance_repo(governance_repo_cli)
+    _registry_root_for_gov = REGISTRY_DIR
+    _vote_issues_path = _registry_root_for_gov / "governance" / "vote_issues.json"
+    _gov_state_in = state_in_path if state_in_path else None
+    _gov_state_out = state_out_path or _registry_root_for_gov / "governance" / "governance-state.json"
+    _quarantine_path = _registry_root_for_gov / "governance" / "quarantine_decisions.json"
+    _discord_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    _use_governance = _governance_mode != GovernanceMode.OFF
+
+    _governance_results: dict[str, Any] = {}
+    if _use_governance and _gh_token:
+        _blacklist = _load_poll_blacklist()
+        _governance_results = run_governance_pipeline(
+            [item for _, item in all_items],
+            mode=_governance_mode,
+            policy=_governance_policy,
+            governance_repo=_governance_repo,
+            token=_gh_token,
+            blacklist=_blacklist,
+            vote_issues_path=_vote_issues_path,
+            governance_state_in_path=_gov_state_in,
+            governance_state_out_path=_gov_state_out,
+            quarantine_decisions_path=_quarantine_path,
+            discord_webhook_url=_discord_url,
+        )
+        logger.info(
+            "Governance pipeline complete: mode=%s, policy=%s, results=%d items",
+            _governance_mode.value, _governance_policy.value,
+            len([k for k in _governance_results if not k.startswith("_")]),
+        )
+    elif _use_governance:
+        logger.info("GITHUB_TOKEN not set; governance pipeline skipped.")
+    else:
+        logger.info("Governance mode=off; legacy Pass 1/2 also skipped.")
+
+    # Legacy Pass 1/2: only run when governance is OFF (preserving original behavior).
+    if not _use_governance and _gh_token:
+        _hydrate_github_social_metrics([item for _, item in all_items])
         _blacklist = _load_poll_blacklist()
         _apply_trust_velocity_pass(
             [item for _, item in all_items],
             token=_gh_token,
             blacklist=_blacklist,
         )
-    # Immune items have their `_social_metrics` removed by Pass 2; non-immune
-    # items with no matching governance issue also have no metrics ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â both
-    # fall through to the default (0, 0, 0, 0.0, "active") path in insert_registry_item.
 
-    # Pass 3 (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§3.2 Raid Shield + ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§3.1 steps 5 organic-trigger, 6 DELETE +
-    # admin-alert, 8 create triage poll + resolve expired polls). Runs only
-    # when GITHUB_TOKEN is present.
-    if _gh_token and not no_governance_write:
-        gov_full = _get_registry_repo()
-        _owner, _, _repo = gov_full.partition("/")
-        if _owner and _repo:
-            _respond_to_circuit_breaker(
-                [item for _, item in all_items],
-                token=_gh_token, owner=_owner, repo=_repo,
-            )
-            _resolve_expired_triage_polls(
-                _owner, _repo,
-                items=[item for _, item in all_items],
-                token=_gh_token,
-            )
-        else:
-            logger.warning("AGORA_REGISTRY_REPO='%s' invalid; skipping Pass 3 responses.", gov_full)
-    elif _gh_token:
-        logger.info("--no-governance-write set; skipping governance response actions.")
+    # Enrich items with governance scores before insertion.
+    for _path, data in all_items:
+        enrich_registry_item_scores(data, _governance_results)
 
     # Insert items, handling pack-specific fields.
     mod_count = 0
@@ -2790,6 +2893,12 @@ def compile_registry(
             else:
                 other_count += 1
     logger.info("Inserted %d mod(s), %d pack(s), %d other item(s)", mod_count, pack_count, other_count)
+
+    # Enrich governance_summary and governance_events tables.
+    try:
+        enrich_governance_tables(conn, _governance_results)
+    except Exception as exc:
+        logger.warning("Failed to enrich governance tables: %s", exc)
 
     # Crash signatures.
     sig_count = 0
@@ -2841,8 +2950,8 @@ def compile_registry(
         audit_data = {"log_format_version": 1, "entries": []}
     if "log_format_version" not in audit_data:
         audit_data["log_format_version"] = 1
-    if no_governance_write:
-        logger.info("--no-governance-write set; leaving audit log unchanged.")
+    if no_governance_write or _governance_mode != GovernanceMode.MONITOR:
+        logger.info("Governance mode does not permit state output; leaving audit log unchanged.")
     else:
         audit_log_path.parent.mkdir(parents=True, exist_ok=True)
         new_entry = {
@@ -3140,13 +3249,69 @@ def main() -> None:
     parser.add_argument(
         "--no-governance-write",
         action="store_true",
-        help="Do not append or rotate governance audit data or perform response actions",
+        help="Do not append or rotate governance audit data or perform response actions (legacy, use --governance-mode instead)",
+    )
+    parser.add_argument(
+        "--registry-root",
+        type=str,
+        default=None,
+        help="Root directory for registry manifests (default: registry/)",
+    )
+    parser.add_argument(
+        "--governance-repo",
+        type=str,
+        default=None,
+        help="GitHub owner/repo for governance issues (CLI > AGORA_GOVERNANCE_REPO > AGORA_REGISTRY_REPO > GITHUB_REPOSITORY)",
+    )
+    parser.add_argument(
+        "--governance-policy",
+        type=str,
+        choices=["production", "sandbox"],
+        default="production",
+        help="Governance policy: production (account age 30d, raid 5/360m) or sandbox (age 0, raid 3/10m)",
+    )
+    parser.add_argument(
+        "--governance-mode",
+        type=str,
+        choices=["off", "read-only", "monitor"],
+        default="read-only",
+        help="Governance mode: off (no reads), read-only (reads + state, no mutations, no Discord), "
+             "monitor (reads + state + Discord, no mutations)",
+    )
+    parser.add_argument(
+        "--governance-state-in",
+        type=str,
+        default=None,
+        help="Path to input governance-state.json (optional; missing = fresh state)",
+    )
+    parser.add_argument(
+        "--governance-state-out",
+        type=str,
+        default=None,
+        help="Path to output governance-state.json (default: registry_root/governance/governance-state.json)",
     )
     args = parser.parse_args()
+
+    # Propagate CLI values to module-level globals for _get_registry_repo.
+    global _CLI_GOVERNANCE_REPO, _CLI_GOVERNANCE_MODE, _CLI_GOVERNANCE_POLICY
+    global _CLI_STATE_IN, _CLI_STATE_OUT, _CLI_REGISTRY_ROOT
+    _CLI_GOVERNANCE_REPO = args.governance_repo
+    _CLI_GOVERNANCE_MODE = args.governance_mode
+    _CLI_GOVERNANCE_POLICY = args.governance_policy
+    _CLI_STATE_IN = args.governance_state_in
+    _CLI_STATE_OUT = args.governance_state_out
+    _CLI_REGISTRY_ROOT = args.registry_root
+
     compile_registry(
         args.out,
         skip_sign=args.skip_sign,
         no_governance_write=args.no_governance_write,
+        governance_mode_str=args.governance_mode,
+        governance_policy_str=args.governance_policy,
+        governance_repo_cli=args.governance_repo,
+        registry_root=args.registry_root,
+        state_in_path=Path(args.governance_state_in) if args.governance_state_in else None,
+        state_out_path=Path(args.governance_state_out) if args.governance_state_out else None,
     )
 
 

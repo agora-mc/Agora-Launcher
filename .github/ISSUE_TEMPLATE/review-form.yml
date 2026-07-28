@@ -1,40 +1,124 @@
-name: "Submit a Mod Review"
-description: "Leave a professional technical review for a curated asset."
+name: "Review a Curated Project"
+description: "Share a focused technical review of an item already in Agora's curated registry."
+title: "[REVIEW] "
+labels:
+  - "community-review"
 body:
   - type: markdown
     attributes:
       value: |
-        > **📜 Platform Code of Engagement**
-        >
-        > This platform is a curated asset repository, not a general discussion forum or social media feed. We built this ecosystem to keep modding open, high-quality, and hyper-focused.
-        >
-        > **Rules of Engagement (Zero Tolerance):**
-        > - Comments must strictly address the technical performance, stability, features, or usability of the mod or asset in question.
-        > - No memes, no off-topic banter, no update-begging ("1.21 when?"), no philosophical discussions.
-        > - No cultural, political, or social drama. Leave it at the door.
-        > - No aggression, entitlement, or personal attacks against mod creators or curators.
-        > - Violations result in immediate and permanent removal from the registry's review system.
-        >
-        > If you want to socialize, share memes, or debate off-topic things, visit our community spaces instead:
-        > 🔗 [Project Discord] | 🔗 [Project Matrix/Lemmy]
+        ## Technical reviews only
+
+        Use this form for first-hand, technically useful feedback about an item already present in Agora's curated registry.
+
+        Good reviews discuss performance, stability, compatibility, features, configuration, or usability. Do not use this form for support requests, update requests, personal disputes, or general conversation.
+
+        **Voting is separate:** reactions on this review do not count as registry votes. Use the item's canonical Agora voting issue when available.
+
   - type: input
-    id: mod_id
+    id: registry_item_id
     attributes:
-      label: "Mod Registry ID"
-      placeholder: "e.g., sodium"
+      label: "Registry Item ID"
+      description: "The exact Agora registry ID shown on the item's details page, such as `sodium`."
+      placeholder: "sodium"
     validations:
       required: true
+
+  - type: input
+    id: item_version
+    attributes:
+      label: "Project version tested"
+      description: "The exact mod, pack, shader, resource pack, datapack, or world version you used."
+      placeholder: "0.6.13+mc1.21.1"
+    validations:
+      required: true
+
+  - type: input
+    id: minecraft_version
+    attributes:
+      label: "Minecraft version"
+      placeholder: "1.21.1"
+    validations:
+      required: true
+
+  - type: input
+    id: loader
+    attributes:
+      label: "Loader or platform"
+      description: "Examples: Fabric 0.16.14, NeoForge 21.1.200, vanilla, client-only resource pack."
+      placeholder: "Fabric 0.16.14"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: relationship
+    attributes:
+      label: "Your relationship to this project"
+      description: "Disclose whether you are connected to the project."
+      options:
+        - "Independent user"
+        - "Pack developer or server administrator"
+        - "Contributor"
+        - "Maintainer or author"
+        - "Other disclosed relationship"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: review_focus
+    attributes:
+      label: "Review focus"
+      description: "Select every area your review substantially covers."
+      multiple: true
+      options:
+        - "Performance"
+        - "Stability"
+        - "Compatibility"
+        - "Features"
+        - "Configuration"
+        - "Usability"
+        - "Documentation"
+        - "Accessibility"
+        - "Other technical concern"
+    validations:
+      required: true
+
   - type: textarea
     id: review_text
     attributes:
-      label: "Your Technical Review (50 character minimum)"
-      placeholder: "Describe your experience with this asset's performance, stability, or features..."
+      label: "Your Technical Review"
+      description: "Provide at least 100 characters of specific, first-hand technical feedback. The compiler should enforce this minimum."
+      placeholder: |
+        Explain what you tested, what worked or failed, and under what conditions.
+        Prefer concrete observations over general praise or criticism.
     validations:
       required: true
-  - type: checkboxes
-    id: guidelines_check
+
+  - type: textarea
+    id: evidence
     attributes:
-      label: "Community Affirmation"
+      label: "Supporting evidence"
+      description: "Optional benchmarks, logs, reproduction steps, configuration details, screenshots, or links. Remove secrets and personal information."
+      placeholder: |
+        Hardware:
+        Relevant mods or configuration:
+        Reproduction steps:
+        Benchmark or log excerpt:
+
+  - type: textarea
+    id: limitations
+    attributes:
+      label: "Known limitations or conflicts"
+      description: "Optional. Note any conflicts, caveats, or conditions that materially affected your experience."
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: "Review confirmation"
       options:
-        - label: "I confirm this review contains no toxic language, version begging, memes, or off-topic commentary."
+        - label: "I personally tested the project/version described above, or clearly disclosed my relationship and basis for the review."
+          required: true
+        - label: "This review is technical and contains no harassment, memes, version begging, promotional spam, or off-topic commentary."
+          required: true
+        - label: "I removed access tokens, private logs, personal information, and other secrets from any evidence."
           required: true

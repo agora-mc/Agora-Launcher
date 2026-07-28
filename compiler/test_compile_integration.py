@@ -32,7 +32,14 @@ class _CompileFixtures(unittest.TestCase):
         repo_root = os.path.dirname(os.path.dirname(__file__))
         compile_script = os.path.join(repo_root, "compiler", "compile.py")
         result = subprocess.run(
-            [sys.executable, compile_script, "--skip-sign"],
+            [
+                sys.executable,
+                compile_script,
+                "--skip-sign",
+                "--governance-mode",
+                "off",
+                "--no-governance-write",
+            ],
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -166,15 +173,15 @@ class TestSchemaVersion(_CompileFixtures):
     """Test 9: schema_version is 6."""
 
     def test_schema_version(self):
-        """SELECT version FROM schema_version should return 6."""
+        """SELECT version FROM schema_version should return 7."""
         conn = self._open_db()
         try:
             row = conn.execute(
                 "SELECT version FROM schema_version"
             ).fetchone()
             self.assertIsNotNone(row, "schema_version table has no rows")
-            self.assertEqual(row[0], 6,
-                             f"Expected schema_version=6, got {row[0]}")
+            self.assertEqual(row[0], 7,
+                             f"Expected schema_version=7, got {row[0]}")
         finally:
             conn.close()
 
@@ -238,6 +245,36 @@ class TestFabricApiManualDeps(_CompileFixtures):
             # required_json is a flat JSON array of loader names.
             self.assertIn("fabricloader", required,
                           f"Expected 'fabricloader' in {required}")
+        finally:
+            conn.close()
+
+
+class TestGovernanceSummaryTable(_CompileFixtures):
+    """Test 13: governance_summary table exists."""
+
+    def test_governance_summary_table_exists(self):
+        """governance_summary should be queryable."""
+        conn = self._open_db()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM governance_summary"
+            ).fetchone()
+            self.assertIsNotNone(row)
+        finally:
+            conn.close()
+
+
+class TestGovernanceEventsTable(_CompileFixtures):
+    """Test 14: governance_events table exists."""
+
+    def test_governance_events_table_exists(self):
+        """governance_events should be queryable."""
+        conn = self._open_db()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM governance_events"
+            ).fetchone()
+            self.assertIsNotNone(row)
         finally:
             conn.close()
 

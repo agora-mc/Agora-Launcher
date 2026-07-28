@@ -2475,6 +2475,14 @@ ead_mod_manifest, enable_mod, search_knowledge_base) per E2 superset.
 
 **Required tests.** Pure unit: classify_launch outcomes, promote_to_lkg failure rejection, compute_diff symmetry, lockfile canonicalization round-trip, detect_drift, retention_plan boundary. Integration: pre-change snapshot on install, lkg.json written on success, crash does not overwrite, restore transactionality. E2E: snapshot → launch → promote → diff → restore → content hash match; export lockfile → import → verify → reject tampered lockfile.
 
+### 19.16 Governance Sandbox and Persistent Vote Quarantine
+
+Production registry and governance data remain in the main Agora repository by default. The compiler may explicitly target a separate governance repository and registry fixture root for sandbox testing; compiler code remains exclusively in the main repository. Governance repository resolution is `--governance-repo`, `AGORA_GOVERNANCE_REPO`, `AGORA_REGISTRY_REPO`, then `GITHUB_REPOSITORY`.
+
+Compiler governance modes are `off`, `read-only`, and `monitor`. All modes are non-mutating with respect to GitHub. `monitor` may write persistent local governance state and send deduplicated Discord alerts for new, expanded, or resolved quarantine events. Review Issues are identified only by the `community-review` label. Votes are read only from direct `+1` and `-1` reactions on canonical Issues mapped in `registry/governance/vote_issues.json`; review and comment reactions never count.
+
+Schema 7 adds per-item `governance_summary` and persistent `governance_events` tables while retaining final counted values and compatibility fields on `registry_items`. Pending and rejected reaction IDs remain excluded across compiles; an accepted curator decision restores them. The desktop supports schema 6 fallback, compile-time production/sandbox governance configuration, read-only diagnostics, and a debug-only validated `AGORA_DEV_REGISTRY_DB` override. The v1 review-report/admin-alert path is removed.
+
 ---
 
 ### 19.15 Content-Addressed Recovery Snapshots
