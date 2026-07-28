@@ -2819,8 +2819,8 @@ def compile_registry(
     _governance_repo = resolve_governance_repo(governance_repo_cli)
     _registry_root_for_gov = REGISTRY_DIR
     _vote_issues_path = _registry_root_for_gov / "governance" / "vote_issues.json"
-    _gov_state_in = state_in_path if state_in_path else None
-    _gov_state_out = state_out_path or _registry_root_for_gov / "governance" / "governance-state.json"
+    _gov_state_out = state_out_path or REPO_ROOT / "governance-state.json"
+    _gov_state_in = state_in_path or (_gov_state_out if _gov_state_out.exists() else None)
     _quarantine_path = _registry_root_for_gov / "governance" / "quarantine_decisions.json"
     _discord_url = os.environ.get("DISCORD_WEBHOOK_URL")
     _use_governance = _governance_mode != GovernanceMode.OFF
