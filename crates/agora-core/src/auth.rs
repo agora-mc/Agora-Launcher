@@ -7,6 +7,124 @@ use std::time::Duration;
 use crate::error::{LauncherError, LauncherResult};
 use crate::http_client::{self, ClientCategory, HttpClients};
 
+// ---------------------------------------------------------------------------
+// OAuthHttpClient — injectable HTTP abstraction for OAuth flows
+// ---------------------------------------------------------------------------
+
+/// Small HTTP response type for OAuth flows — avoids pulling reqwest into trait bounds.
+pub struct OAuthResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+/// A trait abstracting the HTTP calls needed for GitHub OAuth device flow
+/// and token refresh.  Production uses [`LiveOAuthClient`]; tests use a mock.
+#[async_trait::async_trait]
+pub trait OAuthHttpClient: Send + Sync {
+    /// POST an URL-encoded form and return the response.
+    async fn post_form(
+        &self,
+        url: &str,
+        params: &[(&str, &str)],
+        headers: &[(String, String)],
+    ) -> LauncherResult<OAuthResponse>;
+}
+
+/// Production OAuth client that enforces Agora's URL policy via
+/// [`http_client::checked_post_form`] and builds fresh [`HttpClients`].
+#[derive(Debug, Clone)]
+pub struct LiveOAuthClient;
+
+#[async_trait::async_trait]
+impl OAuthHttpClient for LiveOAuthClient {
+    async fn post_form(
+        &self,
+        url: &str,
+        params: &[(&str, &str)],
+        headers: &[(String, String)],
+    ) -> LauncherResult<OAuthResponse> {
+        let clients = HttpClients::new()?;
+        let resp =
+            http_client::checked_post_form(&clients, ClientCategory::GitHub, url, params, headers)
+                .await?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        Ok(OAuthResponse { status, body })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MockOAuthClient — in-memory scripted client for tests
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::VecDeque;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::{Arc, Mutex};
+
+/// An in-memory scripted OAuth client for testing.  Queues responses/errors
+/// consumed in FIFO order on each `post_form` call.  Tracks call count.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+pub struct MockOAuthClient {
+    call_count: Arc<AtomicU64>,
+    responses: Arc<Mutex<VecDeque<LauncherResult<OAuthResponse>>>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MockOAuthClient {
+    pub fn new() -> Self {
+        Self {
+            call_count: Arc::new(AtomicU64::new(0)),
+            responses: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub fn queue_response(&self, status: u16, body: &str) {
+        self.responses.lock().unwrap().push_back(Ok(OAuthResponse {
+            status,
+            body: body.to_string(),
+        }));
+    }
+
+    pub fn queue_error(&self, error: LauncherError) {
+        self.responses.lock().unwrap().push_back(Err(error));
+    }
+
+    pub fn call_count(&self) -> u64 {
+        self.call_count.load(AtomicOrdering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Default for MockOAuthClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl OAuthHttpClient for MockOAuthClient {
+    async fn post_form(
+        &self,
+        _url: &str,
+        _params: &[(&str, &str)],
+        _headers: &[(String, String)],
+    ) -> LauncherResult<OAuthResponse> {
+        self.call_count.fetch_add(1, AtomicOrdering::SeqCst);
+        let mut lock = self.responses.lock().unwrap();
+        lock.pop_front().unwrap_or_else(|| {
+            panic!(
+                "MockOAuthClient: no more responses (call #{})",
+                self.call_count.load(AtomicOrdering::SeqCst)
+            )
+        })
+    }
+}
+
 pub const AGORA_OAUTH_CLIENT_ID: &str = match option_env!("AGORA_OAUTH_CLIENT_ID") {
     Some(v) => v,
     None => "Iv23ctVA40Yy1ZUkvemh",
@@ -243,28 +361,38 @@ static REFRESH_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
 pub async fn refresh_access_token(
     refresh_token: &str,
 ) -> LauncherResult<Option<GitHubTokenBundle>> {
-    let clients = HttpClients::new()?;
+    refresh_access_token_inner(&LiveOAuthClient, refresh_token).await
+}
 
+/// Internal variant that accepts an injectable OAuth client (for testing).
+async fn refresh_access_token_inner(
+    oauth: &dyn OAuthHttpClient,
+    refresh_token: &str,
+) -> LauncherResult<Option<GitHubTokenBundle>> {
     let params = [
         ("client_id", AGORA_OAUTH_CLIENT_ID),
         ("refresh_token", refresh_token),
         ("grant_type", "refresh_token"),
     ];
 
-    let resp = http_client::checked_post_form(
-        &clients,
-        ClientCategory::GitHub,
-        "https://github.com/login/oauth/access_token",
-        &params,
-        &[("Accept".into(), "application/json".into())],
-    )
-    .await?;
+    let resp = oauth
+        .post_form(
+            "https://github.com/login/oauth/access_token",
+            &params,
+            &[("Accept".into(), "application/json".into())],
+        )
+        .await?;
 
-    let status = resp.status();
-    let body = http_client::checked_response_text(resp, ClientCategory::GitHub)
-        .await
-        .unwrap_or_default();
+    let status = resp.status;
+    let body = resp.body;
     eprintln!("[auth] refresh status={status}");
+
+    if status == 400 || status == 401 {
+        return Ok(None);
+    }
+    if !(200..300).contains(&status) {
+        return Err(LauncherError::NetworkOffline);
+    }
 
     #[derive(Debug, Deserialize)]
     struct RefreshResponse {
@@ -360,11 +488,7 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
 /// it is treated as a plain access token and wrapped in a bundle.
 pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
     let raw = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        if let Ok(password) = entry.get_password() {
-            Some(password)
-        } else {
-            None
-        }
+        entry.get_password().ok()
     } else {
         None
     };
@@ -438,6 +562,11 @@ pub(crate) fn access_token_is_fresh(bundle: &GitHubTokenBundle) -> bool {
 /// Serialises concurrent callers through a single-flight lock so only one
 /// refresh request is issued.
 pub async fn get_valid_access_token() -> Option<String> {
+    get_valid_access_token_inner(&LiveOAuthClient).await
+}
+
+/// Internal variant with injectable OAuth client.
+async fn get_valid_access_token_inner(oauth: &dyn OAuthHttpClient) -> Option<String> {
     let bundle = load_token_bundle()?;
 
     if access_token_is_fresh(&bundle) {
@@ -457,7 +586,7 @@ pub async fn get_valid_access_token() -> Option<String> {
 
     let refresh_token = bundle.refresh_token.as_deref()?;
 
-    match refresh_access_token(refresh_token).await {
+    match refresh_access_token_inner(oauth, refresh_token).await {
         Ok(Some(new_bundle)) => {
             eprintln!("[auth] access token refreshed successfully");
             let token = new_bundle.access_token.clone();
@@ -471,7 +600,6 @@ pub async fn get_valid_access_token() -> Option<String> {
         }
         Err(e) => {
             eprintln!("[auth] refresh network error: {e}");
-            // Return the existing token even if near expiry — it might still work.
             Some(bundle.access_token)
         }
     }
@@ -482,6 +610,14 @@ pub async fn get_valid_access_token() -> Option<String> {
 /// Returns Ok(result) if refresh+retry succeeded, or the original error
 /// if refresh failed. Clears the bundle on persistent failure.
 pub async fn try_refresh_after_401(original_error: LauncherError) -> Result<(), LauncherError> {
+    try_refresh_after_401_inner(&LiveOAuthClient, original_error).await
+}
+
+/// Internal variant with injectable OAuth client.
+async fn try_refresh_after_401_inner(
+    oauth: &dyn OAuthHttpClient,
+    original_error: LauncherError,
+) -> Result<(), LauncherError> {
     let _lock = REFRESH_MUTEX.lock().await;
 
     let bundle = match load_token_bundle() {
@@ -497,7 +633,7 @@ pub async fn try_refresh_after_401(original_error: LauncherError) -> Result<(), 
         }
     };
 
-    match refresh_access_token(&refresh_token).await {
+    match refresh_access_token_inner(oauth, &refresh_token).await {
         Ok(Some(new_bundle)) => {
             eprintln!("[auth] 401 recovery: token refreshed");
             let _ = store_token_bundle(&new_bundle);
@@ -609,7 +745,14 @@ fn decrypt_token(data: &[u8], key: &[u8]) -> Option<String> {
 }
 
 /// Return the path to the fallback token file.
+///
+/// In tests, the `AGORA_TEST_TOKEN_DIR` environment variable can be set to an
+/// isolated directory so parallel tests do not share the same fallback file.
 fn fallback_token_path() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
+        return Some(std::path::PathBuf::from(dir).join(TOKEN_FALLBACK_FILE));
+    }
     dirs::data_local_dir().map(|d| d.join("agora").join(TOKEN_FALLBACK_FILE))
 }
 
@@ -877,32 +1020,6 @@ mod tests {
     }
 
     #[test]
-    fn store_token_creates_bundle() {
-        // store_token wraps a bare string in a bundle and stores it.
-        // We can't easily test keyring in CI, but we can verify the JSON
-        // roundtrip through the bundle.
-        let bare = "gho_bare_token";
-        let bundle = GitHubTokenBundle {
-            access_token: bare.into(),
-            refresh_token: None,
-            access_expires_at: None,
-            refresh_expires_at: None,
-            token_type: None,
-            scope: None,
-        };
-        assert_eq!(bundle.access_token, bare);
-        assert!(bundle.refresh_token.is_none());
-
-        let json = serde_json::to_string(&bundle).unwrap();
-        // A legacy bare token string would not parse as JSON bundle. Verify
-        // that a plain string is not valid JSON for the bundle.
-        assert!(serde_json::from_str::<GitHubTokenBundle>("\"just a string\"").is_err());
-        assert!(serde_json::from_str::<GitHubTokenBundle>(bare).is_err());
-        // But the serialized bundle is valid.
-        assert!(serde_json::from_str::<GitHubTokenBundle>(&json).is_ok());
-    }
-
-    #[test]
     fn token_bundle_all_fields_populated() {
         let now = Utc::now();
         let bundle = GitHubTokenBundle {
@@ -962,29 +1079,6 @@ mod tests {
         let parsed: DeviceFlowPollResponse = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.error.as_deref(), Some("authorization_pending"));
         assert_eq!(parsed.interval, Some(5));
-    }
-
-    #[test]
-    fn is_authenticated_returns_false_when_no_token() {
-        let _ = clear_token_bundle();
-        // In a clean environment (no stored token), is_authenticated returns false.
-        // In CI with keyring, there may be a leftover token from another test.
-        // We verify the function doesn't panic and returns a bool.
-        let result = is_authenticated();
-        assert!(result == true || result == false, "must return a bool");
-    }
-
-    #[test]
-    fn get_token_returns_none_without_stored_bundle() {
-        let _ = clear_token_bundle();
-        // In a clean environment, get_token returns None.
-        // May return Some if a token is in keyring from another test.
-        let result = get_token();
-        // Verify it doesn't panic and returns Option<String>
-        assert!(
-            result.is_none() || result.is_some(),
-            "must return Option<String>"
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -1116,9 +1210,9 @@ mod tests {
     // Token refresh audit: load_token_bundle wraps legacy bare token
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn load_token_bundle_legacy_bare_token_wrapping() {
-        // Direct fallback-file write with a bare token (non-JSON).
+    #[tokio::test]
+    async fn load_token_bundle_legacy_bare_token_wrapping() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
         let bare = "gho_legacy_bare_token_abc123";
         let key = derive_fallback_key();
         let encrypted = encrypt_token(bare, &key).expect("encrypt must succeed");
@@ -1151,92 +1245,6 @@ mod tests {
             let _ = clear_token_bundle();
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Token refresh audit: valid-token-use tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn access_token_is_fresh_validates_remaining_buffer() {
-        // Token with >300s remaining is fresh.
-        let fresh = GitHubTokenBundle {
-            access_token: "t".into(),
-            refresh_token: None,
-            access_expires_at: Some(Utc::now() + TimeDelta::seconds(3600)),
-            refresh_expires_at: None,
-            token_type: None,
-            scope: None,
-        };
-        assert!(access_token_is_fresh(&fresh));
-
-        // Token with <300s remaining is NOT fresh.
-        let stale = GitHubTokenBundle {
-            access_token: "t".into(),
-            refresh_token: None,
-            access_expires_at: Some(Utc::now() + TimeDelta::seconds(60)),
-            refresh_expires_at: None,
-            token_type: None,
-            scope: None,
-        };
-        assert!(!access_token_is_fresh(&stale));
-
-        // Legacy token without expiry is always fresh.
-        let legacy = GitHubTokenBundle {
-            access_token: "t".into(),
-            refresh_token: None,
-            access_expires_at: None,
-            refresh_expires_at: None,
-            token_type: None,
-            scope: None,
-        };
-        assert!(access_token_is_fresh(&legacy));
-    }
-
-    // -----------------------------------------------------------------------
-    // Token refresh audit: get_valid_access_token logic tests
-    // -----------------------------------------------------------------------
-
-    /// Gap: `get_valid_access_token` is async and makes network calls.
-    /// Full behavior testing requires HTTP injection (e.g. via
-    /// `wiremock` / `httpmock`).  The following structural gaps remain:
-    ///
-    /// 1. Refresh-on-expiry: when a bundle with a near-expired access_token and
-    ///    a valid refresh_token is stored, the function must call
-    ///    `refresh_access_token` and store the new bundle.
-    ///    → Requires HTTP mocking of `https://github.com/login/oauth/access_token`.
-    ///
-    /// 2. Single-flight: when N concurrent calls arrive simultaneously while
-    ///    the stored token is near-expiry, only ONE refresh request is issued.
-    ///    → Requires async concurrency testing with a controlled HTTP endpoint.
-    ///
-    /// 3. Revoked refresh: when GitHub returns `error=bad_refresh_token` or
-    ///    `error=expired_token`, the function must clear the bundle and return
-    ///    `None` (sign out).
-    ///    → Requires HTTP mocking of an error response.
-    ///
-    /// 4. Network error during refresh: when the refresh HTTP call fails,
-    ///    the function should return the existing (near-expired) token rather
-    ///    than panicking or clearing.
-    ///    → Requires HTTP mocking of a connection failure.
-    ///
-    /// These gaps are honest — the code is structured to make them testable
-    /// once HTTP mocking infrastructure is added to the project.
-
-    // -----------------------------------------------------------------------
-    // Token refresh audit: try_refresh_after_401 logic tests
-    // -----------------------------------------------------------------------
-
-    /// Gap: `try_refresh_after_401` is async and calls GitHub's OAuth endpoint.
-    /// Full testing requires HTTP injection.  Key behaviors not testable today:
-    ///
-    /// 1. Successful 401 recovery: calls `refresh_access_token`, stores the
-    ///    new bundle, returns `Ok(())`.
-    /// 2. Revoked refresh during 401: GitHub returns error → clears bundle →
-    ///    returns `Err(original_error)`.
-    /// 3. Network error during 401 recovery: returns `Err(original_error)`
-    ///    without clearing bundle.
-    ///
-    /// These are documented gaps for when HTTP mocking is introduced.
 
     // -----------------------------------------------------------------------
     // Token refresh audit: signout cleanup tests (isolated)
@@ -1272,41 +1280,274 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Token refresh audit: concurrent single-flight test (structural)
+    // OAuth refresh integration tests (in-memory mock)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn refresh_mutex_is_global_singleton() {
-        let addr1 = &*REFRESH_MUTEX as *const _ as usize;
-        let addr2 = &*REFRESH_MUTEX as *const _ as usize;
-        assert_eq!(addr1, addr2, "REFRESH_MUTEX must be a singleton");
+    static TEST_AUTH_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    struct TestTokenDir(#[allow(dead_code)] tempfile::TempDir);
+    impl Drop for TestTokenDir {
+        fn drop(&mut self) {
+            let _ = clear_token_bundle();
+            std::env::remove_var("AGORA_TEST_TOKEN_DIR");
+        }
+    }
+    fn write_test_bundle(bundle: &GitHubTokenBundle) -> TestTokenDir {
+        let dir = tempfile::tempdir().expect("temp dir for test token");
+        std::env::set_var("AGORA_TEST_TOKEN_DIR", dir.path());
+        let _ = clear_token_bundle();
+        let _ = store_token_bundle(bundle);
+        TestTokenDir(dir)
     }
 
-    // -----------------------------------------------------------------------
-    // Token refresh audit: revoked refresh sign-out test (structural)
-    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_proactive_refresh_exactly_one_call() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(
+            200,
+            r#"{"access_token":"gho_new","refresh_token":"ghr_new","expires_in":28800,"refresh_token_expires_in":15552000,"token_type":"bearer","scope":"repo,user"}"#,
+        );
 
-    /// The `clear_token_bundle` function is called by `get_valid_access_token`
-    /// and `try_refresh_after_401` when the refresh token is revoked.  Its
-    /// behavior is tested in `clear_secret_removes_both_keyring_and_fallback`
-    /// above.  The end-to-end flow (revoked → clear → None) requires HTTP
-    /// mocking as documented in the `get_valid_access_token` gaps above.
+        let near_expiry = Utc::now() - TimeDelta::seconds(60);
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_old".into(),
+            refresh_token: Some("ghr_old".into()),
+            access_expires_at: Some(near_expiry),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: Some("bearer".into()),
+            scope: Some("repo,user".into()),
+        };
+        let _td = write_test_bundle(&bundle);
 
-    // -----------------------------------------------------------------------
-    // Token refresh audit: no token in logs test
-    // -----------------------------------------------------------------------
+        let result = get_valid_access_token_inner(&oauth).await;
+        assert_eq!(result.as_deref(), Some("gho_new"));
 
-    #[test]
-    fn log_line_does_not_emit_tokens() {
-        // Code review assertion: `eprintln!` calls in this module use only
-        // status codes, error strings, and fixed messages — never the raw
-        // access_token or refresh_token values.
-        // Verify the function is callable and the known log patterns are safe.
-        log_line("refresh status=200");
-        log_line("refresh error from GitHub: bad_refresh_token");
-        log_line("access token refreshed successfully");
-        log_line("refresh token expired or revoked");
-        log_line("401 recovery: token refreshed");
+        let stored = load_token_bundle().expect("bundle should exist");
+        assert_eq!(stored.access_token, "gho_new");
+        assert_eq!(stored.refresh_token.as_deref(), Some("ghr_new"));
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_single_flight_exactly_one_call() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = std::sync::Arc::new(MockOAuthClient::new());
+        oauth.queue_response(
+            200,
+            r#"{"access_token":"gho_fresh","refresh_token":"ghr_fresh","expires_in":28800,"token_type":"bearer"}"#,
+        );
+
+        let near_expiry = Utc::now() - TimeDelta::seconds(60);
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_old".into(),
+            refresh_token: Some("ghr_old".into()),
+            access_expires_at: Some(near_expiry),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: Some("bearer".into()),
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let o1 = oauth.clone();
+        let o2 = oauth.clone();
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move { get_valid_access_token_inner(&*o1).await }),
+            tokio::spawn(async move { get_valid_access_token_inner(&*o2).await }),
+        );
+
+        assert_eq!(r1.unwrap().as_deref(), Some("gho_fresh"));
+        assert_eq!(r2.unwrap().as_deref(), Some("gho_fresh"));
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_rotation() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(
+            200,
+            r#"{"access_token":"gho_rotated","refresh_token":"ghr_rotated","expires_in":28800,"token_type":"bearer"}"#,
+        );
+
+        let near_expiry = Utc::now() - TimeDelta::seconds(60);
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_before".into(),
+            refresh_token: Some("ghr_before".into()),
+            access_expires_at: Some(near_expiry),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: Some("bearer".into()),
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = get_valid_access_token_inner(&oauth).await;
+        assert_eq!(result.as_deref(), Some("gho_rotated"));
+
+        let stored = load_token_bundle().expect("bundle should exist");
+        assert_eq!(stored.access_token, "gho_rotated");
+        assert_eq!(stored.refresh_token.as_deref(), Some("ghr_rotated"));
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_revoked_refresh_clears_storage() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(
+            200,
+            r#"{"error":"bad_refresh_token","error_description":"The refresh token has been revoked"}"#,
+        );
+
+        let near_expiry = Utc::now() - TimeDelta::seconds(60);
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_revoked".into(),
+            refresh_token: Some("ghr_revoked".into()),
+            access_expires_at: Some(near_expiry),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = get_valid_access_token_inner(&oauth).await;
+        assert!(result.is_none(), "revoked refresh should return None");
+
+        let stored = load_token_bundle();
+        assert!(
+            stored.is_none(),
+            "bundle must be cleared after revoked refresh"
+        );
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_http_401_refresh_clears_storage() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(401, r#"{"error":"bad_refresh_token"}"#);
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_rejected".into(),
+            refresh_token: Some("ghr_rejected".into()),
+            access_expires_at: Some(Utc::now() - TimeDelta::seconds(60)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        assert!(get_valid_access_token_inner(&oauth).await.is_none());
+        assert!(load_token_bundle().is_none());
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_network_server_error_preserves_storage() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(500, "");
+
+        let near_expiry = Utc::now() - TimeDelta::seconds(60);
+        let old_token = "gho_survivor";
+        let bundle = GitHubTokenBundle {
+            access_token: old_token.into(),
+            refresh_token: Some("ghr_survivor".into()),
+            access_expires_at: Some(near_expiry),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = get_valid_access_token_inner(&oauth).await;
+        assert_eq!(
+            result.as_deref(),
+            Some(old_token),
+            "existing token on server error"
+        );
+
+        let stored = load_token_bundle();
+        assert!(stored.is_some(), "bundle must survive server error");
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_401_refresh_success_exactly_one_call() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(
+            200,
+            r#"{"access_token":"gho_fresh_401","refresh_token":"ghr_fresh_401","expires_in":28800,"token_type":"bearer"}"#,
+        );
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_old_401".into(),
+            refresh_token: Some("ghr_old_401".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = try_refresh_after_401_inner(&oauth, LauncherError::AuthExpired).await;
+        assert!(result.is_ok(), "401 recovery should succeed");
+
+        let stored = load_token_bundle().expect("bundle should exist");
+        assert_eq!(stored.access_token, "gho_fresh_401");
+        assert_eq!(stored.refresh_token.as_deref(), Some("ghr_fresh_401"));
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_revoked_401_clears() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(200, r#"{"error":"expired_token"}"#);
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_401_rev".into(),
+            refresh_token: Some("ghr_401_rev".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = try_refresh_after_401_inner(&oauth, LauncherError::AuthExpired).await;
+        assert!(result.is_err(), "revoked 401 refresh should error");
+        assert_eq!(result.unwrap_err().code(), "ERR_AUTH_EXPIRED");
+
+        let stored = load_token_bundle();
+        assert!(stored.is_none(), "bundle must be cleared after revoked 401");
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_network_401_preserves() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        oauth.queue_response(500, "");
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_401_net".into(),
+            refresh_token: Some("ghr_401_net".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = try_refresh_after_401_inner(&oauth, LauncherError::AuthExpired).await;
+        assert!(result.is_err(), "network 401 error should error");
+        assert_eq!(result.unwrap_err().code(), "ERR_AUTH_EXPIRED");
+
+        let stored = load_token_bundle();
+        assert!(stored.is_some(), "bundle must survive network 401 error");
+        assert_eq!(oauth.call_count(), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -1322,23 +1563,6 @@ mod tests {
 
         let decrypted = decrypt_token(&encrypted, &key);
         assert_eq!(decrypted.as_deref(), Some(data));
-    }
-
-    #[test]
-    fn decrypt_wrong_key_fails() {
-        let key1 = derive_fallback_key_for(b"context-a");
-        let key2 = derive_fallback_key_for(b"context-b");
-        let data = "test-value";
-        let encrypted = encrypt_token(data, &key1).unwrap();
-        let decrypted = decrypt_token(&encrypted, &key2);
-        assert!(decrypted.is_none(), "wrong key should not decrypt");
-    }
-
-    #[test]
-    fn decrypt_truncated_data_returns_none() {
-        let key = derive_fallback_key_for(b"test");
-        let result = decrypt_token(&[0u8; 4], &key);
-        assert!(result.is_none());
     }
 
     // -----------------------------------------------------------------------

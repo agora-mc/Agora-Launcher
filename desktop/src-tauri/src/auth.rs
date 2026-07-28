@@ -43,7 +43,9 @@ pub fn is_authenticated<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> bool {
 pub async fn get_validated_github_profile<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> LauncherResult<GithubProfile> {
-    let token = get_valid_access_token(app).await.ok_or(LauncherError::AuthRequired)?;
+    let token = get_valid_access_token(app)
+        .await
+        .ok_or(LauncherError::AuthRequired)?;
     match get_github_user(&token).await {
         Ok(profile) => Ok(profile),
         Err(LauncherError::AuthExpired) => {

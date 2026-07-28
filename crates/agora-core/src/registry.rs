@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 /// When `AGORA_DEV_REGISTRY_DB` is set in debug builds, the service loads the
 /// registry from that path. The path must exist and have schema version
 /// >= 6 and <= [`APP_REGISTRY_SCHEMA_VERSION`]. If either condition fails,
+///
 /// an error is returned (fail closed, not silent fallback).
 ///
 /// In release builds the variable is logged and ignored.

@@ -755,7 +755,9 @@ impl Resolver {
                 {
                     if let Some(new_token) = crate::auth::get_token() {
                         let new_headers = github_auth_headers(Some(&new_token));
-                        response = self.send_github_releases_request(&url, &new_headers).await?;
+                        response = self
+                            .send_github_releases_request(&url, &new_headers)
+                            .await?;
                     } else {
                         response = self.send_github_releases_request(&url, &[]).await?;
                     }

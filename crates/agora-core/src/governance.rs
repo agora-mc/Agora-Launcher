@@ -9,6 +9,7 @@ use crate::error::{LauncherError, LauncherResult};
 use crate::registry::RegistryService;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // GovernanceEnvironment — compile-time resolution
@@ -41,6 +42,10 @@ pub struct GovernanceConfig {
     pub github_app_slug: Option<String>,
     /// Whether a valid debug-only dev registry override is active.
     pub development_registry: bool,
+    /// Optional path to the flat-file governance directory containing
+    /// vote_issues.json, quarantine_decisions.json, etc.
+    #[serde(default, skip_serializing)]
+    pub governance_dir: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +84,159 @@ pub struct GovernanceEvent {
     pub detected_at: String,
     pub affected_reactions: i64,
     pub details_json: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// VoteIssuesFile — flat-file vote_issues.json schema
+// ---------------------------------------------------------------------------
+
+/// Schema of `registry/governance/vote_issues.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoteIssuesFile {
+    pub schema_version: i64,
+    pub items: std::collections::HashMap<String, VoteIssueEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoteIssueEntry {
+    pub issue_number: i64,
+}
+
+// ---------------------------------------------------------------------------
+// QuarantineDecisionsFile — flat-file quarantine_decisions.json schema
+// ---------------------------------------------------------------------------
+
+/// Schema of `registry/governance/quarantine_decisions.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuarantineDecisionsFile {
+    pub schema_version: i64,
+    pub decisions: Vec<QuarantineDecisionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuarantineDecisionEntry {
+    pub event_id: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+// ---------------------------------------------------------------------------
+// GovernanceStateFile — flat-file governance-state.json schema
+// ---------------------------------------------------------------------------
+
+/// Schema of `registry/governance/governance-state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceStateFile {
+    pub schema_version: i64,
+    #[serde(default)]
+    pub governance_repository: Option<String>,
+    #[serde(default)]
+    pub policy: Option<String>,
+    #[serde(default)]
+    pub events: Vec<GovernanceStateEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceStateEvent {
+    pub event_id: String,
+    pub item_id: String,
+    pub event_type: String,
+    pub status: String,
+    pub detected_at: String,
+    #[serde(default)]
+    pub affected_reactions: Vec<i64>,
+    #[serde(default)]
+    pub details_json: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// GovernanceFileLoader — resolve governance JSON file paths
+// ---------------------------------------------------------------------------
+
+/// Resolve the expected governance flat-file directory.
+///
+/// Priority:
+/// 1. Runtime env `AGORA_GOVERNANCE_DIR` (debug builds only)
+/// 2. If `AGORA_DEV_REGISTRY_DB` is set in debug builds, parent of that path
+///    joined with `governance/`
+/// 3. If `registry_db_path` is provided, its parent joined with `governance/`
+/// 4. `None` (fallback — no known path)
+pub fn resolve_governance_dir(registry_db_path: Option<&Path>) -> Option<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Ok(dir) = std::env::var("AGORA_GOVERNANCE_DIR") {
+        if !dir.is_empty() {
+            return Some(std::path::PathBuf::from(dir));
+        }
+    }
+
+    let base = registry_db_path
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .or_else(|| {
+            #[cfg(debug_assertions)]
+            {
+                std::env::var("AGORA_DEV_REGISTRY_DB")
+                    .ok()
+                    .map(std::path::PathBuf::from)
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                None::<std::path::PathBuf>
+            }
+        })?;
+
+    if base.file_name().and_then(|name| name.to_str()) == Some("build") {
+        if let Some(root) = base.parent() {
+            return Some(root.join("registry").join("governance"));
+        }
+    }
+
+    Some(base.join("governance"))
+}
+
+/// Parse vote_issues.json from a governance directory.
+pub fn parse_vote_issues(dir: &Path) -> LauncherResult<VoteIssuesFile> {
+    let path = dir.join("vote_issues.json");
+    let data = std::fs::read_to_string(&path).map_err(|e| LauncherError::Generic {
+        code: "ERR_GOV_JSON_READ".into(),
+        message: format!("Cannot read vote_issues.json at {}: {e}", path.display()),
+    })?;
+    serde_json::from_str(&data).map_err(|e| LauncherError::Generic {
+        code: "ERR_GOV_JSON_PARSE".into(),
+        message: format!("Cannot parse vote_issues.json: {e}"),
+    })
+}
+
+/// Parse quarantine_decisions.json from a governance directory.
+pub fn parse_quarantine_decisions(dir: &Path) -> LauncherResult<QuarantineDecisionsFile> {
+    let path = dir.join("quarantine_decisions.json");
+    let data = std::fs::read_to_string(&path).map_err(|e| LauncherError::Generic {
+        code: "ERR_GOV_JSON_READ".into(),
+        message: format!(
+            "Cannot read quarantine_decisions.json at {}: {e}",
+            path.display()
+        ),
+    })?;
+    serde_json::from_str(&data).map_err(|e| LauncherError::Generic {
+        code: "ERR_GOV_JSON_PARSE".into(),
+        message: format!("Cannot parse quarantine_decisions.json: {e}"),
+    })
+}
+
+/// Parse governance-state.json from a governance directory (optional — may not exist).
+pub fn parse_governance_state(dir: &Path) -> Option<GovernanceStateFile> {
+    let source_adjacent = dir.join("governance-state.json");
+    let build_adjacent = dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("build").join("governance-state.json"));
+    let path = if source_adjacent.exists() {
+        source_adjacent
+    } else {
+        build_adjacent?
+    };
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +344,12 @@ pub fn resolve_github_app_slug() -> Option<String> {
 ///
 /// `dev_registry_valid` should be `Some(true)` when a valid dev-registry
 /// override is confirmed active, `Some(false)` when not, or `None` to use
-/// a heuristic check.
-pub fn resolve_governance_config(dev_registry_valid: Option<bool>) -> GovernanceConfig {
+/// a heuristic check.  `registry_db_path` is used to derive the flat-file
+/// governance directory.
+pub fn resolve_governance_config(
+    dev_registry_valid: Option<bool>,
+    registry_db_path: Option<&Path>,
+) -> GovernanceConfig {
     let dev_registry = dev_registry_valid.unwrap_or_else(|| {
         #[cfg(debug_assertions)]
         {
@@ -207,6 +369,8 @@ pub fn resolve_governance_config(dev_registry_valid: Option<bool>) -> Governance
         environment: resolve_governance_environment(),
         github_app_slug: resolve_github_app_slug(),
         development_registry: dev_registry,
+        governance_dir: resolve_governance_dir(registry_db_path)
+            .map(|p| p.to_string_lossy().to_string()),
     }
 }
 
@@ -353,15 +517,18 @@ pub fn list_governance_events(
 
 /// Run governance diagnostics (sync checks only).
 ///
-/// Checks 1-4, plus governance table parses (14-16) and schema validation.
+/// Checks 1-4, plus governance JSON file parses (14-16) and schema validation.
 /// Network checks (5-13) are performed by the desktop async command layer.
 pub fn run_governance_diagnostics(
     registry_conn: Option<&Connection>,
+    registry_dir: Option<&Path>,
     config: &GovernanceConfig,
 ) -> Vec<DiagnosticCheck> {
     let mut checks = Vec::new();
 
-    // Schema version and table presence (used by multiple checks below)
+    // Resolve the governance directory from config if not provided directly
+    let gov_dir = registry_dir.or_else(|| config.governance_dir.as_deref().map(Path::new));
+
     let (schema_version, has_summary_table, has_events_table) = match registry_conn {
         Some(conn) => {
             let sv: i64 = conn
@@ -419,7 +586,7 @@ pub fn run_governance_diagnostics(
         .unwrap_or(false);
     let token_fresh = stored_bundle
         .as_ref()
-        .map(|b| crate::auth::access_token_is_fresh(b))
+        .map(crate::auth::access_token_is_fresh)
         .unwrap_or(false);
     let token_valid_or_refreshable = has_token && (token_fresh || has_refresh);
     checks.push(DiagnosticCheck {
@@ -513,128 +680,173 @@ pub fn run_governance_diagnostics(
         },
     });
 
-    // 14. vote_issues_parses — query governance_summary and validate parsing
-    if let Some(conn) = registry_conn {
-        if has_summary_table {
-            let parse_ok = conn
-                .prepare("SELECT COUNT(*) FROM governance_summary")
-                .and_then(|mut s| s.query_row([], |row| row.get::<_, i64>(0)))
-                .is_ok();
-            let row_count = if parse_ok {
-                conn.query_row("SELECT COUNT(*) FROM governance_summary", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap_or(0)
-            } else {
-                0
-            };
-            checks.push(DiagnosticCheck {
-                id: "vote_issues_parses".into(),
-                status: if parse_ok {
-                    DiagnosticStatus::Pass
-                } else {
-                    DiagnosticStatus::Fail
-                },
-                message: if parse_ok {
-                    format!("governance_summary table readable with {row_count} vote record(s)")
-                } else {
-                    "governance_summary table could not be queried".into()
-                },
-            });
-        } else {
-            checks.push(DiagnosticCheck {
-                id: "vote_issues_parses".into(),
-                status: DiagnosticStatus::Warning,
-                message: "governance_summary table unavailable (schema 6)".into(),
-            });
+    // 14. vote_issues_parses — parse actual vote_issues.json from flat-file dir
+    if let Some(dir) = gov_dir {
+        match parse_vote_issues(dir) {
+            Ok(file) => {
+                let count = file.items.len();
+                checks.push(DiagnosticCheck {
+                    id: "vote_issues_parses".into(),
+                    status: DiagnosticStatus::Pass,
+                    message: format!(
+                        "vote_issues.json parsed (schema v{}, {} item(s))",
+                        file.schema_version, count
+                    ),
+                });
+            }
+            Err(e) => {
+                let compiled_count = registry_conn.and_then(|conn| {
+                    conn.query_row("SELECT COUNT(*) FROM governance_summary", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .ok()
+                });
+                checks.push(DiagnosticCheck {
+                    id: "vote_issues_parses".into(),
+                    status: if compiled_count.is_some() {
+                        DiagnosticStatus::Pass
+                    } else if e.code() == "ERR_GOV_JSON_READ" {
+                        DiagnosticStatus::Warning
+                    } else {
+                        DiagnosticStatus::Fail
+                    },
+                    message: compiled_count.map_or_else(
+                        || format!("vote_issues.json: {e}"),
+                        |count| format!("Compiled governance summaries readable ({count} item(s))"),
+                    ),
+                });
+            }
         }
     } else {
+        let compiled_count = registry_conn.and_then(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM governance_summary", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .ok()
+        });
         checks.push(DiagnosticCheck {
             id: "vote_issues_parses".into(),
-            status: DiagnosticStatus::Warning,
-            message: "Cannot parse vote issues: registry database unavailable".into(),
-        });
-    }
-
-    // 15. quarantine_decisions_parses — query governance_events for quarantines
-    if let Some(conn) = registry_conn {
-        if has_events_table {
-            let parse_ok = conn
-                .prepare("SELECT COUNT(*) FROM governance_events")
-                .is_ok();
-            let quarantine_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM governance_events WHERE event_type = 'vote_quarantine'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            checks.push(DiagnosticCheck {
-                id: "quarantine_decisions_parses".into(),
-                status: if parse_ok {
-                    DiagnosticStatus::Pass
-                } else {
-                    DiagnosticStatus::Fail
-                },
-                message: if parse_ok {
-                    format!("governance_events readable; {quarantine_count} quarantine event(s)")
-                } else {
-                    "governance_events table could not be queried".into()
-                },
-            });
-        } else {
-            checks.push(DiagnosticCheck {
-                id: "quarantine_decisions_parses".into(),
-                status: DiagnosticStatus::Warning,
-                message: "governance_events table unavailable (schema 6)".into(),
-            });
-        }
-    } else {
-        checks.push(DiagnosticCheck {
-            id: "quarantine_decisions_parses".into(),
-            status: DiagnosticStatus::Warning,
-            message: "Cannot parse quarantine decisions: registry unavailable".into(),
-        });
-    }
-
-    // 16. governance_state_parses — combined governance_summary + events readable
-    if let Some(conn) = registry_conn {
-        let has_gov_state = has_summary_table || has_events_table;
-        let summary_ok = if has_summary_table {
-            conn.prepare("SELECT COUNT(*) FROM governance_summary")
-                .is_ok()
-        } else {
-            false
-        };
-        let events_ok = if has_events_table {
-            conn.prepare("SELECT COUNT(*) FROM governance_events")
-                .is_ok()
-        } else {
-            false
-        };
-        let state_readable = (has_summary_table && summary_ok) || (has_events_table && events_ok);
-        checks.push(DiagnosticCheck {
-            id: "governance_state_parses".into(),
-            status: if state_readable {
+            status: if compiled_count.is_some() {
                 DiagnosticStatus::Pass
-            } else if has_gov_state {
-                DiagnosticStatus::Fail
             } else {
                 DiagnosticStatus::Warning
             },
-            message: if state_readable {
-                "Governance state is readable from registry".into()
-            } else if has_gov_state {
-                "Governance tables exist but could not be queried".into()
-            } else {
-                "No governance tables present (schema 6)".into()
-            },
+            message: compiled_count.map_or_else(
+                || "vote_issues.json: governance directory not resolved".into(),
+                |count| format!("Compiled governance summaries readable ({count} item(s))"),
+            ),
         });
+    }
+
+    // 15. quarantine_decisions_parses — parse quarantine_decisions.json
+    if let Some(dir) = gov_dir {
+        match parse_quarantine_decisions(dir) {
+            Ok(file) => {
+                let count = file.decisions.len();
+                checks.push(DiagnosticCheck {
+                    id: "quarantine_decisions_parses".into(),
+                    status: DiagnosticStatus::Pass,
+                    message: format!(
+                        "quarantine_decisions.json parsed (schema v{}, {} decision(s))",
+                        file.schema_version, count
+                    ),
+                });
+            }
+            Err(e) => {
+                let compiled_count = registry_conn.and_then(|conn| {
+                    conn.query_row("SELECT COUNT(*) FROM governance_events", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .ok()
+                });
+                checks.push(DiagnosticCheck {
+                    id: "quarantine_decisions_parses".into(),
+                    status: if compiled_count.is_some() {
+                        DiagnosticStatus::Pass
+                    } else if e.code() == "ERR_GOV_JSON_READ" {
+                        DiagnosticStatus::Warning
+                    } else {
+                        DiagnosticStatus::Fail
+                    },
+                    message: compiled_count.map_or_else(
+                        || format!("quarantine_decisions.json: {e}"),
+                        |count| {
+                            format!("Compiled governance decisions readable ({count} event(s))")
+                        },
+                    ),
+                });
+            }
+        }
     } else {
+        let compiled_count = registry_conn.and_then(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM governance_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .ok()
+        });
+        checks.push(DiagnosticCheck {
+            id: "quarantine_decisions_parses".into(),
+            status: if compiled_count.is_some() {
+                DiagnosticStatus::Pass
+            } else {
+                DiagnosticStatus::Warning
+            },
+            message: compiled_count.map_or_else(
+                || "quarantine_decisions.json: governance directory not resolved".into(),
+                |count| format!("Compiled governance decisions readable ({count} event(s))"),
+            ),
+        });
+    }
+
+    // 16. governance_state_parses — parse governance-state.json (optional)
+    if let Some(dir) = gov_dir {
+        match parse_governance_state(dir) {
+            Some(file) => {
+                let count = file.events.len();
+                checks.push(DiagnosticCheck {
+                    id: "governance_state_parses".into(),
+                    status: DiagnosticStatus::Pass,
+                    message: format!(
+                        "governance-state.json parsed (schema v{}, {} event(s))",
+                        file.schema_version, count
+                    ),
+                });
+            }
+            None => {
+                let compiled_count = registry_conn.and_then(|conn| {
+                    conn.query_row("SELECT COUNT(*) FROM governance_events", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .ok()
+                });
+                checks.push(DiagnosticCheck {
+                    id: "governance_state_parses".into(),
+                    status: if compiled_count.is_some() { DiagnosticStatus::Pass } else { DiagnosticStatus::Warning },
+                    message: compiled_count.map_or_else(
+                        || "governance-state.json not found or unparseable (fresh governance state)".into(),
+                        |count| format!("Compiled governance state readable ({count} event(s))"),
+                    ),
+                });
+            }
+        }
+    } else {
+        let compiled_count = registry_conn.and_then(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM governance_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .ok()
+        });
         checks.push(DiagnosticCheck {
             id: "governance_state_parses".into(),
-            status: DiagnosticStatus::Warning,
-            message: "Cannot parse governance state: registry unavailable".into(),
+            status: if compiled_count.is_some() {
+                DiagnosticStatus::Pass
+            } else {
+                DiagnosticStatus::Warning
+            },
+            message: compiled_count.map_or_else(
+                || "governance-state.json: governance directory not resolved".into(),
+                |count| format!("Compiled governance state readable ({count} event(s))"),
+            ),
         });
     }
 
@@ -662,10 +874,12 @@ impl GovernanceService {
     /// Return the resolved governance config.
     ///
     /// `development_registry` is set to true only when a valid dev override
-    /// is confirmed active (env var set AND path valid).
+    /// is confirmed active (env var set AND path valid).  `governance_dir`
+    /// is derived from the registry db path.
     pub fn config(&self) -> GovernanceConfig {
         let dev_active = self.registry.development_registry_active();
-        resolve_governance_config(Some(dev_active))
+        let db_path = self.registry.resolve_db_path().ok();
+        resolve_governance_config(Some(dev_active), db_path.as_deref())
     }
 
     /// Fetch a governance summary for a single item from `governance_summary`.
@@ -697,11 +911,12 @@ impl GovernanceService {
     ///
     /// Network checks (repository_metadata_readable, issues_enabled,
     /// discussions_enabled, labels, templates) must be performed by the
-    /// desktop async command layer with auth.
+    /// desktop async command layer.
     pub fn run_diagnostics(&self) -> Vec<DiagnosticCheck> {
         let conn = self.registry.connection().ok();
         let c = self.config();
-        run_governance_diagnostics(conn.as_ref(), &c)
+        let registry_dir = c.governance_dir.as_deref().map(std::path::Path::new);
+        run_governance_diagnostics(conn.as_ref(), registry_dir, &c)
     }
 }
 
@@ -823,15 +1038,15 @@ mod tests {
 
     #[test]
     fn test_resolve_governance_config_default_fields() {
-        let config = resolve_governance_config(None);
+        let config = resolve_governance_config(None, None);
         assert!(!config.repository.is_empty());
     }
 
     #[test]
     fn test_development_registry_flagged_when_valid() {
-        let config = resolve_governance_config(Some(true));
+        let config = resolve_governance_config(Some(true), None);
         assert!(config.development_registry);
-        let config = resolve_governance_config(Some(false));
+        let config = resolve_governance_config(Some(false), None);
         assert!(!config.development_registry);
     }
 
@@ -1048,8 +1263,9 @@ mod tests {
             environment: GovernanceEnvironment::Production,
             github_app_slug: None,
             development_registry: false,
+            governance_dir: None,
         };
-        let checks = run_governance_diagnostics(None, &config);
+        let checks = run_governance_diagnostics(None, None, &config);
         let ids: Vec<&str> = checks.iter().map(|c| c.id.as_str()).collect();
 
         // Sync checks that must always be present
@@ -1090,8 +1306,9 @@ mod tests {
             environment: GovernanceEnvironment::Production,
             github_app_slug: Some("my-app".into()),
             development_registry: false,
+            governance_dir: None,
         };
-        let checks = run_governance_diagnostics(None, &config);
+        let checks = run_governance_diagnostics(None, None, &config);
 
         let repo_check = checks
             .iter()
@@ -1107,8 +1324,9 @@ mod tests {
             environment: GovernanceEnvironment::Production,
             github_app_slug: None,
             development_registry: false,
+            governance_dir: None,
         };
-        let checks = run_governance_diagnostics(None, &config);
+        let checks = run_governance_diagnostics(None, None, &config);
 
         let repo_check = checks
             .iter()
@@ -1124,14 +1342,35 @@ mod tests {
         let reg_path = root.join("registry.db");
         seed_schema7_registry(&reg_path);
 
+        // Create a governance directory with valid JSON files for JSON-parsing checks
+        let gov_dir = root.join("governance");
+        std::fs::create_dir_all(&gov_dir).unwrap();
+        std::fs::write(
+            gov_dir.join("vote_issues.json"),
+            r#"{"schema_version":1,"items":{"test-mod":{"issue_number":42}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            gov_dir.join("quarantine_decisions.json"),
+            r#"{"schema_version":1,"decisions":[{"event_id":"evt-001","status":"active"}]}"#,
+        )
+        .unwrap();
+        // governance-state.json is optional
+        std::fs::write(
+            gov_dir.join("governance-state.json"),
+            r#"{"schema_version":1,"governance_repository":"test/repo","policy":"sandbox","events":[{"event_id":"evt-001","item_id":"test-mod","event_type":"vote_quarantine","status":"active","detected_at":"2025-01-16T00:00:00Z","affected_reactions":[1,2,3]}]}"#,
+        )
+        .unwrap();
+
         let config = GovernanceConfig {
             repository: "jarjarpfeil/Agora-Launcher".into(),
             environment: GovernanceEnvironment::Production,
             github_app_slug: None,
             development_registry: false,
+            governance_dir: Some(gov_dir.to_string_lossy().to_string()),
         };
         let conn = crate::db::registry_connection(&reg_path).unwrap();
-        let checks = run_governance_diagnostics(Some(&conn), &config);
+        let checks = run_governance_diagnostics(Some(&conn), Some(&gov_dir), &config);
 
         assert!(
             checks.iter().any(|c| {
@@ -1149,13 +1388,13 @@ mod tests {
             checks
                 .iter()
                 .any(|c| c.id == "vote_issues_parses" && c.status == DiagnosticStatus::Pass),
-            "vote_issues_parses should Pass with schema 7"
+            "vote_issues_parses should Pass with JSON file"
         );
         assert!(
             checks
                 .iter()
                 .any(|c| c.id == "governance_state_parses" && c.status == DiagnosticStatus::Pass),
-            "governance_state_parses should Pass with schema 7"
+            "governance_state_parses should Pass with JSON file"
         );
 
         drop(conn);
@@ -1169,14 +1408,16 @@ mod tests {
         let reg_path = root.join("registry.db");
         seed_schema6_registry(&reg_path);
 
+        // governance JSON files not created — checks should report Warning
         let config = GovernanceConfig {
             repository: "jarjarpfeil/Agora-Launcher".into(),
             environment: GovernanceEnvironment::Production,
             github_app_slug: None,
             development_registry: false,
+            governance_dir: None,
         };
         let conn = crate::db::registry_connection(&reg_path).unwrap();
-        let checks = run_governance_diagnostics(Some(&conn), &config);
+        let checks = run_governance_diagnostics(Some(&conn), None, &config);
 
         // Schema 6: governance tables should report Warning
         let sum_check = checks
@@ -1210,8 +1451,9 @@ mod tests {
             environment: GovernanceEnvironment::Production,
             github_app_slug: None,
             development_registry: false,
+            governance_dir: None,
         };
-        let checks = run_governance_diagnostics(None, &config);
+        let checks = run_governance_diagnostics(None, None, &config);
         assert!(checks.iter().any(|c| c.id == "oauth_client_id"));
     }
 
@@ -1222,9 +1464,92 @@ mod tests {
             environment: GovernanceEnvironment::Production,
             github_app_slug: None,
             development_registry: false,
+            governance_dir: None,
         };
-        let checks = run_governance_diagnostics(None, &config);
+        let checks = run_governance_diagnostics(None, None, &config);
         assert!(checks.iter().any(|c| c.id == "github_token_available"));
+    }
+
+    // -----------------------------------------------------------------------
+    // JSON file parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_vote_issues_ok() {
+        let root = std::env::temp_dir().join(format!("agora-gov-vi-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("vote_issues.json"),
+            r#"{"schema_version":1,"items":{"mod-a":{"issue_number":10},"mod-b":{"issue_number":20}}}"#,
+        )
+        .unwrap();
+        let parsed = parse_vote_issues(&root).unwrap();
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.items.len(), 2);
+        assert_eq!(parsed.items["mod-a"].issue_number, 10);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_vote_issues_missing_file() {
+        let root = std::env::temp_dir().join(format!("agora-gov-vi-miss-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let result = parse_vote_issues(&root);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), "ERR_GOV_JSON_READ");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_vote_issues_invalid_json() {
+        let root = std::env::temp_dir().join(format!("agora-gov-vi-bad-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("vote_issues.json"), r#"not valid json"#).unwrap();
+        let result = parse_vote_issues(&root);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), "ERR_GOV_JSON_PARSE");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_quarantine_decisions_ok() {
+        let root = std::env::temp_dir().join(format!("agora-gov-qd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("quarantine_decisions.json"),
+            r#"{"schema_version":1,"decisions":[{"event_id":"e1","status":"accepted"}]}"#,
+        )
+        .unwrap();
+        let parsed = parse_quarantine_decisions(&root).unwrap();
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.decisions.len(), 1);
+        assert_eq!(parsed.decisions[0].event_id, "e1");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_governance_state_missing_is_ok() {
+        let root = std::env::temp_dir().join(format!("agora-gov-gs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let parsed = parse_governance_state(&root);
+        assert!(parsed.is_none(), "missing file should return None");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_parse_governance_state_present() {
+        let root = std::env::temp_dir().join(format!("agora-gov-gs2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("governance-state.json"),
+            r#"{"schema_version":1,"events":[{"event_id":"e1","item_id":"m","event_type":"vote","status":"active","detected_at":"now"}]}"#,
+        )
+        .unwrap();
+        let parsed = parse_governance_state(&root).unwrap();
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.events.len(), 1);
+        assert_eq!(parsed.events[0].event_id, "e1");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     // -----------------------------------------------------------------------
@@ -1234,7 +1559,7 @@ mod tests {
     fn make_registry_svc(reg_path: &std::path::Path) -> RegistryService {
         let root = std::env::temp_dir().join(format!("agora-gov-svc-{}", uuid::Uuid::new_v4()));
         let ctx = crate::ctx::Ctx::for_testing(root.clone());
-        std::fs::copy(reg_path, &ctx.paths.registry_db()).unwrap();
+        std::fs::copy(reg_path, ctx.paths.registry_db()).unwrap();
         RegistryService::new(ctx)
     }
 

@@ -1,14 +1,14 @@
-//! Governance sandbox readiness — Tauri command adapters and async network checks.
+//! Governance sandbox readiness - Tauri command adapters and async network checks.
 //!
 //! Pure logic in `agora_core::governance`; this module adds read-only GitHub
 //! API checks for diagnostics (checks 5-13 from the spec).
 //!
 //! # Network checks (read-only)
-//! - `repository_metadata_readable` — GET /repos/:owner/:repo
-//! - `issues_enabled` — check repo features from metadata
-//! - `discussions_enabled` — check repo features from metadata
-//! - `triage_category_exists` — GraphQL query for DiscussionCategory
-//! - Labels and templates are deferred (require additional API calls)
+//! - `repository_metadata_readable` - GET /repos/:owner/:repo
+//! - `issues_enabled` - check repo features from metadata
+//! - `discussions_enabled` - check repo features from metadata
+//! - `triage_category_exists` - GraphQL query for DiscussionCategory
+//! - Required labels and Issue forms via read-only REST requests
 //!
 //! All checks are read-only. No issues, comments, or reactions are created.
 
@@ -30,7 +30,7 @@ use tauri::AppHandle;
 pub fn get_governance_config(app: &AppHandle) -> GovernanceConfig {
     let ctx = match crate::core_context(app) {
         Ok(c) => c,
-        Err(_) => return core_resolve_config(None),
+        Err(_) => return core_resolve_config(None, None),
     };
     let registry = RegistryService::new(ctx);
     let svc = GovernanceService::new(registry);
@@ -80,10 +80,11 @@ pub fn run_sync_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
 
 /// Run async network-based diagnostic checks.
 ///
-/// All checks are read-only GitHub API calls.
+/// All checks are read-only GitHub API calls.  Every API call that returns 401
+/// triggers exactly one refresh-and-retry before reporting a permanent failure.
 pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
-    let token = match crate::auth::get_valid_access_token(app).await {
-        Some(t) => t,
+    match crate::auth::get_valid_access_token(app).await {
+        Some(_) => {}
         None => {
             return vec![
                 DiagnosticCheck {
@@ -138,20 +139,39 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     let repo = resolve_governance_repo();
     let client = agora_core::github_ratelimit::github_client();
 
-    // 5. repository_metadata_readable
-    let repo_meta_result = check_repo_metadata(&client, &token, &repo).await;
-
     let mut checks = Vec::new();
+    let (owner, repo_name) = repo.split_once('/').unwrap_or(("", ""));
 
-    // 5
-    match &repo_meta_result {
+    // ---- Helper: execute an API call with 401 refresh-and-retry ----
+    async fn call_with_401_retry<T, F, Fut>(f: F) -> Result<T, String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let first = f().await;
+        match &first {
+            Err(msg) if msg.contains("401") => {
+                eprintln!("[governance] 401 on API call; attempting token refresh");
+                if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+                    .await
+                    .is_ok()
+                {
+                    return f().await;
+                }
+                first
+            }
+            _ => first,
+        }
+    }
+
+    // 5. repository_metadata_readable (also yields issues + discussions)
+    match call_with_401_retry(|| get_repo_meta(client, &repo)).await {
         Ok(meta) => {
             checks.push(DiagnosticCheck {
                 id: "repository_metadata_readable".into(),
                 status: DiagnosticStatus::Pass,
-                message: format!("Repository {} is accessible", repo),
+                message: format!("Repository {} is accessible with token", repo),
             });
-            // 6. issues_enabled
             checks.push(DiagnosticCheck {
                 id: "issues_enabled".into(),
                 status: if meta.has_issues {
@@ -160,16 +180,23 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
                     DiagnosticStatus::Warning
                 },
                 message: if meta.has_issues {
-                    "Issues are enabled on the repository".into()
+                    "Issues are enabled on the governance repository".into()
                 } else {
-                    "Issues are disabled on the repository; governance requires issues".into()
+                    "Issues are disabled; governance vote issues require issues enabled".into()
                 },
             });
-            // 7. discussions_enabled
             checks.push(DiagnosticCheck {
                 id: "discussions_enabled".into(),
-                status: DiagnosticStatus::Warning,
-                message: "Discussions support checked via repository metadata endpoint".into(),
+                status: if meta.has_discussions {
+                    DiagnosticStatus::Pass
+                } else {
+                    DiagnosticStatus::Warning
+                },
+                message: if meta.has_discussions {
+                    "Discussions are enabled on the governance repository".into()
+                } else {
+                    "Discussions are disabled; triage polls require discussions enabled".into()
+                },
             });
         }
         Err(msg) => {
@@ -191,50 +218,122 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
         }
     }
 
-    // 8-13 require additional API calls; mark as Warning/deferred
-    checks.push(DiagnosticCheck {
-        id: "triage_category_exists".into(),
-        status: DiagnosticStatus::Warning,
-        message: "Triage discussion category check deferred (requires GraphQL schema query)".into(),
-    });
-    checks.push(DiagnosticCheck {
-        id: "community_review_label_exists".into(),
-        status: DiagnosticStatus::Warning,
-        message: "Label check deferred (requires GET /repos/:owner/:repo/labels)".into(),
-    });
-    checks.push(DiagnosticCheck {
-        id: "registry_submission_label_exists".into(),
-        status: DiagnosticStatus::Warning,
-        message: "Label check deferred".into(),
-    });
-    checks.push(DiagnosticCheck {
-        id: "registry_vote_label_exists".into(),
-        status: DiagnosticStatus::Warning,
-        message: "Label check deferred".into(),
-    });
-    checks.push(DiagnosticCheck {
-        id: "review_form_exists".into(),
-        status: DiagnosticStatus::Warning,
-        message: "Form/template check deferred (requires .github/ISSUE_TEMPLATE/ query)".into(),
-    });
-    checks.push(DiagnosticCheck {
-        id: "mod_submission_exists".into(),
-        status: DiagnosticStatus::Warning,
-        message: "Mod submission template check deferred".into(),
-    });
+    // 8. triage_category_exists
+    match call_with_401_retry(|| check_triage_category(client, owner, repo_name)).await {
+        Ok(true) => checks.push(DiagnosticCheck {
+            id: "triage_category_exists".into(),
+            status: DiagnosticStatus::Pass,
+            message: "Triage discussion category exists on the repository".into(),
+        }),
+        Ok(false) => checks.push(DiagnosticCheck {
+            id: "triage_category_exists".into(),
+            status: DiagnosticStatus::Warning,
+            message:
+                "Triage discussion category not found; triage polls require a \"Triage\" category"
+                    .into(),
+        }),
+        Err(msg) => checks.push(DiagnosticCheck {
+            id: "triage_category_exists".into(),
+            status: DiagnosticStatus::Warning,
+            message: format!("Cannot check triage category: {msg}"),
+        }),
+    }
+
+    // 9-11. Label existence checks
+    let known_labels: Option<Vec<String>> =
+        match call_with_401_retry(|| list_repo_labels(client, owner, repo_name)).await {
+            Ok(labels) => Some(labels),
+            Err(msg) => {
+                for (check_id, label) in [
+                    ("community_review_label_exists", "community-review"),
+                    ("registry_submission_label_exists", "registry-submission"),
+                    ("registry_vote_label_exists", "registry-vote"),
+                ] {
+                    checks.push(DiagnosticCheck {
+                        id: check_id.into(),
+                        status: DiagnosticStatus::Warning,
+                        message: format!("Cannot check \"{label}\" label: {msg}"),
+                    });
+                }
+                None
+            }
+        };
+
+    if let Some(known_labels) = known_labels {
+        for (check_id, label_name) in [
+            ("community_review_label_exists", "community-review"),
+            ("registry_submission_label_exists", "registry-submission"),
+            ("registry_vote_label_exists", "registry-vote"),
+        ] {
+            let found = known_labels.iter().any(|l| l == label_name);
+            checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: if found {
+                    DiagnosticStatus::Pass
+                } else {
+                    DiagnosticStatus::Warning
+                },
+                message: if found {
+                    format!("\"{label_name}\" label exists on the repository")
+                } else {
+                    format!("\"{label_name}\" label not found; governance workflows require it")
+                },
+            });
+        }
+    }
+
+    // 12-13. Issue template existence checks
+    for (check_id, template_path, display) in [
+        (
+            "review_form_exists",
+            ".github/ISSUE_TEMPLATE/review-form.yml",
+            "review-form.yml",
+        ),
+        (
+            "mod_submission_exists",
+            ".github/ISSUE_TEMPLATE/mod-submission.yml",
+            "mod-submission.yml",
+        ),
+    ] {
+        let tmpl_result = call_with_401_retry(|| {
+            let path = template_path.to_owned();
+            async move { check_template_exists(client, owner, repo_name, &path).await }
+        })
+        .await;
+        match tmpl_result {
+            Ok(true) => checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: DiagnosticStatus::Pass,
+                message: format!("\"{display}\" issue template exists"),
+            }),
+            Ok(false) => checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: DiagnosticStatus::Warning,
+                message: format!("\"{display}\" issue template not found"),
+            }),
+            Err(msg) => checks.push(DiagnosticCheck {
+                id: check_id.into(),
+                status: DiagnosticStatus::Warning,
+                message: format!("Cannot check \"{display}\": {msg}"),
+            }),
+        }
+    }
 
     checks
 }
 
+// ---------------------------------------------------------------------------
+// GitHub API helpers (read-only)
+// ---------------------------------------------------------------------------
+
 struct RepoMeta {
     has_issues: bool,
+    has_discussions: bool,
 }
 
-async fn check_repo_metadata(
-    client: &reqwest::Client,
-    token: &str,
-    repo: &str,
-) -> Result<RepoMeta, String> {
+/// Fetch repository metadata (issues + discussions enabled).
+async fn get_repo_meta(client: &reqwest::Client, repo: &str) -> Result<RepoMeta, String> {
+    let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
     let url = format!("https://api.github.com/repos/{}", repo);
     let resp = client
         .get(&url)
@@ -243,10 +342,10 @@ async fn check_repo_metadata(
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
+        .map_err(|e| format!("Network error getting repo metadata: {e}"))?;
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("GitHub token rejected (401); may need refresh".into());
+        return Err("401".to_string());
     }
     if !resp.status().is_success() {
         return Err(format!("GitHub API returned HTTP {}", resp.status()));
@@ -255,6 +354,7 @@ async fn check_repo_metadata(
     #[derive(serde::Deserialize)]
     struct RepoResponse {
         has_issues: bool,
+        has_discussions: bool,
     }
 
     let body: RepoResponse =
@@ -263,7 +363,152 @@ async fn check_repo_metadata(
 
     Ok(RepoMeta {
         has_issues: body.has_issues,
+        has_discussions: body.has_discussions,
     })
+}
+
+/// Run a GraphQL query to check for a discussion category named "Triage".
+async fn check_triage_category(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+) -> Result<bool, String> {
+    let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
+    let query = serde_json::json!({
+        "query": r#"
+            query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                    discussionCategories(first: 20) {
+                        nodes { name slug }
+                    }
+                }
+            }
+        "#,
+        "variables": { "owner": owner, "repo": repo },
+    });
+
+    let resp = client
+        .post("https://api.github.com/graphql")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "agora-launcher")
+        .header("Content-Type", "application/json")
+        .json(&query)
+        .send()
+        .await
+        .map_err(|e| format!("Network error checking triage category: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GraphQL query failed: HTTP {}", resp.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GraphQLResponse {
+        data: Option<GraphQLData>,
+    }
+    #[derive(serde::Deserialize)]
+    struct GraphQLData {
+        repository: Option<GraphQLRepo>,
+    }
+    #[derive(serde::Deserialize)]
+    struct GraphQLRepo {
+        discussion_categories: Option<GraphQLCategories>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GraphQLCategories {
+        nodes: Option<Vec<GraphQLCategory>>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GraphQLCategory {
+        name: String,
+        slug: String,
+    }
+
+    let body: GraphQLResponse =
+        serde_json::from_str(&resp.text().await.map_err(|e| format!("Parse error: {e}"))?)
+            .map_err(|e| format!("JSON parse error: {e}"))?;
+
+    let categories = body
+        .data
+        .and_then(|d| d.repository)
+        .and_then(|r| r.discussion_categories)
+        .and_then(|c| c.nodes)
+        .unwrap_or_default();
+
+    Ok(categories.iter().any(|cat| {
+        cat.name.eq_ignore_ascii_case("Triage") || cat.slug.eq_ignore_ascii_case("triage")
+    }))
+}
+
+/// Fetch all label names from the repository.
+async fn list_repo_labels(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+) -> Result<Vec<String>, String> {
+    let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/labels?per_page=100");
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "agora-launcher")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Network error listing labels: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned HTTP {}", resp.status()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct LabelResponse {
+        name: String,
+    }
+
+    let body: Vec<LabelResponse> =
+        serde_json::from_str(&resp.text().await.map_err(|e| format!("Parse error: {e}"))?)
+            .map_err(|e| format!("JSON parse error: {e}"))?;
+
+    Ok(body.into_iter().map(|l| l.name).collect())
+}
+
+/// Check whether a specific file exists in the `.github/ISSUE_TEMPLATE/`
+/// directory via the read-only Contents API.
+async fn check_template_exists(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+) -> Result<bool, String> {
+    let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}");
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "agora-launcher")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Network error checking template: {e}"))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("401".to_string());
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned HTTP {}", resp.status()));
+    }
+    Ok(true)
 }
 
 // --- Triage poll (read-only GraphQL) ---
@@ -356,7 +601,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         });
     }
 
-    // (remaining fetch_triage_poll is unchanged — see previous impl)
+    // (remaining fetch_triage_poll is unchanged; see previous impl)
     // Deserialize search results
     #[derive(Debug, serde::Deserialize)]
     struct SearchResponse {
