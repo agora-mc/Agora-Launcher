@@ -1,6 +1,10 @@
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
+use crate::governance::{
+    get_governance_summary, list_governance_events, GovernanceEvent, GovernanceSummary,
+};
 use crate::models::InstanceManifest;
+use crate::registry_sync::APP_REGISTRY_SCHEMA_VERSION;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -14,6 +18,15 @@ use std::collections::{HashMap, HashSet};
 ///
 /// Every method opens a fresh read-only connection via `Ctx` paths; desktop
 /// adapters must use this service rather than opening the database directly.
+///
+/// ## Debug-only: `AGORA_DEV_REGISTRY_DB`
+///
+/// When `AGORA_DEV_REGISTRY_DB` is set in debug builds, the service loads the
+/// registry from that path. The path must exist and have schema version
+/// >= 6 and <= [`APP_REGISTRY_SCHEMA_VERSION`]. If either condition fails,
+/// an error is returned (fail closed, not silent fallback).
+///
+/// In release builds the variable is logged and ignored.
 #[derive(Clone)]
 pub struct RegistryService {
     ctx: Ctx,
@@ -24,8 +37,104 @@ impl RegistryService {
         Self { ctx }
     }
 
-    fn connection(&self) -> LauncherResult<rusqlite::Connection> {
-        let path = self.ctx.paths.registry_db();
+    /// Resolve the registry database path, respecting debug-only dev overrides.
+    ///
+    /// Debug: fails with an error message when `AGORA_DEV_REGISTRY_DB` is set
+    /// but the path does not exist or has an unsupported schema version.
+    pub fn resolve_db_path(&self) -> LauncherResult<std::path::PathBuf> {
+        let default_path = self.ctx.paths.registry_db();
+
+        #[cfg(debug_assertions)]
+        if let Ok(dev_path_str) = std::env::var("AGORA_DEV_REGISTRY_DB") {
+            let dev_path = std::path::PathBuf::from(&dev_path_str);
+
+            if !dev_path.exists() {
+                return Err(LauncherError::Generic {
+                    code: "ERR_DEV_REGISTRY_PATH".into(),
+                    message: format!(
+                        "AGORA_DEV_REGISTRY_DB set to {} but path does not exist",
+                        dev_path.display()
+                    ),
+                });
+            }
+
+            let conn =
+                crate::db::registry_connection(&dev_path).map_err(|e| LauncherError::Generic {
+                    code: "ERR_DEV_REGISTRY_OPEN".into(),
+                    message: format!(
+                        "AGORA_DEV_REGISTRY_DB path {} cannot be opened: {e}",
+                        dev_path.display()
+                    ),
+                })?;
+
+            let version: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+
+            if version < 6 {
+                return Err(LauncherError::Generic {
+                    code: "ERR_DEV_REGISTRY_SCHEMA".into(),
+                    message: format!(
+                        "AGORA_DEV_REGISTRY_DB path {} has schema v{version}; \
+                         minimum supported is 6",
+                        dev_path.display()
+                    ),
+                });
+            }
+
+            if version > APP_REGISTRY_SCHEMA_VERSION {
+                return Err(LauncherError::Generic {
+                    code: "ERR_DEV_REGISTRY_SCHEMA_FUTURE".into(),
+                    message: format!(
+                        "AGORA_DEV_REGISTRY_DB path {} has schema v{version}; \
+                         app supports up to v{APP_REGISTRY_SCHEMA_VERSION}",
+                        dev_path.display()
+                    ),
+                });
+            }
+
+            eprintln!(
+                "[registry] AGORA_DEV_REGISTRY_DB active: using {} (schema v{version})",
+                dev_path.display()
+            );
+            return Ok(dev_path);
+        }
+
+        #[cfg(not(debug_assertions))]
+        if std::env::var("AGORA_DEV_REGISTRY_DB").is_ok() {
+            eprintln!(
+                "[registry] AGORA_DEV_REGISTRY_DB is ignored in release builds. \
+                 Using cached registry db."
+            );
+        }
+
+        Ok(default_path)
+    }
+
+    /// Whether a valid development registry override is active.
+    ///
+    /// Returns `true` only when `AGORA_DEV_REGISTRY_DB` is set AND the path
+    /// is valid (exists, schema >=6, <= APP_REGISTRY_SCHEMA_VERSION).
+    pub fn development_registry_active(&self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            self.resolve_db_path()
+                .map(|p| p != self.ctx.paths.registry_db())
+                .unwrap_or(false)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            false
+        }
+    }
+
+    /// Open a read-only connection to the resolved registry database.
+    pub fn connection(&self) -> LauncherResult<rusqlite::Connection> {
+        let path = self.resolve_db_path()?;
         if !path.exists() {
             return Err(LauncherError::RegistryMissing);
         }
@@ -336,6 +445,58 @@ impl RegistryService {
             Err(_) => return Ok(false),
         };
         Ok(stmt.exists([item_id]).unwrap_or(false))
+    }
+
+    // -----------------------------------------------------------------------
+    // Governance schema-7 queries
+    // -----------------------------------------------------------------------
+
+    /// Fetch a governance summary for a single item from `governance_summary`.
+    ///
+    /// Returns `Ok(None)` when the `governance_summary` table does not exist
+    /// (schema 6 or earlier) or when the item has no row.
+    pub fn get_governance_summary(
+        &self,
+        item_id: &str,
+    ) -> LauncherResult<Option<GovernanceSummary>> {
+        let conn = self.connection()?;
+        get_governance_summary(&conn, item_id)
+    }
+
+    /// List governance events, optionally filtered by `item_id`.
+    ///
+    /// Returns `vec![]` when the `governance_events` table does not exist
+    /// (schema 6 or earlier).
+    pub fn list_governance_events(
+        &self,
+        item_id: Option<&str>,
+        limit: i64,
+    ) -> LauncherResult<Vec<GovernanceEvent>> {
+        let conn = self.connection()?;
+        list_governance_events(&conn, item_id, limit)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dev-registry standalone check (no Ctx required)
+// ---------------------------------------------------------------------------
+
+/// Check whether `AGORA_DEV_REGISTRY_DB` is set as a compile-time or
+/// environment override.  Returns `true` when the env var is present
+/// (debug builds only).
+///
+/// This is a lightweight heuristic used by [`resolve_governance_config`]
+/// when a `RegistryService` is not available.  The authoritative check
+/// is [`RegistryService::development_registry_active`], which also
+/// validates the path and schema.
+pub fn check_dev_registry_env_set() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("AGORA_DEV_REGISTRY_DB").is_ok()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
     }
 }
 

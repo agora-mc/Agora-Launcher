@@ -39,7 +39,7 @@ const REGISTRY_PUBKEY_HEX: &str = match option_env!("AGORA_REGISTRY_PUBKEY") {
 /// fallback when a github_release mod's primary source fails). Compiler and
 /// app ship in lockstep from a single commit, so clients always receive a
 /// matching signed db via the update flow.
-pub const APP_REGISTRY_SCHEMA_VERSION: i64 = 6;
+pub const APP_REGISTRY_SCHEMA_VERSION: i64 = 7;
 
 /// Minimum interval between automatic update checks (1 hour).
 const UPDATE_CHECK_INTERVAL_SECS: i64 = 3600;

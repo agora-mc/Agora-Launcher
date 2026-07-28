@@ -4,6 +4,7 @@ use crate::crash_diagnostics::{self, CrashReportInfo, CrashTriageResult};
 use crate::crash_investigator;
 use crate::dependency_ops;
 use crate::error::{LauncherError, LauncherResult};
+use crate::governance::{DiagnosticCheck, GovernanceConfig, GovernanceEvent, GovernanceSummary};
 use crate::instances::{self, CreateInstanceRequest, InstanceDetail, LoaderVersionSummary};
 use crate::loader_manifests;
 use crate::mcp;
@@ -1696,38 +1697,70 @@ pub async fn fetch_triage_poll(
     crate::governance::fetch_triage_poll(&app, mod_id).await
 }
 
-/// Submit a comment-flag for a mod, creating a GitHub issue.
-#[allow(clippy::too_many_arguments)]
+/// Return the resolved governance configuration.
 #[tauri::command]
-pub async fn flag_review(
+pub async fn get_governance_config(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
-    mod_id: String,
-    mod_name: String,
-    issue_number: i64,
-    author: String,
-    quoted_text: String,
-    reporter_login: String,
-) -> LauncherResult<String> {
-    crate::governance::flag_review(
-        &app,
-        mod_id,
-        mod_name,
-        issue_number,
-        author,
-        quoted_text,
-        reporter_login,
-    )
-    .await
+) -> LauncherResult<GovernanceConfig> {
+    Ok(crate::governance::get_governance_config(&app))
 }
 
-/// Return the current flag rate-limit status for the local state database.
+/// Fetch the governance summary for a single registry item.
 #[tauri::command]
-pub async fn get_flag_rate_limit(
+pub async fn get_governance_summary(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<agora_core::db::FlagRateLimit> {
-    crate::governance::get_flag_rate_limit(&app)
+    item_id: String,
+) -> LauncherResult<Option<GovernanceSummary>> {
+    tokio::task::spawn_blocking(move || crate::governance::get_governance_summary(&app, &item_id))
+        .await
+        .map_err(|_| LauncherError::Generic {
+            code: "ERR_GOVERNANCE_QUERY".to_string(),
+            message: "Governance summary query failed.".to_string(),
+        })?
+}
+
+/// List governance events, optionally filtered by item_id.
+#[tauri::command]
+pub async fn list_governance_events(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    item_id: Option<String>,
+) -> LauncherResult<Vec<GovernanceEvent>> {
+    tokio::task::spawn_blocking(move || {
+        crate::governance::list_governance_events(&app, item_id.as_deref())
+    })
+    .await
+    .map_err(|_| LauncherError::Generic {
+        code: "ERR_GOVERNANCE_QUERY".to_string(),
+        message: "Governance events query failed.".to_string(),
+    })?
+}
+
+/// Run read-only governance diagnostics combining sync + async checks.
+///
+/// 1. Spawn_blocking for sync checks (oauth, token, repo, schema tables, parses).
+/// 2. Await async network checks (repo metadata, issues, discussions, labels).
+/// 3. Merge and return all `Vec<DiagnosticCheck>`.
+#[tauri::command]
+pub async fn run_governance_diagnostics(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<Vec<DiagnosticCheck>> {
+    let sync_app = app.clone();
+    let mut sync_checks: Vec<DiagnosticCheck> =
+        tokio::task::spawn_blocking(move || crate::governance::run_sync_diagnostics(&sync_app))
+            .await
+            .map_err(|_| LauncherError::Generic {
+                code: "ERR_GOVERNANCE_DIAGNOSTICS".to_string(),
+                message: "Governance sync diagnostics task failed.".to_string(),
+            })?;
+
+    let net_checks = crate::governance::run_network_diagnostics(&app).await;
+
+    sync_checks.extend(net_checks);
+    Ok(sync_checks)
 }
 
 /// Return one locally enriched inventory snapshot for an instance.
