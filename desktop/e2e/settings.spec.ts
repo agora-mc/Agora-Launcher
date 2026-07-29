@@ -51,7 +51,7 @@ test('one failed setting does not cascade and settings page renders', async ({ p
 
   // The settings page should render all sections even though ai_mcp_enabled
   // failed to load. Sensible defaults are used for the failed setting.
-  await expect(page.getByText('Modrinth Integration')).toBeVisible();
+  await expect(page.getByText('Modrinth Integration', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'GitHub Account' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Launch Mode' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Launcher Path' })).toBeVisible();
@@ -104,7 +104,7 @@ test('boolean settings are sent to Tauri as JSON booleans', async ({ page }) => 
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(page.getByText('Modrinth Integration')).toBeVisible();
+  await expect(page.getByText('Modrinth Integration', { exact: true })).toBeVisible();
   await page.locator('#settings-services input[type="checkbox"]').first().check();
 
   await expect.poll(async () => page.evaluate(() => (window as any).__settingWrites)).toContainEqual({

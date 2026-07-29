@@ -523,11 +523,12 @@ pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
 
 /// Clear the stored token bundle from all storage locations.
 pub fn clear_token_bundle() -> Result<(), String> {
+    let mut keyring_error = None;
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
         match entry.delete_password() {
-            Ok(()) => {}
-            Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(format!("Failed to delete GitHub token: {}", e)),
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) if keyring_backend_unavailable(&error) => {}
+            Err(error) => keyring_error = Some(error),
         }
     }
 
@@ -537,7 +538,10 @@ pub fn clear_token_bundle() -> Result<(), String> {
         }
     }
 
-    Ok(())
+    match keyring_error {
+        Some(error) => Err(format!("Failed to delete GitHub token: {error}")),
+        None => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +764,10 @@ fn fallback_secret_path(file_name: &str) -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|d| d.join("agora").join(file_name))
 }
 
+fn keyring_backend_unavailable(error: &keyring::Error) -> bool {
+    matches!(error, keyring::Error::PlatformFailure(_))
+}
+
 pub(crate) fn store_secret(
     service: &str,
     account: &str,
@@ -804,8 +812,10 @@ pub(crate) fn load_secret(
         Ok(entry) => match entry.get_password() {
             Ok(value) => return Ok(Some(value)),
             Err(keyring::Error::NoEntry) => {}
+            Err(error) if keyring_backend_unavailable(&error) => {}
             Err(error) => keyring_error = Some(error.to_string()),
         },
+        Err(error) if keyring_backend_unavailable(&error) => {}
         Err(error) => keyring_error = Some(error.to_string()),
     }
 
@@ -838,15 +848,12 @@ pub(crate) fn clear_secret(
     account: &str,
     fallback_file: &str,
 ) -> LauncherResult<()> {
+    let mut keyring_error = None;
     if let Ok(entry) = keyring::Entry::new(service, account) {
         match entry.delete_password() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(error) => {
-                return Err(LauncherError::Generic {
-                    code: "ERR_AUTH_KEYRING_DELETE".into(),
-                    message: format!("Failed to delete credentials from the OS keyring: {error}"),
-                });
-            }
+            Err(error) if keyring_backend_unavailable(&error) => {}
+            Err(error) => keyring_error = Some(error),
         }
     }
     if let Some(path) = fallback_secret_path(fallback_file) {
@@ -857,7 +864,13 @@ pub(crate) fn clear_secret(
             })?;
         }
     }
-    Ok(())
+    match keyring_error {
+        Some(error) => Err(LauncherError::Generic {
+            code: "ERR_AUTH_KEYRING_DELETE".into(),
+            message: format!("Failed to delete credentials from the OS keyring: {error}"),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Returns true — the fallback is always available on all platforms.
