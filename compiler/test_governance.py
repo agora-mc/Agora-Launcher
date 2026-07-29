@@ -455,6 +455,32 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(r["sodium"]["status_reason"], "normal")
         self.assertIn("velocity", r["sodium"])
 
+    def test_canonical_pack_id_participates_in_governance(self):
+        self.vi.write_text(json.dumps({
+            "schema_version": 1,
+            "items": {"optimized-survival": {"issue_number": 6}},
+        }), encoding="utf-8")
+        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: []
+        gov.INJECTED_FETCH_REACTIONS = lambda o, r, i, token: [
+            _reaction(1, "alice", "+1")
+        ]
+
+        result = gov.run_governance_pipeline(
+            [{"id": "optimized-survival", "content_type": "pack", "name": "Optimized Survival"}],
+            mode=gov.GovernanceMode.READ_ONLY,
+            policy=gov.GovernancePolicy.PRODUCTION,
+            governance_repo="owner/repo",
+            token="t",
+            blacklist=set(),
+            vote_issues_path=self.vi,
+            governance_state_in_path=self.gs,
+            governance_state_out_path=self.gs,
+            quarantine_decisions_path=self.qd,
+            discord_webhook_url=None,
+        )
+
+        self.assertEqual(result["optimized-survival"]["counted_upvotes"], 1)
+
     def test_state_persistence_no_new_event_if_unchanged(self):
         gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100)]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"alice","+1")]

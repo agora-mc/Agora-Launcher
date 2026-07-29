@@ -308,13 +308,13 @@ impl RegistryService {
         list_categories(&conn)
     }
 
-    /// Look up a curated annotation for a Modrinth project.
+    /// Look up a curated annotation for a registry item by its registry id.
     pub fn get_curated_annotation(
         &self,
-        modrinth_id: &str,
+        item_id: &str,
     ) -> LauncherResult<Option<CuratedAnnotation>> {
         let conn = self.connection()?;
-        get_curated_annotation(&conn, modrinth_id)
+        get_curated_annotation(&conn, item_id)
     }
 
     /// Batch compatibility lookup: for each item_id, resolve whether it declares
@@ -1332,19 +1332,30 @@ pub struct CuratedAnnotation {
     pub base_categories: Vec<String>,
 }
 
-/// Look up a curated annotation for a Modrinth project.
+/// Look up a curated annotation for a registry item by its registry id.
 ///
-/// Queries `registry_items` by `modrinth_id`, then fetches the item's
-/// categories from `item_categories`. Returns `None` when no curated entry
-/// exists for the given Modrinth project ID.
+/// Queries `registry_items` by `id`, LEFT JOINs `curator_reviews` to pull the
+/// real curator note from `curator_reviews.curator_note` (rather than reusing
+/// the registry item description), then fetches the item's base categories
+/// from `item_categories`. Returns `None` when no curated entry exists for the
+/// given registry item id.
+///
+/// Lookup is intentionally by `registry_items.id`, not `modrinth_id`, so
+/// curated entries without a Modrinth link still surface. Callers passing a
+/// Modrinth project id will get `None` even if a curated entry for that
+/// Modrinth project exists — the registry id is the canonical identity, and
+/// Modrinth-only results must be resolved to a registry id before being
+/// treated as curated.
 pub fn get_curated_annotation(
     conn: &Connection,
-    modrinth_id: &str,
+    item_id: &str,
 ) -> LauncherResult<Option<CuratedAnnotation>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, net_score, is_immune, description \
-             FROM registry_items WHERE modrinth_id = ?1",
+            "SELECT ri.id, ri.name, ri.net_score, ri.is_immune, cr.curator_note \
+             FROM registry_items ri \
+             LEFT JOIN curator_reviews cr ON cr.item_id = ri.id \
+             WHERE ri.id = ?1",
         )
         .map_err(|e| LauncherError::Generic {
             code: "ERR_INVALID_QUERY".to_string(),
@@ -1352,7 +1363,7 @@ pub fn get_curated_annotation(
         })?;
 
     let mut rows = stmt
-        .query_map([modrinth_id], |row| {
+        .query_map([item_id], |row| {
             let id: String = row.get(0)?;
             let name: String = row.get(1)?;
             let net_score: i64 = row.get(2)?;
@@ -2113,6 +2124,11 @@ mod tests {
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
             );
+            CREATE TABLE curator_reviews (
+                item_id TEXT PRIMARY KEY,
+                curator_note TEXT,
+                top_reviews_json TEXT
+            );
             INSERT INTO registry_items VALUES (
                 'curated-mod', 'Curated Mod', 'mod', 'modrinth_id',
                 'mr-id-123', 'abc', 100, 5, 85, 2.0, 'approved',
@@ -2121,26 +2137,133 @@ mod tests {
             );
             INSERT INTO item_categories VALUES ('curated-mod', 'fabric');
             INSERT INTO item_categories VALUES ('curated-mod', 'adventure');
+            INSERT INTO curator_reviews VALUES ('curated-mod', 'A real curator note.', '[]');
             ",
         )
         .unwrap();
 
-        let annotation = get_curated_annotation(&conn, "mr-id-123")
+        // Lookup must use the registry item id, not the modrinth id. The
+        // prior implementation queried by modrinth_id, which silently dropped
+        // curated entries that lacked one.
+        let annotation = get_curated_annotation(&conn, "curated-mod")
             .unwrap()
             .expect("Expected some annotation");
         assert_eq!(annotation.id, "curated-mod");
         assert_eq!(annotation.name, "Curated Mod");
         assert!(annotation.is_immune);
         assert_eq!(annotation.net_score, Some(85.0));
+        // The curator note now comes from curator_reviews.curator_note, not
+        // from the registry item description.
         assert_eq!(
             annotation.curator_note,
-            Some("A curated mod description".to_string())
+            Some("A real curator note.".to_string())
         );
         assert_eq!(annotation.base_categories.len(), 2);
         assert!(annotation.base_categories.contains(&"fabric".to_string()));
         assert!(annotation
             .base_categories
             .contains(&"adventure".to_string()));
+    }
+
+    #[test]
+    fn test_get_curated_annotation_found_without_modrinth_id() {
+        // Regression: registry entries with no modrinth_id must still surface
+        // curated features when looked up by their registry id. The prior
+        // implementation queried by modrinth_id and so vanished these entries
+        // from the curated UI.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT
+            );
+            CREATE TABLE item_categories (
+                item_id TEXT, category_id TEXT
+            );
+            CREATE TABLE curator_reviews (
+                item_id TEXT PRIMARY KEY,
+                curator_note TEXT,
+                top_reviews_json TEXT
+            );
+            INSERT INTO registry_items VALUES (
+                'github-mod', 'GitHub Mod', 'mod', 'github_release',
+                'owner/repo', 'abc', 40, 3, 37, 1.0, 'approved',
+                0, NULL, 1, NULL, NULL, '2024-06-01T00:00:00Z', NULL,
+                'A github mod description', NULL, NULL, NULL, NULL, NULL
+            );
+            INSERT INTO item_categories VALUES ('github-mod', 'performance');
+            INSERT INTO curator_reviews VALUES ('github-mod', 'Note from curators.', '[]');
+            ",
+        )
+        .unwrap();
+
+        let annotation = get_curated_annotation(&conn, "github-mod")
+            .unwrap()
+            .expect("Expected some annotation");
+        assert_eq!(annotation.id, "github-mod");
+        assert_eq!(annotation.name, "GitHub Mod");
+        assert!(!annotation.is_immune);
+        assert_eq!(annotation.net_score, Some(37.0));
+        assert_eq!(
+            annotation.curator_note,
+            Some("Note from curators.".to_string())
+        );
+        assert_eq!(annotation.base_categories, vec!["performance".to_string()]);
+    }
+
+    #[test]
+    fn test_get_curated_annotation_ignores_modrinth_id_lookup() {
+        // Contract: a Modrinth project id passed as the lookup key must NOT
+        // resolve to a curated entry even when one exists for that project;
+        // the registry id is the canonical identity and Modrinth-only results
+        // must be resolved to a registry id before receiving curated features.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT
+            );
+            CREATE TABLE item_categories (
+                item_id TEXT, category_id TEXT
+            );
+            CREATE TABLE curator_reviews (
+                item_id TEXT PRIMARY KEY,
+                curator_note TEXT,
+                top_reviews_json TEXT
+            );
+            INSERT INTO registry_items VALUES (
+                'curated-mod', 'Curated Mod', 'mod', 'modrinth_id',
+                'mr-id-123', 'abc', 100, 5, 85, 2.0, 'approved',
+                1, NULL, 1, NULL, NULL, '2024-06-01T00:00:00Z', NULL,
+                'A curated mod description', NULL, NULL, NULL, NULL, 'mr-id-123'
+            );
+            INSERT INTO curator_reviews VALUES ('curated-mod', 'Note.', '[]');
+            ",
+        )
+        .unwrap();
+
+        let result = get_curated_annotation(&conn, "mr-id-123").unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
@@ -2163,6 +2286,11 @@ mod tests {
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
+            );
+            CREATE TABLE curator_reviews (
+                item_id TEXT PRIMARY KEY,
+                curator_note TEXT,
+                top_reviews_json TEXT
             );
             ",
         )

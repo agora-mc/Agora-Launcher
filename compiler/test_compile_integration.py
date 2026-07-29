@@ -204,6 +204,30 @@ class TestRegistryItemsRequiredFields(_CompileFixtures):
             conn.close()
 
 
+class TestPackIdentity(_CompileFixtures):
+    def test_pack_uses_canonical_registry_identity(self):
+        conn = self._open_db()
+        try:
+            row = conn.execute(
+                "SELECT id, content_type FROM registry_items WHERE id = ?",
+                ("optimized-survival",),
+            ).fetchone()
+            self.assertEqual(row, ("optimized-survival", "pack"))
+        finally:
+            conn.close()
+
+    def test_pack_mod_rows_reference_canonical_id(self):
+        conn = self._open_db()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM pack_mods WHERE pack_id = ?",
+                ("optimized-survival",),
+            ).fetchone()[0]
+            self.assertGreater(count, 0)
+        finally:
+            conn.close()
+
+
 class TestFabricApiAliases(_CompileFixtures):
     """Test 11: fabric-api has both 'fabric' and 'fabric_api' aliases."""
 

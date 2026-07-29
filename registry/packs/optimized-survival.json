@@ -1,5 +1,6 @@
 {
-  "pack_id": "optimized-survival",
+  "id": "optimized-survival",
+  "content_type": "pack",
   "name": "Community Optimized Survival",
   "minecraft_version": "1.21",
   "loader": "fabric",

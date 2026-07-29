@@ -57,6 +57,28 @@ _CLI_STATE_IN: str | None = None
 _CLI_STATE_OUT: str | None = None
 _CLI_REGISTRY_ROOT: str | None = None
 
+
+def normalize_pack_identity(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the deprecated top-level pack_id alias to canonical id."""
+    if "pack_id" not in item:
+        return item
+
+    pack_id = item["pack_id"]
+    item_id = item.get("id")
+    if not isinstance(pack_id, str) or not pack_id:
+        raise ValueError("pack_id must be a non-empty string")
+    if item_id is not None and item_id != pack_id:
+        raise ValueError(
+            f"id {item_id!r} and deprecated pack_id {pack_id!r} must match"
+        )
+    if item.get("content_type", "pack") != "pack":
+        raise ValueError("a manifest containing pack_id must have content_type 'pack'")
+
+    item["id"] = pack_id
+    item.setdefault("content_type", "pack")
+    return item
+
+
 # ---------------------------------------------------------------------------
 # Regex DoS protection (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§2.4.1)
 # ---------------------------------------------------------------------------
@@ -2792,6 +2814,21 @@ def compile_registry(
     for dir_name in CONTENT_DIRS:
         all_items.extend(load_json_files(REGISTRY_DIR / dir_name))
 
+    # Identity must be canonical before hydration and governance. Keep the
+    # legacy alias readable for existing registries, but never let downstream
+    # passes grow content-type-specific identity lookups.
+    for path, item in all_items:
+        legacy_pack_id = "pack_id" in item and "id" not in item
+        try:
+            normalize_pack_identity(item)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid pack identity in {path}: {exc}") from exc
+        if legacy_pack_id:
+            logger.warning(
+                "%s uses deprecated top-level pack_id; migrate to id + content_type='pack'.",
+                path,
+            )
+
     # Hydrate Modrinth metadata (description, body, icon, gallery, page URL,
     # license, updated) for modrinth_id items (in-place, with override precedence).
     _hydrate_modrinth_metadata([item for _, item in all_items])
@@ -2879,11 +2916,9 @@ def compile_registry(
     other_count = 0
     for path, data in all_items:
         content_type = data.get("content_type", "mod")
-        is_pack = content_type == "pack" or "pack_id" in data
+        is_pack = content_type == "pack"
         if is_pack:
             pack = dict(data)
-            if "pack_id" in pack and "id" not in pack:
-                pack["id"] = pack["pack_id"]
             pack.setdefault("content_type", "pack")
             pack.setdefault("download_strategy", "curated_pack")
             pack.setdefault("source_identifier", pack["id"])

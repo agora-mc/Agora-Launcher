@@ -85,6 +85,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
   const ts = useTypedSettings();
 
   const [modrinth, setModrinth] = useState(false);
+  const [browseCuratedOnly, setBrowseCuratedOnly] = useState(false);
   const [aiMcp, setAiMcp] = useState(false);
   const [aiChatEnabled, setAiChatEnabled] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
@@ -172,6 +173,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
   useEffect(() => {
     if (ts.loading) return;
     setModrinth(ts.values.modrinthEnabled as boolean ?? false);
+    setBrowseCuratedOnly(ts.values.browseCuratedOnly as boolean ?? false);
     setAiMcp(ts.values.aiMcpEnabled as boolean ?? false);
     setAiChatEnabled(ts.values.aiChatEnabled as boolean ?? false);
     setLauncherPath(ts.values.launcherPath as string ?? '');
@@ -385,6 +387,16 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
       await ts.update(SETTINGS.modrinthEnabled, value);
     } catch (e) {
       setModrinth(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleBrowseCuratedOnly = async (value: boolean) => {
+    setBrowseCuratedOnly(value);
+    try {
+      await ts.update(SETTINGS.browseCuratedOnly, value);
+    } catch (e) {
+      setBrowseCuratedOnly(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -735,6 +747,22 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
             </p>
             {ts.statuses['modrinth_enabled']?.status === 'error' && (
               <p className="text-xs text-destructive">{ts.statuses['modrinth_enabled']?.error}</p>
+            )}
+
+            <label className="flex items-center justify-between pt-2 border-t border-border">
+              <span className="text-sm">Browse — Curated only</span>
+              <input
+                type="checkbox"
+                checked={browseCuratedOnly}
+                onChange={(e) => toggleBrowseCuratedOnly(e.target.checked)}
+                className="h-5 w-5 accent-primary"
+              />
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Show only Agora's curated catalog entries on the Browse page. Non-curated Modrinth results are hidden even when Modrinth Integration is enabled.
+            </p>
+            {ts.statuses['browse_curated_only']?.status === 'error' && (
+              <p className="text-xs text-destructive">{ts.statuses['browse_curated_only']?.error}</p>
             )}
 
             

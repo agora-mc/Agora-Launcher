@@ -447,6 +447,14 @@
       "target_type": "registry",
       "reason": "nightly_compile",
       "details": "Compiled registry with 6 items, 4 crash signatures"
+    },
+    {
+      "timestamp": "2026-07-29T01:22:58.995472+00:00",
+      "action": "compile",
+      "actor": "compiler-bot",
+      "target_type": "registry",
+      "reason": "nightly_compile",
+      "details": "Compiled registry with 6 items, 4 crash signatures"
     }
   ],
   "log_format_version": 1

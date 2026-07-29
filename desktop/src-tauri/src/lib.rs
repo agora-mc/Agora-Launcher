@@ -153,6 +153,8 @@ pub fn run() {
             commands::fetch_triage_poll,
             commands::get_governance_config,
             commands::get_governance_summary,
+            commands::get_item_vote,
+            commands::set_item_vote,
             commands::list_governance_events,
             commands::run_governance_diagnostics,
             commands::list_instance_content,

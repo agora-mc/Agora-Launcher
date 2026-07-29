@@ -36,6 +36,20 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 
+function parseBool(raw: unknown): boolean {
+  return raw === true || raw === 'true' || raw === 1 || raw === '1';
+}
+
+async function modrinthEffectivelyEnabled(): Promise<boolean> {
+  const [mr, curatedOnly] = await Promise.allSettled([
+    getSetting('modrinth_enabled'),
+    getSetting('browse_curated_only'),
+  ]);
+  const modrinthOn = mr.status === 'fulfilled' && parseBool(mr.value);
+  const curatedOnlyOn = curatedOnly.status === 'fulfilled' && parseBool(curatedOnly.value);
+  return modrinthOn && !curatedOnlyOn;
+}
+
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -568,7 +582,7 @@ function BrowseContent({
         setMetaError(null);
         const [curatedResult, modrinthEnabledResult] = await Promise.allSettled([
           listCategories(),
-          getSetting('modrinth_enabled'),
+          modrinthEffectivelyEnabled(),
         ]);
         if (cancelled) return;
 
@@ -579,7 +593,7 @@ function BrowseContent({
         }
 
         const modrinthEnabled = modrinthEnabledResult.status === 'fulfilled'
-          && (modrinthEnabledResult.value === true || modrinthEnabledResult.value === 'true');
+          && modrinthEnabledResult.value === true;
         if (modrinthEnabled) {
           try {
             const result = await listModrinthCategories();
@@ -651,8 +665,7 @@ function BrowseContent({
         if (sort === 'for_you') {
           let modrinthEnabled = false;
           try {
-            const m = await getSetting('modrinth_enabled');
-            modrinthEnabled = m === true || m === 'true';
+            modrinthEnabled = await modrinthEffectivelyEnabled();
           } catch { /* default false */ }
 
           const registryItems = await forYouItems(
@@ -1018,8 +1031,7 @@ function BrowseContent({
                       // simplified for_you retry
                       let modrinthEnabled = false;
                       try {
-                        const m = await getSetting('modrinth_enabled');
-                        modrinthEnabled = m === true || m === 'true';
+                        modrinthEnabled = await modrinthEffectivelyEnabled();
                       } catch {}
                       const registryItems = await forYouItems(
                         modrinthEnabled,

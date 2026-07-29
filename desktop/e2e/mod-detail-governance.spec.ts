@@ -78,6 +78,9 @@ interface ModDetailMockOptions {
   governanceSummary?: Record<string, unknown>;
   showQuarantine?: boolean;
   registryItem?: Record<string, unknown>;
+  authenticated?: boolean;
+  itemVoteState?: { vote: 'upvote' | 'downvote' | null; conflicted: boolean };
+  voteError?: string | null;
 }
 
 async function installModDetailMock(
@@ -89,6 +92,9 @@ async function installModDetailMock(
     governanceSummary = GOV_SUMMARY_NO_VOTE,
     showQuarantine = false,
     registryItem = REGISTRY_ITEM,
+    authenticated = true,
+    itemVoteState = { vote: null, conflicted: false },
+    voteError = null,
   } = opts;
 
   const summary = showQuarantine
@@ -101,12 +107,15 @@ async function installModDetailMock(
   await page.addInitScript(
     (params: Record<string, unknown>) => {
       const {
-        config, summary, registryItem, initDest,
+        config, summary, registryItem, initDest, authenticated, itemVoteState, voteError,
       } = params as unknown as {
         config: Record<string, unknown> | null;
         summary: Record<string, unknown>;
         registryItem: Record<string, unknown>;
         initDest: { type: string; itemId: string };
+        authenticated: boolean;
+        itemVoteState: { vote: 'upvote' | 'downvote' | null; conflicted: boolean };
+        voteError: string | null;
       };
 
       // Seed the history state so useDestination restores mod-detail on boot
@@ -114,6 +123,8 @@ async function installModDetailMock(
 
       const callbacks = new Map<number, (...args: unknown[]) => void>();
       let callbackId = 0;
+      let currentVote = itemVoteState;
+      const voteCalls: Record<string, unknown>[] = [];
 
       const internals = {
         transformCallback(callback: (...args: unknown[]) => void) {
@@ -133,6 +144,7 @@ async function installModDetailMock(
             return Promise.resolve(null);
           }
           if (command === 'set_setting') return Promise.resolve(null);
+          if (command === 'get_auth_status') return Promise.resolve(authenticated);
           if (command === 'get_registry_status') return Promise.resolve({
             has_cached_db: true,
             cached_tag: 'test',
@@ -173,6 +185,16 @@ async function installModDetailMock(
             return Promise.resolve({ ...summary, item_id: itemId });
           }
           if (command === 'get_governance_config') return Promise.resolve(config);
+          if (command === 'get_item_vote') return Promise.resolve(currentVote);
+          if (command === 'set_item_vote') {
+            voteCalls.push({ ...args });
+            if (voteError) return Promise.reject({ code: 'ERR_GOVERNANCE_VOTE', message: voteError });
+            currentVote = {
+              vote: (args.vote as 'upvote' | 'downvote' | null) ?? null,
+              conflicted: false,
+            };
+            return Promise.resolve(currentVote);
+          }
           if (command === 'list_mod_reviews') return Promise.resolve([
             {
               author: 'reviewer1',
@@ -198,9 +220,10 @@ async function installModDetailMock(
       Object.assign(window as unknown as Record<string, unknown>, {
         __TAURI_INTERNALS__: internals,
         __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
+        __voteCalls: voteCalls,
       });
     },
-    { config, summary, registryItem, initDest },
+    { config, summary, registryItem, initDest, authenticated, itemVoteState, voteError },
   );
 }
 
@@ -326,4 +349,94 @@ test.describe('ModDetail Governance summary fields', () => {
     await expect(page.getByText('Under review due to conflict flags')).toBeVisible();
   });
 
+});
+
+test.describe('ModDetail canonical voting controls', () => {
+  test('shows arrow controls with authoritative counts for mapped curated items', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    const downvote = page.getByRole('button', { name: 'Downvote Test Mod. 2 downvotes.' });
+    await expect(upvote).toBeEnabled();
+    await expect(downvote).toBeEnabled();
+    await expect(upvote.locator('svg')).toHaveCount(1);
+    await expect(downvote.locator('svg')).toHaveCount(1);
+  });
+
+  test('records an upvote without changing the published count', async ({ page }) => {
+    await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await upvote.click();
+
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    await expect(upvote).toContainText('10');
+    await expect(page.getByText(/Upvote recorded\. Scores update after the next registry build/)).toBeVisible();
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
+  });
+
+  test('clicking the selected direction retracts the vote', async ({ page }) => {
+    await installModDetailMock(page, {
+      governanceSummary: GOV_SUMMARY_WITH_VOTE,
+      itemVoteState: { vote: 'upvote', conflicted: false },
+    });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    await upvote.click();
+    await expect(upvote).toHaveAttribute('aria-pressed', 'false');
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: null }]);
+  });
+
+  test('switches vote direction and repairs conflicted reactions', async ({ page }) => {
+    await installModDetailMock(page, {
+      governanceSummary: GOV_SUMMARY_WITH_VOTE,
+      itemVoteState: { vote: null, conflicted: true },
+    });
+    await page.goto('/');
+
+    await expect(page.getByText(/Conflicting reactions detected/)).toBeVisible();
+    await page.getByRole('button', { name: 'Downvote Test Mod. 2 downvotes.' }).click();
+    const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
+    expect(calls).toEqual([{ itemId: 'test-mod', vote: 'downvote' }]);
+  });
+
+  test('disables in-app voting when GitHub is signed out', async ({ page }) => {
+    await installModDetailMock(page, {
+      governanceSummary: GOV_SUMMARY_WITH_VOTE,
+      authenticated: false,
+    });
+    await page.goto('/');
+
+    await expect(page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' })).toBeDisabled();
+    await expect(page.getByText('Sign in with GitHub in Settings to vote.')).toBeVisible();
+  });
+
+  test('does not render vote buttons for immune or unmapped items', async ({ page }) => {
+    await installModDetailMock(page, {
+      governanceSummary: GOV_SUMMARY_WITH_VOTE,
+      registryItem: { ...REGISTRY_ITEM, is_immune: true, immunity_reason: 'Protected.' },
+    });
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: /Upvote Test Mod/ })).toHaveCount(0);
+  });
+
+  test('rolls back selection and reports a failed vote', async ({ page }) => {
+    await installModDetailMock(page, {
+      governanceSummary: GOV_SUMMARY_WITH_VOTE,
+      itemVoteState: { vote: 'upvote', conflicted: false },
+      voteError: 'GitHub rejected the vote.',
+    });
+    await page.goto('/');
+
+    const upvote = page.getByRole('button', { name: 'Upvote Test Mod. 10 upvotes.' });
+    await page.getByRole('button', { name: 'Downvote Test Mod. 2 downvotes.' }).click();
+    await expect(upvote).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('alert')).toContainText('GitHub rejected the vote.');
+  });
 });

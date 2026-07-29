@@ -3,12 +3,14 @@ import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { defaultSchema, type Schema } from 'hast-util-sanitize';
+import { ArrowDown, ArrowUp } from 'lucide-react';
 import {
   formatError,
   getAuthStatus,
   getCuratedAnnotation,
   getGovernanceSummary,
   getGovernanceConfig,
+  getItemVote,
   getRegistryItem,
   isModrinthEnabled,
   listInstances,
@@ -20,12 +22,15 @@ import {
   listModVersionsLoadMore,
   listPackMods,
   listRawModrinthVersions,
+  setItemVote,
   createInstance,
   fetchModrinthProject,
   type CreateInstanceRequest,
   type CuratedAnnotation,
   type GovernanceSummary,
   type GovernanceConfig,
+  type ItemVote,
+  type ItemVoteState,
   type InstanceRow,
   type ModReview,
   type ModrinthProjectFull,
@@ -35,6 +40,8 @@ import {
   type RawModrinthVersionCandidate,
 } from '../lib/tauri';
 import { InstallFlow } from '../components/InstallFlow';
+import { showToast } from '../components/Toast';
+import { formatDate } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent, SourceType } from '../lib/installFlow';
 
@@ -80,6 +87,12 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
   const [item, setItem] = useState<RegistryItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // True only when the item was resolved from registry_items via
+  // getRegistryItem(itemId). Curated features (Agora tab, Agora Curated badge,
+  // governance summary) are gated on this flag — a Modrinth-only result
+  // (getRegistryItem returned null and we fell back to fetchModrinthProject)
+  // is not curated by Agora and must not hover between two identities.
+  const [isRegistryBacked, setIsRegistryBacked] = useState(false);
 
   // Pack-as-instance state
   const [showPackCreate, setShowPackCreate] = useState(false);
@@ -114,6 +127,9 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
   // Governance summary state
   const [governanceSummary, setGovernanceSummary] = useState<GovernanceSummary | null>(null);
   const [governanceConfig, setGovernanceConfig] = useState<GovernanceConfig | null>(null);
+  const [itemVoteState, setItemVoteState] = useState<ItemVoteState | null>(null);
+  const [votePending, setVotePending] = useState(false);
+  const [voteLoadError, setVoteLoadError] = useState<string | null>(null);
   const governanceLoadedForRef = useRef<string | null>(null);
 
   // Tab state
@@ -165,12 +181,27 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
       try {
         if (!cancelled) setLoading(true);
         setError(null);
+        // Reset per item so a stale registry-backed flag from a previous
+        // navigation cannot leak into a Modrinth-only view, and so the prior
+        // item's curator note does not briefly render against the new item
+        // while the fresh annotation fetch is in flight.
+        if (!cancelled) {
+          setIsRegistryBacked(false);
+          setCuratedAnnotation(null);
+          setGovernanceSummary(null);
+          setGovernanceConfig(null);
+          setItemVoteState(null);
+          setVoteLoadError(null);
+          setAuthed(null);
+        }
         // Try registry first
         const result = await getRegistryItem(itemId);
         if (!cancelled) {
           if (result) {
             setItem(result);
+            setIsRegistryBacked(true);
           } else {
+            setIsRegistryBacked(false);
             // Not in registry — try as a Modrinth project ID
             const project = await fetchModrinthProject(itemId);
             if (!cancelled) {
@@ -301,10 +332,11 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
     return () => { cancelled = true; };
   }, [createLoader, item?.compatible_versions_json, createMcVersion]);
 
-  // Validate GitHub and fetch governance summary when governance tab becomes visible.
+  // Load governance metadata early so mapped curated items can expose voting
+  // beside their headline score, without requiring a visit to the Agora tab.
   useEffect(() => {
-    if (!item || activeTab !== 'agora' || governanceLoadedForRef.current === itemId) return;
-    governanceLoadedForRef.current = itemId;
+    if (!item || !isRegistryBacked || governanceLoadedForRef.current === item.id) return;
+    governanceLoadedForRef.current = item.id;
     let cancelled = false;
     (async () => {
       try {
@@ -315,14 +347,22 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
         ]);
         if (cancelled) return;
         setAuthed(auth);
-        if (summary) setGovernanceSummary(summary);
-        if (cfg) setGovernanceConfig(cfg);
+        setGovernanceSummary(summary);
+        setGovernanceConfig(cfg);
+        if (auth && summary?.vote_issue_number && !item.is_immune) {
+          try {
+            const voteState = await getItemVote(item.id);
+            if (!cancelled) setItemVoteState(voteState);
+          } catch (voteError) {
+            if (!cancelled) setVoteLoadError(formatError(voteError));
+          }
+        }
       } catch {
         // Non-fatal
       }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, itemId, item?.id]);
+  }, [isRegistryBacked, item?.id, item?.is_immune]);
 
   // Load reviews when item is available
   useEffect(() => {
@@ -342,21 +382,24 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
     return () => { cancelled = true; };
   }, [item]);
 
-  // Fetch curated annotation for ALL items (modrinth_id or registry id).
+  // Fetch curated annotation for registry-backed items by their registry id.
+  // Modrinth-only items are not curated by Agora and must never receive an
+  // annotation (registry is the sole source of truth for curation). Looking
+  // the item up by `item.id` — the actual registry_items.id column — keeps
+  // curated features working for registry entries that have no modrinth_id.
   useEffect(() => {
-    if (!item) return;
+    if (!item || !isRegistryBacked) return;
     let cancelled = false;
     (async () => {
       try {
-        const key = item.modrinth_id || item.id;
-        const ann = await getCuratedAnnotation(key);
+        const ann = await getCuratedAnnotation(item.id);
         if (!cancelled) setCuratedAnnotation(ann);
       } catch {
         // Annotation fetch failure is non-fatal.
       }
     })();
     return () => { cancelled = true; };
-  }, [item]);
+  }, [item, isRegistryBacked]);
 
   // Fetch full Modrinth project data when the item has a modrinth_id.
   useEffect(() => {
@@ -727,6 +770,32 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
     }
   };
 
+  const handleVote = async (direction: ItemVote) => {
+    if (!item || item.id !== itemId || !itemVoteState || votePending) return;
+    const previous = itemVoteState;
+    const desired = !previous.conflicted && previous.vote === direction ? null : direction;
+    setVotePending(true);
+    try {
+      const next = await setItemVote(item.id, desired);
+      setItemVoteState(next);
+      setVoteLoadError(null);
+      showToast(
+        desired
+          ? `${desired === 'upvote' ? 'Upvote' : 'Downvote'} recorded. Scores update after the next registry build.`
+          : 'Vote removed. Scores update after the next registry build.',
+      );
+    } catch (voteError) {
+      try {
+        setItemVoteState(await getItemVote(item.id));
+      } catch {
+        setItemVoteState(previous);
+      }
+      showToast(formatError(voteError), 'error');
+    } finally {
+      setVotePending(false);
+    }
+  };
+
   const hasModrinthId = !!item.modrinth_id;
   const canShowModrinthVersions = hasModrinthId && modrinthEnabled !== false;
   const canShowGithubVersions = !hasModrinthId || (hasModrinthId && modrinthEnabled === false && item.download_strategy === 'github_release');
@@ -773,7 +842,7 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
                   {item.content_type}
                 </span>
               )}
-              {curatedAnnotation && (
+              {isRegistryBacked && (
                 <span className="rounded-full border border-amber-500 bg-amber-50 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-600">
                   Agora Curated
                 </span>
@@ -798,12 +867,65 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
             {!modrinthProject && item.description && (
               <p className="text-sm text-foreground mt-2">{item.description}</p>
             )}
-            <p className="text-xs text-muted-foreground mt-3">
-              ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
-            </p>
+            {isRegistryBacked && !item.is_immune && governanceSummary?.vote_issue_number ? (
+              <div className="mt-3 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <button
+                    type="button"
+                    aria-label={`Upvote ${item.name}. ${item.upvotes} upvotes.`}
+                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
+                    disabled={authed !== true || !itemVoteState || votePending}
+                    onClick={() => handleVote('upvote')}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
+                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'border-border text-muted-foreground hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300'
+                    }`}
+                  >
+                    <ArrowUp aria-hidden size={15} />
+                    <span>{item.upvotes}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Downvote ${item.name}. ${item.downvotes} downvotes.`}
+                    aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'}
+                    disabled={authed !== true || !itemVoteState || votePending}
+                    onClick={() => handleVote('downvote')}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      !itemVoteState?.conflicted && itemVoteState?.vote === 'downvote'
+                        ? 'border-rose-500 bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                        : 'border-border text-muted-foreground hover:border-rose-500 hover:text-rose-700 dark:hover:text-rose-300'
+                    }`}
+                  >
+                    <ArrowDown aria-hidden size={15} />
+                    <span>{item.downvotes}</span>
+                  </button>
+                  <span className="text-muted-foreground">
+                    net {item.net_score} · velocity {velocityLabel}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground" role="status">
+                  {votePending
+                    ? 'Updating your public GitHub vote…'
+                    : authed === false
+                      ? 'Sign in with GitHub in Settings to vote.'
+                      : voteLoadError
+                        ? `Your vote could not be loaded: ${voteLoadError}`
+                        : itemVoteState?.conflicted
+                          ? 'Conflicting reactions detected. Choose one direction to resolve them.'
+                          : itemVoteState?.vote
+                            ? `Your ${itemVoteState.vote} is recorded. Published scores update after the next registry build.`
+                            : 'Votes are public GitHub reactions. Published scores update after the next registry build.'}
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground mt-3">
+                ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
+              </p>
+            )}
             {item.date_added && (
               <p className="text-xs text-muted-foreground mt-1">
-                Added {item.date_added}
+                Added {formatDate(item.date_added)}
               </p>
             )}
             <p className="text-xs text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1">
@@ -1129,7 +1251,7 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
           { key: 'description' as const, label: 'About' },
           { key: 'gallery' as const, label: 'Gallery' },
           { key: 'versions' as const, label: 'Versions' },
-          ...(curatedAnnotation ? [{ key: 'agora' as const, label: 'Agora' }] : []),
+          ...(isRegistryBacked ? [{ key: 'agora' as const, label: 'Agora' }] : []),
         ] as const).map((tab) => (
           <button
             key={tab.key}

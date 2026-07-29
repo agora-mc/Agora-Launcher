@@ -1056,7 +1056,7 @@ export interface ModrinthProjectFull {
 export const fetchModrinthProject = (projectId: string) =>
   invoke<ModrinthProjectFull>('fetch_modrinth_project', { projectId });
 
-// --- Phase 7: Curated annotation overlay for Modrinth projects ---
+// --- Phase 7: Curated annotation overlay for registry-backed items ---
 
 export interface CuratedAnnotation {
   id: string;
@@ -1067,8 +1067,12 @@ export interface CuratedAnnotation {
   base_categories: string[];
 }
 
-export const getCuratedAnnotation = (modrinthId: string) =>
-  invoke<CuratedAnnotation | null>('get_curated_annotation', { modrinthId });
+// `itemId` must be a registry item id (registry_items.id). The backend query
+// resolves curated features by registry id and pulls the real curator note
+// from curator_reviews.curator_note; passing a Modrinth project id here will
+// not match a curated entry. Callers must gate on isRegistryBacked first.
+export const getCuratedAnnotation = (itemId: string) =>
+  invoke<CuratedAnnotation | null>('get_curated_annotation', { itemId });
 
 // --- Governance / Triage ---
 
@@ -1092,6 +1096,13 @@ export interface GovernanceSummary {
   conflicted_users: number;
   status_reason: string | null;
   compiled_at: string;
+}
+
+export type ItemVote = 'upvote' | 'downvote';
+
+export interface ItemVoteState {
+  vote: ItemVote | null;
+  conflicted: boolean;
 }
 
 export interface GovernanceEvent {
@@ -1144,6 +1155,12 @@ export const getGovernanceConfig = () =>
 
 export const getGovernanceSummary = (itemId: string) =>
   invoke<GovernanceSummary | null>('get_governance_summary', { itemId });
+
+export const getItemVote = (itemId: string) =>
+  invoke<ItemVoteState>('get_item_vote', { itemId });
+
+export const setItemVote = (itemId: string, vote: ItemVote | null) =>
+  invoke<ItemVoteState>('set_item_vote', { itemId, vote });
 
 export const listGovernanceEvents = (itemId: string | null) =>
   invoke<GovernanceEvent[]>('list_governance_events', {

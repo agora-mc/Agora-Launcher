@@ -33,6 +33,7 @@ jobs:
             --auto-versions \
             --latest-per-mc 5 \
             --keep-others \
+            --governance-mode read-only \
             --out registry.db
         env:
           ED25519_PRIVATE_KEY: ${{ secrets.ED25519_PRIVATE_KEY }}

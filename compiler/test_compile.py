@@ -26,6 +26,46 @@ import compile as _compile  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# pack identity normalization
+# ---------------------------------------------------------------------------
+
+class TestNormalizePackIdentity(unittest.TestCase):
+    def test_legacy_pack_id_becomes_canonical_id(self):
+        item = {"pack_id": "my-pack", "name": "My Pack"}
+
+        result = _compile.normalize_pack_identity(item)
+
+        self.assertEqual(result["id"], "my-pack")
+        self.assertEqual(result["content_type"], "pack")
+
+    def test_canonical_pack_is_unchanged(self):
+        item = {"id": "my-pack", "content_type": "pack"}
+
+        self.assertEqual(_compile.normalize_pack_identity(item), item)
+
+    def test_matching_alias_is_accepted(self):
+        item = {"id": "my-pack", "pack_id": "my-pack"}
+
+        result = _compile.normalize_pack_identity(item)
+
+        self.assertEqual(result["id"], "my-pack")
+        self.assertEqual(result["content_type"], "pack")
+
+    def test_mismatched_alias_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "must match"):
+            _compile.normalize_pack_identity({"id": "one", "pack_id": "two"})
+
+    def test_pack_alias_cannot_claim_another_content_type(self):
+        with self.assertRaisesRegex(ValueError, "content_type 'pack'"):
+            _compile.normalize_pack_identity({"pack_id": "my-pack", "content_type": "mod"})
+
+    def test_regular_registry_item_is_unchanged(self):
+        item = {"id": "sodium", "content_type": "mod"}
+
+        self.assertEqual(_compile.normalize_pack_identity(item), item)
+
+
+# ---------------------------------------------------------------------------
 # validate_sha256
 # ---------------------------------------------------------------------------
 

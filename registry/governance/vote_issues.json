@@ -1,1 +1,23 @@
-{"schema_version": 1, "items": {}}
+{
+  "schema_version": 1,
+  "items": {
+    "fabric-api": {
+      "issue_number": 1
+    },
+    "iris": {
+      "issue_number": 2
+    },
+    "lithium": {
+      "issue_number": 3
+    },
+    "optimized-survival": {
+      "issue_number": 6
+    },
+    "sodium": {
+      "issue_number": 4
+    },
+    "xaeros-minimap": {
+      "issue_number": 5
+    }
+  }
+}

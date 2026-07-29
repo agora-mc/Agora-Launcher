@@ -6,7 +6,7 @@ A self-contained reference for an agent who does **not** have access to the Agor
 
 ## 1. Repository layout (flat-file manifest)
 
-Everything lives under `registry/` in the Agora monorepo. Each content type has its own subdirectory, and one JSON file = one registry entry. The filename (minus `.json`) should match the manifest's `id` / `pack_id`.
+Everything lives under `registry/` in the Agora monorepo. Each content type has its own subdirectory, and one JSON file = one registry entry. The filename (minus `.json`) should match the manifest's `id`.
 
 ```
 registry/
@@ -175,7 +175,8 @@ Packs reference mods by ID and declare which loader + MC version the pack target
 
 ```json
 {
-  "pack_id": "optimized-survival",
+  "id": "optimized-survival",
+  "content_type": "pack",
   "name": "Community Optimized Survival",
   "minecraft_version": "1.21",
   "loader": "fabric",
@@ -215,7 +216,8 @@ Packs reference mods by ID and declare which loader + MC version the pack target
 
 | Field | Type | Required? | Description |
 |---|---|---|---|
-| `pack_id` | string | Yes | Unique slug for the pack (instead of `id`). |
+| `id` | string | Yes | Unique slug for the pack. |
+| `content_type` | string | Yes | Must be `pack`. |
 | `minecraft_version` | string | Yes | Target Minecraft version. |
 | `loader` | string | Yes | Target loader: `fabric`, `quilt`, `forge`, `neoforge`. |
 | `loader_version` | string | Yes | Pinned loader version. |
@@ -245,7 +247,7 @@ For shaders, resource packs, datapacks, servers, and worlds: the schema is the s
 | Content type | Directory | `content_type` value | Notes |
 |---|---|---|---|
 | Mod | `registry/mods/` | `"mod"` | See §2. |
-| Pack | `registry/packs/` | `"pack"` | Uses `pack_id` instead of `id`; see §4. |
+| Pack | `registry/packs/` | `"pack"` | Uses the canonical `id` field; see §4. |
 | Shader | `registry/shaders/` | `"shader"` | The downloader writes to `<instance>/shaderpacks/`. |
 | Resource pack | `registry/resourcepacks/` | `"resourcepack"` | Writes to `<instance>/resourcepacks/`. |
 | Server | `registry/servers/` | `"server"` | Server configuration / mod set. |
@@ -401,7 +403,7 @@ For `github_release` and `modrinth_id` strategies, the compiler populates the ha
 
 Before submitting a PR, verify:
 
-- [ ] Filename matches `id` (or `pack_id` for packs).
+- [ ] Filename matches `id`.
 - [ ] `content_type` matches the directory (mods → `"mod"`, packs → `"pack"`, etc.).
 - [ ] `license` is a valid SPDX identifier (or `LicenseRef-*` for custom).
 - [ ] `download_strategy` is one of `github_release`, `modrinth_id`, `direct_hash`.
@@ -442,7 +444,7 @@ For mods with no Modrinth presence (pure GitHub-release mods whose slug doesn't 
 2. **Single-segment `package_signatures`** like `["net"]` or `["com"]` — too broad; they match thousands of mods. Use at least 2 segments: `["net.fabricmc.fabric"]`.
 3. **Setting `compatible_versions` to a hardcoded list** when you don't need to — the compiler fetches real data from Modrinth. Only override if the hydrator is wrong or the mod isn't on Modrinth.
 4. **Uppercase `sha256`** — must be lowercase hex.
-5. **Putting a pack manifest in `registry/mods/`** — packs go in `registry/packs/` and use `pack_id` instead of `id`.
+5. **Putting a pack manifest in `registry/mods/`** — packs go in `registry/packs/` and use `id` with `content_type: "pack"`.
 6. **Deleting a manifest to retire it** — move to `registry/archived/` instead to preserve git history.
 7. **Setting `governance.immune: true` without `override_justification`** — the compiler rejects it.
 8. **Inventing a `download_strategy`** like `"curseforge"` — only `github_release`, `modrinth_id`, and `direct_hash` are supported.

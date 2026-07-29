@@ -92,6 +92,7 @@ export interface SettingEntry {
 
 export const SETTINGS = {
   modrinthEnabled: boolDef('modrinth_enabled'),
+  browseCuratedOnly: boolDef('browse_curated_only'),
   aiMcpEnabled: boolDef('ai_mcp_enabled'),
   aiChatEnabled: boolDef('ai_chat_enabled'),
   launcherPath: stringDef('mojang_launcher_path'),

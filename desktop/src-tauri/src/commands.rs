@@ -4,7 +4,9 @@ use crate::crash_diagnostics::{self, CrashReportInfo, CrashTriageResult};
 use crate::crash_investigator;
 use crate::dependency_ops;
 use crate::error::{LauncherError, LauncherResult};
-use crate::governance::{DiagnosticCheck, GovernanceConfig, GovernanceEvent, GovernanceSummary};
+use crate::governance::{
+    DiagnosticCheck, GovernanceConfig, GovernanceEvent, GovernanceSummary, ItemVote, ItemVoteState,
+};
 use crate::instances::{self, CreateInstanceRequest, InstanceDetail, LoaderVersionSummary};
 use crate::loader_manifests;
 use crate::mcp;
@@ -133,17 +135,17 @@ pub async fn for_you_items(
     })?
 }
 
-/// Look up a curated annotation for a Modrinth project.
+/// Look up a curated annotation for a registry item by its registry id.
 #[tauri::command]
 pub async fn get_curated_annotation(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
-    modrinth_id: String,
+    item_id: String,
 ) -> LauncherResult<Option<CuratedAnnotation>> {
     tokio::task::spawn_blocking(move || {
         let ctx = crate::core_context(&app)?;
         let svc = agora_core::registry::RegistryService::new(ctx);
-        svc.get_curated_annotation(&modrinth_id)
+        svc.get_curated_annotation(&item_id)
     })
     .await
     .map_err(|_| LauncherError::Generic {
@@ -1719,6 +1721,27 @@ pub async fn get_governance_summary(
             code: "ERR_GOVERNANCE_QUERY".to_string(),
             message: "Governance summary query failed.".to_string(),
         })?
+}
+
+/// Return the signed-in user's vote on an item's canonical GitHub issue.
+#[tauri::command]
+pub async fn get_item_vote(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    item_id: String,
+) -> LauncherResult<ItemVoteState> {
+    crate::governance::get_item_vote(&app, item_id).await
+}
+
+/// Set, switch, or retract the signed-in user's canonical item vote.
+#[tauri::command]
+pub async fn set_item_vote(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    item_id: String,
+    vote: Option<ItemVote>,
+) -> LauncherResult<ItemVoteState> {
+    crate::governance::set_item_vote(&app, item_id, vote).await
 }
 
 /// List governance events, optionally filtered by item_id.
@@ -3336,13 +3359,14 @@ pub async fn browse_search(
         let ctx = crate::core_context(&app)?;
         let svc = agora_core::settings::SettingsService::new(ctx.clone());
         let me = svc.get_bool("modrinth_enabled").unwrap_or(false);
+        let curated_only = svc.get_bool("browse_curated_only").unwrap_or(false);
         let net_mr = svc
             .get("network_modrinth_enabled")
             .ok()
             .flatten()
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let api_ok = me && net_mr;
+        let api_ok = me && net_mr && !curated_only;
         let svc = agora_core::registry::RegistryService::new(ctx);
         let sort_enum = to_sort_option(sort.as_deref().unwrap_or("net_score"));
         let items = svc

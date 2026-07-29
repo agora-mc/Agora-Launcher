@@ -2483,6 +2483,10 @@ Compiler governance modes are `off`, `read-only`, and `monitor`. All modes are n
 
 Schema 7 adds per-item `governance_summary` and persistent `governance_events` tables while retaining final counted values and compatibility fields on `registry_items`. Pending and rejected reaction IDs remain excluded across compiles; an accepted curator decision restores them. The desktop supports schema 6 fallback, compile-time production/sandbox governance configuration, read-only diagnostics, and a debug-only validated `AGORA_DEV_REGISTRY_DB` override. The v1 review-report/admin-alert path is removed.
 
+### 19.17 Canonical Registry Identity for Packs
+
+Every registry manifest uses `id` as its canonical top-level identity and declares its kind through `content_type`. Pack manifests therefore use `id` plus `content_type: "pack"`; the older top-level `pack_id` field is a deprecated compiler input alias. The compiler normalizes that alias before metadata hydration or governance, rejects mismatched `id` and `pack_id` values, and keeps relational names such as `pack_mods.pack_id` unchanged because those identify the owning pack in a relationship rather than defining a separate identity system.
+
 ---
 
 ### 19.15 Content-Addressed Recovery Snapshots
