@@ -2994,7 +2994,7 @@ def compile_registry(
     if "log_format_version" not in audit_data:
         audit_data["log_format_version"] = 1
     if no_governance_write or (_governance_mode is not None and _governance_mode != GovernanceMode.MONITOR):
-        logger.info("Governance mode does not permit state output; leaving audit log unchanged.")
+        logger.info("Governance audit log writes disabled; leaving audit log unchanged.")
     else:
         audit_log_path.parent.mkdir(parents=True, exist_ok=True)
         new_entry = {

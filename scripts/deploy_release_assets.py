@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Deploy registry.db and registry.db.sig as GitHub Release assets.
+"""Deploy the signed registry database and web export release assets.
 
 Creates (or updates) a tagged release named registry-YYYY-MM-DD, uploads the
-two files as assets, and prunes old registry-* releases to keep only the
+four user-facing files as assets, and prunes old registry-* releases to keep only the
 latest 7.
 
 Usage:
@@ -13,6 +13,8 @@ Requires:
     GITHUB_REPOSITORY — Repo slug in owner/repo format (set automatically in Actions)
     registry.db       — The compiled database file (in the working directory)
     registry.db.sig   — The Ed25519 signature file (in the working directory)
+    registry-web.json — The web registry export (in the working directory)
+    registry-web.json.sig — The web export signature (in the working directory)
 """
 
 from __future__ import annotations
@@ -31,6 +33,12 @@ logger = logging.getLogger("deploy_release_assets")
 
 API_BASE = "https://api.github.com"
 MAX_RELEASES_TO_KEEP = 7
+RELEASE_ASSETS = (
+    Path("registry.db"),
+    Path("registry.db.sig"),
+    Path("registry-web.json"),
+    Path("registry-web.json.sig"),
+)
 
 
 def main() -> int:
@@ -44,15 +52,10 @@ def main() -> int:
         logger.error("GITHUB_REPOSITORY is not set.")
         return 1
 
-    db_path = Path("registry.db")
-    sig_path = Path("registry.db.sig")
-
-    if not db_path.exists():
-        logger.error("registry.db not found in working directory.")
-        return 1
-    if not sig_path.exists():
-        logger.error("registry.db.sig not found in working directory.")
-        return 1
+    for asset_path in RELEASE_ASSETS:
+        if not asset_path.exists():
+            logger.error("%s not found in working directory.", asset_path)
+            return 1
 
     tag = f"registry-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')}"
     logger.info("Deploying to %s with tag %s", repo, tag)
@@ -74,9 +77,8 @@ def main() -> int:
         # Remove old assets with same names.
         delete_existing_assets(headers, repo, release)
 
-    # Upload the two asset files.
-    upload_asset(headers, release, db_path)
-    upload_asset(headers, release, sig_path)
+    for asset_path in RELEASE_ASSETS:
+        upload_asset(headers, release, asset_path)
 
     logger.info("Upload complete.")
 
@@ -119,7 +121,7 @@ def create_release(headers: dict, repo: str, tag: str) -> dict:
 def delete_existing_assets(headers: dict, repo: str, release: dict) -> None:
     for asset in release.get("assets", []):
         name = asset.get("name", "")
-        if name in ("registry.db", "registry.db.sig"):
+        if name in {path.name for path in RELEASE_ASSETS}:
             url = f"{API_BASE}/repos/{repo}/releases/assets/{asset['id']}"
             resp = requests.delete(url, headers=headers)
             if resp.status_code == 204:

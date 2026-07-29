@@ -25,6 +25,8 @@ registry/
 ├── governance/        ← Cross-cutting policy files (see §5)
 │   ├── known_conflicts.json
 │   ├── poll_blacklist.json
+│   ├── quarantine_decisions.json
+│   ├── governance-state.json
 │   └── audit_log.json
 └── archived/          ← Disabled entries (compiler SKIPS this dir entirely)
 ```
@@ -299,7 +301,19 @@ A list of GitHub usernames excluded from triage poll vote tallies (bots, known b
 {"usernames": []}
 ```
 
-### 6.3 Audit log (`audit_log.json`)
+### 6.3 Quarantine decisions (`quarantine_decisions.json`)
+
+Curator-authored; the compiler reads but never writes this file. Maps governance event IDs to `accepted` or `rejected`. An `accepted` decision permanently lifts the vote quarantine for that event's reactions. A `rejected` decision permanently excludes those reactions.
+
+```json
+{"schema_version": 1, "decisions": []}
+```
+
+### 6.4 Governance state (`governance-state.json`)
+
+Compiler-generated in `monitor` mode; records detected vote-surge events with stable IDs, affected GitHub reaction IDs, timestamps, and current status. Production tracks it at `registry/governance/governance-state.json` with `governance_repository: "jarjarpfeil/Agora-Launcher"` and `policy: "production"`. It is public operational history but **not** a release asset because only the compiler consumes it. Validate recovery edits with `python scripts/validate_governance_state.py registry/governance/governance-state.json`; malformed or mismatched production state fails CI.
+
+### 6.5 Audit log (`audit_log.json`)
 
 Compiler-generated; do not edit manually. Appended to on every compile.
 

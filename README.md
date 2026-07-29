@@ -291,10 +291,93 @@ No Node.js, no npm — just a standard installer. The app is ~10–15 MB (Tauri 
 
 | Tag pattern | Contents | Frequency |
 |---|---|---|
-| `registry-YYYY-MM-DD` | `registry.db` + `registry.db.sig` | Nightly (automated by `compile.yml`) |
+| `registry-YYYY-MM-DD` | `registry.db`, `registry.db.sig`, `registry-web.json`, `registry-web.json.sig` | Nightly (automated by `compile.yml`) |
 | `v0.1.0`, `v0.2.0`, ... | Desktop installers per platform | On-demand (when you cut a release) |
 
 The two streams are independent. The desktop app fetches `registry.db` from the `registry-*` releases at runtime; the `v*` releases only ship the app binary.
+
+## Governance Monitor and Tracked State (Work Package 7)
+
+The compiler's governance pipeline (`compiler/governance.py`) detects anomalous voting patterns and manages quarantine state. It operates in three modes, all non-mutating with respect to GitHub:
+
+| Mode | Reads GitHub | Writes state file | Discord alerts |
+|---|---|---|---|
+| `off` | No | No | No |
+| `read-only` | Yes | No | No |
+| `monitor` | Yes | Yes | Yes |
+
+### Tracked state path
+
+Production state is tracked at `registry/governance/governance-state.json` and committed to `master`. The compiler's generic default is `<output-dir>/governance-state.json`; production passes `--governance-state-in` and `--governance-state-out` explicitly. The public file records stable event IDs, affected GitHub reaction IDs, timestamps, and curator-visible status so the community can audit operational quarantine history.
+
+### Production repo and policy
+
+The governance repo defaults to `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Production uses `jarjarpfeil/Agora-Launcher` with the `production` policy, which enforces a 30-day account-age threshold and a 6-hour, 5×-baseline raid window. Sandbox policy removes the age requirement and uses a 10-minute, 3-reaction threshold. State files carry `governance_repository` and `policy`; the loader rejects mismatched prior events with a warning, and production CI rejects the file before compilation.
+
+### Monitor semantics and meaningful-only state commits
+
+State is written only when `mode=monitor`. A state commit represents a meaningful change: a new anomaly event, an expanded anomaly (more reactions in the same window), or a resolved event (curator decision applied). Compiles that produce no state delta do not trigger a commit. This prevents spurious `governance-state.json` diffs on every nightly run.
+
+### Curator decision status updates
+
+Curators record decisions in `registry/governance/quarantine_decisions.json` (compiler never writes this file). Each decision maps an `event_id` to `accepted` or `rejected`. `accepted` lifts the quarantine so reactions count again; `rejected` permanently excludes those reactions. The compiler reads this file every run and persists the resulting event-status transition when monitor state changes meaningfully.
+
+### Public operational and audit rationale
+
+Every state event records `event_id`, `item_id`, `event_type`, `status`, `detected_at`, the exact `affected_reactions` IDs, and `details_json` with threshold, window, vote counts, and conflict users. This provides a transparent audit trail: anyone can verify which reactions were quarantined, why, and whether a curator decision resolved them. The audit log (`registry/governance/audit_log.json`) separately captures compile-level events.
+
+### Why governance state is NOT a release asset
+
+The signed database and web export are published as GitHub Release Assets because clients consume them. `governance-state.json` is compiler-only operational history: it stays in Git for transparent review and use by subsequent nightly runs, and is never uploaded as a release asset.
+
+### Local PowerShell monitor command
+
+```powershell
+# WARNING: This changes the tracked production state and can send real alerts.
+$env:GITHUB_TOKEN = (gh auth token)
+$env:DISCORD_WEBHOOK_URL = "YOUR_PRODUCTION_WEBHOOK"
+
+python compiler/compile.py `
+  --governance-mode monitor `
+  --governance-policy production `
+  --governance-repo jarjarpfeil/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --governance-state-out D:/Agora/registry/governance/governance-state.json `
+  --no-governance-write `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+`--no-governance-write` suppresses the legacy audit-log append without disabling monitor state. Use `agora-mc/governance-sandbox-testing`, `--governance-policy sandbox`, a temporary state path, and a test-channel webhook for sandbox validation. Never point sandbox validation at the tracked production state.
+
+### Read-only diagnostics (never writes state)
+
+```powershell
+$env:GITHUB_TOKEN = (gh auth token)
+python compiler/compile.py `
+  --governance-mode read-only `
+  --governance-policy production `
+  --governance-repo jarjarpfeil/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+`read-only` reads GitHub issues, reactions, and reviews, runs the full anomaly detection pipeline, and produces governance results in memory — but **never writes state to disk, never sends Discord alerts, and has no effect on the working tree or remote**. Use this for dry-run diagnostics.
+
+### Malformed and stale state recovery
+
+Production CI fails before compiling if the tracked state is missing, malformed, uses an unsupported schema, contains duplicate or incomplete events, or names the wrong repository or policy. Recover by restoring the last valid file from Git history, or, after curator review confirms that no pending event history must be retained, commit this valid empty envelope: `{"schema_version":1,"governance_repository":"jarjarpfeil/Agora-Launcher","policy":"production","events":[]}`. Validate it with `python scripts/validate_governance_state.py registry/governance/governance-state.json` before rerunning the workflow. Do not truncate or silently regenerate malformed production state.
+
+### Workflow ownership boundaries
+
+- The loader-refresh workflow is the sole committer for the three tracked files under `loader-manifests/`; the nightly compile may regenerate them for compilation but never includes them in its governance commit.
+- The nightly governance commit stages only `registry/governance/governance-state.json`. Compiled database and web artifacts are uploaded to the registry release, not committed to Git.
+- `quarantine_decisions.json` is curated manually via PR; the compiler reads but never writes it.
+
+### Production mode remains read-only
+
+The production compiler workflow (`compile.yml`) currently uses `read-only` mode for governance (no state writing, no Discord alerts). **Full production monitor mode (state commits + Discord alerts) is not yet activated in CI** — it awaits completion of sandbox testing gates and manual curator sign-off. Until those gates are passed, production runs are observation-only.
 
 ## Agent Tooling
 

@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import fetch_loader_manifests
 import fetch_registry_db
+import deploy_release_assets
 import refresh_loader_manifests
 import validate_loader_catalog_delta
 
@@ -905,6 +906,545 @@ class TestBuildManifest(unittest.TestCase):
         self.assertEqual(manifest["schema_version"], 1)
         self.assertIn("registered_rust", manifest["summary"])
         self.assertIn("commands", manifest)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# compile_registry forwarding tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCompileRegistryForwarding(unittest.TestCase):
+    """Tests for subprocess argument forwarding in compile_registry."""
+
+    def _assert_not_in_args(self, cmd: list[str], *flags: str) -> None:
+        for flag in flags:
+            self.assertNotIn(flag, cmd, f"{flag!r} should not be in command")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_forwards_governance_mode(self, mock_run):
+        """--governance-mode read-only is forwarded."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_mode="read-only",
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-mode")
+        self.assertEqual(cmd[idx + 1], "read-only")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_forwards_governance_policy(self, mock_run):
+        """--governance-policy sandbox is forwarded."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_policy="sandbox",
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-policy")
+        self.assertEqual(cmd[idx + 1], "sandbox")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_omits_absent_governance_policy(self, mock_run):
+        """--governance-policy omitted when not provided."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+        )
+        cmd = mock_run.call_args[0][0]
+        self._assert_not_in_args(cmd, "--governance-policy")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_forwards_governance_repo(self, mock_run):
+        """--governance-repo is forwarded."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_repo="owner/repo",
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-repo")
+        self.assertEqual(cmd[idx + 1], "owner/repo")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_omits_absent_governance_repo(self, mock_run):
+        """--governance-repo omitted when not provided."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+        )
+        cmd = mock_run.call_args[0][0]
+        self._assert_not_in_args(cmd, "--governance-repo")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_forwards_governance_state_in(self, mock_run):
+        """--governance-state-in with Path is forwarded as single argument."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_state_in=Path("some/path.json"),
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-state-in")
+        expected = str(Path("some/path.json"))
+        self.assertEqual(cmd[idx + 1], expected)
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_omits_absent_governance_state_in(self, mock_run):
+        """--governance-state-in omitted when not provided."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+        )
+        cmd = mock_run.call_args[0][0]
+        self._assert_not_in_args(cmd, "--governance-state-in")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_forwards_governance_state_out(self, mock_run):
+        """--governance-state-out with Path is forwarded as single argument."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_state_out=Path("out/state.json"),
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-state-out")
+        expected = str(Path("out/state.json"))
+        self.assertEqual(cmd[idx + 1], expected)
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_omits_absent_governance_state_out(self, mock_run):
+        """--governance-state-out omitted when not provided."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+        )
+        cmd = mock_run.call_args[0][0]
+        self._assert_not_in_args(cmd, "--governance-state-out")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_path_with_spaces(self, mock_run):
+        """Path with spaces forwarded as single subprocess argument."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_state_in=Path("my path/state.json"),
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-state-in")
+        expected = str(Path("my path/state.json"))
+        self.assertEqual(cmd[idx + 1], expected)
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_path_with_spaces_out(self, mock_run):
+        """Path with spaces forwarded for state-out."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_state_out=Path("my output/state.json"),
+        )
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--governance-state-out")
+        expected = str(Path("my output/state.json"))
+        self.assertEqual(cmd[idx + 1], expected)
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_forwards_off_mode(self, mock_run):
+        """--governance-mode off is forwarded."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            governance_mode="off",
+        )
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--governance-mode", cmd)
+        idx = cmd.index("--governance-mode")
+        self.assertEqual(cmd[idx + 1], "off")
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_failure_propagation(self, mock_run):
+        """CalledProcessError from subprocess is propagated."""
+        from subprocess import CalledProcessError
+
+        mock_run.side_effect = CalledProcessError(1, "test")
+        with self.assertRaises(CalledProcessError):
+            refresh_loader_manifests.compile_registry(
+                out="registry.db", skip_sign=True,
+            )
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_no_governance_write_when_mode_unset(self, mock_run):
+        """--no-governance-write forwarded when governance_mode is None."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            no_governance_write=True,
+        )
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--no-governance-write", cmd)
+
+    @mock.patch("refresh_loader_manifests.subprocess.run")
+    def test_monitor_state_can_suppress_legacy_audit_write(self, mock_run):
+        """Monitor state and legacy audit-log writes are controlled separately."""
+        refresh_loader_manifests.compile_registry(
+            out="registry.db", skip_sign=True,
+            no_governance_write=True,
+            governance_mode="monitor",
+        )
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--governance-mode", cmd)
+        self.assertIn("--no-governance-write", cmd)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# governance-state.json validator tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+import validate_governance_state as vgs
+
+
+class TestDeployReleaseAssets(unittest.TestCase):
+    def test_main_uploads_only_four_user_facing_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = tuple(
+                Path(tmp) / name
+                for name in (
+                    "registry.db",
+                    "registry.db.sig",
+                    "registry-web.json",
+                    "registry-web.json.sig",
+                )
+            )
+            for asset in assets:
+                asset.write_bytes(b"test")
+
+            release = {"id": 1, "assets": [], "upload_url": "https://example.test"}
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": "token", "GITHUB_REPOSITORY": "owner/repo"},
+                    clear=False,
+                ),
+                mock.patch.object(deploy_release_assets, "RELEASE_ASSETS", assets),
+                mock.patch.object(
+                    deploy_release_assets, "get_release_by_tag", return_value=release
+                ),
+                mock.patch.object(deploy_release_assets, "delete_existing_assets"),
+                mock.patch.object(deploy_release_assets, "upload_asset") as upload,
+                mock.patch.object(deploy_release_assets, "prune_old_releases"),
+            ):
+                self.assertEqual(deploy_release_assets.main(), 0)
+
+            self.assertEqual(
+                [call.args[2].name for call in upload.call_args_list],
+                [asset.name for asset in assets],
+            )
+            self.assertNotIn(
+                "governance-state.json",
+                [asset.name for asset in assets],
+            )
+
+
+class TestGovernanceStateValidator(unittest.TestCase):
+    """Tests for validate_governance_state.validate()."""
+
+    def test_valid_initial_state(self):
+        """Valid initial state returns no errors."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertEqual(errors, [])
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_wrong_schema_version(self):
+        """schema_version != 1 is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 2,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("schema_version" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_wrong_repo(self):
+        """Wrong repo value is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "some/other",
+                "policy": "production",
+                "events": [],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("repo" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_wrong_policy(self):
+        """Non-production policy is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "sandbox",
+                "events": [],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("policy" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_non_list_events(self):
+        """Non-list events is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": "not a list",
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("events" in e and "list" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_non_object_top_level(self):
+        """Top-level non-object is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            tmp.write("[]")
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("Top-level" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_non_dict_event(self):
+        """Non-dict event is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": ["not an object"],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("must be a JSON object" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_empty_event_id(self):
+        """Empty event_id is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [
+                    {
+                        "event_id": "",
+                        "item_id": "item1",
+                        "event_type": "vote_started",
+                    }
+                ],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("event_id" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_duplicate_event_id(self):
+        """Duplicate event_id is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [
+                    {
+                        "event_id": "same",
+                        "item_id": "item1",
+                        "event_type": "vote_started",
+                    },
+                    {
+                        "event_id": "same",
+                        "item_id": "item2",
+                        "event_type": "vote_closed",
+                    },
+                ],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("Duplicate" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_missing_item_id(self):
+        """Missing item_id is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [
+                    {
+                        "event_id": "evt1",
+                        "event_type": "vote_started",
+                    }
+                ],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("item_id" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_missing_event_type(self):
+        """Missing event_type is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [
+                    {
+                        "event_id": "evt1",
+                        "item_id": "item1",
+                    }
+                ],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("event_type" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rejects_non_string_item_id(self):
+        """Non-string item_id is rejected."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [
+                    {
+                        "event_id": "evt1",
+                        "item_id": 123,
+                        "event_type": "vote_started",
+                    }
+                ],
+            }, tmp)
+            tmp_path = tmp.name
+        try:
+            errors = vgs.validate(Path(tmp_path))
+            self.assertTrue(
+                any("item_id" in e for e in errors)
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_cli_rejects_invalid_file(self):
+        """CLI main() returns 1 for invalid JSON."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            tmp.write("not json")
+            tmp_path = tmp.name
+        original_argv = sys.argv
+        sys.argv = ["script", tmp_path]
+        try:
+            exit_code = vgs.main()
+            self.assertEqual(exit_code, 1)
+        finally:
+            sys.argv = original_argv
+            os.unlink(tmp_path)
+
+    def test_cli_usage(self):
+        """main() with wrong arg count returns 1."""
+        original_argv = sys.argv
+        sys.argv = ["script"]
+        try:
+            self.assertEqual(vgs.main(), 1)
+        finally:
+            sys.argv = original_argv
+
+    def test_cli_accepts_valid_file(self):
+        """CLI main() returns 0 for valid state."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump({
+                "schema_version": 1,
+                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "policy": "production",
+                "events": [],
+            }, tmp)
+            tmp_path = tmp.name
+        original_argv = sys.argv
+        sys.argv = ["script", tmp_path]
+        try:
+            exit_code = vgs.main()
+            self.assertEqual(exit_code, 0)
+        finally:
+            sys.argv = original_argv
+            os.unlink(tmp_path)
 
 
 if __name__ == "__main__":

@@ -438,6 +438,14 @@ def detect_anomaly(
 # State file I/O
 # ---------------------------------------------------------------------------
 
+def governance_state_semantic_view(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": state.get("schema_version", 1),
+        "governance_repository": state.get("governance_repository"),
+        "policy": state.get("policy"),
+        "events": state.get("events", []),
+    }
+
 def load_vote_issues(path: Path) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as fh:
@@ -467,12 +475,27 @@ def load_governance_state(path: Path | None, *, governance_repo: str | None = No
         data["events"] = []
     return data
 
-def save_governance_state(path: Path, data: dict[str, Any]) -> None:
+def save_governance_state(path: Path, data: dict[str, Any]) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            existing = json.load(fh)
+        if (
+            isinstance(existing, dict)
+            and governance_state_semantic_view(existing)
+            == governance_state_semantic_view(data)
+        ):
+            logger.info("Governance state unchanged; preserving existing file.")
+            return False
+    except (OSError, json.JSONDecodeError):
+        pass
+    state = {**data, "generated_at": datetime.now(timezone.utc).isoformat()}
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+        json.dump(state, fh, indent=2)
     tmp.replace(path)
+    logger.info("Governance state saved to %s", path)
+    return True
 
 def load_quarantine_decisions(path: Path) -> dict[str, Any]:
     try:
@@ -510,6 +533,7 @@ def build_discord_embed(*, mod_id: str, event_type: str, event_data: dict[str, A
             {"name": "Item ID", "value": mod_id, "inline": True},
             {"name": "Item Name", "value": event_data.get("item_name", ""), "inline": True},
             {"name": "Issue URL", "value": event_data.get("issue_url", ""), "inline": False},
+            {"name": "Event ID", "value": event_data.get("event_id", ""), "inline": False},
             {"name": "Decision", "value": event_data.get("decision", "unknown"), "inline": False},
         ]
     else:
@@ -523,14 +547,32 @@ def build_discord_embed(*, mod_id: str, event_type: str, event_data: dict[str, A
     }
     return {"username": "Agora Governance", "embeds": [embed]}
 
-def _post_discord(webhook_url: str, embed: dict[str, Any]) -> None:
+def _extract_event_id_from_embed(embed: dict[str, Any]) -> str | None:
+    for emb in embed.get("embeds", []):
+        for field in emb.get("fields", []):
+            if field.get("name") == "Event ID":
+                return field.get("value") or None
+    return None
+
+def _post_discord(webhook_url: str, embed: dict[str, Any]) -> bool:
     import requests
+    event_id = _extract_event_id_from_embed(embed) or "unknown"
     try:
         resp = requests.post(webhook_url, json=embed, timeout=15)
         if resp.status_code not in (200, 204):
-            logger.warning("Discord webhook returned HTTP %d", resp.status_code)
+            logger.warning(
+                "Discord webhook returned HTTP %d for event %s",
+                resp.status_code, event_id,
+            )
+            return False
+        return True
     except Exception as exc:
-        logger.warning("Discord webhook POST failed: %s", exc)
+        logger.warning(
+            "Discord webhook POST failed for event %s (HTTP status unavailable): %s",
+            event_id,
+            exc,
+        )
+        return False
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -959,8 +1001,7 @@ def run_governance_pipeline(
                     mod_id=item_id, event_type="vote_surge",
                     event_data=discord_data, policy=policy, mode=mode,
                 )
-                if embed:
-                    _post_discord(discord_webhook_url, embed)
+                if embed and _post_discord(discord_webhook_url, embed):
                     discord_notified.append(item_id)
             elif is_grown:
                 discord_data = {
@@ -978,29 +1019,29 @@ def run_governance_pipeline(
                     mod_id=item_id, event_type="vote_surge",
                     event_data=discord_data, policy=policy, mode=mode,
                 )
-                if embed:
-                    _post_discord(discord_webhook_url, embed)
+                if embed and _post_discord(discord_webhook_url, embed):
                     discord_notified.append(item_id)
             elif is_resolved:
+                resolved_event_id = next(
+                    (
+                        event_id
+                        for event_id, old_status in stored_status_by_id.items()
+                        if old_status == "pending"
+                        and curator_decisions.get(event_id) in ("accepted", "rejected")
+                        and prev_event_map.get(event_id, {}).get("item_id") == item_id
+                    ),
+                    "",
+                )
                 discord_data = {
                     "item_name": item_name, "issue_url": vote_issue_url,
-                    "decision": next(
-                        (
-                            curator_decisions[event_id]
-                            for event_id, old_status in stored_status_by_id.items()
-                            if old_status == "pending"
-                            and curator_decisions.get(event_id) in ("accepted", "rejected")
-                            and prev_event_map.get(event_id, {}).get("item_id") == item_id
-                        ),
-                        "resolved",
-                    ),
+                    "event_id": resolved_event_id,
+                    "decision": curator_decisions.get(resolved_event_id, "resolved"),
                 }
                 embed = build_discord_embed(
                     mod_id=item_id, event_type="resolved",
                     event_data=discord_data, policy=policy, mode=mode,
                 )
-                if embed:
-                    _post_discord(discord_webhook_url, embed)
+                if embed and _post_discord(discord_webhook_url, embed):
                     discord_notified.append(item_id)
 
         results[item_id] = {
@@ -1048,7 +1089,6 @@ def run_governance_pipeline(
         "schema_version": 1,
         "governance_repository": governance_repo,
         "policy": policy.value,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "events": merged_events,
     }
 

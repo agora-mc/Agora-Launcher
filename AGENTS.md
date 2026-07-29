@@ -60,6 +60,31 @@ Core values:
 
 The shipped Agora launcher app exposes an MCP server on `127.0.0.1:39741` when the user has *AI / MCP Server* enabled in Settings (disabled by default in the shipped app). **Authentication:** the localhost binding is the current sole security boundary; the per-session Bearer token from MASTER_SPEC section 10.0 number 2 is intentionally not yet implemented (deferred pending user decision, see section 19.6). For local development, this project's `.kilo/kilo.json` enables the Kilo MCP client (`enabled: true`) to talk to a locally-running launcher instance. Keep MCP calls stateless and avoid privileged operations without explicit user approval.
 
+## Governance Modes and Tracked State
+
+The compiler governance pipeline (`compiler/governance.py`) detects vote-surge anomalies and manages quarantine state:
+
+| Mode | Reads GitHub | Writes state file | Discord alerts |
+|---|---|---|---|
+| `off` | No | No | No |
+| `read-only` | Yes | No | No |
+| `monitor` | Yes | Yes | Yes |
+
+- **State path**: production tracks `registry/governance/governance-state.json` and passes it explicitly as both state input and output. The compiler default remains `<output-dir>/governance-state.json` for isolated runs.
+- **Repo resolution**: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`.
+- **Decisions**: Curators edit `registry/governance/quarantine_decisions.json` (compiler never writes it). Each entry maps `event_id` to `accepted` (lift quarantine) or `rejected` (permanently exclude).
+- **Recovery**: production CI rejects missing, malformed, mismatched, duplicate, or incomplete state. Restore the last valid file from Git history or commit a curator-approved empty production envelope, then run `python scripts/validate_governance_state.py registry/governance/governance-state.json`.
+- **Production is currently `read-only`**: the CI workflow does not activate `monitor` mode until sandbox gates and manual curator sign-off are completed.
+- **Workflow ownership**: the loader-refresh workflow is the sole committer for `loader-manifests/`. The nightly governance commit stages only `registry/governance/governance-state.json`; signed registry artifacts are release assets, not Git commits.
+
+### Local diagnostics
+
+```powershell
+# ⚠️  Use --governance-policy sandbox to avoid affecting production state or alerts
+cd compiler; $env:GITHUB_TOKEN = "ghp_..."
+python compile.py --skip-sign --governance-mode read-only --out ..\registry.db  # never writes state
+```
+
 ## Environment Variables
 
 - `ED25519_PRIVATE_KEY` — CI-only Ed25519 key used to sign `registry.db`. Never expose or bundle it.

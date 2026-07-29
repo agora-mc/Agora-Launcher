@@ -342,8 +342,67 @@ class TestStateIO(unittest.TestCase):
     def test_save_and_load(self):
         p = Path(self.tmp)/"s.json"
         d = {"schema_version": 1, "events": [{"event_id": "e1", "item_id": "sodium", "event_type": "vote_surge"}]}
-        gov.save_governance_state(p, d)
-        self.assertEqual(gov.load_governance_state(p), d)
+        result = gov.save_governance_state(p, d)
+        self.assertTrue(result)
+        self.assertNotIn("generated_at", d)
+        loaded = gov.load_governance_state(p)
+        self.assertEqual(loaded["schema_version"], 1)
+        self.assertEqual(len(loaded["events"]), 1)
+        self.assertIn("generated_at", loaded)
+    def test_save_creates_new_file(self):
+        p = Path(self.tmp)/"new.json"
+        self.assertFalse(p.exists())
+        result = gov.save_governance_state(p, {"schema_version": 1, "events": []})
+        self.assertTrue(result)
+        self.assertTrue(p.exists())
+        loaded = json.loads(p.read_text(encoding="utf-8"))
+        self.assertEqual(loaded["schema_version"], 1)
+        self.assertIn("generated_at", loaded)
+    def test_save_preserves_on_identical_events(self):
+        p = Path(self.tmp)/"s.json"
+        original = {"schema_version": 1, "events": [{"event_id": "e1"}], "generated_at": "anything"}
+        p.write_text(json.dumps(original), encoding="utf-8")
+        original_bytes = p.read_bytes()
+        original_mtime = p.stat().st_mtime_ns
+        import time; time.sleep(0.01)
+        result = gov.save_governance_state(p, {"schema_version": 1, "events": [{"event_id": "e1"}]})
+        self.assertFalse(result)
+        self.assertEqual(p.read_bytes(), original_bytes)
+        self.assertEqual(p.stat().st_mtime_ns, original_mtime)
+    def test_save_overwrites_malformed(self):
+        p = Path(self.tmp)/"b.json"
+        p.write_text("{invalid", encoding="utf-8")
+        result = gov.save_governance_state(p, {"schema_version": 1, "events": []})
+        self.assertTrue(result)
+        loaded = json.loads(p.read_text(encoding="utf-8"))
+        self.assertEqual(loaded["schema_version"], 1)
+        self.assertIn("generated_at", loaded)
+    def test_save_overwrites_different_events(self):
+        p = Path(self.tmp)/"s.json"
+        gov.save_governance_state(p, {"events": [{"event_id": "e1"}]})
+        result = gov.save_governance_state(p, {"events": [{"event_id": "e2"}]})
+        self.assertTrue(result)
+        loaded = json.loads(p.read_text(encoding="utf-8"))
+        self.assertEqual(len(loaded["events"]), 1)
+        self.assertEqual(loaded["events"][0]["event_id"], "e2")
+    def test_save_ignores_generated_at_diff(self):
+        p = Path(self.tmp)/"s.json"
+        gov.save_governance_state(p, {"schema_version": 1, "events": []})
+        import time; time.sleep(0.01)
+        result = gov.save_governance_state(p, {"schema_version": 1, "events": []})
+        self.assertFalse(result)
+    def test_save_ignores_key_order(self):
+        p = Path(self.tmp)/"s.json"
+        gov.save_governance_state(p, {"events": [], "schema_version": 1, "governance_repository": "r"})
+        import time; time.sleep(0.01)
+        result = gov.save_governance_state(p, {"governance_repository": "r", "schema_version": 1, "events": []})
+        self.assertFalse(result)
+    def test_save_assigns_fresh_generated_at(self):
+        p = Path(self.tmp)/"s.json"
+        gov.save_governance_state(p, {"schema_version": 1, "events": []})
+        loaded = json.loads(p.read_text(encoding="utf-8"))
+        self.assertIn("generated_at", loaded)
+        self.assertIsInstance(loaded["generated_at"], str)
     def test_malformed(self):
         p = Path(self.tmp)/"b.json"; p.write_text("{x", encoding="utf-8")
         self.assertEqual(gov.load_governance_state(p), {"schema_version": 1, "events": []})
@@ -401,8 +460,47 @@ class TestDiscordEmbed(unittest.TestCase):
         for required in ("Item ID","Item Name","Issue URL","Newly Quarantined","Total Quarantined","Before Score","Users","Event ID","Decision"):
             self.assertIn(required, names)
     def test_resolved(self):
-        r = gov.build_discord_embed(mod_id="s", event_type="resolved", event_data={"item_name":"S","issue_url":"u","decision":"accepted"}, policy=gov.GovernancePolicy.PRODUCTION, mode=gov.GovernanceMode.MONITOR)
+        r = gov.build_discord_embed(mod_id="s", event_type="resolved", event_data={"item_name":"S","issue_url":"u","event_id":"sha256:resolved","decision":"accepted"}, policy=gov.GovernancePolicy.PRODUCTION, mode=gov.GovernanceMode.MONITOR)
         self.assertIn("Resolved", r["embeds"][0]["title"])
+        self.assertEqual(gov._extract_event_id_from_embed(r), "sha256:resolved")
+    def test_discord_failure_logs_event_id(self):
+        import requests as _req
+        original_post = _req.post
+        try:
+            _req.post = lambda *a, **kw: type("Resp", (), {"status_code": 500})()
+            embed = gov.build_discord_embed(
+                mod_id="sodium", event_type="vote_surge",
+                event_data={"item_name":"S","issue_url":"u","newly_quarantined":1,
+                           "total_quarantined":2,"before_score":"0","user_count":1,
+                           "event_id":"sha256:abc123"},
+                policy=gov.GovernancePolicy.SANDBOX,
+                mode=gov.GovernanceMode.MONITOR,
+            )
+            with self.assertLogs("compiler.governance", level="WARNING") as logs:
+                delivered = gov._post_discord("https://example.invalid/webhook", embed)
+            self.assertFalse(delivered)
+            self.assertTrue(any("sha256:abc123" in msg for msg in logs.output))
+        finally:
+            _req.post = original_post
+
+    def test_discord_network_failure_logs_event_id_and_unknown_status(self):
+        import requests as _req
+        original_post = _req.post
+        try:
+            _req.post = lambda *a, **kw: (_ for _ in ()).throw(OSError("offline"))
+            embed = gov.build_discord_embed(
+                mod_id="sodium", event_type="vote_surge",
+                event_data={"event_id": "sha256:network-failure"},
+                policy=gov.GovernancePolicy.SANDBOX,
+                mode=gov.GovernanceMode.MONITOR,
+            )
+            with self.assertLogs("compiler.governance", level="WARNING") as logs:
+                delivered = gov._post_discord("https://example.invalid/webhook", embed)
+            self.assertFalse(delivered)
+            self.assertTrue(any("sha256:network-failure" in msg for msg in logs.output))
+            self.assertTrue(any("status unavailable" in msg for msg in logs.output))
+        finally:
+            _req.post = original_post
 
 # ===================================================================
 # Pipeline mocked
@@ -486,8 +584,13 @@ class TestPipelineMocked(unittest.TestCase):
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"alice","+1")]
         r1 = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertIn("sodium", r1)
+        first_bytes = self.gs.read_bytes()
+        first_mtime = self.gs.stat().st_mtime_ns
+        import time; time.sleep(0.01)
         r2 = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertIn("sodium", r2)
+        self.assertEqual(self.gs.read_bytes(), first_bytes)
+        self.assertEqual(self.gs.stat().st_mtime_ns, first_mtime)
 
     def test_anomaly_growth_merges_one_event_and_alerts_once_per_change(self):
         users = ("alice", "bob", "charlie", "dave")
@@ -547,7 +650,7 @@ class TestPipelineMocked(unittest.TestCase):
         from datetime import timezone as _tz
         _detected_bucket = "2026-07-27T06:00:00+00:00"
         existing_event_id = gov.make_stable_event_id("sodium", 1, _detected_bucket)
-        self.gs.write_text(json.dumps({"schema_version": 1, "governance_repository": "o/r", "policy": "production", "events": [{
+        self.gs.write_text(json.dumps({"schema_version": 1, "governance_repository": "o/r", "policy": "sandbox", "events": [{
             "event_id": existing_event_id, "item_id": "sodium", "event_type": "vote_surge",
             "status": "pending", "detected_at": "2026-07-27T00:00:00Z",
             "affected_reactions": [1,2,3,4,5],
@@ -568,6 +671,8 @@ class TestPipelineMocked(unittest.TestCase):
         # Use sandbox policy with low threshold to trigger anomaly
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.SANDBOX, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertIn("sodium", r)
+        saved = json.loads(self.gs.read_text(encoding="utf-8"))
+        self.assertEqual(saved["events"][0]["status"], "accepted")
 
     def test_pending_event_excludes_reactions(self):
         _clear()

@@ -10,6 +10,16 @@ permissions:
   issues: read
   discussions: read
 
+concurrency:
+  group: registry-maintenance
+  cancel-in-progress: false
+
+env:
+  GOVERNANCE_MODE: monitor
+  GOVERNANCE_POLICY: production
+  EXPECTED_GOVERNANCE_REPOSITORY: jarjarpfeil/Agora-Launcher
+  GOVERNANCE_STATE_PATH: registry/governance/governance-state.json
+
 jobs:
   compile:
     runs-on: ubuntu-latest
@@ -27,19 +37,136 @@ jobs:
       - name: Install compiler dependencies
         run: pip install -r compiler/requirements.txt
 
+      - name: Governance configuration preflight
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for f in \
+            registry/governance/vote_issues.json \
+            registry/governance/quarantine_decisions.json \
+            registry/governance/poll_blacklist.json \
+            "$GOVERNANCE_STATE_PATH"
+          do
+            if [ ! -f "$f" ]; then
+              echo "::error::Required governance file $f not found."
+              exit 1
+            fi
+          done
+
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "::error::GITHUB_TOKEN is required for governance."
+            exit 1
+          fi
+
+          if [ "${{ github.repository }}" != "$EXPECTED_GOVERNANCE_REPOSITORY" ]; then
+            echo "::error::Production governance must run against $EXPECTED_GOVERNANCE_REPOSITORY."
+            exit 1
+          fi
+
+          if [ "$GOVERNANCE_POLICY" != "production" ]; then
+            echo "::error::Nightly governance policy must be production."
+            exit 1
+          fi
+
+          if [ "$GOVERNANCE_MODE" = "monitor" ] && [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::error::DISCORD_WEBHOOK_URL is required for production monitor mode."
+            exit 1
+          fi
+
+          python scripts/validate_governance_state.py "$GOVERNANCE_STATE_PATH"
+
       - name: Refresh loader manifests and compile registry
         run: |
           python scripts/refresh_loader_manifests.py \
             --auto-versions \
             --latest-per-mc 5 \
             --keep-others \
-            --governance-mode read-only \
+            --no-governance-write \
+            --governance-mode "$GOVERNANCE_MODE" \
+            --governance-policy "$GOVERNANCE_POLICY" \
+            --governance-repo "${{ github.repository }}" \
+            --governance-state-in "$GOVERNANCE_STATE_PATH" \
+            --governance-state-out "$GOVERNANCE_STATE_PATH" \
             --out registry.db
         env:
           ED25519_PRIVATE_KEY: ${{ secrets.ED25519_PRIVATE_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           AGORA_REGISTRY_REPO: ${{ github.repository }}
+
+      - name: Verify compiled database
+        run: python scripts/verify_db.py registry.db
+
+      - name: Governance unit tests
+        run: python compiler/test_governance.py -v
+
+      - name: Governance integration tests
+        run: python compiler/test_governance_integration.py -v
+
+      - name: Validate scripts
+        run: python scripts/test_scripts.py
+
+      - name: Validate governance state
+        run: python scripts/validate_governance_state.py "$GOVERNANCE_STATE_PATH"
+
+      - name: Verify Code of Engagement in all required locations
+        run: |
+          grep -q "Code of Engagement" README.md || (echo "Missing in README.md" && exit 1)
+          grep -q "Code of Engagement" .github/ISSUE_TEMPLATE/review-form.yml || (echo "Missing in review-form.yml" && exit 1)
+          grep -q "Code of Engagement" CODE_OF_ENGAGEMENT.md || (echo "Missing in CODE_OF_ENGAGEMENT.md" && exit 1)
+
+      - name: Check for unexpected generated files
+        shell: bash
+        run: |
+          allowed='^(registry/governance/governance-state\.json|loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json)$'
+
+          unexpected="$(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } |
+            sort -u |
+            grep -Ev "$allowed" || true
+          )"
+
+          if [[ -n "$unexpected" ]]; then
+            echo "Unexpected generated files:"
+            echo "$unexpected"
+            exit 1
+          fi
+
+      - name: Commit governance state
+        id: governance_state
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          base_commit="$(git rev-parse HEAD)"
+          git add registry/governance/governance-state.json
+
+          changed=false
+          if git diff --cached --quiet; then
+            echo "No meaningful governance state changes."
+          else
+            git commit -m "chore(governance): update monitor state"
+            changed=true
+          fi
+
+          git fetch origin master
+
+          if [[ "$base_commit" != "$(git rev-parse origin/master)" ]]; then
+            echo "::error::master changed during governance compilation; refusing stale output."
+            exit 1
+          fi
+
+          if [[ "$changed" == true ]]; then
+            git push origin HEAD:master
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Upload registry artifacts
         uses: actions/upload-artifact@v4
@@ -48,23 +175,13 @@ jobs:
           path: |
             registry.db
             registry.db.sig
+            registry-web.json
+            registry-web.json.sig
           if-no-files-found: error
 
-      - name: Governance unit tests
-        run: python compiler/test_governance.py -v
-
-      - name: Governance integration tests
-        run: python compiler/test_governance_integration.py -v
-
-      - name: Verify Code of Engagement in all required locations
-        run: |
-          grep -q "Code of Engagement" README.md || (echo "Missing in README.md" && exit 1)
-          grep -q "Code of Engagement" .github/ISSUE_TEMPLATE/review-form.yml || (echo "Missing in review-form.yml" && exit 1)
-          grep -q "Code of Engagement" CODE_OF_ENGAGEMENT.md || (echo "Missing in CODE_OF_ENGAGEMENT.md" && exit 1)
-
-      # Upload to GitHub Release Assets as a tagged release (registry-YYYY-MM-DD).
       - name: Deploy to GitHub Release
+        if: success()
         run: python scripts/deploy_release_assets.py
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           AGORA_REGISTRY_REPO: ${{ github.repository }}

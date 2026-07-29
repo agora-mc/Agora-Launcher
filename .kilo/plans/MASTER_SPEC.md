@@ -2510,6 +2510,63 @@ enforce the readiness check so the UI is not the security boundary.
 Retention accounts for manifest and referenced object storage and removes an
 object only after no remaining snapshot manifest references it.
 
+### 19.18 Governance Monitor and Tracked State (Work Package 7)
+
+> Operational model, file ownership, and safety constraints for the compiler governance sandbox. Last updated 2026-07-29.
+
+**State file location and format.** Production tracks `registry/governance/governance-state.json` and passes it explicitly as both state input and output. The compiler's isolated-run default remains `<output-dir>/governance-state.json`. The file carries `schema_version`, `governance_repository`, `policy`, an `events` array, and `generated_at` after the first meaningful transition. Each event has `event_id`, `item_id`, `event_type`, `status`, `detected_at`, `affected_reactions`, and `details_json`. Growth merges new reactions into the original stable event rather than creating overlapping duplicates.
+
+**Production repo and policy resolution.** Governance repo: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Policy constants: production uses 30-day account-age threshold, 6-hour window, 5×-baseline ratio with 20-reaction floor; sandbox uses 0-day age, 10-minute window, 3-reaction threshold, no baseline. State files embed `governance_repository` and `policy`; `load_governance_state()` discards mismatched state to prevent cross-environment corruption.
+
+**Monitor semantics.** State is persisted only when `mode=monitor`. A write represents a meaningful change: new event creation, event growth (additional reactions in the same bucket), or status transition from curator decision application. Compiles with zero state delta produce no file modification. This prevents spurious diffs on every nightly run.
+
+**Curator decision input.** `registry/governance/quarantine_decisions.json` is curator-authored; the compiler never writes it. Each entry maps `event_id` to `accepted` or `rejected`. The pipeline applies these as overrides over stored event statuses: `accepted` lifts the quarantine and `rejected` permanently excludes those reaction IDs.
+
+**Public audit rationale.** Every state event captures the full anomaly context in `details_json`: threshold, window, historical average, baseline ratio, raw/eligible/counted/quarantined up/down counts, conflict users, and the exact reaction IDs. This enables any community member to independently verify that the quarantine decision matches the policy criteria. The `audit_log.json` separately records compile-level actions.
+
+**Non-release-asset rationale.** `governance-state.json` is consumed exclusively by the compiler on subsequent runs, not by the desktop app or web directory. It must reside in the repository working tree for the nightly governance commit. It is intentionally excluded from `registry.db` and the GitHub Release Asset pipeline.
+
+**Local monitor command and warning.**
+
+```powershell
+# WARNING: This changes tracked production state and can send real alerts.
+$env:GITHUB_TOKEN = (gh auth token)
+$env:DISCORD_WEBHOOK_URL = "YOUR_PRODUCTION_WEBHOOK"
+python compiler/compile.py `
+  --governance-mode monitor `
+  --governance-policy production `
+  --governance-repo jarjarpfeil/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --governance-state-out D:/Agora/registry/governance/governance-state.json `
+  --no-governance-write `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+**Read-only diagnostics.**
+
+```powershell
+$env:GITHUB_TOKEN = (gh auth token)
+python compiler/compile.py `
+  --governance-mode read-only `
+  --governance-policy production `
+  --governance-repo jarjarpfeil/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+`read-only` runs the full detection pipeline in memory but never writes state, never sends Discord alerts, and has no effect on the working tree or remote.
+
+**State recovery.** Production preflight rejects missing or malformed JSON, unsupported schemas, duplicate or incomplete events, and mismatched `governance_repository` or `policy`. Recovery restores the last valid file from Git history or, after curator review, commits an empty production envelope and validates it with `scripts/validate_governance_state.py`. Production state must not be silently truncated or regenerated.
+
+**Workflow ownership boundaries.**
+- The loader-refresh workflow is the sole committer for the three tracked loader-manifest files. The nightly compile may regenerate them for compilation but never stages them in the governance commit.
+- The nightly governance commit stages only `registry/governance/governance-state.json`. Signed database and web exports are user-facing release assets, not Git commits.
+- `quarantine_decisions.json` and `vote_issues.json` are curated manually via PR.
+
+**Production mode is currently read-only.** The CI `compile.yml` workflow runs governance in `read-only` mode (observation, no state writing, no Discord). Full `monitor` mode (state commits + real Discord alerts) is **not yet activated in production** — it requires completion of sandbox testing gates and explicit manual curator sign-off. Until those gates pass, production runs are observation-only.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

@@ -19,4 +19,6 @@ local_state.db
 tokens.enc
 .cache
 .pnpm-store
-governance-state.json
+/governance-state.json
+registry-web.json
+registry-web.json.sig

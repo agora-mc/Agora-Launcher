@@ -297,6 +297,10 @@ def fetch_loader_manifests(
 def compile_registry(
     out: str, skip_sign: bool, no_governance_write: bool = False,
     governance_mode: str | None = None,
+    governance_policy: str | None = None,
+    governance_repo: str | None = None,
+    governance_state_in: Path | None = None,
+    governance_state_out: Path | None = None,
 ) -> None:
     """Run compiler/compile.py as a subprocess."""
     cmd = [sys.executable, str(COMPILE_SCRIPT), "--out", out]
@@ -304,8 +308,16 @@ def compile_registry(
         cmd.append("--skip-sign")
     if governance_mode:
         cmd.extend(["--governance-mode", governance_mode])
-    elif no_governance_write:
+    if no_governance_write:
         cmd.append("--no-governance-write")
+    if governance_policy:
+        cmd.extend(["--governance-policy", governance_policy])
+    if governance_repo:
+        cmd.extend(["--governance-repo", governance_repo])
+    if governance_state_in is not None:
+        cmd.extend(["--governance-state-in", str(governance_state_in)])
+    if governance_state_out is not None:
+        cmd.extend(["--governance-state-out", str(governance_state_out)])
 
     logger.info("Running compiler: %s", " ".join(cmd))
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
@@ -369,14 +381,39 @@ def main() -> int:
     parser.add_argument(
         "--no-governance-write",
         action="store_true",
-        help="Do not append or rotate registry/governance/audit_log.json (legacy; use --governance-mode)",
+        help="Do not append or rotate the legacy registry/governance/audit_log.json",
     )
     parser.add_argument(
         "--governance-mode",
         type=str,
         choices=["off", "read-only", "monitor"],
         default=None,
-        help="Governance mode for the compiler subprocess (default: read-only; use 'off' to disable)",
+        help="Governance mode for the compiler subprocess (default: unset preserves legacy behavior; use 'off' to disable)",
+    )
+    parser.add_argument(
+        "--governance-policy",
+        type=str,
+        choices=["production", "sandbox"],
+        default=None,
+        help="Governance policy for the compiler subprocess (default: unset uses compiler default 'production')",
+    )
+    parser.add_argument(
+        "--governance-repo",
+        type=str,
+        default=None,
+        help="GitHub owner/repo for governance issues (default: unset uses compiler logic)",
+    )
+    parser.add_argument(
+        "--governance-state-in",
+        type=Path,
+        default=None,
+        help="Path to input governance-state.json (default: unset = fresh state in compiler)",
+    )
+    parser.add_argument(
+        "--governance-state-out",
+        type=Path,
+        default=None,
+        help="Path to output governance-state.json (default: unset uses compiler default)",
     )
     parser.add_argument(
         "--report",
@@ -445,6 +482,10 @@ def main() -> int:
             args.skip_sign,
             no_governance_write=args.no_governance_write,
             governance_mode=args.governance_mode,
+            governance_policy=args.governance_policy,
+            governance_repo=args.governance_repo,
+            governance_state_in=args.governance_state_in,
+            governance_state_out=args.governance_state_out,
         )
 
         if args.auto_versions:

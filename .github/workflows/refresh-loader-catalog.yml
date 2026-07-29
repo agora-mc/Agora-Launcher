@@ -10,7 +10,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: refresh-loader-catalog
+  group: registry-maintenance
   cancel-in-progress: false
 
 jobs:
