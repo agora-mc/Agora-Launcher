@@ -2544,6 +2544,8 @@ mod tests {
                 score: crate::health::HealthScore::Green,
                 warnings: vec![],
                 blockers: vec![],
+                recommendations: vec![],
+                scan_token: "test-scan".into(),
             },
         };
         let value = serde_json::to_value(health).unwrap();
@@ -3250,7 +3252,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_health_warning_is_returned_without_rollback() {
+    fn test_execute_health_recommendation_is_returned_without_rollback() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         let source_path = tmp.path().join("optional-warning.jar");
@@ -3283,8 +3285,11 @@ mod tests {
             InstallOutcome::Success {
                 health: HealthOutcome::Completed { report },
                 ..
-            } => assert!(!report.warnings.is_empty()),
-            other => panic!("expected successful yellow health outcome, got {other:?}"),
+            } => {
+                assert!(report.warnings.is_empty());
+                assert!(!report.recommendations.is_empty());
+            }
+            other => panic!("expected successful health recommendation, got {other:?}"),
         }
         assert!(instance_dir.join("mods/optional-warning.jar").is_file());
     }

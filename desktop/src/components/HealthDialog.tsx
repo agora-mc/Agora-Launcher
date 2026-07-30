@@ -2,12 +2,15 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   checkInstanceHealth,
   disableModForTest,
-  getSetting,
-  setSetting,
   type HealthReport,
-  type HealthBlocker,
-  type HealthWarning,
 } from '@/lib/tauri';
+import {
+  activeHealthWarnings,
+  healthWarningKey,
+  loadHealthPreferences,
+  saveHealthPreferences,
+  type HealthPreferences,
+} from '@/lib/healthPreferences';
 import {
   Dialog,
   DialogContent,
@@ -27,14 +30,13 @@ interface HealthDialogProps {
   onCancel: () => void;
 }
 
-function silenceKey(item: HealthWarning | HealthBlocker): string {
-  return `health_silenced_${item.kind}_${item.mod_id ?? 'global'}`;
-}
-
 export function HealthDialog({ instanceId, instanceName, initialReport, onConfirm, onCancel }: HealthDialogProps) {
   const [report, setReport] = useState<HealthReport>(initialReport);
   const [error, setError] = useState<string | null>(null);
-  const [silenced, setSilenced] = useState<Set<string>>(new Set());
+  const [preferences, setPreferences] = useState<HealthPreferences>({
+    mutedWarnings: [],
+    muteAllRecommendations: false,
+  });
   const [fixing, setFixing] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
 
@@ -49,13 +51,8 @@ export function HealthDialog({ instanceId, instanceName, initialReport, onConfir
     let cancelled = false;
     (async () => {
       try {
-        const keys: string[] = [...initialReport.warnings, ...initialReport.blockers].map(silenceKey);
-        const silencedSet = new Set<string>();
-        for (const k of keys) {
-          const val = await getSetting(k);
-          if (val === 'true') silencedSet.add(k);
-        }
-        if (!cancelled) setSilenced(silencedSet);
+        const loaded = await loadHealthPreferences(initialReport.warnings);
+        if (!cancelled) setPreferences(loaded);
       } catch (e: any) {
         if (!cancelled) setError(e?.message || String(e));
       }
@@ -76,15 +73,27 @@ export function HealthDialog({ instanceId, instanceName, initialReport, onConfir
     }
   }, [instanceId]);
 
-  const handleSilence = useCallback(async (key: string, current: boolean) => {
-    const next = !current;
-    await setSetting(key, String(next));
-    setSilenced(prev => {
-      const next2 = new Set(prev);
-      if (next) next2.add(key); else next2.delete(key);
-      return next2;
-    });
-  }, []);
+  const handleSilence = useCallback(async (key: string, isMuted: boolean) => {
+    const muted = new Set(preferences.mutedWarnings);
+    if (isMuted) muted.delete(key); else muted.add(key);
+    const next = { ...preferences, mutedWarnings: [...muted] };
+    try {
+      await saveHealthPreferences(next);
+      setPreferences(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [preferences]);
+
+  const handleRecommendationMute = useCallback(async (muted: boolean) => {
+    const next = { ...preferences, muteAllRecommendations: muted };
+    try {
+      await saveHealthPreferences(next);
+      setPreferences(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [preferences]);
 
   const handleConfirm = async () => {
     setLaunching(true);
@@ -99,15 +108,10 @@ export function HealthDialog({ instanceId, instanceName, initialReport, onConfir
     }
   };
 
-  const activeBlockers = report.blockers.filter(b => {
-    const k = silenceKey(b);
-    return !silenced.has(k);
-  });
-
-  const activeWarnings = report.warnings.filter(w => {
-    const k = silenceKey(w);
-    return !silenced.has(k);
-  });
+  const activeBlockers = report.blockers;
+  const activeWarnings = activeHealthWarnings(report.warnings, preferences);
+  const mutedWarnings = new Set(preferences.mutedWarnings);
+  const recommendations = report.recommendations ?? [];
 
   const effectiveScore = activeBlockers.length > 0 ? 'red' as const
     : activeWarnings.length > 0 ? 'yellow' as const
@@ -155,11 +159,10 @@ export function HealthDialog({ instanceId, instanceName, initialReport, onConfir
               <h4 className="text-sm font-semibold mb-2">Blockers ({report.blockers.length})</h4>
               <div className="space-y-2">
                 {report.blockers.map((b, i) => {
-                  const key = silenceKey(b);
-                  const isSilenced = silenced.has(key);
+                  const key = `${b.kind}:${b.mod_id ?? b.filename ?? i}`;
                   return (
-                    <div key={i} className={`rounded border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : 'border-destructive bg-destructive/10'}`}>
-                      <p className={isSilenced ? 'text-muted-foreground line-through' : 'text-destructive'}>{b.message}</p>
+                    <div key={key} className="rounded border border-destructive bg-destructive/10 p-2 text-sm">
+                      <p className="text-destructive">{b.message}</p>
                       <div className="flex items-center gap-2 mt-1">
                         {b.suggested_action && (
                           <span className="text-xs text-muted-foreground">{b.suggested_action}</span>
@@ -190,8 +193,8 @@ export function HealthDialog({ instanceId, instanceName, initialReport, onConfir
               <h4 className="text-sm font-semibold mb-2">Warnings ({report.warnings.length})</h4>
               <div className="space-y-2">
                 {report.warnings.map((w, i) => {
-                  const key = silenceKey(w);
-                  const isSilenced = silenced.has(key);
+                  const key = healthWarningKey(w);
+                  const isSilenced = mutedWarnings.has(key);
                   return (
                     <div key={i} className={`rounded border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : 'border-amber-500 bg-amber-500/10'}`}>
                       <p className={isSilenced ? 'text-muted-foreground line-through' : 'text-amber-600 dark:text-amber-400'}>{w.message}</p>
@@ -215,6 +218,36 @@ export function HealthDialog({ instanceId, instanceName, initialReport, onConfir
                 })}
               </div>
             </div>
+          )}
+
+          {recommendations.length > 0 && (
+            <details className="mb-3 rounded border border-border bg-muted/30 p-2">
+              <summary className="cursor-pointer select-none text-sm font-semibold">
+                Recommendations ({recommendations.length})
+                {preferences.muteAllRecommendations ? ' - muted' : ''}
+              </summary>
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center justify-between rounded border border-border bg-background p-2">
+                  <div>
+                    <p className="text-sm font-medium">Show recommendations</p>
+                    <p className="text-xs text-muted-foreground">Optional improvements never block launch.</p>
+                  </div>
+                  <Switch
+                    checked={!preferences.muteAllRecommendations}
+                    onCheckedChange={(checked) => handleRecommendationMute(!checked)}
+                    aria-label="Show health recommendations"
+                  />
+                </div>
+                {!preferences.muteAllRecommendations && recommendations.map((recommendation, index) => (
+                  <div key={`${recommendation.kind}:${recommendation.mod_id ?? index}`} className="rounded border border-border bg-background p-2 text-sm">
+                    <p>{recommendation.message}</p>
+                    {recommendation.suggested_action && (
+                      <p className="mt-1 text-xs text-muted-foreground">{recommendation.suggested_action}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
           )}
 
           {/* All clear */}

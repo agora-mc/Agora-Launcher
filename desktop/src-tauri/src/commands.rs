@@ -355,6 +355,7 @@ pub async fn launch_instance(
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
     allow_health_blockers: Option<bool>,
+    health_scan_token: Option<String>,
 ) -> LauncherResult<()> {
     let sanitized = paths::sanitize_id(&instance_id);
     if sanitized.is_empty() {
@@ -385,6 +386,7 @@ pub async fn launch_instance(
         instance_id: sanitized.clone(),
         mode: agora_core::launch_service::LaunchMode::Delegated,
         health_policy: health_policy_for_approval(allow_health_blockers),
+        health_scan_token,
     };
     let result = agora_core::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
@@ -442,6 +444,19 @@ impl agora_core::launch_service::LaunchProgress for DelegatedLaunchProgress {
         );
     }
 
+    fn phase_completed(&self, phase: &str, duration_ms: u128) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "launch-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "phase": format!("{phase}-complete"),
+                "message": format!("Completed in {duration_ms} ms"),
+                "duration_ms": duration_ms,
+            }),
+        );
+    }
+
     fn started(&self, started: &agora_core::launch_service::LaunchStarted) {
         use tauri::Emitter;
         let app = self.app.clone();
@@ -490,6 +505,7 @@ pub async fn launch_instance_with_recovery(
     instance_id: String,
     action: agora_core::launch_service::LaunchRecoveryAction,
     allow_health_blockers: Option<bool>,
+    health_scan_token: Option<String>,
 ) -> LauncherResult<u32> {
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -538,6 +554,7 @@ pub async fn launch_instance_with_recovery(
         instance_id: sanitized,
         mode: agora_core::launch_service::LaunchMode::Direct,
         health_policy: health_policy_for_approval(allow_health_blockers),
+        health_scan_token,
     };
     let task = tokio::spawn(async move {
         agora_core::launch_service::LaunchService::new(ctx)
@@ -575,6 +592,7 @@ pub async fn launch_instance_direct(
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
     allow_health_blockers: Option<bool>,
+    health_scan_token: Option<String>,
 ) -> LauncherResult<u32> {
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -623,6 +641,7 @@ pub async fn launch_instance_direct(
         instance_id: progress.instance_id.clone(),
         mode: agora_core::launch_service::LaunchMode::Direct,
         health_policy: health_policy_for_approval(allow_health_blockers),
+        health_scan_token,
     };
     let task = tokio::spawn(async move {
         agora_core::launch_service::LaunchService::new(ctx)
@@ -669,6 +688,19 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
                 "instance_id": self.instance_id,
                 "phase": phase,
                 "message": message,
+            }),
+        );
+    }
+
+    fn phase_completed(&self, phase: &str, duration_ms: u128) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "launch-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "phase": format!("{phase}-complete"),
+                "message": format!("Completed in {duration_ms} ms"),
+                "duration_ms": duration_ms,
             }),
         );
     }
@@ -1113,6 +1145,49 @@ pub async fn read_crash_log_cmd(
 ) -> LauncherResult<String> {
     tokio::task::spawn_blocking(move || {
         crash_diagnostics::read_crash_log(&app, &instance_id, &filename)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Collect and investigate the most useful recent evidence for an instance.
+#[tauri::command]
+pub async fn investigate_instance_evidence(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<agora_core::crash_service::CrashInvestigation> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::crash_service::CrashService::new(ctx).investigate_evidence(&instance_id, &[])
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Pick additional diagnostic files and investigate them without returning
+/// their filesystem paths to the webview.
+#[tauri::command]
+pub async fn pick_and_investigate_crash_evidence(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<Option<agora_core::crash_service::CrashInvestigation>> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("Add crash evidence")
+        .add_filter("Diagnostic text", &["log", "txt", "json", "md"])
+        .pick_files()
+        .await;
+    let Some(files) = picked else {
+        return Ok(None);
+    };
+    let paths = files
+        .into_iter()
+        .map(|file| file.path().to_path_buf())
+        .collect::<Vec<_>>();
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::crash_service::CrashService::new(ctx)
+            .investigate_evidence(&instance_id, &paths)
+            .map(Some)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -2469,7 +2544,7 @@ pub async fn copilot_try_governance_token(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<Option<ai_assistant::CopilotToken>> {
-    let ghu_token = match crate::auth::get_token(&app) {
+    let ghu_token = match crate::auth::get_valid_access_token(&app).await {
         Some(t) => t,
         None => return Ok(None),
     };
@@ -4249,13 +4324,13 @@ pub async fn import_lockfile(
             "Could not allocate a unique instance ID for the lockfile clone.",
         )
     })?;
-    let memory = lockfile
+    let explicit_memory = lockfile
         .instance
         .user_preferences
         .get("memoryMb")
         .and_then(serde_json::Value::as_u64)
-        .and_then(|value| i64::try_from(value).ok())
-        .unwrap_or(4096);
+        .and_then(|value| i64::try_from(value).ok());
+    let memory = explicit_memory.unwrap_or(4096);
     let request = CreateInstanceRequest {
         name: lockfile.instance.name.clone(),
         instance_id: instance_id.clone(),
@@ -4263,6 +4338,14 @@ pub async fn import_lockfile(
         loader: lockfile.instance.loader.clone(),
         loader_version: lockfile.instance.loader_version.clone(),
         jvm_memory_mb: Some(memory),
+        jvm_memory_mode: Some(
+            if explicit_memory.is_some() {
+                "manual"
+            } else {
+                "auto"
+            }
+            .into(),
+        ),
         jvm_gc: None,
         jvm_custom_args: None,
         jvm_always_pre_touch: None,
@@ -5214,10 +5297,27 @@ pub async fn update_instance_jvm(
     gc: String,
     always_pre_touch: bool,
     custom_args: String,
+    memory_mode: Option<String>,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(&app)?;
     let service = agora_core::instance_service::InstanceService::new(ctx);
-    service.update_jvm(&instance_id, memory_mb, &gc, always_pre_touch, &custom_args)
+    service.update_jvm(
+        &instance_id,
+        memory_mb,
+        &gc,
+        always_pre_touch,
+        &custom_args,
+        memory_mode.as_deref().unwrap_or("manual"),
+    )
+}
+
+#[tauri::command]
+pub async fn recommend_instance_memory(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> LauncherResult<agora_core::memory_recommendation::MemoryRecommendation> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::instance_service::InstanceService::new(ctx).memory_recommendation(&instance_id)
 }
 
 fn to_modrinth_sort(sort: &str) -> ModrinthSort {

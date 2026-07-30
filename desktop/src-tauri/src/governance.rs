@@ -205,11 +205,13 @@ async fn github_graphql<T: serde::de::DeserializeOwned>(
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             if attempt == 0
-                && agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+                && agora_core::auth::try_refresh_after_401_with_token(&token)
                     .await
                     .is_ok()
             {
-                token = crate::auth::get_token(app).ok_or(LauncherError::AuthExpired)?;
+                token = crate::auth::get_valid_access_token(app)
+                    .await
+                    .ok_or(LauncherError::AuthExpired)?;
                 continue;
             }
             let _ = crate::auth::clear_token(app);
@@ -455,8 +457,8 @@ pub fn run_sync_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
 /// All checks are read-only GitHub API calls.  Every API call that returns 401
 /// triggers exactly one refresh-and-retry before reporting a permanent failure.
 pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
-    match crate::auth::get_valid_access_token(app).await {
-        Some(_) => {}
+    let diagnostic_token = match crate::auth::get_valid_access_token(app).await {
+        Some(token) => token,
         None => {
             return vec![
                 DiagnosticCheck {
@@ -515,7 +517,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     let (owner, repo_name) = repo.split_once('/').unwrap_or(("", ""));
 
     // ---- Helper: execute an API call with 401 refresh-and-retry ----
-    async fn call_with_401_retry<T, F, Fut>(f: F) -> Result<T, String>
+    async fn call_with_401_retry<T, F, Fut>(failed_token: &str, f: F) -> Result<T, String>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, String>>,
@@ -524,7 +526,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
         match &first {
             Err(msg) if msg.contains("401") => {
                 eprintln!("[governance] 401 on API call; attempting token refresh");
-                if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+                if agora_core::auth::try_refresh_after_401_with_token(failed_token)
                     .await
                     .is_ok()
                 {
@@ -537,7 +539,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     }
 
     // 5. repository_metadata_readable (also yields issues + discussions)
-    match call_with_401_retry(|| get_repo_meta(client, &repo)).await {
+    match call_with_401_retry(&diagnostic_token, || get_repo_meta(client, &repo)).await {
         Ok(meta) => {
             checks.push(DiagnosticCheck {
                 id: "repository_metadata_readable".into(),
@@ -591,7 +593,11 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     }
 
     // 8. triage_category_exists
-    match call_with_401_retry(|| check_triage_category(client, owner, repo_name)).await {
+    match call_with_401_retry(&diagnostic_token, || {
+        check_triage_category(client, owner, repo_name)
+    })
+    .await
+    {
         Ok(true) => checks.push(DiagnosticCheck {
             id: "triage_category_exists".into(),
             status: DiagnosticStatus::Pass,
@@ -612,24 +618,27 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     }
 
     // 9-11. Label existence checks
-    let known_labels: Option<Vec<String>> =
-        match call_with_401_retry(|| list_repo_labels(client, owner, repo_name)).await {
-            Ok(labels) => Some(labels),
-            Err(msg) => {
-                for (check_id, label) in [
-                    ("community_review_label_exists", "community-review"),
-                    ("registry_submission_label_exists", "registry-submission"),
-                    ("registry_vote_label_exists", "registry-vote"),
-                ] {
-                    checks.push(DiagnosticCheck {
-                        id: check_id.into(),
-                        status: DiagnosticStatus::Warning,
-                        message: format!("Cannot check \"{label}\" label: {msg}"),
-                    });
-                }
-                None
+    let known_labels: Option<Vec<String>> = match call_with_401_retry(&diagnostic_token, || {
+        list_repo_labels(client, owner, repo_name)
+    })
+    .await
+    {
+        Ok(labels) => Some(labels),
+        Err(msg) => {
+            for (check_id, label) in [
+                ("community_review_label_exists", "community-review"),
+                ("registry_submission_label_exists", "registry-submission"),
+                ("registry_vote_label_exists", "registry-vote"),
+            ] {
+                checks.push(DiagnosticCheck {
+                    id: check_id.into(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Cannot check \"{label}\" label: {msg}"),
+                });
             }
-        };
+            None
+        }
+    };
 
     if let Some(known_labels) = known_labels {
         for (check_id, label_name) in [
@@ -667,7 +676,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
             "mod-submission.yml",
         ),
     ] {
-        let tmpl_result = call_with_401_retry(|| {
+        let tmpl_result = call_with_401_retry(&diagnostic_token, || {
             let path = template_path.to_owned();
             async move { check_template_exists(client, owner, repo_name, &path).await }
         })
@@ -929,11 +938,11 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
 
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         crate::auth::log_line("GitHub token expired during triage poll search; attempting refresh");
-        if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+        if agora_core::auth::try_refresh_after_401_with_token(&token)
             .await
             .is_ok()
         {
-            if let Some(new_token) = crate::auth::get_token(app) {
+            if let Some(new_token) = crate::auth::get_valid_access_token(app).await {
                 token = new_token;
                 let retry_resp = agora_core::github_ratelimit::github_client()
                     .post("https://api.github.com/graphql")
@@ -1037,11 +1046,11 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         crate::auth::log_line(
             "GitHub token expired during triage poll reactions; attempting refresh",
         );
-        if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+        if agora_core::auth::try_refresh_after_401_with_token(&token)
             .await
             .is_ok()
         {
-            if let Some(new_token) = crate::auth::get_token(app) {
+            if let Some(new_token) = crate::auth::get_valid_access_token(app).await {
                 token = new_token;
                 let retry_resp = agora_core::github_ratelimit::github_client()
                     .post("https://api.github.com/graphql")

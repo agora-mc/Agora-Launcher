@@ -136,6 +136,96 @@ const KEYRING_ACCOUNT: &str = "github-token";
 /// Fallback token file name (in app data dir) for when OS keyring is unavailable.
 const TOKEN_FALLBACK_FILE: &str = "tokens.enc";
 
+#[cfg(test)]
+static TEST_TOKEN_STORE: LazyLock<std::sync::Mutex<Option<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(None));
+#[cfg(test)]
+static TEST_SECRET_STORE: LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+> = LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn store_test_token(value: &str) -> bool {
+    #[cfg(test)]
+    {
+        *TEST_TOKEN_STORE.lock().unwrap() = Some(value.to_string());
+        true
+    }
+    #[cfg(not(test))]
+    {
+        let _ = value;
+        false
+    }
+}
+
+fn load_test_token() -> Option<Option<String>> {
+    #[cfg(test)]
+    {
+        Some(TEST_TOKEN_STORE.lock().unwrap().clone())
+    }
+    #[cfg(not(test))]
+    None
+}
+
+fn clear_test_token() -> bool {
+    #[cfg(test)]
+    {
+        *TEST_TOKEN_STORE.lock().unwrap() = None;
+        true
+    }
+    #[cfg(not(test))]
+    false
+}
+
+fn store_test_secret(service: &str, account: &str, value: &str) -> bool {
+    #[cfg(test)]
+    {
+        TEST_SECRET_STORE.lock().unwrap().insert(
+            (service.to_string(), account.to_string()),
+            value.to_string(),
+        );
+        true
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (service, account, value);
+        false
+    }
+}
+
+fn load_test_secret(service: &str, account: &str) -> Option<Option<String>> {
+    #[cfg(test)]
+    {
+        Some(
+            TEST_SECRET_STORE
+                .lock()
+                .unwrap()
+                .get(&(service.to_string(), account.to_string()))
+                .cloned(),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (service, account);
+        None
+    }
+}
+
+fn clear_test_secret(service: &str, account: &str) -> bool {
+    #[cfg(test)]
+    {
+        TEST_SECRET_STORE
+            .lock()
+            .unwrap()
+            .remove(&(service.to_string(), account.to_string()));
+        true
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (service, account);
+        false
+    }
+}
+
 /// PBKDF2 iterations for key derivation in the keyring fallback.
 const PBKDF2_ITERATIONS: u32 = 200_000;
 
@@ -357,11 +447,25 @@ static REFRESH_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
 /// Exchange a refresh token for a new access+refresh token pair.
 ///
 /// POSTs to GitHub's OAuth token endpoint with `grant_type=refresh_token`.
-/// Returns None when the refresh token has been revoked or expired.
+/// Returns:
+/// - `Ok(Some(bundle))` on success
+/// - `Ok(None)` when the refresh token has been permanently revoked/expired
+/// - `Err(_)` on transient network or server error (bundle preserved)
 pub async fn refresh_access_token(
     refresh_token: &str,
 ) -> LauncherResult<Option<GitHubTokenBundle>> {
     refresh_access_token_inner(&LiveOAuthClient, refresh_token).await
+}
+
+/// Returns `true` when the OAuth error body signals a permanent failure
+/// that should clear stored credentials.
+fn is_permanent_oauth_error(body: &str) -> bool {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+            return matches!(err, "bad_refresh_token" | "expired_token" | "access_denied");
+        }
+    }
+    false
 }
 
 /// Internal variant that accepts an injectable OAuth client (for testing).
@@ -387,8 +491,12 @@ async fn refresh_access_token_inner(
     let body = resp.body;
     eprintln!("[auth] refresh status={status}");
 
+    // 400/401: permanent only when the body contains a known OAuth error
     if status == 400 || status == 401 {
-        return Ok(None);
+        if is_permanent_oauth_error(&body) {
+            return Ok(None);
+        }
+        return Err(LauncherError::NetworkOffline);
     }
     if !(200..300).contains(&status) {
         return Err(LauncherError::NetworkOffline);
@@ -431,13 +539,19 @@ async fn refresh_access_token_inner(
         }
 
         if let Some(err) = parsed.error.as_deref() {
-            eprintln!("[auth] refresh error from GitHub: {err}");
-            return Ok(None);
+            // 200 with error body — classify by known permanent OAuth errors
+            if matches!(err, "bad_refresh_token" | "expired_token" | "access_denied") {
+                eprintln!("[auth] refresh permanent error from GitHub: {err}");
+                return Ok(None);
+            }
+            eprintln!("[auth] refresh transient error from GitHub: {err}");
+            return Err(LauncherError::NetworkOffline);
         }
     }
 
+    // Malformed / unparseable response — treat as transient
     eprintln!("[auth] could not parse refresh response");
-    Ok(None)
+    Err(LauncherError::NetworkOffline)
 }
 
 // ---------------------------------------------------------------------------
@@ -450,13 +564,18 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
         code: "ERR_AUTH_SERIALIZE".into(),
         message: "Failed to serialize token bundle.".into(),
     })?;
+    if store_test_token(&json) {
+        return Ok(());
+    }
 
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        if entry.set_password(&json).is_ok() {
-            if let Some(path) = fallback_token_path() {
-                let _ = std::fs::remove_file(path);
+    if !using_test_token_store() {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+            if entry.set_password(&json).is_ok() {
+                if let Some(path) = fallback_token_path() {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
 
@@ -487,8 +606,12 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
 /// Handles legacy bare access tokens: if the stored value is not valid JSON,
 /// it is treated as a plain access token and wrapped in a bundle.
 pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
-    let raw = if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        entry.get_password().ok()
+    let raw = if let Some(stored) = load_test_token() {
+        stored
+    } else if !using_test_token_store() {
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
     } else {
         None
     };
@@ -523,12 +646,17 @@ pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
 
 /// Clear the stored token bundle from all storage locations.
 pub fn clear_token_bundle() -> Result<(), String> {
+    if clear_test_token() {
+        return Ok(());
+    }
     let mut keyring_error = None;
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        match entry.delete_password() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(error) if keyring_backend_unavailable(&error) => {}
-            Err(error) => keyring_error = Some(error),
+    if !using_test_token_store() {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+            match entry.delete_password() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) if keyring_backend_unavailable(&error) => {}
+                Err(error) => keyring_error = Some(error),
+            }
         }
     }
 
@@ -565,46 +693,75 @@ pub(crate) fn access_token_is_fresh(bundle: &GitHubTokenBundle) -> bool {
 ///
 /// Serialises concurrent callers through a single-flight lock so only one
 /// refresh request is issued.
+///
+/// On storage failures the error is logged and the stored token (if any) is
+/// returned. Callers that need to distinguish storage errors from success
+/// should use [`get_valid_access_token_fallible`].
 pub async fn get_valid_access_token() -> Option<String> {
+    match get_valid_access_token_inner(&LiveOAuthClient).await {
+        Ok(tok) => tok,
+        Err(e) => {
+            eprintln!("[auth] get_valid_access_token error: {e}");
+            load_token_bundle().map(|b| b.access_token)
+        }
+    }
+}
+
+/// Like [`get_valid_access_token`] but propagates storage errors so callers
+/// can treat a refresh that could not be persisted as incomplete.
+pub async fn get_valid_access_token_fallible() -> LauncherResult<Option<String>> {
     get_valid_access_token_inner(&LiveOAuthClient).await
 }
 
 /// Internal variant with injectable OAuth client.
-async fn get_valid_access_token_inner(oauth: &dyn OAuthHttpClient) -> Option<String> {
-    let bundle = load_token_bundle()?;
+/// Returns `LauncherResult` so callers can distinguish refresh-complete vs
+/// storage-failure vs sign-in-required.
+async fn get_valid_access_token_inner(
+    oauth: &dyn OAuthHttpClient,
+) -> LauncherResult<Option<String>> {
+    let bundle = match load_token_bundle() {
+        Some(b) => b,
+        None => return Ok(None),
+    };
 
     if access_token_is_fresh(&bundle) {
-        return Some(bundle.access_token);
+        return Ok(Some(bundle.access_token));
     }
 
     if bundle.refresh_token.is_none() {
-        return Some(bundle.access_token);
+        return Ok(Some(bundle.access_token));
     }
 
     let _lock = REFRESH_MUTEX.lock().await;
 
-    let bundle = load_token_bundle()?;
+    let bundle = match load_token_bundle() {
+        Some(b) => b,
+        None => return Ok(None),
+    };
     if access_token_is_fresh(&bundle) {
-        return Some(bundle.access_token);
+        return Ok(Some(bundle.access_token));
     }
 
-    let refresh_token = bundle.refresh_token.as_deref()?;
+    let refresh_token = match bundle.refresh_token.as_deref() {
+        Some(rt) => rt,
+        None => return Ok(Some(bundle.access_token)),
+    };
 
     match refresh_access_token_inner(oauth, refresh_token).await {
         Ok(Some(new_bundle)) => {
             eprintln!("[auth] access token refreshed successfully");
             let token = new_bundle.access_token.clone();
-            let _ = store_token_bundle(&new_bundle);
-            Some(token)
+            store_token_bundle(&new_bundle)?;
+            Ok(Some(token))
         }
         Ok(None) => {
-            eprintln!("[auth] refresh token expired or revoked");
+            eprintln!("[auth] refresh token expired or revoked — clearing bundle");
             let _ = clear_token_bundle();
-            None
+            Ok(None)
         }
         Err(e) => {
-            eprintln!("[auth] refresh network error: {e}");
-            Some(bundle.access_token)
+            eprintln!("[auth] refresh transient error: {e} — preserving bundle");
+            Ok(Some(bundle.access_token))
         }
     }
 }
@@ -613,44 +770,75 @@ async fn get_valid_access_token_inner(oauth: &dyn OAuthHttpClient) -> Option<Str
 ///
 /// Returns Ok(result) if refresh+retry succeeded, or the original error
 /// if refresh failed. Clears the bundle on persistent failure.
+///
+/// This variant does **not** carry the failed access token, so it cannot
+/// detect concurrent rotation — prefer [`try_refresh_after_401_with_token`]
+/// for new code.
 pub async fn try_refresh_after_401(original_error: LauncherError) -> Result<(), LauncherError> {
-    try_refresh_after_401_inner(&LiveOAuthClient, original_error).await
+    try_refresh_after_401_with_token("")
+        .await
+        .map_err(|_| original_error)
 }
 
-/// Internal variant with injectable OAuth client.
+/// Attempt one refresh after a 401, carrying the exact failed access token
+/// so that concurrent rotation is detected.
+///
+/// Under the single-flight mutex:
+/// 1. Re-reads stored credentials
+/// 2. If the stored access token **differs** from `failed_token`, another
+///    caller already rotated — returns `Ok(())` without a second refresh.
+/// 3. Otherwise issues exactly one refresh request.
+/// 4. On permanent OAuth failure (bad_refresh_token, expired_token, etc.)
+///    clears the bundle and returns `Err(LauncherError::AuthExpired)`.
+/// 5. On transient errors preserves the bundle and returns `Err`.
+/// 6. On success persists atomically — a failure to write durable storage
+///    propagates as `Err`.
+pub async fn try_refresh_after_401_with_token(failed_token: &str) -> Result<(), LauncherError> {
+    try_refresh_after_401_inner(&LiveOAuthClient, failed_token).await
+}
+
+/// Internal variant with injectable OAuth client and `failed_token` for
+/// rotation detection. Pass `""` to skip the rotation check.
 async fn try_refresh_after_401_inner(
     oauth: &dyn OAuthHttpClient,
-    original_error: LauncherError,
+    failed_token: &str,
 ) -> Result<(), LauncherError> {
     let _lock = REFRESH_MUTEX.lock().await;
 
     let bundle = match load_token_bundle() {
         Some(b) => b,
-        None => return Err(original_error),
+        None => return Err(LauncherError::AuthExpired),
     };
+
+    // If we know the failed token and the stored one differs, another
+    // caller already rotated — no second refresh needed.
+    if !failed_token.is_empty() && bundle.access_token != failed_token {
+        return Ok(());
+    }
 
     let refresh_token = match bundle.refresh_token.as_deref() {
         Some(rt) => rt.to_string(),
         None => {
             let _ = clear_token_bundle();
-            return Err(original_error);
+            return Err(LauncherError::AuthExpired);
         }
     };
 
     match refresh_access_token_inner(oauth, &refresh_token).await {
         Ok(Some(new_bundle)) => {
             eprintln!("[auth] 401 recovery: token refreshed");
-            let _ = store_token_bundle(&new_bundle);
+            // Propagate store failure — refresh incomplete without durable storage
+            store_token_bundle(&new_bundle)?;
             Ok(())
         }
         Ok(None) => {
             eprintln!("[auth] 401 recovery failed: refresh token invalid");
             let _ = clear_token_bundle();
-            Err(original_error)
+            Err(LauncherError::AuthExpired)
         }
-        Err(_) => {
-            eprintln!("[auth] 401 recovery failed: network error during refresh");
-            Err(original_error)
+        Err(e) => {
+            eprintln!("[auth] 401 recovery failed: transient error — preserving bundle");
+            Err(e)
         }
     }
 }
@@ -753,7 +941,7 @@ fn decrypt_token(data: &[u8], key: &[u8]) -> Option<String> {
 /// In tests, the `AGORA_TEST_TOKEN_DIR` environment variable can be set to an
 /// isolated directory so parallel tests do not share the same fallback file.
 fn fallback_token_path() -> Option<std::path::PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
         return Some(std::path::PathBuf::from(dir).join(TOKEN_FALLBACK_FILE));
     }
@@ -761,7 +949,19 @@ fn fallback_token_path() -> Option<std::path::PathBuf> {
 }
 
 fn fallback_secret_path(file_name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Ok(dir) = std::env::var("AGORA_TEST_SECRET_DIR") {
+        return Some(std::path::PathBuf::from(dir).join(file_name));
+    }
     dirs::data_local_dir().map(|d| d.join("agora").join(file_name))
+}
+
+fn using_test_token_store() -> bool {
+    cfg!(any(test, feature = "test-support")) && std::env::var_os("AGORA_TEST_TOKEN_DIR").is_some()
+}
+
+fn using_test_secret_store() -> bool {
+    cfg!(any(test, feature = "test-support")) && std::env::var_os("AGORA_TEST_SECRET_DIR").is_some()
 }
 
 fn keyring_backend_unavailable(error: &keyring::Error) -> bool {
@@ -775,12 +975,17 @@ pub(crate) fn store_secret(
     key_context: &[u8],
     value: &str,
 ) -> LauncherResult<()> {
-    if let Ok(entry) = keyring::Entry::new(service, account) {
-        if entry.set_password(value).is_ok() {
-            if let Some(path) = fallback_secret_path(fallback_file) {
-                let _ = std::fs::remove_file(path);
+    if store_test_secret(service, account, value) {
+        return Ok(());
+    }
+    if !using_test_secret_store() {
+        if let Ok(entry) = keyring::Entry::new(service, account) {
+            if entry.set_password(value).is_ok() {
+                if let Some(path) = fallback_secret_path(fallback_file) {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
 
@@ -807,16 +1012,21 @@ pub(crate) fn load_secret(
     fallback_file: &str,
     key_context: &[u8],
 ) -> LauncherResult<Option<String>> {
+    if let Some(stored) = load_test_secret(service, account) {
+        return Ok(stored);
+    }
     let mut keyring_error = None;
-    match keyring::Entry::new(service, account) {
-        Ok(entry) => match entry.get_password() {
-            Ok(value) => return Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => {}
+    if !using_test_secret_store() {
+        match keyring::Entry::new(service, account) {
+            Ok(entry) => match entry.get_password() {
+                Ok(value) => return Ok(Some(value)),
+                Err(keyring::Error::NoEntry) => {}
+                Err(error) if keyring_backend_unavailable(&error) => {}
+                Err(error) => keyring_error = Some(error.to_string()),
+            },
             Err(error) if keyring_backend_unavailable(&error) => {}
             Err(error) => keyring_error = Some(error.to_string()),
-        },
-        Err(error) if keyring_backend_unavailable(&error) => {}
-        Err(error) => keyring_error = Some(error.to_string()),
+        }
     }
 
     if let Some(path) = fallback_secret_path(fallback_file) {
@@ -848,12 +1058,17 @@ pub(crate) fn clear_secret(
     account: &str,
     fallback_file: &str,
 ) -> LauncherResult<()> {
+    if clear_test_secret(service, account) {
+        return Ok(());
+    }
     let mut keyring_error = None;
-    if let Ok(entry) = keyring::Entry::new(service, account) {
-        match entry.delete_password() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(error) if keyring_backend_unavailable(&error) => {}
-            Err(error) => keyring_error = Some(error),
+    if !using_test_secret_store() {
+        if let Ok(entry) = keyring::Entry::new(service, account) {
+            match entry.delete_password() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) if keyring_backend_unavailable(&error) => {}
+                Err(error) => keyring_error = Some(error),
+            }
         }
     }
     if let Some(path) = fallback_secret_path(fallback_file) {
@@ -1226,45 +1441,33 @@ mod tests {
     #[tokio::test]
     async fn load_token_bundle_legacy_bare_token_wrapping() {
         let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let _ = clear_token_bundle();
         let bare = "gho_legacy_bare_token_abc123";
-        let key = derive_fallback_key();
-        let encrypted = encrypt_token(bare, &key).expect("encrypt must succeed");
-        if let Some(path) = fallback_token_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            std::fs::write(&path, encrypted).expect("must write fallback");
+        *TEST_TOKEN_STORE.lock().unwrap() = Some(bare.to_string());
 
-            let loaded = load_token_bundle();
-            assert!(
-                loaded.is_some(),
-                "must load bundle even from legacy bare token"
-            );
-            if let Some(bundle) = loaded {
-                assert_eq!(
-                    bundle.access_token, bare,
-                    "bare token must become access_token"
-                );
-                assert!(
-                    bundle.refresh_token.is_none(),
-                    "bare token must not have refresh_token"
-                );
-                assert!(
-                    bundle.access_expires_at.is_none(),
-                    "bare token must not have expiry"
-                );
-            }
-            let _ = std::fs::remove_file(&path);
-            let _ = clear_token_bundle();
-        }
+        let loaded = load_token_bundle().expect("must load bundle even from legacy bare token");
+        assert_eq!(
+            loaded.access_token, bare,
+            "bare token must become access_token"
+        );
+        assert!(
+            loaded.refresh_token.is_none(),
+            "bare token must not have refresh_token"
+        );
+        assert!(
+            loaded.access_expires_at.is_none(),
+            "bare token must not have expiry"
+        );
+        let _ = clear_token_bundle();
     }
 
     // -----------------------------------------------------------------------
     // Token refresh audit: signout cleanup tests (isolated)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn clear_token_bundle_twice_does_not_error() {
+    #[tokio::test]
+    async fn clear_token_bundle_twice_does_not_error() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
         let _ = clear_token_bundle();
         let result = clear_token_bundle();
         assert!(result.is_ok(), "double clear should not error");
@@ -1310,7 +1513,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir for test token");
         std::env::set_var("AGORA_TEST_TOKEN_DIR", dir.path());
         let _ = clear_token_bundle();
-        let _ = store_token_bundle(bundle);
+        store_token_bundle(bundle).expect("store test token bundle");
         TestTokenDir(dir)
     }
 
@@ -1334,7 +1537,7 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = get_valid_access_token_inner(&oauth).await;
+        let result = get_valid_access_token_inner(&oauth).await.unwrap();
         assert_eq!(result.as_deref(), Some("gho_new"));
 
         let stored = load_token_bundle().expect("bundle should exist");
@@ -1370,8 +1573,8 @@ mod tests {
             tokio::spawn(async move { get_valid_access_token_inner(&*o2).await }),
         );
 
-        assert_eq!(r1.unwrap().as_deref(), Some("gho_fresh"));
-        assert_eq!(r2.unwrap().as_deref(), Some("gho_fresh"));
+        assert_eq!(r1.unwrap().unwrap().as_deref(), Some("gho_fresh"));
+        assert_eq!(r2.unwrap().unwrap().as_deref(), Some("gho_fresh"));
         assert_eq!(oauth.call_count(), 1);
     }
 
@@ -1395,7 +1598,7 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = get_valid_access_token_inner(&oauth).await;
+        let result = get_valid_access_token_inner(&oauth).await.unwrap();
         assert_eq!(result.as_deref(), Some("gho_rotated"));
 
         let stored = load_token_bundle().expect("bundle should exist");
@@ -1424,7 +1627,7 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = get_valid_access_token_inner(&oauth).await;
+        let result = get_valid_access_token_inner(&oauth).await.unwrap();
         assert!(result.is_none(), "revoked refresh should return None");
 
         let stored = load_token_bundle();
@@ -1450,7 +1653,10 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        assert!(get_valid_access_token_inner(&oauth).await.is_none());
+        assert!(get_valid_access_token_inner(&oauth)
+            .await
+            .unwrap()
+            .is_none());
         assert!(load_token_bundle().is_none());
         assert_eq!(oauth.call_count(), 1);
     }
@@ -1473,7 +1679,7 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = get_valid_access_token_inner(&oauth).await;
+        let result = get_valid_access_token_inner(&oauth).await.unwrap();
         assert_eq!(
             result.as_deref(),
             Some(old_token),
@@ -1504,7 +1710,7 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = try_refresh_after_401_inner(&oauth, LauncherError::AuthExpired).await;
+        let result = try_refresh_after_401_inner(&oauth, "gho_old_401").await;
         assert!(result.is_ok(), "401 recovery should succeed");
 
         let stored = load_token_bundle().expect("bundle should exist");
@@ -1529,7 +1735,7 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = try_refresh_after_401_inner(&oauth, LauncherError::AuthExpired).await;
+        let result = try_refresh_after_401_inner(&oauth, "gho_401_rev").await;
         assert!(result.is_err(), "revoked 401 refresh should error");
         assert_eq!(result.unwrap_err().code(), "ERR_AUTH_EXPIRED");
 
@@ -1554,12 +1760,148 @@ mod tests {
         };
         let _td = write_test_bundle(&bundle);
 
-        let result = try_refresh_after_401_inner(&oauth, LauncherError::AuthExpired).await;
+        let result = try_refresh_after_401_inner(&oauth, "gho_401_net").await;
         assert!(result.is_err(), "network 401 error should error");
-        assert_eq!(result.unwrap_err().code(), "ERR_AUTH_EXPIRED");
+        // Transient error returns NetworkOffline, not AuthExpired
+        assert_eq!(result.unwrap_err().code(), "ERR_NETWORK_OFFLINE");
 
         let stored = load_token_bundle();
         assert!(stored.is_some(), "bundle must survive network 401 error");
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // 401 rotation detection tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_401_double_rotation_prevention() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        // First caller will consume this response
+        oauth.queue_response(
+            200,
+            r#"{"access_token":"gho_rotated_first","refresh_token":"ghr_rotated_first","expires_in":28800,"token_type":"bearer"}"#,
+        );
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_original".into(),
+            refresh_token: Some("ghr_original".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        // Simulate: first caller fails with "gho_original", rotates
+        let r1 = try_refresh_after_401_inner(&oauth, "gho_original").await;
+        assert!(r1.is_ok(), "first caller should succeed");
+
+        let stored = load_token_bundle().expect("bundle should exist");
+        assert_eq!(stored.access_token, "gho_rotated_first");
+
+        // Second caller arrives with the now-stale "gho_original" — detects rotation
+        let r2 = try_refresh_after_401_inner(&oauth, "gho_original").await;
+        assert!(r2.is_ok(), "second caller should see already-rotated");
+        assert_eq!(
+            oauth.call_count(),
+            1,
+            "only one refresh call should be made"
+        );
+
+        let stored2 = load_token_bundle().expect("bundle should exist");
+        assert_eq!(
+            stored2.access_token, "gho_rotated_first",
+            "bundle must not change"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_401_concurrent_first_rotates_second_detects() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = std::sync::Arc::new(MockOAuthClient::new());
+        oauth.queue_response(
+            200,
+            r#"{"access_token":"gho_concurrent","refresh_token":"ghr_concurrent","expires_in":28800,"token_type":"bearer"}"#,
+        );
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_before_race".into(),
+            refresh_token: Some("ghr_before_race".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        // Both callers see 401 with the same failed token
+        let (r1, r2) = tokio::join!(
+            try_refresh_after_401_inner(&*oauth, "gho_before_race"),
+            try_refresh_after_401_inner(&*oauth, "gho_before_race"),
+        );
+
+        // Both must succeed
+        assert!(r1.is_ok(), "first concurrent caller succeeds: {r1:?}");
+        assert!(r2.is_ok(), "second concurrent caller succeeds: {r2:?}");
+
+        // Exactly one HTTP call
+        assert_eq!(oauth.call_count(), 1);
+
+        let stored = load_token_bundle().expect("bundle should exist");
+        assert_eq!(stored.access_token, "gho_concurrent");
+    }
+
+    #[tokio::test]
+    async fn test_401_malformed_response_is_transient() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        // GitHub returns 200 with unparseable body
+        oauth.queue_response(200, "not-json-at-all{{{");
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_survivor_malformed".into(),
+            refresh_token: Some("ghr_survivor_malformed".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = try_refresh_after_401_inner(&oauth, "gho_survivor_malformed").await;
+        assert!(result.is_err(), "malformed response should error");
+        assert_eq!(result.unwrap_err().code(), "ERR_NETWORK_OFFLINE");
+
+        let stored = load_token_bundle();
+        assert!(stored.is_some(), "bundle must survive malformed response");
+        assert_eq!(oauth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_401_unknown_error_body_is_transient() {
+        let _test_lock = TEST_AUTH_MUTEX.lock().await;
+        let oauth = MockOAuthClient::new();
+        // 400 with unrecognized error field (not one of the known permanent ones)
+        oauth.queue_response(400, r#"{"error":"temporarily_unavailable"}"#);
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_unknown_err".into(),
+            refresh_token: Some("ghr_unknown_err".into()),
+            access_expires_at: Some(Utc::now() + TimeDelta::seconds(600)),
+            refresh_expires_at: Some(Utc::now() + TimeDelta::days(30)),
+            token_type: None,
+            scope: None,
+        };
+        let _td = write_test_bundle(&bundle);
+
+        let result = try_refresh_after_401_inner(&oauth, "gho_unknown_err").await;
+        assert!(result.is_err(), "unknown error body should be transient");
+        assert_eq!(result.unwrap_err().code(), "ERR_NETWORK_OFFLINE");
+
+        let stored = load_token_bundle();
+        assert!(stored.is_some(), "bundle must survive unknown error body");
         assert_eq!(oauth.call_count(), 1);
     }
 

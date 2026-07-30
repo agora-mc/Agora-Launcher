@@ -333,6 +333,7 @@ export interface InstanceRow {
   is_locked: boolean;
   last_launched_at: string | null;
   jvm_memory_mb: number;
+  jvm_memory_mode: 'auto' | 'manual';
   jvm_gc: string;
   jvm_custom_args: string;
   jvm_always_pre_touch: boolean;
@@ -486,6 +487,7 @@ export interface CreateInstanceRequest {
   loader: string;
   loader_version: string;
   jvm_memory_mb?: number;
+  jvm_memory_mode?: 'auto' | 'manual';
   jvm_gc?: string;
   jvm_custom_args?: string;
   is_modpack?: boolean;
@@ -530,11 +532,11 @@ export const openInstanceFolder = (instanceId: string) =>
   invoke<void>('open_instance_folder', { instanceId });
 export const revealPath = (path: string) =>
   invoke<void>('reveal_path', { path });
-export const launchInstance = (instanceId: string, allowHealthBlockers = false) =>
-  invoke<void>('launch_instance', { instanceId, allowHealthBlockers });
+export const launchInstance = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
+  invoke<void>('launch_instance', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
 
-export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false) =>
-  invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers });
+export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
+  invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
 
 /**
  * Coarse recovery action for launch_instance_with_recovery.
@@ -554,7 +556,8 @@ export const launchInstanceWithRecovery = (
   instanceId: string,
   action: LaunchRecoveryAction,
   allowHealthBlockers = false,
-) => invoke<number>('launch_instance_with_recovery', { instanceId, action, allowHealthBlockers });
+  healthScanToken?: string,
+) => invoke<number>('launch_instance_with_recovery', { instanceId, action, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
 
 export const killProcess = (pid: number) =>
   invoke<void>('kill_process', { pid });
@@ -649,10 +652,20 @@ export interface HealthBlocker {
   suggested_action: string | null;
 }
 
+export interface HealthRecommendation {
+  kind: string;
+  mod_id: string | null;
+  source_filename: string | null;
+  message: string;
+  suggested_action: string | null;
+}
+
 export interface HealthReport {
   score: HealthScore;
   warnings: HealthWarning[];
   blockers: HealthBlocker[];
+  recommendations: HealthRecommendation[];
+  scan_token: string;
 }
 
 export const checkInstanceHealth = (instanceId: string) =>
@@ -768,6 +781,43 @@ export interface CrashTriageResult {
   action_button_json: string | null;
 }
 
+export type EvidenceSourceKind =
+  | 'CrashReport'
+  | 'LatestLog'
+  | 'DebugLog'
+  | 'JvmFatalErrorLog'
+  | 'UserAdded'
+  | 'UserPasted';
+
+export interface CrashEvidenceSource {
+  meta: {
+    basename: string;
+    kind: EvidenceSourceKind;
+    size_bytes: number;
+    truncated: boolean;
+    stale: boolean;
+    supplementary: boolean;
+    modified_at: string | null;
+    line_count: number;
+  };
+  text: string;
+}
+
+export interface CrashInvestigation {
+  evidence: {
+    sources: CrashEvidenceSource[];
+    primary_index: number;
+    aggregate_bytes: number;
+    any_truncated: boolean;
+    any_stale: boolean;
+    failure_category: 'CrashReport' | 'Oom' | 'JvmFatal' | 'NoEvidence';
+  };
+  fingerprint: CrashFingerprint | null;
+  triage: CrashTriageResult;
+  suspects: SuspectScore[];
+  failure_category: 'CrashReport' | 'Oom' | 'JvmFatal' | 'NoEvidence';
+}
+
 export const checkInstanceCrash = (instanceId: string) =>
   invoke<CrashReportInfo | null>('check_instance_crash', { instanceId });
 export const triageCrashReport = (instanceId: string, filename: string) =>
@@ -776,6 +826,10 @@ export const listCrashReports = (instanceId: string) =>
   invoke<CrashReportInfo[]>('list_crash_reports_cmd', { instanceId });
 export const readCrashLog = (instanceId: string, filename: string) =>
   invoke<string>('read_crash_log_cmd', { instanceId, filename });
+export const investigateInstanceEvidence = (instanceId: string) =>
+  invoke<CrashInvestigation>('investigate_instance_evidence', { instanceId });
+export const pickAndInvestigateCrashEvidence = (instanceId: string) =>
+  invoke<CrashInvestigation | null>('pick_and_investigate_crash_evidence', { instanceId });
 
 export interface ModVersionCandidate {
   version: string;
@@ -1715,6 +1769,7 @@ export const updateInstanceJvm = (
   gc: string,
   alwaysPreTouch: boolean,
   customArgs: string,
+  memoryMode: 'auto' | 'manual',
 ) =>
   invoke<void>('update_instance_jvm', {
     instanceId,
@@ -1722,7 +1777,25 @@ export const updateInstanceJvm = (
     gc,
     alwaysPreTouch,
     customArgs,
+    memoryMode,
   });
+
+export interface MemoryRecommendation {
+  recommended_mb: number;
+  tier_label: string;
+  tier_index: number;
+  is_large_resource_pack_adjustment: boolean;
+  ram_capped: boolean;
+  insufficient_system_ram: boolean;
+  system_ram_mb: number;
+  next_tier_mb: number;
+  next_tier_label: string;
+  factors: string[];
+  explanation: string;
+}
+
+export const recommendInstanceMemory = (instanceId: string) =>
+  invoke<MemoryRecommendation>('recommend_instance_memory', { instanceId });
 
 /**
  * Structured error details for JavaRuntimeMissing.

@@ -15,6 +15,8 @@ pub struct InstanceRow {
     pub is_locked: bool,
     pub last_launched_at: Option<String>,
     pub jvm_memory_mb: i64,
+    #[serde(default = "default_memory_mode")]
+    pub jvm_memory_mode: String,
     pub jvm_gc: String,
     pub jvm_custom_args: String,
     pub jvm_always_pre_touch: bool,
@@ -33,6 +35,10 @@ pub struct InstanceRow {
 
 fn default_launch_mode_override() -> String {
     "auto".to_string()
+}
+
+fn default_memory_mode() -> String {
+    "manual".to_string()
 }
 
 /// JVM configuration assembled from instance settings (see §8.5).

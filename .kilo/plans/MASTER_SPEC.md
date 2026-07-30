@@ -2302,7 +2302,7 @@ From the deleted dependency-aware-mod-ops-plan.md: manifests may declare mod_dep
 
 ### 19.6 MCP Server -- Implemented Tool Set & Roadmap
 
-Per the E2 user decision (combine spec section 10.1 with the implemented v1 set), the MCP server is being expanded to a **superset**. Currently implemented (in desktop/src-tauri/src/mcp.rs):
+Per the E2 user decision (combine spec section 10.1 with the implemented v1 set), the MCP server exposes this ten-tool **superset** from `desktop/src-tauri/src/mcp.rs` and `agora-core`'s dispatcher:
 
 1. list_instances -- list all instance IDs + metadata.
 2. list_instance_mods(instance_id) -- read instance_manifest.json, return mod jar info + java packages.
@@ -2310,16 +2310,12 @@ Per the E2 user decision (combine spec section 10.1 with the implemented v1 set)
 4. search_crash_signatures(crash_text) -- local regex triage against crash_signatures table.
 5. suggest_mod_incompatibility(instance_id, crash_text) -- runs the section 19.4 dynamic scoring algorithm.
 6. get_system_context -- markdown overview returnable to AI clients.
+7. read_latest_crash(instance_id) -- return the bounded tail of the newest crash report.
+8. read_mod_manifest(mod_id) -- fetch curator data from local SQLite.
+9. enable_mod(instance_id, filename) -- destructive reverse of `disable_mod`; requires approval.
+10. search_knowledge_base(query) -- local curated-catalog search.
 
-**Planned additions** (from the section 10.1 superset, not yet implemented):
-- 
-ead_latest_crash(instance_id) -- return last 200 lines of newest crash report.
-- 
-ead_mod_manifest(mod_id) -- fetch curator data from local SQLite.
-- enable_mod(instance_id, filename) -- reverse disable_mod.
-- search_knowledge_base(query) -- TF-IDF LIKE search over curator_note.
-
-Per B2 (user decision): the per-session Bearer token from section 10.0 number 2 is **not yet implemented** -- the localhost binding is the current sole security boundary. Spec text in section 10.0 is preserved for future hardening. The agora serve CLI stub (Phase 9 of v1 refactor) returns *MCP server is not yet implemented* from crates/agora/src/main.rs.
+The server binds only to `127.0.0.1` and requires a persistent Bearer token for every request. The token is generated when MCP is enabled, displayed and regenerable in Settings, and accepted through the Authorization header or SSE query parameter. Requests also retain the per-instance destructive-tool approval boundary and rate limiting.
 
 ### 19.7 Audit Log Schema (replaces section 4.6 compile-only entries)
 
@@ -2566,6 +2562,20 @@ python compiler/compile.py `
 - `quarantine_decisions.json` and `vote_issues.json` are curated manually via PR.
 
 **Production mode is currently read-only.** The CI `compile.yml` workflow runs governance in `read-only` mode (observation, no state writing, no Discord). Full `monitor` mode (state commits + real Discord alerts) is **not yet activated in production** — it requires completion of sandbox testing gates and explicit manual curator sign-off. Until those gates pass, production runs are observation-only.
+
+---
+
+### 19.19 Health, Crash Doctor, Memory, Authentication, and Launch Reliability
+
+Health reports separate blockers, warnings, and non-interrupting recommendations. Recommendation-only reports remain green and never stop launch. Warning mutes use stable structured keys with legacy-setting migration; blockers cannot be muted. A health scan carries an identity derived from the instance manifest plus observed mod-file and registry-database content hashes. Core launch reuses that scan only while the identity remains unchanged, preventing duplicate healthy scans without trusting stale frontend approval.
+
+Crash Doctor is local-first and instance-aware. Automatic evidence collection considers the newest coherent launch window across `crash-reports/*.txt`, `logs/latest.log`, `logs/debug.log`, and `hs_err_pid*.log`; bounded user-selected text files and pasted text are supported without exposing a generic arbitrary-path read command. Evidence paths are never returned to the webview, text is size-bounded and cleaned, and no evidence is uploaded. Curated signatures, fingerprints, and installed-mod scoring analyze the coherent evidence set together. Recovery snapshots are created lazily before the first mutation, not during read-only diagnosis. Guided disable experiments wait for a correlated launch outcome: the same crash rules a suspect out, a changed crash starts a new hypothesis without claiming causality, a successful run asks for confirmation, and an abandoned run restores state as inconclusive. The built-in doctor does not search or submit GitHub issues; an external AI agent may optionally research upstream sources after local findings are exhausted and must label those findings as external hypotheses.
+
+Schema v9 adds `user_instances.jvm_memory_mode` with `auto` and `manual` values. Existing rows migrate to Manual because their prior allocation does not establish consent to automatic changes; newly created instances default to Auto unless an explicit imported or CLI memory value is present. Auto derives a 512 MiB-rounded recommendation from enabled mod count, enabled archive bytes, resource-pack load, and system headroom, and calculates the effective value at launch without overwriting Manual allocations. Both desktop and CLI expose the recommendation and insufficient-system-RAM warning.
+
+Direct launch obtains classified Microsoft credentials through a single-flight refresh path. Delegated launch does not read Microsoft credentials because the official launcher owns authentication. GitHub preflight and post-401 recovery use the same fallible token path; post-401 refresh carries the exact failed access token under the refresh mutex so concurrent failures rotate once. Permanent refresh failures clear credentials, transient failures preserve them, and secret values are never logged.
+
+Launch records `last_launched_at` immediately after successful handoff or process spawn so a newly written crash report is discoverable. Warm Java discovery uses a bounded five-minute cache. Launch progress records loading, health, resolution, materialization, and snapshot durations; the CLI exposes these with `launch --timings`. Content-addressed snapshot indexes use immutable manifest hashes for comparison rather than rereading every object blob, while restore continues verifying bytes before mutation.
 
 ---
 

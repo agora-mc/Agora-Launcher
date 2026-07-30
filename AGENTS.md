@@ -58,7 +58,7 @@ Core values:
 
 ## MCP Server
 
-The shipped Agora launcher app exposes an MCP server on `127.0.0.1:39741` when the user has *AI / MCP Server* enabled in Settings (disabled by default in the shipped app). **Authentication:** the localhost binding is the current sole security boundary; the per-session Bearer token from MASTER_SPEC section 10.0 number 2 is intentionally not yet implemented (deferred pending user decision, see section 19.6). For local development, this project's `.kilo/kilo.json` enables the Kilo MCP client (`enabled: true`) to talk to a locally-running launcher instance. Keep MCP calls stateless and avoid privileged operations without explicit user approval.
+The shipped Agora launcher app exposes an MCP server on `127.0.0.1:39741` when the user has *AI / MCP Server* enabled in Settings (disabled by default in the shipped app). Every request requires the persistent Bearer token generated when MCP is enabled and shown in Settings; localhost binding remains defense in depth. For local development, this project's `.kilo/kilo.json` enables the Kilo MCP client (`enabled: true`) to talk to a locally-running launcher instance. Keep MCP calls stateless and avoid privileged operations without explicit user approval.
 
 ## Governance Modes and Tracked State
 

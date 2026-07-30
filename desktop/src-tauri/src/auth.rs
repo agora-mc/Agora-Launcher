@@ -49,11 +49,11 @@ pub async fn get_validated_github_profile<R: tauri::Runtime>(
     match get_github_user(&token).await {
         Ok(profile) => Ok(profile),
         Err(LauncherError::AuthExpired) => {
-            if agora_core::auth::try_refresh_after_401(LauncherError::AuthExpired)
+            if agora_core::auth::try_refresh_after_401_with_token(&token)
                 .await
                 .is_ok()
             {
-                if let Some(new_token) = get_token(app) {
+                if let Some(new_token) = get_valid_access_token(app).await {
                     return match get_github_user(&new_token).await {
                         Ok(profile) => Ok(profile),
                         Err(LauncherError::AuthExpired) => {

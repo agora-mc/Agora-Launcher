@@ -52,8 +52,12 @@ loader-manifests/known_good_hashes.json
 # Generated Tauri capability/schema JSON (build output, never hand-edited).
 desktop/src-tauri/gen/
 
-# Governance audit-log archives (transactional history, not source).
+# Governance audit logs (live + archived — repetitive entries drown crash queries).
+registry/governance/audit_log.json
 registry/governance/audit_log_archive.*.json
+
+# Runtime hash catalog — dense SHA-256 list that pollutes short generic queries.
+runtime-catalog/runtime_catalog.json
 
 # --- Dependency lock files (no semantic value; agents should grep, not read) 
 *.lock

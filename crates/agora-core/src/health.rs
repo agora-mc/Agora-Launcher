@@ -7,7 +7,9 @@ use crate::models::{InstalledMod, InstanceManifest};
 use crate::registry;
 use crate::version_match;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 
 /// Pre-launch health score.
@@ -35,7 +37,6 @@ pub struct Warning {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningKind {
-    MissingOptionalDependency,
     MissingRequiredDependencyUnverified,
     InventoryIncomplete,
     ManifestDrift,
@@ -51,6 +52,22 @@ pub enum WarningKind {
     IncompatibleModSoft,
     /// A curated `known_conflicts` record whose severity is not launch-breaking.
     CuratedConflictSoft,
+}
+
+/// A low-priority improvement that never interrupts launch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recommendation {
+    pub kind: RecommendationKind,
+    pub mod_id: Option<String>,
+    pub source_filename: Option<String>,
+    pub message: String,
+    pub suggested_action: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecommendationKind {
+    MissingOptionalDependency,
 }
 
 /// A blocking concern that should prevent launch until resolved.
@@ -79,6 +96,64 @@ pub struct HealthReport {
     pub score: HealthScore,
     pub warnings: Vec<Warning>,
     pub blockers: Vec<Blocker>,
+    #[serde(default)]
+    pub recommendations: Vec<Recommendation>,
+    pub scan_token: String,
+}
+
+/// Content identity of the files and registry inputs that affect a health scan.
+pub fn scan_token(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    registry_db_path: Option<&std::path::Path>,
+) -> String {
+    let mut hasher = Sha256::new();
+    if let Ok(bytes) = serde_json::to_vec(manifest) {
+        hasher.update(bytes);
+    }
+    let mods_dir = instance_dir.join("mods");
+    let mut entries = std::fs::read_dir(mods_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            Some((
+                entry.file_name().to_string_lossy().to_string(),
+                entry.path(),
+                metadata.len(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    for entry in entries {
+        hasher.update(entry.0.as_bytes());
+        hasher.update(entry.2.to_le_bytes());
+        hash_file_contents(&mut hasher, &entry.1);
+    }
+    if let Some(path) = registry_db_path {
+        hasher.update(path.to_string_lossy().as_bytes());
+        hash_file_contents(&mut hasher, path);
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn hash_file_contents(hasher: &mut Sha256, path: &Path) {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        hasher.update(b"<unreadable>");
+        return;
+    };
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(_) => {
+                hasher.update(b"<read-error>");
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,6 +490,7 @@ pub fn health(
     // 3. Also build from manifest's installed mod list (modrinth_id / registry_id)
     let mut warnings = Vec::new();
     let mut blockers = Vec::new();
+    let mut recommendations = Vec::new();
     if !missing_enabled_manifest_files.is_empty() {
         let examples = missing_enabled_manifest_files
             .iter()
@@ -864,10 +940,10 @@ pub fn health(
                 } else {
                     dep.clone()
                 };
-                warnings.push(Warning {
-                    kind: WarningKind::MissingOptionalDependency,
+                recommendations.push(Recommendation {
+                    kind: RecommendationKind::MissingOptionalDependency,
                     mod_id: Some(display_name.clone()),
-                    filename: None, // dependency is not installed
+                    source_filename: Some(source.clone()),
                     message: format!(
                         "'{}' recommends '{}' but it is not installed. The mod may work without it.",
                         source, display_name
@@ -911,6 +987,8 @@ pub fn health(
         score,
         warnings,
         blockers,
+        recommendations,
+        scan_token: scan_token(instance_dir, manifest, registry_db_path),
     }
 }
 
@@ -1147,6 +1225,19 @@ mod tests {
             worlds: vec![],
             user_preferences: serde_json::json!({}),
         }
+    }
+
+    #[test]
+    fn scan_token_changes_when_same_sized_mod_content_changes() {
+        let dir = fresh_instance("scan_token_content");
+        let manifest = tracked_manifest(&[("content.jar", "content")]);
+        let path = dir.join("mods/content.jar");
+        std::fs::write(&path, b"aaaa").unwrap();
+        let before = scan_token(&dir, &manifest, None);
+        std::fs::write(&path, b"bbbb").unwrap();
+        let after = scan_token(&dir, &manifest, None);
+        assert_ne!(before, after);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

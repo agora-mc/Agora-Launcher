@@ -372,6 +372,7 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         loader: loader.to_string(),
         loader_version: loader_version.to_string(),
         jvm_memory_mb: Some(4096),
+        jvm_memory_mode: Some("auto".into()),
         jvm_gc: None,
         jvm_custom_args: None,
         jvm_always_pre_touch: None,

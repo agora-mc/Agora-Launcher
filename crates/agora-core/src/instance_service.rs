@@ -20,6 +20,8 @@ pub struct CreateInstanceRequest {
     #[serde(default)]
     pub jvm_memory_mb: Option<i64>,
     #[serde(default)]
+    pub jvm_memory_mode: Option<String>,
+    #[serde(default)]
     pub jvm_gc: Option<String>,
     #[serde(default)]
     pub jvm_custom_args: Option<String>,
@@ -174,6 +176,7 @@ impl InstanceService {
         gc: &str,
         always_pre_touch: bool,
         custom_args: &str,
+        memory_mode: &str,
     ) -> LauncherResult<()> {
         let instance_id = self.validate_id(instance_id)?;
         let memory_mb = memory_mb.clamp(2048, 32768);
@@ -198,11 +201,27 @@ impl InstanceService {
             &gc,
             always_pre_touch,
             custom_args,
+            memory_mode,
         )
         .map_err(|error| LauncherError::Generic {
             code: "ERR_LOCAL_STATE_FAILED".into(),
             message: error.to_string(),
         })
+    }
+
+    pub fn memory_recommendation(
+        &self,
+        instance_id: &str,
+    ) -> LauncherResult<crate::memory_recommendation::MemoryRecommendation> {
+        let instance_id = self.validate_id(instance_id)?;
+        let manifest_path = self.ctx.paths.instance_manifest(&instance_id)?;
+        let manifest = read_manifest(&manifest_path)?.ok_or_else(|| LauncherError::Generic {
+            code: "ERR_INSTANCE_MANIFEST_MISSING".into(),
+            message: format!("Instance manifest not found for '{instance_id}'"),
+        })?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+        let summary = crate::memory_recommendation::summarize_instance(&instance_dir, &manifest);
+        Ok(crate::memory_recommendation::detect_and_recommend(&summary))
     }
 
     pub fn rename(&self, instance_id: &str, name: &str) -> LauncherResult<()> {
@@ -260,8 +279,8 @@ impl InstanceService {
         crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
     }
 
-    /// Reconcile the official launcher profile and persistent launch history
-    /// before a desktop adapter starts the native Mojang launcher.
+    /// Reconcile the official launcher profile before a desktop adapter starts
+    /// the native Mojang launcher. Launch history is recorded after handoff.
     pub fn prepare_delegated_launch(
         &self,
         instance_id: &str,
@@ -278,8 +297,21 @@ impl InstanceService {
             .ok()
             .flatten()
             .and_then(|value| value.as_bool());
+        let manifest = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?;
+        let memory_mb = if row.jvm_memory_mode == "auto" {
+            if let Some(manifest) = manifest.as_ref() {
+                let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+                let summary =
+                    crate::memory_recommendation::summarize_instance(&instance_dir, manifest);
+                crate::memory_recommendation::detect_and_recommend(&summary).recommended_mb
+            } else {
+                row.jvm_memory_mb
+            }
+        } else {
+            row.jvm_memory_mb
+        };
         let jvm = crate::models::JvmConfig {
-            memory_mb: row.jvm_memory_mb,
+            memory_mb,
             gc: row.jvm_gc.clone(),
             custom_args: row.jvm_custom_args.clone(),
             always_pre_touch: row.jvm_always_pre_touch && user_override.unwrap_or(true),
@@ -297,12 +329,7 @@ impl InstanceService {
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
             crate::launcher_profiles::upsert_profile(&profile, profiles_path)?;
         }
-        crate::db::touch_last_launched(&conn, &instance_id, &chrono::Utc::now().to_rfc3339())
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: error.to_string(),
-            })?;
-        let mod_ids = read_manifest(&self.ctx.paths.instance_manifest(&instance_id)?)?
+        let mod_ids = manifest
             .map(|manifest| {
                 manifest
                     .mods
@@ -599,6 +626,7 @@ impl InstanceService {
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: source_row.jvm_memory_mb,
+            jvm_memory_mode: source_row.jvm_memory_mode.clone(),
             jvm_gc: source_row.jvm_gc.clone(),
             jvm_custom_args: source_row.jvm_custom_args.clone(),
             jvm_always_pre_touch: source_row.jvm_always_pre_touch,
@@ -975,6 +1003,12 @@ fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRo
         is_locked: false,
         last_launched_at: None,
         jvm_memory_mb: request.jvm_memory_mb.unwrap_or(4096),
+        jvm_memory_mode: request
+            .jvm_memory_mode
+            .as_deref()
+            .filter(|mode| *mode == "manual")
+            .unwrap_or("auto")
+            .into(),
         jvm_gc: request.jvm_gc.clone().unwrap_or_else(|| "auto".into()),
         jvm_custom_args: request.jvm_custom_args.clone().unwrap_or_default(),
         jvm_always_pre_touch: request.jvm_always_pre_touch.unwrap_or_else(|| {
@@ -1071,6 +1105,7 @@ mod tests {
             loader: "vanilla".into(),
             loader_version: "".into(),
             jvm_memory_mb: None,
+            jvm_memory_mode: None,
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
@@ -1078,6 +1113,7 @@ mod tests {
             pack_icon_url: None,
         };
         let row = prepare_row("test", &request);
+        assert_eq!(row.jvm_memory_mode, "auto");
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
         crate::db::upsert_instance(&conn, &row).unwrap();
         let manifest = manifest_from_request("test", &request);
@@ -1120,6 +1156,7 @@ mod tests {
             loader: "vanilla".into(),
             loader_version: "".into(),
             jvm_memory_mb: None,
+            jvm_memory_mode: None,
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
@@ -1179,6 +1216,7 @@ mod tests {
             loader: "vanilla".into(),
             loader_version: "".into(),
             jvm_memory_mb: None,
+            jvm_memory_mode: None,
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
@@ -1223,6 +1261,7 @@ mod tests {
             loader: "vanilla".into(),
             loader_version: "".into(),
             jvm_memory_mb: None,
+            jvm_memory_mode: None,
             jvm_gc: None,
             jvm_custom_args: None,
             jvm_always_pre_touch: None,
@@ -1275,6 +1314,7 @@ mod tests {
                 loader: "vanilla".into(),
                 loader_version: "".into(),
                 jvm_memory_mb: None,
+                jvm_memory_mode: None,
                 jvm_gc: None,
                 jvm_custom_args: None,
                 jvm_always_pre_touch: None,

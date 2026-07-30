@@ -584,6 +584,120 @@ pub struct InvestigationResult {
 }
 
 // ---------------------------------------------------------------------------
+// CrashInvestigation — unified read-only investigation result
+// ---------------------------------------------------------------------------
+
+/// Combined result of a full crash investigation: evidence, triage,
+/// fingerprint, and ranked suspects (zero-score suspects filtered out).
+#[derive(Debug, Clone, Serialize)]
+pub struct CrashInvestigation {
+    pub evidence: crate::crash_evidence::CollectedEvidence,
+    pub fingerprint: Option<CrashFingerprint>,
+    pub triage: crate::crash_diagnostics::CrashTriageResult,
+    pub suspects: Vec<SuspectScore>,
+    pub failure_category: crate::crash_evidence::FailureCategory,
+}
+
+impl CrashService {
+    /// Unified read-only investigation: collect local evidence, run triage,
+    /// extract fingerprint, rank suspects, and filter zero-score results.
+    ///
+    /// This is the single entry point for GUI, CLI, and MCP diagnostics.
+    /// It does NOT mutate state (no disable, no telemetry).
+    ///
+    /// `explicit_files` are user-chosen absolute paths to include as
+    /// additional evidence (canonicalized and extension-validated by the
+    /// collector).
+    pub fn investigate_evidence(
+        &self,
+        instance_id: &str,
+        explicit_files: &[std::path::PathBuf],
+    ) -> LauncherResult<CrashInvestigation> {
+        let sanitized = validate_instance_id(instance_id)?;
+
+        // 1. Collect local evidence
+        let instance_dir = match self.ctx.paths.instance_dir(&sanitized) {
+            Ok(d) => d,
+            Err(_) => {
+                return Ok(CrashInvestigation {
+                    evidence: crate::crash_evidence::CollectedEvidence {
+                        sources: vec![],
+                        primary_index: 0,
+                        aggregate_bytes: 0,
+                        any_truncated: false,
+                        any_stale: false,
+                        failure_category: crate::crash_evidence::FailureCategory::NoEvidence,
+                    },
+                    fingerprint: None,
+                    triage: crate::crash_diagnostics::CrashTriageResult::no_match(),
+                    suspects: vec![],
+                    failure_category: crate::crash_evidence::FailureCategory::NoEvidence,
+                })
+            }
+        };
+
+        let launch_started_at = crate::db::local_state_connection(&self.ctx.paths.local_state_db())
+            .ok()
+            .and_then(|conn| crate::db::get_instance(&conn, &sanitized).ok().flatten())
+            .and_then(|row| row.last_launched_at)
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+            .and_then(|value| {
+                let seconds = value.timestamp();
+                (seconds >= 0).then(|| {
+                    std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(seconds as u64)
+                        + std::time::Duration::from_nanos(value.timestamp_subsec_nanos() as u64)
+                })
+            });
+        let evidence_svc = crate::crash_evidence::CrashEvidenceService::new();
+        let evidence = evidence_svc.collect_since(&instance_dir, explicit_files, launch_started_at);
+
+        // 2. Analyze the coherent evidence set together. Source boundaries are
+        // retained so evidence excerpts remain understandable.
+        let combined_text = evidence
+            .sources
+            .iter()
+            .map(|source| format!("\n===== {} =====\n{}", source.meta.basename, source.text))
+            .collect::<String>();
+
+        // 3. Run curated triage
+        let conn_opt = if self.ctx.paths.registry_db().exists() {
+            crate::db::registry_connection(&self.ctx.paths.registry_db()).ok()
+        } else {
+            None
+        };
+        let triage = crate::crash_diagnostics::triage_with_db(&combined_text, conn_opt.as_ref());
+
+        // 4. Extract fingerprint
+        let fingerprint = crate::crash_service::parse_crash_log(&combined_text);
+
+        // 5. Score suspects (requires manifest)
+        let suspects = if let Some(ref _fp) = fingerprint {
+            match self.load_instance_manifest(&sanitized) {
+                Ok(Some(manifest)) => {
+                    crate::crash_service::score_suspects(&self.ctx, &combined_text, &manifest.mods)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|s| s.total_score > 0.0)
+                        .collect()
+                }
+                _ => vec![],
+            }
+        } else {
+            vec![]
+        };
+
+        Ok(CrashInvestigation {
+            failure_category: evidence.failure_category.clone(),
+            evidence,
+            fingerprint,
+            triage,
+            suspects,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // continue_investigation — full investigation pipeline
 // ---------------------------------------------------------------------------
 

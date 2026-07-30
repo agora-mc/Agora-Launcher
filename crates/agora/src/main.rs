@@ -38,6 +38,7 @@ impl agora_core::runtime_manager::RuntimeProgress for ConsoleRuntimeProgress {
 
 struct ConsoleLaunchProgress {
     json: bool,
+    timings: bool,
 }
 
 struct CliProgressSink {
@@ -79,6 +80,12 @@ impl agora_core::launch_service::LaunchProgress for ConsoleLaunchProgress {
     fn phase(&self, _name: &str, message: &str) {
         if !self.json {
             eprintln!("[..] {message}");
+        }
+    }
+
+    fn phase_completed(&self, name: &str, duration_ms: u128) {
+        if self.timings {
+            eprintln!("[timing] {name}: {duration_ms} ms");
         }
     }
 }
@@ -176,6 +183,8 @@ enum Commands {
         instance: String,
         #[arg(long, help = "Skip health check confirmation")]
         yes: bool,
+        #[arg(long, help = "Print launch phase timings to stderr")]
+        timings: bool,
     },
     Auth {
         #[command(subcommand)]
@@ -289,6 +298,8 @@ enum InstanceCmd {
     Rename { id: String, name: String },
     /// Reinstall the mod loader for an instance.
     RepairLoader { id: String },
+    /// Explain the current automatic memory estimate without changing settings.
+    RecommendMemory { id: String },
 }
 
 #[derive(Subcommand)]
@@ -558,8 +569,13 @@ enum CrashCmd {
     List { instance: String },
     /// Read the content of a crash report file.
     Inspect { instance: String, file: String },
-    /// Analyze the latest crash log and suggest incompatible mods.
-    Investigate { instance: String },
+    /// Collect recent logs and run the full local crash investigation.
+    Investigate {
+        instance: String,
+        /// Add an explicit diagnostic text file. May be repeated.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -974,6 +990,11 @@ async fn run_command(
                 jvm_always_pre_touch,
             } => {
                 let instance_id = agora_core::paths::sanitize_id(&name);
+                let jvm_memory_mode = Some(if jvm_memory_mb.is_some() {
+                    "manual".to_string()
+                } else {
+                    "auto".to_string()
+                });
                 let request = CreateInstanceRequest {
                     name: name.clone(),
                     instance_id: instance_id.clone(),
@@ -981,6 +1002,7 @@ async fn run_command(
                     loader,
                     loader_version,
                     jvm_memory_mb,
+                    jvm_memory_mode,
                     jvm_gc,
                     jvm_custom_args,
                     jvm_always_pre_touch,
@@ -1085,6 +1107,22 @@ async fn run_command(
                         "Reinstalled {} {} for '{}'",
                         summary.tuple.loader, summary.tuple.loader_version, id
                     );
+                }
+            }
+            InstanceCmd::RecommendMemory { id } => {
+                let recommendation =
+                    InstanceService::new(ctx.clone()).memory_recommendation(&id)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&recommendation)?);
+                } else {
+                    println!("Recommended memory: {}", recommendation.tier_label);
+                    println!("Effective allocation: {} MB", recommendation.recommended_mb);
+                    println!("{}", recommendation.explanation);
+                    if recommendation.insufficient_system_ram {
+                        println!(
+                            "Warning: the recommended tier does not fit available system RAM."
+                        );
+                    }
                 }
             }
         },
@@ -1866,6 +1904,9 @@ async fn run_command(
                 for b in &report.blockers {
                     println!("  [BLOCK] {}", b.message);
                 }
+                for recommendation in &report.recommendations {
+                    println!("  [RECOMMEND] {}", recommendation.message);
+                }
             }
             if report.score == agora_core::health::HealthScore::Red {
                 anyhow::bail!("Health score is {:?} (see report above)", report.score);
@@ -2116,8 +2157,12 @@ async fn run_command(
                 println!("Imported: {} ({} mods)", result.name, result.imported_mods);
             }
         }
-        Commands::Launch { instance, yes } => {
-            run_launch_service(ctx, &instance, yes, output_fmt).await?;
+        Commands::Launch {
+            instance,
+            yes,
+            timings,
+        } => {
+            run_launch_service(ctx, &instance, yes, timings, output_fmt).await?;
         }
         Commands::Auth { action } => match action {
             AuthCmd::Login => {
@@ -2355,19 +2400,38 @@ async fn run_command(
                     println!("{}", content);
                 }
             }
-            CrashCmd::Investigate { instance } => {
-                let reports = CrashService::new(ctx.clone()).list_reports(&instance)?;
-                let newest = reports
-                    .first()
-                    .ok_or_else(|| anyhow::anyhow!("No crash reports found for '{}'", instance))?;
-                let crash_text =
-                    CrashService::new(ctx.clone()).read_crash_log(&instance, &newest.filename)?;
-                let suspects = CrashService::new(ctx.clone())
-                    .suggest_mod_incompatibility(&instance, &crash_text)?;
+            CrashCmd::Investigate { instance, files } => {
+                let investigation =
+                    CrashService::new(ctx.clone()).investigate_evidence(&instance, &files)?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&suspects)?);
+                    println!("{}", serde_json::to_string_pretty(&investigation)?);
                 } else {
-                    let rows: Vec<Vec<String>> = suspects
+                    if investigation.evidence.sources.is_empty() {
+                        anyhow::bail!("No crash evidence found for '{}'", instance);
+                    }
+                    println!("Evidence:");
+                    for (index, source) in investigation.evidence.sources.iter().enumerate() {
+                        let role = if index == investigation.evidence.primary_index {
+                            "primary"
+                        } else {
+                            "supporting"
+                        };
+                        let truncated = if source.meta.truncated {
+                            ", truncated"
+                        } else {
+                            ""
+                        };
+                        println!("  - {} ({role}{truncated})", source.meta.basename);
+                    }
+                    println!("Category: {:?}", investigation.failure_category);
+                    if let Some(name) = investigation.triage.signature_name.as_deref() {
+                        println!("Known signature: {name}");
+                    }
+                    if let Some(solution) = investigation.triage.solution_markdown.as_deref() {
+                        println!("Suggested fix: {solution}");
+                    }
+                    let rows: Vec<Vec<String>> = investigation
+                        .suspects
                         .iter()
                         .map(|s| {
                             vec![
@@ -2379,6 +2443,9 @@ async fn run_command(
                         })
                         .collect();
                     print_table(&["Mod ID", "Filename", "Score", "Depends On"], &rows);
+                    if investigation.suspects.is_empty() {
+                        println!("No mod suspects had positive deterministic evidence.");
+                    }
                 }
             }
         },
@@ -2963,6 +3030,7 @@ async fn run_launch_service(
     ctx: &agora_core::ctx::Ctx,
     instance: &str,
     yes: bool,
+    timings: bool,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
@@ -2974,8 +3042,9 @@ async fn run_launch_service(
         } else {
             agora_core::launch_service::HealthPolicy::BlockOnRed
         },
+        health_scan_token: None,
     };
-    let progress = ConsoleLaunchProgress { json };
+    let progress = ConsoleLaunchProgress { json, timings };
     let result = agora_core::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
         .await?;

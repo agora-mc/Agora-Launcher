@@ -19,6 +19,7 @@ import {
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
 } from './tauri';
+import { activeHealthWarnings, loadHealthPreferences } from './healthPreferences';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +39,7 @@ export interface ProcessState {
   instanceId: string | null;
   pid: number | null;
   error: string | null;
+  errorCode: string | null;
   healthReport: HealthReport | null;
   /** The launch mode (direct vs delegated) captured at the start of the launch flow. */
   directLaunch: boolean;
@@ -67,6 +69,11 @@ export interface ProcessController {
   /** Returns true only when a launch command actually started. Health-deferred,
    * concurrent, and failed attempts return false. */
   startLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
+  startLaunchDetailed: (
+    instanceId: string,
+    directLaunch: boolean,
+    onAwaitingHealth?: () => void,
+  ) => Promise<LaunchStartOutcome>;
   /** Continue a launch after the user approved health warnings. Uses the mode captured in startLaunch. Returns null on success or an error string. */
   approveLaunch: () => Promise<string | null>;
   /** Cancel the launch flow (health dialog dismissal). */
@@ -110,11 +117,14 @@ export interface ProcessController {
   cancelJavaRuntimeForInstance: () => Promise<void>;
 }
 
+export type LaunchStartOutcome = 'started' | 'awaiting_health' | 'failed';
+
 const INITIAL_STATE: ProcessState = {
   phase: 'idle',
   instanceId: null,
   pid: null,
   error: null,
+  errorCode: null,
   healthReport: null,
   directLaunch: false,
   exitCode: null,
@@ -154,6 +164,7 @@ export function useProcessController(): ProcessController {
             instanceId: running.instance_id,
             pid: running.pid,
             error: null,
+            errorCode: null,
             healthReport: null,
             directLaunch: true,
             exitCode: null,
@@ -194,6 +205,7 @@ export function useProcessController(): ProcessController {
             phase: 'exited',
             pid: null,
             error: null,
+            errorCode: null,
             healthReport: null,
             recoverableIssue: null,
             recoverableJavaIssue: null,
@@ -261,6 +273,7 @@ export function useProcessController(): ProcessController {
     setState((prev) => ({
       ...prev,
       error: null,
+      errorCode: null,
       phase: 'idle',
       recoverableIssue: null,
       recoverableJavaIssue: null,
@@ -291,7 +304,7 @@ export function useProcessController(): ProcessController {
       const pid = await launchInstanceWithRecovery(current.instanceId, {
         type: 'ProvisionJava',
         major: javaIssue.major,
-      }, current.healthReport !== null);
+      }, current.healthReport !== null, current.healthReport?.scan_token);
       const newState = launchedState(current.instanceId, true, pid);
       setState(newState);
     } catch (e) {
@@ -340,7 +353,12 @@ export function useProcessController(): ProcessController {
       await updateInstanceJava(current.instanceId, chosen, false);
 
       // Retry direct launch
-      const newState = await executeLaunch(current.instanceId, true, current.healthReport !== null);
+      const newState = await executeLaunch(
+        current.instanceId,
+        true,
+        current.healthReport !== null,
+        current.healthReport?.scan_token,
+      );
       setState(newState);
     } catch (e) {
       const parsed = parseLauncherError(e);
@@ -386,8 +404,8 @@ export function useProcessController(): ProcessController {
 
   // ---- End Java recovery helpers ----
 
-  const startLaunch = useCallback(
-    async (instanceId: string, directLaunch: boolean) => {
+  const startLaunchDetailed = useCallback(
+    async (instanceId: string, directLaunch: boolean, onAwaitingHealth?: () => void) => {
       // Reject if any non-terminal phase is active (concurrent-launch guard).
       const current = stateRef.current;
       const activePhases: LaunchPhase[] = ['launching', 'running'];
@@ -396,7 +414,7 @@ export function useProcessController(): ProcessController {
           ...prev,
           error: 'A launch is already in progress. Wait for it to complete before launching another instance.',
         }));
-        return false;
+        return 'failed' as const;
       }
 
       setState({
@@ -404,6 +422,7 @@ export function useProcessController(): ProcessController {
         instanceId,
         pid: null,
         error: null,
+        errorCode: null,
         healthReport: null,
         directLaunch,
         exitCode: null,
@@ -420,32 +439,45 @@ export function useProcessController(): ProcessController {
         // Core owns health analysis; React only decides whether to present
         // the returned findings and ask the user for approval.
         const healthReport = await checkInstanceHealth(instanceId);
-        if (healthReport.blockers.length > 0 || healthReport.warnings.length > 0) {
+        healthReport.recommendations ??= [];
+        const preferences = await loadHealthPreferences(healthReport.warnings);
+        if (
+          healthReport.blockers.length > 0
+          || activeHealthWarnings(healthReport.warnings, preferences).length > 0
+        ) {
+          onAwaitingHealth?.();
           setState((previous) => ({
             ...previous,
             phase: 'failed',
             healthReport,
           }));
-          return false;
+          return 'awaiting_health' as const;
         }
 
-        const newState = await executeLaunch(instanceId, directLaunch, false);
+        const newState = await executeLaunch(instanceId, directLaunch, false, healthReport.scan_token);
         setState(newState);
-        return true;
+        return 'started' as const;
       } catch (e) {
         const parsed = parseLauncherError(e);
         setState((prev) => ({
           ...prev,
           phase: 'failed',
           error: parsed.message,
+          errorCode: parsed.code,
           recoverableIssue: parsed.recoverableIssue,
           recoverableJavaIssue: parsed.recoverableJavaIssue,
           availableActions: parsed.availableActions,
         }));
-        return false;
+        return 'failed' as const;
       }
     },
     [],
+  );
+
+  const startLaunch = useCallback(
+    async (instanceId: string, directLaunch: boolean) =>
+      (await startLaunchDetailed(instanceId, directLaunch)) === 'started',
+    [startLaunchDetailed],
   );
 
   const approveLaunch = useCallback(
@@ -453,18 +485,27 @@ export function useProcessController(): ProcessController {
       const current = stateRef.current;
       if (!current.instanceId) return 'No instance selected';
 
-      setState((prev) => ({ ...prev, phase: 'launching', error: null }));
+      setState((prev) => ({ ...prev, phase: 'launching', error: null, errorCode: null }));
 
       try {
-        const newState = await executeLaunch(current.instanceId, current.directLaunch, true);
+        const newState = await executeLaunch(
+          current.instanceId,
+          current.directLaunch,
+          true,
+          current.healthReport?.scan_token,
+        );
         setState(newState);
         return null;
       } catch (e) {
         const parsed = parseLauncherError(e);
+        const releaseHealthDialog = parsed.code === 'ERR_MSA_AUTH_REQUIRED'
+          || parsed.code === 'ERR_MSA_AUTH_EXPIRED';
         setState((prev) => ({
           ...prev,
           phase: 'failed',
           error: parsed.message,
+          errorCode: parsed.code,
+          healthReport: releaseHealthDialog ? null : prev.healthReport,
           recoverableIssue: parsed.recoverableIssue,
           recoverableJavaIssue: parsed.recoverableJavaIssue,
           availableActions: parsed.availableActions,
@@ -531,7 +572,7 @@ export function useProcessController(): ProcessController {
       // Single coarse backend call — repair + retry in the same operation
       const pid = await launchInstanceWithRecovery(current.instanceId, {
         type: 'RepairLoader',
-      }, current.healthReport !== null);
+      }, current.healthReport !== null, current.healthReport?.scan_token);
       const newState = launchedState(current.instanceId, true, pid);
       setState(newState);
     } catch (e) {
@@ -566,12 +607,17 @@ export function useProcessController(): ProcessController {
 
     try {
       // Use delegated launch (bypasses direct profile adoption).
-      await launchInstance(current.instanceId, current.healthReport !== null);
+      await launchInstance(
+        current.instanceId,
+        current.healthReport !== null,
+        current.healthReport?.scan_token,
+      );
       setState({
         phase: 'delegated',
         instanceId: current.instanceId,
         pid: null,
         error: null,
+        errorCode: null,
         healthReport: null,
         directLaunch: false,
         exitCode: null,
@@ -600,6 +646,7 @@ export function useProcessController(): ProcessController {
     state,
     logs,
     startLaunch,
+    startLaunchDetailed,
     approveLaunch,
     cancelLaunch,
     kill,
@@ -627,6 +674,7 @@ function launchedState(
     instanceId,
     pid: directLaunch ? pid : null,
     error: null,
+    errorCode: null,
     healthReport: null,
     directLaunch,
     exitCode: null,
@@ -644,12 +692,13 @@ async function executeLaunch(
   instanceId: string,
   directLaunch: boolean,
   allowHealthBlockers: boolean,
+  healthScanToken?: string,
 ): Promise<ProcessState> {
   if (directLaunch) {
-    const pid = await launchInstanceDirect(instanceId, allowHealthBlockers);
+    const pid = await launchInstanceDirect(instanceId, allowHealthBlockers, healthScanToken);
     return launchedState(instanceId, true, pid);
   } else {
-    await launchInstance(instanceId, allowHealthBlockers);
+    await launchInstance(instanceId, allowHealthBlockers, healthScanToken);
     return launchedState(instanceId, false, null);
   }
 }

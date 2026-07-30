@@ -12,6 +12,7 @@ pub struct InstanceRow {
     pub is_locked: bool,
     pub last_launched_at: Option<String>,
     pub jvm_memory_mb: i64,
+    pub jvm_memory_mode: String,
     pub jvm_gc: String,
     pub jvm_custom_args: String,
     pub jvm_always_pre_touch: bool,

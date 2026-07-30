@@ -16,9 +16,14 @@ use crate::snapshot::{create_snapshot, live_file_index, snapshot_file_index};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+type JavaDiscoveryCache = std::collections::HashMap<String, (Instant, Vec<JavaInstallation>)>;
+static JAVA_DISCOVERY_CACHE: LazyLock<Mutex<JavaDiscoveryCache>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+const JAVA_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// Whether the service should directly execute Java or hand off to an
 /// external launcher.
@@ -61,6 +66,7 @@ pub enum JavaRuntimeMode {
 /// called in Delegated mode so the adapter can invoke the external launcher.
 pub trait LaunchProgress: Send + Sync {
     fn phase(&self, _name: &str, _message: &str) {}
+    fn phase_completed(&self, _name: &str, _duration_ms: u128) {}
     fn started(&self, _started: &LaunchStarted) {}
     fn log(&self, _stream: &str, _line: &str) {}
     fn finished(&self, _result: &LaunchResult) {}
@@ -87,6 +93,7 @@ pub struct LaunchRequest {
     pub instance_id: String,
     pub mode: LaunchMode,
     pub health_policy: HealthPolicy,
+    pub health_scan_token: Option<String>,
 }
 
 /// State loaded and normalized by [`LaunchService`] before execution.
@@ -95,6 +102,7 @@ struct LaunchInputs {
     mode: LaunchMode,
     instance_id: String,
     health_policy: HealthPolicy,
+    health_scan_token: Option<String>,
     java_runtime_mode: JavaRuntimeMode,
     manifest: InstanceManifest,
     game_dir: PathBuf,
@@ -163,7 +171,10 @@ impl LaunchService {
             crate::lock_manager::LockResource::Instance(request.instance_id.clone()),
             "launch",
         )?;
+        progress.phase("loading-inputs", "Loading instance and account state");
+        let started = Instant::now();
         let inputs = self.load_inputs(request).await?;
+        progress.phase_completed("loading-inputs", started.elapsed().as_millis());
         self.launch_inputs(inputs, progress).await
     }
 
@@ -240,26 +251,40 @@ impl LaunchService {
                 message: error.to_string(),
             })?;
         let network_policy = NetworkPolicy::from_db(&conn);
-        network_policy.check(crate::network::NetworkCategory::MicrosoftAuthentication)?;
-        let mut credentials =
-            crate::msa::load_credentials()?.ok_or(LauncherError::MsaAuthRequired)?;
-        if credentials.needs_refresh() {
-            credentials = crate::msa::refresh_credentials(
+        let identity = if request.mode == LaunchMode::Direct {
+            network_policy.check(crate::network::NetworkCategory::MicrosoftAuthentication)?;
+            match crate::msa::get_valid_credentials(
                 self.ctx
                     .http_clients
                     .get(crate::http_client::ClientCategory::Microsoft),
-                &credentials,
-                &self.ctx.paths.local_state_db(),
             )
             .await
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_AUTH_REFRESH_FAILED".into(),
-                message: error.to_string(),
-            })?;
-        }
-        if credentials.is_expired() {
-            return Err(LauncherError::AuthExpired);
-        }
+            {
+                crate::msa::MsaCredentialOutcome::Valid(credentials) => LaunchIdentity {
+                    username: credentials.username,
+                    access_token: credentials.access_token,
+                    uuid: credentials.uuid,
+                    user_type: "msa".into(),
+                    client_id: String::new(),
+                    xuid: String::new(),
+                    user_properties: "{}".into(),
+                },
+                crate::msa::MsaCredentialOutcome::SignInRequired => {
+                    return Err(LauncherError::MsaAuthRequired)
+                }
+                crate::msa::MsaCredentialOutcome::RefreshFailed(error) => return Err(error),
+            }
+        } else {
+            LaunchIdentity {
+                username: "Player".into(),
+                access_token: String::new(),
+                uuid: "00000000000000000000000000000000".into(),
+                user_type: "legacy".into(),
+                client_id: String::new(),
+                xuid: String::new(),
+                user_properties: "{}".into(),
+            }
+        };
         let java_runtime_mode = match crate::db::get_setting(&conn, "java_runtime_mode")
             .ok()
             .flatten()
@@ -296,13 +321,22 @@ impl LaunchService {
             .unwrap_or(true);
         let jvm_always_pre_touch = row.jvm_always_pre_touch && global_pre_touch;
 
+        let game_dir = self.ctx.paths.instance_dir(&row.instance_id)?;
+        let jvm_memory_mb = if row.jvm_memory_mode == "auto" {
+            let summary = crate::memory_recommendation::summarize_instance(&game_dir, &manifest);
+            crate::memory_recommendation::detect_and_recommend(&summary).recommended_mb
+        } else {
+            row.jvm_memory_mb
+        };
+
         Ok(LaunchInputs {
             mode: request.mode,
             instance_id: request.instance_id,
             health_policy: request.health_policy,
+            health_scan_token: request.health_scan_token,
             java_runtime_mode,
             manifest,
-            game_dir: self.ctx.paths.instance_dir(&row.instance_id)?,
+            game_dir,
             minecraft_root,
             assets_dir: layout.assets,
             runtimes_root: self.ctx.paths.java_runtimes_root(),
@@ -314,19 +348,11 @@ impl LaunchService {
                 .exists()
                 .then(|| self.ctx.paths.registry_db()),
             network_policy,
-            identity: LaunchIdentity {
-                username: credentials.username,
-                access_token: credentials.access_token,
-                uuid: credentials.uuid,
-                user_type: "msa".into(),
-                client_id: String::new(),
-                xuid: String::new(),
-                user_properties: "{}".into(),
-            },
+            identity,
             java_override,
             allow_incompatible_java_override: row.java_incompatible_override,
             java_candidates: Vec::new(),
-            jvm_memory_mb: row.jvm_memory_mb,
+            jvm_memory_mb,
             jvm_gc_profile,
             jvm_custom_args: row.jvm_custom_args,
             jvm_always_pre_touch,
@@ -361,22 +387,32 @@ impl LaunchService {
             }
         }
         progress.phase("checking-health", "Checking instance health");
+        let health_started = Instant::now();
 
         if request.health_policy == HealthPolicy::BlockOnRed {
-            let report = crate::health::health(
+            let current_scan_token = crate::health::scan_token(
                 &request.game_dir,
                 &request.manifest,
                 request.registry_db.as_deref(),
             );
-            if report.score == crate::health::HealthScore::Red {
-                return Err(LauncherError::Generic {
-                    code: "ERR_HEALTH_BLOCKED".into(),
-                    message: "Health checks found blockers that prevent launch.".into(),
-                });
+            if request.health_scan_token.as_deref() != Some(current_scan_token.as_str()) {
+                let report = crate::health::health(
+                    &request.game_dir,
+                    &request.manifest,
+                    request.registry_db.as_deref(),
+                );
+                if report.score == crate::health::HealthScore::Red {
+                    return Err(LauncherError::Generic {
+                        code: "ERR_HEALTH_BLOCKED".into(),
+                        message: "Health checks found blockers that prevent launch.".into(),
+                    });
+                }
             }
         }
+        progress.phase_completed("checking-health", health_started.elapsed().as_millis());
 
         progress.phase("resolving", "Resolving Minecraft metadata and Java");
+        let resolve_started = Instant::now();
         // An explicit Java override is authoritative. Do not scan unrelated
         // system/Mojang runtimes first: on macOS, Java shims can block while
         // waiting for installation or GUI approval even though the override
@@ -385,17 +421,12 @@ impl LaunchService {
             Vec::new()
         } else if request.java_candidates.is_empty() {
             let runtimes_root = request.runtimes_root.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::java::detect_java_candidates(
-                    Some(&runtimes_root),
-                    crate::paths::minecraft_dir().as_deref(),
-                )
-            })
-            .await
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_JAVA_DISCOVERY".into(),
-                message: format!("Java discovery task failed: {error}"),
-            })?
+            tokio::task::spawn_blocking(move || cached_java_candidates(&runtimes_root))
+                .await
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_JAVA_DISCOVERY".into(),
+                    message: format!("Java discovery task failed: {error}"),
+                })?
         } else {
             request.java_candidates.clone()
         };
@@ -463,6 +494,7 @@ impl LaunchService {
             }
             Err(error) => return Err(error),
         };
+        progress.phase_completed("resolving", resolve_started.elapsed().as_millis());
 
         // Record this session as the latest for its instance (used by
         // delegated monitoring to detect same-instance replacement without
@@ -472,11 +504,13 @@ impl LaunchService {
             .note_latest(&request.instance_id, session_id);
 
         progress.phase("materializing", "Materializing verified launch artifacts");
+        let materialize_started = Instant::now();
         let _materialization_lock = self.ctx.lock_manager.acquire(
             crate::lock_manager::LockResource::Materialization,
             "launch-materialize",
         )?;
         let materialized = crate::launch_planner::materialize(resolved).await?;
+        progress.phase_completed("materializing", materialize_started.elapsed().as_millis());
         let java_path = materialized.resolved.java.path.clone();
         let gc_args = crate::gc::compute_gc(
             materialized.resolved.java.major_version,
@@ -495,12 +529,15 @@ impl LaunchService {
         })?;
 
         progress.phase("snapshot", "Creating the pre-launch snapshot");
+        let snapshot_started = Instant::now();
         let snapshot_id = create_or_reuse_snapshot(&request.game_dir)?;
+        progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
         let operation_id = _op_handle.id().clone();
 
         if request.mode == LaunchMode::Delegated {
             progress.phase("handoff", "Handing off to external launcher");
             progress.handoff(&request.identity)?;
+            record_launch_started(&self.ctx, &request.instance_id);
 
             let pid = 0;
             let process_identity = ProcessIdentity {
@@ -547,6 +584,7 @@ impl LaunchService {
             message: "Spawned process has no PID.".into(),
         })?;
         let process_identity = crate::process_identity::capture(pid)?;
+        record_launch_started(&self.ctx, &request.instance_id);
 
         // Register the session with the core-owned process session manager.
         // Non-fatal: a duplicate registration should never happen in practice
@@ -593,23 +631,6 @@ impl LaunchService {
             self.ctx.process_session_manager.remove(session_id);
         })?;
 
-        let local_state = crate::db::local_state_connection(&self.ctx.paths.local_state_db())
-            .map_err(|error| LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: error.to_string(),
-            })?;
-        crate::db::touch_last_launched(
-            &local_state,
-            &request.instance_id,
-            &chrono::Utc::now().to_rfc3339(),
-        )
-        .map_err(|error| {
-            self.ctx.process_session_manager.remove(session_id);
-            LauncherError::Generic {
-                code: "ERR_INSTANCE_UPDATE".into(),
-                message: error.to_string(),
-            }
-        })?;
         crate::lkg::record_launch_outcome(
             &request.game_dir,
             Some(&snapshot_id),
@@ -753,6 +774,40 @@ impl LaunchService {
         let _ = crate::lkg::run_retention(game_dir);
 
         outcome
+    }
+}
+
+fn cached_java_candidates(runtimes_root: &Path) -> Vec<JavaInstallation> {
+    let minecraft_dir = crate::paths::minecraft_dir();
+    let key = format!(
+        "{}|{}",
+        runtimes_root.display(),
+        minecraft_dir
+            .as_deref()
+            .map(|path| path.to_string_lossy())
+            .unwrap_or_default()
+    );
+    if let Ok(cache) = JAVA_DISCOVERY_CACHE.lock() {
+        if let Some((fetched_at, candidates)) = cache.get(&key) {
+            if fetched_at.elapsed() < JAVA_DISCOVERY_CACHE_TTL {
+                return candidates.clone();
+            }
+        }
+    }
+    let candidates =
+        crate::java::detect_java_candidates(Some(runtimes_root), minecraft_dir.as_deref());
+    if let Ok(mut cache) = JAVA_DISCOVERY_CACHE.lock() {
+        cache.insert(key, (Instant::now(), candidates.clone()));
+    }
+    candidates
+}
+
+fn record_launch_started(ctx: &Ctx, instance_id: &str) {
+    let result = crate::db::local_state_connection(&ctx.paths.local_state_db()).and_then(|conn| {
+        crate::db::touch_last_launched(&conn, instance_id, &chrono::Utc::now().to_rfc3339())
+    });
+    if let Err(error) = result {
+        eprintln!("[launch] could not record launch start for {instance_id}: {error}");
     }
 }
 

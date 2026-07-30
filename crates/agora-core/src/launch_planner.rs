@@ -1818,7 +1818,8 @@ async fn materialize_assets(
             code: "ERR_ASSET_INDEX_PARSE".into(),
             message: format!("Failed to parse {}: {error}", index_path.display()),
         })?;
-    for (logical_name, object) in &index.objects {
+    let mut grouped = BTreeMap::<String, (i64, Vec<String>)>::new();
+    for (logical_name, object) in index.objects {
         if object.hash.len() < 2
             || !object.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
             || object.size < 0
@@ -1828,47 +1829,94 @@ async fn materialize_assets(
                 message: format!("Asset index contains invalid object {logical_name}."),
             });
         }
-        let object_path = assets_dir
-            .join("objects")
-            .join(&object.hash[..2])
-            .join(&object.hash);
-        let url = format!(
-            "https://resources.download.minecraft.net/{}/{}",
-            &object.hash[..2],
-            object.hash
-        );
-        download_sha1_atomic(
-            client,
-            &url,
-            &object_path,
-            Some(&object.hash),
-            Some(object.size),
-            policy,
-            NetworkCategory::MojangContent,
-        )
-        .await?;
-
-        if index.virtual_ || index.map_to_resources {
-            let relative = safe_relative_path(logical_name)?;
-            let root = if index.virtual_ {
-                assets_dir.join("virtual").join("legacy")
-            } else {
-                assets_dir.join("resources")
-            };
-            let destination = root.join(relative);
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| LauncherError::Generic {
-                    code: "ERR_ASSET_VIRTUAL_DIR".into(),
-                    message: format!("Failed to create {}: {error}", parent.display()),
-                })?;
-            }
-            std::fs::copy(&object_path, &destination).map_err(|error| LauncherError::Generic {
-                code: "ERR_ASSET_VIRTUAL_COPY".into(),
-                message: format!("Failed to copy {}: {error}", destination.display()),
-            })?;
+        let entry = grouped
+            .entry(object.hash)
+            .or_insert_with(|| (object.size, Vec::new()));
+        if entry.0 != object.size {
+            return Err(LauncherError::Generic {
+                code: "ERR_ASSET_OBJECT_INVALID".into(),
+                message: format!("Asset index gives conflicting sizes for {logical_name}."),
+            });
         }
+        entry.1.push(logical_name);
+    }
+
+    const MAX_CONCURRENT_ASSETS: usize = 8;
+    let mut pending = tokio::task::JoinSet::new();
+    for (hash, (size, logical_names)) in grouped {
+        while pending.len() >= MAX_CONCURRENT_ASSETS {
+            join_asset_task(&mut pending).await?;
+        }
+        let client = client.clone();
+        let assets_dir = assets_dir.to_path_buf();
+        let policy = policy.clone();
+        let virtual_ = index.virtual_;
+        let map_to_resources = index.map_to_resources;
+        pending.spawn(async move {
+            let object_path = assets_dir.join("objects").join(&hash[..2]).join(&hash);
+            let url = format!(
+                "https://resources.download.minecraft.net/{}/{}",
+                &hash[..2],
+                hash
+            );
+            download_sha1_atomic(
+                &client,
+                &url,
+                &object_path,
+                Some(&hash),
+                Some(size),
+                &policy,
+                NetworkCategory::MojangContent,
+            )
+            .await?;
+
+            if virtual_ || map_to_resources {
+                let root = if virtual_ {
+                    assets_dir.join("virtual").join("legacy")
+                } else {
+                    assets_dir.join("resources")
+                };
+                for logical_name in logical_names {
+                    let destination = root.join(safe_relative_path(&logical_name)?);
+                    if let Some(parent) = destination.parent() {
+                        std::fs::create_dir_all(parent).map_err(|error| {
+                            LauncherError::Generic {
+                                code: "ERR_ASSET_VIRTUAL_DIR".into(),
+                                message: format!("Failed to create {}: {error}", parent.display()),
+                            }
+                        })?;
+                    }
+                    std::fs::copy(&object_path, &destination).map_err(|error| {
+                        LauncherError::Generic {
+                            code: "ERR_ASSET_VIRTUAL_COPY".into(),
+                            message: format!("Failed to copy {}: {error}", destination.display()),
+                        }
+                    })?;
+                }
+            }
+            Ok(())
+        });
+    }
+    while !pending.is_empty() {
+        join_asset_task(&mut pending).await?;
     }
     Ok(())
+}
+
+async fn join_asset_task(
+    pending: &mut tokio::task::JoinSet<LauncherResult<()>>,
+) -> LauncherResult<()> {
+    pending
+        .join_next()
+        .await
+        .ok_or_else(|| LauncherError::Generic {
+            code: "ERR_ASSET_TASK".into(),
+            message: "Asset materialization task ended unexpectedly.".into(),
+        })?
+        .map_err(|error| LauncherError::Generic {
+            code: "ERR_ASSET_TASK".into(),
+            message: format!("Asset materialization task failed: {error}"),
+        })?
 }
 
 async fn download_sha1_atomic(

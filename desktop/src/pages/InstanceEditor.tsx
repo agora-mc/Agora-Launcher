@@ -29,6 +29,7 @@ import {
   updateInstanceJava,
   updateInstanceJvm,
   computeGcArgs,
+  recommendInstanceMemory,
   browseItems,
   listModVersions,
   listPackMods,
@@ -62,6 +63,7 @@ import {
   type SnapshotDiff,
   type LoadoutProfile,
   type LockfileDriftReport,
+  type MemoryRecommendation,
 } from '../lib/tauri';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
@@ -187,7 +189,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, processLogs }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; processLogs?: import('../lib/useProcessController').LogLine[] }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[] }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
   const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
@@ -232,6 +234,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [instanceJavaPath, setInstanceJavaPath] = useState('');
   const [instanceJavaArgs, setInstanceJavaArgs] = useState('');
   const [instanceJvmMemory, setInstanceJvmMemory] = useState(4096);
+  const [instanceMemoryMode, setInstanceMemoryMode] = useState<'auto' | 'manual'>('manual');
+  const [memoryRecommendation, setMemoryRecommendation] = useState<MemoryRecommendation | null>(null);
   const [instanceGcMode, setInstanceGcMode] = useState<GcMode>('auto');
   const [instanceAlwaysPreTouch, setInstanceAlwaysPreTouch] = useState(true);
   const [gcPreview, setGcPreview] = useState<Awaited<ReturnType<typeof computeGcArgs>> | null>(null);
@@ -307,6 +311,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           setInstanceJavaPath(result?.row?.java_path ?? '');
           setInstanceJavaArgs(result?.row?.jvm_custom_args ?? '');
           setInstanceJvmMemory(result?.row?.jvm_memory_mb ?? 4096);
+          setInstanceMemoryMode(result?.row?.jvm_memory_mode ?? 'manual');
           setInstanceGcMode(storedGcMode(result?.row?.jvm_gc));
           setInstanceAlwaysPreTouch(result?.row?.jvm_always_pre_touch ?? true);
           setInstanceJavaAllowOverride(result?.row?.java_incompatible_override ?? false);
@@ -411,12 +416,27 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   }, [detail?.snapshot_readiness, instanceId]);
 
   useEffect(() => {
+    if (activeTab !== 'java-args') return;
+    let cancelled = false;
+    void recommendInstanceMemory(instanceId)
+      .then((recommendation) => {
+        if (!cancelled) setMemoryRecommendation(recommendation);
+      })
+      .catch(() => {
+        if (!cancelled) setMemoryRecommendation(null);
+      });
+    return () => { cancelled = true; };
+  }, [activeTab, instanceId, detail?.manifest?.mods, detail?.manifest?.resourcepacks]);
+
+  useEffect(() => {
     if (activeTab !== 'java-args' || !detail?.row) return;
     let cancelled = false;
     setGcPreviewLoading(true);
     computeGcArgs(
       instanceJavaInspected?.version ?? previewJavaMajor(detail.row.minecraft_version),
-      instanceJvmMemory,
+      instanceMemoryMode === 'auto' && memoryRecommendation
+        ? memoryRecommendation.recommended_mb
+        : instanceJvmMemory,
       instanceGcMode === 'manual' ? instanceJavaArgs : '',
       instanceGcMode,
       instanceAlwaysPreTouch,
@@ -428,7 +448,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       if (!cancelled) setGcPreviewLoading(false);
     });
     return () => { cancelled = true; };
-  }, [activeTab, detail?.row, instanceGcMode, instanceJvmMemory, instanceJavaArgs, instanceAlwaysPreTouch, instanceJavaInspected?.version]);
+  }, [activeTab, detail?.row, instanceGcMode, instanceJvmMemory, instanceMemoryMode, memoryRecommendation, instanceJavaArgs, instanceAlwaysPreTouch, instanceJavaInspected?.version]);
 
   const modMetadataKey = installedModMetadataKey(detail?.manifest?.mods);
 
@@ -1140,6 +1160,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               title="Open instance folder in file explorer"
             >
               📂 Open in Folder
+            </button>
+            <button
+              onClick={() => onInvestigate?.(instanceId)}
+              className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+              title="Analyze the latest instance logs"
+            >
+              Investigate
             </button>
             </div>
             <button
@@ -2042,8 +2069,25 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <span className="flex items-center justify-between text-sm font-medium">
                   <span>Memory allocation</span>
                   <span className="tabular-nums text-primary">
-                    {instanceJvmMemory >= 1024 ? `${(instanceJvmMemory / 1024).toFixed(instanceJvmMemory % 1024 === 0 ? 0 : 1)} GB` : `${instanceJvmMemory} MB`}
+                    {instanceMemoryMode === 'auto'
+                      ? `Auto - ${((memoryRecommendation?.recommended_mb ?? instanceJvmMemory) / 1024).toFixed(1)} GB`
+                      : instanceJvmMemory >= 1024
+                        ? `${(instanceJvmMemory / 1024).toFixed(instanceJvmMemory % 1024 === 0 ? 0 : 1)} GB`
+                        : `${instanceJvmMemory} MB`}
                   </span>
+                </span>
+                <span className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-xs">
+                  <span>
+                    <span className="block font-medium">Estimate from pack size</span>
+                    <span className="block text-muted-foreground">Recalculates when enabled content changes.</span>
+                  </span>
+                  <input
+                    aria-label="Automatic memory allocation"
+                    type="checkbox"
+                    checked={instanceMemoryMode === 'auto'}
+                    disabled={recoveryBlocked}
+                    onChange={(event) => setInstanceMemoryMode(event.target.checked ? 'auto' : 'manual')}
+                  />
                 </span>
                 <input
                   aria-label="Memory allocation"
@@ -2052,7 +2096,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   max={32768}
                   step={512}
                   value={instanceJvmMemory}
-                  disabled={recoveryBlocked}
+                  disabled={recoveryBlocked || instanceMemoryMode === 'auto'}
                   onChange={(e) => setInstanceJvmMemory(Number(e.target.value))}
                   className="w-full accent-primary"
                 />
@@ -2060,6 +2104,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <span>2 GB</span>
                   <span>32 GB maximum</span>
                 </span>
+                {instanceMemoryMode === 'auto' && memoryRecommendation && (
+                  <span className={memoryRecommendation.insufficient_system_ram ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
+                    {memoryRecommendation.explanation}
+                  </span>
+                )}
               </label>
 
               <label className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
@@ -2201,6 +2250,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       instanceGcMode,
                       instanceAlwaysPreTouch,
                       instanceJavaArgs.trim(),
+                      instanceMemoryMode,
                     );
                     setStatus('Java settings saved.');
                     // Refresh to update the displayed detail
@@ -2229,8 +2279,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                        instanceId,
                        instanceJvmMemory,
                        instanceGcMode,
-                       instanceAlwaysPreTouch,
-                       '',
+                        instanceAlwaysPreTouch,
+                        '',
+                        instanceMemoryMode,
                      );
                     setStatus('Java settings cleared.');
                     const fresh = await getInstanceDetail(instanceId);

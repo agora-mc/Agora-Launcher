@@ -711,6 +711,101 @@ fn health_nonexistent_instance_fails() {
     );
 }
 
+#[test]
+fn crash_investigate_uses_latest_log_without_crash_report() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    create_vanilla_instance(&data_dir, "crash-latest", "1.21");
+    let logs = data_dir.join("instances/crash-latest/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(
+        logs.join("latest.log"),
+        "[Render thread/ERROR]: java.lang.OutOfMemoryError: Java heap space\n",
+    )
+    .unwrap();
+
+    let output = run_agora_json(&data_dir, &["crash", "investigate", "crash-latest"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(parsed["failure_category"], "Oom");
+    assert_eq!(
+        parsed["evidence"]["sources"][0]["meta"]["basename"],
+        "latest.log"
+    );
+}
+
+#[test]
+fn crash_investigate_accepts_explicit_text_evidence() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    create_vanilla_instance(&data_dir, "crash-explicit", "1.21");
+    let extra = data_dir.join("selected-forge-crash.txt");
+    std::fs::write(
+        &extra,
+        "net.minecraftforge.fml.ModLoadingException: Missing mandatory dependency\nCaused by: java.lang.NoClassDefFoundError: example/api/EntryPoint\n",
+    )
+    .unwrap();
+
+    let output = run_agora_json(
+        &data_dir,
+        &[
+            "crash",
+            "investigate",
+            "crash-explicit",
+            "--file",
+            extra.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = assert_json_stdout(&output);
+    assert_eq!(
+        parsed["evidence"]["sources"][0]["meta"]["basename"],
+        "selected-forge-crash.txt"
+    );
+    assert!(parsed["evidence"]["sources"][0].get("path").is_none());
+}
+
+#[test]
+fn instance_memory_recommendation_is_read_only_and_explained() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    create_vanilla_instance(&data_dir, "memory-recommend", "1.21");
+    let conn = agora_core::db::local_state_connection(&data_dir.join("local_state.db")).unwrap();
+    let before = agora_core::db::get_instance(&conn, "memory-recommend")
+        .unwrap()
+        .unwrap();
+
+    let output = run_agora_json(
+        &data_dir,
+        &["instance", "recommend-memory", "memory-recommend"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let recommendation = assert_json_stdout(&output);
+    assert_eq!(recommendation["recommended_mb"], 2048);
+    assert!(recommendation["explanation"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("enabled mods"));
+
+    let after = agora_core::db::get_instance(&conn, "memory-recommend")
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.jvm_memory_mb, after.jvm_memory_mb);
+    assert_eq!(before.jvm_memory_mode, after.jvm_memory_mode);
+}
+
 // ---------------------------------------------------------------------------
 // Registry status (no registry.db — should not panic)
 // ---------------------------------------------------------------------------
@@ -866,6 +961,7 @@ fn create_vanilla_instance(data_dir: &Path, instance_id: &str, version: &str) {
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
             jvm_gc: "g1gc".into(),
             jvm_custom_args: String::new(),
             jvm_always_pre_touch: true,
@@ -1060,6 +1156,25 @@ fn launch_json_stdout() {
     assert!(
         parsed.get("outcome").is_some(),
         "JSON must contain 'outcome'"
+    );
+}
+
+#[test]
+fn launch_timings_are_written_to_stderr() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    let instance_id = prepare_launch_state(&data_dir, 0, 21);
+    let output =
+        run_agora_with_test_credentials(&data_dir, &["launch", &instance_id, "--yes", "--timings"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[timing]"),
+        "expected timing output:\n{stderr}"
     );
 }
 
@@ -1670,6 +1785,7 @@ fn create_loader_instance(data_dir: &std::path::Path, id: &str, mod_names: &[&st
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
             jvm_gc: "g1gc".into(),
             jvm_custom_args: String::new(),
             jvm_always_pre_touch: true,

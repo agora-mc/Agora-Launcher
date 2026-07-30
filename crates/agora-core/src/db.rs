@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 8;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 9;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -156,6 +156,7 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
                  is_locked BOOLEAN NOT NULL DEFAULT 0,
                  last_launched_at TEXT,
                  jvm_memory_mb INTEGER NOT NULL DEFAULT 4096,
+                 jvm_memory_mode TEXT NOT NULL DEFAULT 'manual',
                   jvm_gc TEXT NOT NULL DEFAULT 'auto',
                  jvm_custom_args TEXT NOT NULL DEFAULT '',
                  jvm_always_pre_touch INTEGER NOT NULL DEFAULT 1,
@@ -376,6 +377,19 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
     }
 
+    // Migration v9: explicit automatic/manual instance memory policy. Existing
+    // rows remain manual because their previous 4 GB value does not prove intent.
+    if current < 9 {
+        let _ = conn.execute(
+            "ALTER TABLE user_instances ADD COLUMN jvm_memory_mode TEXT NOT NULL DEFAULT 'manual'",
+            [],
+        );
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (9)",
+            [],
+        )?;
+    }
+
     if current > target {
         anyhow::bail!("local_state.db schema version {current} is newer than supported {target}");
     }
@@ -440,8 +454,9 @@ pub fn upsert_instance(conn: &Connection, row: &InstanceRow) -> anyhow::Result<(
              instance_id, name, minecraft_version, loader, loader_version,
              is_modpack, is_locked, last_launched_at,
              jvm_memory_mb, jvm_gc, jvm_custom_args, jvm_always_pre_touch, created_at,
-              java_path, java_incompatible_override, icon_path, launch_mode_override
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+              java_path, java_incompatible_override, icon_path, launch_mode_override,
+              jvm_memory_mode
+           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(instance_id) DO UPDATE SET
              name = excluded.name,
              minecraft_version = excluded.minecraft_version,
@@ -457,7 +472,8 @@ pub fn upsert_instance(conn: &Connection, row: &InstanceRow) -> anyhow::Result<(
              java_path = excluded.java_path,
               java_incompatible_override = excluded.java_incompatible_override,
               icon_path = excluded.icon_path,
-              launch_mode_override = excluded.launch_mode_override",
+               launch_mode_override = excluded.launch_mode_override,
+               jvm_memory_mode = excluded.jvm_memory_mode",
         rusqlite::params![
             row.instance_id,
             row.name,
@@ -476,6 +492,7 @@ pub fn upsert_instance(conn: &Connection, row: &InstanceRow) -> anyhow::Result<(
             row.java_incompatible_override as i64,
             row.icon_path,
             normalized_launch_mode(&row.launch_mode_override),
+            normalized_memory_mode(&row.jvm_memory_mode),
         ],
     )?;
     Ok(())
@@ -512,20 +529,23 @@ pub fn update_instance_jvm(
     gc: &str,
     always_pre_touch: bool,
     custom_args: &str,
+    memory_mode: &str,
 ) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE user_instances
          SET jvm_memory_mb = ?1,
              jvm_gc = ?2,
-             jvm_always_pre_touch = ?3,
-             jvm_custom_args = ?4
-         WHERE instance_id = ?5",
+              jvm_always_pre_touch = ?3,
+              jvm_custom_args = ?4,
+              jvm_memory_mode = ?5
+          WHERE instance_id = ?6",
         rusqlite::params![
             memory_mb,
             gc,
             always_pre_touch as i64,
             custom_args,
-            instance_id
+            normalized_memory_mode(memory_mode),
+            instance_id,
         ],
     )?;
     Ok(())
@@ -578,6 +598,7 @@ pub fn list_instances(conn: &Connection) -> anyhow::Result<Vec<InstanceRow>> {
                 is_modpack, is_locked, last_launched_at,
                 jvm_memory_mb, jvm_gc, jvm_custom_args, jvm_always_pre_touch, created_at,
                  java_path, java_incompatible_override, icon_path, launch_mode_override,
+                 jvm_memory_mode,
                  (SELECT launcher_kind FROM instance_imports
                   WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1)
           FROM user_instances
@@ -598,6 +619,7 @@ pub fn get_instance(conn: &Connection, instance_id: &str) -> anyhow::Result<Opti
                 is_modpack, is_locked, last_launched_at,
                 jvm_memory_mb, jvm_gc, jvm_custom_args, jvm_always_pre_touch, created_at,
                  java_path, java_incompatible_override, icon_path, launch_mode_override,
+                 jvm_memory_mode,
                  (SELECT launcher_kind FROM instance_imports
                   WHERE instance_imports.instance_id = user_instances.instance_id LIMIT 1)
           FROM user_instances
@@ -773,7 +795,8 @@ fn row_to_instance(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstanceRow> {
         java_incompatible_override: row.get::<_, i64>(14)? != 0,
         icon_path: row.get(15)?,
         launch_mode_override: row.get(16)?,
-        import_source: row.get(17)?,
+        jvm_memory_mode: row.get(17)?,
+        import_source: row.get(18)?,
     })
 }
 
@@ -782,6 +805,14 @@ fn normalized_launch_mode(value: &str) -> &str {
         "direct" => "direct",
         "delegated" => "delegated",
         _ => "auto",
+    }
+}
+
+fn normalized_memory_mode(value: &str) -> &str {
+    if value == "auto" {
+        "auto"
+    } else {
+        "manual"
     }
 }
 
@@ -1529,6 +1560,7 @@ mod tests {
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
             jvm_gc: "auto".into(),
             jvm_custom_args: String::new(),
             jvm_always_pre_touch: false,
@@ -1649,6 +1681,7 @@ mod tests {
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
             jvm_gc: "g1gc".into(),
             jvm_custom_args: String::new(),
             jvm_always_pre_touch: true,
@@ -1697,6 +1730,7 @@ mod tests {
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: 2048,
+            jvm_memory_mode: "manual".into(),
             jvm_gc: "zgc".into(),
             jvm_custom_args: "-XX:+AlwaysPreTouch".into(),
             jvm_always_pre_touch: false,
@@ -1716,6 +1750,7 @@ mod tests {
             .unwrap();
         assert_eq!(found.java_path.as_deref(), Some("/opt/java21/bin/java"));
         assert!(found.java_incompatible_override);
+        assert_eq!(found.jvm_memory_mode, "manual");
     }
 
     // ---- get_pair_crash_count ----

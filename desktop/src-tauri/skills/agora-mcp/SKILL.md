@@ -7,11 +7,11 @@ description: Guide for using the Agora launcher MCP server to diagnose Minecraft
 
 ## Overview
 
-The Agora launcher runs a local MCP server on `127.0.0.1:39741` that exposes 6 tools for managing Minecraft mod instances and diagnosing crashes. The server is built into the desktop app and runs when the user has "AI / MCP Server" enabled in Settings.
+The Agora launcher runs a local MCP server on `127.0.0.1:39741` that exposes 10 tools for managing Minecraft mod instances and diagnosing crashes. The server is built into the desktop app and runs when the user has "AI / MCP Server" enabled in Settings (disabled by default in the shipped app). Every connection requires the persistent Bearer token shown in Settings -> Integrations -> MCP Server.
 
 The server speaks JSON-RPC 2.0 over HTTP with SSE (Server-Sent Events) for response delivery. Tools are called via the `tools/call` method with `name` and `arguments` in the params. All tool responses are wrapped in a JSON object with `content` (array of `{type: "text", text: "..."}`) and `isError` fields.
 
-## The 6 Tools
+## The 10 Tools
 
 ### 1. `list_instances`
 
@@ -60,6 +60,30 @@ The server speaks JSON-RPC 2.0 over HTTP with SSE (Server-Sent Events) for respo
 - **Returns:** A markdown summary with sections for Instances, Installed Mods, and Recent Crashes.
 - **Use when:** You need an overview of the user's system state before diagnosing an issue, or when the user asks "what do you know about my setup?".
 
+### 7. `read_latest_crash`
+
+- **Params:** `instance_id` (string).
+- **Returns:** The last 200 lines of the newest crash report, its filename, and total line count.
+- **Use when:** A known instance crashed and you need its newest local report before scoring suspects.
+
+### 8. `read_mod_manifest`
+
+- **Params:** `mod_id` (string).
+- **Returns:** The full curated local registry record for the mod.
+- **Use when:** You need curator-authored compatibility, description, license, or vote context without a network request.
+
+### 9. `enable_mod`
+
+- **Params:** `instance_id` (string), `filename` (string).
+- **Destructive -- requires user approval.** Reverses a prior disable by restoring `.jar.disabled` to `.jar`.
+- **Use when:** A disable test did not solve the crash or the user explicitly wants the mod restored.
+
+### 10. `search_knowledge_base`
+
+- **Params:** `query` (string).
+- **Returns:** Up to five matching local registry entries.
+- **Use when:** You need a natural-language search across the curated catalog without network access.
+
 ## Crash Diagnosis Workflow
 
 Follow this decision tree when a user reports a crash:
@@ -86,9 +110,11 @@ Follow this decision tree when a user reports a crash:
 
 7. **No suspects above zero.** If no suspects score above zero, the crash is likely not mod-related (game engine issue, world corruption, shaders, etc.). Advise the user accordingly.
 
+8. **Optional upstream research.** Only after local evidence, curated signatures, and installed-mod scoring are exhausted, an AI agent may search upstream issue trackers or release notes. Clearly distinguish external hypotheses from Agora's deterministic local findings. Crash Doctor itself does not upload evidence, search GitHub, or submit issues.
+
 ## Important Notes
 
-- **`disable_mod` is the only destructive tool.** It requires explicit per-instance approval in Agora Settings → MCP → Approvals. If you receive `ERR_MCP_DENIED`, tell the user to grant permission for that instance.
+- **`disable_mod` and `enable_mod` are the only destructive tools.** They require explicit per-instance approval in Agora Settings -> MCP -> Approvals. If you receive `ERR_MCP_DENIED`, tell the user to grant permission for that instance.
 
 - **The scoring algorithm learns.** When you disable a mod and the crash stops, that attribution is recorded as a prior (signal E). This speeds up future diagnosis for similar crashes.
 
@@ -98,4 +124,6 @@ Follow this decision tree when a user reports a crash:
 
 - **Rate limiting.** The server enforces a rate limit of 100 requests per 60 seconds per session. If you hit `ERR_MCP_TOO_MANY_REQUESTS`, slow down your tool calls.
 
-- **Connection.** The server only accepts connections from `127.0.0.1` (loopback). No authentication is required — the localhost binding is the security boundary.
+- **Authentication.** Every request requires the Bearer token shown in Settings -> Integrations -> MCP Server. Send it as an `Authorization: Bearer <token>` header or as the `token` query parameter on the SSE URL. The user can regenerate the token in Settings.
+- **Connection.** The server only accepts connections from `127.0.0.1` (loopback) with a valid token.
+- **Tool set.** The complete set is `list_instances`, `list_instance_mods`, `disable_mod`, `search_crash_signatures`, `suggest_mod_incompatibility`, `get_system_context`, `read_latest_crash`, `read_mod_manifest`, `enable_mod`, and `search_knowledge_base`.

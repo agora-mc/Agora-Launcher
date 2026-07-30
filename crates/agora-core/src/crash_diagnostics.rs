@@ -278,10 +278,12 @@ pub fn list_reports_from_dir(dir: &std::path::Path) -> Vec<CrashReportInfo> {
 
 /// Read the content of a specific crash report file at the given path.
 pub fn read_crash_log_from_path(path: &std::path::Path) -> LauncherResult<String> {
-    std::fs::read_to_string(path).map_err(|_| crate::error::LauncherError::Generic {
-        code: "ERR_CRASH_LOG_READ".to_string(),
-        message: "Could not read the crash log file.".to_string(),
-    })
+    crate::crash_evidence::CrashEvidenceService::new()
+        .read_bounded_text(path)
+        .ok_or_else(|| crate::error::LauncherError::Generic {
+            code: "ERR_CRASH_LOG_READ".to_string(),
+            message: "Could not read the crash log file.".to_string(),
+        })
 }
 
 /// Check whether a fresh crash report appeared after the given timestamp.

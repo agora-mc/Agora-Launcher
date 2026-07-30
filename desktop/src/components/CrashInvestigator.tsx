@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import ReactMarkdown from 'react-markdown';
 import {
   confirmCrashFix,
   createSnapshot,
@@ -7,17 +8,22 @@ import {
   formatError,
   getDisablePlan,
   investigateCrash,
+  investigateInstanceEvidence,
   investigateManual,
+  pickAndInvestigateCrashEvidence,
   readCrashLog,
   reportStillCrashing,
   restoreSnapshot,
   type DisablePlan,
+  type CrashInvestigation,
   type InvestigationResult,
   type SuspectScore,
   type SuggestedAction,
 } from '../lib/tauri';
 import { DependencyPrompt } from './DependencyPrompt';
 import { AiAssistant } from './AiAssistant';
+import type { ProcessState } from '../lib/useProcessController';
+import type { LaunchStartOutcome } from '../lib/useProcessController';
 import {
   Dialog,
   DialogContent,
@@ -32,7 +38,8 @@ interface CrashInvestigatorProps {
   onClose: () => void;
   /** Called to re-launch the instance after disabling a suspected mod. */
   /** Returns true only when the canonical launch controller actually started. */
-  onLaunch: () => Promise<boolean>;
+  onLaunch: (onAwaitingHealth: () => void) => Promise<LaunchStartOutcome>;
+  processState: ProcessState;
 }
 
 const SIGNAL_LABELS: Record<string, string> = {
@@ -47,6 +54,25 @@ const SIGNAL_LABELS: Record<string, string> = {
   confirmed_prior_fixes: 'Confirmed prior fixes',
   confirmed_fix_score: 'Confirmed prior fixes',
 };
+
+function investigationResultFromEvidence(investigation: CrashInvestigation): InvestigationResult {
+  const top = investigation.suspects[0];
+  return {
+    fingerprint: investigation.fingerprint,
+    signature_name: investigation.triage.signature_name,
+    suspects: investigation.suspects,
+    suggested_action: top
+      ? { kind: 'GuidedDisable', next_suspect: top }
+      : { kind: 'NoSuspects' },
+    ruled_out: [],
+  };
+}
+
+function combinedEvidenceText(investigation: CrashInvestigation): string {
+  return investigation.evidence.sources
+    .map((source) => `===== ${source.meta.basename} =====\n${source.text}`)
+    .join('\n\n');
+}
 
 /** Render one deterministic signal with its evidence source. */
 function BreakdownEntry({ signal, value }: { signal: string; value: unknown }) {
@@ -279,8 +305,10 @@ export function CrashInvestigator({
   manualLogText,
   onClose,
   onLaunch,
+  processState,
 }: CrashInvestigatorProps) {
   const [result, setResult] = useState<InvestigationResult | null>(null);
+  const [evidence, setEvidence] = useState<CrashInvestigation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Raw crash log text, stored for reportStillCrashing in file-mode investigations
@@ -290,9 +318,16 @@ export function CrashInvestigator({
     filename: string;
     modId: string;
   } | null>(null);
+  const [pendingTest, setPendingTest] = useState<{
+    filename: string;
+    modId: string;
+    armed: boolean;
+  } | null>(null);
+  const [experimentNotice, setExperimentNotice] = useState<string | null>(null);
   // Success state
   const [success, setSuccess] = useState<string | null>(null);
   const [recoverySnapshotId, setRecoverySnapshotId] = useState<string | null>(null);
+  const recoverySnapshotIdRef = useRef<string | null>(null);
   const [disabledByTest, setDisabledByTest] = useState<string[]>([]);
   // Disable dependency prompt state
   const [disablePlanTarget, setDisablePlanTarget] = useState<{
@@ -306,21 +341,18 @@ export function CrashInvestigator({
   const [aiExplanation, setAiExplanation] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState('');
   const cancelledRef = useRef(false);
   const closeInProgressRef = useRef(false);
+  const pendingLaunchRef = useRef(false);
+  const stackedHealthDialogRef = useRef(false);
 
   // Run investigation on mount
   useEffect(() => {
     let cancelled = false;
     const runInvestigation = async () => {
       try {
-        const snapshot = await createSnapshot(
-          instanceId,
-          `crash-doctor-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
-        );
-        if (cancelled) return;
-        setRecoverySnapshotId(snapshot.id);
-
         // For file-based investigation, fetch the raw log text first
         if (crashFilename) {
           const rawText = await readCrashLog(instanceId, crashFilename);
@@ -330,8 +362,14 @@ export function CrashInvestigator({
         let invResult: InvestigationResult;
         if (manualLogText) {
           invResult = await investigateManual(instanceId, manualLogText);
-        } else {
+        } else if (crashFilename) {
           invResult = await investigateCrash(instanceId, crashFilename || undefined);
+        } else {
+          const automatic = await investigateInstanceEvidence(instanceId);
+          if (cancelled) return;
+          setEvidence(automatic);
+          setCrashLogText(combinedEvidenceText(automatic));
+          invResult = investigationResultFromEvidence(automatic);
         }
         if (!cancelled) setResult(invResult);
       } catch (e) {
@@ -348,14 +386,26 @@ export function CrashInvestigator({
     };
   }, [instanceId, crashFilename, manualLogText]);
 
+  const ensureRecoverySnapshot = useCallback(async () => {
+    if (recoverySnapshotIdRef.current) return recoverySnapshotIdRef.current;
+    const snapshot = await createSnapshot(
+      instanceId,
+      `crash-doctor-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+    );
+    recoverySnapshotIdRef.current = snapshot.id;
+    setRecoverySnapshotId(snapshot.id);
+    return snapshot.id;
+  }, [instanceId]);
+
   const restoreInvestigationSnapshot = useCallback(async () => {
-    if (!recoverySnapshotId) {
+    const snapshotId = recoverySnapshotIdRef.current;
+    if (!snapshotId) {
       throw new Error('The pre-investigation recovery snapshot is unavailable.');
     }
-    await restoreSnapshot(instanceId, recoverySnapshotId);
+    await restoreSnapshot(instanceId, snapshotId);
     setDisabledByTest([]);
     setPostLaunch(null);
-  }, [instanceId, recoverySnapshotId]);
+  }, [instanceId]);
 
   const handleClose = useCallback(async () => {
     if (closeInProgressRef.current) return;
@@ -382,6 +432,18 @@ export function CrashInvestigator({
       closeInProgressRef.current = false;
     }
   }, [disabledByTest.length, onClose, recoverySnapshotId, restoreInvestigationSnapshot, success]);
+
+  const handleDialogOpenChange = useCallback((open: boolean) => {
+    if (open) return;
+    // Radix closes the underlying modal when Health Check is stacked above it.
+    // Keep Crash Doctor mounted so approval retains the guided experiment.
+    if (
+      pendingLaunchRef.current
+      || stackedHealthDialogRef.current
+      || (pendingTest && processState.healthReport)
+    ) return;
+    void handleClose();
+  }, [handleClose, pendingTest, processState.healthReport]);
 
   const handleDisableAndRelaunch = useCallback(async () => {
     if (!result) return;
@@ -414,13 +476,21 @@ export function CrashInvestigator({
         setLoading(false);
         return;
       }
+      await ensureRecoverySnapshot();
       await disableModForTest(instanceId, filename);
       modified = true;
       setDisabledByTest([filename]);
-      const launched = await onLaunch();
-      if (!cancelledRef.current && launched) {
-        setPostLaunch({ filename, modId });
+      pendingLaunchRef.current = true;
+      const launchOutcome = await onLaunch(() => {
+        stackedHealthDialogRef.current = true;
+        setPendingTest({ filename, modId, armed: true });
+      });
+      if (!cancelledRef.current && launchOutcome !== 'failed') {
+        setPendingTest({ filename, modId, armed: true });
       } else if (!cancelledRef.current) {
+        pendingLaunchRef.current = false;
+        setPendingTest(null);
+        await restoreInvestigationSnapshot();
         setError('The test launch did not start. Resolve the health prompt or launch error, then retry this suspect.');
       }
     } catch (e) {
@@ -440,7 +510,7 @@ export function CrashInvestigator({
     } finally {
       if (!cancelledRef.current && !disablePlanTarget) setLoading(false);
     }
-  }, [result, instanceId, onLaunch, restoreInvestigationSnapshot]);
+  }, [result, instanceId, onLaunch, restoreInvestigationSnapshot, ensureRecoverySnapshot]);
 
   const handleDisableConfirm = useCallback(async (selectedKeys: string[]) => {
     if (!disablePlanTarget) return;
@@ -449,6 +519,7 @@ export function CrashInvestigator({
     setError(null);
 
     try {
+      await ensureRecoverySnapshot();
       const selectedSet = new Set(selectedKeys);
       const filenames = [
         ...plan.dependents
@@ -460,10 +531,17 @@ export function CrashInvestigator({
         await disableModForTest(instanceId, filename);
       }
       setDisabledByTest(filenames);
-      const launched = await onLaunch();
-      if (!cancelledRef.current && launched) {
-        setPostLaunch({ filename: originalFilename, modId });
+      pendingLaunchRef.current = true;
+      const launchOutcome = await onLaunch(() => {
+        stackedHealthDialogRef.current = true;
+        setPendingTest({ filename: originalFilename, modId, armed: true });
+      });
+      if (!cancelledRef.current && launchOutcome !== 'failed') {
+        setPendingTest({ filename: originalFilename, modId, armed: true });
       } else if (!cancelledRef.current) {
+        pendingLaunchRef.current = false;
+        setPendingTest(null);
+        await restoreInvestigationSnapshot();
         setError('The test launch did not start. Resolve the health prompt or launch error, then retry this suspect.');
       }
     } catch (e) {
@@ -484,7 +562,42 @@ export function CrashInvestigator({
         setLoading(false);
       }
     }
-  }, [disablePlanTarget, instanceId, onLaunch, restoreInvestigationSnapshot]);
+  }, [disablePlanTarget, instanceId, onLaunch, restoreInvestigationSnapshot, ensureRecoverySnapshot]);
+
+  const handleAddEvidence = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const investigation = await pickAndInvestigateCrashEvidence(instanceId);
+      if (!investigation || cancelledRef.current) return;
+      setEvidence(investigation);
+      setCrashLogText(combinedEvidenceText(investigation));
+      setResult(investigationResultFromEvidence(investigation));
+    } catch (cause) {
+      if (!cancelledRef.current) setError(formatError(cause));
+    } finally {
+      if (!cancelledRef.current) setLoading(false);
+    }
+  }, [instanceId]);
+
+  const handlePasteEvidence = useCallback(async () => {
+    if (!pasteText.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const investigation = await investigateManual(instanceId, pasteText);
+      if (!cancelledRef.current) {
+        setEvidence(null);
+        setCrashLogText(pasteText);
+        setResult(investigation);
+        setShowPaste(false);
+      }
+    } catch (cause) {
+      if (!cancelledRef.current) setError(formatError(cause));
+    } finally {
+      if (!cancelledRef.current) setLoading(false);
+    }
+  }, [instanceId, pasteText]);
 
   // Track whether the component is still mounted.
   // Reset on setup so StrictMode double-invocation (dev) or real remounts
@@ -564,6 +677,102 @@ export function CrashInvestigator({
     }
   }, [result, postLaunch, instanceId, manualLogText, crashLogText, crashFilename, restoreInvestigationSnapshot]);
 
+  useEffect(() => {
+    if (!pendingTest?.armed) return;
+    let cancelled = false;
+    const finishTest = async () => {
+      const failedBeforeStart = (
+        processState.phase === 'failed'
+        && processState.instanceId === instanceId
+        && !processState.healthReport
+      ) || (
+        processState.phase === 'idle'
+        && processState.instanceId === null
+      );
+      if (failedBeforeStart) {
+        try {
+          await restoreInvestigationSnapshot();
+          if (!cancelled) {
+            pendingLaunchRef.current = false;
+            globalThis.setTimeout(() => {
+              stackedHealthDialogRef.current = false;
+            }, 250);
+            setPendingTest(null);
+            setError(processState.error ?? 'The test launch was cancelled before it started. Changes were restored.');
+          }
+        } catch (cause) {
+          if (!cancelled) setError(`The test launch failed and recovery also failed: ${formatError(cause)}`);
+        }
+        return;
+      }
+
+      if (processState.instanceId !== instanceId || processState.phase !== 'exited') return;
+      if (processState.outcome === 'success') {
+        if (!cancelled) {
+          pendingLaunchRef.current = false;
+          stackedHealthDialogRef.current = false;
+          setPostLaunch(pendingTest);
+          setPendingTest(null);
+        }
+        return;
+      }
+
+      if (processState.outcome === 'crash') {
+        setLoading(true);
+        try {
+          await restoreInvestigationSnapshot();
+          const latest = await investigateInstanceEvidence(instanceId);
+          const sameFingerprint = result?.fingerprint
+            && latest.fingerprint
+            && result.fingerprint.exception_class === latest.fingerprint.exception_class
+            && result.fingerprint.top_frames.join('\n') === latest.fingerprint.top_frames.join('\n');
+          const latestText = combinedEvidenceText(latest);
+          if (sameFingerprint && result?.fingerprint) {
+            const advanced = await reportStillCrashing(
+              instanceId,
+              result.fingerprint,
+              pendingTest.modId,
+              latestText,
+            );
+            if (!cancelled) {
+              setResult(advanced);
+              setExperimentNotice(`The same crash persisted without ${pendingTest.filename}; it was ruled out.`);
+            }
+          } else if (!cancelled) {
+            setEvidence(latest);
+            setCrashLogText(latestText);
+            setResult(investigationResultFromEvidence(latest));
+            setExperimentNotice('The failure changed after this test. The previous suspect was not automatically confirmed or ruled out.');
+          }
+        } catch (cause) {
+          if (!cancelled) setError(`Could not evaluate the test launch: ${formatError(cause)}`);
+        } finally {
+          if (!cancelled) {
+            pendingLaunchRef.current = false;
+            stackedHealthDialogRef.current = false;
+            setPendingTest(null);
+            setLoading(false);
+          }
+        }
+        return;
+      }
+
+      try {
+        await restoreInvestigationSnapshot();
+        if (!cancelled) {
+          pendingLaunchRef.current = false;
+          stackedHealthDialogRef.current = false;
+          setExperimentNotice('The test launch ended before a useful result was available. Changes were restored.');
+          setPendingTest(null);
+        }
+      } catch (cause) {
+        if (!cancelled) setError(`Could not restore the inconclusive test: ${formatError(cause)}`);
+      }
+    };
+    void finishTest();
+    return () => { cancelled = true; };
+  }, [instanceId, pendingTest, processState.error, processState.healthReport, processState.instanceId, processState.outcome, processState.phase, restoreInvestigationSnapshot, result]);
+
   const handleViewTriage = useCallback(() => {
     onClose();
   }, [onClose]);
@@ -599,11 +808,11 @@ export function CrashInvestigator({
 
   if (loading && !result) {
     return (
-      <Dialog open onOpenChange={(open) => { if (!open) void handleClose(); }}>
+      <Dialog open onOpenChange={handleDialogOpenChange}>
         <DialogContent>
           <DialogTitle>Crash Doctor</DialogTitle>
           <DialogDescription>
-            Creating a recovery snapshot and analyzing deterministic crash signals.
+            Finding recent logs and analyzing deterministic crash signals.
           </DialogDescription>
           <div className="flex flex-col items-center gap-3 py-8">
             <div role="status" aria-label="Investigating crash" className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -616,7 +825,7 @@ export function CrashInvestigator({
 
   if (error) {
     return (
-      <Dialog open onOpenChange={(open) => { if (!open) void handleClose(); }}>
+      <Dialog open onOpenChange={handleDialogOpenChange}>
         <DialogContent>
           <DialogTitle>Crash Doctor</DialogTitle>
           <DialogDescription>
@@ -658,7 +867,7 @@ export function CrashInvestigator({
 
   return (
     <>
-      <Dialog open onOpenChange={(open) => { if (!open) void handleClose(); }}>
+      <Dialog open onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
           <div className="flex items-start justify-between gap-4 border-b border-border pb-4 pr-6">
           <div className="flex-1 min-w-0">
@@ -688,6 +897,87 @@ export function CrashInvestigator({
         </div>
 
         <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-muted/40 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold">Evidence</p>
+                <p className="text-xs text-muted-foreground">
+                  {evidence
+                    ? `${evidence.evidence.sources.length} local source${evidence.evidence.sources.length === 1 ? '' : 's'} analyzed`
+                    : manualLogText || crashFilename
+                      ? 'User-provided crash evidence analyzed'
+                      : 'No recent diagnostic files found'}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { void handleAddEvidence(); }}
+                  disabled={loading}
+                  className="rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                >
+                  Browse files
+                </button>
+                <button
+                  onClick={() => setShowPaste((value) => !value)}
+                  disabled={loading}
+                  className="rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                >
+                  Paste log
+                </button>
+              </div>
+            </div>
+            {showPaste && (
+              <div className="mt-3 space-y-2">
+                <textarea
+                  value={pasteText}
+                  onChange={(event) => setPasteText(event.target.value)}
+                  placeholder="Paste a crash report or latest.log"
+                  className="h-32 w-full resize-y rounded-md border border-input bg-background p-2 font-mono text-xs"
+                />
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => { void handlePasteEvidence(); }}
+                    disabled={!pasteText.trim() || loading}
+                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                  >
+                    Analyze pasted log
+                  </button>
+                </div>
+              </div>
+            )}
+            {evidence && evidence.evidence.sources.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {evidence.evidence.sources.map((source, index) => (
+                  <details key={`${source.meta.kind}:${source.meta.basename}:${index}`} className="rounded border border-border bg-background px-2 py-1.5">
+                    <summary className="cursor-pointer text-xs font-medium">
+                      {source.meta.basename}
+                      {index === evidence.evidence.primary_index ? ' - primary' : ''}
+                      {source.meta.truncated ? ' - truncated' : ''}
+                      {source.meta.stale ? ' - old' : ''}
+                    </summary>
+                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-[11px] leading-relaxed">
+                      {source.text}
+                    </pre>
+                  </details>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {evidence?.triage.matched && evidence.triage.solution_markdown && (
+            <div className="rounded-lg border border-primary/30 bg-primary/10 p-4">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Known fix</p>
+              <div className="prose prose-sm max-w-none text-foreground dark:prose-invert">
+                <ReactMarkdown
+                  allowedElements={['p', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'blockquote', 'br']}
+                  unwrapDisallowed
+                >
+                  {evidence.triage.solution_markdown}
+                </ReactMarkdown>
+              </div>
+            </div>
+          )}
+
           {recoverySnapshotId && (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted p-3 text-xs text-muted-foreground">
               <span>Recovery snapshot ready: {recoverySnapshotId}</span>
@@ -790,6 +1080,18 @@ export function CrashInvestigator({
               )}
 
               {/* Post-launch confirmation */}
+              {pendingTest && (
+                <div className="rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm text-muted-foreground">
+                  Waiting for the test launch to finish before evaluating {pendingTest.filename}.
+                </div>
+              )}
+
+              {experimentNotice && (
+                <div className="rounded-xl border border-border bg-muted p-4 text-sm text-muted-foreground">
+                  {experimentNotice}
+                </div>
+              )}
+
               {postLaunch && (
                 <FixConfirmation
                   filename={postLaunch.filename}

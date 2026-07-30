@@ -749,11 +749,13 @@ impl Resolver {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.github_token.is_some() {
             if self.clear_stored_github_token_on_unauthorized {
                 // Attempt a single token refresh before falling back to anonymous.
-                if crate::auth::try_refresh_after_401(LauncherError::AuthExpired)
-                    .await
-                    .is_ok()
+                if crate::auth::try_refresh_after_401_with_token(
+                    self.github_token.as_deref().unwrap_or_default(),
+                )
+                .await
+                .is_ok()
                 {
-                    if let Some(new_token) = crate::auth::get_token() {
+                    if let Some(new_token) = crate::auth::get_valid_access_token().await {
                         let new_headers = github_auth_headers(Some(&new_token));
                         response = self
                             .send_github_releases_request(&url, &new_headers)

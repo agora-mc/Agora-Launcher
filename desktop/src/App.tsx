@@ -357,6 +357,7 @@ export default function App() {
     state: processState,
     logs: processLogs,
     startLaunch,
+    startLaunchDetailed,
     approveLaunch,
     cancelLaunch,
     kill: killProcess,
@@ -365,7 +366,7 @@ export default function App() {
     useDelegatedLaunch,
   } = processController;
 
-  const handleInstanceEditorLaunch = async (instanceId: string) => {
+  const resolveDirectLaunch = async (instanceId: string) => {
     let directLaunch = false;
     try {
       directLaunch = (await getSetting('launch_mode')) === 'direct';
@@ -375,7 +376,22 @@ export default function App() {
     } catch {
       // Delegated launch is the safe default when the setting is unavailable.
     }
-    return startLaunch(instanceId, directLaunch);
+    return directLaunch;
+  };
+
+  const handleInstanceEditorLaunch = async (instanceId: string) => {
+    return startLaunch(instanceId, await resolveDirectLaunch(instanceId));
+  };
+
+  const handleInstanceEditorInvestigate = (instanceId: string) => {
+    void resolveDirectLaunch(instanceId).then((directLaunch) => {
+      setCrashInvestigation({
+        instanceId,
+        crashFilename: null,
+        manualLogText: null,
+        directLaunch,
+      });
+    });
   };
 
   const handleModDetailBack = () => {
@@ -526,6 +542,7 @@ export default function App() {
                   onOpenModDetail={handleInstanceEditorOpenMod}
                   onOpenBrowseForInstance={navigateToBrowse}
                   onLaunch={handleInstanceEditorLaunch}
+                  onInvestigate={handleInstanceEditorInvestigate}
                   processLogs={processLogs}
                 />
               </div>
@@ -545,10 +562,12 @@ export default function App() {
             crashFilename={crashInvestigation.crashFilename}
             manualLogText={crashInvestigation.manualLogText}
             onClose={() => setCrashInvestigation(null)}
-            onLaunch={() => startLaunch(
+            onLaunch={(onAwaitingHealth) => startLaunchDetailed(
               crashInvestigation.instanceId,
               crashInvestigation.directLaunch,
+              onAwaitingHealth,
             )}
+            processState={processState}
           />
         )}
       </div>

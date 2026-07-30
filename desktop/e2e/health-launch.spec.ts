@@ -1,6 +1,14 @@
 import { test, expect, type Page } from '@playwright/test';
 
-async function installHealthMock(page: Page, options: { direct: boolean; blocker?: boolean; filename?: string | null; failLaunch?: boolean }) {
+async function installHealthMock(page: Page, options: {
+  direct: boolean;
+  blocker?: boolean;
+  filename?: string | null;
+  failLaunch?: boolean;
+  msaRequired?: boolean;
+  mutedWarning?: boolean;
+  recommendationOnly?: boolean;
+}) {
   await page.addInitScript(({ options }) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
     let callbackId = 0;
@@ -25,6 +33,12 @@ async function installHealthMock(page: Page, options: { direct: boolean; blocker
         if (command === 'get_setting') {
           if (args.key === 'onboarding_complete') return Promise.resolve(true);
           if (args.key === 'launch_mode') return Promise.resolve(options.direct ? 'direct' : 'delegation');
+          if (args.key === 'health_preferences' && options.mutedWarning) {
+            return Promise.resolve({
+              mutedWarnings: ['unknown_mod:example:a75df095'],
+              muteAllRecommendations: false,
+            });
+          }
           return Promise.resolve(false);
         }
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
@@ -38,19 +52,32 @@ async function installHealthMock(page: Page, options: { direct: boolean; blocker
         if (command === 'check_instance_crash') return Promise.resolve(null);
         if (command === 'check_instance_health') {
           return Promise.resolve({
-            score: options.blocker ? 'red' : 'yellow',
+            score: options.blocker ? 'red' : options.recommendationOnly ? 'green' : 'yellow',
             blockers: options.blocker ? [{
               kind: 'incompatible_mod', mod_id: 'example',
               filename: options.filename === undefined ? 'example.jar' : options.filename,
               message: 'Example blocker', suggested_action: null,
             }] : [],
-            warnings: options.blocker ? [] : [{
+            warnings: options.blocker || options.recommendationOnly ? [] : [{
               kind: 'unknown_mod', mod_id: 'example', filename: 'example.jar',
               message: 'Example warning', suggested_action: null,
             }],
+            recommendations: options.recommendationOnly ? [{
+              kind: 'missing_optional_dependency', mod_id: 'rei', source_filename: 'example.jar',
+              message: 'Example recommendation', suggested_action: null,
+            }] : [],
+            scan_token: 'health-e2e-scan',
           });
         }
         if (command === 'launch_instance_direct') {
+          if (options.msaRequired) {
+            return Promise.reject({
+              code: 'ERR_MSA_AUTH_REQUIRED',
+              message: 'Sign in with Microsoft to use direct launch.',
+              details: null,
+              suggested_action: 'Sign in with Microsoft',
+            });
+          }
           return options.failLaunch ? Promise.reject(new Error('Launch failed')) : Promise.resolve(4242);
         }
         if (command === 'launch_instance') return Promise.resolve(null);
@@ -93,6 +120,7 @@ test('health approval preserves direct launch and scans only once', async ({ pag
 
   await expect(page.getByText(/Running \(PID 4242\)/)).toBeVisible();
   expect(await page.evaluate(() => (window as any).__commandCounts.launch_instance_direct)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__lastCommandArgs.launch_instance_direct.healthScanToken)).toBe('health-e2e-scan');
   expect(await page.evaluate(() => (window as any).__commandCounts.launch_instance ?? 0)).toBe(0);
 });
 
@@ -149,4 +177,35 @@ test('failed launch keeps the dialog recoverable', async ({ page }) => {
   await page.getByRole('button', { name: 'Launch Anyway' }).click();
   await expect(page.getByText('Launch failed').first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+});
+
+test('all muted warnings skip the health dialog', async ({ page }) => {
+  await installHealthMock(page, { direct: true, mutedWarning: true });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'My Instances' }).click();
+  await page.getByRole('button', { name: 'Launch' }).first().click();
+
+  await expect(page.getByRole('heading', { name: 'Health Check' })).toHaveCount(0);
+  await expect(page.getByText(/Running \(PID 4242\)/)).toBeVisible();
+});
+
+test('recommendation-only health report does not interrupt launch', async ({ page }) => {
+  await installHealthMock(page, { direct: true, recommendationOnly: true });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'My Instances' }).click();
+  await page.getByRole('button', { name: 'Launch' }).first().click();
+
+  await expect(page.getByText('Example recommendation')).toHaveCount(0);
+  await expect(page.getByText(/Running \(PID 4242\)/)).toBeVisible();
+});
+
+test('microsoft auth error releases the health dialog', async ({ page }) => {
+  await installHealthMock(page, { direct: true, msaRequired: true });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'My Instances' }).click();
+  await page.getByRole('button', { name: 'Launch' }).first().click();
+  await page.getByRole('button', { name: 'Launch Anyway' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Health Check' })).toHaveCount(0);
+  await expect(page.getByText('Sign in with Microsoft to use direct launch.').first()).toBeVisible();
 });

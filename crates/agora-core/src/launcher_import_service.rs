@@ -1722,6 +1722,11 @@ impl LauncherImportService {
                     is_locked: false,
                     last_launched_at: None,
                     jvm_memory_mb: item.sanitized_settings.memory_mb.unwrap_or(4096),
+                    jvm_memory_mode: if item.sanitized_settings.memory_mb.is_some() {
+                        "manual".into()
+                    } else {
+                        "auto".into()
+                    },
                     jvm_gc: "auto".into(),
                     jvm_custom_args: item.sanitized_settings.jvm_args.join(" "),
                     jvm_always_pre_touch: crate::models::recommended_java_version_for_minecraft(
@@ -1990,6 +1995,16 @@ impl LauncherImportService {
                             .as_ref()
                             .map(|row| row.jvm_memory_mb)
                             .unwrap_or(4096)
+                    },
+                    jvm_memory_mode: if item.preserve_settings
+                        && item.sanitized_settings.memory_mb.is_some()
+                    {
+                        "manual".into()
+                    } else {
+                        previous_row
+                            .as_ref()
+                            .map(|row| row.jvm_memory_mode.clone())
+                            .unwrap_or_else(|| "auto".into())
                     },
                     jvm_gc: previous_row
                         .as_ref()

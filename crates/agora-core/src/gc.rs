@@ -47,7 +47,7 @@ impl SystemResources {
         use sysinfo::System;
         let mut sys = System::new_all();
         sys.refresh_all();
-        let total_ram_mb = sys.total_memory() / 1024; // sysinfo returns KB
+        let total_ram_mb = sys.total_memory() / 1024 / 1024;
         let cpu_threads = sys.cpus().len();
         SystemResources {
             total_ram_mb,
@@ -64,11 +64,12 @@ pub fn safe_heap_mb(requested_mb: i64, total_ram_mb: u64) -> i64 {
     if total_ram_mb == 0 {
         return 4096;
     }
-    let max_allowed = (total_ram_mb as f64 * 0.75) as i64;
+    let max_allowed =
+        ((total_ram_mb as f64 * 0.75) as i64).min((total_ram_mb as i64 - 2048).max(512));
     let min_recommended = 2048i64;
 
     requested_mb
-        .max(min_recommended)
+        .max(min_recommended.min(max_allowed))
         .min(max_allowed)
         .min(32768) // hard cap at 32GB
 }

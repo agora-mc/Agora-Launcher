@@ -312,6 +312,7 @@ impl ImportService {
             is_locked: false,
             last_launched_at: None,
             jvm_memory_mb: 4096,
+            jvm_memory_mode: "auto".into(),
             jvm_gc: "auto".into(),
             jvm_custom_args: String::new(),
             jvm_always_pre_touch: crate::models::recommended_java_version_for_minecraft(

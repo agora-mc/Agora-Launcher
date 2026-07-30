@@ -9,6 +9,7 @@ const RECOVERY_SNAPSHOT_ID = 'snap-recovery-001';
 
 interface CrashCfg {
   healthOk?: boolean;
+  healthWarning?: boolean;
   withDependents?: boolean;
   snapshotId?: string;
   investigateError?: string;
@@ -16,11 +17,13 @@ interface CrashCfg {
   noSuspects?: boolean;
   stillCrashingSuspects?: number;
   stillCrashingRuledOut?: string;
+  launchError?: string;
 }
 
 async function installMock(page: Page, cfg: CrashCfg = {}) {
   const defaults: Required<CrashCfg> = {
     healthOk: true,
+    healthWarning: false,
     withDependents: false,
     snapshotId: RECOVERY_SNAPSHOT_ID,
     investigateError: '',
@@ -28,6 +31,7 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
     noSuspects: false,
     stillCrashingSuspects: 1,
     stillCrashingRuledOut: 'suspect-mod',
+    launchError: '',
   };
   const merged = { ...defaults, ...cfg };
 
@@ -59,6 +63,32 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
 
       const initialResult = makeInitialResult();
       const stillCrashingResult = makeStillCrashingResult();
+      const evidenceResult = {
+        evidence: {
+          sources: [{
+            meta: {
+              basename: 'latest.log', kind: 'LatestLog', size_bytes: 120,
+              truncated: false, stale: false, supplementary: false,
+              modified_at: '2026-07-12T18:00:00Z', line_count: 3,
+            },
+            text: 'Mock crash log:\njava.lang.NullPointerException\n\tat net.minecraft.class_123',
+          }],
+          primary_index: 0,
+          aggregate_bytes: 120,
+          any_truncated: false,
+          any_stale: false,
+          failure_category: 'CrashReport',
+        },
+        fingerprint: initialResult.fingerprint,
+        triage: {
+          matched: !cfg.noSuspects,
+          signature_name: initialResult.signature_name,
+          solution_markdown: cfg.noSuspects ? null : 'Disable the identified rendering mod and test again.',
+          action_button_json: null,
+        },
+        suspects: initialResult.suspects,
+        failure_category: 'CrashReport',
+      };
 
       const instanceRow = { instance_id: 'crash-test-instance', name: 'Crash Test', loader: 'fabric', loader_version: '0.16', minecraft_version: '1.21', is_locked: false, last_launched_at: null };
 
@@ -114,6 +144,11 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
             if (cfg.investigateError) return Promise.reject(new Error(cfg.investigateError));
             return Promise.resolve(initialResult);
           }
+          if (command === 'investigate_instance_evidence') {
+            if (cfg.investigateError) return Promise.reject(new Error(cfg.investigateError));
+            return Promise.resolve(evidenceResult);
+          }
+          if (command === 'pick_and_investigate_crash_evidence') return Promise.resolve(evidenceResult);
           if (command === 'read_crash_log') return Promise.resolve('Mock crash log:\njava.lang.NullPointerException\n\tat net.minecraft.class_123');
 
           if (command === 'get_disable_plan') {
@@ -132,9 +167,18 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
           }
 
           if (command === 'check_instance_health') {
-            return Promise.resolve({ score: cfg.healthOk ? 'green' : 'red', blockers: cfg.healthOk ? [] : [{ kind: 'incompatible_mod', mod_id: 'blocker-mod', filename: 'blocker.jar', message: 'Health blocker', suggested_action: null }], warnings: [] });
+            return Promise.resolve({
+              score: cfg.healthWarning ? 'yellow' : cfg.healthOk ? 'green' : 'red',
+              blockers: cfg.healthOk || cfg.healthWarning ? [] : [{ kind: 'incompatible_mod', mod_id: 'blocker-mod', filename: 'blocker.jar', message: 'Health blocker', suggested_action: null }],
+              warnings: cfg.healthWarning ? [{ kind: 'unknown_mod', mod_id: 'warning-mod', filename: 'warning.jar', message: 'Review this warning', suggested_action: null }] : [],
+              recommendations: [],
+              scan_token: 'crash-e2e-scan',
+            });
           }
-          if (command === 'launch_instance_direct') return Promise.resolve(4242);
+          if (command === 'launch_instance_direct') {
+            if (cfg.launchError) return Promise.reject(new Error(cfg.launchError));
+            return Promise.resolve(4242);
+          }
           if (command === 'launch_instance') return Promise.resolve(null);
 
           return Promise.resolve(null);
@@ -170,11 +214,7 @@ async function openDialog(page: Page) {
   await page.getByRole('button', { name: 'My Instances' }).click();
   await expect(page.getByRole('button', { name: 'Troubleshoot' })).toBeVisible({ timeout: 10000 });
   await page.getByRole('button', { name: 'Troubleshoot' }).click();
-
-  const textarea = page.locator('textarea');
-  await expect(textarea).toBeVisible({ timeout: 5000 });
-  await textarea.fill('java.lang.NullPointerException');
-  await page.getByRole('button', { name: 'Investigate' }).click();
+  await expect(page.getByRole('heading', { name: 'Crash Doctor' })).toBeVisible({ timeout: 5000 });
 }
 
 async function waitForContent(page: Page) {
@@ -185,6 +225,27 @@ async function waitForContent(page: Page) {
 
 async function relaunch(page: Page) {
   await page.getByRole('button', { name: /Relaunch/ }).first().click();
+  await finishSuccessfulLaunch(page);
+}
+
+async function finishSuccessfulLaunch(page: Page) {
+  const waiting = page.getByText(/Waiting for the test launch to finish/);
+  await expect(waiting.or(page.getByText(/The test launch did not start/))).toBeVisible({ timeout: 8000 });
+  if (await waiting.count() === 0) return;
+  await page.evaluate(() => {
+    const listeners = (window as any).__tauriEventListeners as Map<string, number>;
+    const callbacks = (window as any).__callbacks as Map<number, (...args: unknown[]) => void>;
+    const handlerId = listeners.get('game-exited');
+    const callback = handlerId == null ? undefined : callbacks.get(handlerId);
+    callback?.({
+      payload: {
+        instance_id: 'crash-test-instance',
+        exit_code: 0,
+        outcome: 'success',
+        snapshot_id: 'launch-snapshot',
+      },
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -192,17 +253,19 @@ async function relaunch(page: Page) {
 // ---------------------------------------------------------------------------
 
 test.describe('CrashInvestigator', () => {
-  test('creates recovery snapshot during init', async ({ page }) => {
+  test('defers recovery snapshot during read-only analysis', async ({ page }) => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
     const calls = await getCalls(page);
-    expect(calls['create_snapshot']).toBeGreaterThanOrEqual(1);
+    expect(calls['create_snapshot'] ?? 0).toBe(0);
   });
 
   test('snapshot failure shows error state', async ({ page }) => {
     await installMock(page, { snapshotId: '' });
     await openDialog(page);
+    await waitForContent(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
     await expect(page.getByText('Snapshot creation failed')).toBeVisible({ timeout: 8000 });
   });
 
@@ -221,7 +284,7 @@ test.describe('CrashInvestigator', () => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
-    await expect(page.getByText('java.lang.NullPointerException')).toBeVisible();
+    await expect(page.getByText('java.lang.NullPointerException', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('NullPointerException in rendering')).toBeVisible();
   });
 
@@ -262,6 +325,7 @@ test.describe('CrashInvestigator', () => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
     await expect(page.getByText(/Recovery snapshot ready/)).toBeVisible();
     await expect(page.getByText(RECOVERY_SNAPSHOT_ID)).toBeVisible();
   });
@@ -270,6 +334,7 @@ test.describe('CrashInvestigator', () => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
+    await relaunch(page);
     await page.getByRole('button', { name: 'Restore All & Close' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 8000 });
     const args = await getArgs(page);
@@ -280,7 +345,7 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { withDependents: true });
     await openDialog(page);
     await waitForContent(page);
-    await relaunch(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
     await expect(page.getByText('Disable mod and dependents')).toBeVisible();
     await expect(page.getByText('dependent-mod')).toBeVisible();
   });
@@ -289,7 +354,7 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { withDependents: true });
     await openDialog(page);
     await waitForContent(page);
-    await relaunch(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
     await expect(page.getByText('Disable mod and dependents')).toBeVisible();
     await page.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.getByText('SUSPECTS')).toBeVisible();
@@ -299,9 +364,10 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { withDependents: true });
     await openDialog(page);
     await waitForContent(page);
-    await relaunch(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
     await expect(page.getByText('Disable mod and dependents')).toBeVisible();
     await page.getByRole('button', { name: 'Disable selected' }).click();
+    await finishSuccessfulLaunch(page);
     await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
     const calls = await getCalls(page);
     expect(calls['disable_mod_for_test']).toBe(2);
@@ -318,13 +384,39 @@ test.describe('CrashInvestigator', () => {
   });
 
   test('launched=false shows error without FixConfirmation', async ({ page }) => {
-    await installMock(page, { healthOk: false });
+    await installMock(page, { launchError: 'ERR_MSA_AUTH_REQUIRED' });
     await openDialog(page);
     await waitForContent(page);
-    await relaunch(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
     await expect(page.getByText(/The test launch did not start/)).toBeVisible({ timeout: 8000 });
     await expect(page.getByText(/Did that fix/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Yes, fixed' })).toHaveCount(0);
+    const calls = await getCalls(page);
+    expect(calls['restore_snapshot']).toBeGreaterThanOrEqual(1);
+  });
+
+  test('health approval preserves the pending guided experiment', async ({ page }) => {
+    await installMock(page, { healthWarning: true });
+    await openDialog(page);
+    await waitForContent(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
+    await expect(page.getByText(/Waiting for the test launch to finish/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
+    await page.getByRole('button', { name: 'Launch Anyway' }).click();
+    await finishSuccessfulLaunch(page);
+    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
+  });
+
+  test('cancelling health approval restores the guided experiment', async ({ page }) => {
+    await installMock(page, { healthWarning: true });
+    await openDialog(page);
+    await waitForContent(page);
+    await page.getByRole('button', { name: /Relaunch/ }).first().click();
+    await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
+    await page.getByRole('button', { name: 'Cancel' }).last().click();
+    await expect(page.getByText(/Changes were restored/)).toBeVisible({ timeout: 8000 });
+    const calls = await getCalls(page);
+    expect(calls['restore_snapshot']).toBeGreaterThanOrEqual(1);
   });
 
   test('confirmed fix calls confirmCrashFix, shows success, auto-closes', async ({ page }) => {
@@ -365,7 +457,7 @@ test.describe('CrashInvestigator', () => {
     await expect(page.getByText(/No suspects identified/)).toBeVisible({ timeout: 8000 });
   });
 
-  test('rapid Escape presses trigger only one restore call', async ({ page }) => {
+  test('read-only close does not restore a snapshot', async ({ page }) => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
@@ -374,7 +466,7 @@ test.describe('CrashInvestigator', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 8000 });
     const calls = await getCalls(page);
-    expect(calls['restore_snapshot']).toBe(1);
+    expect(calls['restore_snapshot'] ?? 0).toBe(0);
   });
 
   test('close after success does not attempt restore', async ({ page }) => {

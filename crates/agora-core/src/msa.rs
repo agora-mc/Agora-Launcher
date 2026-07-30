@@ -27,6 +27,7 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 /// Check a network enable setting from the local state DB.
@@ -570,10 +571,10 @@ async fn sisu_authenticate(
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct OAuthToken {
-    access_token: String,
-    refresh_token: String,
-    expires_in: u64,
+pub(crate) struct OAuthToken {
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: String,
+    pub(crate) expires_in: u64,
 }
 
 impl std::fmt::Debug for OAuthToken {
@@ -634,6 +635,17 @@ async fn exchange_oauth_token(
     Ok((date, token))
 }
 
+/// Returns `true` when the OAuth error body signals a permanent failure
+/// (`invalid_grant` or `expired_token`) that should clear stored credentials.
+fn is_msa_permanent_refresh_error(body: &str) -> bool {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+            return matches!(err, "invalid_grant" | "expired_token");
+        }
+    }
+    false
+}
+
 async fn refresh_oauth_token(
     _client: &reqwest::Client,
     refresh_token: &str,
@@ -659,9 +671,12 @@ async fn refresh_oauth_token(
     let status = resp.status();
     let date = response_date(resp.headers());
     if !status.is_success() {
-        let _body = http_client::checked_response_text(resp, ClientCategory::Microsoft)
+        let body = http_client::checked_response_text(resp, ClientCategory::Microsoft)
             .await
             .unwrap_or_default();
+        if is_msa_permanent_refresh_error(&body) {
+            return Err(LauncherError::MsaAuthRequired);
+        }
         return Err(LauncherError::Generic {
             code: "ERR_MSA_OAUTH_REFRESH_HTTP".into(),
             message: format!(
@@ -1123,6 +1138,204 @@ pub fn clear_credentials() -> LauncherResult<()> {
     crate::auth::clear_secret(KEYRING_SERVICE, KEYRING_ACCOUNT, CREDENTIALS_FALLBACK_FILE)
 }
 
+// ---------------------------------------------------------------------------
+// Durable, race-safe credential refresh
+// ---------------------------------------------------------------------------
+
+/// Outcome of [`get_valid_credentials`].
+#[derive(Debug)]
+pub enum MsaCredentialOutcome {
+    /// Credentials are valid and ready to use (possibly just-refreshed).
+    Valid(MsaCredentials),
+    /// Session has been permanently invalidated; user must sign in again.
+    SignInRequired,
+    /// Temporary failure; stored credentials preserved.
+    RefreshFailed(LauncherError),
+}
+
+static MSA_REFRESH_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Injectable abstraction for the complete MSA refresh chain.
+#[async_trait::async_trait]
+pub(crate) trait MsaRefreshHttp: Send + Sync {
+    async fn refresh_credentials(
+        &self,
+        client: &reqwest::Client,
+        credentials: &MsaCredentials,
+    ) -> LauncherResult<MsaCredentials>;
+}
+
+/// Production MSA refresh client that delegates to the real HTTP endpoint.
+pub(crate) struct LiveMsaRefreshHttp;
+
+#[async_trait::async_trait]
+impl MsaRefreshHttp for LiveMsaRefreshHttp {
+    async fn refresh_credentials(
+        &self,
+        client: &reqwest::Client,
+        credentials: &MsaCredentials,
+    ) -> LauncherResult<MsaCredentials> {
+        let (auth_date, oauth) = refresh_oauth_token(client, &credentials.refresh_token).await?;
+        let key = DeviceTokenKey::generate();
+        let (device_date, device_token) = get_device_token(client, &key).await?;
+        let (sisu_date, sisu) = sisu_authorize(
+            client,
+            None,
+            &oauth.access_token,
+            &device_token.token,
+            &key,
+            device_date,
+        )
+        .await?;
+        let (uhs, xsts_token) =
+            xsts_authorize(client, &sisu, &device_token.token, &key, sisu_date).await?;
+        let mc_access_token = get_minecraft_token(client, &uhs, &xsts_token).await?;
+        Ok(MsaCredentials {
+            username: credentials.username.clone(),
+            uuid: credentials.uuid.clone(),
+            access_token: mc_access_token,
+            refresh_token: oauth.refresh_token,
+            expires: auth_date + chrono::Duration::seconds(oauth.expires_in as i64),
+        })
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::VecDeque;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::{Arc, Mutex};
+
+/// In-memory scripted MSA refresh client for testing.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct MockMsaRefreshHttp {
+    call_count: Arc<AtomicU64>,
+    responses: Arc<Mutex<MockMsaResponses>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type MockMsaResponses = VecDeque<LauncherResult<(String, String, u64)>>;
+
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)]
+impl MockMsaRefreshHttp {
+    pub(crate) fn new() -> Self {
+        Self {
+            call_count: Arc::new(AtomicU64::new(0)),
+            responses: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub(crate) fn queue_success(&self, access_token: &str, refresh_token: &str, expires_in: u64) {
+        self.responses.lock().unwrap().push_back(Ok((
+            access_token.to_string(),
+            refresh_token.to_string(),
+            expires_in,
+        )));
+    }
+
+    pub(crate) fn queue_error(&self, error: LauncherError) {
+        self.responses.lock().unwrap().push_back(Err(error));
+    }
+
+    pub(crate) fn call_count(&self) -> u64 {
+        self.call_count.load(AtomicOrdering::SeqCst)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[async_trait::async_trait]
+impl MsaRefreshHttp for MockMsaRefreshHttp {
+    async fn refresh_credentials(
+        &self,
+        _client: &reqwest::Client,
+        credentials: &MsaCredentials,
+    ) -> LauncherResult<MsaCredentials> {
+        self.call_count.fetch_add(1, AtomicOrdering::SeqCst);
+        let mut lock = self.responses.lock().unwrap();
+        let (access_token, refresh_token, expires_in) = lock.pop_front().unwrap_or_else(|| {
+            panic!(
+                "MockMsaRefreshHttp: no more responses (call #{})",
+                self.call_count.load(AtomicOrdering::SeqCst)
+            )
+        })?;
+        Ok(MsaCredentials {
+            username: credentials.username.clone(),
+            uuid: credentials.uuid.clone(),
+            access_token,
+            refresh_token,
+            expires: Utc::now() + chrono::Duration::seconds(expires_in as i64),
+        })
+    }
+}
+
+/// Obtain valid MSA credentials with single-flight refresh and double-check.
+///
+/// 1. Loads stored credentials; returns `SignInRequired` if none exist.
+/// 2. If still within the 5‑minute margin, returns `Valid` immediately.
+/// 3. Acquires a refresh mutex and re‑checks (another caller may have refreshed).
+/// 4. Refreshes the OAuth token.
+///    - On `invalid_grant` / `expired_token`, clears credentials and returns `SignInRequired`.
+///    - On network / 5xx / malformed responses, preserves credentials and returns `RefreshFailed`.
+///    - On success, performs the full refresh chain, persists it, and returns `Valid`.
+///
+pub async fn get_valid_credentials(client: &reqwest::Client) -> MsaCredentialOutcome {
+    get_valid_credentials_inner(&LiveMsaRefreshHttp, client).await
+}
+
+/// Internal variant with injectable HTTP — enables deterministic testing.
+async fn get_valid_credentials_inner(
+    http: &dyn MsaRefreshHttp,
+    client: &reqwest::Client,
+) -> MsaCredentialOutcome {
+    // 1. Load stored credentials
+    let creds = match load_credentials() {
+        Ok(Some(c)) => c,
+        Ok(None) => return MsaCredentialOutcome::SignInRequired,
+        Err(e) => return MsaCredentialOutcome::RefreshFailed(e),
+    };
+
+    // 2. Return immediately if still fresh
+    if !creds.needs_refresh() {
+        return MsaCredentialOutcome::Valid(creds);
+    }
+
+    // 3. Single-flight with double-check
+    let _lock = MSA_REFRESH_MUTEX.lock().await;
+
+    let creds = match load_credentials() {
+        Ok(Some(c)) => c,
+        Ok(None) => return MsaCredentialOutcome::SignInRequired,
+        Err(e) => return MsaCredentialOutcome::RefreshFailed(e),
+    };
+    if !creds.needs_refresh() {
+        return MsaCredentialOutcome::Valid(creds);
+    }
+
+    // 4. Complete refresh chain — the permanent/transient decision point.
+    let refreshed = match http.refresh_credentials(client, &creds).await {
+        Ok(result) => result,
+        Err(LauncherError::MsaAuthRequired) => {
+            // Permanent: invalid_grant or expired_token
+            let _ = clear_credentials();
+            return MsaCredentialOutcome::SignInRequired;
+        }
+        Err(e) => {
+            // Transient: preserve existing credentials
+            return MsaCredentialOutcome::RefreshFailed(e);
+        }
+    };
+
+    match store_credentials(&refreshed) {
+        Ok(()) => MsaCredentialOutcome::Valid(refreshed),
+        Err(e) => MsaCredentialOutcome::RefreshFailed(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,5 +1392,167 @@ mod tests {
         };
         assert!(!future.is_expired());
         assert!(!future.needs_refresh());
+    }
+
+    // -----------------------------------------------------------------------
+    // Durable credential refresh tests
+    // -----------------------------------------------------------------------
+
+    static TEST_MSA_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    #[allow(dead_code)]
+    struct TestMsaCredDir(tempfile::TempDir);
+    impl Drop for TestMsaCredDir {
+        fn drop(&mut self) {
+            let _ = clear_credentials();
+            std::env::remove_var("AGORA_TEST_SECRET_DIR");
+        }
+    }
+
+    fn write_test_msa_creds(creds: &MsaCredentials) -> TestMsaCredDir {
+        let dir = tempfile::tempdir().expect("temp dir for MSA test credentials");
+        std::env::set_var("AGORA_TEST_SECRET_DIR", dir.path());
+        let _ = clear_credentials();
+        store_credentials(creds).expect("store test MSA credentials");
+        TestMsaCredDir(dir)
+    }
+
+    fn test_creds() -> MsaCredentials {
+        MsaCredentials {
+            username: "test_user".into(),
+            uuid: "abc-def-ghi".into(),
+            access_token: "mc_test_access".into(),
+            refresh_token: "mc_test_refresh".into(),
+            expires: Utc::now() + chrono::Duration::hours(1),
+        }
+    }
+
+    fn expired_creds() -> MsaCredentials {
+        let mut c = test_creds();
+        c.expires = Utc::now() - chrono::Duration::minutes(1);
+        c
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_credentials_fresh_returns_immediately() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let http = MockMsaRefreshHttp::new();
+        let client = reqwest::Client::new();
+        let _td = write_test_msa_creds(&test_creds());
+
+        let outcome = get_valid_credentials_inner(&http, &client).await;
+
+        match outcome {
+            MsaCredentialOutcome::Valid(c) => {
+                assert_eq!(c.access_token, "mc_test_access");
+            }
+            _ => panic!("expected Valid for fresh credentials"),
+        }
+        assert_eq!(http.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_credentials_no_creds_returns_sign_in_required() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let http = MockMsaRefreshHttp::new();
+        let client = reqwest::Client::new();
+        let _td = write_test_msa_creds(&test_creds());
+
+        // Clear after writing so no credentials exist
+        let _ = clear_credentials();
+
+        let outcome = get_valid_credentials_inner(&http, &client).await;
+
+        assert!(matches!(outcome, MsaCredentialOutcome::SignInRequired));
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_credentials_refresh_success() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let http = MockMsaRefreshHttp::new();
+        // Queue OAuth refresh success
+        http.queue_success("new_mc_token", "new_refresh_token", 28800);
+        let client = reqwest::Client::new();
+        let _td = write_test_msa_creds(&expired_creds());
+
+        let outcome = get_valid_credentials_inner(&http, &client).await;
+
+        match outcome {
+            MsaCredentialOutcome::Valid(c) => {
+                assert_eq!(c.username, "test_user");
+                assert_eq!(c.access_token, "new_mc_token");
+                assert_eq!(c.refresh_token, "new_refresh_token");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        assert_eq!(http.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_credentials_invalid_grant_is_permanent() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let http = MockMsaRefreshHttp::new();
+        http.queue_error(LauncherError::MsaAuthRequired);
+        let client = reqwest::Client::new();
+        let _td = write_test_msa_creds(&expired_creds());
+
+        let outcome = get_valid_credentials_inner(&http, &client).await;
+        assert!(matches!(outcome, MsaCredentialOutcome::SignInRequired));
+
+        // Credentials should be cleared
+        assert!(load_credentials().unwrap().is_none());
+        assert_eq!(http.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_credentials_transient_preserves_creds() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let http = MockMsaRefreshHttp::new();
+        http.queue_error(LauncherError::NetworkOffline);
+        let client = reqwest::Client::new();
+        let _td = write_test_msa_creds(&expired_creds());
+
+        let outcome = get_valid_credentials_inner(&http, &client).await;
+        assert!(matches!(outcome, MsaCredentialOutcome::RefreshFailed(_)));
+
+        // Credentials should still be present
+        let loaded = load_credentials().unwrap();
+        assert!(loaded.is_some(), "creds must survive transient error");
+        assert_eq!(http.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_valid_credentials_double_check_skips_refresh() {
+        let _test_lock = TEST_MSA_MUTEX.lock().await;
+        let http = MockMsaRefreshHttp::new();
+        // No responses queued — if the double-check works, refresh is never called
+        let client = reqwest::Client::new();
+        let _td = write_test_msa_creds(&test_creds()); // fresh, not expired
+
+        let outcome = get_valid_credentials_inner(&http, &client).await;
+        assert!(matches!(outcome, MsaCredentialOutcome::Valid(_)));
+        assert_eq!(http.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_is_msa_permanent_refresh_error_classification() {
+        assert!(is_msa_permanent_refresh_error(
+            r#"{"error":"invalid_grant"}"#
+        ));
+        assert!(is_msa_permanent_refresh_error(
+            r#"{"error":"expired_token"}"#
+        ));
+        assert!(is_msa_permanent_refresh_error(
+            r#"{"error":"invalid_grant","error_description":"The refresh token has expired"}"#
+        ));
+        assert!(!is_msa_permanent_refresh_error(
+            r#"{"error":"server_error"}"#
+        ));
+        assert!(!is_msa_permanent_refresh_error(
+            r#"{"error":"temporarily_unavailable"}"#
+        ));
+        assert!(!is_msa_permanent_refresh_error("not-json"));
+        assert!(!is_msa_permanent_refresh_error(""));
     }
 }

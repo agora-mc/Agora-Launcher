@@ -171,8 +171,10 @@ fn pre_restore_dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".agora_pre_restore")
 }
 
-/// Return the verified file index stored in a snapshot.  Legacy entries with
-/// no recorded hash are hashed from their archive bytes.  This is also the
+/// Return the file index stored in a snapshot. Modern immutable manifests use
+/// their recorded hashes without rereading every object blob; restore still
+/// verifies object bytes before mutation. Legacy entries with no recorded hash
+/// are hashed from their archive bytes. This is also the
 /// canonical input for LKG/drift comparisons, ensuring both sides use the same
 /// `mods/foo.jar` path format and the same tracked-entry set.
 pub fn snapshot_file_index(
@@ -204,21 +206,12 @@ pub fn snapshot_file_index(
                     )
                 })?;
             validate_blob_hash(blob_hash)?;
-            let contents = fs::read(snapshot_blob_path(instance_dir, blob_hash)).map_err(|e| {
-                format!(
-                    "failed to read snapshot object for {}: {e}",
-                    indexed.relative_path
-                )
-            })?;
-            verify_snapshot_bytes(
-                &indexed.relative_path,
-                indexed.size,
-                indexed.sha256.as_deref().or(Some(blob_hash)),
-                &contents,
-            )?;
             result.push(crate::lkg::FileEntry {
                 path: indexed.relative_path.clone(),
-                sha256: sha256_hex(&contents),
+                sha256: indexed
+                    .sha256
+                    .clone()
+                    .unwrap_or_else(|| blob_hash.to_string()),
                 size: indexed.size,
             });
         }
@@ -877,24 +870,6 @@ fn validate_manifest(manifest: &SnapshotManifest, snapshot_id: &str) -> Result<(
             "snapshot identity mismatch: requested {snapshot_id}, archive contains {}",
             manifest.snapshot.id
         ));
-    }
-    Ok(())
-}
-
-fn verify_snapshot_bytes(
-    relative_path: &str,
-    expected_size: u64,
-    expected_hash: Option<&str>,
-    contents: &[u8],
-) -> Result<(), String> {
-    if contents.len() as u64 != expected_size {
-        return Err(format!("snapshot size mismatch for {relative_path}"));
-    }
-    let actual = sha256_hex(contents);
-    if let Some(expected) = expected_hash {
-        if !actual.eq_ignore_ascii_case(expected) {
-            return Err(format!("snapshot hash mismatch for {relative_path}"));
-        }
     }
     Ok(())
 }

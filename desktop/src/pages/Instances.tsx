@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
-  checkInstanceCrash,
   checkInstanceUpdates,
   createInstance,
   createSnapshot,
@@ -130,31 +129,6 @@ export function Instances({
     return () => window.clearInterval(timer);
   }, [snapshotReadiness]);
 
-  // Reactive crash detection when the tab becomes visible.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const lastLaunch = instances.find((i) => i.last_launched_at);
-        if (!lastLaunch) return;
-        const report = await checkInstanceCrash(lastLaunch.instance_id);
-        if (!cancelled && report) {
-          onStartCrashInvestigation({
-            instanceId: lastLaunch.instance_id,
-            crashFilename: report.filename,
-            manualLogText: null,
-            directLaunch,
-          });
-        }
-      } catch {
-        // Silently ignore — the user can still use manual troubleshooting.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [instances, directLaunch, onStartCrashInvestigation]);
-
   // Load launch mode setting on mount
   useEffect(() => {
     let cancelled = false;
@@ -169,20 +143,11 @@ export function Instances({
     return () => { cancelled = true; };
   }, []);
 
-  // State for the manual crash-log paste modal.
-  const [pasteLog, setPasteLog] = useState<{ open: boolean; instanceId: string } | null>(null);
-
   const openCrashInvestigator = (instanceId: string) => {
-    setPasteLog({ open: true, instanceId });
-  };
-
-  const submitPasteLog = (text: string) => {
-    if (!pasteLog) return;
-    setPasteLog(null);
     onStartCrashInvestigation({
-      instanceId: pasteLog.instanceId,
+      instanceId,
       crashFilename: null,
-      manualLogText: text || null,
+      manualLogText: null,
       directLaunch,
     });
   };
@@ -259,7 +224,7 @@ export function Instances({
                     || (instance.launch_mode_override !== 'delegated' && directLaunch),
                 )}
                 onKill={onKillProcess}
-                controllerError={processState.phase === 'failed' ? processState.error : null}
+                controllerError={isCurrentFailed ? processState.error : null}
                 controllerRecoverableIssue={isCurrentFailed ? processState.recoverableIssue : null}
                 controllerRecoverableJavaIssue={isCurrentThisInstance ? processState.recoverableJavaIssue : null}
                 controllerAvailableActions={isCurrentFailed ? processState.availableActions : []}
@@ -302,16 +267,9 @@ export function Instances({
         onComplete={refresh}
       />
 
-      {pasteLog && (
-        <PasteLogModal
-          onClose={() => setPasteLog(null)}
-          onSubmit={(text) => submitPasteLog(text)}
-        />
-      )}
     </div>
   );
 }
-
 // ─── Instance Card with recoverable profile warning panel ─────────────────
 
 const PROFILE_ISSUE_MESSAGES: Record<string, { title: string; description: string }> = {
@@ -991,6 +949,7 @@ function CreateInstanceDialog({
   const [loaderVersions, setLoaderVersions] = useState<LoaderVersionSummary[]>([]);
   const [loaderVersion, setLoaderVersion] = useState('');
   const [memoryMb, setMemoryMb] = useState(4096);
+  const [memoryMode, setMemoryMode] = useState<'auto' | 'manual'>('auto');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -1087,6 +1046,7 @@ function CreateInstanceDialog({
         loader,
         loader_version: loaderVersion,
         jvm_memory_mb: memoryMb,
+        jvm_memory_mode: memoryMode,
       };
       await createInstance(request);
       onCreated();
@@ -1164,7 +1124,17 @@ function CreateInstanceDialog({
           </label>
 
           <label className="block">
-            <span className="text-sm font-medium">JVM memory: {memoryMb} MB</span>
+            <span className="flex items-center justify-between text-sm font-medium">
+              <span>JVM memory: {memoryMode === 'auto' ? 'Auto' : `${memoryMb} MB`}</span>
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                Automatic
+                <input
+                  type="checkbox"
+                  checked={memoryMode === 'auto'}
+                  onChange={(event) => setMemoryMode(event.target.checked ? 'auto' : 'manual')}
+                />
+              </span>
+            </span>
             <input
               type="range"
               min={1024}
@@ -1172,8 +1142,14 @@ function CreateInstanceDialog({
               step={512}
               value={memoryMb}
               onChange={(e) => setMemoryMb(Number(e.target.value))}
+              disabled={memoryMode === 'auto'}
               className="mt-1 w-full accent-primary"
             />
+            {memoryMode === 'auto' && (
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Agora will estimate memory from enabled pack content and system headroom.
+              </span>
+            )}
           </label>
         </div>
 
@@ -1199,47 +1175,6 @@ function CreateInstanceDialog({
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? 'Creating…' : 'Create'}
-          </button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function PasteLogModal({
-  onClose,
-  onSubmit,
-}: {
-  onClose: () => void;
-  onSubmit: (text: string) => void;
-}) {
-  const [text, setText] = useState('');
-
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg">
-        <DialogTitle>Paste Crash Log</DialogTitle>
-        <DialogDescription>
-          Paste your crash log or latest.log contents for automated investigation.
-        </DialogDescription>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Paste your crash log or latest.log contents here…"
-          className="w-full h-48 rounded-lg border border-gray-300 dark:border-gray-600 bg-transparent px-3 py-2 text-sm font-mono resize-y"
-        />
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:hover:bg-gray-800"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onSubmit(text)}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Investigate
           </button>
         </div>
       </DialogContent>
