@@ -83,7 +83,7 @@ const SANITIZE_SCHEMA: Schema = {
 
 type CuratorNotesRegistryItem = RegistryItem & { curator_notes?: string | null };
 
-export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
+export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
   const [item, setItem] = useState<RegistryItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -619,6 +619,11 @@ export function ModDetail({ itemId, onBack, onOpenInstanceEditor }: { itemId: st
     try {
       const all = await listInstances();
       setInstances(all);
+      setSelectedInstanceId(
+        initialInstanceId && all.some((instance) => instance.instance_id === initialInstanceId)
+          ? initialInstanceId
+          : null,
+      );
     } catch (e) {
       setPhase('error');
       setInstallMsg(formatError(e));

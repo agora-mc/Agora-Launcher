@@ -345,6 +345,10 @@ export default function App() {
     destination.type === 'tab' && destination.tab === 'browse'
       ? destination.browseContentType
       : undefined;
+  const modDetailBrowseInstanceId =
+    destination.type === 'mod-detail'
+      ? destination.browseInstanceId
+      : undefined;
   const instanceEditorId =
     destination.type === 'instance-detail'
       ? destination.instanceId
@@ -402,9 +406,9 @@ export default function App() {
     }
   };
 
-  const handleBrowseSelectMod = (id: string) => {
+  const handleBrowseSelectMod = (id: string, instanceId?: string) => {
     browseScrollTopRef.current = mainRef.current?.scrollTop ?? 0;
-    navigateToModDetail(id);
+    navigateToModDetail(id, instanceId);
   };
 
   const handleInstanceEditorOpenMod = (id: string) => {
@@ -478,6 +482,7 @@ export default function App() {
             ) : showModDetail ? (
               <ModDetail
                 itemId={destination.itemId}
+                initialInstanceId={modDetailBrowseInstanceId}
                 onBack={handleModDetailBack}
                 onOpenInstanceEditor={(id) => {
                   navigateToInstanceDetail(id);
@@ -491,6 +496,8 @@ export default function App() {
                     onOpenInstance={navigateToInstanceDetail}
                     onOpenMod={navigateToModDetail}
                     onLaunch={startLaunch}
+                    processState={processState}
+                    onKillProcess={killProcess}
                   />
                 )}
                 {effectiveTab === 'instances' && (
@@ -542,6 +549,8 @@ export default function App() {
                   onOpenModDetail={handleInstanceEditorOpenMod}
                   onOpenBrowseForInstance={navigateToBrowse}
                   onLaunch={handleInstanceEditorLaunch}
+                  processState={processState}
+                  onKillProcess={killProcess}
                   onInvestigate={handleInstanceEditorInvestigate}
                   processLogs={processLogs}
                 />

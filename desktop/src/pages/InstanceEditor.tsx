@@ -189,7 +189,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[] }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void> }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
   const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
@@ -1008,6 +1008,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const recoveryBlocked = (
     detail?.snapshot_readiness !== undefined && detail.snapshot_readiness !== 'ready'
   ) || packInstall?.status === 'running';
+  const isCurrentProcess = processState?.instanceId === instanceId;
+  const processLaunching = isCurrentProcess && processState?.phase === 'launching';
+  const processStopping = isCurrentProcess && processState?.phase === 'stopping';
+  const processRunning = isCurrentProcess && processState?.phase === 'running';
+  const processDelegated = isCurrentProcess && processState?.phase === 'delegated';
+  const anotherProcessActive = processState?.instanceId !== null
+    && processState?.instanceId !== undefined
+    && ['launching', 'running', 'stopping', 'delegated'].includes(processState.phase)
+    && !isCurrentProcess;
+  const playDisabled = playBusy || recoveryBlocked || processLaunching || processStopping || processDelegated || anotherProcessActive;
   const recoveryPending = detail?.snapshot_readiness === 'pending';
   const snapshotOperationPending = recoveryPending || packInstall?.status === 'running';
 
@@ -1169,27 +1179,39 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               Investigate
             </button>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                if (!onLaunch || playBusy || recoveryBlocked) return;
-                setPlayBusy(true);
-                setError(null);
-                try {
-                  await onLaunch(instanceId);
-                } catch (cause) {
-                  setError(formatError(cause));
-                } finally {
-                  setPlayBusy(false);
-                }
-              }}
-              disabled={!onLaunch || playBusy || recoveryBlocked}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label={`Play ${row?.name ?? 'instance'}`}
-            >
-              <Play className="h-5 w-5 fill-current" aria-hidden="true" />
-              {playBusy ? 'Starting…' : 'Play'}
-            </button>
+            {processRunning ? (
+              <button
+                type="button"
+                onClick={() => { void onKillProcess?.(); }}
+                disabled={!onKillProcess || processStopping}
+                className="inline-flex items-center gap-2 rounded-lg bg-destructive px-5 py-3 text-base font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`Kill ${row?.name ?? 'instance'}`}
+              >
+                Kill
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!onLaunch || playDisabled) return;
+                  setPlayBusy(true);
+                  setError(null);
+                  try {
+                    await onLaunch(instanceId);
+                  } catch (cause) {
+                    setError(formatError(cause));
+                  } finally {
+                    setPlayBusy(false);
+                  }
+                }}
+                disabled={!onLaunch || playDisabled}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`Play ${row?.name ?? 'instance'}`}
+              >
+                <Play className="h-5 w-5 fill-current" aria-hidden="true" />
+                {processLaunching || playBusy ? 'Starting…' : processStopping ? 'Stopping…' : processDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Play'}
+              </button>
+            )}
           </div>
         </div>
 

@@ -342,7 +342,7 @@ function RegistryRecoveryShell({
   );
 }
 
-export function Browse({ onSelectMod, initialInstanceId, initialContentType }: { onSelectMod?: (id: string) => void; initialInstanceId?: string; initialContentType?: string }) {
+export function Browse({ onSelectMod, initialInstanceId, initialContentType }: { onSelectMod?: (id: string, instanceId?: string) => void; initialInstanceId?: string; initialContentType?: string }) {
   // Registry availability — show recovery panel when missing.
   // This is the ONLY hook call in this component, so the hook count is stable.
   const registry = useRegistryState();
@@ -385,7 +385,7 @@ function BrowseContent({
   registryError: regError,
   registryActions: regActions,
 }: {
-  onSelectMod?: (id: string) => void;
+  onSelectMod?: (id: string, instanceId?: string) => void;
   initialInstanceId?: string;
   initialContentType?: string;
   registryState: import('../lib/useRegistryState').RegistryState;
@@ -1107,9 +1107,17 @@ function BrowseContent({
           )}
         </div>
       ) : layout === 'grid' ? (
-        <BrowseTileResults items={items} contextFor={contextFor} onSelectMod={onSelectMod} />
+        <BrowseTileResults
+          items={items}
+          contextFor={contextFor}
+          onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+        />
       ) : (
-        <BrowseListResults items={items} contextFor={contextFor} onSelectMod={onSelectMod} />
+        <BrowseListResults
+          items={items}
+          contextFor={contextFor}
+          onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+        />
       )}
 
       {/* Infinite scroll sentinel */}

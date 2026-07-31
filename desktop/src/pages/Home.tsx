@@ -15,6 +15,7 @@ import {
   type RegistryItem,
 } from '../lib/tauri';
 import type { Tab } from '../lib/useDestination';
+import type { ProcessState } from '../lib/useProcessController';
 import { ArrowRight, BookOpen, GraduationCap } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -27,11 +28,15 @@ export function Home({
   onOpenInstance,
   onOpenMod,
   onLaunch,
+  processState,
+  onKillProcess,
 }: {
   onNavigateTab: (tab: Tab) => void;
   onOpenInstance: (instanceId: string) => void;
   onOpenMod: (itemId: string) => void;
   onLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
+  processState: ProcessState;
+  onKillProcess: () => Promise<void>;
 }) {
   const { state: regState, hasCachedDb } = useRegistryState();
 
@@ -286,11 +291,13 @@ export function Home({
       <ContinuePlayingCard
         instance={heroInstance}
         loading={instancesLoading}
+        processState={processState}
         onLaunch={() => {
           if (heroInstance) {
             void handleContinuePlaying();
           }
         }}
+        onKill={() => { void onKillProcess(); }}
         onBrowsePacks={() => onNavigateTab('browse')}
       />
 
@@ -385,10 +392,12 @@ function RegistryAlert({ hasCachedDb }: {
   );
 }
 
-function ContinuePlayingCard({ instance, loading, onLaunch, onBrowsePacks }: {
+function ContinuePlayingCard({ instance, loading, processState, onLaunch, onKill, onBrowsePacks }: {
   instance: InstanceRow | null;
   loading: boolean;
+  processState: ProcessState;
   onLaunch: () => void;
+  onKill: () => void;
   onBrowsePacks: () => void;
 }) {
   if (loading) {
@@ -417,6 +426,15 @@ function ContinuePlayingCard({ instance, loading, onLaunch, onBrowsePacks }: {
   const timeAgo = instance.last_launched_at
     ? timeSince(new Date(instance.last_launched_at))
     : 'Not launched yet';
+  const isCurrent = processState.instanceId === instance.instance_id;
+  const isLaunching = isCurrent && processState.phase === 'launching';
+  const isStopping = isCurrent && processState.phase === 'stopping';
+  const isRunning = isCurrent && processState.phase === 'running';
+  const isDelegated = isCurrent && processState.phase === 'delegated';
+  const anotherProcessActive = processState.instanceId !== null
+    && ['launching', 'running', 'stopping', 'delegated'].includes(processState.phase)
+    && !isCurrent;
+  const buttonDisabled = isLaunching || isStopping || isDelegated || anotherProcessActive;
 
   return (
     <div className="rounded-xl border border-border bg-card p-6">
@@ -426,9 +444,22 @@ function ContinuePlayingCard({ instance, loading, onLaunch, onBrowsePacks }: {
       </p>
       <p className="text-xs text-muted-foreground mb-4">{timeAgo}</p>
       <div className="flex gap-2">
-        <button onClick={onLaunch} className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-          Continue Playing
-        </button>
+        {isRunning ? (
+          <button
+            onClick={onKill}
+            className="rounded-lg bg-destructive px-5 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90"
+          >
+            Kill
+          </button>
+        ) : (
+          <button
+            onClick={onLaunch}
+            disabled={buttonDisabled}
+            className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isLaunching ? 'Starting…' : isStopping ? 'Stopping…' : isDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Continue Playing'}
+          </button>
+        )}
       </div>
     </div>
   );

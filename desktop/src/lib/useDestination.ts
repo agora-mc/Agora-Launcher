@@ -13,7 +13,7 @@ export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide
  */
 export type Destination =
   | { type: 'tab'; tab: Tab; browseInstanceId?: string; browseContentType?: string }
-  | { type: 'mod-detail'; itemId: string }
+  | { type: 'mod-detail'; itemId: string; browseInstanceId?: string }
   | { type: 'instance-detail'; instanceId: string };
 
 export interface UseDestinationReturn {
@@ -23,7 +23,7 @@ export interface UseDestinationReturn {
   goBack: () => void;
   navigateToTab: (tab: Tab) => void;
   navigateToBrowse: (instanceId?: string, contentType?: string) => void;
-  navigateToModDetail: (itemId: string) => void;
+  navigateToModDetail: (itemId: string, browseInstanceId?: string) => void;
   navigateToInstanceDetail: (instanceId: string) => void;
 }
 
@@ -37,7 +37,10 @@ function isValidDestination(d: unknown): d is Destination {
       && (dest.browseInstanceId === undefined || typeof dest.browseInstanceId === 'string')
       && (dest.browseContentType === undefined || typeof dest.browseContentType === 'string');
   }
-  if (dest.type === 'mod-detail') return typeof dest.itemId === 'string';
+  if (dest.type === 'mod-detail') {
+    return typeof dest.itemId === 'string'
+      && (dest.browseInstanceId === undefined || typeof dest.browseInstanceId === 'string');
+  }
   if (dest.type === 'instance-detail') return typeof dest.instanceId === 'string';
   return false;
 }
@@ -103,7 +106,14 @@ export function useDestination(): UseDestinationReturn {
     }),
     [push],
   );
-  const navigateToModDetail = useCallback((itemId: string) => push({ type: 'mod-detail', itemId }), [push]);
+  const navigateToModDetail = useCallback(
+    (itemId: string, browseInstanceId?: string) => push({
+      type: 'mod-detail',
+      itemId,
+      ...(browseInstanceId ? { browseInstanceId } : {}),
+    }),
+    [push],
+  );
   const navigateToInstanceDetail = useCallback(
     (instanceId: string) => push({ type: 'instance-detail', instanceId }),
     [push],
