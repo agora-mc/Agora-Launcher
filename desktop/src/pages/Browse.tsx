@@ -3,7 +3,6 @@ import { Check, ChevronDown, Leaf, List, LayoutGrid, Search } from 'lucide-react
 import {
   browseSearch,
   browseLoadMore,
-  batchCheckCompat,
   forYouItems,
   formatError,
   getInstanceDetail,
@@ -440,7 +439,6 @@ function BrowseContent({
   const [instances, setInstances] = useState<InstanceRow[]>([]);
   const [activeInstanceId, setActiveInstanceId] = useState('');
   const [activeInstance, setActiveInstance] = useState<InstanceDetail | null>(null);
-  const [compatibilityById, setCompatibilityById] = useState<Record<string, string>>({});
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
 
@@ -472,7 +470,6 @@ function BrowseContent({
     setActiveInstanceId(instanceId);
     setContextError(null);
     setActiveInstance(null);
-    setCompatibilityById({});
     if (!instanceId) return;
     setContextLoading(true);
     try {
@@ -493,23 +490,6 @@ function BrowseContent({
     if (!instances.some((instance) => instance.instance_id === initialInstanceId)) return;
     void selectInstanceContext(initialInstanceId);
   }, [activeInstanceId, initialInstanceId, instances]);
-
-  useEffect(() => {
-    if (!activeInstance || items.length === 0) {
-      setCompatibilityById({});
-      return;
-    }
-    let cancelled = false;
-    const itemIds = [...new Set(items.map((item) => item.id))];
-    void batchCheckCompat(activeInstance.row.instance_id, itemIds)
-      .then((result) => {
-        if (!cancelled) setCompatibilityById(result);
-      })
-      .catch((cause) => {
-        if (!cancelled) setContextError(formatError(cause));
-      });
-    return () => { cancelled = true; };
-  }, [activeInstance, items]);
 
   const handleSortChange = (next: SortOption) => {
     setSort(next);
@@ -546,12 +526,7 @@ function BrowseContent({
         )
       : false;
     return {
-      instanceName: activeInstance.row.name,
-      minecraftVersion: activeInstance.row.minecraft_version,
-      loader: activeInstance.row.loader,
-      compatibility: (compatibilityById[item.id] ?? '') as ItemContext['compatibility'],
       installed,
-      updateAvailable: false,
       whyRecommended: sort === 'for_you'
         ? item.registryItem?.recommendation_reason
           ?? `Recommended by Agora's curated score for ${activeInstance.row.loader} ${activeInstance.row.minecraft_version}.`

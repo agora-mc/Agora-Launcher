@@ -504,22 +504,6 @@ async function installBrowseContextMock(page: Page) {
             ]);
           }
 
-          // Compatibility
-          if (command === 'batch_check_compat') {
-            const itemIds = args.itemIds as string[] | undefined;
-            const result: Record<string, string> = {};
-            if (itemIds) {
-              for (const id of itemIds) {
-                if (id === 'exact-mod') result[id] = 'compatible';
-                else if (id === 'major-mod') result[id] = 'major_match';
-                else if (id === 'installed-mod') result[id] = 'compatible';
-                else if (id === 'updatable-mod') result[id] = 'compatible';
-                else result[id] = '';
-              }
-            }
-            return Promise.resolve(result);
-          }
-
           // Misc
           if (command === 'get_windows_accent_color') return Promise.resolve(null);
           if (command.startsWith('plugin:event|')) return Promise.resolve(1);
@@ -542,7 +526,7 @@ async function installBrowseContextMock(page: Page) {
 
 test.describe('D1 — Browse instance-context selector', () => {
 
-  test('instance selector shows compatibility labels via batch_check_compat', async ({ page }) => {
+  test('instance selector shows installed status without compatibility labels', async ({ page }) => {
     await installBrowseContextMock(page);
     await page.goto('/');
     await page.getByRole('button', { name: 'Browse', exact: true }).click();
@@ -554,14 +538,11 @@ test.describe('D1 — Browse instance-context selector', () => {
     const contextSelect = page.locator('#browse-instance-context');
     await contextSelect.selectOption('fabric-121');
 
-    // Wait for compatibility labels — the effect calls batch_check_compat
-    // after activeInstance is set. Since all promises resolve immediately,
-    // the labels appear in the next React render.
-    await expect(page.getByText(/Compatible with My Fabric World/).first()).toBeVisible({ timeout: 5000 });
-    await expect(page.getByText(/May work with My Fabric World/)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Installed').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/Compatible with|May work with/)).toHaveCount(0);
   });
 
-  test('exact-compatible label format for an item', async ({ page }) => {
+  test('uninstalled items have no instance-status label', async ({ page }) => {
     await installBrowseContextMock(page);
     await page.goto('/');
     await page.getByRole('button', { name: 'Browse', exact: true }).click();
@@ -571,27 +552,7 @@ test.describe('D1 — Browse instance-context selector', () => {
     const contextSelect = page.locator('#browse-instance-context');
     await contextSelect.selectOption('fabric-121');
 
-    // The paginated browse loads items on the page — wait for the "Compatible
-    // with" label to appear on items. Use .first() because 3 items return
-    // 'compatible' from batch_check_compat.
-    await expect(
-      page.getByText(/Compatible with My Fabric World · fabric · MC 1\.21/).first(),
-    ).toBeVisible({ timeout: 5000 });
-  });
-
-  test('major-match label format for an item', async ({ page }) => {
-    await installBrowseContextMock(page);
-    await page.goto('/');
-    await page.getByRole('button', { name: 'Browse', exact: true }).click();
-
-    await expect(page.getByText('Major Match Mod')).toBeVisible();
-
-    const contextSelect = page.locator('#browse-instance-context');
-    await contextSelect.selectOption('fabric-121');
-
-    await expect(
-      page.getByText(/May work with My Fabric World · same major Minecraft version/),
-    ).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/Compatible with|May work with/)).toHaveCount(0);
   });
 
   test('installed label shown for items in the active instance manifest', async ({ page }) => {
@@ -618,7 +579,7 @@ test.describe('D1 — Browse instance-context selector', () => {
     const contextSelect = page.locator('#browse-instance-context');
     await contextSelect.selectOption('fabric-121');
 
-    await expect(page.getByText(/Compatible with My Fabric World/).first()).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/Compatible with|May work with/)).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).__browseUpdateChecks())).toBe(0);
     await expect(page.getByText('Update available')).toHaveCount(0);
   });
@@ -632,7 +593,7 @@ test.describe('D1 — Browse instance-context selector', () => {
     // return the recommendation reason.
     const contextSelect = page.locator('#browse-instance-context');
     await contextSelect.selectOption('fabric-121');
-    await expect(page.getByText(/Compatible with/).first()).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Installed').first()).toBeVisible({ timeout: 5000 });
 
     // Now switch sort to "For You"
     const selects = page.locator('select');

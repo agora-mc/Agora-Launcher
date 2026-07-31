@@ -10,24 +10,11 @@ export function CuratedBadge() {
 }
 
 export function BrowseContextLabels({ context }: { context: BrowseItemContext | null }) {
-  if (!context || (!context.compatibility && !context.installed && !context.updateAvailable)) return null;
+  if (!context || !context.installed) return null;
   return (
     <div className="browse-context-labels">
-      {context?.compatibility === 'compatible' && (
-        <span className="browse-context-label browse-context-label--compatible">
-          Compatible with {context.instanceName} · {context.loader} · MC {context.minecraftVersion}
-        </span>
-      )}
-      {context?.compatibility === 'major_match' && (
-        <span className="browse-context-label browse-context-label--partial">
-          May work with {context.instanceName} · same major Minecraft version
-        </span>
-      )}
-      {context?.installed && (
+      {context.installed && (
         <span className="browse-context-label browse-context-label--installed">Installed</span>
-      )}
-      {context?.updateAvailable && (
-        <span className="browse-context-label browse-context-label--partial">Update available</span>
       )}
     </div>
   );

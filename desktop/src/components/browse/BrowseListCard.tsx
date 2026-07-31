@@ -34,16 +34,20 @@ export function BrowseListCard({ item, context, onSelectMod }: BrowseCardProps) 
           {context?.whyRecommended && <p className="browse-recommendation">Why: {context.whyRecommended}</p>}
         </div>
         <aside className="browse-list-card__side">
-          <BrowseContextLabels context={context} />
           <BrowseStats item={item} />
-          <button type="button" onClick={() => onSelectMod?.(item.id)} className="browse-primary-action">
-            View Details
-          </button>
-          {item.sourcePageUrl && (
-            <a href={item.sourcePageUrl} target="_blank" rel="noopener noreferrer" className="browse-source-link">
-              View source <ExternalLink aria-hidden size={12} />
-              </a>
-          )}
+          <div className="browse-list-card__actions">
+            <BrowseContextLabels context={context} />
+            <div className="browse-card-action-row">
+              <button type="button" onClick={() => onSelectMod?.(item.id)} className="browse-primary-action">
+                View Details
+              </button>
+              {item.sourcePageUrl && (
+                <a href={item.sourcePageUrl} target="_blank" rel="noopener noreferrer" className="browse-source-link">
+                  View source <ExternalLink aria-hidden size={12} />
+                </a>
+              )}
+            </div>
+          </div>
         </aside>
       </div>
     </li>

@@ -27,17 +27,19 @@ export function BrowseTileCard({ item, context, onSelectMod }: BrowseCardProps) 
             {item.categories.slice(0, 3).map((category) => <span key={category}>{category.replace(/[-_]/g, ' ')}</span>)}
           </div>
         )}
-        <BrowseContextLabels context={context} />
         {context?.whyRecommended && <p className="browse-recommendation">Why: {context.whyRecommended}</p>}
         <div className="browse-tile-card__actions">
-          <button type="button" onClick={() => onSelectMod?.(item.id)} className="browse-primary-action">
-            View Details
-          </button>
-          {item.sourcePageUrl && (
-            <a href={item.sourcePageUrl} target="_blank" rel="noopener noreferrer" className="browse-source-link">
-              View source <ExternalLink aria-hidden size={12} />
-            </a>
-          )}
+          <BrowseContextLabels context={context} />
+          <div className="browse-card-action-row">
+            <button type="button" onClick={() => onSelectMod?.(item.id)} className="browse-primary-action">
+              View Details
+            </button>
+            {item.sourcePageUrl && (
+              <a href={item.sourcePageUrl} target="_blank" rel="noopener noreferrer" className="browse-source-link">
+                View source <ExternalLink aria-hidden size={12} />
+              </a>
+            )}
+          </div>
         </div>
       </div>
     </article>
