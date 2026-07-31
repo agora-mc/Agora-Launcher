@@ -26,7 +26,9 @@ use agora_core::installed_content::{InstalledContentMetadata, InstalledContentRo
 use agora_core::modrinth::{ModrinthSearchParams, ModrinthSort};
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use tauri::Manager;
 
 const MSA_AUTH_REPLY_HOST: &str = "login.live.com";
@@ -507,7 +509,6 @@ pub async fn launch_instance_with_recovery(
     allow_health_blockers: Option<bool>,
     health_scan_token: Option<String>,
 ) -> LauncherResult<u32> {
-    use std::sync::Mutex;
     use tokio::sync::oneshot;
 
     let sanitized = paths::sanitize_id(&instance_id);
@@ -543,13 +544,12 @@ pub async fn launch_instance_with_recovery(
             instance_id: sanitized.clone(),
         });
     }
-    let progress = TauriLaunchProgress {
-        app: app.clone(),
-        state: state.inner().clone(),
-        instance_id: sanitized.clone(),
-        started: Mutex::new(Some(started_tx)),
-        session_id: Mutex::new(None),
-    };
+    let progress = TauriLaunchProgress::new(
+        app.clone(),
+        state.inner().clone(),
+        sanitized.clone(),
+        started_tx,
+    );
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized,
         mode: agora_core::launch_service::LaunchMode::Direct,
@@ -594,7 +594,6 @@ pub async fn launch_instance_direct(
     allow_health_blockers: Option<bool>,
     health_scan_token: Option<String>,
 ) -> LauncherResult<u32> {
-    use std::sync::Mutex;
     use tokio::sync::oneshot;
 
     let sanitized = paths::sanitize_id(&instance_id);
@@ -630,13 +629,8 @@ pub async fn launch_instance_direct(
             instance_id: sanitized.clone(),
         });
     }
-    let progress = TauriLaunchProgress {
-        app: app.clone(),
-        state: state.inner().clone(),
-        instance_id: sanitized,
-        started: Mutex::new(Some(started_tx)),
-        session_id: Mutex::new(None),
-    };
+    let progress =
+        TauriLaunchProgress::new(app.clone(), state.inner().clone(), sanitized, started_tx);
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: progress.instance_id.clone(),
         mode: agora_core::launch_service::LaunchMode::Direct,
@@ -677,6 +671,124 @@ struct TauriLaunchProgress {
     instance_id: String,
     started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<LauncherResult<u32>>>>,
     session_id: std::sync::Mutex<Option<u64>>,
+    log_sender: std::sync::mpsc::SyncSender<QueuedGameLogLine>,
+    dropped_log_lines: Arc<AtomicU64>,
+}
+
+#[derive(Debug)]
+struct QueuedGameLogLine {
+    line: String,
+    stream: String,
+    session_id: Option<u64>,
+}
+
+const GAME_LOG_QUEUE_CAPACITY: usize = 4096;
+const GAME_LOG_BATCH_CAPACITY: usize = 256;
+const GAME_LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+
+impl TauriLaunchProgress {
+    fn new(
+        app: tauri::AppHandle,
+        state: LauncherState,
+        instance_id: String,
+        started: tokio::sync::oneshot::Sender<LauncherResult<u32>>,
+    ) -> Self {
+        let (log_sender, log_receiver) = std::sync::mpsc::sync_channel(GAME_LOG_QUEUE_CAPACITY);
+        let dropped_log_lines = Arc::new(AtomicU64::new(0));
+        spawn_game_log_bridge(
+            app.clone(),
+            instance_id.clone(),
+            log_receiver,
+            dropped_log_lines.clone(),
+        );
+        Self {
+            app,
+            state,
+            instance_id,
+            started: Mutex::new(Some(started)),
+            session_id: Mutex::new(None),
+            log_sender,
+            dropped_log_lines,
+        }
+    }
+}
+
+fn spawn_game_log_bridge(
+    app: tauri::AppHandle,
+    instance_id: String,
+    receiver: std::sync::mpsc::Receiver<QueuedGameLogLine>,
+    dropped_log_lines: Arc<AtomicU64>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("agora-game-log-bridge".into())
+        .spawn(move || {
+            let mut batch = Vec::with_capacity(GAME_LOG_BATCH_CAPACITY);
+            let mut next_flush = Instant::now() + GAME_LOG_FLUSH_INTERVAL;
+            loop {
+                let wait = next_flush.saturating_duration_since(Instant::now());
+                match receiver.recv_timeout(wait) {
+                    Ok(message) => batch.push(message),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        emit_game_log_batch(
+                            &app,
+                            &instance_id,
+                            &mut batch,
+                            dropped_log_lines.as_ref(),
+                        );
+                        break;
+                    }
+                }
+
+                if batch.len() >= GAME_LOG_BATCH_CAPACITY || Instant::now() >= next_flush {
+                    emit_game_log_batch(&app, &instance_id, &mut batch, dropped_log_lines.as_ref());
+                    next_flush = Instant::now() + GAME_LOG_FLUSH_INTERVAL;
+                }
+            }
+        });
+}
+
+fn queue_game_log(
+    sender: &std::sync::mpsc::SyncSender<QueuedGameLogLine>,
+    dropped_log_lines: &AtomicU64,
+    message: QueuedGameLogLine,
+) {
+    if sender.try_send(message).is_err() {
+        dropped_log_lines.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn emit_game_log_batch(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    batch: &mut Vec<QueuedGameLogLine>,
+    dropped_log_lines: &AtomicU64,
+) {
+    use tauri::Emitter;
+
+    let dropped_lines = dropped_log_lines.swap(0, Ordering::Relaxed);
+    if batch.is_empty() && dropped_lines == 0 {
+        return;
+    }
+    let session_id = batch.last().and_then(|entry| entry.session_id);
+    let lines = batch
+        .drain(..)
+        .map(|entry| {
+            serde_json::json!({
+                "line": entry.line,
+                "stream": entry.stream,
+            })
+        })
+        .collect::<Vec<_>>();
+    let _ = app.emit(
+        "game-log-batch",
+        serde_json::json!({
+            "lines": lines,
+            "dropped_lines": dropped_lines,
+            "instance_id": instance_id,
+            "session_id": session_id,
+        }),
+    );
 }
 
 impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
@@ -747,17 +859,13 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
     }
 
     fn log(&self, stream: &str, line: &str) {
-        use tauri::Emitter;
         let session_id = self.session_id.lock().ok().and_then(|value| *value);
-        let _ = self.app.emit(
-            "game-log",
-            serde_json::json!({
-                "line": line,
-                "stream": stream,
-                "instance_id": self.instance_id,
-                "session_id": session_id,
-            }),
-        );
+        let message = QueuedGameLogLine {
+            line: line.to_owned(),
+            stream: stream.to_owned(),
+            session_id,
+        };
+        queue_game_log(&self.log_sender, self.dropped_log_lines.as_ref(), message);
     }
 
     fn finished(&self, result: &agora_core::launch_service::LaunchResult) {
@@ -5420,8 +5528,39 @@ fn reveal_in_explorer(path: &std::path::Path) -> Result<(), String> {
 mod command_helper_tests {
     use super::{
         apply_lockfile_metadata, create_or_reuse_prelaunch_snapshot, installed_lockfile_identity,
-        lockfile_identity, normalize_lock_content_type,
+        lockfile_identity, normalize_lock_content_type, queue_game_log, QueuedGameLogLine,
     };
+
+    #[test]
+    fn game_log_queue_drops_overflow_without_blocking() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let dropped = std::sync::atomic::AtomicU64::new(0);
+        queue_game_log(
+            &sender,
+            &dropped,
+            QueuedGameLogLine {
+                line: "first".into(),
+                stream: "stdout".into(),
+                session_id: Some(1),
+            },
+        );
+        queue_game_log(
+            &sender,
+            &dropped,
+            QueuedGameLogLine {
+                line: "overflow".into(),
+                stream: "stderr".into(),
+                session_id: Some(1),
+            },
+        );
+
+        assert_eq!(
+            dropped.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a full UI queue must drop rather than block the JVM pipe reader"
+        );
+        assert_eq!(receiver.try_recv().unwrap().line, "first");
+    }
 
     #[test]
     fn unchanged_prelaunch_state_reuses_current_lkg_snapshot() {

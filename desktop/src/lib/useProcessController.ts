@@ -146,6 +146,12 @@ export interface LogLine {
   instance_id: string;
 }
 
+interface GameLogBatchEvent {
+  lines: { line: string; stream: 'stdout' | 'stderr' }[];
+  dropped_lines: number;
+  instance_id: string;
+}
+
 export function useProcessController(): ProcessController {
   const [state, setState] = useState<ProcessState>(INITIAL_STATE);
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -224,24 +230,29 @@ export function useProcessController(): ProcessController {
     };
   }, []);
 
-  // Listen for game-log events and buffer them.
+  // Receive bounded batches from the backend so verbose packs cannot flood
+  // the webview with one IPC event and React render per log line.
   useEffect(() => {
-    const unlisten = listen<{ line: string; stream: string; instance_id: string }>(
-      'game-log',
+    const unlisten = listen<GameLogBatchEvent>(
+      'game-log-batch',
       (event) => {
         const current = stateRef.current;
         // Only buffer logs for the tracked instance.
         if (current.instanceId !== event.payload.instance_id) return;
         setLogs((prev) => {
-          const next = [...prev, {
-            line: event.payload.line,
-            stream: event.payload.stream as 'stdout' | 'stderr',
+          const incoming = event.payload.lines.map((entry) => ({
+            ...entry,
             instance_id: event.payload.instance_id,
-          }];
-          if (next.length > MAX_LOG_LINES) {
-            return next.slice(-MAX_LOG_LINES);
+          }));
+          if (event.payload.dropped_lines > 0) {
+            incoming.unshift({
+              line: `[Agora] Live console skipped ${event.payload.dropped_lines} log lines to keep the game responsive. Check the instance logs for persisted output.`,
+              stream: 'stderr',
+              instance_id: event.payload.instance_id,
+            });
           }
-          return next;
+          const next = [...prev, ...incoming];
+          return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next;
         });
       },
     );

@@ -3,9 +3,9 @@ import { listen } from '@tauri-apps/api/event';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
-interface GameLogEvent {
-  line: string;
-  stream: 'stdout' | 'stderr';
+interface GameLogBatchEvent {
+  lines: { line: string; stream: 'stdout' | 'stderr' }[];
+  dropped_lines: number;
   instance_id: string;
 }
 
@@ -47,12 +47,20 @@ export function ConsoleView({ instanceId, className, logBuffer }: Props) {
   const [filter, setFilter] = useState<Set<string>>(new Set(['INFO', 'WARN', 'ERROR', 'DEBUG']));
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Listen for live game-log events, filtered by this instance.
+  // Listen for bounded live-log batches, filtered by this instance.
   useEffect(() => {
-    const unlisten = listen<GameLogEvent>('game-log', (e) => {
+    const unlisten = listen<GameLogBatchEvent>('game-log-batch', (e) => {
       if (e.payload.instance_id !== instanceId) return;
       setLogs((prev) => {
-        const next = [...prev, toLogLine(e.payload)];
+        const incoming = e.payload.lines.map(toLogLine);
+        if (e.payload.dropped_lines > 0) {
+          incoming.unshift({
+            line: `[Agora] Live console skipped ${e.payload.dropped_lines} log lines to keep the game responsive. Check the instance logs for persisted output.`,
+            stream: 'stderr',
+            level: 'WARN',
+          });
+        }
+        const next = [...prev, ...incoming];
         return next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
       });
     });

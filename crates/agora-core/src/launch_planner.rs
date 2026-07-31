@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 
 // No managed-installer re-exports — Forge/NeoForge uses installed-profile adoption only.
 
@@ -1413,24 +1413,141 @@ pub async fn wait_and_classify(
 
 /// Bounded line count retained for crash-triage after streaming.
 const MAX_CAPTURED_LINES: usize = 200;
+const MAX_CAPTURED_OUTPUT_BYTES: usize = 1024 * 1024;
+const OUTPUT_READ_CHUNK_BYTES: usize = 16 * 1024;
+const MAX_OUTPUT_RECORD_BYTES: usize = 64 * 1024;
+const CAPTURED_LAUNCH_OUTPUT_FILE: &str = "agora-launch-output.log";
+type OutputLineCallback<'a> = dyn Fn(&str, &str) + Send + Sync + 'a;
+
+#[derive(Debug, Default)]
+struct ProcessOutputRecords {
+    buffer: Vec<u8>,
+    overflowed: bool,
+}
+
+impl ProcessOutputRecords {
+    fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        let mut records = Vec::new();
+        for &byte in chunk {
+            if byte == b'\n' {
+                records.push(self.take_record());
+            } else if !self.overflowed {
+                if self.buffer.len() < MAX_OUTPUT_RECORD_BYTES {
+                    self.buffer.push(byte);
+                } else {
+                    // Omit the whole oversized record. Emitting a truncated
+                    // prefix could expose part of a secret that crosses the
+                    // truncation boundary and therefore cannot be redacted.
+                    self.buffer.clear();
+                    self.overflowed = true;
+                }
+            }
+        }
+        records
+    }
+
+    fn finish(&mut self) -> Option<String> {
+        if self.buffer.is_empty() && !self.overflowed {
+            None
+        } else {
+            Some(self.take_record())
+        }
+    }
+
+    fn take_record(&mut self) -> String {
+        if self.overflowed {
+            self.overflowed = false;
+            self.buffer.clear();
+            return format!(
+                "[Agora] Java output record exceeded {} KiB and was omitted while output continued to drain.",
+                MAX_OUTPUT_RECORD_BYTES / 1024
+            );
+        }
+
+        if self.buffer.last() == Some(&b'\r') {
+            self.buffer.pop();
+        }
+
+        // Java uses the host console encoding for stdout/stderr on Windows even
+        // when `file.encoding` is UTF-8. Mod output can therefore contain bytes
+        // such as CP-1252's 0xA9 for ©. Decoding lossily keeps the pipe draining
+        // instead of treating one non-UTF-8 byte as EOF and deadlocking the JVM.
+        let record = String::from_utf8_lossy(&self.buffer).into_owned();
+        self.buffer.clear();
+        record
+    }
+}
+
+fn capture_launch_output_line(
+    captured: &mut Vec<String>,
+    captured_bytes: &mut usize,
+    stream: &str,
+    line: &str,
+) {
+    let entry = format!("[{stream}] {line}");
+    while !captured.is_empty()
+        && (captured.len() >= MAX_CAPTURED_LINES
+            || captured_bytes.saturating_add(entry.len()) > MAX_CAPTURED_OUTPUT_BYTES)
+    {
+        let removed = captured.remove(0);
+        *captured_bytes = captured_bytes.saturating_sub(removed.len());
+    }
+    *captured_bytes = captured_bytes.saturating_add(entry.len());
+    captured.push(entry);
+}
+
+fn process_output_record(
+    captured: &mut Vec<String>,
+    captured_bytes: &mut usize,
+    stream: &str,
+    text: &str,
+    secrets: &[&str],
+    on_line: Option<&OutputLineCallback<'_>>,
+) {
+    let sanitized = crate::log_sanitizer::sanitize_log_with_secrets(text, secrets);
+    if let Some(callback) = on_line {
+        callback(stream, &sanitized);
+    }
+    capture_launch_output_line(captured, captured_bytes, stream, &sanitized);
+}
+
+fn persist_captured_launch_output(
+    game_dir: &Path,
+    exit_code: Option<i32>,
+    runtime_ms: u64,
+    captured_text: &str,
+) {
+    let exit_code = exit_code
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let contents = format!(
+        "# Agora captured Java output (sanitized, last {MAX_CAPTURED_LINES} lines)\n\
+         # exit_code={exit_code}\n\
+         # runtime_ms={runtime_ms}\n\
+         {captured_text}\n"
+    );
+    let _ = atomic_write(
+        &game_dir.join("logs").join(CAPTURED_LAUNCH_OUTPUT_FILE),
+        contents.as_bytes(),
+    );
+}
 
 /// Wait for a child while streaming stdout/stderr lines in real-time to an
 /// optional callback. Each line is sanitised (secrets redacted, paths masked)
 /// **before** it reaches the callback, so adapters never see raw secrets.
 ///
-/// The two output streams are read concurrently via biased `tokio::select!`:
-/// stdout lines have slightly higher priority. Memory is bounded to the last
-/// [`MAX_CAPTURED_LINES`] lines, which is sufficient for crash-signature
-/// matching. Process cleanup (reaping) is guaranteed after exit.
+/// The two output streams are read fairly in fixed-size byte chunks so neither
+/// a platform console encoding mismatch nor an unterminated record can stop
+/// pipe draining. Memory retained for crash triage is bounded by both line and
+/// byte counts. Process cleanup (reaping) is guaranteed after exit.
 ///
 /// # Compatibility
 /// The signature and return type are identical to the pre-streaming version.
-#[allow(clippy::type_complexity)]
 pub async fn wait_and_classify_with_progress(
     mut child: tokio::process::Child,
     game_dir: &Path,
     secrets: &[&str],
-    on_line: Option<&(dyn Fn(&str, &str) + Send + Sync)>,
+    on_line: Option<&OutputLineCallback<'_>>,
 ) -> LauncherResult<crate::lkg::LaunchOutcome> {
     let started = std::time::Instant::now();
     let launched_at = std::time::SystemTime::now();
@@ -1444,46 +1561,101 @@ pub async fn wait_and_classify_with_progress(
         message: "Failed to take stderr pipe from child process".into(),
     })?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    let mut stdout_reader = stdout;
+    let mut stderr_reader = stderr;
+    let mut stdout_chunk = [0_u8; OUTPUT_READ_CHUNK_BYTES];
+    let mut stderr_chunk = [0_u8; OUTPUT_READ_CHUNK_BYTES];
+    let mut stdout_records = ProcessOutputRecords::default();
+    let mut stderr_records = ProcessOutputRecords::default();
 
     let mut captured: Vec<String> = Vec::with_capacity(MAX_CAPTURED_LINES);
+    let mut captured_bytes = 0;
     let mut stdout_done = false;
     let mut stderr_done = false;
 
     loop {
         tokio::select! {
-            biased;
-
-            result = stdout_reader.next_line(), if !stdout_done => {
+            result = stdout_reader.read(&mut stdout_chunk), if !stdout_done => {
                 match result {
-                    Ok(Some(text)) => {
-                        let sanitized = crate::log_sanitizer::sanitize_log_with_secrets(&text, secrets);
-                        if let Some(cb) = on_line {
-                            cb("stdout", &sanitized);
+                    Ok(0) => {
+                        if let Some(text) = stdout_records.finish() {
+                            process_output_record(
+                                &mut captured,
+                                &mut captured_bytes,
+                                "stdout",
+                                &text,
+                                secrets,
+                                on_line,
+                            );
                         }
-                        if captured.len() >= MAX_CAPTURED_LINES {
-                            captured.remove(0);
-                        }
-                        captured.push(sanitized);
+                        stdout_done = true;
                     }
-                    _ => { stdout_done = true; }
+                    Ok(read) => {
+                        for text in stdout_records.push(&stdout_chunk[..read]) {
+                            process_output_record(
+                                &mut captured,
+                                &mut captured_bytes,
+                                "stdout",
+                                &text,
+                                secrets,
+                                on_line,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("[Agora] Failed to read Java stdout: {error}");
+                        process_output_record(
+                            &mut captured,
+                            &mut captured_bytes,
+                            "stderr",
+                            &message,
+                            secrets,
+                            on_line,
+                        );
+                        stdout_done = true;
+                    }
                 }
             }
 
-            result = stderr_reader.next_line(), if !stderr_done => {
+            result = stderr_reader.read(&mut stderr_chunk), if !stderr_done => {
                 match result {
-                    Ok(Some(text)) => {
-                        let sanitized = crate::log_sanitizer::sanitize_log_with_secrets(&text, secrets);
-                        if let Some(cb) = on_line {
-                            cb("stderr", &sanitized);
+                    Ok(0) => {
+                        if let Some(text) = stderr_records.finish() {
+                            process_output_record(
+                                &mut captured,
+                                &mut captured_bytes,
+                                "stderr",
+                                &text,
+                                secrets,
+                                on_line,
+                            );
                         }
-                        if captured.len() >= MAX_CAPTURED_LINES {
-                            captured.remove(0);
-                        }
-                        captured.push(sanitized);
+                        stderr_done = true;
                     }
-                    _ => { stderr_done = true; }
+                    Ok(read) => {
+                        for text in stderr_records.push(&stderr_chunk[..read]) {
+                            process_output_record(
+                                &mut captured,
+                                &mut captured_bytes,
+                                "stderr",
+                                &text,
+                                secrets,
+                                on_line,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("[Agora] Failed to read Java stderr: {error}");
+                        process_output_record(
+                            &mut captured,
+                            &mut captured_bytes,
+                            "stderr",
+                            &message,
+                            secrets,
+                            on_line,
+                        );
+                        stderr_done = true;
+                    }
                 }
             }
         }
@@ -1498,7 +1670,10 @@ pub async fn wait_and_classify_with_progress(
         message: format!("Failed while waiting for Java: {error}"),
     })?;
 
+    let runtime_ms = started.elapsed().as_millis() as u64;
+    let exit_code = exit_code_for_classification(&exit_status);
     let captured_text = captured.join("\n");
+    persist_captured_launch_output(game_dir, exit_code, runtime_ms, &captured_text);
 
     let crash_report_found = game_dir
         .join("crash-reports")
@@ -1516,8 +1691,8 @@ pub async fn wait_and_classify_with_progress(
         });
 
     Ok(crate::lkg::classify_launch(&crate::lkg::LaunchEvents {
-        exit_code: exit_code_for_classification(&exit_status),
-        runtime_ms: started.elapsed().as_millis() as u64,
+        exit_code,
+        runtime_ms,
         was_user_cancelled: false,
         crash_report_found,
         log_crash_signature_matched: crate::crash_diagnostics::triage(&captured_text).matched,
@@ -4967,6 +5142,33 @@ mod tests {
             .expect("spawn_cmd should succeed")
     }
 
+    #[cfg(windows)]
+    fn spawn_cp1252_flood() -> tokio::process::Child {
+        let script = r#"
+$output = [Console]::OpenStandardOutput()
+$invalidUtf8 = [byte[]](67, 111, 112, 121, 114, 105, 103, 104, 116, 32, 169, 10)
+$output.Write($invalidUtf8, 0, $invalidUtf8.Length)
+$chunk = [Text.Encoding]::ASCII.GetBytes('x' * 8192)
+for ($i = 0; $i -lt 128; $i++) {
+    $output.Write($chunk, 0, $chunk.Length)
+}
+$newline = [byte[]](10)
+$output.Write($newline, 0, $newline.Length)
+$after = [Text.Encoding]::ASCII.GetBytes('after-cp1252-flood' + [Environment]::NewLine)
+$output.Write($after, 0, $after.Length)
+"#;
+
+        let mut command = tokio::process::Command::new("powershell");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        command
+            .spawn()
+            .expect("PowerShell test helper should spawn")
+    }
+
     #[tokio::test]
     async fn streaming_delivers_stdout_lines_to_callback() {
         let child = spawn_cmd("echo hello-stream-world");
@@ -5023,11 +5225,57 @@ mod tests {
             collected.iter().any(|l| l.contains("[REDACTED]")),
             "Expected at least one line containing [REDACTED], got {collected:?}"
         );
+        let persisted =
+            std::fs::read_to_string(tmp.path().join("logs/agora-launch-output.log")).unwrap();
+        assert!(
+            !persisted.contains("super-sensitive-value"),
+            "secret leaked in persisted launch output"
+        );
+        assert!(persisted.contains("[stdout] [REDACTED]"));
+        assert!(persisted.contains("# exit_code=0"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn streaming_keeps_draining_after_cp1252_output() {
+        let child = spawn_cp1252_flood();
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cb_lines = lines.clone();
+        let on_line = move |_stream: &str, line: &str| {
+            cb_lines.lock().unwrap().push(line.to_owned());
+        };
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line)),
+        )
+        .await
+        .expect("non-UTF-8 output must not stop draining the child pipe")
+        .unwrap();
+
+        let collected = lines.lock().unwrap();
+        assert!(
+            collected.iter().any(|line| line.contains("Copyright")),
+            "the CP-1252 line should be delivered lossily"
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|line| line.contains("record exceeded 64 KiB")),
+            "an oversized unterminated record should be omitted without blocking"
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|line| line.contains("after-cp1252-flood")),
+            "output after more than a pipe buffer of data should still be delivered"
+        );
     }
 
     #[tokio::test]
     async fn streaming_handles_both_stdout_and_stderr() {
-        let child = spawn_cmd("echo stdout-only");
+        let child = spawn_cmd("echo stdout-only && echo stderr-only 1>&2");
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let cb_lines = lines.clone();
         let on_line = move |stream: &str, line: &str| {
@@ -5046,6 +5294,10 @@ mod tests {
         assert!(
             collected.iter().any(|(s, _)| s == "stdout"),
             "Expected at least one stdout entry, got {collected:?}"
+        );
+        assert!(
+            collected.iter().any(|(s, _)| s == "stderr"),
+            "Expected at least one stderr entry, got {collected:?}"
         );
     }
 }

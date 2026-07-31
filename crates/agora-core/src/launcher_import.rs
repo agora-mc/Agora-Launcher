@@ -1072,13 +1072,8 @@ fn parse_curseforge_settings(meta: &serde_json::Value) -> LaunchSettingsPreview 
     ]
     .iter()
     .find_map(|pointer| meta.pointer(pointer).and_then(serde_json::Value::as_i64))
-    .map(|value| {
-        if value > 0 && value < 128 {
-            value * 1024
-        } else {
-            value
-        }
-    });
+    .filter(|value| *value > 0)
+    .map(|value| if value < 128 { value * 1024 } else { value });
     let java_path = meta
         .get("javaPath")
         .or_else(|| meta.pointer("/javaSettings/path"))
@@ -2514,6 +2509,13 @@ mod tests {
         let (loader, version) = parse_curseforge_loader(&metadata);
         assert_eq!(loader.as_deref(), Some("fabric"));
         assert_eq!(version.as_deref(), Some("0.18.6"));
+    }
+
+    #[test]
+    fn test_curseforge_zero_allocated_memory_is_unset() {
+        let metadata = serde_json::json!({"allocatedMemory": 0});
+        let settings = parse_curseforge_settings(&metadata);
+        assert_eq!(settings.memory_mb, None);
     }
 
     #[test]

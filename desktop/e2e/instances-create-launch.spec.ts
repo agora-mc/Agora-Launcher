@@ -40,7 +40,7 @@ interface CreateLaunchMockOptions {
  *    list_loader_versions)
  *  - Stateful list_instances (empty → after creation returns the new instance)
  *  - Health check + launch (direct or delegated)
- *  - Event listeners (game-exited, game-log)
+ *  - Event listeners (game-exited, game-log-batch)
  */
 async function installCreateLaunchMock(page: Page, options: CreateLaunchMockOptions) {
   await page.addInitScript(({ options }) => {
