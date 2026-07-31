@@ -29,7 +29,8 @@ pub enum NetworkCategory {
 /// Each of the five categories can be independently enabled or disabled.
 /// Construct with `all_enabled()` or `all_disabled()`, then customize
 /// with builder-style `set_*` methods or with `set_category`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct NetworkPolicy(u8);
 
 // Bit positions for each category.

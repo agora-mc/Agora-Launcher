@@ -62,9 +62,34 @@ pub fn upsert_profile(
     let profiles_map = profiles_obj
         .as_object_mut()
         .ok_or(LauncherError::ProfileWriteFailed)?;
-    profiles_map.insert(entry.profile_id.clone(), entry.to_json());
+    let desired = entry.to_json();
+    if profiles_map
+        .get(&entry.profile_id)
+        .is_some_and(|existing| profile_values_match(existing, &desired))
+    {
+        // Delegated launches reconcile this profile on every handoff.  Keep
+        // the existing JSON and timestamp when the effective launch settings
+        // are already identical so the official launcher does not see a
+        // needless profile mutation on every click.
+        return Ok(());
+    }
+    profiles_map.insert(entry.profile_id.clone(), desired);
 
     atomic_write(profiles_path, &root)
+}
+
+fn profile_values_match(existing: &Value, desired: &Value) -> bool {
+    const STABLE_KEYS: &[&str] = &[
+        "name",
+        "type",
+        "lastVersionId",
+        "gameDir",
+        "javaArgs",
+        "icon",
+    ];
+    STABLE_KEYS
+        .iter()
+        .all(|key| existing.get(*key) == desired.get(*key))
 }
 
 pub fn remove_profile(profile_id: &str, profiles_path: &std::path::Path) -> LauncherResult<()> {
@@ -226,5 +251,19 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unchanged_profile_is_not_rewritten() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("launcher_profiles.json");
+        let entry = profile("stable", root.path());
+
+        upsert_profile(&entry, &path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        upsert_profile(&entry, &path).unwrap();
+        let after = std::fs::read(&path).unwrap();
+
+        assert_eq!(before, after);
     }
 }

@@ -387,17 +387,31 @@ pub fn adopt_library_artifact(
     // Step 1: Cache hit check
     if cache_path.is_file() {
         if let Some(pin) = sha256 {
-            if verify_sha256(cache_path, pin).is_ok() {
+            if crate::artifact_receipt::is_verified(cache_path, "sha256", pin, size) {
+                return Ok(ArtifactAdoptResult::CacheHit);
+            }
+            if verify_sha256(cache_path, pin).is_ok()
+                && size.is_none_or(|expected| verify_size(cache_path, expected).is_ok())
+            {
+                let _ = crate::artifact_receipt::record_verified(cache_path, "sha256", pin, size);
                 return Ok(ArtifactAdoptResult::CacheHit);
             }
             // Cache has wrong hash — treat as cache miss, do NOT use it.
         } else if let Some(hash) = sha1 {
+            if crate::artifact_receipt::is_verified(cache_path, "sha1", hash, size) {
+                return Ok(ArtifactAdoptResult::CacheHit);
+            }
             if verify_sha1(cache_path, hash).is_ok() {
                 if let Some(s) = size {
                     if verify_size(cache_path, s).is_ok() {
+                        let _ = crate::artifact_receipt::record_verified(
+                            cache_path, "sha1", hash, size,
+                        );
                         return Ok(ArtifactAdoptResult::CacheHit);
                     }
                 } else {
+                    let _ =
+                        crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
                     return Ok(ArtifactAdoptResult::CacheHit);
                 }
             }
@@ -456,6 +470,11 @@ pub fn adopt_library_artifact(
             ));
         }
     }
+    if let Some(pin) = sha256 {
+        let _ = crate::artifact_receipt::record_verified(cache_path, "sha256", pin, size);
+    } else if let Some(hash) = sha1 {
+        let _ = crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
+    }
 
     Ok(ArtifactAdoptResult::Materialized { used_hardlink })
 }
@@ -476,12 +495,20 @@ pub fn adopt_client_jar(
     // Cache hit check
     if cache_path.is_file() {
         if let Some(hash) = sha1 {
+            if crate::artifact_receipt::is_verified(cache_path, "sha1", hash, size) {
+                return Ok(ArtifactAdoptResult::CacheHit);
+            }
             if verify_sha1(cache_path, hash).is_ok() {
                 if let Some(s) = size {
                     if verify_size(cache_path, s).is_ok() {
+                        let _ = crate::artifact_receipt::record_verified(
+                            cache_path, "sha1", hash, size,
+                        );
                         return Ok(ArtifactAdoptResult::CacheHit);
                     }
                 } else {
+                    let _ =
+                        crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
                     return Ok(ArtifactAdoptResult::CacheHit);
                 }
             }
@@ -521,6 +548,7 @@ pub fn adopt_client_jar(
                 "Post-materialization SHA-1 verification failed for client JAR".to_string(),
             ));
         }
+        let _ = crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
     }
 
     Ok(ArtifactAdoptResult::Materialized {
@@ -539,12 +567,20 @@ pub fn adopt_asset_index(
     // Cache hit check
     if cache_path.is_file() {
         if let Some(hash) = sha1 {
+            if crate::artifact_receipt::is_verified(cache_path, "sha1", hash, size) {
+                return Ok(ArtifactAdoptResult::CacheHit);
+            }
             if verify_sha1(cache_path, hash).is_ok() {
                 if let Some(s) = size {
                     if verify_size(cache_path, s).is_ok() {
+                        let _ = crate::artifact_receipt::record_verified(
+                            cache_path, "sha1", hash, size,
+                        );
                         return Ok(ArtifactAdoptResult::CacheHit);
                     }
                 } else {
+                    let _ =
+                        crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
                     return Ok(ArtifactAdoptResult::CacheHit);
                 }
             }
@@ -583,6 +619,7 @@ pub fn adopt_asset_index(
                 "Post-materialization SHA-1 verification failed for asset index".to_string(),
             ));
         }
+        let _ = crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
     }
 
     Ok(ArtifactAdoptResult::Materialized {
@@ -631,10 +668,25 @@ pub fn adopt_asset_objects(
 
         // Check cache
         if object_path.is_file() {
+            if crate::artifact_receipt::is_verified(
+                &object_path,
+                "sha1",
+                &object.hash,
+                Some(object.size),
+            ) {
+                sync_virtual_asset(&index, &object_path, logical_name, assets_dir)?;
+                continue;
+            }
             if let Ok(data) = std::fs::read(&object_path) {
                 let actual_sha1 = sha1_hex(&data);
                 let size_ok = data.len() as i64 == object.size;
                 if actual_sha1 == object.hash && size_ok {
+                    let _ = crate::artifact_receipt::record_verified(
+                        &object_path,
+                        "sha1",
+                        &object.hash,
+                        Some(object.size),
+                    );
                     // Already cached and valid
                     sync_virtual_asset(&index, &object_path, logical_name, assets_dir)?;
                     continue;
@@ -670,6 +722,12 @@ pub fn adopt_asset_objects(
                     });
                 }
             }
+            let _ = crate::artifact_receipt::record_verified(
+                &object_path,
+                "sha1",
+                &object.hash,
+                Some(object.size),
+            );
 
             sync_virtual_asset(&index, &object_path, logical_name, assets_dir)?;
             continue;
@@ -749,12 +807,20 @@ pub fn adopt_logging_config(
     // Cache hit check
     if cache_path.is_file() {
         if let Some(hash) = sha1 {
+            if crate::artifact_receipt::is_verified(cache_path, "sha1", hash, size) {
+                return Ok(ArtifactAdoptResult::CacheHit);
+            }
             if verify_sha1(cache_path, hash).is_ok() {
                 if let Some(s) = size {
                     if verify_size(cache_path, s).is_ok() {
+                        let _ = crate::artifact_receipt::record_verified(
+                            cache_path, "sha1", hash, size,
+                        );
                         return Ok(ArtifactAdoptResult::CacheHit);
                     }
                 } else {
+                    let _ =
+                        crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
                     return Ok(ArtifactAdoptResult::CacheHit);
                 }
             }
@@ -792,6 +858,7 @@ pub fn adopt_logging_config(
                 "Post-materialization SHA-1 verification failed for logging config".to_string(),
             ));
         }
+        let _ = crate::artifact_receipt::record_verified(cache_path, "sha1", hash, size);
     }
 
     Ok(ArtifactAdoptResult::Materialized {
@@ -827,7 +894,12 @@ pub fn adopt_trusted_unhashed_library(
         })?;
 
     // Cache hit: verify against receipt hash
-    if cache_path.is_file() && verify_sha256(cache_path, expected_sha256).is_ok() {
+    if cache_path.is_file()
+        && (crate::artifact_receipt::is_verified(cache_path, "sha256", expected_sha256, None)
+            || verify_sha256(cache_path, expected_sha256).is_ok())
+    {
+        let _ =
+            crate::artifact_receipt::record_verified(cache_path, "sha256", expected_sha256, None);
         return Ok(ArtifactAdoptResult::CacheHit);
     }
 
@@ -860,6 +932,7 @@ pub fn adopt_trusted_unhashed_library(
             ),
         ));
     }
+    let _ = crate::artifact_receipt::record_verified(cache_path, "sha256", expected_sha256, None);
 
     Ok(ArtifactAdoptResult::Materialized { used_hardlink })
 }

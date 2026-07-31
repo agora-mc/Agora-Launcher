@@ -302,10 +302,15 @@ pub fn summarize_instance(
 /// Query total physical RAM via `sysinfo`. Returns 0 on failure (callers treat
 /// 0 as "unknown" and skip system-headroom checks).
 pub fn detect_total_ram_mb() -> u64 {
+    use std::sync::OnceLock;
     use sysinfo::System;
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    sys.total_memory() / 1024 / 1024
+
+    static TOTAL_RAM_MB: OnceLock<u64> = OnceLock::new();
+    *TOTAL_RAM_MB.get_or_init(|| {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        sys.total_memory() / 1024 / 1024
+    })
 }
 
 // ---------------------------------------------------------------------------

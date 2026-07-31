@@ -25,8 +25,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::task_scheduler::{BlockingPriority, TaskScheduler};
+
 // Reuse types from dependency_ops to avoid duplication.
 pub use crate::dependency_ops::{DepSource, Requirement};
+
+/// Optional host-owned resources used while executing an install. Core-only
+/// callers can use the default; application hosts supply their bounded worker
+/// scheduler and current registry so post-install caches match launch inputs.
+#[derive(Clone, Copy, Default)]
+pub struct InstallExecutionResources<'a> {
+    pub scheduler: Option<&'a TaskScheduler>,
+    pub registry_db_path: Option<&'a Path>,
+}
 
 // ---------------------------------------------------------------------------
 // 1. Operation type
@@ -1177,6 +1188,31 @@ impl InstallPipeline {
         reporter: &dyn ProgressReporter,
         cancel: &CancellationToken,
     ) -> InstallOutcome {
+        self.execute_plan_with_scheduler(
+            plan,
+            instance_dir,
+            current_registry_revision,
+            reporter,
+            cancel,
+            InstallExecutionResources::default(),
+        )
+        .await
+    }
+
+    /// Execute a plan while routing the large synchronous phases through the
+    /// shared bounded worker scheduler.  The compatibility wrapper above is
+    /// retained for core-only callers and tests that do not own a context.
+    pub async fn execute_plan_with_scheduler(
+        &self,
+        plan: &ResolvedInstallPlan,
+        instance_dir: &Path,
+        current_registry_revision: &str,
+        reporter: &dyn ProgressReporter,
+        cancel: &CancellationToken,
+        resources: InstallExecutionResources<'_>,
+    ) -> InstallOutcome {
+        let scheduler = resources.scheduler;
+        let registry_db_path = resources.registry_db_path;
         let fail = |error: String, snapshot_id: Option<String>, rollback_performed: bool| {
             InstallOutcome::Failed {
                 error,
@@ -1238,18 +1274,23 @@ impl InstallPipeline {
                 false,
             );
         }
-        let current_state_hash = match crate::snapshot::live_file_index(instance_dir)
-            .and_then(|index| hash_serializable(&index))
-        {
-            Ok(hash) => hash,
-            Err(error) => {
-                return fail(
-                    format!("Could not verify current instance state: {error}"),
-                    None,
-                    false,
-                )
-            }
-        };
+        let state_dir = instance_dir.to_path_buf();
+        let current_state_hash =
+            match run_blocking_phase(scheduler, "install state verification", move || {
+                crate::snapshot::live_file_index(&state_dir)
+                    .and_then(|index| hash_serializable(&index))
+            })
+            .await
+            {
+                Ok(hash) => hash,
+                Err(error) => {
+                    return fail(
+                        format!("Could not verify current instance state: {error}"),
+                        None,
+                        false,
+                    )
+                }
+            };
         if current_state_hash != plan.instance_state_hash {
             return fail(
                 "The instance changed after this plan was reviewed. Resolve a fresh plan before installing."
@@ -1273,7 +1314,7 @@ impl InstallPipeline {
             message: "Downloading and verifying every artifact…".into(),
         });
         if let Err(error) = stage_plan_artifacts(plan, &staging_dir, reporter, cancel).await {
-            let _ = std::fs::remove_dir_all(&staging_dir);
+            cleanup_staging_dir(scheduler, &staging_dir).await;
             if cancel.is_cancelled() {
                 return InstallOutcome::Cancelled {
                     phase: "staging".into(),
@@ -1283,7 +1324,7 @@ impl InstallPipeline {
             return fail(error, None, false);
         }
         if cancel.is_cancelled() {
-            let _ = std::fs::remove_dir_all(&staging_dir);
+            cleanup_staging_dir(scheduler, &staging_dir).await;
             return InstallOutcome::Cancelled {
                 phase: "staging".into(),
                 rollback_performed: false,
@@ -1292,8 +1333,16 @@ impl InstallPipeline {
 
         // Build and sync the future manifest before taking the snapshot or
         // touching live files. Serialization/disk failures are pre-mutation.
-        if let Err(error) = prepare_manifest(plan, instance_dir, &staging_dir) {
-            let _ = std::fs::remove_dir_all(&staging_dir);
+        let prepare_plan = plan.clone();
+        let prepare_dir = instance_dir.to_path_buf();
+        let prepare_staging = staging_dir.clone();
+        if let Err(error) =
+            run_blocking_phase(scheduler, "install manifest preparation", move || {
+                prepare_manifest(&prepare_plan, &prepare_dir, &prepare_staging)
+            })
+            .await
+        {
+            cleanup_staging_dir(scheduler, &staging_dir).await;
             return fail(error, None, false);
         }
 
@@ -1306,20 +1355,25 @@ impl InstallPipeline {
             bytes_total: plan.disk_estimate.download_bytes,
             message: "Creating the recovery snapshot…".into(),
         });
-        let snapshot =
-            match crate::snapshot::create_snapshot(instance_dir, Some(&plan.snapshot.label)) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    let _ = std::fs::remove_dir_all(&staging_dir);
-                    return fail(
-                        format!("Snapshot failed before apply: {error}"),
-                        None,
-                        false,
-                    );
-                }
-            };
+        let snapshot_dir = instance_dir.to_path_buf();
+        let snapshot_label = plan.snapshot.label.clone();
+        let snapshot = match run_blocking_phase(scheduler, "install recovery snapshot", move || {
+            crate::snapshot::create_snapshot(&snapshot_dir, Some(&snapshot_label))
+        })
+        .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                cleanup_staging_dir(scheduler, &staging_dir).await;
+                return fail(
+                    format!("Snapshot failed before apply: {error}"),
+                    None,
+                    false,
+                );
+            }
+        };
         if cancel.is_cancelled() {
-            let _ = std::fs::remove_dir_all(&staging_dir);
+            cleanup_staging_dir(scheduler, &staging_dir).await;
             return InstallOutcome::Cancelled {
                 phase: "snapshotting".into(),
                 rollback_performed: false,
@@ -1335,11 +1389,24 @@ impl InstallPipeline {
             bytes_total: plan.disk_estimate.download_bytes,
             message: "Atomically applying files and manifest…".into(),
         });
-        if let Err(apply_error) = apply_transaction(plan, instance_dir, &staging_dir) {
+        let apply_plan = plan.clone();
+        let apply_dir = instance_dir.to_path_buf();
+        let apply_staging = staging_dir.clone();
+        if let Err(apply_error) =
+            run_blocking_phase(scheduler, "install transaction apply", move || {
+                apply_transaction(&apply_plan, &apply_dir, &apply_staging)
+            })
+            .await
+        {
             let fast_rollback_performed =
                 apply_error.contains("pre-commit file moves were reversed");
-            let restore = crate::snapshot::restore_snapshot(instance_dir, &snapshot.id);
-            let _ = std::fs::remove_dir_all(&staging_dir);
+            let restore_dir = instance_dir.to_path_buf();
+            let restore_id = snapshot.id.clone();
+            let restore = run_blocking_phase(scheduler, "install rollback", move || {
+                crate::snapshot::restore_snapshot(&restore_dir, &restore_id)
+            })
+            .await;
+            cleanup_staging_dir(scheduler, &staging_dir).await;
             return match restore {
                 Ok(()) => fail(
                     format!("Apply failed; the recovery snapshot was restored: {apply_error}"),
@@ -1366,43 +1433,76 @@ impl InstallPipeline {
             message: "Checking the installed instance…".into(),
         });
         let health = if plan.intent.overrides.skip_health_scan {
+            let cache_dir = instance_dir.to_path_buf();
+            let cache_result =
+                run_blocking_phase(scheduler, "install JAR metadata precompute", move || {
+                    let manifest_path = cache_dir.join("instance_manifest.json");
+                    let manifest_text = std::fs::read_to_string(&manifest_path)
+                        .map_err(|error| format!("committed manifest is unreadable ({error})"))?;
+                    let manifest: crate::models::InstanceManifest =
+                        serde_json::from_str(&manifest_text)
+                            .map_err(|error| format!("committed manifest is invalid ({error})"))?;
+                    crate::health::precompute_jar_metadata_cache(&cache_dir, &manifest)
+                })
+                .await;
             HealthOutcome::Skipped {
-                reason: "The caller explicitly skipped the post-install health scan.".into(),
+                reason: match cache_result {
+                    Ok(()) => "The caller explicitly skipped the post-install health scan; JAR metadata was precomputed for the next launch.".into(),
+                    Err(error) => format!("The caller explicitly skipped the post-install health scan; cache precomputation was unavailable: {error}"),
+                },
             }
         } else {
-            let manifest_text = match std::fs::read_to_string(
-                instance_dir.join("instance_manifest.json"),
-            ) {
-                Ok(text) => text,
-                Err(error) => {
-                    let restore = crate::snapshot::restore_snapshot(instance_dir, &snapshot.id);
-                    let _ = std::fs::remove_dir_all(&staging_dir);
-                    return fail(
-                        format!("Committed manifest is unreadable ({error}); restore result: {restore:?}"),
-                        Some(snapshot.id),
-                        restore.is_ok(),
-                    );
-                }
-            };
-            let manifest: crate::models::InstanceManifest =
-                match serde_json::from_str(&manifest_text) {
-                    Ok(manifest) => manifest,
+            let health_dir = instance_dir.to_path_buf();
+            let health_registry = registry_db_path.map(Path::to_path_buf);
+            let report =
+                match run_blocking_phase(scheduler, "post-install health scan", move || {
+                    let manifest_text =
+                        std::fs::read_to_string(health_dir.join("instance_manifest.json"))
+                            .map_err(|error| {
+                                format!("Committed manifest is unreadable ({error})")
+                            })?;
+                    let manifest: crate::models::InstanceManifest =
+                        serde_json::from_str(&manifest_text)
+                            .map_err(|error| format!("Committed manifest is invalid ({error})"))?;
+                    // The post-commit health pass is already part of the
+                    // install's longer-running work.  Use the cache-aware
+                    // path so this scan publishes both the durable report
+                    // and per-JAR metadata for the next launch instead of
+                    // making launch parse the same archives again.
+                    Ok(crate::health::cached_health(
+                        &health_dir,
+                        &manifest,
+                        health_registry.as_deref(),
+                        None,
+                    ))
+                })
+                .await
+                {
+                    Ok(report) => report,
                     Err(error) => {
-                        let restore = crate::snapshot::restore_snapshot(instance_dir, &snapshot.id);
-                        let _ = std::fs::remove_dir_all(&staging_dir);
+                        let restore_dir = instance_dir.to_path_buf();
+                        let restore_id = snapshot.id.clone();
+                        let restore =
+                            run_blocking_phase(scheduler, "install health rollback", move || {
+                                crate::snapshot::restore_snapshot(&restore_dir, &restore_id)
+                            })
+                            .await;
+                        cleanup_staging_dir(scheduler, &staging_dir).await;
                         return fail(
-                            format!(
-                            "Committed manifest is invalid ({error}); restore result: {restore:?}"
-                        ),
+                            format!("{error}; restore result: {restore:?}"),
                             Some(snapshot.id),
                             restore.is_ok(),
                         );
                     }
                 };
-            let report = crate::health::health(instance_dir, &manifest, None);
             if !report.blockers.is_empty() {
-                let restore = crate::snapshot::restore_snapshot(instance_dir, &snapshot.id);
-                let _ = std::fs::remove_dir_all(&staging_dir);
+                let restore_dir = instance_dir.to_path_buf();
+                let restore_id = snapshot.id.clone();
+                let restore = run_blocking_phase(scheduler, "install health rollback", move || {
+                    crate::snapshot::restore_snapshot(&restore_dir, &restore_id)
+                })
+                .await;
+                cleanup_staging_dir(scheduler, &staging_dir).await;
                 return match restore {
                     Ok(()) => InstallOutcome::HealthRollback {
                         health_report: report,
@@ -1419,7 +1519,7 @@ impl InstallPipeline {
             HealthOutcome::Completed { report }
         };
 
-        let _ = std::fs::remove_dir_all(&staging_dir);
+        cleanup_staging_dir(scheduler, &staging_dir).await;
         reporter.report(ProgressEvent {
             plan_id: plan.fingerprint.clone(),
             phase: ProgressPhase::Done,
@@ -1453,6 +1553,36 @@ impl InstallPipeline {
 // -----------------------------------------------------------------------
 // Internal helpers
 // -----------------------------------------------------------------------
+
+async fn run_blocking_phase<T, F>(
+    scheduler: Option<&TaskScheduler>,
+    label: &'static str,
+    task: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    match scheduler {
+        Some(scheduler) => scheduler
+            .run_blocking(BlockingPriority::UserInitiated, task)
+            .await
+            .map_err(|error| format!("{label} worker failed: {error}"))?,
+        None => task(),
+    }
+}
+
+async fn cleanup_staging_dir(scheduler: Option<&TaskScheduler>, staging_dir: &Path) {
+    let path = staging_dir.to_path_buf();
+    let _ = run_blocking_phase(scheduler, "install staging cleanup", move || {
+        if path.exists() {
+            std::fs::remove_dir_all(&path)
+                .map_err(|error| format!("failed to remove staging directory: {error}"))?;
+        }
+        Ok(())
+    })
+    .await;
+}
 
 fn apply_optional_policy(
     policy: &OptionalDepsPolicy,

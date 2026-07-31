@@ -9,8 +9,15 @@ use crate::version_match;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::time::UNIX_EPOCH;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 /// Pre-launch health score.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,59 +108,364 @@ pub struct HealthReport {
     pub scan_token: String,
 }
 
-/// Content identity of the files and registry inputs that affect a health scan.
-pub fn scan_token(
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HealthCacheKey {
+    instance_dir: PathBuf,
+    registry_db_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedHealth {
+    metadata_fingerprint: String,
+    report: HealthReport,
+}
+
+const HEALTH_CACHE_CAPACITY: usize = 64;
+const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 1;
+const JAR_METADATA_CACHE_SCHEMA_VERSION: u32 = 1;
+const JAR_METADATA_PARSER_SCHEMA_VERSION: u32 = 1;
+static HEALTH_CACHE_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static HEALTH_CACHE: LazyLock<Mutex<HashMap<HealthCacheKey, CachedHealth>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistentHealthCache {
+    schema_version: u32,
+    parser_schema_version: u32,
+    metadata_fingerprint: String,
+    report: HealthReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistentJarMetadataCache {
+    schema_version: u32,
+    parser_schema_version: u32,
+    entries: Vec<PersistentJarMetadataEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistentJarMetadataEntry {
+    filename: String,
+    loader: String,
+    file_size: u64,
+    modified_ns: u128,
+    file_identity: Option<String>,
+    metadata: JarDeps,
+    status: ParseStatus,
+    diagnostics: Vec<ParseDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct JarMetadataCacheKey {
+    filename: String,
+    loader: String,
+    file_size: u64,
+    modified_ns: u128,
+    file_identity: Option<String>,
+}
+
+impl PersistentJarMetadataEntry {
+    fn cache_key(&self) -> JarMetadataCacheKey {
+        JarMetadataCacheKey {
+            filename: self.filename.clone(),
+            loader: self.loader.clone(),
+            file_size: self.file_size,
+            modified_ns: self.modified_ns,
+            file_identity: self.file_identity.clone(),
+        }
+    }
+}
+
+/// Run health once for a metadata state and reuse the complete report while
+/// that state is unchanged.  The frontend may supply an earlier scan token;
+/// when it differs from the cached report we deliberately perform a full scan
+/// instead of trusting the stale approval.
+pub fn cached_health(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    registry_db_path: Option<&std::path::Path>,
+    expected_scan_token: Option<&str>,
+) -> HealthReport {
+    let key = HealthCacheKey {
+        instance_dir: instance_dir.to_path_buf(),
+        registry_db_path: registry_db_path.map(Path::to_path_buf),
+    };
+    let metadata_fingerprint = cheap_metadata_fingerprint(instance_dir, manifest, registry_db_path);
+    if let Ok(cache) = HEALTH_CACHE.lock() {
+        if let Some(cached) = cache.get(&key) {
+            let token_is_current = expected_scan_token
+                .map(|token| token == cached.report.scan_token)
+                .unwrap_or(true);
+            if cached.metadata_fingerprint == metadata_fingerprint && token_is_current {
+                return cached.report.clone();
+            }
+        }
+    }
+
+    if let Some(report) =
+        load_persistent_health(instance_dir, &metadata_fingerprint, expected_scan_token)
+    {
+        if let Ok(mut cache) = HEALTH_CACHE.lock() {
+            cache.insert(
+                key,
+                CachedHealth {
+                    metadata_fingerprint,
+                    report: report.clone(),
+                },
+            );
+        }
+        return report;
+    }
+
+    let report = health_from_inventory(
+        instance_dir,
+        manifest,
+        registry_db_path,
+        inventory_cached(instance_dir, manifest),
+    );
+    // A background warmup can overlap a user or external filesystem change.
+    // Only publish a report when the metadata state observed before the scan
+    // is still the state recorded at the end of the scan. A mismatched report
+    // remains useful to the immediate caller, but it must not become a warm
+    // cache hit for a later launch.
+    if report.scan_token == metadata_fingerprint {
+        let _ = persist_health_cache(instance_dir, &report);
+        if let Ok(mut cache) = HEALTH_CACHE.lock() {
+            cache.insert(
+                key,
+                CachedHealth {
+                    metadata_fingerprint,
+                    report: report.clone(),
+                },
+            );
+            while cache.len() > HEALTH_CACHE_CAPACITY {
+                let Some(oldest_key) = cache.keys().next().cloned() else {
+                    break;
+                };
+                cache.remove(&oldest_key);
+            }
+        }
+    }
+    report
+}
+
+fn health_cache_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(".agora").join("health-report.json")
+}
+
+fn jar_metadata_cache_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(".agora").join("jar-metadata.json")
+}
+
+fn load_persistent_health(
+    instance_dir: &Path,
+    metadata_fingerprint: &str,
+    expected_scan_token: Option<&str>,
+) -> Option<HealthReport> {
+    let bytes = std::fs::read(health_cache_path(instance_dir)).ok()?;
+    let cached = serde_json::from_slice::<PersistentHealthCache>(&bytes).ok()?;
+    if cached.schema_version != HEALTH_REPORT_CACHE_SCHEMA_VERSION
+        || cached.parser_schema_version != JAR_METADATA_PARSER_SCHEMA_VERSION
+        || cached.metadata_fingerprint != metadata_fingerprint
+        || cached.report.scan_token != metadata_fingerprint
+        || expected_scan_token.is_some_and(|token| token != cached.report.scan_token)
+    {
+        return None;
+    }
+    Some(cached.report)
+}
+
+fn persist_health_cache(instance_dir: &Path, report: &HealthReport) -> Result<(), String> {
+    let cached = PersistentHealthCache {
+        schema_version: HEALTH_REPORT_CACHE_SCHEMA_VERSION,
+        parser_schema_version: JAR_METADATA_PARSER_SCHEMA_VERSION,
+        metadata_fingerprint: report.scan_token.clone(),
+        report: report.clone(),
+    };
+    let bytes = serde_json::to_vec(&cached)
+        .map_err(|error| format!("failed to serialize health cache: {error}"))?;
+    atomic_cache_write(&health_cache_path(instance_dir), &bytes)
+}
+
+fn load_jar_metadata_cache(instance_dir: &Path) -> PersistentJarMetadataCache {
+    let Ok(bytes) = std::fs::read(jar_metadata_cache_path(instance_dir)) else {
+        return PersistentJarMetadataCache {
+            schema_version: JAR_METADATA_CACHE_SCHEMA_VERSION,
+            parser_schema_version: JAR_METADATA_PARSER_SCHEMA_VERSION,
+            entries: Vec::new(),
+        };
+    };
+    serde_json::from_slice::<PersistentJarMetadataCache>(&bytes)
+        .ok()
+        .filter(|cache| {
+            cache.schema_version == JAR_METADATA_CACHE_SCHEMA_VERSION
+                && cache.parser_schema_version == JAR_METADATA_PARSER_SCHEMA_VERSION
+        })
+        .unwrap_or(PersistentJarMetadataCache {
+            schema_version: JAR_METADATA_CACHE_SCHEMA_VERSION,
+            parser_schema_version: JAR_METADATA_PARSER_SCHEMA_VERSION,
+            entries: Vec::new(),
+        })
+}
+
+fn persist_jar_metadata_cache(
+    instance_dir: &Path,
+    entries: Vec<PersistentJarMetadataEntry>,
+) -> Result<(), String> {
+    let cache = PersistentJarMetadataCache {
+        schema_version: JAR_METADATA_CACHE_SCHEMA_VERSION,
+        parser_schema_version: JAR_METADATA_PARSER_SCHEMA_VERSION,
+        entries,
+    };
+    let bytes = serde_json::to_vec(&cache)
+        .map_err(|error| format!("failed to serialize JAR metadata cache: {error}"))?;
+    atomic_cache_write(&jar_metadata_cache_path(instance_dir), &bytes)
+}
+
+fn atomic_cache_write(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("cache path has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create cache directory: {error}"))?;
+    let temp = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("cache"),
+        std::process::id(),
+        HEALTH_CACHE_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write_result = (|| {
+        let mut file = std::fs::File::create(&temp)
+            .map_err(|error| format!("failed to create cache temporary file: {error}"))?;
+        std::io::Write::write_all(&mut file, contents)
+            .map_err(|error| format!("failed to write cache temporary file: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("failed to sync cache temporary file: {error}"))?;
+        Ok::<_, String>(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    let _ = std::fs::remove_file(path);
+    if let Err(error) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("failed to commit cache: {error}"));
+    }
+    Ok(())
+}
+
+/// Build a cheap invalidation fingerprint.  It intentionally records file
+/// metadata rather than file contents; a missing, unreadable, or changed
+/// metadata record simply forces the normal content-hashing health scan.
+fn cheap_metadata_fingerprint(
     instance_dir: &Path,
     manifest: &InstanceManifest,
     registry_db_path: Option<&std::path::Path>,
 ) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(b"agora-health-metadata-v2");
     if let Ok(bytes) = serde_json::to_vec(manifest) {
         hasher.update(bytes);
+    } else {
+        hasher.update(b"<manifest-serialize-error>");
     }
+
     let mods_dir = instance_dir.join("mods");
-    let mut entries = std::fs::read_dir(mods_dir)
+    let mut entries = std::fs::read_dir(&mods_dir)
         .into_iter()
         .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let metadata = entry.metadata().ok()?;
-            Some((
-                entry.file_name().to_string_lossy().to_string(),
-                entry.path(),
-                metadata.len(),
-            ))
-        })
+        .flatten()
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        hasher.update(entry.0.as_bytes());
-        hasher.update(entry.2.to_le_bytes());
-        hash_file_contents(&mut hasher, &entry.1);
+        let name = entry.file_name().to_string_lossy().into_owned();
+        hasher.update(name.as_bytes());
+        if let Ok(metadata) = entry.metadata() {
+            hasher.update([if metadata.is_file() { 1 } else { 0 }]);
+            hasher.update(metadata.len().to_le_bytes());
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            hasher.update(modified_ns.to_le_bytes());
+            append_file_identity(&mut hasher, &metadata);
+        } else {
+            hasher.update(b"<metadata-error>");
+        }
     }
+
     if let Some(path) = registry_db_path {
         hasher.update(path.to_string_lossy().as_bytes());
-        hash_file_contents(&mut hasher, path);
+        if let Ok(metadata) = std::fs::metadata(path) {
+            hasher.update(metadata.len().to_le_bytes());
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            hasher.update(modified_ns.to_le_bytes());
+            append_file_identity(&mut hasher, &metadata);
+        } else {
+            hasher.update(b"<registry-metadata-error>");
+        }
+    } else {
+        hasher.update(b"<no-registry>");
     }
     hex::encode(hasher.finalize())
 }
 
-fn hash_file_contents(hasher: &mut Sha256, path: &Path) {
-    let Ok(mut file) = std::fs::File::open(path) else {
-        hasher.update(b"<unreadable>");
-        return;
-    };
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => hasher.update(&buffer[..read]),
-            Err(_) => {
-                hasher.update(b"<read-error>");
-                break;
-            }
-        }
+fn append_file_identity(hasher: &mut Sha256, metadata: &std::fs::Metadata) {
+    #[cfg(unix)]
+    {
+        hasher.update(metadata.dev().to_le_bytes());
+        hasher.update(metadata.ino().to_le_bytes());
     }
+    #[cfg(windows)]
+    hasher.update(metadata.creation_time().to_le_bytes());
+    #[cfg(not(unix))]
+    {
+        let _ = (hasher, metadata);
+    }
+}
+
+fn file_metadata_state(path: &Path) -> Option<(u64, u128, Option<String>)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    #[cfg(unix)]
+    let file_identity = Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()));
+    #[cfg(windows)]
+    let file_identity = Some(format!(
+        "windows:creation-time:{}",
+        metadata.creation_time()
+    ));
+    #[cfg(not(any(unix, windows)))]
+    let file_identity = None;
+    Some((metadata.len(), modified_ns, file_identity))
+}
+
+/// Cheap identity of the files and registry inputs that affect a health scan.
+/// The report itself still performs the full JAR parse when this identity is a
+/// cache miss; this token only decides whether that work must be repeated.
+pub fn scan_token(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    registry_db_path: Option<&std::path::Path>,
+) -> String {
+    cheap_metadata_fingerprint(instance_dir, manifest, registry_db_path)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,9 +648,64 @@ fn apply_explicit_capability_mappings(
 }
 
 pub fn inventory(instance_dir: &Path, manifest: &InstanceManifest) -> InstanceInventory {
+    inventory_with_parser(instance_dir, manifest, false)
+}
+
+/// Load the inventory from the durable per-instance cache when each JAR's
+/// metadata still matches.  A cache miss parses only that JAR and refreshes
+/// its entry; a missing or malformed cache is merely a cold-path condition.
+fn inventory_cached(instance_dir: &Path, manifest: &InstanceManifest) -> InstanceInventory {
+    inventory_with_parser(instance_dir, manifest, true)
+}
+
+/// Populate the durable per-instance JAR metadata cache without running the
+/// full dependency/conflict health analysis.
+///
+/// Install operations and startup maintenance use this when they have time to
+/// do the archive parsing away from the launch path.  The cache is keyed by
+/// file metadata and loader, so launch still invalidates it when a JAR or
+/// manifest changes.  Cache failures are deliberately surfaced to callers so
+/// optimization work never silently masquerades as completed precomputation.
+pub fn precompute_jar_metadata_cache(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+) -> Result<(), String> {
+    let (_, cache_write) = inventory_with_parser_result(instance_dir, manifest, true);
+    cache_write
+}
+
+fn inventory_with_parser(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    use_cache: bool,
+) -> InstanceInventory {
+    inventory_with_parser_result(instance_dir, manifest, use_cache).0
+}
+
+fn inventory_with_parser_result(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    use_cache: bool,
+) -> (InstanceInventory, Result<(), String>) {
     let mods_dir = instance_dir.join("mods");
     let mut artifacts = Vec::new();
     let mut physical_filenames = HashSet::new();
+    let mut manifest_by_filename = HashMap::with_capacity(manifest.mods.len());
+    for item in &manifest.mods {
+        // Preserve the old first-match behavior for malformed manifests that
+        // contain duplicate filenames while making the normal lookup O(1).
+        manifest_by_filename
+            .entry(item.filename.as_str())
+            .or_insert(item);
+    }
+    let old_cache = use_cache.then(|| {
+        load_jar_metadata_cache(instance_dir)
+            .entries
+            .into_iter()
+            .map(|entry| (entry.cache_key(), entry))
+            .collect::<HashMap<_, _>>()
+    });
+    let mut refreshed_cache = Vec::new();
     if mods_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&mods_dir) {
             for entry in entries.flatten() {
@@ -351,14 +718,47 @@ pub fn inventory(instance_dir: &Path, manifest: &InstanceManifest) -> InstanceIn
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 physical_filenames.insert(filename.clone());
-                let manifest_entry = manifest.mods.iter().find(|item| item.filename == filename);
+                let manifest_entry = manifest_by_filename.get(filename.as_str()).copied();
                 if manifest_entry.is_some_and(|item| !item.enabled) {
                     continue;
                 }
-                let parsed = parse_jar_metadata_for_loader_with_status(&path, &manifest.loader);
-                let mut metadata = parsed.metadata;
+                let file_state = use_cache.then(|| file_metadata_state(&path)).flatten();
+                let cached = old_cache.as_ref().and_then(|cache| {
+                    let (file_size, modified_ns, file_identity) = file_state.clone()?;
+                    cache.get(&JarMetadataCacheKey {
+                        filename: filename.clone(),
+                        loader: manifest.loader.clone(),
+                        file_size,
+                        modified_ns,
+                        file_identity,
+                    })
+                });
+                let (mut metadata, status, diagnostics) = if let Some(cached) = cached {
+                    (
+                        cached.metadata.clone(),
+                        cached.status,
+                        cached.diagnostics.clone(),
+                    )
+                } else {
+                    let parsed = parse_jar_metadata_for_loader_with_status(&path, &manifest.loader);
+                    if use_cache {
+                        if let Some((file_size, modified_ns, file_identity)) = file_state {
+                            refreshed_cache.push(PersistentJarMetadataEntry {
+                                filename: filename.clone(),
+                                loader: manifest.loader.clone(),
+                                file_size,
+                                modified_ns,
+                                file_identity,
+                                metadata: parsed.metadata.clone(),
+                                status: parsed.status,
+                                diagnostics: parsed.diagnostics.clone(),
+                            });
+                        }
+                    }
+                    (parsed.metadata, parsed.status, parsed.diagnostics)
+                };
                 let mut manifest_fallback_used = false;
-                if parsed.status == ParseStatus::Failed {
+                if status == ParseStatus::Failed {
                     if let Some(installed) = manifest_entry {
                         metadata = manifest_fallback_metadata(installed);
                         manifest_fallback_used = true;
@@ -367,10 +767,16 @@ pub fn inventory(instance_dir: &Path, manifest: &InstanceManifest) -> InstanceIn
                 artifacts.push(ArtifactInventory {
                     filename,
                     metadata,
-                    status: parsed.status,
-                    diagnostics: parsed.diagnostics,
+                    status,
+                    diagnostics,
                     manifest_fallback_used,
                 });
+
+                if use_cache {
+                    if let Some(cached) = cached {
+                        refreshed_cache.push(cached.clone());
+                    }
+                }
             }
         }
     }
@@ -384,10 +790,18 @@ pub fn inventory(instance_dir: &Path, manifest: &InstanceManifest) -> InstanceIn
         .collect();
     missing_enabled_manifest_files.sort();
     missing_enabled_manifest_files.dedup();
-    InstanceInventory {
-        artifacts,
-        missing_enabled_manifest_files,
-    }
+    let cache_write = if use_cache {
+        persist_jar_metadata_cache(instance_dir, refreshed_cache)
+    } else {
+        Ok(())
+    };
+    (
+        InstanceInventory {
+            artifacts,
+            missing_enabled_manifest_files,
+        },
+        cache_write,
+    )
 }
 
 fn provider_files(
@@ -463,8 +877,21 @@ pub fn health(
     manifest: &InstanceManifest,
     registry_db_path: Option<&std::path::Path>,
 ) -> HealthReport {
+    health_from_inventory(
+        instance_dir,
+        manifest,
+        registry_db_path,
+        inventory(instance_dir, manifest),
+    )
+}
+
+fn health_from_inventory(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+    registry_db_path: Option<&std::path::Path>,
+    instance_inventory: InstanceInventory,
+) -> HealthReport {
     // 1. Scan all enabled physical JARs and retain manifest drift.
-    let instance_inventory = inventory(instance_dir, manifest);
     let missing_enabled_manifest_files = instance_inventory.missing_enabled_manifest_files;
     let jars = instance_inventory.artifacts;
 
@@ -521,30 +948,21 @@ pub fn health(
 
     // 3a. Load aliases and curated deps from the registry for alias resolution
     //     in subsequent checks. (registry.db, optional — Phase 3 decoupling)
-    let alias_pairs: Vec<(String, String)> = registry_db_path
-        .and_then(|p| {
-            if p.exists() {
-                db::registry_connection(p)
-                    .ok()
-                    .and_then(|conn| registry::get_all_mod_aliases(&conn).ok())
-            } else {
-                None
-            }
+    let (alias_pairs, curated_deps): (
+        Vec<(String, String)>,
+        HashMap<String, registry::ManifestDeps>,
+    ) = registry_db_path
+        .filter(|path| path.exists())
+        .and_then(|path| db::registry_connection(path).ok())
+        .map(|conn| {
+            (
+                registry::get_all_mod_aliases(&conn).unwrap_or_default(),
+                registry::get_all_manifest_dependencies(&conn).unwrap_or_default(),
+            )
         })
         .unwrap_or_default();
     let aliases = AliasMap::from_pairs(&alias_pairs);
 
-    let curated_deps: HashMap<String, registry::ManifestDeps> = registry_db_path
-        .and_then(|p| {
-            if p.exists() {
-                db::registry_connection(p)
-                    .ok()
-                    .and_then(|conn| registry::get_all_manifest_dependencies(&conn).ok())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
     let curated_index: HashMap<String, &registry::ManifestDeps> = curated_deps
         .iter()
         .map(|(k, v)| (k.to_lowercase(), v))
@@ -1234,9 +1652,70 @@ mod tests {
         let path = dir.join("mods/content.jar");
         std::fs::write(&path, b"aaaa").unwrap();
         let before = scan_token(&dir, &manifest, None);
+        // Windows can coalesce immediate filesystem timestamp updates. Give
+        // the metadata identity a tick before replacing same-sized content.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&path, b"bbbb").unwrap();
         let after = scan_token(&dir, &manifest, None);
         assert_ne!(before, after);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cached_health_refreshes_when_mod_metadata_changes() {
+        let dir = fresh_instance("cached_health_metadata");
+        let manifest = tracked_manifest(&[("content.jar", "content")]);
+        let path = dir.join("mods/content.jar");
+        std::fs::write(&path, b"aaaa").unwrap();
+        let first = cached_health(&dir, &manifest, None, None);
+        std::fs::write(&path, b"bbbbbbbb").unwrap();
+        let second = cached_health(&dir, &manifest, None, Some(&first.scan_token));
+        assert_ne!(first.scan_token, second.scan_token);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cached_health_persists_report_and_jar_metadata() {
+        let dir = fresh_instance("cached_health_persistent");
+        let manifest = tracked_manifest(&[("content.jar", "content")]);
+        std::fs::write(dir.join("mods/content.jar"), b"not a real jar").unwrap();
+
+        let _ = cached_health(&dir, &manifest, None, None);
+
+        assert!(health_cache_path(&dir).is_file());
+        assert!(jar_metadata_cache_path(&dir).is_file());
+        let cache: PersistentHealthCache =
+            serde_json::from_slice(&std::fs::read(health_cache_path(&dir)).unwrap()).unwrap();
+        assert_eq!(
+            cache.parser_schema_version,
+            JAR_METADATA_PARSER_SCHEMA_VERSION
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn precompute_jar_metadata_cache_does_not_run_full_health() {
+        let dir = fresh_instance("precompute_metadata_only");
+        let manifest = tracked_manifest(&[("content.jar", "content")]);
+        std::fs::write(dir.join("mods/content.jar"), b"not a real jar").unwrap();
+
+        precompute_jar_metadata_cache(&dir, &manifest).unwrap();
+
+        assert!(jar_metadata_cache_path(&dir).is_file());
+        assert!(!health_cache_path(&dir).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn precompute_jar_metadata_cache_surfaces_persistence_failure() {
+        let dir = fresh_instance("precompute_metadata_write_failure");
+        let manifest = tracked_manifest(&[("content.jar", "content")]);
+        std::fs::write(dir.join("mods/content.jar"), b"not a real jar").unwrap();
+        std::fs::write(dir.join(".agora"), b"blocks cache directory").unwrap();
+
+        let error = precompute_jar_metadata_cache(&dir, &manifest).unwrap_err();
+
+        assert!(error.contains("cache directory"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

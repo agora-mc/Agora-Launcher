@@ -234,7 +234,7 @@ pub struct InstalledProfileReceipt {
 /// `profile_path` is included (it's inside the well-known `versions/`
 /// directory, not a user-chosen arbitrary path). Other paths are derived
 /// from the input arguments and already known to the caller.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdoptedProfile {
     /// The loader tuple.
     pub tuple: LoaderTuple,

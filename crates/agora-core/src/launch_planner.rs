@@ -41,6 +41,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+
 // No managed-installer re-exports — Forge/NeoForge uses installed-profile adoption only.
 
 #[cfg(unix)]
@@ -56,6 +61,7 @@ const VERSION_MANIFEST_URL: &str =
 /// other metadata (version JSONs addressed by SHA-1, asset indexes, pinned
 /// loader profiles) are content-addressable and need no freshness window.
 const VERSION_MANIFEST_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const RESOLVED_PLAN_CACHE_SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Redirect-safe HTTP clients
@@ -222,7 +228,7 @@ pub struct ResolveRequest {
     pub receipts_root: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedJava {
     pub path: PathBuf,
     pub major_version: u32,
@@ -242,7 +248,7 @@ pub struct ResolvedJava {
 ///
 /// Forge/NeoForge loaders use the `adopted_profile` path (installed-profile
 /// adoption). The managed installer execution path has been removed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedLaunchPlan {
     pub instance_id: String,
     pub version_id: String,
@@ -379,6 +385,369 @@ struct AssetIndexDocument {
 struct AssetObject {
     hash: String,
     size: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct AssetCompletionMarker {
+    schema_version: u32,
+    index_sha1: String,
+    object_count: usize,
+    total_expected_size: u64,
+    virtual_: bool,
+    map_to_resources: bool,
+    storage_fingerprint: String,
+}
+
+type GroupedAssets = BTreeMap<String, (i64, Vec<String>)>;
+
+const ASSET_COMPLETION_SCHEMA_VERSION: u32 = 3;
+
+fn asset_completion_path(assets_dir: &Path, index_sha1: &str) -> PathBuf {
+    assets_dir
+        .join("completion")
+        .join(format!("{index_sha1}.json"))
+}
+
+fn asset_completion_matches(
+    assets_dir: &Path,
+    index_sha1: &str,
+    grouped: &GroupedAssets,
+    virtual_: bool,
+    map_to_resources: bool,
+) -> bool {
+    let Ok(bytes) = std::fs::read(asset_completion_path(assets_dir, index_sha1)) else {
+        return false;
+    };
+    let Ok(marker) = serde_json::from_slice::<AssetCompletionMarker>(&bytes) else {
+        return false;
+    };
+    let Ok(storage_fingerprint) =
+        asset_storage_metadata_fingerprint(assets_dir, grouped, virtual_, map_to_resources)
+    else {
+        return false;
+    };
+    marker.schema_version == ASSET_COMPLETION_SCHEMA_VERSION
+        && marker.index_sha1 == index_sha1
+        && marker.object_count == grouped.len()
+        && marker.total_expected_size == total_expected_asset_size(grouped)
+        && marker.virtual_ == virtual_
+        && marker.map_to_resources == map_to_resources
+        && marker.storage_fingerprint == storage_fingerprint
+}
+
+fn write_asset_completion_marker(
+    assets_dir: &Path,
+    index_sha1: &str,
+    grouped: &GroupedAssets,
+    virtual_: bool,
+    map_to_resources: bool,
+) {
+    let Ok(storage_fingerprint) =
+        asset_storage_metadata_fingerprint(assets_dir, grouped, virtual_, map_to_resources)
+    else {
+        // Never publish a completion marker for a partially materialized
+        // index. The next launch will take the normal verification path.
+        return;
+    };
+    let marker = AssetCompletionMarker {
+        schema_version: ASSET_COMPLETION_SCHEMA_VERSION,
+        index_sha1: index_sha1.to_string(),
+        object_count: grouped.len(),
+        total_expected_size: total_expected_asset_size(grouped),
+        virtual_,
+        map_to_resources,
+        storage_fingerprint,
+    };
+    let Ok(bytes) = serde_json::to_vec(&marker) else {
+        return;
+    };
+    if let Err(error) = atomic_write(&asset_completion_path(assets_dir, index_sha1), &bytes) {
+        eprintln!("[launch-assets] could not persist completion receipt: {error}");
+    }
+}
+
+fn total_expected_asset_size(grouped: &GroupedAssets) -> u64 {
+    grouped
+        .values()
+        .filter_map(|(size, _)| u64::try_from(*size).ok())
+        .sum()
+}
+
+/// Metadata identity for every file covered by an asset completion marker.
+/// This preserves the warm-path win (no content hashing) while ensuring a
+/// deleted, replaced, truncated, or normally modified cache file invalidates
+/// the marker instead of letting direct launch proceed with missing assets.
+fn asset_storage_metadata_fingerprint(
+    assets_dir: &Path,
+    grouped: &GroupedAssets,
+    virtual_: bool,
+    map_to_resources: bool,
+) -> Result<String, String> {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-asset-storage-metadata-v1");
+    let virtual_root = if virtual_ {
+        Some(assets_dir.join("virtual").join("legacy"))
+    } else if map_to_resources {
+        Some(assets_dir.join("resources"))
+    } else {
+        None
+    };
+
+    for (hash, (size, logical_names)) in grouped {
+        let expected_size = u64::try_from(*size)
+            .map_err(|_| format!("asset {hash} has an invalid negative size"))?;
+        let object_path = assets_dir.join("objects").join(&hash[..2]).join(hash);
+        append_asset_file_metadata(
+            &mut hasher,
+            &format!("object:{hash}"),
+            &object_path,
+            expected_size,
+        )?;
+
+        if let Some(root) = virtual_root.as_ref() {
+            for logical_name in logical_names {
+                let relative = safe_relative_path(logical_name).map_err(|error| {
+                    format!("asset index contains an unsafe virtual path: {error}")
+                })?;
+                append_asset_file_metadata(
+                    &mut hasher,
+                    &format!("virtual:{logical_name}"),
+                    &root.join(relative),
+                    expected_size,
+                )?;
+            }
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn append_asset_file_metadata(
+    hasher: &mut sha2::Sha256,
+    identity: &str,
+    path: &Path,
+    expected_size: u64,
+) -> Result<(), String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("asset {} is unavailable: {error}", path.display()))?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(format!(
+            "asset {} does not match its expected file size",
+            path.display()
+        ));
+    }
+    let modified_ns = metadata
+        .modified()
+        .map_err(|error| format!("asset {} has no modification time: {error}", path.display()))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            format!(
+                "asset {} has an invalid modification time: {error}",
+                path.display()
+            )
+        })?
+        .as_nanos();
+    hasher.update((identity.len() as u64).to_le_bytes());
+    hasher.update(identity.as_bytes());
+    hasher.update(metadata.len().to_le_bytes());
+    hasher.update(modified_ns.to_le_bytes());
+    #[cfg(unix)]
+    {
+        hasher.update(metadata.dev().to_le_bytes());
+        hasher.update(metadata.ino().to_le_bytes());
+    }
+    #[cfg(windows)]
+    hasher.update(metadata.creation_time().to_le_bytes());
+    Ok(())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ResolvedPlanCacheEntry {
+    schema_version: u32,
+    key: String,
+    plan: ResolvedLaunchPlan,
+}
+
+/// Resolve a launch plan through a durable cache keyed by all inputs that can
+/// affect metadata resolution or Java selection. The cache is advisory: a
+/// missing, malformed, stale, or unusable entry falls back to the canonical
+/// resolver and is replaced after success.
+pub async fn resolve_cached(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPlan> {
+    let key = resolved_plan_cache_key(&request);
+    let cache_path = request
+        .cache_dir
+        .join("launch-plans")
+        .join(format!("{}.json", resolved_plan_cache_slot(&request)));
+    if let Ok(bytes) = std::fs::read(&cache_path) {
+        if let Ok(entry) = serde_json::from_slice::<ResolvedPlanCacheEntry>(&bytes) {
+            let mut plan = entry.plan;
+            if entry.schema_version == RESOLVED_PLAN_CACHE_SCHEMA_VERSION
+                && entry.key == key
+                && cached_plan_matches_request(&plan, &request)
+            {
+                // Network policy controls cache misses. A valid prepared plan
+                // remains safe to use when the user is offline, so use the
+                // current policy for any later materialization miss.
+                plan.network_policy = request.network_policy.clone();
+                return Ok(plan);
+            }
+        }
+    }
+
+    let plan = resolve(request.clone()).await?;
+    // Resolution may populate previously missing version/profile metadata.
+    // Bind the durable entry to the post-resolution state so the very next
+    // launch can hit it instead of paying for a guaranteed one-time miss.
+    let persisted_key = resolved_plan_cache_key(&request);
+    let entry = ResolvedPlanCacheEntry {
+        schema_version: RESOLVED_PLAN_CACHE_SCHEMA_VERSION,
+        key: persisted_key,
+        plan: plan.clone(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&entry) {
+        let _ = atomic_write(&cache_path, &bytes);
+    }
+    Ok(plan)
+}
+
+fn cached_plan_matches_request(plan: &ResolvedLaunchPlan, request: &ResolveRequest) -> bool {
+    let loader_matches = match (&plan.loader, &request.loader) {
+        (None, None) => true,
+        (Some(plan), Some(request)) => {
+            plan.loader_type == request.loader_type
+                && plan.version == request.version
+                && plan.version_url == request.version_url
+        }
+        _ => false,
+    };
+    let java_matches = if let Some(override_path) = request.java_override.as_deref() {
+        plan.java.path == override_path
+    } else {
+        request.java_candidates.iter().any(|candidate| {
+            candidate.path == plan.java.path && candidate.version == plan.java.major_version
+        })
+    };
+
+    plan.instance_id == request.instance_id
+        && plan.base_version_id == request.base_version_id
+        && plan.game_dir == request.game_dir
+        && plan.assets_dir == request.assets_dir
+        && plan.cache_dir == request.cache_dir
+        && loader_matches
+        && java_matches
+        && plan.java.path.is_file()
+}
+
+/// Stable storage slot for one instance/version/loader plan. The dynamic
+/// validity key remains inside the entry and is replaced in place when Java or
+/// source metadata changes, preventing an unbounded trail of obsolete plan
+/// files over the lifetime of an instance.
+fn resolved_plan_cache_slot(request: &ResolveRequest) -> String {
+    let value = serde_json::json!({
+        "schema": RESOLVED_PLAN_CACHE_SCHEMA_VERSION,
+        "instance_id": request.instance_id,
+        "base_version_id": request.base_version_id,
+        "loader": request.loader,
+        "game_dir": request.game_dir,
+        "assets_dir": request.assets_dir,
+        "cache_dir": request.cache_dir,
+    });
+    sha1_hex(&serde_json::to_vec(&value).unwrap_or_default())
+}
+
+fn resolved_plan_cache_key(request: &ResolveRequest) -> String {
+    let mut source_metadata = Vec::new();
+    if let Some(java_override) = request.java_override.as_deref() {
+        append_plan_source_metadata(&mut source_metadata, java_override);
+    }
+    for candidate in &request.java_candidates {
+        append_plan_source_metadata(&mut source_metadata, &candidate.path);
+    }
+    append_plan_source_metadata(
+        &mut source_metadata,
+        &request
+            .cache_dir
+            .join("versions")
+            .join(&request.base_version_id)
+            .join(format!("{}.json", request.base_version_id)),
+    );
+    if let Some(minecraft_dir) = request.minecraft_dir.as_deref() {
+        append_plan_source_metadata(&mut source_metadata, &minecraft_dir.join("versions"));
+        append_plan_source_metadata(
+            &mut source_metadata,
+            &minecraft_dir
+                .join("versions")
+                .join(&request.base_version_id)
+                .join(format!("{}.json", request.base_version_id)),
+        );
+        if let Some(loader) = request.loader.as_ref() {
+            let tuple = crate::installed_profile::LoaderTuple {
+                loader: loader.loader_type.clone(),
+                minecraft_version: request.base_version_id.clone(),
+                loader_version: loader.version.clone(),
+            };
+            if tuple.validate().is_ok()
+                && matches!(
+                    loader.loader_type.to_ascii_lowercase().as_str(),
+                    "forge" | "neoforge" | "fabric" | "quilt"
+                )
+            {
+                let profile_id = crate::installed_profile::derive_profile_id(&tuple);
+                append_plan_source_metadata(
+                    &mut source_metadata,
+                    &minecraft_dir
+                        .join("versions")
+                        .join(&profile_id)
+                        .join(format!("{profile_id}.json")),
+                );
+                if let Some(receipts_root) = request.receipts_root.as_deref() {
+                    append_plan_source_metadata(
+                        &mut source_metadata,
+                        &crate::installed_profile::receipt_path(receipts_root, &tuple),
+                    );
+                }
+            }
+        }
+    }
+    let value = serde_json::json!({
+        "schema": RESOLVED_PLAN_CACHE_SCHEMA_VERSION,
+        "instance_id": request.instance_id,
+        "base_version_id": request.base_version_id,
+        "loader": request.loader,
+        "game_dir": request.game_dir,
+        "assets_dir": request.assets_dir,
+        "cache_dir": request.cache_dir,
+        "java_override": request.java_override,
+        "allow_incompatible_java_override": request.allow_incompatible_java_override,
+        "java_candidates": request.java_candidates,
+        "minecraft_dir": request.minecraft_dir,
+        "receipts_root": request.receipts_root,
+        "source_metadata": source_metadata,
+    });
+    let bytes = serde_json::to_vec(&value).unwrap_or_default();
+    sha1_hex(&bytes)
+}
+
+fn append_plan_source_metadata(records: &mut Vec<serde_json::Value>, path: &Path) {
+    let Some(metadata) = std::fs::metadata(path).ok() else {
+        records.push(serde_json::json!({
+            "path": path,
+            "state": "missing",
+        }));
+        return;
+    };
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    records.push(serde_json::json!({
+        "path": path,
+        "size": metadata.len(),
+        "modified_ns": modified_ns,
+        "is_file": metadata.is_file(),
+        "is_dir": metadata.is_dir(),
+    }));
 }
 
 /// Resolve base Minecraft metadata, an optional pinned Fabric/Quilt profile,
@@ -673,7 +1042,12 @@ pub async fn materialize(
                 )
                 .await?;
             }
-            native_archives.push((path, library.extract.clone()));
+            native_archives.push(NativeArchive {
+                path,
+                rules: library.extract.clone(),
+                sha1: artifact.sha1.clone(),
+                sha256: artifact.sha256.clone(),
+            });
         }
     }
 
@@ -1051,7 +1425,12 @@ async fn materialize_adopted_profile(
                     }
                 }
             }
-            native_archives.push((path, library.extract.clone()));
+            native_archives.push(NativeArchive {
+                path,
+                rules: library.extract.clone(),
+                sha1: artifact.sha1.clone(),
+                sha256: artifact.sha256.clone(),
+            });
         }
     }
 
@@ -1116,6 +1495,8 @@ async fn materialize_adopted_profile(
                 code: "ERR_ASSET_INDEX_PARSE".into(),
                 message: format!("Failed to parse {}: {e}", asset_index_path.display()),
             })?;
+        let index_sha1 = sha1_hex(&index_bytes);
+        let mut grouped = GroupedAssets::new();
         for (logical_name, object) in &index.objects {
             if object.hash.len() < 2
                 || !object.hash.bytes().all(|b| b.is_ascii_hexdigit())
@@ -1126,60 +1507,123 @@ async fn materialize_adopted_profile(
                     message: format!("Asset index contains invalid object {logical_name}."),
                 });
             }
+            let grouped_entry = grouped
+                .entry(object.hash.clone())
+                .or_insert_with(|| (object.size, Vec::new()));
+            if grouped_entry.0 != object.size {
+                return Err(LauncherError::Generic {
+                    code: "ERR_ASSET_OBJECT_INVALID".into(),
+                    message: format!("Asset index gives conflicting sizes for {}.", object.hash),
+                });
+            }
+            grouped_entry.1.push(logical_name.clone());
+        }
+        let completion_is_current = asset_completion_matches(
+            &resolved.assets_dir,
+            &index_sha1,
+            &grouped,
+            index.virtual_,
+            index.map_to_resources,
+        );
+        if !completion_is_current {
+            for (logical_name, object) in &index.objects {
+                if object.hash.len() < 2
+                    || !object.hash.bytes().all(|b| b.is_ascii_hexdigit())
+                    || object.size < 0
+                {
+                    return Err(LauncherError::Generic {
+                        code: "ERR_ASSET_OBJECT_INVALID".into(),
+                        message: format!("Asset index contains invalid object {logical_name}."),
+                    });
+                }
 
-            let object_path = resolved
-                .assets_dir
-                .join("objects")
-                .join(&object.hash[..2])
-                .join(&object.hash);
+                let object_path = resolved
+                    .assets_dir
+                    .join("objects")
+                    .join(&object.hash[..2])
+                    .join(&object.hash);
 
-            // Cache hit check
-            if object_path.is_file() {
-                if let Ok(data) = std::fs::read(&object_path) {
-                    if crate::installed_artifact::sha1_hex(&data) == object.hash
-                        && data.len() as i64 == object.size
+                // Cache hit check
+                if object_path.is_file() {
+                    if crate::artifact_receipt::is_verified(
+                        &object_path,
+                        "sha1",
+                        &object.hash,
+                        Some(object.size),
+                    ) {
+                        continue;
+                    }
+                    if let Ok(data) = std::fs::read(&object_path) {
+                        if crate::installed_artifact::sha1_hex(&data) == object.hash
+                            && data.len() as i64 == object.size
+                        {
+                            let _ = crate::artifact_receipt::record_verified(
+                                &object_path,
+                                "sha1",
+                                &object.hash,
+                                Some(object.size),
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                // Installed source
+                let installed_path = src.asset_object(&object.hash);
+                if installed_path.is_file() {
+                    use crate::installed_artifact::{is_regular_file, verify_sha1, verify_size};
+                    if is_regular_file(&installed_path).is_ok()
+                        && verify_sha1(&installed_path, &object.hash).is_ok()
+                        && verify_size(&installed_path, object.size).is_ok()
                     {
+                        crate::installed_artifact::hardlink_or_copy(&installed_path, &object_path)
+                            .map_err(|e| LauncherError::Generic {
+                                code: "ERR_ASSET_MATERIALIZE".into(),
+                                message: format!(
+                                    "Failed to materialize asset {}: {e}",
+                                    object_path.display()
+                                ),
+                            })?;
+                        let _ = crate::artifact_receipt::record_verified(
+                            &object_path,
+                            "sha1",
+                            &object.hash,
+                            Some(object.size),
+                        );
                         continue;
                     }
                 }
-            }
 
-            // Installed source
-            let installed_path = src.asset_object(&object.hash);
-            if installed_path.is_file() {
-                use crate::installed_artifact::{is_regular_file, verify_sha1, verify_size};
-                if is_regular_file(&installed_path).is_ok()
-                    && verify_sha1(&installed_path, &object.hash).is_ok()
-                    && verify_size(&installed_path, object.size).is_ok()
-                {
-                    crate::installed_artifact::hardlink_or_copy(&installed_path, &object_path)
-                        .map_err(|e| LauncherError::Generic {
-                            code: "ERR_ASSET_MATERIALIZE".into(),
-                            message: format!(
-                                "Failed to materialize asset {}: {e}",
-                                object_path.display()
-                            ),
-                        })?;
-                    continue;
-                }
+                // Network fallback
+                let url = format!(
+                    "https://resources.download.minecraft.net/{}/{}",
+                    &object.hash[..2],
+                    object.hash
+                );
+                download_sha1_atomic(
+                    clients.for_category(NetworkCategory::MojangContent),
+                    &url,
+                    &object_path,
+                    Some(&object.hash),
+                    Some(object.size),
+                    &policy,
+                    NetworkCategory::MojangContent,
+                )
+                .await?;
             }
-
-            // Network fallback
-            let url = format!(
-                "https://resources.download.minecraft.net/{}/{}",
-                &object.hash[..2],
-                object.hash
+        }
+        // This adoption path materializes content-addressed objects but does
+        // not author legacy virtual/resource copies. It may consume a marker
+        // produced by the canonical materializer, but must not certify those
+        // secondary outputs itself.
+        if !index.virtual_ && !index.map_to_resources {
+            write_asset_completion_marker(
+                &resolved.assets_dir,
+                &index_sha1,
+                &grouped,
+                false,
+                false,
             );
-            download_sha1_atomic(
-                clients.for_category(NetworkCategory::MojangContent),
-                &url,
-                &object_path,
-                Some(&object.hash),
-                Some(object.size),
-                &policy,
-                NetworkCategory::MojangContent,
-            )
-            .await?;
         }
     }
 
@@ -1993,7 +2437,10 @@ async fn materialize_assets(
             code: "ERR_ASSET_INDEX_PARSE".into(),
             message: format!("Failed to parse {}: {error}", index_path.display()),
         })?;
-    let mut grouped = BTreeMap::<String, (i64, Vec<String>)>::new();
+    let index_sha1 = sha1_hex(&bytes);
+    let virtual_ = index.virtual_;
+    let map_to_resources = index.map_to_resources;
+    let mut grouped = GroupedAssets::new();
     for (logical_name, object) in index.objects {
         if object.hash.len() < 2
             || !object.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -2016,17 +2463,29 @@ async fn materialize_assets(
         entry.1.push(logical_name);
     }
 
+    let completion_is_current = asset_completion_matches(
+        assets_dir,
+        &index_sha1,
+        &grouped,
+        virtual_,
+        map_to_resources,
+    );
+    if completion_is_current {
+        return Ok(());
+    }
+
     const MAX_CONCURRENT_ASSETS: usize = 8;
     let mut pending = tokio::task::JoinSet::new();
-    for (hash, (size, logical_names)) in grouped {
+    for (hash, (size, logical_names)) in &grouped {
         while pending.len() >= MAX_CONCURRENT_ASSETS {
             join_asset_task(&mut pending).await?;
         }
         let client = client.clone();
         let assets_dir = assets_dir.to_path_buf();
         let policy = policy.clone();
-        let virtual_ = index.virtual_;
-        let map_to_resources = index.map_to_resources;
+        let hash = hash.clone();
+        let size = *size;
+        let logical_names = logical_names.clone();
         pending.spawn(async move {
             let object_path = assets_dir.join("objects").join(&hash[..2]).join(&hash);
             let url = format!(
@@ -2075,6 +2534,13 @@ async fn materialize_assets(
     while !pending.is_empty() {
         join_asset_task(&mut pending).await?;
     }
+    write_asset_completion_marker(
+        assets_dir,
+        &index_sha1,
+        &grouped,
+        virtual_,
+        map_to_resources,
+    );
     Ok(())
 }
 
@@ -2108,8 +2574,17 @@ async fn download_sha1_atomic(
         Some(hash) => hash.to_owned(),
         None => resolve_sidecar_sha1(client, url, path, policy, category).await?,
     };
+    if crate::artifact_receipt::is_verified(path, "sha1", &resolved_sha1, expected_size) {
+        return Ok(());
+    }
     if let Ok(bytes) = std::fs::read(path) {
         if artifact_matches(&bytes, Some(&resolved_sha1), expected_size) {
+            let _ = crate::artifact_receipt::record_verified(
+                path,
+                "sha1",
+                &resolved_sha1,
+                expected_size,
+            );
             return Ok(());
         }
     }
@@ -2137,7 +2612,9 @@ async fn download_sha1_atomic(
     if !artifact_matches(&bytes, Some(&resolved_sha1), expected_size) {
         return Err(LauncherError::HashMismatch);
     }
-    atomic_write(path, &bytes)
+    atomic_write(path, &bytes)?;
+    let _ = crate::artifact_receipt::record_verified(path, "sha1", &resolved_sha1, expected_size);
+    Ok(())
 }
 
 /// Resolve an artifact's SHA-1 from its `.sha1` sidecar.
@@ -2324,12 +2801,35 @@ struct SeenEntry {
     kind: SeenEntryKind,
 }
 
+#[derive(Debug, Clone)]
+struct NativeArchive {
+    path: PathBuf,
+    rules: Option<launch::ExtractRules>,
+    sha1: Option<String>,
+    sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct NativeExtractionMarker {
+    schema_version: u32,
+    archive_key: String,
+    extracted_file_count: usize,
+    output_metadata_fingerprint: String,
+}
+
+const NATIVE_EXTRACTION_SCHEMA_VERSION: u32 = 2;
+const NATIVE_EXTRACTION_MARKER: &str = ".agora-natives.json";
+
 fn extract_natives_atomically(
-    archives: &[(PathBuf, Option<launch::ExtractRules>)],
+    archives: &[NativeArchive],
     destination: &Path,
 ) -> LauncherResult<()> {
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(native_io_error)?;
+    }
+    let archive_key = native_archive_key(archives)?;
+    if native_marker_matches(destination, &archive_key) {
+        return Ok(());
     }
     // Never reuse a predictable staging path: another launch may be extracting
     // the same native set concurrently.
@@ -2345,7 +2845,9 @@ fn extract_natives_atomically(
         let mut total_entries = 0usize;
         let mut total_size = 0u64;
 
-        for (archive_path, rules) in archives {
+        for archive_spec in archives {
+            let archive_path = &archive_spec.path;
+            let rules = archive_spec.rules.as_ref();
             let file = std::fs::File::open(archive_path).map_err(native_io_error)?;
             let mut archive =
                 zip::ZipArchive::new(file).map_err(|error| LauncherError::Generic {
@@ -2402,7 +2904,7 @@ fn extract_natives_atomically(
                 }
 
                 // Exclude META-INF and configured excludes.
-                if is_excluded(&normalized_name, rules.as_ref()) {
+                if is_excluded(&normalized_name, rules) {
                     continue;
                 }
 
@@ -2512,12 +3014,28 @@ fn extract_natives_atomically(
         None
     };
 
+    let extracted_file_count = count_regular_files(&staging).map_err(native_io_error)?;
+    let output_metadata_fingerprint =
+        native_output_metadata_fingerprint(&staging).map_err(native_io_error)?;
     match std::fs::rename(&staging, destination) {
         Ok(()) => {
             if let Some(backup) = backup {
                 let _ = std::fs::remove_dir_all(backup);
             }
             sync_parent_dir(destination.parent().unwrap_or_else(|| Path::new(".")));
+            let marker = NativeExtractionMarker {
+                schema_version: NATIVE_EXTRACTION_SCHEMA_VERSION,
+                archive_key,
+                extracted_file_count,
+                output_metadata_fingerprint,
+            };
+            if let Ok(bytes) = serde_json::to_vec(&marker) {
+                if let Err(error) =
+                    atomic_write(&destination.join(NATIVE_EXTRACTION_MARKER), &bytes)
+                {
+                    eprintln!("[launch-natives] could not persist extraction receipt: {error}");
+                }
+            }
             Ok(())
         }
         Err(error) => {
@@ -2532,6 +3050,145 @@ fn extract_natives_atomically(
             Err(native_io_error(error))
         }
     }
+}
+
+fn native_archive_key(archives: &[NativeArchive]) -> LauncherResult<String> {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-native-extractor-v1");
+    for archive in archives {
+        hasher.update(archive.path.to_string_lossy().as_bytes());
+        if let Some(hash) = archive.sha256.as_deref() {
+            hasher.update(b"sha256:");
+            hasher.update(hash.to_ascii_lowercase().as_bytes());
+        } else if let Some(hash) = archive.sha1.as_deref() {
+            hasher.update(b"sha1:");
+            hasher.update(hash.to_ascii_lowercase().as_bytes());
+        } else {
+            let metadata = std::fs::metadata(&archive.path).map_err(native_io_error)?;
+            hasher.update(b"metadata:");
+            hasher.update(metadata.len().to_le_bytes());
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            hasher.update(modified_ns.to_le_bytes());
+        }
+        if let Some(rules) = archive.rules.as_ref() {
+            let bytes = serde_json::to_vec(rules).map_err(|error| LauncherError::Generic {
+                code: "ERR_NATIVE_RULES".into(),
+                message: format!("Failed to serialize native extraction rules: {error}"),
+            })?;
+            hasher.update(bytes);
+        } else {
+            hasher.update(b"<no-rules>");
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn native_marker_matches(destination: &Path, archive_key: &str) -> bool {
+    let marker_path = destination.join(NATIVE_EXTRACTION_MARKER);
+    let Ok(bytes) = std::fs::read(marker_path) else {
+        return false;
+    };
+    let Ok(marker) = serde_json::from_slice::<NativeExtractionMarker>(&bytes) else {
+        return false;
+    };
+    marker.schema_version == NATIVE_EXTRACTION_SCHEMA_VERSION
+        && marker.archive_key == archive_key
+        && count_regular_files(destination).ok() == Some(marker.extracted_file_count)
+        && native_output_metadata_fingerprint(destination)
+            .ok()
+            .as_deref()
+            == Some(marker.output_metadata_fingerprint.as_str())
+}
+
+fn native_output_metadata_fingerprint(directory: &Path) -> std::io::Result<String> {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-native-output-metadata-v1");
+    walk_native_output_metadata(&mut hasher, directory, "")?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn walk_native_output_metadata(
+    hasher: &mut sha2::Sha256,
+    directory: &Path,
+    prefix: &str,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if entry.file_name().to_string_lossy() == NATIVE_EXTRACTION_MARKER {
+            continue;
+        }
+        let path = entry.path();
+        let relative = if prefix.is_empty() {
+            entry.file_name().to_string_lossy().into_owned()
+        } else {
+            format!("{prefix}/{}", entry.file_name().to_string_lossy())
+        };
+        let file_type = entry.file_type()?;
+        let metadata = entry.metadata()?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        hasher.update((relative.len() as u64).to_le_bytes());
+        hasher.update(relative.as_bytes());
+        if file_type.is_dir() {
+            hasher.update([1]);
+            hasher.update(metadata.len().to_le_bytes());
+            hasher.update(modified_ns.to_le_bytes());
+            #[cfg(unix)]
+            {
+                hasher.update(metadata.dev().to_le_bytes());
+                hasher.update(metadata.ino().to_le_bytes());
+            }
+            #[cfg(windows)]
+            hasher.update(metadata.creation_time().to_le_bytes());
+            walk_native_output_metadata(hasher, &path, &relative)?;
+        } else if file_type.is_file() {
+            hasher.update([2]);
+            hasher.update(metadata.len().to_le_bytes());
+            hasher.update(modified_ns.to_le_bytes());
+            #[cfg(unix)]
+            {
+                hasher.update(metadata.dev().to_le_bytes());
+                hasher.update(metadata.ino().to_le_bytes());
+            }
+            #[cfg(windows)]
+            hasher.update(metadata.creation_time().to_le_bytes());
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "native output contains unsupported entry {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn count_regular_files(directory: &Path) -> std::io::Result<usize> {
+    let mut count = 0usize;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            count = count.saturating_add(count_regular_files(&entry.path())?);
+        } else if file_type.is_file()
+            && entry.file_name().to_string_lossy() != NATIVE_EXTRACTION_MARKER
+        {
+            count = count.saturating_add(1);
+        }
+    }
+    Ok(count)
 }
 
 /// Check if a Unix file mode corresponds to a regular file or directory.
@@ -2902,7 +3559,18 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
 
     if let Ok(bytes) = std::fs::read(cache_path) {
         let hash_matches = expected_sha1
-            .map(|expected| sha1_hex(&bytes) == expected)
+            .map(|expected| {
+                if crate::artifact_receipt::is_verified(cache_path, "sha1", expected, None) {
+                    true
+                } else if sha1_hex(&bytes) == expected {
+                    let _ = crate::artifact_receipt::record_verified(
+                        cache_path, "sha1", expected, None,
+                    );
+                    true
+                } else {
+                    false
+                }
+            })
             .unwrap_or(true);
         if hash_matches {
             if let Ok(parsed) = serde_json::from_slice::<T>(&bytes) {
@@ -2962,6 +3630,9 @@ pub(crate) async fn load_json_cache_first<T: serde::de::DeserializeOwned>(
         message: format!("Failed to parse launch metadata from {url}: {error}"),
     })?;
     atomic_write(cache_path, &bytes)?;
+    if let Some(expected) = expected_sha1 {
+        let _ = crate::artifact_receipt::record_verified(cache_path, "sha1", expected, None);
+    }
     Ok(parsed)
 }
 
@@ -3086,10 +3757,15 @@ async fn download_library_with_pin(
 
     // 1. Metadata SHA-256 from profile
     if let Some(ref sha256) = artifact.sha256 {
+        if crate::artifact_receipt::is_verified(path, "sha256", sha256, artifact.size) {
+            return Ok(());
+        }
         if let Ok(bytes) = std::fs::read(path) {
             if download::sha256_hex(&bytes) == sha256.as_str()
                 && artifact.size.is_none_or(|s| s as u64 == bytes.len() as u64)
             {
+                let _ =
+                    crate::artifact_receipt::record_verified(path, "sha256", sha256, artifact.size);
                 return Ok(());
             }
         }
@@ -3098,7 +3774,9 @@ async fn download_library_with_pin(
         if download::sha256_hex(&bytes) != sha256.as_str() {
             return Err(LauncherError::HashMismatch);
         }
-        return atomic_write(path, &bytes);
+        atomic_write(path, &bytes)?;
+        let _ = crate::artifact_receipt::record_verified(path, "sha256", sha256, artifact.size);
+        return Ok(());
     }
 
     // 2. Metadata SHA-1
@@ -3124,7 +3802,9 @@ async fn download_library_with_pin(
     let bytes = download_verified_inner(client, &artifact.url, lib_category).await?;
     let observed = download::sha256_hex(&bytes);
     atomic_write(path, &bytes)?;
-    atomic_write(&observed_sha256_sidecar_path(path), observed.as_bytes())
+    atomic_write(&observed_sha256_sidecar_path(path), observed.as_bytes())?;
+    let _ = crate::artifact_receipt::record_verified(path, "sha256", &observed, artifact.size);
+    Ok(())
 }
 
 fn observed_sha256_sidecar_path(path: &Path) -> PathBuf {
@@ -3137,22 +3817,31 @@ fn observed_sha256_sidecar_path(path: &Path) -> PathBuf {
 }
 
 fn observed_cache_matches(path: &Path, expected_size: Option<i64>) -> bool {
-    let Ok(cached) = std::fs::read(path) else {
-        return false;
-    };
-    if expected_size
-        .and_then(|size| usize::try_from(size).ok())
-        .is_some_and(|size| size != cached.len())
-    {
-        return false;
-    }
     let Ok(sidecar_text) = std::fs::read_to_string(observed_sha256_sidecar_path(path)) else {
         return false;
     };
     let observed = sidecar_text.trim();
-    observed.len() == 64
-        && observed.bytes().all(|byte| byte.is_ascii_hexdigit())
-        && download::sha256_hex(&cached) == observed
+    if observed.len() != 64 || !observed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    if crate::artifact_receipt::is_verified(path, "sha256", observed, expected_size) {
+        return true;
+    }
+    let Ok(cached) = std::fs::read(path) else {
+        return false;
+    };
+    if expected_size.is_some_and(|size| {
+        usize::try_from(size)
+            .map(|expected| expected != cached.len())
+            .unwrap_or(true)
+    }) {
+        return false;
+    }
+    if download::sha256_hex(&cached) != observed {
+        return false;
+    }
+    let _ = crate::artifact_receipt::record_verified(path, "sha256", observed, expected_size);
+    true
 }
 
 /// Download raw bytes from a loader Maven URL using a redirect-safe client.
@@ -3196,6 +3885,64 @@ mod tests {
                 .join("neoforge-21.1.215")
                 .join("neoforge-21.1.215.jar")
         );
+    }
+
+    #[test]
+    fn asset_completion_marker_rejects_changed_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let assets = directory.path();
+        let hash = "aa00000000000000000000000000000000000000";
+        let object = assets.join("objects").join("aa").join(hash);
+        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+        std::fs::write(&object, b"asset").unwrap();
+        let grouped = GroupedAssets::from([(hash.to_string(), (5, Vec::new()))]);
+
+        write_asset_completion_marker(assets, "index", &grouped, false, false);
+        assert!(asset_completion_matches(
+            assets, "index", &grouped, false, false
+        ));
+
+        std::fs::write(&object, b"truncated").unwrap();
+        assert!(!asset_completion_matches(
+            assets, "index", &grouped, false, false
+        ));
+    }
+
+    #[test]
+    fn asset_completion_marker_requires_virtual_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let assets = directory.path();
+        let hash = "bb00000000000000000000000000000000000000";
+        let object = assets.join("objects").join("bb").join(hash);
+        let virtual_asset = assets
+            .join("virtual")
+            .join("legacy")
+            .join("sounds")
+            .join("test.ogg");
+        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(virtual_asset.parent().unwrap()).unwrap();
+        std::fs::write(&object, b"asset").unwrap();
+        std::fs::write(&virtual_asset, b"asset").unwrap();
+        let grouped =
+            GroupedAssets::from([(hash.to_string(), (5, vec!["sounds/test.ogg".to_string()]))]);
+
+        write_asset_completion_marker(assets, "virtual-index", &grouped, true, false);
+        assert!(asset_completion_matches(
+            assets,
+            "virtual-index",
+            &grouped,
+            true,
+            false
+        ));
+
+        std::fs::remove_file(virtual_asset).unwrap();
+        assert!(!asset_completion_matches(
+            assets,
+            "virtual-index",
+            &grouped,
+            true,
+            false
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -3488,6 +4235,36 @@ mod tests {
     }
 
     #[test]
+    fn resolved_plan_cache_slot_does_not_grow_with_java_refreshes() {
+        let mut request = ResolveRequest {
+            instance_id: "test".into(),
+            base_version_id: "1.21".into(),
+            loader: None,
+            game_dir: PathBuf::from("/tmp/game"),
+            assets_dir: PathBuf::from("/tmp/assets"),
+            cache_dir: PathBuf::from("/tmp/cache"),
+            java_override: None,
+            java_candidates: Vec::new(),
+            network_policy: NetworkPolicy::all_disabled(),
+            allow_incompatible_java_override: false,
+            minecraft_dir: None,
+            receipts_root: None,
+        };
+        let original_slot = resolved_plan_cache_slot(&request);
+        request.java_candidates.push(JavaInstallation {
+            path: PathBuf::from("/tmp/java"),
+            version: 21,
+            version_string: "21".into(),
+            source: java::JavaSource::System,
+            arch: Some("x86_64".into()),
+        });
+
+        assert_eq!(original_slot, resolved_plan_cache_slot(&request));
+        request.base_version_id = "1.20.1".into();
+        assert_ne!(original_slot, resolved_plan_cache_slot(&request));
+    }
+
+    #[test]
     fn resolved_launch_plan_retains_policy() {
         let policy = NetworkPolicy::all_enabled();
         // Just verify the struct compiles with network_policy and is cloneable.
@@ -3622,7 +4399,15 @@ mod tests {
         let archive_path = dir.path().join("natives.zip");
         std::fs::write(&archive_path, zip_data).unwrap();
         let natives_dir = dir.path().join("natives");
-        extract_natives_atomically(&[(archive_path, rules)], &natives_dir)?;
+        extract_natives_atomically(
+            &[NativeArchive {
+                path: archive_path,
+                rules,
+                sha1: None,
+                sha256: None,
+            }],
+            &natives_dir,
+        )?;
         Ok(dir)
     }
 
@@ -3663,6 +4448,55 @@ mod tests {
     }
 
     #[test]
+    fn reuses_native_output_when_archive_identity_is_unchanged() {
+        let zip_data = make_zip(&[("native.dll", b"original")]);
+        let dir = extract_test_zip(&zip_data, None).unwrap();
+        let archive_path = dir.path().join("natives.zip");
+        let natives = dir.path().join("natives");
+
+        extract_natives_atomically(
+            &[NativeArchive {
+                path: archive_path,
+                rules: None,
+                sha1: None,
+                sha256: None,
+            }],
+            &natives,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(natives.join("native.dll")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[test]
+    fn reextracts_native_output_when_marker_state_changes() {
+        let zip_data = make_zip(&[("native.dll", b"original")]);
+        let dir = extract_test_zip(&zip_data, None).unwrap();
+        let archive_path = dir.path().join("natives.zip");
+        let natives = dir.path().join("natives");
+        std::fs::write(natives.join("native.dll"), b"changed-after-extract").unwrap();
+
+        extract_natives_atomically(
+            &[NativeArchive {
+                path: archive_path,
+                rules: None,
+                sha1: None,
+                sha256: None,
+            }],
+            &natives,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(natives.join("native.dll")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[test]
     fn accepts_explicit_directory_entries_with_children() {
         let dir = tempfile::tempdir().unwrap();
         let archive_path = dir.path().join("natives.zip");
@@ -3679,7 +4513,16 @@ mod tests {
         std::fs::write(&archive_path, bytes).unwrap();
 
         let destination = dir.path().join("output");
-        extract_natives_atomically(&[(archive_path, None)], &destination).unwrap();
+        extract_natives_atomically(
+            &[NativeArchive {
+                path: archive_path,
+                rules: None,
+                sha1: None,
+                sha256: None,
+            }],
+            &destination,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(destination.join("natives/example.dll")).unwrap(),
             b"native"
@@ -3859,7 +4702,15 @@ mod tests {
         std::fs::create_dir_all(&natives_dir).unwrap();
         std::fs::write(natives_dir.join("old.so"), b"old content").unwrap();
 
-        let result = extract_natives_atomically(&[(archive_path, None)], &natives_dir);
+        let result = extract_natives_atomically(
+            &[NativeArchive {
+                path: archive_path,
+                rules: None,
+                sha1: None,
+                sha256: None,
+            }],
+            &natives_dir,
+        );
         assert!(result.is_err());
 
         // Staging must be removed.

@@ -219,22 +219,28 @@ pub fn run() {
                 eprintln!("Failed to migrate legacy Agora data directory: {error}");
             }
             // Initialize CoreContext from the shared core-owned data directory.
-            match crate::paths::app_paths(app.handle()) {
+            // Keep one clone for startup maintenance after the managed state is
+            // installed; maintenance is optional and must never delay setup.
+            let startup_maintenance_ctx = match crate::paths::app_paths(app.handle()) {
                 Ok(paths) => match agora_core::ctx::CoreContext::initialize(paths) {
                     Ok((ctx, warnings)) => {
                         for w in &warnings {
                             eprintln!("[core] {w}");
                         }
+                        let maintenance_ctx = ctx.clone();
                         app.manage(ManagedCoreContext::new(std::sync::Mutex::new(ctx)));
+                        Some(maintenance_ctx)
                     }
                     Err(e) => {
                         eprintln!("Failed to initialize core context: {e}");
+                        None
                     }
                 },
                 Err(e) => {
                     eprintln!("Failed to resolve app data dir: {e}");
+                    None
                 }
-            }
+            };
 
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
@@ -247,6 +253,20 @@ pub fn run() {
                 #[cfg(debug_assertions)]
                 if let Err(e) = crate::registry_sync::seed_from_local_build(&handle) {
                     eprintln!("Failed to seed registry: {}", e);
+                }
+                if let Some(ctx) = startup_maintenance_ctx {
+                    tauri::async_runtime::spawn(async move {
+                        match agora_core::maintenance::prewarm_recent_instances(ctx).await {
+                            Ok(summary) if summary.warmed > 0 => eprintln!(
+                                "[core] warmed {} recent instance cache(s) ({} skipped, {} failed)",
+                                summary.warmed, summary.skipped, summary.failed
+                            ),
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[core] startup cache warmup unavailable: {error}")
+                            }
+                        }
+                    });
                 }
                 let purge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

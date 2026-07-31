@@ -2,14 +2,21 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
 use sha2::Digest;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 const RESTORE_MARKER: &str = ".agora_restore_in_progress";
 const SNAPSHOT_PENDING_MARKER: &str = ".agora_snapshot_pending";
 const SNAPSHOT_FAILED_MARKER: &str = ".agora_snapshot_failed";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+const LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION: u32 = 3;
+const LIVE_FILE_INDEX_SCHEMA_VERSION: u32 = 1;
 
 const TRACKED_ENTRIES: &[&str] = &[
     "mods",
@@ -138,6 +145,29 @@ fn snapshots_dir(instance_dir: &Path) -> PathBuf {
 
 fn snapshot_manifest_path(instance_dir: &Path, id: &str) -> PathBuf {
     snapshots_dir(instance_dir).join(format!("{id}.json"))
+}
+
+fn snapshot_fingerprint_path(instance_dir: &Path, id: &str) -> PathBuf {
+    snapshots_dir(instance_dir).join(format!("{id}.fingerprint"))
+}
+
+fn live_file_index_cache_path(instance_dir: &Path) -> PathBuf {
+    snapshots_dir(instance_dir).join("live-file-index.json")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LiveFileIndexCache {
+    schema_version: u32,
+    entries: Vec<LiveFileIndexEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LiveFileIndexEntry {
+    relative_path: String,
+    size: u64,
+    modified_ns: u128,
+    file_identity: Option<String>,
+    sha256: String,
 }
 
 /// The object store is shared by instances belonging to the same app data
@@ -293,6 +323,333 @@ pub fn live_file_index(instance_dir: &Path) -> Result<Vec<crate::lkg::FileEntry>
     Ok(result)
 }
 
+/// Build a metadata-only identity for the tracked live state.  This is used
+/// only to decide whether the last exact snapshot can be reused; whenever the
+/// receipt is absent or differs, callers fall back to [`live_file_index`].
+pub fn live_metadata_fingerprint(instance_dir: &Path) -> Result<String, String> {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-snapshot-metadata-v1");
+    for entry_name in TRACKED_ENTRIES {
+        let path = instance_dir.join(entry_name);
+        if path.is_file() {
+            append_metadata_record(&mut hasher, entry_name, &path)?;
+        } else if path.is_dir() {
+            append_metadata_record(&mut hasher, entry_name, &path)?;
+            walk_metadata(&mut hasher, &path, entry_name)?;
+        } else {
+            hasher.update(format!("missing:{entry_name}").as_bytes());
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Compare the current live state with a snapshot while reusing the durable
+/// per-file index. Only files whose size, modification time, or platform file
+/// identity changed are read and hashed. This is the launch-side comparison;
+/// callers that explicitly request a full drift audit should continue using
+/// live_file_index.
+pub fn snapshot_matches_live_incremental(
+    instance_dir: &Path,
+    snapshot_id: &str,
+) -> Result<bool, String> {
+    validate_snapshot_id(snapshot_id)?;
+    let reference = snapshot_file_index(instance_dir, snapshot_id)?;
+    let reference = reference
+        .into_iter()
+        .map(|entry| (entry.path, (entry.sha256, entry.size)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let previous = read_live_file_index_cache(instance_dir).map(|entries| {
+        entries
+            .into_iter()
+            .map(|entry| (entry.relative_path.clone(), entry))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    let current = collect_live_file_metadata(instance_dir)?;
+    let mut refreshed = Vec::with_capacity(current.len());
+    let mut matches = current.len() == reference.len();
+
+    for mut entry in current {
+        let cached = previous.as_ref().and_then(|cache| {
+            cache.get(&entry.relative_path).filter(|cached| {
+                cached.size == entry.size
+                    && cached.modified_ns == entry.modified_ns
+                    && cached.file_identity == entry.file_identity
+            })
+        });
+        let (hash, blob_valid) = if let Some(cached) = cached {
+            (
+                cached.sha256.clone(),
+                snapshot_blob_is_available(instance_dir, &cached.sha256, cached.size),
+            )
+        } else {
+            (hash_live_file(instance_dir, &entry.relative_path)?, true)
+        };
+        entry.sha256 = hash.clone();
+        if !blob_valid {
+            matches = false;
+        }
+        if !reference
+            .get(&entry.relative_path)
+            .is_some_and(|(expected_hash, expected_size)| {
+                *expected_size == entry.size
+                    && expected_hash.eq_ignore_ascii_case(&hash)
+                    && snapshot_blob_is_available(instance_dir, expected_hash, *expected_size)
+            })
+        {
+            matches = false;
+        }
+        refreshed.push(entry);
+    }
+
+    if matches {
+        let refreshed_by_path = refreshed
+            .iter()
+            .map(|entry| {
+                (
+                    entry.relative_path.as_str(),
+                    (entry.size, entry.sha256.as_str()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for (path, (hash, size)) in &reference {
+            let Some((entry_size, entry_hash)) = refreshed_by_path.get(path.as_str()) else {
+                matches = false;
+                break;
+            };
+            if *entry_size != *size || !entry_hash.eq_ignore_ascii_case(hash) {
+                matches = false;
+                break;
+            }
+        }
+    }
+    let _ = write_live_file_index_cache(instance_dir, refreshed);
+    Ok(matches)
+}
+
+fn read_live_file_index_cache(instance_dir: &Path) -> Option<Vec<LiveFileIndexEntry>> {
+    let bytes = fs::read(live_file_index_cache_path(instance_dir)).ok()?;
+    let cache = serde_json::from_slice::<LiveFileIndexCache>(&bytes).ok()?;
+    (cache.schema_version == LIVE_FILE_INDEX_SCHEMA_VERSION).then_some(cache.entries)
+}
+
+fn write_live_file_index_cache(
+    instance_dir: &Path,
+    entries: Vec<LiveFileIndexEntry>,
+) -> Result<(), String> {
+    let cache = LiveFileIndexCache {
+        schema_version: LIVE_FILE_INDEX_SCHEMA_VERSION,
+        entries,
+    };
+    let bytes = serde_json::to_vec(&cache)
+        .map_err(|error| format!("failed to serialize live file index: {error}"))?;
+    atomic_write(&live_file_index_cache_path(instance_dir), &bytes)
+}
+
+fn collect_live_file_metadata(instance_dir: &Path) -> Result<Vec<LiveFileIndexEntry>, String> {
+    let mut result = Vec::new();
+    for entry_name in TRACKED_ENTRIES {
+        let path = instance_dir.join(entry_name);
+        if path.is_file() {
+            result.push(live_file_metadata_entry(entry_name, &path)?);
+        } else if path.is_dir() {
+            walk_file_metadata(&path, entry_name, &mut result)?;
+        }
+    }
+    result.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(result)
+}
+
+fn walk_file_metadata(
+    directory: &Path,
+    prefix: &str,
+    result: &mut Vec<LiveFileIndexEntry>,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("failed to scan {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to scan {}: {error}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let relative = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+        if file_type.is_dir() {
+            walk_file_metadata(&path, &relative, result)?;
+        } else if file_type.is_file() {
+            result.push(live_file_metadata_entry(&relative, &path)?);
+        }
+    }
+    Ok(())
+}
+
+fn live_file_metadata_entry(
+    relative_path: &str,
+    path: &Path,
+) -> Result<LiveFileIndexEntry, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("failed to inspect live {}: {error}", path.display()))?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(LiveFileIndexEntry {
+        relative_path: relative_path.to_string(),
+        size: metadata.len(),
+        modified_ns,
+        file_identity: metadata_file_identity(&metadata),
+        sha256: String::new(),
+    })
+}
+
+#[cfg(unix)]
+fn metadata_file_identity(metadata: &fs::Metadata) -> Option<String> {
+    Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn metadata_file_identity(metadata: &fs::Metadata) -> Option<String> {
+    Some(format!(
+        "windows:creation-time:{}",
+        metadata.creation_time()
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn metadata_file_identity(_metadata: &fs::Metadata) -> Option<String> {
+    None
+}
+
+fn hash_live_file(instance_dir: &Path, relative_path: &str) -> Result<String, String> {
+    let path = instance_dir.join(Path::new(relative_path));
+    let contents =
+        fs::read(&path).map_err(|error| format!("failed to read live {relative_path}: {error}"))?;
+    Ok(sha256_hex(&contents))
+}
+
+fn snapshot_blob_is_available(instance_dir: &Path, hash: &str, size: u64) -> bool {
+    if validate_blob_hash(hash).is_err() {
+        return false;
+    }
+    let path = snapshot_blob_path(instance_dir, hash);
+    if crate::artifact_receipt::is_verified(&path, "sha256", hash, i64::try_from(size).ok()) {
+        return true;
+    }
+    if !blob_file_matches(&path, hash, size) {
+        return false;
+    }
+    let _ =
+        crate::artifact_receipt::record_verified(&path, "sha256", hash, i64::try_from(size).ok());
+    true
+}
+
+/// Return the metadata receipt associated with a snapshot, if it is valid.
+pub fn read_snapshot_metadata_fingerprint(
+    instance_dir: &Path,
+    snapshot_id: &str,
+) -> Option<String> {
+    if validate_snapshot_id(snapshot_id).is_err() {
+        return None;
+    }
+    let bytes = fs::read(snapshot_fingerprint_path(instance_dir, snapshot_id)).ok()?;
+    let receipt: SnapshotMetadataFingerprint = serde_json::from_slice(&bytes).ok()?;
+    let manifest_bytes = fs::read(snapshot_manifest_path(instance_dir, snapshot_id)).ok()?;
+    let manifest_sha256 = sha256_hex(&manifest_bytes);
+    if receipt.schema_version == LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION
+        && receipt.snapshot_id == snapshot_id
+        && receipt.snapshot_manifest_sha256 == manifest_sha256
+    {
+        Some(receipt.fingerprint)
+    } else {
+        None
+    }
+}
+
+/// Persist the metadata identity for a snapshot.  Failure is reported to the
+/// caller, but launch code may safely treat it as a cache miss on the next run.
+pub fn write_snapshot_metadata_fingerprint(
+    instance_dir: &Path,
+    snapshot_id: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    validate_snapshot_id(snapshot_id)?;
+    let manifest_bytes = fs::read(snapshot_manifest_path(instance_dir, snapshot_id))
+        .map_err(|error| format!("failed to read snapshot manifest for fingerprint: {error}"))?;
+    let receipt = SnapshotMetadataFingerprint {
+        schema_version: LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION,
+        snapshot_id: snapshot_id.to_string(),
+        fingerprint: fingerprint.to_string(),
+        snapshot_manifest_sha256: sha256_hex(&manifest_bytes),
+    };
+    let bytes = serde_json::to_vec(&receipt)
+        .map_err(|error| format!("failed to serialize snapshot fingerprint: {error}"))?;
+    atomic_write(
+        &snapshot_fingerprint_path(instance_dir, snapshot_id),
+        &bytes,
+    )
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SnapshotMetadataFingerprint {
+    schema_version: u32,
+    snapshot_id: String,
+    fingerprint: String,
+    snapshot_manifest_sha256: String,
+}
+
+fn walk_metadata(hasher: &mut sha2::Sha256, directory: &Path, prefix: &str) -> Result<(), String> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|e| format!("failed to scan {}: {e}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to scan {}: {e}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let relative = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("failed to inspect {}: {e}", path.display()))?;
+        if file_type.is_dir() {
+            append_metadata_record(hasher, &relative, &path)?;
+            walk_metadata(hasher, &path, &relative)?;
+        } else if file_type.is_file() {
+            append_metadata_record(hasher, &relative, &path)?;
+        }
+    }
+    Ok(())
+}
+
+fn append_metadata_record(
+    hasher: &mut sha2::Sha256,
+    relative: &str,
+    path: &Path,
+) -> Result<(), String> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("failed to inspect live metadata {}: {e}", path.display()))?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    hasher.update((relative.len() as u64).to_le_bytes());
+    hasher.update(relative.as_bytes());
+    hasher.update([if metadata.is_dir() { 1 } else { 2 }]);
+    hasher.update(metadata.len().to_le_bytes());
+    hasher.update(modified_ns.to_le_bytes());
+    #[cfg(unix)]
+    {
+        hasher.update(metadata.dev().to_le_bytes());
+        hasher.update(metadata.ino().to_le_bytes());
+    }
+    #[cfg(windows)]
+    hasher.update(metadata.creation_time().to_le_bytes());
+    Ok(())
+}
+
 fn walk_and_hash(
     directory: &Path,
     prefix: &str,
@@ -339,27 +696,41 @@ pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snaps
     fs::create_dir_all(snapshot_objects_dir(instance_dir))
         .map_err(|e| format!("failed to create snapshot object store: {e}"))?;
 
-    let mut files: Vec<SnapshotFileEntry> = Vec::new();
+    let previous = read_live_file_index_cache(instance_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| (entry.relative_path.clone(), entry))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let current = collect_live_file_metadata(instance_dir)?;
+    let mut files: Vec<SnapshotFileEntry> = Vec::with_capacity(current.len());
+    let mut live_index = Vec::with_capacity(current.len());
     let mut total_size: u64 = 0;
 
-    for entry_name in TRACKED_ENTRIES {
-        let src = instance_dir.join(entry_name);
-        if !src.exists() {
-            continue;
-        }
-
-        if src.is_file() {
-            let (sha256, size) = store_snapshot_object(instance_dir, &src)?;
-            files.push(SnapshotFileEntry {
-                relative_path: entry_name.to_string(),
-                size,
-                sha256: Some(sha256.clone()),
-                blob_sha256: Some(sha256),
-            });
-            total_size += size;
-        } else if src.is_dir() {
-            walk_and_store(instance_dir, &src, entry_name, &mut files, &mut total_size)?;
-        }
+    for mut entry in current {
+        let cached = previous.get(&entry.relative_path);
+        let reused = cached
+            .filter(|cached| {
+                cached.size == entry.size
+                    && cached.modified_ns == entry.modified_ns
+                    && cached.file_identity == entry.file_identity
+                    && snapshot_blob_is_available(instance_dir, &cached.sha256, cached.size)
+            })
+            .map(|cached| (cached.sha256.clone(), cached.size));
+        let (sha256, size) = if let Some(reused) = reused {
+            reused
+        } else {
+            let source = instance_dir.join(Path::new(&entry.relative_path));
+            store_snapshot_object(instance_dir, &source)?
+        };
+        entry.sha256 = sha256.clone();
+        files.push(SnapshotFileEntry {
+            relative_path: entry.relative_path.clone(),
+            size,
+            sha256: Some(sha256.clone()),
+            blob_sha256: Some(sha256),
+        });
+        live_index.push(entry);
+        total_size += size;
     }
 
     let snapshot = Snapshot {
@@ -379,44 +750,9 @@ pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snaps
     let manifest_json = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("failed to serialize manifest: {e}"))?;
     atomic_write(&snapshot_manifest_path(instance_dir, &id), &manifest_json)?;
+    let _ = write_live_file_index_cache(instance_dir, live_index);
     mark_snapshot_ready(instance_dir)?;
     Ok(snapshot)
-}
-
-fn walk_and_store(
-    instance_dir: &Path,
-    src: &Path,
-    prefix: &str,
-    files: &mut Vec<SnapshotFileEntry>,
-    total_size: &mut u64,
-) -> Result<(), String> {
-    let entries =
-        fs::read_dir(src).map_err(|e| format!("failed to read dir {}: {}", src.display(), e))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("failed to read entry: {e}"))?;
-        let entry_type = entry
-            .file_type()
-            .map_err(|e| format!("file type error: {e}"))?;
-        let entry_name = entry.file_name().to_string_lossy().to_string();
-        let src_path = entry.path();
-        let relative = format!("{prefix}/{entry_name}");
-
-        if entry_type.is_dir() {
-            walk_and_store(instance_dir, &src_path, &relative, files, total_size)?;
-        } else if entry_type.is_file() {
-            let (sha256, size) = store_snapshot_object(instance_dir, &src_path)?;
-            files.push(SnapshotFileEntry {
-                relative_path: relative,
-                size,
-                sha256: Some(sha256.clone()),
-                blob_sha256: Some(sha256),
-            });
-            *total_size += size;
-        }
-    }
-
-    Ok(())
 }
 
 fn store_snapshot_object(instance_dir: &Path, source: &Path) -> Result<(String, u64), String> {
@@ -465,9 +801,23 @@ fn store_snapshot_object(instance_dir: &Path, source: &Path) -> Result<(String, 
             .map_err(|e| format!("failed to create snapshot object prefix: {e}"))?;
     }
     if destination.exists() {
-        if blob_file_matches(&destination, &hash, size) {
+        let already_verified = crate::artifact_receipt::is_verified(
+            &destination,
+            "sha256",
+            &hash,
+            i64::try_from(size).ok(),
+        );
+        if already_verified || blob_file_matches(&destination, &hash, size) {
             fs::remove_file(&temp_path)
                 .map_err(|e| format!("failed to discard duplicate snapshot object: {e}"))?;
+            if !already_verified {
+                let _ = crate::artifact_receipt::record_verified(
+                    &destination,
+                    "sha256",
+                    &hash,
+                    i64::try_from(size).ok(),
+                );
+            }
         } else {
             fs::remove_file(&destination)
                 .map_err(|e| format!("failed to replace corrupt snapshot object: {e}"))?;
@@ -483,6 +833,12 @@ fn store_snapshot_object(instance_dir: &Path, source: &Path) -> Result<(String, 
             return Err(format!("failed to commit snapshot object: {error}"));
         }
     }
+    let _ = crate::artifact_receipt::record_verified(
+        &destination,
+        "sha256",
+        &hash,
+        i64::try_from(size).ok(),
+    );
     Ok((hash, size))
 }
 
@@ -1120,11 +1476,15 @@ pub fn delete_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<(), Str
     } else {
         fs::remove_file(&zip_path).map_err(|e| format!("failed to delete snapshot zip: {e}"))?;
     }
+    let _ = fs::remove_file(snapshot_fingerprint_path(instance_dir, snapshot_id));
 
     for hash in blobs {
         if !blob_is_referenced_by_any_snapshot(instance_dir, &hash) {
             let path = snapshot_blob_path(instance_dir, &hash);
             let _ = fs::remove_file(&path);
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                let _ = fs::remove_file(path.with_file_name(format!("{name}.agora-verified.json")));
+            }
             if let Some(parent) = path.parent() {
                 let _ = fs::remove_dir(parent);
             }
@@ -1298,6 +1658,50 @@ mod tests {
             snapshot_file_index(&inst, &first.id).unwrap(),
             snapshot_file_index(&inst, &second.id).unwrap()
         );
+    }
+
+    #[test]
+    fn incremental_snapshot_reuses_unchanged_file_hashes() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+
+        let first = create_snapshot(&inst, Some("first")).unwrap();
+        let first_index = snapshot_file_index(&inst, &first.id).unwrap();
+        fs::write(inst.join("options.txt"), b"render_distance=20").unwrap();
+
+        assert!(!snapshot_matches_live_incremental(&inst, &first.id).unwrap());
+        let second = create_snapshot(&inst, Some("second")).unwrap();
+        let second_index = snapshot_file_index(&inst, &second.id).unwrap();
+        let first_mod = first_index
+            .iter()
+            .find(|entry| entry.path == "mods/test.jar")
+            .unwrap();
+        let second_mod = second_index
+            .iter()
+            .find(|entry| entry.path == "mods/test.jar")
+            .unwrap();
+        assert_eq!(first_mod, second_mod);
+        assert!(snapshot_matches_live_incremental(&inst, &second.id).unwrap());
+    }
+
+    #[test]
+    fn snapshot_fingerprint_is_bound_to_its_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let snapshot = create_snapshot(&inst, Some("bound")).unwrap();
+        let fingerprint = live_metadata_fingerprint(&inst).unwrap();
+        write_snapshot_metadata_fingerprint(&inst, &snapshot.id, &fingerprint).unwrap();
+
+        assert_eq!(
+            read_snapshot_metadata_fingerprint(&inst, &snapshot.id).as_deref(),
+            Some(fingerprint.as_str())
+        );
+
+        let manifest_path = snapshot_manifest_path(&inst, &snapshot.id);
+        let mut manifest = fs::read(&manifest_path).unwrap();
+        manifest.push(b'\n');
+        fs::write(manifest_path, manifest).unwrap();
+        assert!(read_snapshot_metadata_fingerprint(&inst, &snapshot.id).is_none());
     }
 
     #[test]

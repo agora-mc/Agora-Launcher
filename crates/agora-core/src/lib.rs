@@ -8,6 +8,7 @@
 
 pub mod ai_assistant;
 pub mod app_paths;
+pub mod artifact_receipt;
 pub mod auth;
 pub mod browse_cache;
 pub mod catalog;
@@ -60,6 +61,7 @@ pub mod loadout;
 pub mod lock_manager;
 pub mod lockfile;
 pub mod log_sanitizer;
+pub mod maintenance;
 pub mod mcp_dispatcher;
 pub mod memory_recommendation;
 pub mod minecraft_metadata;
@@ -85,4 +87,5 @@ pub mod server_export;
 pub mod settings;
 pub mod snapshot;
 pub mod state;
+pub mod task_scheduler;
 pub mod version_match;

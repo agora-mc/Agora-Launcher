@@ -1006,26 +1006,32 @@ pub async fn check_instance_health(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<agora_core::health::HealthReport> {
-    tokio::task::spawn_blocking(move || {
-        let sanitized = paths::sanitize_id(&instance_id);
-        let instance_dir =
-            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-                code: "ERR_INSTANCE_PATH".into(),
-                message: e.to_string(),
-            })?;
-        let manifest = load_manifest(&app, &sanitized)?;
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let sanitized = paths::sanitize_id(&instance_id);
+                let instance_dir =
+                    paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                        code: "ERR_INSTANCE_PATH".into(),
+                        message: e.to_string(),
+                    })?;
+                let manifest = load_manifest(&app, &sanitized)?;
 
-        // Registry DB for curated known_conflicts â€” optional (Phase 3: never required)
-        let reg_path = paths::registry_db_path(&app).ok();
+                // Registry DB for curated known_conflicts â€” optional (Phase 3: never required)
+                let reg_path = paths::registry_db_path(&app).ok();
 
-        Ok(agora_core::health::health(
-            &instance_dir,
-            &manifest,
-            reg_path.as_deref(),
-        ))
-    })
-    .await
-    .map_err(|_| LauncherError::LocalStateFailed)?
+                Ok(agora_core::health::cached_health(
+                    &instance_dir,
+                    &manifest,
+                    reg_path.as_deref(),
+                    None,
+                ))
+            },
+        )
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 /// List pinned loader versions for a loader + Minecraft version.
@@ -1505,20 +1511,17 @@ pub async fn check_mod_compat(
     mod_install::check_mod_compat(&app, &instance_id, &item_id).await
 }
 
-/// Reuse the current LKG archive when the tracked content is byte-for-byte
-/// unchanged. Stable instances should not produce a full duplicate zip before
-/// every launch, but every launch still retains an exact recovery pointer.
+/// Reuse the current LKG archive when tracked content is unchanged. The
+/// snapshot layer reuses hashes for files whose metadata is unchanged and only
+/// reads changed files on the reconcile path.
 #[allow(dead_code)]
 fn create_or_reuse_prelaunch_snapshot(instance_dir: &Path, label: &str) -> Result<String, String> {
     let lkg = agora_core::lkg::read_lkg_state(instance_dir)?;
     if let Some(snapshot_id) = lkg.current_lkg_snapshot_id {
-        if let (Ok(reference), Ok(current)) = (
-            agora_core::snapshot::snapshot_file_index(instance_dir, &snapshot_id),
-            agora_core::snapshot::live_file_index(instance_dir),
-        ) {
-            if reference == current {
-                return Ok(snapshot_id);
-            }
+        if agora_core::snapshot::snapshot_matches_live_incremental(instance_dir, &snapshot_id)
+            .unwrap_or(false)
+        {
+            return Ok(snapshot_id);
         }
     }
     agora_core::snapshot::create_snapshot(instance_dir, Some(label)).map(|snapshot| snapshot.id)
@@ -3065,20 +3068,26 @@ pub async fn create_snapshot(
             message: e.to_string(),
         })?;
 
-    tokio::task::spawn_blocking(move || {
-        let result = agora_core::snapshot::create_snapshot(&instance_dir, label.as_deref())?;
-        agora_core::lkg::run_retention(&instance_dir)?;
-        Ok::<_, String>(result)
-    })
-    .await
-    .map_err(|e| LauncherError::Generic {
-        code: "ERR_SNAPSHOT_TASK".into(),
-        message: format!("Snapshot creation task failed: {e}"),
-    })?
-    .map_err(|e| LauncherError::Generic {
-        code: "ERR_SNAPSHOT".into(),
-        message: e,
-    })
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let result =
+                    agora_core::snapshot::create_snapshot(&instance_dir, label.as_deref())?;
+                agora_core::lkg::run_retention(&instance_dir)?;
+                Ok::<_, String>(result)
+            },
+        )
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_SNAPSHOT_TASK".into(),
+            message: format!("Snapshot creation task failed: {e}"),
+        })?
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_SNAPSHOT".into(),
+            message: e,
+        })
 }
 
 #[tauri::command]
@@ -4710,7 +4719,12 @@ fn lockfile_health_report(
         .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
     let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)
         .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
-    Ok(agora_core::health::health(instance_dir, &manifest, None))
+    Ok(agora_core::health::cached_health(
+        instance_dir,
+        &manifest,
+        None,
+        None,
+    ))
 }
 
 fn resolved_lockfile_artifact(

@@ -12,7 +12,8 @@ use crate::network::NetworkPolicy;
 use crate::process_identity::ProcessIdentity;
 use crate::process_session_manager::ProcessSession;
 use crate::runtime_manager::RuntimeProgress;
-use crate::snapshot::{create_snapshot, live_file_index, snapshot_file_index};
+use crate::snapshot::create_snapshot;
+use crate::task_scheduler::BlockingPriority;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -123,7 +124,9 @@ struct LaunchInputs {
     extra_game_args: Vec<String>,
 }
 
-/// Process-start result delivered before the attached launch completes.
+/// Process-start result delivered before launch monitoring begins. Delegated
+/// handoffs use `pid == 0` and an empty `java_path` because the official
+/// launcher owns the eventual Java process.
 #[derive(Debug, Clone)]
 pub struct LaunchStarted {
     pub pid: u32,
@@ -133,7 +136,9 @@ pub struct LaunchStarted {
     pub process_identity: ProcessIdentity,
 }
 
-/// Result of a complete attached direct launch.
+/// Result of a launch operation. Delegated handoffs return immediately with
+/// `pid == 0`, an empty `java_path`, and [`LaunchOutcome::Unknown`]; their
+/// eventual outcome is produced by [`LaunchService::wait_delegated`].
 #[derive(Debug, Clone)]
 pub struct LaunchResult {
     pub pid: u32,
@@ -155,12 +160,13 @@ impl LaunchService {
         Self { ctx }
     }
 
-    /// Execute the complete launch lifecycle once. Both Direct and Delegated
-    /// modes go through the same preparation (health checks, resolution,
-    /// materialization, snapshot). Direct mode spawns Java and waits for exit;
-    /// Delegated mode calls [`LaunchProgress::handoff`] and returns promptly.
-    /// Callers of Delegated mode should spawn a background task calling
-    /// [`Self::wait_delegated`] for monitoring.
+    /// Execute the complete launch lifecycle once. Both modes validate health
+    /// and retain a pre-launch recovery snapshot. Direct mode additionally
+    /// resolves and materializes the Java launch plan before spawning the game;
+    /// delegated mode leaves that work to the official launcher, calls
+    /// [`LaunchProgress::handoff`], and returns promptly. Callers of Delegated
+    /// mode should spawn a background task calling [`Self::wait_delegated`] for
+    /// monitoring.
     pub async fn launch(
         &self,
         request: LaunchRequest,
@@ -175,7 +181,11 @@ impl LaunchService {
         let started = Instant::now();
         let inputs = self.load_inputs(request).await?;
         progress.phase_completed("loading-inputs", started.elapsed().as_millis());
-        self.launch_inputs(inputs, progress).await
+        // The complete direct-launch state machine contains several large
+        // resolver/materializer futures. Keep it heap-backed so CLI hosts with
+        // the default Windows main-thread stack do not have to inline that
+        // state into their command-dispatch future.
+        Box::pin(self.launch_inputs(inputs, progress)).await
     }
 
     /// Execute a launch with an optional recovery step performed before
@@ -198,21 +208,23 @@ impl LaunchService {
                 let runtimes_root = self.ctx.paths.java_runtimes_root();
                 let catalog = self.ctx.runtime_catalog.snapshot();
                 let lock_manager = self.ctx.lock_manager.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::runtime_manager::ensure_runtime(
-                        &runtimes_root,
-                        major,
-                        &catalog,
-                        &policy,
-                        None::<&dyn crate::runtime_manager::RuntimeProgress>,
-                        Some(&lock_manager),
-                    )
-                })
-                .await
-                .map_err(|error| LauncherError::Generic {
-                    code: "ERR_JAVA_PROVISION".into(),
-                    message: format!("Java provisioning task failed: {error}"),
-                })??;
+                self.ctx
+                    .task_scheduler
+                    .run_blocking(BlockingPriority::Launch, move || {
+                        crate::runtime_manager::ensure_runtime(
+                            &runtimes_root,
+                            major,
+                            &catalog,
+                            &policy,
+                            None::<&dyn crate::runtime_manager::RuntimeProgress>,
+                            Some(&lock_manager),
+                        )
+                    })
+                    .await
+                    .map_err(|error| LauncherError::Generic {
+                        code: "ERR_JAVA_PROVISION".into(),
+                        message: format!("Java provisioning task failed: {error}"),
+                    })??;
             }
             LaunchRecoveryAction::RepairLoader => {
                 progress.phase("recovery", "Repairing loader installation");
@@ -322,7 +334,7 @@ impl LaunchService {
         let jvm_always_pre_touch = row.jvm_always_pre_touch && global_pre_touch;
 
         let game_dir = self.ctx.paths.instance_dir(&row.instance_id)?;
-        let jvm_memory_mb = if row.jvm_memory_mode == "auto" {
+        let jvm_memory_mb = if request.mode == LaunchMode::Direct && row.jvm_memory_mode == "auto" {
             let summary = crate::memory_recommendation::summarize_instance(&game_dir, &manifest);
             crate::memory_recommendation::detect_and_recommend(&summary).recommended_mb
         } else {
@@ -390,26 +402,101 @@ impl LaunchService {
         let health_started = Instant::now();
 
         if request.health_policy == HealthPolicy::BlockOnRed {
-            let current_scan_token = crate::health::scan_token(
-                &request.game_dir,
-                &request.manifest,
-                request.registry_db.as_deref(),
-            );
-            if request.health_scan_token.as_deref() != Some(current_scan_token.as_str()) {
-                let report = crate::health::health(
-                    &request.game_dir,
-                    &request.manifest,
-                    request.registry_db.as_deref(),
-                );
-                if report.score == crate::health::HealthScore::Red {
-                    return Err(LauncherError::Generic {
-                        code: "ERR_HEALTH_BLOCKED".into(),
-                        message: "Health checks found blockers that prevent launch.".into(),
-                    });
-                }
+            let health_dir = request.game_dir.clone();
+            let health_manifest = request.manifest.clone();
+            let health_registry = request.registry_db.clone();
+            let health_scan_token = request.health_scan_token.clone();
+            let report = self
+                .ctx
+                .task_scheduler
+                .run_blocking(BlockingPriority::Launch, move || {
+                    crate::health::cached_health(
+                        &health_dir,
+                        &health_manifest,
+                        health_registry.as_deref(),
+                        health_scan_token.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_HEALTH_TASK".into(),
+                    message: format!("Health check task failed: {error}"),
+                })?;
+            if report.score == crate::health::HealthScore::Red {
+                return Err(LauncherError::Generic {
+                    code: "ERR_HEALTH_BLOCKED".into(),
+                    message: "Health checks found blockers that prevent launch.".into(),
+                });
             }
         }
         progress.phase_completed("checking-health", health_started.elapsed().as_millis());
+
+        // Delegated mode is intentionally a small handoff pipeline.  The
+        // official launcher owns Java discovery, artifact materialization,
+        // native extraction, and command construction; doing that work here
+        // only delays the handoff and duplicates the official launcher's work.
+        if request.mode == LaunchMode::Delegated {
+            progress.phase("snapshot", "Creating the pre-launch snapshot");
+            let snapshot_started = Instant::now();
+            let snapshot_dir = request.game_dir.clone();
+            let snapshot_id = self
+                .ctx
+                .task_scheduler
+                .run_blocking(BlockingPriority::Launch, move || {
+                    create_or_reuse_snapshot(&snapshot_dir)
+                })
+                .await
+                .map_err(|error| LauncherError::Generic {
+                    code: "ERR_SNAPSHOT_TASK".into(),
+                    message: format!("Pre-launch snapshot task failed: {error}"),
+                })??;
+            progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
+            let operation_id = _op_handle.id().clone();
+
+            progress.phase("handoff", "Handing off to external launcher");
+            progress.handoff(&request.identity)?;
+            // Do not publish a session until the external launcher was
+            // actually spawned. A snapshot or handoff failure must not make a
+            // non-existent session supersede an already monitored launch.
+            self.ctx
+                .process_session_manager
+                .note_latest(&request.instance_id, session_id);
+            record_launch_started(&self.ctx, &request.instance_id);
+
+            let process_identity = ProcessIdentity {
+                pid: 0,
+                start_time: 0,
+                expected_exe: None,
+            };
+            let started = LaunchStarted {
+                pid: 0,
+                session_id,
+                snapshot_id: snapshot_id.clone(),
+                java_path: PathBuf::new(),
+                process_identity: process_identity.clone(),
+            };
+            progress.started(&started);
+            self.ctx
+                .event_sink
+                .emit(crate::event_sink::CoreEvent::Launch {
+                    operation_id,
+                    instance_id: request.instance_id.clone(),
+                    status: crate::event_sink::EventStatus::Started,
+                    pid: None,
+                });
+
+            let result = LaunchResult {
+                pid: 0,
+                session_id,
+                outcome: LaunchOutcome::Unknown,
+                snapshot_id,
+                java_path: PathBuf::new(),
+                process_identity,
+            };
+            progress.finished(&result);
+            _op_handle.complete();
+            return Ok(result);
+        }
 
         progress.phase("resolving", "Resolving Minecraft metadata and Java");
         let resolve_started = Instant::now();
@@ -421,7 +508,11 @@ impl LaunchService {
             Vec::new()
         } else if request.java_candidates.is_empty() {
             let runtimes_root = request.runtimes_root.clone();
-            tokio::task::spawn_blocking(move || cached_java_candidates(&runtimes_root))
+            self.ctx
+                .task_scheduler
+                .run_blocking(BlockingPriority::Launch, move || {
+                    cached_java_candidates(&runtimes_root)
+                })
                 .await
                 .map_err(|error| LauncherError::Generic {
                     code: "ERR_JAVA_DISCOVERY".into(),
@@ -447,7 +538,7 @@ impl LaunchService {
             receipts_root: Some(request.receipts_root.clone()),
         };
 
-        let resolved = match crate::launch_planner::resolve(resolve_request()).await {
+        let resolved = match crate::launch_planner::resolve_cached(resolve_request()).await {
             Ok(plan) => plan,
             Err(LauncherError::JavaRuntimeMissing { major, .. })
                 if request.java_runtime_mode == JavaRuntimeMode::Automatic =>
@@ -463,21 +554,24 @@ impl LaunchService {
                 let network_policy = request.network_policy.clone();
                 let catalog = self.ctx.runtime_catalog.snapshot();
                 let lock_manager = self.ctx.lock_manager.clone();
-                let ensured = tokio::task::spawn_blocking(move || {
-                    crate::runtime_manager::ensure_runtime(
-                        &runtime_root,
-                        major,
-                        &catalog,
-                        &network_policy,
-                        None::<&dyn RuntimeProgress>,
-                        Some(&lock_manager),
-                    )
-                })
-                .await
-                .map_err(|error| LauncherError::Generic {
-                    code: "ERR_JAVA_PROVISION".into(),
-                    message: format!("Java provisioning task failed: {error}"),
-                })??;
+                let ensured = self
+                    .ctx
+                    .task_scheduler
+                    .run_blocking(BlockingPriority::Launch, move || {
+                        crate::runtime_manager::ensure_runtime(
+                            &runtime_root,
+                            major,
+                            &catalog,
+                            &network_policy,
+                            None::<&dyn RuntimeProgress>,
+                            Some(&lock_manager),
+                        )
+                    })
+                    .await
+                    .map_err(|error| LauncherError::Generic {
+                        code: "ERR_JAVA_PROVISION".into(),
+                        message: format!("Java provisioning task failed: {error}"),
+                    })??;
                 let mut refreshed = java_candidates.clone();
                 refreshed.push(JavaInstallation {
                     path: ensured.path,
@@ -486,7 +580,7 @@ impl LaunchService {
                     source: crate::java::JavaSource::Managed,
                     arch: ensured.arch,
                 });
-                crate::launch_planner::resolve(ResolveRequest {
+                crate::launch_planner::resolve_cached(ResolveRequest {
                     java_candidates: refreshed,
                     ..resolve_request()
                 })
@@ -530,51 +624,20 @@ impl LaunchService {
 
         progress.phase("snapshot", "Creating the pre-launch snapshot");
         let snapshot_started = Instant::now();
-        let snapshot_id = create_or_reuse_snapshot(&request.game_dir)?;
+        let snapshot_dir = request.game_dir.clone();
+        let snapshot_id = self
+            .ctx
+            .task_scheduler
+            .run_blocking(BlockingPriority::Launch, move || {
+                create_or_reuse_snapshot(&snapshot_dir)
+            })
+            .await
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_SNAPSHOT_TASK".into(),
+                message: format!("Pre-launch snapshot task failed: {error}"),
+            })??;
         progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
         let operation_id = _op_handle.id().clone();
-
-        if request.mode == LaunchMode::Delegated {
-            progress.phase("handoff", "Handing off to external launcher");
-            progress.handoff(&request.identity)?;
-            record_launch_started(&self.ctx, &request.instance_id);
-
-            let pid = 0;
-            let process_identity = ProcessIdentity {
-                pid: 0,
-                start_time: 0,
-                expected_exe: None,
-            };
-
-            let started = LaunchStarted {
-                pid,
-                session_id,
-                snapshot_id: snapshot_id.clone(),
-                java_path: java_path.clone(),
-                process_identity: process_identity.clone(),
-            };
-            progress.started(&started);
-            self.ctx
-                .event_sink
-                .emit(crate::event_sink::CoreEvent::Launch {
-                    operation_id: operation_id.clone(),
-                    instance_id: request.instance_id.clone(),
-                    status: crate::event_sink::EventStatus::Started,
-                    pid: None,
-                });
-
-            let result = LaunchResult {
-                pid,
-                session_id,
-                outcome: LaunchOutcome::Unknown,
-                snapshot_id: snapshot_id.clone(),
-                java_path: java_path.clone(),
-                process_identity,
-            };
-            progress.finished(&result);
-            _op_handle.complete();
-            return Ok(result);
-        }
 
         // -- Direct mode: spawn Java and attach --
         progress.phase("launching", "Starting Minecraft");
@@ -832,21 +895,47 @@ fn create_or_reuse_snapshot(instance_dir: &Path) -> LauncherResult<String> {
         code: "ERR_LKG_READ".into(),
         message: error.to_string(),
     })?;
+    let metadata_fingerprint = crate::snapshot::live_metadata_fingerprint(instance_dir).ok();
     if let Some(snapshot_id) = lkg.current_lkg_snapshot_id {
-        let reference = snapshot_file_index(instance_dir, &snapshot_id);
-        let current = live_file_index(instance_dir);
-        if let (Ok(reference), Ok(current)) = (reference, current) {
-            if reference == current {
-                return Ok(snapshot_id);
+        if metadata_fingerprint.as_deref().is_some_and(|fingerprint| {
+            crate::snapshot::read_snapshot_metadata_fingerprint(instance_dir, &snapshot_id)
+                .as_deref()
+                == Some(fingerprint)
+        }) {
+            return Ok(snapshot_id);
+        }
+
+        // Legacy snapshots and receipts written before this optimization still
+        // receive the exact content comparison once.  A successful comparison
+        // upgrades the snapshot with a metadata receipt for future launches.
+        if crate::snapshot::snapshot_matches_live_incremental(instance_dir, &snapshot_id)
+            .unwrap_or(false)
+        {
+            if let Some(fingerprint) = metadata_fingerprint.as_deref() {
+                let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
+                    instance_dir,
+                    &snapshot_id,
+                    fingerprint,
+                );
             }
+            return Ok(snapshot_id);
         }
     }
-    create_snapshot(instance_dir, Some("pre-launch"))
-        .map(|snapshot| snapshot.id)
-        .map_err(|error| LauncherError::Generic {
+
+    let snapshot = create_snapshot(instance_dir, Some("pre-launch")).map_err(|error| {
+        LauncherError::Generic {
             code: "ERR_SNAPSHOT_CREATE".into(),
             message: error.to_string(),
-        })
+        }
+    })?;
+    if let Some(fingerprint) = metadata_fingerprint.as_deref() {
+        let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
+            instance_dir,
+            &snapshot.id,
+            fingerprint,
+        );
+    }
+    Ok(snapshot.id)
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ use crate::lock_manager::LockManager;
 use crate::operation_manager::OperationManager;
 use crate::process_session_manager::ProcessSessionManager;
 use crate::runtime_catalog::{RuntimeCatalog, RuntimeCatalogHandle};
+use crate::task_scheduler::TaskScheduler;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -101,6 +102,8 @@ pub struct CoreContext {
     pub event_sink: Arc<dyn EventSink>,
     /// Cloneable operation manager for tracking long-running operations.
     pub operation_manager: OperationManager,
+    /// Bounded worker admission for blocking filesystem and archive work.
+    pub task_scheduler: TaskScheduler,
     /// Process session manager for direct-launch lifecycle tracking.
     pub process_session_manager: ProcessSessionManager,
 }
@@ -260,6 +263,7 @@ impl CoreContext {
             progress_sink: Arc::new(NoopProgressSink),
             event_sink: Arc::new(NoopEventSink),
             operation_manager: OperationManager::new(),
+            task_scheduler: TaskScheduler::default(),
             process_session_manager: ProcessSessionManager::new(),
         };
 
@@ -287,6 +291,7 @@ impl CoreContext {
             progress_sink: Arc::new(NoopProgressSink),
             event_sink: Arc::new(NoopEventSink),
             operation_manager: OperationManager::new(),
+            task_scheduler: TaskScheduler::default(),
             process_session_manager: ProcessSessionManager::new(),
         }
     }

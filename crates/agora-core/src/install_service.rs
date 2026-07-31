@@ -188,13 +188,23 @@ impl InstallService {
                 };
             }
         };
+        let registry_db = self
+            .ctx
+            .paths
+            .registry_db()
+            .is_file()
+            .then(|| self.ctx.paths.registry_db());
         InstallPipeline
-            .execute_plan(
+            .execute_plan_with_scheduler(
                 plan,
                 &load.instance_dir,
                 &load.registry_revision,
                 reporter,
                 cancel,
+                crate::install_pipeline::InstallExecutionResources {
+                    scheduler: Some(&self.ctx.task_scheduler),
+                    registry_db_path: registry_db.as_deref(),
+                },
             )
             .await
     }
