@@ -311,7 +311,7 @@ Curator-authored; the compiler reads but never writes this file. Maps governance
 
 ### 6.4 Governance state (`governance-state.json`)
 
-Compiler-generated in `monitor` mode; records detected vote-surge events with stable IDs, affected GitHub reaction IDs, timestamps, and current status. Production tracks it at `registry/governance/governance-state.json` with `governance_repository: "jarjarpfeil/Agora-Launcher"` and `policy: "production"`. It is public operational history but **not** a release asset because only the compiler consumes it. Validate recovery edits with `python scripts/validate_governance_state.py registry/governance/governance-state.json`; malformed or mismatched production state fails CI.
+Compiler-generated in `monitor` mode; records detected vote-surge events with stable IDs, affected GitHub reaction IDs, timestamps, and current status. Production tracks it at `registry/governance/governance-state.json` with `governance_repository: "agora-mc/Agora-Launcher"` and `policy: "production"`. It is public operational history but **not** a release asset because only the compiler consumes it. Validate recovery edits with `python scripts/validate_governance_state.py registry/governance/governance-state.json`; malformed or mismatched production state fails CI.
 
 ### 6.5 Audit log (`audit_log.json`)
 

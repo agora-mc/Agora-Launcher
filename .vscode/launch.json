@@ -24,7 +24,7 @@
       "terminal": "integrated",
       "env": {
         "RUST_BACKTRACE": "1",
-        "AGORA_REGISTRY_REPO": "jarjarpfeil/Agora-Launcher"
+        "AGORA_REGISTRY_REPO": "agora-mc/Agora-Launcher"
       }
     },
     {
@@ -50,7 +50,7 @@
       "terminal": "integrated",
       "env": {
         "RUST_BACKTRACE": "1",
-        "AGORA_REGISTRY_REPO": "jarjarpfeil/Agora-Launcher"
+        "AGORA_REGISTRY_REPO": "agora-mc/Agora-Launcher"
       }
     },
     {

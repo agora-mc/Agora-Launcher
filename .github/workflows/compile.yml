@@ -17,7 +17,7 @@ concurrency:
 env:
   GOVERNANCE_MODE: monitor
   GOVERNANCE_POLICY: production
-  EXPECTED_GOVERNANCE_REPOSITORY: jarjarpfeil/Agora-Launcher
+  EXPECTED_GOVERNANCE_REPOSITORY: agora-mc/Agora-Launcher
   GOVERNANCE_STATE_PATH: registry/governance/governance-state.json
 
 jobs:

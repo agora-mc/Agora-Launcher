@@ -9,7 +9,7 @@
         "cwd": "${workspaceFolder}/desktop",
         "env": {
           "NO_COLOR": "1",
-          "VITE_AGORA_REPOSITORY": "jarjarpfeil/Agora-Launcher"
+          "VITE_AGORA_REPOSITORY": "agora-mc/Agora-Launcher"
         }
       },
       "isBackground": true,

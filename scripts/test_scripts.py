@@ -1141,7 +1141,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [],
             }, tmp)
@@ -1159,7 +1159,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 2,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [],
             }, tmp)
@@ -1199,7 +1199,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "sandbox",
                 "events": [],
             }, tmp)
@@ -1219,7 +1219,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": "not a list",
             }, tmp)
@@ -1254,7 +1254,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": ["not an object"],
             }, tmp)
@@ -1274,7 +1274,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [
                     {
@@ -1300,7 +1300,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [
                     {
@@ -1331,7 +1331,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [
                     {
@@ -1356,7 +1356,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [
                     {
@@ -1381,7 +1381,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [
                     {
@@ -1432,7 +1432,7 @@ class TestGovernanceStateValidator(unittest.TestCase):
         ) as tmp:
             json.dump({
                 "schema_version": 1,
-                "governance_repository": "jarjarpfeil/Agora-Launcher",
+                "governance_repository": "agora-mc/Agora-Launcher",
                 "policy": "production",
                 "events": [],
             }, tmp)

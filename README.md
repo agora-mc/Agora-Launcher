@@ -312,7 +312,7 @@ Production state is tracked at `registry/governance/governance-state.json` and c
 
 ### Production repo and policy
 
-The governance repo defaults to `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Production uses `jarjarpfeil/Agora-Launcher` with the `production` policy, which enforces a 30-day account-age threshold and a 6-hour, 5×-baseline raid window. Sandbox policy removes the age requirement and uses a 10-minute, 3-reaction threshold. State files carry `governance_repository` and `policy`; the loader rejects mismatched prior events with a warning, and production CI rejects the file before compilation.
+The governance repo defaults to `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Production uses `agora-mc/Agora-Launcher` with the `production` policy, which enforces a 30-day account-age threshold and a 6-hour, 5×-baseline raid window. Sandbox policy removes the age requirement and uses a 10-minute, 3-reaction threshold. State files carry `governance_repository` and `policy`; the loader rejects mismatched prior events with a warning, and production CI rejects the file before compilation.
 
 ### Monitor semantics and meaningful-only state commits
 
@@ -340,7 +340,7 @@ $env:DISCORD_WEBHOOK_URL = "YOUR_PRODUCTION_WEBHOOK"
 python compiler/compile.py `
   --governance-mode monitor `
   --governance-policy production `
-  --governance-repo jarjarpfeil/Agora-Launcher `
+  --governance-repo agora-mc/Agora-Launcher `
   --governance-state-in D:/Agora/registry/governance/governance-state.json `
   --governance-state-out D:/Agora/registry/governance/governance-state.json `
   --no-governance-write `
@@ -357,7 +357,7 @@ $env:GITHUB_TOKEN = (gh auth token)
 python compiler/compile.py `
   --governance-mode read-only `
   --governance-policy production `
-  --governance-repo jarjarpfeil/Agora-Launcher `
+  --governance-repo agora-mc/Agora-Launcher `
   --governance-state-in D:/Agora/registry/governance/governance-state.json `
   --skip-sign `
   --out D:/Agora/registry.db
@@ -367,7 +367,7 @@ python compiler/compile.py `
 
 ### Malformed and stale state recovery
 
-Production CI fails before compiling if the tracked state is missing, malformed, uses an unsupported schema, contains duplicate or incomplete events, or names the wrong repository or policy. Recover by restoring the last valid file from Git history, or, after curator review confirms that no pending event history must be retained, commit this valid empty envelope: `{"schema_version":1,"governance_repository":"jarjarpfeil/Agora-Launcher","policy":"production","events":[]}`. Validate it with `python scripts/validate_governance_state.py registry/governance/governance-state.json` before rerunning the workflow. Do not truncate or silently regenerate malformed production state.
+Production CI fails before compiling if the tracked state is missing, malformed, uses an unsupported schema, contains duplicate or incomplete events, or names the wrong repository or policy. Recover by restoring the last valid file from Git history, or, after curator review confirms that no pending event history must be retained, commit this valid empty envelope: `{"schema_version":1,"governance_repository":"agora-mc/Agora-Launcher","policy":"production","events":[]}`. Validate it with `python scripts/validate_governance_state.py registry/governance/governance-state.json` before rerunning the workflow. Do not truncate or silently regenerate malformed production state.
 
 ### Workflow ownership boundaries
 
