@@ -13,7 +13,7 @@ import {
 } from '@/lib/db';
 
 interface DetailPageProps {
-  params: { type: string; id: string };
+  params: Promise<{ type: string; id: string }>;
 }
 
 export async function generateStaticParams() {
@@ -87,12 +87,13 @@ function SourceLinks({ item }: { item: RegistryItem }) {
 }
 
 export default async function DetailPage({ params }: DetailPageProps) {
-  const contentType = contentTypeFromPath(params.type);
+  const { type, id } = await params;
+  const contentType = contentTypeFromPath(type);
   if (!contentType) {
     notFound();
   }
 
-  const item = await getItemById(params.id);
+  const item = await getItemById(id);
   if (!item) {
     notFound();
   }

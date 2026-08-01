@@ -27,7 +27,7 @@ license = "GPL-3.0-only"
 # specific version via `workspace = true` in their own Cargo.toml.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"

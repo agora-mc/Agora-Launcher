@@ -9,11 +9,12 @@ export function generateStaticParams() {
 }
 
 interface TypePageProps {
-  params: { type: string };
+  params: Promise<{ type: string }>;
 }
 
 export default async function TypePage({ params }: TypePageProps) {
-  const contentType = contentTypeFromPath(params.type);
+  const { type } = await params;
+  const contentType = contentTypeFromPath(type);
   if (!contentType) {
     notFound();
   }
