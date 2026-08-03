@@ -1034,6 +1034,79 @@ pub async fn check_instance_health(
         .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
+/// Health status for one entry in a background all-instance scan. Individual
+/// failures are returned in-band so an unreadable instance never prevents the
+/// rest of the library from reporting its health state.
+#[derive(Debug, serde::Serialize)]
+pub struct InstanceHealthScanResult {
+    pub instance_id: String,
+    pub report: Option<agora_core::health::HealthReport>,
+    pub error: Option<String>,
+}
+
+/// Scan every local instance at background priority. The desktop shell calls
+/// this periodically to keep instance-card alerts current; pre-launch checks
+/// remain user-initiated and authoritative.
+#[tauri::command]
+pub async fn check_all_instance_health(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<Vec<InstanceHealthScanResult>> {
+    let ctx = crate::core_context(&app)?;
+    let worker_ctx = ctx.clone();
+    let app_for_scan = app.clone();
+    let registry_db_path = paths::registry_db_path(&app).ok();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::Background,
+            move || {
+                let rows = agora_core::instance_service::InstanceService::new(worker_ctx.clone())
+                    .list()?;
+                let mut results = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let instance_id = row.instance_id;
+                    let result =
+                        (|| -> LauncherResult<agora_core::health::HealthReport> {
+                            let sanitized = paths::sanitize_id(&instance_id);
+                            if sanitized.is_empty() || sanitized != instance_id {
+                                return Err(LauncherError::Generic {
+                                    code: "ERR_INVALID_INSTANCE".into(),
+                                    message: "Stored instance ID is invalid.".into(),
+                                });
+                            }
+                            let instance_dir = paths::instance_dir(&app_for_scan, &sanitized)
+                                .map_err(|error| LauncherError::Generic {
+                                    code: "ERR_INSTANCE_PATH".into(),
+                                    message: error.to_string(),
+                                })?;
+                            let manifest = load_manifest(&app_for_scan, &sanitized)?;
+                            Ok(agora_core::health::cached_health(
+                                &instance_dir,
+                                &manifest,
+                                registry_db_path.as_deref(),
+                                None,
+                            ))
+                        })();
+                    match result {
+                        Ok(report) => results.push(InstanceHealthScanResult {
+                            instance_id,
+                            report: Some(report),
+                            error: None,
+                        }),
+                        Err(error) => results.push(InstanceHealthScanResult {
+                            instance_id,
+                            report: None,
+                            error: Some(error.to_string()),
+                        }),
+                    }
+                }
+                Ok(results)
+            },
+        )
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// List pinned loader versions for a loader + Minecraft version.
 #[tauri::command]
 pub async fn list_loader_versions(
@@ -1044,6 +1117,57 @@ pub async fn list_loader_versions(
 ) -> LauncherResult<Vec<LoaderVersionSummary>> {
     let ctx = crate::core_context(&app)?;
     Ok(agora_core::loader_service::LoaderService::new(ctx).list_versions(&loader, &mc_version))
+}
+
+/// Plan a loader version switch for an instance without mutating anything.
+///
+/// Locks the instance for the duration, rejects an active core-managed
+/// process, re-inventories the enabled mods against the active signed loader
+/// catalog, and returns the current tuple, the proven recommendation (when
+/// one exists), and the full compatibility report. Committing a selection is
+/// a separate [`change_loader_version`] call.
+#[tauri::command]
+pub async fn plan_loader_change(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<agora_core::loader_service::LoaderChangePlan> {
+    let ctx = crate::core_context(&app)?;
+    let scheduler = ctx.task_scheduler.clone();
+    scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                agora_core::loader_service::LoaderService::new(ctx).plan_loader_change(&instance_id)
+            },
+        )
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Change an instance's loader version in one transactional operation.
+///
+/// The target must be an exact pinned signed-catalog tuple for the instance's
+/// loader + Minecraft version that satisfies every hard loader requirement of
+/// the enabled mods. The target is installed first, then the manifest and DB
+/// tuple are committed (with rollback on failure), and a fresh post-switch
+/// health report is returned with the result.
+#[tauri::command]
+pub async fn change_loader_version(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target_version: String,
+    allow_indeterminate: Option<bool>,
+) -> LauncherResult<agora_core::loader_service::LoaderChangeResult> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::loader_service::LoaderService::new(ctx)
+        .change_loader_version_with_confirmation(
+            &instance_id,
+            &target_version,
+            allow_indeterminate.unwrap_or(false),
+        )
+        .await
 }
 
 /// Force-reinstall the loader for an instance (repair command).

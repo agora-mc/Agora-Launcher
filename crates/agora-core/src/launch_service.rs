@@ -37,7 +37,13 @@ pub enum LaunchMode {
 /// Coarse recovery action requested by the frontend before a retry launch.
 /// The action is performed in the same backend operation; if it fails the
 /// launch is aborted and the error is returned to the caller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// Internally tagged (`{ "type": ... }`) so the desktop frontend's existing
+/// discriminated-union payloads (`{type:'RepairLoader'}`, `{type:
+/// 'ProvisionJava', major}`, `{type:'SwitchLoader', target_version}`) are
+/// accepted verbatim at the IPC boundary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
 pub enum LaunchRecoveryAction {
     /// No recovery — plain launch.
     None,
@@ -46,6 +52,10 @@ pub enum LaunchRecoveryAction {
     ProvisionJava { major: u32 },
     /// Force-reinstall the instance's loader (repair), then retry the launch.
     RepairLoader,
+    /// Switch the instance's loader to a signed catalog version, then retry
+    /// the launch. The switch and the launch run in one backend-owned
+    /// operation.
+    SwitchLoader { target_version: String },
 }
 
 /// Health behavior selected by the frontend or CLI policy.
@@ -177,6 +187,14 @@ impl LaunchService {
             crate::lock_manager::LockResource::Instance(request.instance_id.clone()),
             "launch",
         )?;
+        self.launch_locked(request, progress).await
+    }
+
+    async fn launch_locked(
+        &self,
+        request: LaunchRequest,
+        progress: &dyn LaunchProgress,
+    ) -> LauncherResult<LaunchResult> {
         progress.phase("loading-inputs", "Loading instance and account state");
         let started = Instant::now();
         let inputs = self.load_inputs(request).await?;
@@ -199,6 +217,10 @@ impl LaunchService {
         progress: &dyn LaunchProgress,
     ) -> LauncherResult<LaunchResult> {
         validate_instance_id(&request.instance_id)?;
+        let _lock = self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(request.instance_id.clone()),
+            "launch-recovery",
+        )?;
         match action {
             LaunchRecoveryAction::None => {}
             LaunchRecoveryAction::ProvisionJava { major } => {
@@ -231,8 +253,15 @@ impl LaunchService {
                 let loader_svc = crate::loader_service::LoaderService::new(self.ctx.clone());
                 loader_svc.repair(&request.instance_id).await?;
             }
+            LaunchRecoveryAction::SwitchLoader { target_version } => {
+                progress.phase("recovery", "Switching loader version");
+                let loader_svc = crate::loader_service::LoaderService::new(self.ctx.clone());
+                loader_svc
+                    .change_loader_version_locked(&request.instance_id, &target_version, false)
+                    .await?;
+            }
         }
-        self.launch(request, progress).await
+        self.launch_locked(request, progress).await
     }
 
     async fn load_inputs(&self, request: LaunchRequest) -> LauncherResult<LaunchInputs> {
@@ -966,6 +995,9 @@ mod tests {
             LaunchRecoveryAction::None,
             LaunchRecoveryAction::ProvisionJava { major: 21 },
             LaunchRecoveryAction::RepairLoader,
+            LaunchRecoveryAction::SwitchLoader {
+                target_version: "0.19.0".into(),
+            },
         ] {
             let json = serde_json::to_string(action).unwrap();
             let back: LaunchRecoveryAction = serde_json::from_str(&json).unwrap();
@@ -974,9 +1006,36 @@ mod tests {
     }
 
     #[test]
+    fn launch_recovery_action_serde_matches_frontend_discriminated_shape() {
+        // The desktop frontend sends and receives `{type: ...}` payloads;
+        // the exact serialized forms below are the contract at the IPC
+        // boundary.
+        assert_eq!(
+            serde_json::to_string(&LaunchRecoveryAction::None).unwrap(),
+            r#"{"type":"None"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LaunchRecoveryAction::ProvisionJava { major: 21 }).unwrap(),
+            r#"{"type":"ProvisionJava","major":21}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LaunchRecoveryAction::RepairLoader).unwrap(),
+            r#"{"type":"RepairLoader"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LaunchRecoveryAction::SwitchLoader {
+                target_version: "0.19.0".into(),
+            })
+            .unwrap(),
+            r#"{"type":"SwitchLoader","target_version":"0.19.0"}"#
+        );
+    }
+
+    #[test]
     fn launch_recovery_action_none_is_noop() {
         // None should serialize/deserialize without error
         let json = serde_json::to_string(&LaunchRecoveryAction::None).unwrap();
+        assert_eq!(json, r#"{"type":"None"}"#);
         let back: LaunchRecoveryAction = serde_json::from_str(&json).unwrap();
         assert_eq!(back, LaunchRecoveryAction::None);
     }
@@ -985,7 +1044,7 @@ mod tests {
     fn launch_recovery_action_provision_java_carries_major() {
         let action = LaunchRecoveryAction::ProvisionJava { major: 17 };
         let json = serde_json::to_string(&action).unwrap();
-        assert!(json.contains("17"));
+        assert_eq!(json, r#"{"type":"ProvisionJava","major":17}"#);
         let back: LaunchRecoveryAction = serde_json::from_str(&json).unwrap();
         match back {
             LaunchRecoveryAction::ProvisionJava { major } => assert_eq!(major, 17),
@@ -996,7 +1055,24 @@ mod tests {
     #[test]
     fn launch_recovery_action_repair_loader_roundtrips() {
         let json = serde_json::to_string(&LaunchRecoveryAction::RepairLoader).unwrap();
+        assert_eq!(json, r#"{"type":"RepairLoader"}"#);
         let back: LaunchRecoveryAction = serde_json::from_str(&json).unwrap();
         assert_eq!(back, LaunchRecoveryAction::RepairLoader);
+    }
+
+    #[test]
+    fn launch_recovery_action_switch_loader_roundtrips() {
+        let action = LaunchRecoveryAction::SwitchLoader {
+            target_version: "0.19.0".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(json, r#"{"type":"SwitchLoader","target_version":"0.19.0"}"#);
+        let back: LaunchRecoveryAction = serde_json::from_str(&json).unwrap();
+        match back {
+            LaunchRecoveryAction::SwitchLoader { target_version } => {
+                assert_eq!(target_version, "0.19.0")
+            }
+            _ => panic!("expected SwitchLoader"),
+        }
     }
 }

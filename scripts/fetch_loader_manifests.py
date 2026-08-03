@@ -74,6 +74,24 @@ IMMUTABLE_ENTRY_FIELDS = (
     "installer_spec",
 )
 
+# Optional enrichment fields. A legacy entry missing one of these fields may
+# be enriched by the refresh; once a value exists, changing it is a mutation.
+ENRICHABLE_ENTRY_FIELDS = (
+    "provided_versions",
+    "release_channel",
+    "recommendation_rank",
+)
+
+# The capability each loader family's distribution provides under its own id.
+# This is the identity written for new entries; language-loader capabilities
+# (javafml/lowcodefml) are never derived from a Forge/NeoForge release.
+DISTRIBUTION_CAPABILITY = {
+    "fabric": "fabricloader",
+    "quilt": "quilt_loader",
+    "forge": "forge",
+    "neoforge": "neoforge",
+}
+
 
 # ---------------------------------------------------------------------------
 # Utility helpers
@@ -90,6 +108,51 @@ def _version_key(v: str):
         except ValueError:
             out.append(part.lower())
     return out
+
+
+def _release_channel(version: str) -> str:
+    """Conservatively classify a loader version's release channel.
+
+    A dotted-numeric version with optional build metadata (e.g. ``0.18.6``,
+    ``0.4.0+build.112``) is ``stable``. A hyphenated prerelease component or a
+    non-numeric component is ``prerelease``. Build metadata alone does not
+    lower SemVer precedence and is not a prerelease marker.
+    """
+    semantic_core = version.split("+", 1)[0]
+    if re.fullmatch(r"\d+(\.\d+)+", semantic_core):
+        return "stable"
+    return "prerelease"
+
+
+def _enrich_entry(loader: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """Add optional enrichment fields to an entry without changing values.
+
+    Adds ``provided_versions`` (the distribution identity) and a conservative
+    ``release_channel`` when absent. Existing values are never overwritten.
+    """
+    capability = DISTRIBUTION_CAPABILITY.get(loader)
+    if capability is not None:
+        provided = entry.get("provided_versions")
+        if provided is None:
+            provided = {}
+            entry["provided_versions"] = provided
+        if (
+            isinstance(provided, dict)
+            and capability not in provided
+            and entry.get("loader_version")
+        ):
+            provided[capability] = entry["loader_version"]
+    if "release_channel" not in entry and entry.get("loader_version"):
+        entry["release_channel"] = _release_channel(entry["loader_version"])
+    return entry
+
+
+def _enrichment_absent(entry: dict[str, Any], field: str) -> bool:
+    """Whether an enrichment field is effectively absent (may be enriched)."""
+    value = entry.get(field)
+    if field == "provided_versions":
+        return value in (None, {})
+    return value is None
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -340,11 +403,14 @@ def _fetch_fabric(
             "sha256": sha,
             "file_name": file_name,
             "file_type": "profile_json",
+            "provided_versions": {"fabricloader": loader_version},
+            "release_channel": _release_channel(loader_version),
         })
         logger.info(
-            "Added Fabric loader %s for MC %s (stable sha256=%s...)",
+            "Added Fabric loader %s for MC %s (%s sha256=%s...)",
             loader_version,
             mc_version,
+            _release_channel(loader_version),
             sha[:16],
         )
 
@@ -476,11 +542,14 @@ def _fetch_quilt(
             "sha256": sha,
             "file_name": file_name,
             "file_type": "profile_json",
+            "provided_versions": {"quilt_loader": loader_version},
+            "release_channel": _release_channel(loader_version),
         })
         logger.info(
-            "Added Quilt loader %s for MC %s (stable sha256=%s...)",
+            "Added Quilt loader %s for MC %s (%s sha256=%s...)",
             loader_version,
             mc_version,
+            _release_channel(loader_version),
             sha[:16],
         )
 
@@ -556,6 +625,8 @@ def _fetch_neoforge(
             "sha256": jar_sha,
             "file_name": file_name,
             "file_type": "installer_jar",
+            "provided_versions": {"neoforge": version},
+            "release_channel": _release_channel(version),
         }
         if version_json_sha:
             entry["version_json_sha256"] = version_json_sha
@@ -647,6 +718,8 @@ def _fetch_forge(
             "sha256": jar_sha,
             "file_name": file_name,
             "file_type": "installer_jar",
+            "provided_versions": {"forge": loader_version},
+            "release_channel": _release_channel(loader_version),
         }
         if version_json_sha:
             entry["version_json_sha256"] = version_json_sha
@@ -699,6 +772,17 @@ def _merge_entries(existing: list[dict[str, Any]], new_entries: list[dict[str, A
             for field in IMMUTABLE_ENTRY_FIELDS
             if previous.get(field) != entry.get(field)
         }
+        # Enrichable fields: absent -> the new value is adopted (enrichment);
+        # present -> any change is a mutation and must fail closed.
+        for field in ENRICHABLE_ENTRY_FIELDS:
+            if _enrichment_absent(previous, field):
+                if not _enrichment_absent(entry, field):
+                    previous[field] = entry[field]
+            elif previous.get(field) != entry.get(field):
+                changed_fields[field] = {
+                    "before": previous.get(field),
+                    "after": entry.get(field),
+                }
         if changed_fields:
             mutations.append({
                 "key": f"{key[0]}/{key[1]}",
@@ -718,10 +802,36 @@ def _sort_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+# Canonical key order for written entries, so enriched legacy entries and
+# freshly fetched entries serialize identically.
+_CANONICAL_ENTRY_KEYS = (
+    "mc_version",
+    "loader_version",
+    "source_url",
+    "sha256",
+    "file_name",
+    "file_type",
+    "version_json_sha256",
+    "installer_spec",
+    "provided_versions",
+    "release_channel",
+    "recommendation_rank",
+)
+
+
+def _canonicalize_entry(loader: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """Enrich a legacy entry and re-emit its keys in canonical order."""
+    entry = _enrich_entry(loader, entry)
+    return {key: entry[key] for key in _CANONICAL_ENTRY_KEYS if key in entry}
+
+
 def _write_loader_manifests(manifest: dict[str, Any]) -> None:
     LOADER_MANIFESTS_DIR.mkdir(parents=True, exist_ok=True)
     path = LOADER_MANIFESTS_DIR / "loader_manifests.json"
-    for loader in manifest["loaders"]:
+    for loader, entries in manifest["loaders"].items():
+        manifest["loaders"][loader] = [
+            _canonicalize_entry(loader, entry) for entry in entries
+        ]
         manifest["loaders"][loader] = _sort_entries(manifest["loaders"][loader])
     manifest["domain_allowlist"] = sorted(set(manifest["domain_allowlist"]))
 

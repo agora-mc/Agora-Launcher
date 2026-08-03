@@ -20,6 +20,14 @@
 //! - Snapshot is taken BEFORE any instance mutation and is mandatory.
 //! - The manifest atomic rename is the single commit point.
 //! - Post-apply health failure triggers automatic snapshot restore.
+//!
+//! Loader-mismatch gate (Work Package 8): when a plan adds local-file
+//! artifacts whose loader requirements the current loader does not satisfy,
+//! the resolve phase surfaces a structured `PendingChoice::LoaderChange`.
+//! Approval is a backend override (`PlanOverrides::approve_loader_version`
+//! matching the signed-catalog recommendation); the accepted switch is
+//! committed inside the same manifest transaction, so the loader version and
+//! the mod files change atomically and roll back together.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -37,6 +45,9 @@ pub use crate::dependency_ops::{DepSource, Requirement};
 pub struct InstallExecutionResources<'a> {
     pub scheduler: Option<&'a TaskScheduler>,
     pub registry_db_path: Option<&'a Path>,
+    /// Production callers supply the core loader service so an approved loader
+    /// switch installs its signed profile before the manifest commit point.
+    pub loader_service: Option<&'a crate::loader_service::LoaderService>,
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +406,20 @@ pub enum PendingChoice {
         conflict_id: String,
         options: Vec<ConflictResolutionOption>,
     },
+    /// The plan would add files whose loader requirements the current loader
+    /// does not satisfy. Structured evidence mirrors the signed-catalog
+    /// report; approving the change is a backend override
+    /// (`PlanOverrides::approve_loader_version`), which folds the version
+    /// switch into the same install transaction.
+    LoaderChange {
+        choice_id: String,
+        loader: String,
+        current_version: String,
+        recommended_version: String,
+        compatible_versions: Vec<String>,
+        requirements: Vec<crate::health::LoaderRequirementIssue>,
+        conflicts: Vec<crate::loader_compatibility::LoaderConflict>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +435,17 @@ pub struct ConflictResolutionOption {
     pub resolution: ConflictResolution,
     pub label: String,
     pub description: String,
+}
+
+/// An approved loader version switch that is committed atomically with the
+/// rest of the install transaction (the manifest rename is the commit point,
+/// and the recovery snapshot covers `instance_manifest.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderChangePlan {
+    pub loader: String,
+    pub from_version: String,
+    pub to_version: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +470,13 @@ pub struct PlanOverrides {
     pub skip_items: Vec<String>,
     /// Override applied conflict resolutions by conflict_id.
     pub force_conflict_resolution: BTreeMap<String, ConflictResolution>,
+    /// Explicit approval to switch the instance loader to this exact
+    /// recommended version so the incoming mods' loader requirements are
+    /// satisfied. The change is applied inside the same install transaction.
+    /// Only the recommended version from the signed catalog is accepted; any
+    /// other value leaves the `PendingChoice::LoaderChange` unresolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approve_loader_version: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +613,11 @@ pub struct ResolvedInstallPlan {
     pub warnings: Vec<PlanWarning>,
     pub blocking_errors: Vec<PlanError>,
     pub pending_choices: Vec<PendingChoice>,
+    /// Approved loader version switch committed atomically with this plan's
+    /// file changes. Absent unless the loader-change choice was approved via
+    /// `PlanOverrides::approve_loader_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_change: Option<LoaderChangePlan>,
     pub created_at: String,
     pub instance_state_hash: String,
     pub registry_revision: String,
@@ -1149,6 +1197,17 @@ impl InstallPipeline {
             }
         }
         files_to_add.dedup_by(|a, b| a.target_filename == b.target_filename);
+
+        let loader_change = apply_loader_change_policy(
+            &manifest,
+            &intent,
+            instance_dir,
+            &files_to_add,
+            &files_to_remove,
+            &files_to_disable,
+            &mut pending_choices,
+            &mut warnings,
+        );
         files_to_remove.sort_by(|a, b| a.filename.cmp(&b.filename));
         files_to_remove
             .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
@@ -1199,6 +1258,7 @@ impl InstallPipeline {
             warnings,
             blocking_errors,
             pending_choices,
+            loader_change,
             created_at: chrono::Utc::now().to_rfc3339(),
             instance_state_hash,
             registry_revision,
@@ -1244,6 +1304,7 @@ impl InstallPipeline {
     ) -> InstallOutcome {
         let scheduler = resources.scheduler;
         let registry_db_path = resources.registry_db_path;
+        let loader_service = resources.loader_service;
         let fail = |error: String, snapshot_id: Option<String>, rollback_performed: bool| {
             InstallOutcome::Failed {
                 error,
@@ -1360,6 +1421,54 @@ impl InstallPipeline {
                 phase: "staging".into(),
                 rollback_performed: false,
             };
+        }
+
+        if let Err(error) = validate_staged_loader_compatibility(plan, instance_dir, &staging_dir) {
+            cleanup_staging_dir(scheduler, &staging_dir).await;
+            return fail(error, None, false);
+        }
+
+        // The loader profile is shared cache material, so install it before
+        // committing mod files or the future instance manifest. A later
+        // transaction failure leaves only harmless verified cache material.
+        if let Some(change) = &plan.loader_change {
+            let Some(loader_service) = loader_service else {
+                cleanup_staging_dir(scheduler, &staging_dir).await;
+                return fail(
+                    "Approved loader changes require the core loader service.".into(),
+                    None,
+                    false,
+                );
+            };
+            let minecraft_version = match std::fs::read_to_string(
+                instance_dir.join("instance_manifest.json"),
+            )
+            .ok()
+            .and_then(|text| serde_json::from_str::<crate::models::InstanceManifest>(&text).ok())
+            .map(|manifest| manifest.minecraft_version)
+            {
+                Some(version) => version,
+                None => {
+                    cleanup_staging_dir(scheduler, &staging_dir).await;
+                    return fail(
+                        "Could not read the instance Minecraft version before installing the approved loader.".into(),
+                        None,
+                        false,
+                    );
+                }
+            };
+            if let Err(error) = loader_service
+                .ensure_installed(
+                    &change.loader,
+                    &minecraft_version,
+                    &change.to_version,
+                    false,
+                )
+                .await
+            {
+                cleanup_staging_dir(scheduler, &staging_dir).await;
+                return fail(error.to_string(), None, false);
+            }
         }
 
         // Build and sync the future manifest before taking the snapshot or
@@ -1747,6 +1856,244 @@ fn conflict_resolution_option(resolution: &ConflictResolution) -> ConflictResolu
     }
 }
 
+/// Work Package 8 — pre-commit loader-mismatch gate.
+///
+/// When a plan would add local-file artifacts whose loader requirements the
+/// instance's current loader does not satisfy, surface a structured
+/// `PendingChoice::LoaderChange` before any mod file is committed. Approval is
+/// a backend override (`PlanOverrides::approve_loader_version` matching the
+/// signed-catalog recommendation); the accepted switch is returned as a
+/// `LoaderChangePlan` that `prepare_manifest` folds into the same atomic
+/// manifest transaction as the file changes.
+///
+/// Only artifacts whose JARs exist at plan time are evaluated (manual /
+/// local-file installs): their declarations are parsed exactly the way
+/// `prepare_manifest` parses the staged JAR at apply time. Download-only
+/// artifacts cannot contribute evidence before staging without downloading at
+/// resolve time (a redesign), so they remain covered by the post-install
+/// health scan.
+fn apply_loader_change_policy(
+    manifest: &crate::models::InstanceManifest,
+    intent: &InstallIntent,
+    instance_dir: &Path,
+    files_to_add: &[FileAdd],
+    files_to_remove: &[FileRemove],
+    files_to_disable: &[FileDisable],
+    pending_choices: &mut Vec<PendingChoice>,
+    warnings: &mut Vec<PlanWarning>,
+) -> Option<LoaderChangePlan> {
+    use crate::loader_compatibility::{
+        evaluate_loader_compatibility, is_loader_requirement, CurrentLoaderStatus,
+        LoaderCompatibilityRequest,
+    };
+
+    if matches!(manifest.loader.as_str(), "" | "vanilla") || manifest.loader_version.is_empty() {
+        return None;
+    }
+    // Evaluate the prospective complete enabled set, not only the incoming
+    // artifact. Existing requirements may conflict with the new mod, and
+    // updates/removals must stop contributing after this plan commits.
+    let removed: std::collections::BTreeSet<&str> = files_to_remove
+        .iter()
+        .map(|file| file.filename.as_str())
+        .chain(files_to_disable.iter().map(|file| file.filename.as_str()))
+        .collect();
+    let mut decls = crate::health::inventory(instance_dir, manifest)
+        .artifacts
+        .into_iter()
+        .filter(|artifact| !removed.contains(artifact.filename.as_str()))
+        .flat_map(|artifact| artifact.metadata.dependency_decls)
+        .collect::<Vec<_>>();
+    for add in files_to_add {
+        let source_path = match &add.artifact {
+            ResolvedArtifact::LocalFile(local) => Some(local.source_path.as_str()),
+            ResolvedArtifact::Download(download) => match &download.source {
+                ArtifactSource::LocalFile { path } => Some(path.as_str()),
+                ArtifactSource::Download { .. } => None,
+            },
+        };
+        let Some(source_path) = source_path else {
+            continue;
+        };
+        if !Path::new(source_path).is_file() {
+            continue;
+        }
+        decls.extend(
+            crate::jar_metadata::parse_jar_metadata_for_loader(
+                Path::new(source_path),
+                &manifest.loader,
+            )
+            .dependency_decls,
+        );
+    }
+    if !decls
+        .iter()
+        .any(|decl| is_loader_requirement(decl).is_some())
+    {
+        return None;
+    }
+    let catalog = crate::loader_manifests::active_catalog();
+    let report = evaluate_loader_compatibility(&LoaderCompatibilityRequest {
+        loader: &manifest.loader,
+        minecraft_version: &manifest.minecraft_version,
+        current_loader_version: Some(&manifest.loader_version),
+        requirements: &decls,
+        catalog: &catalog,
+    });
+    let Some(recommended) = report.recommended_version.as_ref() else {
+        if matches!(
+            report.current_status,
+            CurrentLoaderStatus::Incompatible | CurrentLoaderStatus::NoCompatibleCandidates
+        ) {
+            warnings.push(PlanWarning {
+                code: "WARN_LOADER_INCOMPATIBLE".into(),
+                message: format!(
+                    "The installed {} loader {} does not satisfy the loader requirements of the added files, and no signed catalog version satisfies every requirement.",
+                    manifest.loader, manifest.loader_version
+                ),
+            });
+        }
+        return None;
+    };
+    if report.current_status != CurrentLoaderStatus::Incompatible {
+        return None;
+    }
+    if intent
+        .overrides
+        .approve_loader_version
+        .as_deref()
+        .is_some_and(|approved| approved == recommended.loader_version)
+    {
+        return Some(LoaderChangePlan {
+            loader: manifest.loader.clone(),
+            from_version: manifest.loader_version.clone(),
+            to_version: recommended.loader_version.clone(),
+        });
+    }
+    pending_choices.push(PendingChoice::LoaderChange {
+        choice_id: "loader-change".into(),
+        loader: manifest.loader.clone(),
+        current_version: manifest.loader_version.clone(),
+        recommended_version: recommended.loader_version.clone(),
+        compatible_versions: report
+            .compatible_versions
+            .iter()
+            .map(|candidate| candidate.loader_version.clone())
+            .collect(),
+        requirements: report
+            .requirements
+            .iter()
+            .map(|result| crate::health::LoaderRequirementIssue {
+                declaring_mod_id: result.declaration.declaring_mod_id.clone(),
+                target_id: result.declaration.target_id.clone(),
+                version_ranges: result.declaration.version_ranges.clone(),
+                importance: result.declaration.importance,
+                candidate_version: result.candidate_provided_version.clone(),
+                verdict: result.verdict.clone(),
+            })
+            .collect(),
+        conflicts: report.conflicts.clone(),
+    });
+    None
+}
+
+/// Recheck the complete prospective mod set after every artifact has been
+/// downloaded and verified. Resolve-time planning cannot inspect a remote JAR
+/// without downloading it, so this gate closes that gap before the first live
+/// file or manifest mutation.
+fn validate_staged_loader_compatibility(
+    plan: &ResolvedInstallPlan,
+    instance_dir: &Path,
+    staging_dir: &Path,
+) -> Result<(), String> {
+    let manifest_path = instance_dir.join("instance_manifest.json");
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("failed to read manifest for loader validation: {error}"))?;
+    let manifest: crate::models::InstanceManifest = serde_json::from_str(&manifest_text)
+        .map_err(|error| format!("failed to parse manifest for loader validation: {error}"))?;
+    if matches!(manifest.loader.as_str(), "" | "vanilla") || manifest.loader_version.is_empty() {
+        return Ok(());
+    }
+
+    let removed: std::collections::BTreeSet<&str> = plan
+        .files_to_remove
+        .iter()
+        .map(|file| file.filename.as_str())
+        .chain(
+            plan.files_to_disable
+                .iter()
+                .map(|file| file.filename.as_str()),
+        )
+        .collect();
+    let mut decls = crate::health::inventory(instance_dir, &manifest)
+        .artifacts
+        .into_iter()
+        .filter(|artifact| !removed.contains(artifact.filename.as_str()))
+        .flat_map(|artifact| artifact.metadata.dependency_decls)
+        .collect::<Vec<_>>();
+
+    for add in &plan.files_to_add {
+        if artifact_metadata(&add.artifact).content_type != "mod" {
+            continue;
+        }
+        let staged = staging_dir.join("artifacts").join(&add.staging_filename);
+        let metadata =
+            crate::jar_metadata::parse_jar_metadata_for_loader(&staged, &manifest.loader);
+        decls.extend(metadata.dependency_decls);
+    }
+    if !decls
+        .iter()
+        .any(|decl| crate::loader_compatibility::is_loader_requirement(decl).is_some())
+    {
+        return Ok(());
+    }
+
+    let catalog = crate::loader_manifests::active_catalog();
+    let report = crate::loader_compatibility::evaluate_loader_compatibility(
+        &crate::loader_compatibility::LoaderCompatibilityRequest {
+            loader: &manifest.loader,
+            minecraft_version: &manifest.minecraft_version,
+            current_loader_version: Some(&manifest.loader_version),
+            requirements: &decls,
+            catalog: &catalog,
+        },
+    );
+    match report.current_status {
+        crate::loader_compatibility::CurrentLoaderStatus::Compatible => {
+            if plan.loader_change.is_some() {
+                return Err(
+                    "The approved loader change is stale; the staged mod set already satisfies the current loader. Resolve a fresh plan.".into(),
+                );
+            }
+            Ok(())
+        }
+        crate::loader_compatibility::CurrentLoaderStatus::Incompatible => {
+            let Some(change) = &plan.loader_change else {
+                return Err(
+                    "The downloaded mod set introduces a loader mismatch. Resolve a fresh install plan to review the required loader change.".into(),
+                );
+            };
+            let target_is_compatible = report
+                .compatible_versions
+                .iter()
+                .any(|candidate| candidate.loader_version == change.to_version);
+            if target_is_compatible {
+                Ok(())
+            } else {
+                Err(
+                    "The approved loader version does not satisfy the complete staged mod set. Resolve a fresh install plan.".into(),
+                )
+            }
+        }
+        crate::loader_compatibility::CurrentLoaderStatus::Indeterminate => Err(
+            "The staged mod set contains loader requirements that cannot be verified safely. Review the loader manually before installing.".into(),
+        ),
+        crate::loader_compatibility::CurrentLoaderStatus::NoCompatibleCandidates => Err(
+            "The staged mod set has no signed loader version satisfying all hard requirements.".into(),
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_artifact_change(
     artifact: &ResolvedArtifact,
@@ -2029,7 +2376,8 @@ fn artifact_hash_value(artifact: &ResolvedArtifact, algorithm: HashAlgorithm) ->
 fn pending_choice_id(choice: &PendingChoice) -> &str {
     match choice {
         PendingChoice::OptionalDependencies { choice_id, .. }
-        | PendingChoice::Conflict { choice_id, .. } => choice_id,
+        | PendingChoice::Conflict { choice_id, .. }
+        | PendingChoice::LoaderChange { choice_id, .. } => choice_id,
     }
 }
 
@@ -2053,13 +2401,14 @@ struct PlanFingerprintMaterial<'a> {
     files_to_add: &'a [FileAdd],
     files_to_remove: &'a [FileRemove],
     files_to_disable: &'a [FileDisable],
+    loader_change: &'a Option<LoaderChangePlan>,
     instance_state_hash: &'a str,
     registry_revision: &'a str,
 }
 
 fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String> {
     hash_serializable(&PlanFingerprintMaterial {
-        schema_version: 1,
+        schema_version: 2,
         intent: &plan.intent,
         operation: &plan.operation,
         dependencies: &plan.dependencies,
@@ -2067,6 +2416,7 @@ fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String
         files_to_add: &plan.files_to_add,
         files_to_remove: &plan.files_to_remove,
         files_to_disable: &plan.files_to_disable,
+        loader_change: &plan.loader_change,
         instance_state_hash: &plan.instance_state_hash,
         registry_revision: &plan.registry_revision,
     })
@@ -2192,6 +2542,16 @@ fn prepare_manifest(
         .map_err(|e| format!("failed to read manifest before apply: {e}"))?;
     let mut manifest: crate::models::InstanceManifest = serde_json::from_str(&text)
         .map_err(|e| format!("failed to parse manifest before apply: {e}"))?;
+
+    if let Some(change) = &plan.loader_change {
+        if !manifest.loader.eq_ignore_ascii_case(&change.loader) {
+            return Err(format!(
+                "loader change targets {} but the instance uses {}",
+                change.loader, manifest.loader
+            ));
+        }
+        manifest.loader_version = change.to_version.clone();
+    }
 
     for remove in &plan.files_to_remove {
         remove_manifest_entry(
@@ -4111,6 +4471,354 @@ mod tests {
             .unwrap()
     }
 
+    fn resolve_local_plan_with_overrides(
+        instance_dir: &Path,
+        source_path: &Path,
+        target_filename: &str,
+        overrides: PlanOverrides,
+    ) -> ResolvedInstallPlan {
+        let contents = std::fs::read(source_path).unwrap();
+        let hash = crate::download::sha256_hex(&contents);
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "manual-item",
+                    target_filename,
+                    hash,
+                    ArtifactSource::LocalFile {
+                        path: source_path.to_string_lossy().into_owned(),
+                    },
+                    SourceType::Manual,
+                ),
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let intent = InstallIntent {
+            action: InstallAction::Install {
+                source_type: SourceType::Manual,
+                item_id: "manual-item".into(),
+                candidate_version: Some("1.0".into()),
+            },
+            target_instance: "test".into(),
+            optional_deps: OptionalDepsPolicy::ExcludeAll,
+            requested_by: RequestSource::Interactive,
+            overrides,
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(intent, instance_dir, prepared, &NoopReporter))
+            .unwrap()
+    }
+
+    /// A fabric JAR whose loader requirement is `fabricloader >= <range>`.
+    /// The test instance is MC 1.21.1 / fabric 0.16.0 (both pinned tuples in
+    /// the embedded signed catalog, which also carries 0.17.0..0.19.3 for
+    /// 1.21.1), so a `>=0.17.0` requirement proves an Incompatible status
+    /// with a deterministic recommendation of 0.19.3.
+    fn write_loader_requiring_fabric_jar(path: &Path, loader_range: &str) {
+        write_fabric_test_jar(
+            path,
+            serde_json::json!({
+                "id": "loader-needy",
+                "version": "1.0.0",
+                "depends": {
+                    "fabricloader": loader_range,
+                    "minecraft": ">=1.21.1"
+                }
+            }),
+        );
+    }
+
+    fn loader_change_choice(plan: &ResolvedInstallPlan) -> Option<&PendingChoice> {
+        plan.pending_choices
+            .iter()
+            .find(|choice| matches!(choice, PendingChoice::LoaderChange { .. }))
+    }
+
+    #[test]
+    fn loader_change_surfaces_pending_choice_before_commit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        let plan = resolve_local_plan(&instance_dir, &source_path, "needy.jar", None);
+
+        let choice = loader_change_choice(&plan)
+            .expect("a loader mismatch must surface a PendingChoice::LoaderChange");
+        let PendingChoice::LoaderChange {
+            choice_id,
+            loader,
+            current_version,
+            recommended_version,
+            compatible_versions,
+            requirements,
+            conflicts,
+        } = choice
+        else {
+            unreachable!()
+        };
+        assert_eq!(choice_id, "loader-change");
+        assert_eq!(loader, "fabric");
+        assert_eq!(current_version, "0.16.0");
+        assert_eq!(recommended_version, "0.19.3");
+        assert!(compatible_versions.contains(&"0.19.3".to_string()));
+        assert!(!compatible_versions.contains(&"0.16.0".to_string()));
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].target_id, "fabricloader");
+        assert_eq!(requirements[0].candidate_version.as_deref(), Some("0.16.0"));
+        assert!(matches!(
+            requirements[0].verdict,
+            crate::loader_compatibility::RequirementVerdict::Unsatisfied
+        ));
+        assert!(conflicts.is_empty());
+        assert!(!plan.is_fully_resolved(), "the choice must block execution");
+    }
+
+    #[test]
+    fn loader_change_choice_carries_deterministic_json_shape() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        let plan = resolve_local_plan(&instance_dir, &source_path, "needy.jar", None);
+        let value = serde_json::to_value(loader_change_choice(&plan).unwrap()).unwrap();
+        assert_eq!(value["type"], "loader-change");
+        assert_eq!(value["currentVersion"], "0.16.0");
+        assert_eq!(value["recommendedVersion"], "0.19.3");
+        assert_eq!(value["compatibleVersions"][0], "0.19.3");
+        assert_eq!(value["requirements"][0]["target_id"], "fabricloader");
+        assert_eq!(value["requirements"][0]["candidate_version"], "0.16.0");
+        assert_eq!(value["requirements"][0]["verdict"], "unsatisfied");
+    }
+
+    #[test]
+    fn loader_change_approval_folds_into_plan_without_choice() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        let plan = resolve_local_plan_with_overrides(
+            &instance_dir,
+            &source_path,
+            "needy.jar",
+            PlanOverrides {
+                skip_health_scan: true,
+                approve_loader_version: Some("0.19.3".into()),
+                ..PlanOverrides::default()
+            },
+        );
+
+        assert!(plan.pending_choices.is_empty());
+        assert_eq!(
+            plan.loader_change,
+            Some(LoaderChangePlan {
+                loader: "fabric".into(),
+                from_version: "0.16.0".into(),
+                to_version: "0.19.3".into(),
+            })
+        );
+        assert!(plan.is_fully_resolved());
+        assert_eq!(plan.files_to_add.len(), 1);
+    }
+
+    #[test]
+    fn loader_change_approval_with_wrong_version_keeps_choice() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        let plan = resolve_local_plan_with_overrides(
+            &instance_dir,
+            &source_path,
+            "needy.jar",
+            PlanOverrides {
+                skip_health_scan: true,
+                approve_loader_version: Some("0.17.0".into()),
+                ..PlanOverrides::default()
+            },
+        );
+
+        assert!(plan.loader_change.is_none());
+        assert!(loader_change_choice(&plan).is_some());
+        assert!(!plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn loader_change_not_surfaced_when_current_loader_satisfies_requirements() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("fine.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.15.0");
+
+        let plan = resolve_local_plan(&instance_dir, &source_path, "fine.jar", None);
+
+        assert!(plan.pending_choices.is_empty());
+        assert!(plan.loader_change.is_none());
+        assert!(plan
+            .warnings
+            .iter()
+            .all(|warning| warning.code != "WARN_LOADER_INCOMPATIBLE"));
+        assert!(plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn loader_change_not_surfaced_when_no_candidate_satisfies_requirements() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("impossible.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=99.0.0");
+
+        let plan = resolve_local_plan(&instance_dir, &source_path, "impossible.jar", None);
+
+        assert!(plan.pending_choices.is_empty());
+        assert!(plan.loader_change.is_none());
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "WARN_LOADER_INCOMPATIBLE"));
+        assert!(plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn loader_change_considers_existing_enabled_mod_requirements() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        write_fabric_test_jar(
+            &instance_dir.join("mods/existing.jar"),
+            serde_json::json!({
+                "id": "existing",
+                "version": "1.0.0",
+                "depends": {"fabricloader": "<0.17.0"}
+            }),
+        );
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        let plan = resolve_local_plan(&instance_dir, &source_path, "needy.jar", None);
+
+        assert!(loader_change_choice(&plan).is_none());
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "WARN_LOADER_INCOMPATIBLE"));
+        assert!(plan.loader_change.is_none());
+    }
+
+    #[test]
+    fn loader_change_not_surfaced_for_download_artifacts() {
+        // Download artifacts have no JAR at plan time; the post-install
+        // health scan remains the safety net (documented absence).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        let contents = std::fs::read(&source_path).unwrap();
+        let hash = crate::download::sha256_hex(&contents);
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "manual-item",
+                    "needy.jar",
+                    hash,
+                    ArtifactSource::Download {
+                        url: "https://example.com/needy.jar".into(),
+                    },
+                    SourceType::Manual,
+                ),
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                local_intent("manual-item"),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+
+        assert!(plan.pending_choices.is_empty());
+        assert!(plan.loader_change.is_none());
+    }
+
+    #[test]
+    fn loader_change_blocks_execution_until_approved() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        let manifest_before = std::fs::read_to_string(&manifest_path).unwrap();
+
+        let plan = resolve_local_plan(&instance_dir, &source_path, "needy.jar", None);
+        let outcome =
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.execute_plan(
+                    &plan,
+                    &instance_dir,
+                    "registry-rev",
+                    &NoopReporter,
+                    &CancellationToken::new(),
+                ));
+
+        assert!(matches!(outcome, InstallOutcome::Failed { .. }));
+        assert!(!instance_dir.join("mods/needy.jar").exists());
+        assert_eq!(
+            std::fs::read_to_string(&manifest_path).unwrap(),
+            manifest_before,
+            "the unapproved loader change must not modify the manifest"
+        );
+    }
+
+    #[test]
+    fn loader_change_without_core_loader_service_fails_before_mutation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+        let manifest_path = instance_dir.join("instance_manifest.json");
+
+        let plan = resolve_local_plan_with_overrides(
+            &instance_dir,
+            &source_path,
+            "needy.jar",
+            PlanOverrides {
+                skip_health_scan: true,
+                approve_loader_version: Some("0.19.3".into()),
+                ..PlanOverrides::default()
+            },
+        );
+        let outcome =
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.execute_plan(
+                    &plan,
+                    &instance_dir,
+                    "registry-rev",
+                    &NoopReporter,
+                    &CancellationToken::new(),
+                ));
+
+        assert!(matches!(outcome, InstallOutcome::Failed { .. }));
+        assert!(!instance_dir.join("mods/needy.jar").exists());
+        let manifest: crate::models::InstanceManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest.loader, "fabric");
+        assert_eq!(manifest.loader_version, "0.16.0");
+        assert!(manifest.mods.is_empty());
+    }
+
     fn test_plan() -> ResolvedInstallPlan {
         ResolvedInstallPlan {
             fingerprint: "test-fp".into(),
@@ -4160,6 +4868,7 @@ mod tests {
                 message: "Test blocker".into(),
             }],
             pending_choices: vec![],
+            loader_change: None,
             created_at: String::new(),
             instance_state_hash: String::new(),
             registry_revision: String::new(),

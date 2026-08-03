@@ -33,6 +33,13 @@ export interface PlanOverrides {
   allowClosestVersion?: boolean;
   skipItems?: string[];
   forceConflictResolution: Record<string, string>;
+  /**
+   * Explicit approval to switch the instance loader to this exact recommended
+   * version so the incoming mods' loader requirements are satisfied. Only the
+   * recommended version from the signed catalog is accepted; any other value
+   * leaves the `loader-change` pending choice unresolved.
+   */
+  approveLoaderVersion?: string;
 }
 
 export interface InstallIntent {
@@ -59,6 +66,8 @@ export interface ResolvedInstallPlan {
   warnings: PlanWarning[];
   blockingErrors: PlanError[];
   pendingChoices: PendingChoice[];
+  /** Approved loader version switch, committed atomically with the file changes. */
+  loaderChange?: LoaderChangePlan;
   createdAt: string;
   instanceStateHash: string;
   registryRevision: string;
@@ -156,10 +165,50 @@ export interface PlanError { code: string; message: string; }
 
 export type PendingChoice =
   | { type: 'optional-dependencies'; choiceId: string; options: OptionalDepOption[] }
-  | { type: 'conflict'; choiceId: string; conflictId: string; options: ConflictResolutionOption[] };
+  | { type: 'conflict'; choiceId: string; conflictId: string; options: ConflictResolutionOption[] }
+  | {
+      type: 'loader-change';
+      choiceId: string;
+      loader: string;
+      currentVersion: string;
+      recommendedVersion: string;
+      compatibleVersions: string[];
+      requirements: LoaderRequirementIssue[];
+      conflicts: LoaderConflict[];
+    };
 
 export interface OptionalDepOption { modJarId: string; displayName: string; }
 export interface ConflictResolutionOption { resolution: string; label: string; description: string; }
+
+export interface LoaderChangePlan { loader: string; fromVersion: string; toVersion: string; }
+
+/**
+ * Mirrors `agora_core::health::LoaderRequirementIssue` (snake_case JSON keys,
+ * identical to the payload health blockers attach to loader findings).
+ */
+export interface LoaderRequirementIssue {
+  declaring_mod_id: string | null;
+  target_id: string;
+  version_ranges: string[];
+  importance: 'required' | 'recommended' | 'suggested';
+  candidate_version: string | null;
+  verdict: LoaderRequirementVerdict;
+}
+export type LoaderRequirementVerdict =
+  | 'satisfied'
+  | 'unsatisfied'
+  | { unsupported: { reason: string } };
+
+/** Mirrors `agora_core::loader_compatibility::LoaderConflict`. */
+export interface LoaderConflict {
+  declaring_mod_id: string | null;
+  target_id: string;
+  version_ranges: string[];
+  with_declaring_mod_id: string | null;
+  with_target_id: string;
+  with_version_ranges: string[];
+  message: string;
+}
 
 export interface ReverseDepInfo { modJarId: string; filename: string; requirement: string; impact?: string; }
 

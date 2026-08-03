@@ -194,6 +194,7 @@ impl InstallService {
             .registry_db()
             .is_file()
             .then(|| self.ctx.paths.registry_db());
+        let loader_service = crate::loader_service::LoaderService::new(self.ctx.clone());
         InstallPipeline
             .execute_plan_with_scheduler(
                 plan,
@@ -204,6 +205,7 @@ impl InstallService {
                 crate::install_pipeline::InstallExecutionResources {
                     scheduler: Some(&self.ctx.task_scheduler),
                     registry_db_path: registry_db.as_deref(),
+                    loader_service: Some(&loader_service),
                 },
             )
             .await

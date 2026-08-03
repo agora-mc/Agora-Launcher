@@ -19,6 +19,7 @@ import {
   type JavaRuntimeProgressEvent,
   type LauncherAction,
   type LoaderVersionSummary,
+  type HealthReport,
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
   type UpdateInfo,
@@ -45,6 +46,10 @@ export function Instances({
   onRepairAndRetry,
   onUseDelegatedLaunch,
   onClearError,
+  healthReports,
+  healthErrors,
+  onReviewHealth,
+  onRefreshHealth,
 }: {
   onEditInstance: (id: string) => void;
   processState: ProcessState;
@@ -59,6 +64,10 @@ export function Instances({
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
   onClearError: () => void;
+  healthReports: Record<string, HealthReport>;
+  healthErrors: Record<string, string>;
+  onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
+  onRefreshHealth: () => Promise<void>;
 }) {
   const [instances, setInstances] = useState<InstanceRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -237,6 +246,10 @@ export function Instances({
                 recoveryPending={recoveryPending}
                 recoveryError={snapshotErrors[instance.instance_id] ?? null}
                 recoveryFailed={recoveryFailed}
+                healthReport={healthReports[instance.instance_id] ?? null}
+                healthError={healthErrors[instance.instance_id] ?? null}
+                onReviewHealth={onReviewHealth}
+                onRefreshHealth={onRefreshHealth}
                 onRetryRecovery={async () => {
                   await createSnapshot(instance.instance_id, 'Initial import retry');
                   await refresh();
@@ -314,6 +327,10 @@ function InstanceCard({
   recoveryPending,
   recoveryError,
   recoveryFailed,
+  healthReport,
+  healthError,
+  onReviewHealth,
+  onRefreshHealth,
   onRetryRecovery,
 }: {
   instance: InstanceRow;
@@ -339,16 +356,25 @@ function InstanceCard({
   recoveryPending: boolean;
   recoveryError: string | null;
   recoveryFailed: boolean;
+  healthReport: HealthReport | null;
+  healthError: string | null;
+  onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
+  onRefreshHealth: () => Promise<void>;
   onRetryRecovery: () => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
   const [cancellingJava, setCancellingJava] = useState(false);
   const [retryingRecovery, setRetryingRecovery] = useState(false);
+  const [refreshingHealth, setRefreshingHealth] = useState(false);
 
   const displayError = error ?? controllerError;
   const effectiveBusy = launchBusy || repairBusy || repairing || cancellingJava;
   const recoveryBlocked = recoveryPending || recoveryFailed || packInstall?.status === 'running';
+  const healthIssueCount = healthReport
+    ? healthReport.blockers.length + healthReport.warnings.length
+    : 0;
+  const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
 
   const handleCancelJavaProvisioning = async () => {
     if (!runtimeProgress) return;
@@ -369,6 +395,15 @@ function InstanceCard({
       setError(formatError(cause));
     } finally {
       setRetryingRecovery(false);
+    }
+  };
+
+  const handleRefreshHealth = async () => {
+    setRefreshingHealth(true);
+    try {
+      await onRefreshHealth();
+    } finally {
+      setRefreshingHealth(false);
     }
   };
 
@@ -451,6 +486,55 @@ function InstanceCard({
       </div>
 
       {packInstall && <PackInstallProgressBar task={packInstall} compact />}
+
+      {healthReport && healthIssueCount > 0 && (
+        <div
+          className={`mt-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${
+            healthBlocked
+              ? 'border-destructive/60 bg-destructive/10'
+              : 'border-amber-500/60 bg-amber-500/10'
+          }`}
+          role="alert"
+          aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
+        >
+          <div className="min-w-0">
+            <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
+              {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
+            </p>
+            <p className="truncate text-muted-foreground">
+              {healthBlocked ? 'Launch is blocked until these are resolved.' : 'Review recommended before launch.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onReviewHealth(instance.instance_id, instance.name, healthReport)}
+            className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
+          >
+            Review & repair
+          </button>
+        </div>
+      )}
+
+      {healthError && (
+        <div
+          className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs"
+          role="alert"
+          aria-label="Health check unavailable"
+        >
+          <div className="min-w-0">
+            <p className="font-medium text-amber-700 dark:text-amber-300">Health check unavailable</p>
+            <p className="truncate text-muted-foreground">{healthError}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleRefreshHealth()}
+            disabled={refreshingHealth}
+            className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40 disabled:opacity-50"
+          >
+            {refreshingHealth ? 'Checking…' : 'Check again'}
+          </button>
+        </div>
+      )}
 
       {recoveryBlocked && (
         <div className="mt-3 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-xs" role="status">

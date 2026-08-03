@@ -55,6 +55,7 @@ pub mod launcher_import;
 pub mod launcher_import_service;
 pub mod launcher_profiles;
 pub mod lkg;
+pub mod loader_compatibility;
 pub mod loader_manifests;
 pub mod loader_service;
 pub mod loadout;

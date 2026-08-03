@@ -1,8 +1,15 @@
 use crate::db;
-use crate::dependency_ops::{AliasMap, JarDeps, ProvidedModSource};
+use crate::dependency_ops::{
+    AliasMap, DependencyDecl, DependencyImportance, JarDeps, ProvidedModSource,
+};
 use crate::jar_metadata::{
     parse_jar_metadata_for_loader_with_status, ParseDiagnostic, ParseStatus,
 };
+use crate::loader_compatibility::{
+    evaluate_loader_compatibility, CurrentLoaderStatus, LoaderCompatibilityReport,
+    LoaderCompatibilityRequest, LoaderConflict, LoaderRequirementResult, RequirementVerdict,
+};
+use crate::loader_manifests;
 use crate::models::{InstalledMod, InstanceManifest};
 use crate::registry;
 use crate::version_match;
@@ -39,6 +46,10 @@ pub struct Warning {
     pub filename: Option<String>,
     pub message: String,
     pub suggested_action: Option<String>,
+    /// Structured loader-compatibility evidence when this warning is a loader
+    /// requirement finding. Absent for every other warning kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_compatibility: Option<LoaderCompatibilityIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +70,9 @@ pub enum WarningKind {
     IncompatibleModSoft,
     /// A curated `known_conflicts` record whose severity is not launch-breaking.
     CuratedConflictSoft,
+    /// An unsatisfied Recommended/Suggested loader requirement. The installed
+    /// loader satisfies every hard requirement, so launch is allowed.
+    LoaderRequirementSoft,
 }
 
 /// A low-priority improvement that never interrupts launch.
@@ -87,6 +101,10 @@ pub struct Blocker {
     pub filename: Option<String>,
     pub message: String,
     pub suggested_action: Option<String>,
+    /// Structured loader-compatibility evidence when this blocker is a loader
+    /// requirement finding. Absent for every other blocker kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_compatibility: Option<LoaderCompatibilityIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +113,54 @@ pub enum BlockerKind {
     MissingRequiredDependency,
     IncompatibleMod,
     CuratedConflict,
+    /// The installed loader fails at least one hard (Required) loader
+    /// requirement of the enabled mods, or no signed catalog candidate
+    /// satisfies every requirement.
+    LoaderVersionMismatch,
+    /// Loader compatibility cannot be verified: a hard requirement is
+    /// Unsupported (unknown capability or uninterpretable range), or the
+    /// installed loader tuple is absent from the signed catalog. Requires
+    /// manual review; automatic switching is not offered.
+    LoaderRequirementUnsupported,
+}
+
+/// Structured loader-compatibility evidence attached to a health finding.
+///
+/// Desktop renders this payload directly; it must never need to parse the
+/// human-readable `message` text to make decisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoaderCompatibilityIssue {
+    /// Loader family, e.g. `fabric`, `forge`.
+    pub loader: String,
+    /// Currently installed loader version, when known.
+    pub current_version: Option<String>,
+    /// The recommended signed catalog version, when one can be proven.
+    pub recommended_version: Option<String>,
+    /// Every signed catalog version satisfying all hard requirements.
+    pub compatible_versions: Vec<String>,
+    /// Signed catalog versions that require explicit manual confirmation
+    /// because at least one hard capability could not be verified.
+    #[serde(default)]
+    pub indeterminate_versions: Vec<String>,
+    /// Per-requirement evidence evaluated against the current loader.
+    pub requirements: Vec<LoaderRequirementIssue>,
+    /// Minimal pair conflicts between hard requirements.
+    pub conflicts: Vec<LoaderConflict>,
+}
+
+/// Structured evidence for one loader requirement evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoaderRequirementIssue {
+    /// The declaring mod id, when known.
+    pub declaring_mod_id: Option<String>,
+    /// The capability the requirement targets (e.g. `fabricloader`).
+    pub target_id: String,
+    /// Raw version ranges in the loader-native grammar.
+    pub version_ranges: Vec<String>,
+    pub importance: DependencyImportance,
+    /// The version the evaluated candidate provides for the capability.
+    pub candidate_version: Option<String>,
+    pub verdict: RequirementVerdict,
 }
 
 /// Full health report for a pre-launch scan.
@@ -121,7 +187,9 @@ struct CachedHealth {
 }
 
 const HEALTH_CACHE_CAPACITY: usize = 64;
-const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 1;
+/// v3: reports carry structured loader-compatibility findings and source-JAR
+/// repair targets for missing dependencies; earlier cached reports are stale.
+const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 3;
 const JAR_METADATA_CACHE_SCHEMA_VERSION: u32 = 1;
 const JAR_METADATA_PARSER_SCHEMA_VERSION: u32 = 1;
 static HEALTH_CACHE_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -255,6 +323,34 @@ fn health_cache_path(instance_dir: &Path) -> PathBuf {
 
 fn jar_metadata_cache_path(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".agora").join("jar-metadata.json")
+}
+
+/// Evict every health cache for one instance: the in-process report cache and
+/// the durable per-instance health/metadata cache files.
+///
+/// Called after a loader switch so the next scan reflects the new loader
+/// tuple instead of a report computed against the old one. Missing cache files
+/// are not an error; only I/O failures are surfaced.
+pub fn invalidate_health_cache(instance_dir: &Path) -> Result<(), String> {
+    if let Ok(mut cache) = HEALTH_CACHE.lock() {
+        cache.retain(|key, _| key.instance_dir != instance_dir);
+    }
+    let mut failures = Vec::new();
+    for path in [
+        health_cache_path(instance_dir),
+        jar_metadata_cache_path(instance_dir),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn load_persistent_health(
@@ -531,6 +627,7 @@ fn manifest_fallback_metadata(installed: &InstalledMod) -> JarDeps {
                 nested_path: None,
             })
             .collect(),
+        dependency_decls: Vec::new(),
     }
 }
 
@@ -943,6 +1040,7 @@ fn health_from_inventory(
                 "Repair or reinstall the modpack before treating dependent mods as installed."
                     .into(),
             ),
+            loader_compatibility: None,
         });
     }
 
@@ -1003,6 +1101,7 @@ fn health_from_inventory(
                     jar.filename, detail
                 ),
                 suggested_action: None,
+                loader_compatibility: None,
             });
         }
     }
@@ -1022,6 +1121,7 @@ fn health_from_inventory(
                 suggested_action: Some(
                     "Keep only one version of this mod; disable the others.".into(),
                 ),
+                loader_compatibility: None,
             });
         }
     }
@@ -1050,12 +1150,17 @@ fn health_from_inventory(
                             source, display_name
                         ),
                         suggested_action: None,
+                        loader_compatibility: None,
                     });
                 } else {
                     blockers.push(Blocker {
                         kind: BlockerKind::MissingRequiredDependency,
                         mod_id: Some(display_name.clone()),
-                        filename: None,
+                        // The missing dependency has no file, but this is the
+                        // enabled source JAR that declares it. Returning that
+                        // filename lets the shared health UI offer the safe
+                        // coarse repair of disabling the dependent mod.
+                        filename: Some(source.clone()),
                         message: format!(
                             "'{}' requires '{}' but no enabled artifact provides it.",
                             source, display_name
@@ -1064,6 +1169,7 @@ fn health_from_inventory(
                             "Install '{}' to resolve this dependency.",
                             display_name
                         )),
+                        loader_compatibility: None,
                     });
                 }
             }
@@ -1262,6 +1368,7 @@ fn health_from_inventory(
                             "Remove '{}' or '{}' to resolve the conflict.",
                             source, target_provider.owner_filename
                         )),
+                        loader_compatibility: None,
                     });
                     }
                     version_match::VersionMatch::Matched
@@ -1283,6 +1390,7 @@ fn health_from_inventory(
                             "If you experience issues, remove '{}' or '{}'.",
                             source, target_provider.owner_filename
                         )),
+                        loader_compatibility: None,
                     });
                     }
                 }
@@ -1328,6 +1436,7 @@ fn health_from_inventory(
                                     filename: None, // no single actionable file
                                     message,
                                     suggested_action: Some(mitigation),
+                                    loader_compatibility: None,
                                 });
                             } else {
                                 // Non-hard (or unrecognized/missing) severity:
@@ -1338,6 +1447,7 @@ fn health_from_inventory(
                                     filename: None,
                                     message,
                                     suggested_action: Some(mitigation),
+                                    loader_compatibility: None,
                                 });
                             }
                         }
@@ -1391,11 +1501,81 @@ fn health_from_inventory(
                 suggested_action: Some(
                     "This may be a manually-added mod. It will be launched but is not managed by Agora.".into(),
                 ),
+                loader_compatibility: None,
             });
         }
     }
 
-    // 10. Compute score
+    // 10. Loader compatibility (Work Packages 5/6).
+    //
+    // Collect every structured dependency declaration from the enabled
+    // inventory (the parser already aggregates nested-JAR declarations) and
+    // evaluate them against the active signed loader catalog for the
+    // manifest's loader / Minecraft / current loader tuple. No declarations
+    // means no loader finding. Soft (Recommended/Suggested) requirements are
+    // warnings only; hard failures block; unverifiable combinations require
+    // manual review.
+    let loader_decls: Vec<DependencyDecl> = jars
+        .iter()
+        .flat_map(|jar| jar.metadata.dependency_decls.iter().cloned())
+        .collect();
+    if let Some(report) = evaluate_loader_compatibility_for_decls(manifest, &loader_decls) {
+        let issue = loader_compatibility_issue(manifest, &report);
+        match report.current_status {
+            CurrentLoaderStatus::Compatible => {
+                let soft_unsatisfied = report.requirements.iter().any(|result| {
+                    matches!(
+                        result.declaration.importance,
+                        DependencyImportance::Recommended | DependencyImportance::Suggested
+                    ) && !matches!(result.verdict, RequirementVerdict::Satisfied)
+                });
+                if soft_unsatisfied {
+                    warnings.push(Warning {
+                        kind: WarningKind::LoaderRequirementSoft,
+                        mod_id: None,
+                        filename: None,
+                        message: format!(
+                            "Enabled mods recommend or suggest a newer {} loader than the installed {}, but every hard requirement is met. The mods may still work.",
+                            manifest.loader, manifest.loader_version
+                        ),
+                        suggested_action: Some(
+                            "Review the loader version before launch; switching is optional."
+                                .into(),
+                        ),
+                        loader_compatibility: Some(issue),
+                    });
+                }
+            }
+            CurrentLoaderStatus::Incompatible | CurrentLoaderStatus::NoCompatibleCandidates => {
+                blockers.push(Blocker {
+                    kind: BlockerKind::LoaderVersionMismatch,
+                    mod_id: None,
+                    filename: None,
+                    message: loader_mismatch_message(manifest, &report),
+                    suggested_action: loader_mismatch_action(manifest, &report),
+                    loader_compatibility: Some(issue),
+                });
+            }
+            CurrentLoaderStatus::Indeterminate => {
+                blockers.push(Blocker {
+                    kind: BlockerKind::LoaderRequirementUnsupported,
+                    mod_id: None,
+                    filename: None,
+                    message: format!(
+                        "Loader compatibility cannot be verified for the installed {} loader {}: enabled mods declare requirements Agora cannot evaluate, or the installed tuple is absent from the signed catalog. Automatic switching is unavailable; review before launching.",
+                        manifest.loader, manifest.loader_version
+                    ),
+                    suggested_action: Some(
+                        "Manually review the loader requirements of your enabled mods before launch."
+                            .into(),
+                    ),
+                    loader_compatibility: Some(issue),
+                });
+            }
+        }
+    }
+
+    // 11. Compute score
     let score = if blockers.is_empty() && warnings.is_empty() {
         HealthScore::Green
     } else if blockers.is_empty() {
@@ -1453,6 +1633,117 @@ fn is_hard_severity(s: &str) -> bool {
         s.trim().to_lowercase().as_str(),
         "hard" | "critical" | "breaking" | "fatal" | "incompatible" | "block" | "blocker"
     )
+}
+
+/// Evaluate loader compatibility for an instance's enabled mods against the
+/// active signed loader catalog.
+///
+/// Runs a fresh inventory of the instance's `mods/` directory, aggregates the
+/// parser's structured dependency declarations (including nested-JAR
+/// declarations), and evaluates them against the manifest's loader tuple.
+/// Returns `None` when no enabled mod declares a loader requirement.
+pub fn loader_compatibility_report(
+    instance_dir: &Path,
+    manifest: &InstanceManifest,
+) -> Option<LoaderCompatibilityReport> {
+    let decls: Vec<DependencyDecl> = inventory(instance_dir, manifest)
+        .artifacts
+        .iter()
+        .flat_map(|artifact| artifact.metadata.dependency_decls.iter().cloned())
+        .collect();
+    evaluate_loader_compatibility_for_decls(manifest, &decls)
+}
+
+fn evaluate_loader_compatibility_for_decls(
+    manifest: &InstanceManifest,
+    decls: &[DependencyDecl],
+) -> Option<LoaderCompatibilityReport> {
+    // Only loader-requirement declarations can produce a loader finding. Mod
+    // dependencies alone (including on an absent current tuple) never do.
+    if matches!(manifest.loader.as_str(), "" | "vanilla")
+        || !decls
+            .iter()
+            .any(|decl| crate::loader_compatibility::is_loader_requirement(decl).is_some())
+    {
+        return None;
+    }
+    let catalog = loader_manifests::active_catalog();
+    let request = LoaderCompatibilityRequest {
+        loader: &manifest.loader,
+        minecraft_version: &manifest.minecraft_version,
+        current_loader_version: (!manifest.loader_version.is_empty())
+            .then_some(manifest.loader_version.as_str()),
+        requirements: decls,
+        catalog: &catalog,
+    };
+    Some(evaluate_loader_compatibility(&request))
+}
+
+fn loader_mismatch_message(
+    manifest: &InstanceManifest,
+    report: &LoaderCompatibilityReport,
+) -> String {
+    match &report.recommended_version {
+        Some(recommended) => format!(
+            "The installed {} loader {} does not satisfy the loader requirements of enabled mods. Switch to {} to resolve.",
+            manifest.loader, manifest.loader_version, recommended.loader_version
+        ),
+        None => format!(
+            "The installed {} loader {} does not satisfy the loader requirements of enabled mods, and no signed catalog version satisfies every requirement.",
+            manifest.loader, manifest.loader_version
+        ),
+    }
+}
+
+fn loader_mismatch_action(
+    manifest: &InstanceManifest,
+    report: &LoaderCompatibilityReport,
+) -> Option<String> {
+    match &report.recommended_version {
+        Some(recommended) => Some(format!(
+            "Switch the instance loader to {} {}.",
+            manifest.loader, recommended.loader_version
+        )),
+        None => Some("Review the conflicting loader requirements of your enabled mods.".into()),
+    }
+}
+
+fn loader_compatibility_issue(
+    manifest: &InstanceManifest,
+    report: &LoaderCompatibilityReport,
+) -> LoaderCompatibilityIssue {
+    LoaderCompatibilityIssue {
+        loader: manifest.loader.clone(),
+        current_version: (!manifest.loader_version.is_empty())
+            .then_some(manifest.loader_version.clone()),
+        recommended_version: report
+            .recommended_version
+            .as_ref()
+            .map(|candidate| candidate.loader_version.clone()),
+        compatible_versions: report
+            .compatible_versions
+            .iter()
+            .map(|candidate| candidate.loader_version.clone())
+            .collect(),
+        indeterminate_versions: report
+            .indeterminate_versions
+            .iter()
+            .map(|candidate| candidate.loader_version.clone())
+            .collect(),
+        requirements: report
+            .requirements
+            .iter()
+            .map(|result: &LoaderRequirementResult| LoaderRequirementIssue {
+                declaring_mod_id: result.declaration.declaring_mod_id.clone(),
+                target_id: result.declaration.target_id.clone(),
+                version_ranges: result.declaration.version_ranges.clone(),
+                importance: result.declaration.importance,
+                candidate_version: result.candidate_provided_version.clone(),
+                verdict: result.verdict.clone(),
+            })
+            .collect(),
+        conflicts: report.conflicts.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -2191,10 +2482,12 @@ mandatory=true
             tracked_manifest(&[("consumer.jar", "consumer"), ("provider.jar", "provider")]);
         manifest.mods[1].enabled = false;
         let report = health(&dir, &manifest, None);
-        assert!(report
+        let dependency_blocker = report
             .blockers
             .iter()
-            .any(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency));
+            .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .expect("disabled provider must leave a missing dependency blocker");
+        assert_eq!(dependency_blocker.filename.as_deref(), Some("consumer.jar"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2915,5 +3208,213 @@ type="required"
         assert!(json.contains("fabric_breaks"));
         let back: IncompatibilityDecl = serde_json::from_str(&json).unwrap();
         assert_eq!(back, decl);
+    }
+
+    // -------------------------------------------------------------------
+    // Loader compatibility findings (Work Packages 5/6).
+    //
+    // These exercise the real parse path (fabric.mod.json) against the
+    // embedded signed catalog for fabric / 1.21, which pins 0.18.6..0.19.3.
+    // -------------------------------------------------------------------
+
+    fn loader_manifest_for_version(loader_version: &str) -> InstanceManifest {
+        let mut manifest = tracked_manifest(&[("moda.jar", "moda")]);
+        manifest.loader_version = loader_version.into();
+        manifest
+    }
+
+    #[test]
+    fn health_loader_requirement_unsatisfied_blocks_with_structured_evidence() {
+        let dir = fresh_instance("loader_mismatch");
+        write_jar(
+            &dir.join("mods"),
+            "moda.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"moda","version":"1.0","depends":{"fabricloader":">=0.19.0"}}"#,
+            )],
+        );
+        let manifest = loader_manifest_for_version("0.18.6");
+        let report = health(&dir, &manifest, None);
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|b| b.kind == BlockerKind::LoaderVersionMismatch)
+            .expect("mismatch blocker");
+        let issue = blocker
+            .loader_compatibility
+            .as_ref()
+            .expect("structured payload attached to blocker");
+        assert_eq!(issue.loader, "fabric");
+        assert_eq!(issue.current_version.as_deref(), Some("0.18.6"));
+        assert!(issue.recommended_version.is_some());
+        assert!(issue
+            .compatible_versions
+            .iter()
+            .any(|version| version == "0.19.0"));
+        let requirement = issue
+            .requirements
+            .iter()
+            .find(|r| r.target_id == "fabricloader")
+            .expect("requirement evidence");
+        assert_eq!(requirement.verdict, RequirementVerdict::Unsatisfied);
+        assert_eq!(requirement.importance, DependencyImportance::Required);
+        assert_eq!(requirement.candidate_version.as_deref(), Some("0.18.6"));
+        assert_eq!(report.score, HealthScore::Red);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn health_loader_current_compatible_produces_no_loader_finding() {
+        let dir = fresh_instance("loader_compatible");
+        write_jar(
+            &dir.join("mods"),
+            "moda.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"moda","version":"1.0","depends":{"fabricloader":">=0.19.0"}}"#,
+            )],
+        );
+        let manifest = loader_manifest_for_version("0.19.0");
+        let report = health(&dir, &manifest, None);
+        assert!(!report.blockers.iter().any(|b| {
+            matches!(
+                b.kind,
+                BlockerKind::LoaderVersionMismatch | BlockerKind::LoaderRequirementUnsupported
+            )
+        }));
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::LoaderRequirementSoft));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn health_loader_unsupported_requirement_blocks_with_manual_review() {
+        let dir = fresh_instance("loader_unsupported");
+        write_jar(
+            &dir.join("mods"),
+            "moda.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"moda","version":"1.0","depends":{"fabricloader":">=1.x"}}"#,
+            )],
+        );
+        let manifest = loader_manifest_for_version("0.19.0");
+        let report = health(&dir, &manifest, None);
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|b| b.kind == BlockerKind::LoaderRequirementUnsupported)
+            .expect("unsupported blocker");
+        let issue = blocker
+            .loader_compatibility
+            .as_ref()
+            .expect("structured payload attached to blocker");
+        assert!(issue.requirements.iter().any(|r| {
+            r.target_id == "fabricloader"
+                && matches!(r.verdict, RequirementVerdict::Unsupported { .. })
+        }));
+        assert!(issue.recommended_version.is_none());
+        assert_eq!(report.score, HealthScore::Red);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn health_loader_absent_current_tuple_blocks_with_manual_review() {
+        let dir = fresh_instance("loader_absent_current");
+        write_jar(
+            &dir.join("mods"),
+            "moda.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"moda","version":"1.0","depends":{"fabricloader":">=0.19.0"}}"#,
+            )],
+        );
+        let manifest = loader_manifest_for_version("0.99.0");
+        let report = health(&dir, &manifest, None);
+        assert!(report.blockers.iter().any(|b| {
+            b.kind == BlockerKind::LoaderRequirementUnsupported
+                && b.loader_compatibility
+                    .as_ref()
+                    .is_some_and(|issue| issue.current_version.as_deref() == Some("0.99.0"))
+        }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn health_loader_soft_requirement_warns_only() {
+        let dir = fresh_instance("loader_soft");
+        write_jar(
+            &dir.join("mods"),
+            "moda.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"moda","version":"1.0","recommends":{"fabricloader":">=0.19.0"}}"#,
+            )],
+        );
+        let manifest = loader_manifest_for_version("0.18.6");
+        let report = health(&dir, &manifest, None);
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.kind == WarningKind::LoaderRequirementSoft)
+            .expect("soft loader warning");
+        assert!(warning.loader_compatibility.is_some());
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.score, HealthScore::Yellow);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn health_loader_no_declarations_no_finding() {
+        let dir = fresh_instance("loader_no_decls");
+        write_jar(
+            &dir.join("mods"),
+            "moda.jar",
+            &[("fabric.mod.json", r#"{"id":"moda","version":"1.0"}"#)],
+        );
+        let manifest = loader_manifest_for_version("0.18.6");
+        let report = health(&dir, &manifest, None);
+        assert!(!report.blockers.iter().any(|b| {
+            matches!(
+                b.kind,
+                BlockerKind::LoaderVersionMismatch | BlockerKind::LoaderRequirementUnsupported
+            )
+        }));
+        assert!(!report
+            .warnings
+            .iter()
+            .any(|w| w.kind == WarningKind::LoaderRequirementSoft));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalidate_health_cache_evicts_process_and_durable_caches() {
+        let dir = fresh_instance("invalidate_health");
+        let manifest = tracked_manifest(&[("content.jar", "content")]);
+        std::fs::write(dir.join("mods/content.jar"), b"not a real jar").unwrap();
+
+        let _ = cached_health(&dir, &manifest, None, None);
+        assert!(health_cache_path(&dir).is_file());
+        assert!(jar_metadata_cache_path(&dir).is_file());
+
+        invalidate_health_cache(&dir).unwrap();
+        assert!(!health_cache_path(&dir).exists());
+        assert!(!jar_metadata_cache_path(&dir).exists());
+
+        // The next scan must recompute from scratch and repopulate.
+        let _ = cached_health(&dir, &manifest, None, None);
+        assert!(health_cache_path(&dir).is_file());
+        assert!(jar_metadata_cache_path(&dir).is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalidate_health_cache_is_ok_when_caches_absent() {
+        let dir = fresh_instance("invalidate_health_absent");
+        invalidate_health_cache(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

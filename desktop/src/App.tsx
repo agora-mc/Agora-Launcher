@@ -11,7 +11,7 @@ import AiChatPage from './pages/AiChatPage';
 import { Onboarding } from './pages/Onboarding';
 import { ModDetail } from './pages/ModDetail';
 import { InstanceEditor } from './pages/InstanceEditor';
-import { getInstanceDetail, getSetting } from './lib/tauri';
+import { changeLoaderVersion, getInstanceDetail, getSetting, type HealthReport } from './lib/tauri';
 import { OfflineBanner } from './components/offline-banner';
 import { SandboxBanner } from './components/sandbox-banner';
 import { HealthDialog } from './components/HealthDialog';
@@ -19,6 +19,7 @@ import { CrashInvestigator } from './components/CrashInvestigator';
 import { ToastContainer } from './components/Toast';
 import { useDestination, type Destination, type Tab } from './lib/useDestination';
 import { useProcessController } from './lib/useProcessController';
+import { useInstanceHealthMonitor } from './lib/useInstanceHealthMonitor';
 import { BrandMark } from './components/BrandMark';
 import { PackInstallProvider } from './components/PackInstallProgress';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Landmark, SettingsIcon } from 'lucide-react';
@@ -180,6 +181,12 @@ export default function App() {
     manualLogText: string | null;
     directLaunch: boolean;
   } | null>(null);
+  const [healthReview, setHealthReview] = useState<{
+    instanceId: string;
+    instanceName: string;
+    report: HealthReport;
+  } | null>(null);
+  const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
 
   useEffect(() => {
     if (destination.type === 'tab' && destination.tab === 'browse') {
@@ -367,6 +374,7 @@ export default function App() {
     kill: killProcess,
     clearError,
     repairAndRetry,
+    switchLoaderAndRetry,
     useDelegatedLaunch,
   } = processController;
 
@@ -385,6 +393,21 @@ export default function App() {
 
   const handleInstanceEditorLaunch = async (instanceId: string) => {
     return startLaunch(instanceId, await resolveDirectLaunch(instanceId));
+  };
+
+  const openHealthReview = (instanceId: string, instanceName: string, report: HealthReport) => {
+    setHealthReview({ instanceId, instanceName, report });
+  };
+
+  const switchLoaderFromHealthReview = async (targetVersion: string): Promise<HealthReport> => {
+    const review = healthReview;
+    if (!review) throw new Error('No instance health report is open.');
+    const result = await changeLoaderVersion(review.instanceId, targetVersion);
+    healthMonitor.updateReport(review.instanceId, result.health);
+    setHealthReview((current) => current && current.instanceId === review.instanceId
+      ? { ...current, report: result.health }
+      : current);
+    return result.health;
   };
 
   const handleInstanceEditorInvestigate = (instanceId: string) => {
@@ -461,13 +484,29 @@ export default function App() {
           }}
         />
 
-        {processState.phase === 'failed' && processState.healthReport && (
+        {processState.phase === 'failed' && processState.healthReport ? (
           <HealthDialog
             instanceId={processState.instanceId!}
             instanceName={processState.instanceId!}
             initialReport={processState.healthReport}
             onConfirm={approveLaunch}
             onCancel={cancelLaunch}
+            onSwitchLoader={switchLoaderAndRetry}
+          />
+        ) : healthReview && (
+          <HealthDialog
+            instanceId={healthReview.instanceId}
+            instanceName={healthReview.instanceName}
+            initialReport={healthReview.report}
+            onCancel={() => setHealthReview(null)}
+            onSwitchLoader={switchLoaderFromHealthReview}
+            reviewOnly
+            onReportChanged={(report) => {
+              healthMonitor.updateReport(healthReview.instanceId, report);
+              setHealthReview((current) => current && current.instanceId === healthReview.instanceId
+                ? { ...current, report }
+                : current);
+            }}
           />
         )}
 
@@ -510,6 +549,10 @@ export default function App() {
                     onRepairAndRetry={repairAndRetry}
                     onUseDelegatedLaunch={useDelegatedLaunch}
                     onClearError={clearError}
+                    healthReports={healthMonitor.reports}
+                    healthErrors={healthMonitor.errors}
+                    onReviewHealth={openHealthReview}
+                    onRefreshHealth={healthMonitor.refresh}
                   />
                 )}
                 {effectiveTab === 'governance' && <Governance />}

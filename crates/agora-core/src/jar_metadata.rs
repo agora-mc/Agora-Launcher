@@ -1,5 +1,6 @@
 use crate::dependency_ops::{
-    IncompatibilityDecl, IncompatibilitySource, JarDeps, ProvidedMod, ProvidedModSource,
+    DependencyDecl, DependencyImportance, DependencySource, IncompatibilityDecl,
+    IncompatibilitySource, JarDeps, ProvidedMod, ProvidedModSource, VersionGrammar,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -283,8 +284,10 @@ fn collect_fabric_metadata(
     optional_deps: &mut BTreeSet<String>,
     incompatible_ids: &mut BTreeSet<String>,
     incompatibility_decls: &mut Vec<IncompatibilityDecl>,
+    dependency_decls: &mut Vec<DependencyDecl>,
     provides: &mut Vec<String>,
     jars: &mut Vec<String>,
+    status: &mut ParseStatus,
 ) {
     if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
         if !id.is_empty() {
@@ -301,10 +304,39 @@ fn collect_fabric_metadata(
     let declaration_start = incompatibility_decls.len();
     if let Some(value) = value.get("depends") {
         extract_fabric_deps(value, depends_on, None);
+        collect_fabric_decls(
+            value,
+            &declaring_mod_id,
+            DependencyImportance::Required,
+            DependencySource::FabricDepends,
+            dependency_decls,
+            depends_on,
+            status,
+        );
     }
     for key in ["recommends", "suggests"] {
         if let Some(value) = value.get(key) {
             extract_fabric_deps(value, optional_deps, None);
+            let (importance, source) = if key == "recommends" {
+                (
+                    DependencyImportance::Recommended,
+                    DependencySource::FabricRecommends,
+                )
+            } else {
+                (
+                    DependencyImportance::Suggested,
+                    DependencySource::FabricSuggests,
+                )
+            };
+            collect_fabric_decls(
+                value,
+                &declaring_mod_id,
+                importance,
+                source,
+                dependency_decls,
+                optional_deps,
+                status,
+            );
         }
     }
     if let Some(value) = value.get("breaks") {
@@ -356,8 +388,10 @@ fn collect_quilt_metadata(
     depends_on: &mut BTreeSet<String>,
     incompatible_ids: &mut BTreeSet<String>,
     incompatibility_decls: &mut Vec<IncompatibilityDecl>,
+    dependency_decls: &mut Vec<DependencyDecl>,
     provides: &mut Vec<(String, Option<String>)>,
     jars: &mut Vec<String>,
+    status: &mut ParseStatus,
 ) {
     let Some(loader) = value.get("quilt_loader").or(value.get("quiltLoader")) else {
         return;
@@ -377,6 +411,15 @@ fn collect_quilt_metadata(
     let declaration_start = incompatibility_decls.len();
     if let Some(value) = loader.get("depends") {
         extract_fabric_deps(value, depends_on, None);
+        collect_fabric_decls(
+            value,
+            &declaring_mod_id,
+            DependencyImportance::Required,
+            DependencySource::QuiltDepends,
+            dependency_decls,
+            depends_on,
+            status,
+        );
     }
     if let Some(value) = loader.get("breaks") {
         extract_fabric_deps(
@@ -545,6 +588,7 @@ fn parse_from_archive<R: Read + Seek>(
     let mut optional_deps: BTreeSet<String> = BTreeSet::new();
     let mut incompatible_ids: BTreeSet<String> = BTreeSet::new();
     let mut incompatibility_decls: Vec<IncompatibilityDecl> = Vec::new();
+    let mut dependency_decls: Vec<DependencyDecl> = Vec::new();
     let mut forge_mod_id: Option<String> = None;
     let mut forge_provides_strs: BTreeSet<String> = BTreeSet::new();
     let mut forge_version: Option<String> = None;
@@ -597,8 +641,10 @@ fn parse_from_archive<R: Read + Seek>(
                             &mut optional_deps,
                             &mut incompatible_ids,
                             &mut incompatibility_decls,
+                            &mut dependency_decls,
                             &mut fabric_provides_strs,
                             &mut fabric_jars_strs,
+                            &mut status,
                         );
                     }
                     Err(error) => {
@@ -640,8 +686,10 @@ fn parse_from_archive<R: Read + Seek>(
                             &mut depends_on,
                             &mut incompatible_ids,
                             &mut incompatibility_decls,
+                            &mut dependency_decls,
                             &mut quilt_provides,
                             &mut quilt_jars_strs,
+                            &mut status,
                         );
                     }
                     Err(error) => {
@@ -687,8 +735,11 @@ fn parse_from_archive<R: Read + Seek>(
                             &mut optional_deps,
                             &mut incompatible_ids,
                             &mut incompatibility_decls,
+                            &mut dependency_decls,
                             &mut forge_mod_id,
                             &mut forge_version,
+                            DependencySource::NeoForgeDependency,
+                            &mut status,
                         );
                     }
                     Err(message) => {
@@ -728,8 +779,11 @@ fn parse_from_archive<R: Read + Seek>(
                             &mut optional_deps,
                             &mut incompatible_ids,
                             &mut incompatibility_decls,
+                            &mut dependency_decls,
                             &mut forge_mod_id,
                             &mut forge_version,
+                            DependencySource::ForgeDependency,
+                            &mut status,
                         );
                     }
                     Err(message) => {
@@ -969,6 +1023,9 @@ fn parse_from_archive<R: Read + Seek>(
         optional_deps.extend(nested_metadata.optional_deps);
         incompatible_ids.extend(nested_metadata.incompatible_deps);
         incompatibility_decls.extend(nested_metadata.incompatibility_decls);
+        // Nested JAR declarations always aggregate — the structured decls are
+        // the authoritative record and must never lose loader requirements.
+        dependency_decls.extend(nested_metadata.dependency_decls);
         packages.extend(nested_metadata.java_packages);
     }
 
@@ -1005,6 +1062,10 @@ fn parse_from_archive<R: Read + Seek>(
     optional_deps.retain(|dep| !DEPENDENCY_IGNORE_LIST.contains(&dep.as_str()));
     incompatible_ids.retain(|dep| !DEPENDENCY_IGNORE_LIST.contains(&dep.as_str()));
     incompatibility_decls.retain(|d| !DEPENDENCY_IGNORE_LIST.contains(&d.mod_id.as_str()));
+    // dependency_decls are intentionally NOT filtered: they retain every
+    // declared dependency including loader/framework IDs and language-loader
+    // requirements, while the flat lists above stay the ordinary
+    // missing-dependency flow.
 
     // Build final ProvidedMod vec from map (already sorted by BTreeMap).
     let provided_mods: Vec<ProvidedMod> = provided_mods_map.into_values().collect();
@@ -1019,6 +1080,7 @@ fn parse_from_archive<R: Read + Seek>(
             incompatible_deps: incompatible_ids.into_iter().collect(),
             incompatibility_decls,
             provided_mods,
+            dependency_decls,
         },
         has_native_metadata,
         status,
@@ -1186,6 +1248,93 @@ fn fabric_version_ranges(val: &serde_json::Value) -> Vec<String> {
     }
 }
 
+/// True when a Fabric/Quilt dependency version value is one of the shapes the
+/// loader grammar accepts: a string or an array of strings.
+fn fabric_value_type_is_valid(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(_) => true,
+        serde_json::Value::Array(items) => items
+            .iter()
+            .all(|item| matches!(item, serde_json::Value::String(_))),
+        _ => false,
+    }
+}
+
+/// Collect structured dependency declarations from a Fabric/Quilt dependency
+/// value (object or array form), preserving the raw predicate strings.
+///
+/// Object form `{"modid": "<2.0"}` → one decl; an array version value is kept
+/// as the OR list of raw predicates, and a space-separated string stays intact
+/// as the AND expression. Array form `[{"id":..,"version":..}]` → one decl per
+/// element (version optional).
+///
+/// Values of invalid type (numbers, nested objects, non-string array
+/// elements) record `Partial` and are skipped in BOTH the decl output and the
+/// flat `flat_out` set — an unreadable constraint must never be invented as an
+/// unconditional requirement.
+fn collect_fabric_decls(
+    depends: &serde_json::Value,
+    declaring_mod_id: &Option<String>,
+    importance: DependencyImportance,
+    source: DependencySource,
+    decls: &mut Vec<DependencyDecl>,
+    flat_out: &mut BTreeSet<String>,
+    status: &mut ParseStatus,
+) {
+    match depends {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map {
+                if !fabric_value_type_is_valid(val) {
+                    status.record_partial();
+                    flat_out.remove(key);
+                    continue;
+                }
+                decls.push(DependencyDecl {
+                    declaring_mod_id: declaring_mod_id.clone(),
+                    target_id: key.clone(),
+                    version_ranges: fabric_version_ranges(val),
+                    importance,
+                    grammar: VersionGrammar::Fabric,
+                    source,
+                });
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for elem in arr {
+                let target_id = match elem.get("id").or_else(|| elem.get("identifier")) {
+                    Some(serde_json::Value::String(id)) if !id.is_empty() => id.clone(),
+                    Some(_) => {
+                        status.record_partial();
+                        continue;
+                    }
+                    None => continue,
+                };
+                let version = elem.get("version");
+                let version_ranges = match version {
+                    Some(v) if !fabric_value_type_is_valid(v) => {
+                        status.record_partial();
+                        flat_out.remove(&target_id);
+                        continue;
+                    }
+                    Some(v) => fabric_version_ranges(v),
+                    None => Vec::new(),
+                };
+                decls.push(DependencyDecl {
+                    declaring_mod_id: declaring_mod_id.clone(),
+                    target_id,
+                    version_ranges,
+                    importance,
+                    grammar: VersionGrammar::Fabric,
+                    source,
+                });
+            }
+        }
+        _ => {
+            status.record_partial();
+        }
+    }
+}
+
 /// In-flight Forge dependency block state.
 #[derive(Clone, Default)]
 struct PendingForgeDep {
@@ -1205,6 +1354,44 @@ struct ParsedForgeMetadata {
     mod_ids: BTreeSet<String>,
     version: Option<String>,
     dependencies: Vec<PendingForgeDep>,
+    language_loader: Option<LanguageLoaderField>,
+}
+
+/// Top-level Forge/NeoForge `modLoader` + `loaderVersion` pair, or an
+/// indication that one of the two fields has an unreadable type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LanguageLoaderField {
+    Valid {
+        name: String,
+        version: Option<String>,
+    },
+    Invalid,
+}
+
+/// Parse the top-level `modLoader` / `loaderVersion` language-loader
+/// requirement. A wrong-typed field yields [`LanguageLoaderField::Invalid`]
+/// (the caller records `Partial` instead of inventing a constraint).
+fn parse_language_loader(document: &toml::Value) -> Option<LanguageLoaderField> {
+    let loader = document.get("modLoader")?;
+    let Some(name) = loader
+        .as_str()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return Some(LanguageLoaderField::Invalid);
+    };
+    let version = match document.get("loaderVersion") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some(version) if !version.trim().is_empty() => Some(version.to_string()),
+            Some(_) => None,
+            None => return Some(LanguageLoaderField::Invalid),
+        },
+    };
+    Some(LanguageLoaderField::Valid {
+        name: name.to_string(),
+        version,
+    })
 }
 
 /// Parse the Forge/NeoForge TOML document with a real TOML parser.
@@ -1306,23 +1493,53 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
         }
     }
 
+    parsed.language_loader = parse_language_loader(&document);
+
     Ok(parsed)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merge_forge_metadata(
     parsed: ParsedForgeMetadata,
     required_out: &mut BTreeSet<String>,
     optional_out: &mut BTreeSet<String>,
     incompatible_ids_out: &mut BTreeSet<String>,
     incompatibility_decls_out: &mut Vec<IncompatibilityDecl>,
+    dependency_decls_out: &mut Vec<DependencyDecl>,
     mod_id_out: &mut Option<String>,
     mod_version_out: &mut Option<String>,
+    dep_source: DependencySource,
+    status: &mut ParseStatus,
 ) {
     if mod_id_out.is_none() {
         *mod_id_out = parsed.mod_ids.iter().next().cloned();
     }
     if mod_version_out.is_none() {
         *mod_version_out = parsed.version;
+    }
+    match parsed.language_loader {
+        Some(LanguageLoaderField::Valid { name, version }) => {
+            let version_ranges = version
+                .filter(|v| v.trim() != "*" && !v.trim().is_empty())
+                .map(|v| vec![v])
+                .unwrap_or_default();
+            dependency_decls_out.push(DependencyDecl {
+                declaring_mod_id: mod_id_out.clone(),
+                target_id: name,
+                version_ranges,
+                importance: DependencyImportance::Required,
+                grammar: VersionGrammar::Maven,
+                source: match dep_source {
+                    DependencySource::ForgeDependency => DependencySource::ForgeLanguageLoader,
+                    DependencySource::NeoForgeDependency => {
+                        DependencySource::NeoForgeLanguageLoader
+                    }
+                    _ => dep_source,
+                },
+            });
+        }
+        Some(LanguageLoaderField::Invalid) => status.record_partial(),
+        None => {}
     }
     for dependency in parsed.dependencies {
         flush_forge_dep(
@@ -1331,6 +1548,8 @@ fn merge_forge_metadata(
             optional_out,
             incompatible_ids_out,
             incompatibility_decls_out,
+            dependency_decls_out,
+            dep_source,
         );
     }
 }
@@ -1349,12 +1568,14 @@ fn extract_forge_mod_ids(content: &str) -> BTreeSet<String> {
 /// Previously the parser stored the owner id as the dependency, which caused a
 /// mod to appear to depend on / conflict with itself.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn extract_forge_deps(
     content: &str,
     required_out: &mut BTreeSet<String>,
     optional_out: &mut BTreeSet<String>,
     incompatible_ids_out: &mut BTreeSet<String>,
     incompatibility_decls_out: &mut Vec<IncompatibilityDecl>,
+    dependency_decls_out: &mut Vec<DependencyDecl>,
     mod_id_out: &mut Option<String>,
     mod_version_out: &mut Option<String>,
 ) {
@@ -1365,8 +1586,11 @@ fn extract_forge_deps(
             optional_out,
             incompatible_ids_out,
             incompatibility_decls_out,
+            dependency_decls_out,
             mod_id_out,
             mod_version_out,
+            DependencySource::ForgeDependency,
+            &mut ParseStatus::Complete,
         );
     }
 }
@@ -1378,6 +1602,8 @@ fn flush_forge_dep(
     optional_out: &mut BTreeSet<String>,
     incompatible_ids_out: &mut BTreeSet<String>,
     incompatibility_decls_out: &mut Vec<IncompatibilityDecl>,
+    dependency_decls_out: &mut Vec<DependencyDecl>,
+    dep_source: DependencySource,
 ) {
     let dep_id = match &pending.mod_id {
         Some(id) if !id.is_empty() => id.clone(),
@@ -1417,17 +1643,51 @@ fn flush_forge_dep(
             });
         }
         Some("optional") => {
-            optional_out.insert(dep_id);
+            optional_out.insert(dep_id.clone());
+            dependency_decls_out.push(DependencyDecl {
+                declaring_mod_id: pending.declaring_mod_id.clone(),
+                target_id: dep_id,
+                version_ranges: ranges,
+                // Forge has no separate recommendation tier: optional maps to
+                // Recommended on the three-level importance scale.
+                importance: DependencyImportance::Recommended,
+                grammar: VersionGrammar::Maven,
+                source: dep_source,
+            });
         }
         Some("required") | Some(_) => {
-            required_out.insert(dep_id);
+            required_out.insert(dep_id.clone());
+            dependency_decls_out.push(DependencyDecl {
+                declaring_mod_id: pending.declaring_mod_id.clone(),
+                target_id: dep_id,
+                version_ranges: ranges,
+                importance: DependencyImportance::Required,
+                grammar: VersionGrammar::Maven,
+                source: dep_source,
+            });
         }
         None => match pending.mandatory {
             Some(false) => {
-                optional_out.insert(dep_id);
+                optional_out.insert(dep_id.clone());
+                dependency_decls_out.push(DependencyDecl {
+                    declaring_mod_id: pending.declaring_mod_id.clone(),
+                    target_id: dep_id,
+                    version_ranges: ranges,
+                    importance: DependencyImportance::Recommended,
+                    grammar: VersionGrammar::Maven,
+                    source: dep_source,
+                });
             }
             _ => {
-                required_out.insert(dep_id);
+                required_out.insert(dep_id.clone());
+                dependency_decls_out.push(DependencyDecl {
+                    declaring_mod_id: pending.declaring_mod_id.clone(),
+                    target_id: dep_id,
+                    version_ranges: ranges,
+                    importance: DependencyImportance::Required,
+                    grammar: VersionGrammar::Maven,
+                    source: dep_source,
+                });
             }
         },
     }
@@ -1980,6 +2240,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -1988,6 +2249,7 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
@@ -1995,6 +2257,7 @@ version="1.0"
         assert!(required.contains("fabric-api"));
         assert!(!required.contains("mymod"), "owner must NOT be its own dep");
         assert!(optional.contains("sodium"));
+        assert_eq!(dependency_decls.len(), 2);
     }
 
     #[test]
@@ -2007,6 +2270,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -2015,11 +2279,16 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
         assert!(optional.contains("bar"));
         assert!(!required.contains("bar"));
+        assert_eq!(
+            dependency_decls[0].importance,
+            DependencyImportance::Recommended
+        );
     }
 
     #[test]
@@ -2032,6 +2301,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -2040,10 +2310,15 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
         assert!(required.contains("bar"));
+        assert_eq!(
+            dependency_decls[0].importance,
+            DependencyImportance::Required
+        );
     }
 
     #[test]
@@ -2057,6 +2332,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -2065,6 +2341,7 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
@@ -2077,6 +2354,8 @@ version="1.0"
         assert_eq!(decls[0].mod_id, "optifine");
         assert_eq!(decls[0].version_ranges, vec!["[1.0,2.0)".to_string()]);
         assert_eq!(decls[0].source, IncompatibilitySource::ForgeIncompatible);
+        // Incompatibilities are not dependencies — no decl emitted.
+        assert!(dependency_decls.is_empty());
     }
 
     #[test]
@@ -2089,6 +2368,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -2097,6 +2377,7 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
@@ -2115,6 +2396,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -2123,6 +2405,7 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
@@ -2138,6 +2421,7 @@ version="1.0"
         let mut optional = BTreeSet::new();
         let mut incompat_ids = BTreeSet::new();
         let mut decls = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut mod_version = None;
         extract_forge_deps(
@@ -2146,12 +2430,14 @@ version="1.0"
             &mut optional,
             &mut incompat_ids,
             &mut decls,
+            &mut dependency_decls,
             &mut mod_id,
             &mut mod_version,
         );
         assert!(required.is_empty());
         assert!(incompat_ids.is_empty());
         assert!(decls.is_empty());
+        assert!(dependency_decls.is_empty());
     }
 
     // -------------------------------------------------------------------
@@ -2301,6 +2587,7 @@ versionRange="(,2.0]"
         let mut optional = BTreeSet::new();
         let mut incompatible = BTreeSet::new();
         let mut declarations = Vec::new();
+        let mut dependency_decls = Vec::new();
         let mut mod_id = None;
         let mut version = None;
         merge_forge_metadata(
@@ -2309,12 +2596,25 @@ versionRange="(,2.0]"
             &mut optional,
             &mut incompatible,
             &mut declarations,
+            &mut dependency_decls,
             &mut mod_id,
             &mut version,
+            DependencySource::NeoForgeDependency,
+            &mut ParseStatus::Complete,
         );
         assert!(required.contains("ae2"));
         assert!(incompatible.contains("old_api"));
         assert_eq!(declarations[0].declaring_mod_id.as_deref(), Some("arseng"));
+        let ae2_decl = dependency_decls
+            .iter()
+            .find(|d| d.target_id == "ae2")
+            .expect("ae2 decl");
+        assert_eq!(ae2_decl.source, DependencySource::NeoForgeDependency);
+        let loader_decl = dependency_decls
+            .iter()
+            .find(|d| d.source == DependencySource::NeoForgeLanguageLoader)
+            .expect("language loader decl");
+        assert_eq!(loader_decl.target_id, "javafml");
     }
 
     #[test]
@@ -2532,5 +2832,352 @@ type="required"
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.kind == ParseDiagnosticKind::ArchiveOpenFailed));
+    }
+
+    // -------------------------------------------------------------------
+    // DependencyDecl retention (Work Package 1)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn fabric_dependency_decls_preserve_sources_grammar_and_raw_ranges() {
+        let jar = build_test_jar(&[(
+            "fabric.mod.json",
+            r#"{"id":"m","version":"1.0","depends":{"minecraft":">=1.20","fabricloader":">=0.15","fabric-api":">=0.90","and_expr":">=1.0 <2.0","or_expr":["<2.0",">=3.0"],"any":"*"},"recommends":{"rec":"1.0"},"suggests":{"sug":["1.0","2.0"]}}"#,
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        let find = |id: &str| {
+            meta.dependency_decls
+                .iter()
+                .find(|d| d.target_id == id)
+                .unwrap_or_else(|| panic!("missing decl {id}"))
+        };
+
+        let minecraft = find("minecraft");
+        assert_eq!(minecraft.importance, DependencyImportance::Required);
+        assert_eq!(minecraft.grammar, VersionGrammar::Fabric);
+        assert_eq!(minecraft.source, DependencySource::FabricDepends);
+        assert_eq!(minecraft.declaring_mod_id.as_deref(), Some("m"));
+        assert_eq!(minecraft.version_ranges, vec![">=1.20".to_string()]);
+
+        // Space-separated AND expression preserved as a single raw string.
+        assert_eq!(
+            find("and_expr").version_ranges,
+            vec![">=1.0 <2.0".to_string()]
+        );
+        // OR array preserved as separate raw entries.
+        assert_eq!(
+            find("or_expr").version_ranges,
+            vec!["<2.0".to_string(), ">=3.0".to_string()]
+        );
+        // "*" is unconstrained → empty ranges.
+        assert!(find("any").version_ranges.is_empty());
+
+        let rec = find("rec");
+        assert_eq!(rec.importance, DependencyImportance::Recommended);
+        assert_eq!(rec.source, DependencySource::FabricRecommends);
+        let sug = find("sug");
+        assert_eq!(sug.importance, DependencyImportance::Suggested);
+        assert_eq!(sug.source, DependencySource::FabricSuggests);
+        assert_eq!(
+            sug.version_ranges,
+            vec!["1.0".to_string(), "2.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn fabric_loader_and_framework_ids_retained_in_decls_but_not_flat() {
+        let jar = build_test_jar(&[(
+            "fabric.mod.json",
+            r#"{"id":"m","depends":{"minecraft":">=1.20","fabricloader":">=0.15","java":">=17","fabric-api":">=0.90"}}"#,
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        // Flat ordinary missing-dependency flow excludes loader/framework IDs.
+        assert!(meta.depends_on.contains(&"fabric-api".to_string()));
+        for id in ["minecraft", "fabricloader", "java"] {
+            assert!(
+                !meta.depends_on.contains(&id.to_string()),
+                "{id} must stay out of depends_on"
+            );
+            assert!(
+                meta.dependency_decls.iter().any(|d| d.target_id == id),
+                "{id} must be retained as a DependencyDecl"
+            );
+        }
+    }
+
+    #[test]
+    fn fabric_array_form_dependency_decls() {
+        let jar = build_test_jar(&[(
+            "fabric.mod.json",
+            r#"{"id":"m","depends":[{"id":"sodium","version":">=0.5"},{"identifier":"lithium"},{"id":"no_version_obj"}]}"#,
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert!(meta.depends_on.contains(&"sodium".to_string()));
+        assert!(meta.depends_on.contains(&"lithium".to_string()));
+        let sodium = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.target_id == "sodium")
+            .expect("sodium decl");
+        assert_eq!(sodium.version_ranges, vec![">=0.5".to_string()]);
+        assert_eq!(sodium.source, DependencySource::FabricDepends);
+        assert_eq!(sodium.importance, DependencyImportance::Required);
+        // Elements without a version → unconstrained decl.
+        assert!(meta
+            .dependency_decls
+            .iter()
+            .any(|d| d.target_id == "lithium" && d.version_ranges.is_empty()));
+    }
+
+    #[test]
+    fn quilt_depends_decl_captured_with_quilt_source() {
+        let jar = build_test_jar(&[(
+            "quilt.mod.json",
+            r#"{"quilt_loader":{"id":"q","version":"1.0","depends":{"needed":">=1.0"}}}"#,
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert!(meta.depends_on.contains(&"needed".to_string()));
+        let decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.target_id == "needed")
+            .expect("needed decl");
+        assert_eq!(decl.source, DependencySource::QuiltDepends);
+        assert_eq!(decl.importance, DependencyImportance::Required);
+        assert_eq!(decl.grammar, VersionGrammar::Fabric);
+        assert_eq!(decl.version_ranges, vec![">=1.0".to_string()]);
+    }
+
+    #[test]
+    fn forge_language_loader_decl_preserved_and_not_conflated_with_distribution() {
+        let jar = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "modLoader=\"javafml\"\nloaderVersion=\"[1,3)\"\nmodId=\"m\"\nversion=\"2.1.0\"\n[[dependencies.m]]\n    modId=\"realdep\"\n    type=\"required\"\n    versionRange=\"[1.0,2.0)\"\n",
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        // Distribution identity/version is NOT touched by the loader fields.
+        assert_eq!(meta.mod_jar_id.as_deref(), Some("m"));
+        assert_eq!(meta.mod_version.as_deref(), Some("2.1.0"));
+
+        let loader_decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.source == DependencySource::ForgeLanguageLoader)
+            .expect("language loader decl");
+        assert_eq!(loader_decl.target_id, "javafml");
+        assert_eq!(loader_decl.version_ranges, vec!["[1,3)".to_string()]);
+        assert_eq!(loader_decl.grammar, VersionGrammar::Maven);
+        assert_eq!(loader_decl.importance, DependencyImportance::Required);
+        assert_eq!(loader_decl.declaring_mod_id.as_deref(), Some("m"));
+
+        let dep_decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.target_id == "realdep")
+            .expect("realdep decl");
+        assert_eq!(dep_decl.source, DependencySource::ForgeDependency);
+        assert_eq!(dep_decl.importance, DependencyImportance::Required);
+        assert_eq!(dep_decl.grammar, VersionGrammar::Maven);
+        assert_eq!(dep_decl.version_ranges, vec!["[1.0,2.0)".to_string()]);
+        assert!(meta.depends_on.contains(&"realdep".to_string()));
+        // Loader/framework flat filtering still applies to Forge deps.
+        assert!(!meta.depends_on.contains(&"forge".to_string()));
+    }
+
+    #[test]
+    fn forge_optional_dep_decl_importance_is_recommended() {
+        let jar = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "modId=\"m\"\n[[dependencies.m]]\n    modId=\"optional_thing\"\n    type=\"optional\"\n    versionRange=\"[2.0,3.0]\"\n",
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert!(meta.optional_deps.contains(&"optional_thing".to_string()));
+        let decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.target_id == "optional_thing")
+            .expect("optional decl");
+        assert_eq!(decl.importance, DependencyImportance::Recommended);
+        assert_eq!(decl.grammar, VersionGrammar::Maven);
+        assert_eq!(decl.version_ranges, vec!["[2.0,3.0]".to_string()]);
+    }
+
+    #[test]
+    fn neoforge_language_loader_decl_source() {
+        let jar = build_test_jar(&[(
+            "META-INF/neoforge.mods.toml",
+            "modLoader=\"javafml\"\nloaderVersion=\"[1,3)\"\nmodId=\"neomod\"\n",
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert_eq!(meta.mod_jar_id.as_deref(), Some("neomod"));
+        let loader_decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.source == DependencySource::NeoForgeLanguageLoader)
+            .expect("neoforge language loader decl");
+        assert_eq!(loader_decl.target_id, "javafml");
+        assert_eq!(loader_decl.version_ranges, vec!["[1,3)".to_string()]);
+        // The loader version must not leak into the visible distribution.
+        assert!(meta.mod_version.is_none());
+        assert!(meta.provided_mods.is_empty());
+    }
+
+    #[test]
+    fn nested_jar_dependency_decls_aggregate_while_flat_intra_jar_filtered() {
+        let inner_bytes = build_jar_bytes(&[(
+            "fabric.mod.json",
+            br#"{"id":"inner","version":"2.0","depends":{"minecraft":">=1.20","outer_peer":"1.0"}}"#
+                as &[u8],
+        )]);
+
+        let jar = build_test_jar_binary(&[
+            (
+                "fabric.mod.json",
+                br#"{"id":"outer","version":"1.0","depends":{"inner":"*","real":">=1.0"},"jars":[{"file":"nested.jar"}]}"#
+                    as &[u8],
+            ),
+            ("nested.jar", &inner_bytes),
+        ]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        // Flat intra-JAR filtering removes the nested module, as before…
+        assert!(
+            !meta.depends_on.contains(&"inner".to_string()),
+            "intra-JAR dep must stay out of the flat list"
+        );
+        assert!(meta.depends_on.contains(&"real".to_string()));
+        // …but the nested JAR's decls aggregate and keep every requirement.
+        let inner_decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.target_id == "minecraft" && d.declaring_mod_id.as_deref() == Some("inner"))
+            .expect("inner minecraft decl aggregated");
+        assert_eq!(inner_decl.version_ranges, vec![">=1.20".to_string()]);
+        let peer_decl = meta
+            .dependency_decls
+            .iter()
+            .find(|d| d.target_id == "outer_peer")
+            .expect("outer_peer decl aggregated");
+        assert_eq!(peer_decl.source, DependencySource::FabricDepends);
+        // The outer JAR's own intra-JAR dep decl survives too.
+        assert!(meta
+            .dependency_decls
+            .iter()
+            .any(|d| d.target_id == "inner" && d.version_ranges.is_empty()));
+    }
+
+    #[test]
+    fn invalid_fabric_dep_value_type_partial_and_not_unconditional() {
+        let jar = build_test_jar(&[(
+            "fabric.mod.json",
+            r#"{"id":"m","depends":{"bad_number":123,"bad_array":[">=1.0",2],"ok":">=1.0"}}"#,
+        )]);
+        let result = parse_jar_metadata_result(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert_eq!(result.status, ParseStatus::Partial);
+        // The unreadable constraints are not invented as requirements.
+        assert!(!result
+            .metadata
+            .depends_on
+            .contains(&"bad_number".to_string()));
+        assert!(!result
+            .metadata
+            .depends_on
+            .contains(&"bad_array".to_string()));
+        assert!(!result
+            .metadata
+            .dependency_decls
+            .iter()
+            .any(|d| d.target_id == "bad_number" || d.target_id == "bad_array"));
+        // Valid entries still flow through both paths.
+        assert!(result.metadata.depends_on.contains(&"ok".to_string()));
+        assert!(result
+            .metadata
+            .dependency_decls
+            .iter()
+            .any(|d| d.target_id == "ok" && d.version_ranges == vec![">=1.0".to_string()]));
+    }
+
+    #[test]
+    fn invalid_whole_depends_field_partial_without_invented_decls() {
+        let jar = build_test_jar(&[(
+            "fabric.mod.json",
+            r#"{"id":"m","depends":"not-an-object-or-array"}"#,
+        )]);
+        let result = parse_jar_metadata_result(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert_eq!(result.status, ParseStatus::Partial);
+        assert!(result.metadata.depends_on.is_empty());
+        assert!(result.metadata.dependency_decls.is_empty());
+    }
+
+    #[test]
+    fn invalid_fabric_array_element_id_type_partial() {
+        let jar = build_test_jar(&[(
+            "fabric.mod.json",
+            r#"{"id":"m","depends":[{"id":123},{"id":"good","version":"1.0"}]}"#,
+        )]);
+        let result = parse_jar_metadata_result(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert_eq!(result.status, ParseStatus::Partial);
+        assert!(result.metadata.depends_on.contains(&"good".to_string()));
+        assert!(!result
+            .metadata
+            .dependency_decls
+            .iter()
+            .any(|d| d.target_id == "123"));
+    }
+
+    #[test]
+    fn forge_loader_version_wrong_type_partial_without_language_loader_decl() {
+        let jar = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "modLoader=\"javafml\"\nloaderVersion=123\nmodId=\"m\"\n[[dependencies.m]]\n    modId=\"realdep\"\n    type=\"required\"\n",
+        )]);
+        let result = parse_jar_metadata_result(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert_eq!(result.status, ParseStatus::Partial);
+        assert!(!result.metadata.dependency_decls.iter().any(|d| matches!(
+            d.source,
+            DependencySource::ForgeLanguageLoader | DependencySource::NeoForgeLanguageLoader
+        )));
+        // The rest of the metadata still parses.
+        assert!(result.metadata.depends_on.contains(&"realdep".to_string()));
+    }
+
+    #[test]
+    fn forge_language_loader_without_version_is_unconstrained_decl() {
+        let jar = build_test_jar(&[("META-INF/mods.toml", "modLoader=\"javafml\"\nmodId=\"m\"\n")]);
+        let result = parse_jar_metadata_result(&jar);
+        let _ = std::fs::remove_file(&jar);
+
+        assert_eq!(result.status, ParseStatus::Complete);
+        let loader_decl = result
+            .metadata
+            .dependency_decls
+            .iter()
+            .find(|d| d.source == DependencySource::ForgeLanguageLoader)
+            .expect("language loader decl");
+        assert_eq!(loader_decl.target_id, "javafml");
+        assert!(loader_decl.version_ranges.is_empty());
     }
 }

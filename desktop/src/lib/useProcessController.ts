@@ -90,6 +90,14 @@ export interface ProcessController {
    */
   repairAndRetry: () => Promise<void>;
   /**
+   * Switch the current instance's loader to a signed catalog version and
+   * retry direct launch in one backend operation. Phase is set to 'launching'
+   * during the switch-and-retry flow. The health override is deliberately
+   * false so the core re-runs health after the change and preserves residual
+   * blockers. Rejects with an error string if no instance is set.
+   */
+  switchLoaderAndRetry: (targetVersion: string) => Promise<void>;
+  /**
    * Explicitly switch to delegated launch for the current instance,
    * bypassing only the Direct profile adoption (health checks already completed).
    * Calls executeLaunch(..., false) and transitions to 'delegated'.
@@ -599,6 +607,59 @@ export function useProcessController(): ProcessController {
     }
   }, []);
 
+  const switchLoaderAndRetry = useCallback(async (targetVersion: string) => {
+    const current = stateRef.current;
+    if (!current.instanceId) throw new Error('No instance selected');
+
+    // Prevent concurrent actions.
+    if (current.phase === 'launching') return;
+
+    setState((prev) => ({
+      ...prev,
+      phase: 'launching',
+      error: null,
+      recoverableIssue: null,
+      recoverableJavaIssue: null,
+      runtimeProgress: null,
+      availableActions: [],
+    }));
+
+    try {
+      // Single coarse backend call — switch + retry in the same operation.
+      // The health override stays false so the core re-runs health after the
+      // change and preserves any residual blockers.
+      const pid = await launchInstanceWithRecovery(current.instanceId, {
+        type: 'SwitchLoader',
+        target_version: targetVersion,
+      }, false, current.healthReport?.scan_token);
+      const newState = launchedState(current.instanceId, true, pid);
+      setState(newState);
+    } catch (e) {
+      const parsed = parseLauncherError(e);
+      let refreshedHealth = current.healthReport;
+      try {
+        // A switch may have committed successfully before a residual health
+        // blocker stopped the retry. Refresh the dialog so it does not offer
+        // the same repair against the old loader tuple.
+        refreshedHealth = await checkInstanceHealth(current.instanceId);
+      } catch {
+        // Preserve the last known report when the follow-up scan is unavailable.
+      }
+      setState((prev) => ({
+        ...prev,
+        phase: 'failed',
+        error: parsed.message,
+        healthReport: refreshedHealth,
+        recoverableIssue: parsed.recoverableIssue,
+        recoverableJavaIssue: parsed.recoverableJavaIssue,
+        availableActions: parsed.availableActions,
+      }));
+      // Rethrow so the HealthDialog loader card can keep the error visible
+      // while the dialog stays open on the preserved health report.
+      throw new Error(parsed.message);
+    }
+  }, []);
+
   const useDelegatedLaunch = useCallback(async () => {
     const current = stateRef.current;
     if (!current.instanceId) throw new Error('No instance selected');
@@ -663,6 +724,7 @@ export function useProcessController(): ProcessController {
     kill,
     clearError,
     repairAndRetry,
+    switchLoaderAndRetry,
     useDelegatedLaunch,
     downloadRuntimeAndRetry,
     chooseJavaAndRetry,

@@ -2918,13 +2918,22 @@ fn report_unresolved_plan(plan: &agora_core::install_pipeline::ResolvedInstallPl
             }
         }
         for choice in &plan.pending_choices {
-            let label = match choice {
+            let label: std::borrow::Cow<'_, str> = match choice {
                 agora_core::install_pipeline::PendingChoice::OptionalDependencies { .. } => {
-                    "Optional dependencies"
+                    "Optional dependencies".into()
                 }
                 agora_core::install_pipeline::PendingChoice::Conflict { .. } => {
-                    "Conflict resolution"
+                    "Conflict resolution".into()
                 }
+                agora_core::install_pipeline::PendingChoice::LoaderChange {
+                    current_version,
+                    recommended_version,
+                    ..
+                } => format!(
+                    "Loader change {} -> {}",
+                    current_version, recommended_version
+                )
+                .into(),
             };
             eprintln!("[CHOICE] {} requires user input", label);
         }
@@ -4512,6 +4521,7 @@ mod tests {
             warnings: vec![],
             blocking_errors: vec![],
             pending_choices: vec![],
+            loader_change: None,
             created_at: "".into(),
             instance_state_hash: "".into(),
             registry_revision: "".into(),
@@ -4567,6 +4577,7 @@ mod tests {
             warnings: vec![],
             blocking_errors: vec![],
             pending_choices: vec![],
+            loader_change: None,
             created_at: "".into(),
             instance_state_hash: "".into(),
             registry_revision: "".into(),

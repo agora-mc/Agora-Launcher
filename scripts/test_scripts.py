@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -191,6 +192,221 @@ class TestLoaderCatalogRefreshSafety(unittest.TestCase):
 
         self.assertEqual(report["unexpected_deletions"], ["fabric/1.21/0.1.0"])
         self.assertIn("append-only validation found deleted entries", report["errors"])
+
+
+class TestLoaderManifestEnrichment(unittest.TestCase):
+    """Tests for capability/channel enrichment of loader catalog entries."""
+
+    def _entry(self, version: str = "0.1.0", **extra) -> dict[str, Any]:
+        entry = {
+            "mc_version": "1.21",
+            "loader_version": version,
+            "source_url": f"https://example.test/{version}.jar",
+            "sha256": version.ljust(64, "0"),
+            "file_name": f"loader-{version}.jar",
+            "file_type": "installer_jar",
+        }
+        entry.update(extra)
+        return entry
+
+    # -- Conservative release-channel detection ------------------------------
+
+    def test_release_channel_conservative_stable(self):
+        for version in ("0.18.6", "21.1.181", "51.0.0", "0.30.0", "1.21"):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    fetch_loader_manifests._release_channel(version), "stable"
+                )
+
+    def test_release_channel_conservative_prerelease(self):
+        for version in (
+            "0.29.2-beta.1",
+            "0.30.0-beta.0",
+            "20.2.86-beta",
+            "0.19.0-dev+mc1.21",
+            "51.0.0-rc1",
+        ):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    fetch_loader_manifests._release_channel(version), "prerelease"
+                )
+
+    # -- New entries from fetchers carry capabilities ------------------------
+
+    @mock.patch("fetch_loader_manifests._fetch_profile_json")
+    @mock.patch("fetch_loader_manifests._fetch_json")
+    def test_fabric_new_entry_writes_capabilities(self, fetch_json, fetch_profile):
+        fetch_json.return_value = [{"loader": {"version": "0.19.0"}}]
+        fetch_profile.return_value = b'{"loader": {"version": "0.19.0"}}'
+        entries = fetch_loader_manifests._fetch_fabric("1.21", refresh_profiles=True)
+        self.assertEqual(
+            entries[0]["provided_versions"], {"fabricloader": "0.19.0"}
+        )
+        self.assertEqual(entries[0]["release_channel"], "stable")
+
+    @mock.patch("fetch_loader_manifests._fetch_profile_json")
+    @mock.patch("fetch_loader_manifests._fetch_json")
+    def test_quilt_new_entry_writes_capabilities(self, fetch_json, fetch_profile):
+        fetch_json.return_value = [{"loader": {"version": "0.28.0-beta.5"}}]
+        fetch_profile.return_value = b'{"loader": {"version": "0.28.0-beta.5"}}'
+        entries = fetch_loader_manifests._fetch_quilt("1.21", refresh_profiles=True)
+        self.assertEqual(
+            entries[0]["provided_versions"], {"quilt_loader": "0.28.0-beta.5"}
+        )
+        self.assertEqual(entries[0]["release_channel"], "prerelease")
+
+    @mock.patch("fetch_loader_manifests._download_to_cache")
+    @mock.patch("fetch_loader_manifests._fetch_bytes")
+    def test_neoforge_new_entry_writes_capabilities(self, fetch_bytes, download):
+        fetch_bytes.return_value = (
+            b"<metadata><versions><version>21.1.181</version></versions></metadata>"
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(b"not-a-jar")
+            jar_path = Path(tmp.name)
+        try:
+            download.return_value = jar_path
+            entries = fetch_loader_manifests._fetch_neoforge(["1.21.1"])
+        finally:
+            os.unlink(jar_path)
+        self.assertEqual(entries[0]["provided_versions"], {"neoforge": "21.1.181"})
+        self.assertEqual(entries[0]["release_channel"], "stable")
+        # Language-loader capabilities are never derived.
+        self.assertNotIn("javafml", entries[0]["provided_versions"])
+        self.assertNotIn("lowcodefml", entries[0]["provided_versions"])
+
+    @mock.patch("fetch_loader_manifests._download_to_cache")
+    @mock.patch("fetch_loader_manifests._fetch_bytes")
+    def test_forge_new_entry_writes_capabilities(self, fetch_bytes, download):
+        fetch_bytes.return_value = (
+            b"<metadata><versions><version>1.21-51.0.0</version></versions></metadata>"
+        )
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(b"not-a-jar")
+            jar_path = Path(tmp.name)
+        try:
+            download.return_value = jar_path
+            entries = fetch_loader_manifests._fetch_forge(["1.21"])
+        finally:
+            os.unlink(jar_path)
+        self.assertEqual(entries[0]["provided_versions"], {"forge": "51.0.0"})
+        self.assertEqual(entries[0]["release_channel"], "stable")
+
+    # -- Append-only enrichment in _merge_entries -----------------------------
+
+    def test_merge_enriches_legacy_entry_without_error(self):
+        legacy = self._entry()
+        fresh = dict(legacy)
+        fresh["provided_versions"] = {"fabricloader": "0.1.0"}
+        fresh["release_channel"] = "stable"
+
+        merged = fetch_loader_manifests._merge_entries([legacy], [fresh])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(
+            merged[0]["provided_versions"], {"fabricloader": "0.1.0"}
+        )
+        self.assertEqual(merged[0]["release_channel"], "stable")
+
+    def test_merge_treats_empty_provided_versions_as_absent(self):
+        legacy = self._entry(provided_versions={})
+        fresh = dict(legacy)
+        fresh["provided_versions"] = {"fabricloader": "0.1.0"}
+
+        merged = fetch_loader_manifests._merge_entries([legacy], [fresh])
+
+        self.assertEqual(
+            merged[0]["provided_versions"], {"fabricloader": "0.1.0"}
+        )
+
+    def test_merge_rejects_changed_capability(self):
+        existing = self._entry(provided_versions={"fabricloader": "0.1.0"})
+        changed = dict(existing)
+        changed["provided_versions"] = {"fabricloader": "0.2.0"}
+
+        with self.assertRaises(fetch_loader_manifests.ExistingEntryMutationError) as raised:
+            fetch_loader_manifests._merge_entries([existing], [changed])
+
+        fields = raised.exception.mutations[0]["fields"]
+        self.assertIn("provided_versions", fields)
+        self.assertEqual(fields["provided_versions"]["before"], {"fabricloader": "0.1.0"})
+        self.assertEqual(fields["provided_versions"]["after"], {"fabricloader": "0.2.0"})
+
+    def test_merge_rejects_changed_release_channel(self):
+        existing = self._entry(release_channel="stable")
+        changed = dict(existing)
+        changed["release_channel"] = "prerelease"
+
+        with self.assertRaises(fetch_loader_manifests.ExistingEntryMutationError) as raised:
+            fetch_loader_manifests._merge_entries([existing], [changed])
+
+        self.assertIn("release_channel", raised.exception.mutations[0]["fields"])
+
+    def test_merge_rank_enrichment_and_change(self):
+        existing = self._entry()
+        fresh = dict(existing)
+        fresh["recommendation_rank"] = 1
+        merged = fetch_loader_manifests._merge_entries([existing], [fresh])
+        self.assertEqual(merged[0]["recommendation_rank"], 1)
+
+        existing = self._entry(recommendation_rank=1)
+        changed = dict(existing)
+        changed["recommendation_rank"] = 2
+        with self.assertRaises(fetch_loader_manifests.ExistingEntryMutationError):
+            fetch_loader_manifests._merge_entries([existing], [changed])
+
+    def test_merge_keeps_enriched_entry_stable_on_rerun(self):
+        first = self._entry()
+        fresh = dict(first)
+        fresh["provided_versions"] = {"fabricloader": "0.1.0"}
+        fresh["release_channel"] = "stable"
+        enriched = fetch_loader_manifests._merge_entries([first], [fresh])
+        # A second refresh with identical upstream data must not mutate.
+        rerun = fetch_loader_manifests._merge_entries(enriched, [fresh])
+        self.assertEqual(rerun, enriched)
+
+    # -- Writer enrichment pass ----------------------------------------------
+
+    def test_write_loader_manifests_enriches_legacy_entries(self):
+        legacy = self._entry(version="0.18.6")
+        manifest = {
+            "domain_allowlist": ["example.com"],
+            "loaders": {"fabric": [legacy]},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("fetch_loader_manifests.LOADER_MANIFESTS_DIR", Path(tmp)):
+                fetch_loader_manifests._write_loader_manifests(manifest)
+            written = json.loads((Path(tmp) / "loader_manifests.json").read_text())
+
+        entry = written["loaders"]["fabric"][0]
+        self.assertEqual(
+            entry["provided_versions"], {"fabricloader": "0.18.6"}
+        )
+        self.assertEqual(entry["release_channel"], "stable")
+        self.assertEqual(
+            list(entry.keys())[-2:], ["provided_versions", "release_channel"]
+        )
+
+    def test_write_enrichment_never_overwrites_existing_values(self):
+        existing = self._entry(
+            version="0.18.6",
+            provided_versions={"fabricloader": "9.9.9"},
+            release_channel="prerelease",
+            recommendation_rank=7,
+        )
+        manifest = {
+            "domain_allowlist": ["example.com"],
+            "loaders": {"fabric": [existing]},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("fetch_loader_manifests.LOADER_MANIFESTS_DIR", Path(tmp)):
+                fetch_loader_manifests._write_loader_manifests(manifest)
+            written = json.loads((Path(tmp) / "loader_manifests.json").read_text())
+
+        entry = written["loaders"]["fabric"][0]
+        self.assertEqual(entry["provided_versions"], {"fabricloader": "9.9.9"})
+        self.assertEqual(entry["release_channel"], "prerelease")
+        self.assertEqual(entry["recommendation_rank"], 7)
 
 
 class TestSha256Hex(unittest.TestCase):

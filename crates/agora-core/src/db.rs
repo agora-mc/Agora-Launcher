@@ -568,6 +568,39 @@ pub fn set_locked(conn: &Connection, instance_id: &str, locked: bool) -> anyhow:
     Ok(())
 }
 
+/// Narrow, parameterized loader-tuple update for loader version switches.
+///
+/// The `WHERE` clause checks the instance's expected loader tuple so a
+/// concurrent modification fails the update instead of silently overwriting
+/// it. Returns the number of affected rows (0 when the instance is absent or
+/// its tuple changed) so callers can detect and roll back a committed
+/// manifest.
+pub fn update_instance_loader_version(
+    conn: &Connection,
+    instance_id: &str,
+    expected_loader: &str,
+    expected_minecraft_version: &str,
+    expected_loader_version: &str,
+    new_loader_version: &str,
+) -> anyhow::Result<u64> {
+    let affected = conn.execute(
+        "UPDATE user_instances
+         SET loader_version = ?1
+         WHERE instance_id = ?2
+           AND loader = ?3
+           AND minecraft_version = ?4
+           AND loader_version = ?5",
+        rusqlite::params![
+            new_loader_version,
+            instance_id,
+            expected_loader,
+            expected_minecraft_version,
+            expected_loader_version
+        ],
+    )?;
+    Ok(affected as u64)
+}
+
 /// Persist the relative path of an Agora-owned custom instance icon.
 pub fn set_instance_icon_path(
     conn: &Connection,

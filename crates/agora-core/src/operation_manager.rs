@@ -840,6 +840,7 @@ mod tests {
             warnings: Vec::new(),
             blocking_errors: Vec::new(),
             pending_choices: Vec::new(),
+            loader_change: None,
             created_at: "2024-01-01T00:00:00Z".into(),
             instance_state_hash: "hash".into(),
             registry_revision: "rev".into(),

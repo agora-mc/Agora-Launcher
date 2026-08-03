@@ -179,6 +179,85 @@ pub struct ProvidedMod {
     pub nested_path: Option<String>,
 }
 
+/// How strongly a dependency is declared.
+///
+/// Mirrors the loader-native scales: Fabric `depends`/`recommends`/`suggests`
+/// map directly; Quilt only has `depends` (Required); Forge/NeoForge
+/// required/optional map to Required/Recommended (their two-level scale has no
+/// separate suggestion tier).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyImportance {
+    Required,
+    Recommended,
+    Suggested,
+}
+
+/// Version-range grammar a dependency declaration uses.
+///
+/// Fabric/Quilt predicate syntax (`">=1.0 <2.0"`, `"1.x"`, `"*"`) versus
+/// Forge/NeoForge Maven ranges (`"[1.0,2.0)"`, bare minimum versions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionGrammar {
+    Fabric,
+    Maven,
+}
+
+/// Where a dependency declaration originated in loader metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencySource {
+    /// Fabric `depends` — required.
+    FabricDepends,
+    /// Fabric `recommends` — recommended.
+    FabricRecommends,
+    /// Fabric `suggests` — suggested.
+    FabricSuggests,
+    /// Quilt `quilt_loader.depends` — required.
+    QuiltDepends,
+    /// Forge `[[dependencies.<owner>]]` entry in `META-INF/mods.toml`.
+    ForgeDependency,
+    /// NeoForge `[[dependencies.<owner>]]` entry in `META-INF/neoforge.mods.toml`.
+    #[serde(rename = "neoforge_dependency")]
+    NeoForgeDependency,
+    /// Forge top-level `modLoader` + `loaderVersion` language-loader requirement.
+    ForgeLanguageLoader,
+    /// NeoForge top-level `modLoader` + `loaderVersion` language-loader requirement.
+    #[serde(rename = "neoforge_language_loader")]
+    NeoForgeLanguageLoader,
+}
+
+/// A structured dependency declaration with full version data.
+///
+/// Unlike the flat `depends_on`/`optional_deps` lists (which are filtered for
+/// the ordinary missing-dependency flow — intra-JAR IDs and loader/framework
+/// IDs are excluded), `dependency_decls` retains EVERY declared dependency
+/// with its loader-native version grammar, importance, and origin, including
+/// language-loader requirements and loader/framework IDs such as `minecraft`,
+/// `fabricloader`, `java`, `forge`, and `neoforge`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyDecl {
+    /// Loader capability that declared the dependency. Nested modules keep
+    /// their own identity even though the outer physical JAR owns them.
+    #[serde(default)]
+    pub declaring_mod_id: Option<String>,
+    /// The target mod id (what the dependency points at).
+    pub target_id: String,
+    /// Version-range predicates in the loader-native grammar. Multiple entries
+    /// are OR-joined (Fabric array semantics; Maven comma-separated union). A
+    /// single entry may itself AND multiple space-separated Fabric predicates
+    /// or be one Maven range. Empty = unconstrained (any version).
+    #[serde(default)]
+    pub version_ranges: Vec<String>,
+    /// How strongly the dependency is declared.
+    pub importance: DependencyImportance,
+    /// Version-range grammar of `version_ranges`.
+    pub grammar: VersionGrammar,
+    /// Origin of the declaration within loader metadata.
+    pub source: DependencySource,
+}
+
 /// Jar dependency metadata extracted from a mod JAR file.
 ///
 /// Renamed from `JarMetadata` to avoid collision with
@@ -209,6 +288,12 @@ pub struct JarDeps {
     /// Fabric/Quilt `provides` and explicitly declared nested JAR metadata.
     #[serde(default)]
     pub provided_mods: Vec<ProvidedMod>,
+    /// Structured dependency declarations retaining ALL declared dependencies
+    /// with full version data, grammar, importance, and origin. Not filtered by
+    /// the intra-JAR or loader/framework ignore rules that apply to the flat
+    /// `depends_on`/`optional_deps` lists.
+    #[serde(default)]
+    pub dependency_decls: Vec<DependencyDecl>,
 }
 
 impl JarDeps {
@@ -791,6 +876,7 @@ mod tests {
             incompatibility_decls,
             mod_version: None,
             provided_mods: Vec::new(),
+            dependency_decls: Vec::new(),
         }
     }
 
@@ -1207,5 +1293,129 @@ mod tests {
         let plan = build_removal_plan(&installed, &fabric_api);
         assert_eq!(plan.dependents.len(), 1);
         assert_eq!(plan.dependents[0].filename, "modmenu.jar");
+    }
+
+    // -----------------------------------------------------------------------
+    // G. DependencyDecl types + serde
+    // -----------------------------------------------------------------------
+
+    fn dep_decl(
+        declaring_mod_id: Option<&str>,
+        target_id: &str,
+        version_ranges: &[&str],
+        importance: DependencyImportance,
+        grammar: VersionGrammar,
+        source: DependencySource,
+    ) -> DependencyDecl {
+        DependencyDecl {
+            declaring_mod_id: declaring_mod_id.map(String::from),
+            target_id: target_id.to_string(),
+            version_ranges: version_ranges.iter().map(|s| s.to_string()).collect(),
+            importance,
+            grammar,
+            source,
+        }
+    }
+
+    #[test]
+    fn dependency_source_serde_uses_snake_case() {
+        let cases = [
+            (DependencySource::FabricDepends, "fabric_depends"),
+            (DependencySource::FabricRecommends, "fabric_recommends"),
+            (DependencySource::FabricSuggests, "fabric_suggests"),
+            (DependencySource::QuiltDepends, "quilt_depends"),
+            (DependencySource::ForgeDependency, "forge_dependency"),
+            (DependencySource::NeoForgeDependency, "neoforge_dependency"),
+            (
+                DependencySource::ForgeLanguageLoader,
+                "forge_language_loader",
+            ),
+            (
+                DependencySource::NeoForgeLanguageLoader,
+                "neoforge_language_loader",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(value).expect("serialize"),
+                serde_json::json!(expected)
+            );
+            let restored: DependencySource =
+                serde_json::from_value(serde_json::json!(expected)).expect("deserialize");
+            assert_eq!(restored, value);
+        }
+    }
+
+    #[test]
+    fn dependency_importance_and_grammar_serde() {
+        let importance: DependencyImportance =
+            serde_json::from_str("\"required\"").expect("deserialize required");
+        assert_eq!(importance, DependencyImportance::Required);
+        let restored: DependencyImportance =
+            serde_json::from_str("\"suggested\"").expect("deserialize suggested");
+        assert_eq!(restored, DependencyImportance::Suggested);
+        assert_eq!(
+            serde_json::to_string(&DependencyImportance::Recommended).expect("serialize"),
+            "\"recommended\""
+        );
+        let grammar: VersionGrammar = serde_json::from_str("\"fabric\"").expect("deserialize");
+        assert_eq!(grammar, VersionGrammar::Fabric);
+        assert_eq!(
+            serde_json::to_string(&VersionGrammar::Maven).expect("serialize"),
+            "\"maven\""
+        );
+    }
+
+    #[test]
+    fn dependency_decl_serde_roundtrip() {
+        let decl = dep_decl(
+            Some("outer"),
+            "fabricloader",
+            &[">=0.15.0"],
+            DependencyImportance::Required,
+            VersionGrammar::Fabric,
+            DependencySource::FabricDepends,
+        );
+        let json = serde_json::to_string(&decl).expect("serialize");
+        let restored: DependencyDecl = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, decl);
+        assert_eq!(restored.declaring_mod_id.as_deref(), Some("outer"));
+        assert_eq!(restored.target_id, "fabricloader");
+        assert_eq!(restored.version_ranges, vec![">=0.15.0"]);
+    }
+
+    #[test]
+    fn dependency_decl_missing_optional_fields_default() {
+        let json = r#"{"target_id":"foo","importance":"required","grammar":"maven","source":"forge_dependency"}"#;
+        let restored: DependencyDecl = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(restored.declaring_mod_id, None);
+        assert!(restored.version_ranges.is_empty());
+    }
+
+    #[test]
+    fn jar_deps_roundtrip_preserves_dependency_decls() {
+        let mut deps = jar_deps(Some("target"), &["real_dep"], &["opt_dep"], &[]);
+        deps.dependency_decls.push(dep_decl(
+            None,
+            "minecraft",
+            &[">=1.20"],
+            DependencyImportance::Required,
+            VersionGrammar::Fabric,
+            DependencySource::FabricDepends,
+        ));
+        let json = serde_json::to_string(&deps).expect("serialize");
+        let restored: JarDeps = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.depends_on, vec!["real_dep"]);
+        assert_eq!(restored.optional_deps, vec!["opt_dep"]);
+        assert_eq!(restored.dependency_decls.len(), 1);
+        assert_eq!(restored.dependency_decls[0].target_id, "minecraft");
+    }
+
+    #[test]
+    fn jar_deps_deserialize_without_dependency_decls_defaults_empty() {
+        let json = r#"{"java_packages":[],"mod_jar_id":null,"depends_on":[],"optional_deps":[],"incompatible_deps":[],"incompatibility_decls":[],"mod_version":null,"provided_mods":[]}"#;
+        let restored: JarDeps = serde_json::from_str(json).expect("deserialize");
+        assert!(restored.dependency_decls.is_empty());
+        assert!(restored.provided_mods.is_empty());
     }
 }

@@ -540,12 +540,13 @@ export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = f
 
 /**
  * Coarse recovery action for launch_instance_with_recovery.
- * Mirrors Rust `LaunchRecoveryAction` serde (externally-tagged enum).
+ * Mirrors Rust `LaunchRecoveryAction` serde (internally-tagged enum).
  */
 export type LaunchRecoveryAction =
   | { type: 'None' }
   | { type: 'ProvisionJava'; major: number }
-  | { type: 'RepairLoader' };
+  | { type: 'RepairLoader' }
+  | { type: 'SwitchLoader'; target_version: string };
 
 /**
  * Launch an instance with an optional recovery action performed before the
@@ -634,6 +635,75 @@ export const importLockfile = (lockfileJson: string) =>
 
 export type HealthScore = 'green' | 'yellow' | 'red';
 
+/** Structured loader-compatibility evidence on a health finding (Rust
+ * `health::LoaderCompatibilityIssue`). The UI renders this payload directly
+ * and never parses the finding's human-readable `message` to make decisions. */
+export interface LoaderCompatibilityIssue {
+  loader: string;
+  current_version: string | null;
+  recommended_version: string | null;
+  compatible_versions: string[];
+  indeterminate_versions?: string[];
+  requirements: LoaderRequirementIssue[];
+  conflicts: LoaderConflict[];
+}
+
+/** Structured evidence for one loader requirement evaluation (Rust
+ * `health::LoaderRequirementIssue`). */
+export interface LoaderRequirementIssue {
+  declaring_mod_id: string | null;
+  target_id: string;
+  version_ranges: string[];
+  importance: DependencyImportance;
+  candidate_version: string | null;
+  verdict: RequirementVerdict;
+}
+
+/** Serialized `dependency_ops::DependencyImportance`. */
+export type DependencyImportance = 'required' | 'recommended' | 'suggested';
+
+/** Serialized `dependency_ops::DependencySource`. */
+export type DependencySource =
+  | 'fabric_depends'
+  | 'fabric_recommends'
+  | 'fabric_suggests'
+  | 'quilt_depends'
+  | 'forge_dependency'
+  | 'neoforge_dependency'
+  | 'forge_language_loader'
+  | 'neoforge_language_loader';
+
+/** Serialized `dependency_ops::VersionGrammar`. */
+export type VersionGrammar = 'fabric' | 'maven';
+
+/** Serialized `dependency_ops::DependencyDecl` as carried inside loader
+ * requirement evidence. */
+export interface DependencyDecl {
+  declaring_mod_id: string | null;
+  target_id: string;
+  version_ranges: string[];
+  importance: DependencyImportance;
+  grammar: VersionGrammar;
+  source: DependencySource;
+}
+
+/** Serialized `loader_compatibility::RequirementVerdict`. */
+export type RequirementVerdict =
+  | 'satisfied'
+  | 'unsatisfied'
+  | { unsupported: { reason: string } };
+
+/** Serialized `loader_compatibility::LoaderConflict`. */
+export interface LoaderConflict {
+  declaring_mod_id: string | null;
+  target_id: string;
+  version_ranges: string[];
+  with_declaring_mod_id: string | null;
+  with_target_id: string;
+  with_version_ranges: string[];
+  message: string;
+}
+
 export interface HealthWarning {
   kind: string;
   mod_id: string | null;
@@ -641,6 +711,8 @@ export interface HealthWarning {
   filename: string | null;
   message: string;
   suggested_action: string | null;
+  /** Present when this warning is a loader requirement finding. */
+  loader_compatibility?: LoaderCompatibilityIssue | null;
 }
 
 export interface HealthBlocker {
@@ -650,6 +722,8 @@ export interface HealthBlocker {
   filename: string | null;
   message: string;
   suggested_action: string | null;
+  /** Present when this blocker is a loader requirement finding. */
+  loader_compatibility?: LoaderCompatibilityIssue | null;
 }
 
 export interface HealthRecommendation {
@@ -670,11 +744,108 @@ export interface HealthReport {
 
 export const checkInstanceHealth = (instanceId: string) =>
   invoke<HealthReport>('check_instance_health', { instanceId });
+
+/** One background scan result. A per-instance failure is isolated so other
+ * cards retain their current health status. */
+export interface InstanceHealthScanResult {
+  instance_id: string;
+  report: HealthReport | null;
+  error: string | null;
+}
+
+/** Periodically used by the app shell to scan every local instance. */
+export const checkAllInstanceHealth = () =>
+  invoke<InstanceHealthScanResult[]>('check_all_instance_health');
+
 export const listLoaderVersions = (loader: string, mcVersion: string) =>
   invoke<LoaderVersionSummary[]>('list_loader_versions', {
     loader,
     mcVersion,
   });
+
+// --- Loader version switching (Work Package 7) ---
+
+/** Serialized `loader_manifests::LoaderReleaseChannel`. */
+export type LoaderReleaseChannel = 'stable' | 'prerelease';
+
+/** Serialized `loader_manifests::LoaderCapabilities`. */
+export interface LoaderCapabilities {
+  distribution_id: string;
+  distribution_version: string;
+  provided_versions: Record<string, string>;
+}
+
+/** Serialized `loader_compatibility::CurrentLoaderStatus`. */
+export type CurrentLoaderStatus =
+  | 'compatible'
+  | 'incompatible'
+  | 'indeterminate'
+  | 'no_compatible_candidates';
+
+/** Serialized `loader_compatibility::LoaderRequirementResult`. */
+export interface LoaderRequirementResult {
+  declaration: DependencyDecl;
+  capability: string;
+  kind: 'framework' | 'language_loader';
+  candidate_provided_version: string | null;
+  verdict: RequirementVerdict;
+}
+
+/** A signed catalog candidate that satisfies every hard requirement
+ * (serialized `loader_compatibility::CompatibleLoaderCandidate`). */
+export interface CompatibleLoaderCandidate {
+  loader_version: string;
+  release_channel: LoaderReleaseChannel;
+  recommendation_rank: number | null;
+  capabilities: LoaderCapabilities;
+  requirement_results: LoaderRequirementResult[];
+}
+
+/** Full compatibility report (serialized
+ * `loader_compatibility::LoaderCompatibilityReport`). */
+export interface LoaderCompatibilityReport {
+  current_status: CurrentLoaderStatus;
+  requirements: LoaderRequirementResult[];
+  compatible_versions: CompatibleLoaderCandidate[];
+  indeterminate_versions?: CompatibleLoaderCandidate[];
+  recommended_version: CompatibleLoaderCandidate | null;
+  conflicts: LoaderConflict[];
+}
+
+/** Preview of a loader version switch (serialized
+ * `loader_service::LoaderChangePlan`). Planning performs no mutation. */
+export interface LoaderChangePlan {
+  instance_id: string;
+  loader: string;
+  minecraft_version: string;
+  current_loader_version: string;
+  recommended_loader_version: string | null;
+  current_report: LoaderCompatibilityReport;
+}
+
+/** Committed result of a loader version switch (serialized
+ * `loader_service::LoaderChangeResult`). */
+export interface LoaderChangeResult {
+  instance_id: string;
+  previous_loader_version: string;
+  loader_version: string;
+  health: HealthReport;
+}
+
+/** Plan a loader version switch without mutating anything. */
+export const planLoaderChange = (instanceId: string) =>
+  invoke<LoaderChangePlan>('plan_loader_change', { instanceId });
+
+/** Commit a loader version switch to an explicit signed catalog target. */
+export const changeLoaderVersion = (
+  instanceId: string,
+  targetVersion: string,
+  allowIndeterminate = false,
+) => invoke<LoaderChangeResult>('change_loader_version', {
+  instanceId,
+  targetVersion,
+  allowIndeterminate,
+});
 export const listManifestLoaders = () =>
   invoke<string[]>('list_manifest_loaders');
 export const listManifestMcVersions = (loader?: string) =>
