@@ -15614,6 +15614,16 @@
         "installer_spec": 1
       },
       {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.248",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.248/neoforge-21.1.248-installer.jar",
+        "sha256": "68eeab77059ba53df1812f1afa5bf530ab2566a3cdcd5f924aa6e71be42e410c",
+        "file_name": "neoforge-21.1.248-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "ac2d0b2711198e1de0c7e607832d75941dc9e35b76a2f1a6c6ae9ab2045adf74",
+        "installer_spec": 1
+      },
+      {
         "mc_version": "1.21.2",
         "loader_version": "21.2.0-beta",
         "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.2.0-beta/neoforge-21.2.0-beta-installer.jar",
