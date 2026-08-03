@@ -623,3 +623,614 @@ test.describe('D1 — Browse instance-context selector', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// E3: Bulk select and install from browse cards
+// ---------------------------------------------------------------------------
+
+const BULK_ITEM_A = item('bulk-mod-a', 'Bulk Mod A');
+const BULK_ITEM_B = item('bulk-mod-b', 'Bulk Mod B');
+const BULK_ITEM_M = { ...item('mr-project-1', 'Bulk Modrinth'), source: 'modrinth' as const };
+// Matches the installed entry in CONTEXT_DETAIL.manifest.mods.
+const BULK_ITEM_I = item('installed-mod', 'Installed Mod');
+
+const bulkCard = (page: Page, name: string) =>
+  page.locator('.browse-list-card').filter({ hasText: name });
+
+function bulkBatchPlan(intent: unknown) {
+  return {
+    fingerprint: 'plan-fp-bulk-001',
+    intent,
+    operation: { type: 'batch-install', operations: [] },
+    dependencies: [],
+    conflicts: [],
+    filesToAdd: [],
+    filesToRemove: [],
+    filesToDisable: [],
+    snapshot: { label: 'Before installing selected items', estimatedBytes: 1_000_000 },
+    diskEstimate: { downloadBytes: 500_000, snapshotBytes: 1_000_000, applyOverheadBytes: 200_000, peakAdditionalBytes: 1_200_000, postCommitDeltaBytes: 500_000 },
+    warnings: [],
+    blockingErrors: [],
+    pendingChoices: [],
+    createdAt: '2026-08-01T00:00:00Z',
+    instanceStateHash: 'bulkstatehash',
+    registryRevision: 'v20260801',
+  };
+}
+
+function bulkBatchPlanWithOptionalDep(intent: unknown) {
+  return {
+    ...bulkBatchPlan(intent),
+    fingerprint: 'plan-fp-bulk-optional',
+    dependencies: [
+      {
+        modJarId: 'required-dep',
+        requirement: 'required',
+        source: 'manifest',
+        disposition: { type: 'install-candidate', artifact: {} },
+        displayName: 'Required Dependency',
+        pageUrl: 'https://modrinth.com/mod/required-dep',
+      },
+      {
+        modJarId: 'optional-dep-b',
+        requirement: 'optional',
+        source: 'manifest',
+        disposition: { type: 'excluded' },
+        displayName: 'TerraBlender',
+        pageUrl: 'https://modrinth.com/mod/terrablender',
+      },
+      {
+        modJarId: 'batch-sibling-dep',
+        requirement: 'required',
+        source: 'manifest',
+        disposition: { type: 'included-in-batch', targetFilename: 'bulk-mod-b.jar' },
+        displayName: 'Bulk Mod B',
+      },
+    ],
+    pendingChoices: [],
+  };
+}
+
+function bulkBatchPlanBlocking(intent: unknown) {
+  return {
+    ...bulkBatchPlan(intent),
+    fingerprint: 'plan-fp-bulk-blocking',
+    blockingErrors: [
+      { code: 'ERR_REQUIRED_DEPENDENCY', message: 'Required dependency missing-dep could not be resolved: no compatible artifact' },
+    ],
+  };
+}
+
+function bulkBatchPlanWithNewOptionalFile(intent: unknown) {
+  return {
+    ...bulkBatchPlan(intent),
+    fingerprint: 'plan-fp-bulk-optional-final',
+    filesToAdd: [{ targetFilename: 'optional-dep-b.jar' }],
+  };
+}
+
+function bulkBatchPlanWithRootArtifact(intent: unknown) {
+  return {
+    ...bulkBatchPlan(intent),
+    operation: {
+      type: 'batch-install',
+      operations: [{
+        type: 'install',
+        artifact: {
+          type: 'download',
+          itemId: 'bulk-mod-a',
+          versionId: 'bulk-a-v1',
+          filename: 'bulk-mod-a-1.0.0.jar',
+          metadata: { sourceType: 'modrinth', version: '1.0.0' },
+        },
+      }],
+    },
+    filesToAdd: [{ targetFilename: 'bulk-mod-a-1.0.0.jar' }],
+  };
+}
+
+function bulkBatchPlanHashBlocking(intent: unknown) {
+  return {
+    ...bulkBatchPlanWithRootArtifact(intent),
+    blockingErrors: [{
+      code: 'ERR_HASH_UNAVAILABLE',
+      message: 'bulk-mod-a has no acceptable published hash for Curated source.',
+    }],
+  };
+}
+
+const BULK_SUCCESS_OUTCOME = {
+  type: 'success',
+  installedItems: ['bulk-mod-a-1.0.0.jar', 'bulk-mod-b-1.0.0.jar'],
+  existingItemsReused: [],
+  warnings: [],
+  health: { type: 'completed', report: {} },
+  snapshotId: 'snap-bulk-001',
+};
+
+async function installBulkSelectMock(page: Page, autoConfirmClean = true, alwaysAutoConfirm = false) {
+  const instance = CONTEXT_INSTANCE;
+  const detail = CONTEXT_DETAIL;
+  const itemA = BULK_ITEM_A;
+  const itemB = BULK_ITEM_B;
+  const itemM = BULK_ITEM_M;
+  const itemI = BULK_ITEM_I;
+
+  await page.addInitScript(
+    (params: {
+      instance: Record<string, unknown>;
+      detail: Record<string, unknown>;
+      itemA: Record<string, unknown>;
+      itemB: Record<string, unknown>;
+      itemM: Record<string, unknown>;
+      itemI: Record<string, unknown>;
+      autoConfirmClean: boolean;
+      alwaysAutoConfirm: boolean;
+    }) => {
+      const { instance, detail, itemA, itemB, itemM, itemI, autoConfirmClean, alwaysAutoConfirm } = params;
+      const calls: Array<{
+        command: string;
+        args: Record<string, unknown>;
+        resolve: (value: unknown) => void;
+        reject: (reason?: unknown) => void;
+      }> = [];
+      const callbacks = new Map<number, (...args: unknown[]) => void>();
+      let callbackId = 0;
+
+      const internals = {
+        transformCallback(callback: (...args: unknown[]) => void) {
+          const id = ++callbackId;
+          callbacks.set(id, callback);
+          return id;
+        },
+        unregisterCallback(id: number) { callbacks.delete(id); },
+        invoke(command: string, args: Record<string, unknown> = {}) {
+          if (command === 'get_setting') {
+            const key = args.key;
+            if (key === 'onboarding_complete') return Promise.resolve(true);
+            if (key === 'modrinth_enabled') return Promise.resolve(true);
+            if (key === 'ai_chat_enabled') return Promise.resolve(false);
+            if (key === 'install_auto_confirm_clean') return Promise.resolve(autoConfirmClean);
+            if (key === 'install_always_auto_confirm') return Promise.resolve(alwaysAutoConfirm);
+            return Promise.resolve(null);
+          }
+          if (command === 'get_registry_status') {
+            return Promise.resolve({
+              has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
+              latest_tag: 'test', update_available: false, checked: true,
+              message: 'Registry ready.',
+            });
+          }
+          if (command === 'list_categories') return Promise.resolve([]);
+          if (command === 'list_manifest_loaders') return Promise.resolve([]);
+          if (command === 'list_manifest_mc_versions') return Promise.resolve([]);
+          if (command === 'get_windows_accent_color') return Promise.resolve(null);
+          if (command === 'list_instances') return Promise.resolve([instance]);
+          if (command === 'get_instance_detail') return Promise.resolve(detail);
+          if (command === 'get_registry_item') {
+            const itemId = args.itemId;
+            return Promise.resolve(itemId === itemA.id ? itemA.registryItem : null);
+          }
+          if (command === 'browse_search') {
+            return Promise.resolve({ items: [itemA, itemB, itemM, itemI], total: 4, page: 0, hasMore: false });
+          }
+          if (command === 'browse_load_more') {
+            return Promise.resolve({ items: [], total: 4, page: 1, hasMore: false });
+          }
+          if (command === 'for_you_items') {
+            return Promise.resolve([]);
+          }
+          if (command === 'resolve_install_plan' || command === 'apply_install_plan') {
+            return new Promise((resolve, reject) => calls.push({ command, args, resolve, reject }));
+          }
+          if (command === 'cancel_install') return Promise.resolve(null);
+          if (command.startsWith('plugin:event|')) return Promise.resolve(1);
+          if (command === 'get_auth_status') return Promise.resolve(false);
+          return Promise.resolve(null);
+        },
+      };
+      Object.assign(window as unknown as Record<string, unknown>, {
+        __TAURI_INTERNALS__: internals,
+        __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
+        __bulkInstallCalls: calls,
+        __resolveBulkInstall(index: number, value: unknown) { calls[index].resolve(value); },
+        __rejectBulkInstall(index: number, value: unknown) { calls[index].reject(value); },
+      });
+    },
+    { instance, detail, itemA, itemB, itemM, itemI, autoConfirmClean, alwaysAutoConfirm },
+  );
+}
+
+async function findBulkInstallCall(page: Page, command: string) {
+  let index = -1;
+  await expect.poll(async () => {
+    index = await page.evaluate((cmd) => {
+      const calls = (window as any).__bulkInstallCalls as Array<{ command: string }>;
+      return calls.findIndex((call) => call.command === cmd);
+    }, command);
+    return index;
+  }).toBeGreaterThanOrEqual(0);
+  return index;
+}
+
+async function findBulkInstallCallAfter(page: Page, command: string, afterIndex: number) {
+  let index = -1;
+  await expect.poll(async () => {
+    index = await page.evaluate(({ cmd, after }) => {
+      const calls = (window as any).__bulkInstallCalls as Array<{ command: string }>;
+      return calls.findIndex((call, i) => i > after && call.command === cmd);
+    }, { cmd: command, after: afterIndex });
+    return index;
+  }).toBeGreaterThanOrEqual(0);
+  return index;
+}
+
+async function resolveBulkInstallCall(page: Page, index: number, value: unknown) {
+  await page.evaluate(({ index, value }) => (window as any).__resolveBulkInstall(index, value), { index, value });
+}
+
+async function openBrowseAndWait(page: Page) {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Browse', exact: true }).click();
+  await expect(page.getByText('Bulk Mod A')).toBeVisible({ timeout: 5000 });
+}
+
+test.describe('E3 — Bulk select and install', () => {
+
+  test('clicking cards toggles selection and the install bar reflects it', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    const cardA = bulkCard(page, 'Bulk Mod A');
+    const cardB = bulkCard(page, 'Bulk Mod B');
+
+    await cardA.click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveText('1 selected');
+    await expect(cardA).toHaveClass(/browse-card--selected/);
+
+    await cardB.click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveText('2 selected');
+    await expect(page.getByRole('button', { name: 'Install 2', exact: true })).toBeVisible();
+
+    // Clicking a selected card unselects it
+    await cardA.click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveText('1 selected');
+    await expect(cardA).not.toHaveClass(/browse-card--selected/);
+
+    // Clear removes the whole selection and the bar
+    await page.getByRole('button', { name: 'Clear', exact: true }).click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveCount(0);
+  });
+
+  test('installed items are blocked from bulk selection', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await expect(page.getByText('Installed Mod')).toBeVisible();
+
+    const card = bulkCard(page, 'Installed Mod');
+    await expect(card.locator('.browse-context-label--installed')).toBeVisible();
+
+    await card.click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveCount(0);
+    await expect(card).not.toHaveClass(/browse-card--selected/);
+    await expect(page.getByText(/Installed Mod is already installed in My Fabric World/)).toBeVisible();
+  });
+
+  test('bulk install with an instance context installs directly to that instance', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await expect(page.getByText('Bulk Mod A')).toBeVisible();
+
+    await bulkCard(page, 'Bulk Mod A').click();
+    await bulkCard(page, 'Bulk Mod B').click();
+    await bulkCard(page, 'Bulk Modrinth').click();
+    await page.getByRole('button', { name: 'Install 3 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    const intent = args.intent as {
+      action: { type: string; items: Array<{ sourceType: string; itemId: string; candidateVersion?: string }> };
+      targetInstance: string;
+    };
+    expect(intent.action.type).toBe('batch-install');
+    expect(intent.targetInstance).toBe('fabric-121');
+    // Curated items use the registry id; Modrinth-only items use the project id.
+    expect(intent.action.items.map((item) => `${item.sourceType}:${item.itemId}`).sort()).toEqual([
+      'curated:bulk-mod-a',
+      'curated:bulk-mod-b',
+      'modrinth:mr-project-1',
+    ]);
+    // No version selection in bulk mode — the resolver picks the latest compatible.
+    expect(intent.action.items.every((item) => item.candidateVersion === undefined)).toBe(true);
+
+    // The install runs in the non-blocking corner card; no focused dialog.
+    await expect(page.getByText('Installing 3 selected items')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlan(args.intent));
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, BULK_SUCCESS_OUTCOME);
+    await expect(page.getByText('Installation complete', { exact: true })).toBeVisible();
+
+    // Starting the background install clears the selection and the bar.
+    await expect(page.getByTestId('browse-selection-count')).toHaveCount(0);
+  });
+
+  test('clean bulk plans open confirmation when auto-confirm is disabled', async ({ page }) => {
+    await installBulkSelectMock(page, false);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await bulkCard(page, 'Bulk Mod A').click();
+    await page.getByRole('button', { name: 'Install 1 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlan(args.intent));
+
+    const review = page.getByRole('dialog');
+    await expect(review).toBeVisible();
+    await expect(review.getByRole('button', { name: 'Install Batch', exact: true })).toBeVisible();
+    await expect(page.getByText('Installing 1 selected item')).toHaveCount(0);
+
+    await review.getByRole('button', { name: 'Install Batch', exact: true }).click();
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, BULK_SUCCESS_OUTCOME);
+    await expect(page.getByText('Installation complete', { exact: true })).toBeVisible();
+  });
+
+  test('always auto-confirm skips dependency details when enabled', async ({ page }) => {
+    await installBulkSelectMock(page, true, true);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await bulkCard(page, 'Bulk Mod A').click();
+    await bulkCard(page, 'Bulk Mod B').click();
+    await page.getByRole('button', { name: 'Install 2 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlanWithOptionalDep(args.intent));
+
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, BULK_SUCCESS_OUTCOME);
+    await expect(page.getByText('Installation complete', { exact: true })).toBeVisible();
+  });
+
+  test('bulk install without an instance context opens an instance picker', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await bulkCard(page, 'Bulk Mod A').click();
+    await bulkCard(page, 'Bulk Mod B').click();
+    await page.getByRole('button', { name: 'Install 2', exact: true }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText('Install 2 selected items')).toBeVisible();
+
+    // No instance is pre-selected — an explicit choice is required.
+    await expect(dialog.getByRole('button', { name: 'Install 2 items', exact: true })).toBeDisabled();
+    await dialog.getByLabel('Target instance').selectOption('fabric-121');
+    await dialog.getByRole('button', { name: 'Install 2 items', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    const intent = args.intent as { action: { type: string }; targetInstance: string };
+    expect(intent.action.type).toBe('batch-install');
+    expect(intent.targetInstance).toBe('fabric-121');
+
+    await expect(page.getByText('Installing 2 selected items')).toBeVisible();
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlan(args.intent));
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, BULK_SUCCESS_OUTCOME);
+    await expect(page.getByText('Installation complete', { exact: true })).toBeVisible();
+  });
+
+  test('optional dependencies open a focused review with names, links, and unchecked defaults', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await expect(page.getByText('Bulk Mod A')).toBeVisible();
+
+    await bulkCard(page, 'Bulk Mod A').click();
+    await bulkCard(page, 'Bulk Mod B').click();
+    await page.getByRole('button', { name: 'Install 2 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlanWithOptionalDep(args.intent));
+
+    // The plan needs a decision, so the focused review opens with real names
+    // and page links instead of raw ids, and the corner card is dismissed.
+    const review = page.getByRole('dialog');
+    await expect(review).toBeVisible();
+    await expect(page.getByText('Installing 2 selected items')).toHaveCount(0);
+    await expect(review.getByText('TerraBlender')).toBeVisible();
+    await expect(review.getByText('Required Dependency')).toBeVisible();
+    // Deps render in plan order (required-dep first, optional-dep-b second).
+    await expect(review.getByRole('link', { name: 'View mod page ↗' })).toHaveCount(2);
+    await expect(review.getByRole('link', { name: 'View mod page ↗' }).nth(1))
+      .toHaveAttribute('href', 'https://modrinth.com/mod/terrablender');
+    // A dependency satisfied by another batch item is labelled as such.
+    await expect(review.getByText('Bulk Mod B')).toBeVisible();
+    await expect(review.getByText('included in this batch')).toBeVisible();
+
+    // Optional dependencies default to unchecked for bulk installs.
+    const optionalCheckbox = review.getByRole('checkbox', { name: 'Include optional dependency TerraBlender' });
+    await expect(optionalCheckbox).not.toBeChecked();
+
+    // Opt in, recheck, and review the final plan with new files highlighted.
+    await optionalCheckbox.check();
+    await review.getByRole('button', { name: 'Install Batch', exact: true }).click();
+
+    const replanCall = await findBulkInstallCallAfter(page, 'resolve_install_plan', resolveCall);
+    const replanArgs = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, replanCall);
+    const replanIntent = replanArgs.intent as {
+      optionalDeps: { type: string; deps: string[] };
+      action: { type: string };
+    };
+    expect(replanIntent.action.type).toBe('batch-install');
+    expect(replanIntent.optionalDeps).toEqual({ type: 'include', deps: ['optional-dep-b'] });
+
+    await resolveBulkInstallCall(page, replanCall, bulkBatchPlanWithNewOptionalFile(replanArgs.intent));
+    const finalReview = page.getByRole('dialog');
+    await expect(finalReview.getByText('New options have been checked')).toBeVisible();
+    await expect(finalReview.getByText('New Items From Optional Dependencies')).toBeVisible();
+    await expect(finalReview.getByText('+ optional-dep-b.jar')).toBeVisible();
+    await finalReview.getByRole('button', { name: 'Install Batch', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, BULK_SUCCESS_OUTCOME);
+    await expect(page.getByText('Installation complete', { exact: true })).toBeVisible();
+  });
+
+  test('blocking plan errors open the focused review instead of the corner card', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await expect(page.getByText('Bulk Mod A')).toBeVisible();
+
+    await bulkCard(page, 'Bulk Mod A').click();
+    await bulkCard(page, 'Bulk Mod B').click();
+    await page.getByRole('button', { name: 'Install 2 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlanBlocking(args.intent));
+
+    const review = page.getByRole('dialog');
+    await expect(review).toBeVisible();
+    await expect(review.getByText(/Required dependency missing-dep could not be resolved/)).toBeVisible();
+    await expect(review.getByRole('button', { name: 'Retry Resolution', exact: true })).toBeVisible();
+    await expect(review.getByRole('button', { name: 'Cannot Apply' })).toBeDisabled();
+    await expect(page.getByText('Installing 2 selected items')).toHaveCount(0);
+  });
+
+  test('resolution failures open the focused retry screen', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await bulkCard(page, 'Bulk Mod A').click();
+    await page.getByRole('button', { name: 'Install 1 to My Fabric World', exact: true }).click();
+
+    const firstResolve = await findBulkInstallCall(page, 'resolve_install_plan');
+    await page.evaluate((index) => {
+      (window as any).__rejectBulkInstall(index, {
+        code: 'ERR_VERSION_NOT_FOUND',
+        message: "No compatible version found for Modrinth item 'bulk-mod-a' on Minecraft 1.21.1 / fabric. Closest available: 1.0.0 (bulk-mod-a.jar).",
+      });
+    }, firstResolve);
+
+    const retryResolve = await findBulkInstallCallAfter(page, 'resolve_install_plan', firstResolve);
+    await page.evaluate((index) => {
+      (window as any).__rejectBulkInstall(index, {
+        code: 'ERR_VERSION_NOT_FOUND',
+        message: "No compatible version found for Modrinth item 'bulk-mod-a' on Minecraft 1.21.1 / fabric. Closest available: 1.0.0 (bulk-mod-a.jar).",
+      });
+    }, retryResolve);
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText(/Closest available: 1\.0\.0/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Try Closest Version' })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Try Closest Version' }).click();
+    const closestResolve = await findBulkInstallCallAfter(page, 'resolve_install_plan', retryResolve);
+    const closestArgs = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, closestResolve);
+    expect((closestArgs.intent as any).overrides.allowClosestVersion).toBe(true);
+    await page.evaluate((index) => {
+      (window as any).__rejectBulkInstall(index, {
+        code: 'ERR_VERSION_NOT_FOUND',
+        message: "No compatible version found for Modrinth item 'bulk-mod-a' on Minecraft 1.21.1 / fabric. Closest available: 1.0.0 (bulk-mod-a.jar).",
+      });
+    }, closestResolve);
+    await expect(dialog.getByRole('button', { name: 'Skip This Mod' })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Skip This Mod' }).click();
+    const skipResolve = await findBulkInstallCallAfter(page, 'resolve_install_plan', closestResolve);
+    const skipArgs = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, skipResolve);
+    expect((skipArgs.intent as any).overrides.skipItems).toEqual(['bulk-mod-a']);
+    await resolveBulkInstallCall(page, skipResolve, bulkBatchPlan(skipArgs.intent));
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, BULK_SUCCESS_OUTCOME);
+    await expect(page.getByText('Installation complete', { exact: true })).toBeVisible();
+  });
+
+  test('background hash failures open retry and skip actions', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await bulkCard(page, 'Bulk Mod A').click();
+    await page.getByRole('button', { name: 'Install 1 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlanWithRootArtifact(args.intent));
+
+    const applyCall = await findBulkInstallCall(page, 'apply_install_plan');
+    await resolveBulkInstallCall(page, applyCall, {
+      type: 'failed',
+      error: 'verification failed for bulk-mod-a-1.0.0.jar: Sha256 hash mismatch',
+      rollbackPerformed: false,
+      snapshotId: null,
+    });
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText(/Sha256 hash mismatch/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Skip This Mod' })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Skip This Mod' }).click();
+
+    const retryResolve = await findBulkInstallCallAfter(page, 'resolve_install_plan', applyCall);
+    const retryArgs = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, retryResolve);
+    expect((retryArgs.intent as any).overrides.skipItems).toEqual(['bulk-mod-a']);
+  });
+
+  test('hash-blocked review plans offer skip for the failing batch root', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await page.locator('#browse-instance-context').selectOption('fabric-121');
+    await bulkCard(page, 'Bulk Mod A').click();
+    await page.getByRole('button', { name: 'Install 1 to My Fabric World', exact: true }).click();
+
+    const resolveCall = await findBulkInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, resolveCall);
+    await resolveBulkInstallCall(page, resolveCall, bulkBatchPlanHashBlocking(args.intent));
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText(/no acceptable published hash/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Skip This Mod' })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Skip This Mod' }).click();
+
+    const retryResolve = await findBulkInstallCallAfter(page, 'resolve_install_plan', resolveCall);
+    const retryArgs = await page.evaluate((index) => (window as any).__bulkInstallCalls[index].args, retryResolve);
+    expect((retryArgs.intent as any).overrides.skipItems).toEqual(['bulk-mod-a']);
+  });
+
+  test('View Details opens details without toggling selection', async ({ page }) => {
+    await installBulkSelectMock(page);
+    await openBrowseAndWait(page);
+
+    await bulkCard(page, 'Bulk Mod A').click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveText('1 selected');
+
+    // Opening details must not flip selection state
+    await page.getByRole('button', { name: 'View Details', exact: true }).first().click();
+    await expect(page.getByRole('heading', { name: 'Bulk Mod A' })).toBeVisible({ timeout: 5000 });
+
+    await page.getByRole('button', { name: '← Back' }).click();
+    await expect(page.getByTestId('browse-selection-count')).toHaveText('1 selected');
+    await expect(bulkCard(page, 'Bulk Mod B')).not.toHaveClass(/browse-card--selected/);
+  });
+
+});

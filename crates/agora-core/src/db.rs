@@ -67,7 +67,13 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
     // comparing with `true` / `&Value::Bool(true)` match correctly. They are
     // integrations rather than prerequisites, so a new player must opt in
     // during onboarding before any of them can be used or auto-started.
-    for key in ["modrinth_enabled", "ai_chat_enabled", "ai_mcp_enabled"] {
+    for key in [
+        "modrinth_enabled",
+        "ai_chat_enabled",
+        "ai_mcp_enabled",
+        "install_auto_confirm_clean",
+        "install_always_auto_confirm",
+    ] {
         if get_setting(&conn, key).ok().flatten().is_none() {
             set_setting(&conn, key, &serde_json::Value::Bool(false))?;
         }
@@ -83,6 +89,8 @@ const BOOLEAN_SETTING_KEYS: &[&str] = &[
     "ai_chat_enabled",
     "ai_mcp_enabled",
     "always_pre_touch",
+    "install_auto_confirm_clean",
+    "install_always_auto_confirm",
     "onboarding_complete",
     "network_modrinth_enabled",
     "network_modrinth_cdn_enabled",
@@ -1336,7 +1344,13 @@ mod tests {
     #[test]
     fn test_optional_integrations_default_to_disabled() {
         let (conn, _path) = test_db();
-        for key in ["modrinth_enabled", "ai_chat_enabled", "ai_mcp_enabled"] {
+        for key in [
+            "modrinth_enabled",
+            "ai_chat_enabled",
+            "ai_mcp_enabled",
+            "install_auto_confirm_clean",
+            "install_always_auto_confirm",
+        ] {
             assert_eq!(
                 get_setting(&conn, key).unwrap(),
                 Some(serde_json::json!(false))

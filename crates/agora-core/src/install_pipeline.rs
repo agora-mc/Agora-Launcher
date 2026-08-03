@@ -217,6 +217,9 @@ pub enum DepDisposition {
     },
     /// Will be downloaded and installed.
     InstallCandidate { artifact: ResolvedArtifact },
+    /// Another item in the same batch installs this dependency — no action
+    /// needed here and no duplicate artifact is added.
+    IncludedInBatch { target_filename: String },
     /// User chose to exclude this optional dependency.
     Excluded,
     /// Could not be resolved — kept for diagnostics.
@@ -230,6 +233,15 @@ pub struct ResolvedDep {
     pub requirement: Requirement,
     pub source: DepSource,
     pub disposition: DepDisposition,
+    /// Human-readable project name when it could be resolved cheaply
+    /// (registry lookup for curated deps, batched Modrinth fetch for raw
+    /// deps). Falls back to `mod_jar_id` in the UI when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Canonical upstream page URL (registry `page_url` or Modrinth project
+    /// URL). Absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -404,11 +416,22 @@ pub struct ConflictResolutionOption {
 // 15. Plan overrides
 // ---------------------------------------------------------------------------
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanOverrides {
     pub allow_replace: bool,
     pub skip_health_scan: bool,
+    /// Permit the resolver to retry a failed exact/compatible version lookup
+    /// using the nearest available candidate after explicit user approval.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_closest_version: bool,
+    /// Root batch items explicitly skipped after a version-resolution failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_items: Vec<String>,
     /// Override applied conflict resolutions by conflict_id.
     pub force_conflict_resolution: BTreeMap<String, ConflictResolution>,
 }
@@ -756,6 +779,12 @@ impl InstallPipeline {
         let mut warnings = Vec::new();
         let mut blocking_errors = Vec::new();
         let mut pending_choices = Vec::new();
+        if intent.overrides.allow_closest_version {
+            warnings.push(PlanWarning {
+                code: "WARN_CLOSEST_VERSION".into(),
+                message: "A closest available version was selected where the exact compatible version was unavailable. Verify the instance after installation.".into(),
+            });
+        }
         if manifest.is_locked {
             blocking_errors.push(PlanError {
                 code: "ERR_INSTANCE_LOCKED".into(),
@@ -778,13 +807,16 @@ impl InstallPipeline {
             &mut pending_choices,
         );
         for dependency in &dependencies {
+            let dependency_name = dependency
+                .display_name
+                .as_deref()
+                .unwrap_or(&dependency.mod_jar_id);
             if dependency.requirement == Requirement::Required {
                 if let DepDisposition::Unresolved { reason } = &dependency.disposition {
                     blocking_errors.push(PlanError {
                         code: "ERR_REQUIRED_DEPENDENCY".into(),
                         message: format!(
-                            "Required dependency {} could not be resolved: {reason}",
-                            dependency.mod_jar_id
+                            "Required dependency {dependency_name} could not be resolved: {reason}"
                         ),
                     });
                 }
@@ -793,8 +825,7 @@ impl InstallPipeline {
                     blocking_errors.push(PlanError {
                         code: "ERR_OPTIONAL_DEPENDENCY".into(),
                         message: format!(
-                            "Selected optional dependency {} could not be resolved: {reason}",
-                            dependency.mod_jar_id
+                            "Selected optional dependency {dependency_name} could not be resolved: {reason}"
                         ),
                     });
                 }
@@ -1597,13 +1628,20 @@ fn apply_optional_policy(
         match policy {
             OptionalDepsPolicy::Include { deps } => {
                 if !deps.iter().any(|id| id == &dependency.mod_jar_id)
-                    && !matches!(dependency.disposition, DepDisposition::ReuseExisting { .. })
+                    && !matches!(
+                        dependency.disposition,
+                        DepDisposition::ReuseExisting { .. }
+                            | DepDisposition::IncludedInBatch { .. }
+                    )
                 {
                     dependency.disposition = DepDisposition::Excluded;
                 }
             }
             OptionalDepsPolicy::ExcludeAll => {
-                if !matches!(dependency.disposition, DepDisposition::ReuseExisting { .. }) {
+                if !matches!(
+                    dependency.disposition,
+                    DepDisposition::ReuseExisting { .. } | DepDisposition::IncludedInBatch { .. }
+                ) {
                     dependency.disposition = DepDisposition::Excluded;
                 }
             }
@@ -1614,7 +1652,10 @@ fn apply_optional_policy(
                 ) {
                     prompt_options.push(OptionalDepOption {
                         mod_jar_id: dependency.mod_jar_id.clone(),
-                        display_name: dependency.mod_jar_id.clone(),
+                        display_name: dependency
+                            .display_name
+                            .clone()
+                            .unwrap_or_else(|| dependency.mod_jar_id.clone()),
                     });
                 }
             }
@@ -1914,7 +1955,10 @@ fn validate_artifact_hashes(artifact: &ResolvedArtifact) -> Result<(), String> {
         })
     };
     let verified = match metadata.source_type {
-        SourceType::Curated | SourceType::Manual => valid(HashAlgorithm::Sha256, 64),
+        SourceType::Curated => {
+            valid(HashAlgorithm::Sha512, 128) || valid(HashAlgorithm::Sha256, 64)
+        }
+        SourceType::Manual => valid(HashAlgorithm::Sha256, 64),
         SourceType::Modrinth => {
             valid(HashAlgorithm::Sha512, 128)
                 || valid(HashAlgorithm::Sha256, 64)
@@ -2822,6 +2866,8 @@ mod tests {
                     mod_jar_id: "required-dep".into(),
                     requirement: Requirement::Required,
                     source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
                     disposition: DepDisposition::InstallCandidate {
                         artifact: test_artifact(
                             "required-dep",
@@ -2838,6 +2884,8 @@ mod tests {
                     mod_jar_id: "optional-dep".into(),
                     requirement: Requirement::Optional,
                     source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
                     disposition: DepDisposition::InstallCandidate {
                         artifact: test_artifact(
                             "optional-dep",
@@ -2892,6 +2940,8 @@ mod tests {
                 mod_jar_id: "fabric-api".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
+                display_name: None,
+                page_url: None,
                 disposition: DepDisposition::ReuseExisting {
                     mod_jar_id: "fabric-api".into(),
                     installed_filename: "fabric-api.jar".into(),
@@ -2971,6 +3021,66 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_dependency_included_in_batch_adds_no_duplicate_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchInstall {
+                operations: vec![ResolvedOperation::Install {
+                    artifact: test_artifact(
+                        "terrablender",
+                        "TerraBlender-fabric-3.3.0.10.jar",
+                        "a".repeat(64),
+                        ArtifactSource::Download {
+                            url: "https://example.com/terrablender.jar".into(),
+                        },
+                        SourceType::Modrinth,
+                    ),
+                }],
+            },
+            dependencies: vec![ResolvedDep {
+                mod_jar_id: "terrablender".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Manifest,
+                display_name: Some("TerraBlender".into()),
+                page_url: Some("https://modrinth.com/mod/terrablender".into()),
+                disposition: DepDisposition::IncludedInBatch {
+                    target_filename: "TerraBlender-fabric-3.3.0.10.jar".into(),
+                },
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                local_intent("root"),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+
+        // The dependency is satisfied by the batch itself: no duplicate file,
+        // no blocking error, and the display metadata survives into the plan.
+        assert_eq!(
+            plan.files_to_add.len(),
+            1,
+            "batch root artifact is the only file to add"
+        );
+        assert!(plan.blocking_errors.is_empty());
+        assert!(plan.is_fully_resolved());
+        assert_eq!(
+            plan.dependencies[0].display_name.as_deref(),
+            Some("TerraBlender")
+        );
+        assert!(matches!(
+            plan.dependencies[0].disposition,
+            DepDisposition::IncludedInBatch { .. }
+        ));
+    }
+
+    #[test]
     fn test_resolve_plan_unresolved_required_dependency_is_blocking() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
@@ -2990,6 +3100,8 @@ mod tests {
                 mod_jar_id: "missing-required".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
+                display_name: Some("TerraBlender".into()),
+                page_url: None,
                 disposition: DepDisposition::Unresolved {
                     reason: "no compatible artifact".into(),
                 },
@@ -3011,6 +3123,11 @@ mod tests {
             .blocking_errors
             .iter()
             .any(|error| error.code == "ERR_REQUIRED_DEPENDENCY"));
+        assert!(plan.blocking_errors.iter().any(|error| {
+            error
+                .message
+                .contains("Required dependency TerraBlender could not be resolved")
+        }));
         assert!(!plan.is_fully_resolved());
     }
 
@@ -3256,6 +3373,8 @@ mod tests {
                 mod_jar_id: "missing-dep".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
+                display_name: None,
+                page_url: None,
                 disposition: DepDisposition::InstallCandidate {
                     artifact: test_artifact(
                         "missing-dep",
@@ -3849,6 +3968,34 @@ mod tests {
                 version: None,
             },
         })
+    }
+
+    #[test]
+    fn curated_source_accepts_published_sha512_when_sha256_is_unavailable() {
+        let artifact = ResolvedArtifact::Download(ResolvedDownload {
+            item_id: "xaeros-minimap".into(),
+            version_id: "fabric-26.2-26.4.2".into(),
+            source: ArtifactSource::Download {
+                url: "https://cdn.modrinth.com/xaerominimap.jar".into(),
+            },
+            hashes: HashSpec {
+                values: vec![HashedValue {
+                    algorithm: HashAlgorithm::Sha512,
+                    value: "a".repeat(128),
+                }],
+            },
+            size: 1,
+            filename: "xaerominimap-fabric-26.2-26.4.2.jar".into(),
+            metadata: ArtifactMetadata {
+                source_type: SourceType::Curated,
+                registry_id: Some("xaeros-minimap".into()),
+                modrinth_id: Some("1bokaNcj".into()),
+                content_type: "mod".into(),
+                version: Some("fabric-26.2-26.4.2".into()),
+            },
+        });
+
+        assert!(validate_artifact_hashes(&artifact).is_ok());
     }
 
     fn batch_update_intent() -> InstallIntent {

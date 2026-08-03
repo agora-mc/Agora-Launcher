@@ -25,6 +25,43 @@
   padding: 0.75rem;
 }
 
+.browse-card--selectable {
+  cursor: pointer;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.browse-card--selectable:hover {
+  border-color: hsl(var(--primary) / 0.5);
+}
+
+.browse-card--selected {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.6), 0 4px 14px hsl(var(--primary) / 0.15);
+}
+
+.browse-card--selected.browse-card--selectable:hover {
+  border-color: hsl(var(--primary));
+}
+
+.browse-card-check {
+  position: absolute;
+  z-index: 2;
+  top: 0.625rem;
+  right: 0.625rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  box-shadow: 0 2px 8px hsl(var(--midnight) / 0.3);
+}
+
+.browse-list-card { position: relative; }
+.browse-tile-card { position: relative; }
+
 .browse-list-card__layout {
   display: grid;
   grid-template-columns: 3rem minmax(0, 1fr);

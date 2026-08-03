@@ -28,7 +28,7 @@ use crate::models::{InstalledMod, InstanceManifest, ModVersionCandidate};
 use crate::registry::{self, ManifestDeps};
 use serde::Deserialize;
 use sha2::Digest;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -60,6 +60,134 @@ pub struct RawModrinthDep {
     pub project_id: Option<String>,
     pub version_id: Option<String>,
     pub dependency_type: String,
+}
+
+/// Identities supplied by the items of a batch install.
+///
+/// Dependency resolution consults this set so a dependency that is also a
+/// root item of the same batch is treated as satisfied by the batch itself:
+/// no duplicate artifact is resolved and a stale version pin cannot turn the
+/// dependency into a blocking error.
+#[derive(Debug, Default)]
+struct BatchContext {
+    /// Lowercased item ids, registry ids, and Modrinth project ids of every
+    /// root artifact in the batch.
+    identities: HashSet<String>,
+    /// Lowercased identity -> target filename of the batch artifact that
+    /// provides it.
+    target_filenames: HashMap<String, String>,
+    /// Native loader identity -> Modrinth project id for a batch root. Native
+    /// metadata can call TerraBlender `terrablender` while the batch item is
+    /// identified by its opaque Modrinth project id.
+    loader_project_ids: HashMap<String, String>,
+    /// Lowercased Modrinth project identity -> original project id for batch
+    /// roots. Modrinth opaque ids are case-sensitive on the API, so the
+    /// original spelling must be preserved for network requests.
+    project_ids: HashMap<String, String>,
+}
+
+impl BatchContext {
+    fn from_artifacts<'a>(artifacts: impl IntoIterator<Item = &'a ResolvedArtifact>) -> Self {
+        let mut ctx = Self::default();
+        for artifact in artifacts {
+            let (item_id, filename, metadata) = match artifact {
+                ResolvedArtifact::Download(download) => (
+                    download.item_id.as_str(),
+                    download.filename.as_str(),
+                    &download.metadata,
+                ),
+                ResolvedArtifact::LocalFile(local) => (
+                    local.item_id.as_str(),
+                    local.filename.as_str(),
+                    &local.metadata,
+                ),
+            };
+            let mut identities = vec![item_id.to_ascii_lowercase()];
+            if let Some(registry_id) = &metadata.registry_id {
+                identities.push(registry_id.to_ascii_lowercase());
+            }
+            if let Some(modrinth_id) = &metadata.modrinth_id {
+                let key = modrinth_id.to_ascii_lowercase();
+                identities.push(key.clone());
+                ctx.project_ids
+                    .entry(key)
+                    .or_insert_with(|| modrinth_id.clone());
+            }
+            for identity in identities {
+                ctx.identities.insert(identity.clone());
+                ctx.target_filenames
+                    .entry(identity)
+                    .or_insert_with(|| filename.to_string());
+            }
+        }
+        ctx
+    }
+
+    fn add_native_metadata(
+        &mut self,
+        artifact: &ResolvedArtifact,
+        metadata: &crate::dependency_ops::JarDeps,
+    ) {
+        let (filename, project_id) = match artifact {
+            ResolvedArtifact::Download(download) => (
+                download.filename.as_str(),
+                download.metadata.modrinth_id.as_deref(),
+            ),
+            ResolvedArtifact::LocalFile(local) => (
+                local.filename.as_str(),
+                local.metadata.modrinth_id.as_deref(),
+            ),
+        };
+
+        for loader_id in metadata.all_mod_ids() {
+            let identity = loader_id.to_ascii_lowercase();
+            self.identities.insert(identity.clone());
+            self.target_filenames
+                .entry(identity.clone())
+                .or_insert_with(|| filename.to_string());
+            if let Some(project_id) = project_id {
+                self.loader_project_ids
+                    .entry(identity)
+                    .or_insert_with(|| project_id.to_ascii_lowercase());
+            }
+        }
+    }
+
+    fn target_filename_for(&self, identity: &str) -> Option<&str> {
+        self.target_filenames
+            .get(&identity.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    fn project_id_for_loader(&self, identity: &str) -> Option<&str> {
+        self.loader_project_ids
+            .get(&identity.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+}
+
+/// Minimal project fields from the Modrinth batch projects endpoint, used to
+/// hydrate dependency display names and page links.
+#[derive(Deserialize)]
+struct ModrinthBatchProject {
+    id: String,
+    title: String,
+    slug: Option<String>,
+    project_type: String,
+}
+
+#[derive(Deserialize)]
+struct ModrinthSearchResponse {
+    #[serde(default)]
+    hits: Vec<ModrinthSearchHit>,
+}
+
+#[derive(Deserialize)]
+struct ModrinthSearchHit {
+    project_id: String,
+    title: String,
+    slug: String,
+    project_type: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +313,7 @@ impl Resolver {
                         candidate_version.as_deref(),
                         revision,
                         false,
+                        intent.overrides.allow_closest_version,
                     )
                     .await
                 }
@@ -195,6 +324,7 @@ impl Resolver {
                         candidate_version.as_deref(),
                         revision,
                         false,
+                        intent.overrides.allow_closest_version,
                     )
                     .await
                 }
@@ -220,6 +350,7 @@ impl Resolver {
                         normalize_requested_version(Some(target_version)),
                         revision,
                         true,
+                        intent.overrides.allow_closest_version,
                     )
                     .await
                 } else {
@@ -230,6 +361,7 @@ impl Resolver {
                         normalize_requested_version(Some(target_version)),
                         revision,
                         true,
+                        intent.overrides.allow_closest_version,
                     )
                     .await
                 }
@@ -262,7 +394,14 @@ impl Resolver {
                 self.resolve_batch_update(manifest, items, revision).await
             }
             InstallAction::BatchInstall { items } => {
-                self.resolve_batch_install(manifest, items, revision).await
+                self.resolve_batch_install(
+                    manifest,
+                    items,
+                    revision,
+                    intent.overrides.allow_closest_version,
+                    &intent.overrides.skip_items,
+                )
+                .await
             }
             InstallAction::RepairLockfile { .. } => Err(LauncherError::Generic {
                 code: "ERR_LOCKFILE_COMMAND".into(),
@@ -294,14 +433,15 @@ impl Resolver {
     // Curated install resolution
     // ------------------------------------------------------------------
 
-    async fn resolve_curated_install(
+    /// Resolve the artifact for a curated item at the requested version
+    /// (or the best compatible version when none is requested).
+    async fn resolve_curated_artifact(
         &self,
         manifest: &InstanceManifest,
         item_id: &str,
         requested_version: Option<&str>,
-        registry_revision: String,
-        update: bool,
-    ) -> LauncherResult<PreparedPlan> {
+        allow_closest_version: bool,
+    ) -> LauncherResult<ResolvedArtifact> {
         let item = {
             let conn = open_registry_db(&self.ctx.paths.registry_db())?;
             registry::get_item_by_id(&conn, item_id)?.ok_or_else(|| LauncherError::Generic {
@@ -310,15 +450,36 @@ impl Resolver {
             })?
         };
 
-        let mc_version = &manifest.minecraft_version;
-        let loader = &manifest.loader;
         let candidates = self
-            .list_curated_versions(&item, mc_version, loader)
+            .list_curated_versions(&item, &manifest.minecraft_version, &manifest.loader)
             .await?;
-        let candidate = select_curated_candidate(&candidates, requested_version)?;
-        let artifact = curated_artifact(&item, candidate)?;
-        let (dependencies, conflicts) =
-            self.resolve_curated_dependencies(manifest, item_id).await?;
+        let candidate =
+            select_curated_candidate(&candidates, requested_version).or_else(|error| {
+                if allow_closest_version {
+                    select_closest_curated_candidate(&candidates, &manifest.minecraft_version)
+                        .ok_or(error)
+                } else {
+                    Err(error)
+                }
+            })?;
+        curated_artifact(&item, candidate)
+    }
+
+    async fn resolve_curated_install(
+        &self,
+        manifest: &InstanceManifest,
+        item_id: &str,
+        requested_version: Option<&str>,
+        registry_revision: String,
+        update: bool,
+        allow_closest_version: bool,
+    ) -> LauncherResult<PreparedPlan> {
+        let artifact = self
+            .resolve_curated_artifact(manifest, item_id, requested_version, allow_closest_version)
+            .await?;
+        let (dependencies, conflicts) = self
+            .resolve_curated_dependencies(manifest, item_id, None)
+            .await?;
 
         let operation = if update {
             let installed = find_installed_by_identity(manifest, item_id).ok_or_else(|| {
@@ -350,16 +511,36 @@ impl Resolver {
         &self,
         manifest: &InstanceManifest,
         root_item_id: &str,
+        batch: Option<&BatchContext>,
     ) -> LauncherResult<(Vec<ResolvedDep>, Vec<DepConflict>)> {
-        let (dependency_map, aliases, known_conflicts) = {
+        let (dependency_map, aliases, known_conflicts, dep_display) = {
             let conn = open_registry_db(&self.ctx.paths.registry_db())?;
             let dependency_map = registry::get_all_manifest_dependencies(&conn)?;
             let alias_pairs = registry::get_all_mod_aliases(&conn)?;
             let known_conflicts = registry::get_known_conflicts(&conn)?;
+            // Prefetch every manifest-declared item so dependency rows can
+            // show real project names and page links instead of raw ids.
+            let mut item_ids: Vec<String> = dependency_map
+                .values()
+                .flat_map(|deps| {
+                    deps.required
+                        .iter()
+                        .chain(deps.optional.iter())
+                        .chain(deps.incompatible.iter())
+                        .cloned()
+                })
+                .collect();
+            item_ids.push(root_item_id.to_string());
+            let items = registry::get_items_by_ids(&conn, &item_ids).unwrap_or_default();
+            let dep_display: HashMap<String, (String, Option<String>)> = items
+                .into_iter()
+                .map(|(id, item)| (id.to_ascii_lowercase(), (item.name, item.page_url)))
+                .collect();
             (
                 dependency_map,
                 AliasMap::from_pairs(&alias_pairs),
                 known_conflicts,
+                dep_display,
             )
         };
 
@@ -395,6 +576,9 @@ impl Resolver {
                 }
                 continue;
             }
+            let display = dep_display.get(&key).cloned();
+            let display_name = display.as_ref().map(|(name, _)| name.clone());
+            let page_url = display.as_ref().and_then(|(_, url)| url.clone());
             if let Some(installed) = installed_ids.get(&key) {
                 resolved.insert(
                     key,
@@ -402,6 +586,9 @@ impl Resolver {
                         mod_jar_id: canonical,
                         requirement,
                         source: DepSource::Manifest,
+                        display_name: display_name
+                            .or_else(|| Some(effective_installed_filename(installed).to_string())),
+                        page_url,
                         disposition: DepDisposition::ReuseExisting {
                             mod_jar_id: installed
                                 .mod_jar_id
@@ -420,6 +607,8 @@ impl Resolver {
                         mod_jar_id: canonical,
                         requirement,
                         source: DepSource::Manifest,
+                        display_name: None,
+                        page_url: None,
                         disposition: DepDisposition::ReuseExisting {
                             mod_jar_id: raw_id,
                             installed_filename: format!("provided by {} loader", manifest.loader),
@@ -427,6 +616,27 @@ impl Resolver {
                     },
                 );
                 continue;
+            }
+            if let Some(batch) = batch {
+                if let Some(target_filename) = batch.target_filename_for(&key) {
+                    // Another root item of this batch provides the dependency:
+                    // its own operation installs the artifact, so mark the
+                    // dependency satisfied without adding a duplicate file.
+                    resolved.insert(
+                        key,
+                        ResolvedDep {
+                            mod_jar_id: canonical,
+                            requirement,
+                            source: DepSource::Manifest,
+                            display_name,
+                            page_url,
+                            disposition: DepDisposition::IncludedInBatch {
+                                target_filename: target_filename.to_string(),
+                            },
+                        },
+                    );
+                    continue;
+                }
             }
 
             let disposition = self.load_curated_dep(&canonical, manifest).await;
@@ -436,6 +646,8 @@ impl Resolver {
                     mod_jar_id: canonical.clone(),
                     requirement,
                     source: DepSource::Manifest,
+                    display_name,
+                    page_url,
                     disposition,
                 },
             );
@@ -867,6 +1079,57 @@ impl Resolver {
     // Raw Modrinth install resolution
     // ------------------------------------------------------------------
 
+    /// Resolve the artifact for a raw Modrinth project at the requested
+    /// version (or the newest compatible version when none is requested).
+    /// Returns the selected candidate alongside the artifact so callers can
+    /// run native-metadata and dependency traversal without re-listing.
+    async fn resolve_raw_modrinth_artifact(
+        &self,
+        manifest: &InstanceManifest,
+        project_id: &str,
+        requested_version: Option<&str>,
+        allow_closest_version: bool,
+    ) -> LauncherResult<(RawModrinthVersionCandidate, ResolvedArtifact)> {
+        let mut candidates = self
+            .list_raw_modrinth_versions(manifest, project_id)
+            .await?;
+        let mut used_closest_candidates = false;
+        if allow_closest_version {
+            let requested_found =
+                normalize_requested_version(requested_version).is_some_and(|requested| {
+                    candidates.iter().any(|candidate| {
+                        candidate.version_id == requested
+                            || candidate.version == requested
+                            || candidate.filename == requested
+                    })
+                });
+            if candidates.is_empty() || (requested_version.is_some() && !requested_found) {
+                if let Ok(fallback) = self
+                    .list_raw_modrinth_versions_closest(manifest, project_id)
+                    .await
+                {
+                    if !fallback.is_empty() {
+                        candidates = fallback;
+                        used_closest_candidates = true;
+                    }
+                }
+            }
+        }
+        let candidate =
+            select_raw_modrinth_candidate(&candidates, requested_version).or_else(|error| {
+                if allow_closest_version && used_closest_candidates {
+                    select_closest_raw_modrinth_candidate(&candidates, &manifest.minecraft_version)
+                        .ok_or(error)
+                } else if allow_closest_version {
+                    candidates.first().ok_or(error)
+                } else {
+                    Err(error)
+                }
+            })?;
+        let artifact = raw_modrinth_artifact(project_id, candidate)?;
+        Ok((candidate.clone(), artifact))
+    }
+
     async fn resolve_raw_modrinth_install(
         &self,
         manifest: &InstanceManifest,
@@ -874,19 +1137,23 @@ impl Resolver {
         requested_version: Option<&str>,
         registry_revision: String,
         update: bool,
+        allow_closest_version: bool,
     ) -> LauncherResult<PreparedPlan> {
-        let candidates = self
-            .list_raw_modrinth_versions(manifest, project_id)
+        let (candidate, artifact) = self
+            .resolve_raw_modrinth_artifact(
+                manifest,
+                project_id,
+                requested_version,
+                allow_closest_version,
+            )
             .await?;
-        let candidate = select_raw_modrinth_candidate(&candidates, requested_version)?;
-        let artifact = raw_modrinth_artifact(project_id, candidate)?;
         // A multi-loader Modrinth version may advertise compatibility-route
         // dependencies (for example Connector for NeoForge) at the version
         // level. Once the verified JAR is available, its active-loader-native
         // metadata is the authoritative dependency source.
-        let native_metadata = self.native_loader_metadata(manifest, candidate).await;
+        let native_metadata = self.native_loader_metadata(manifest, &candidate).await;
         let dependencies = self
-            .resolve_raw_modrinth_deps(manifest, candidate, native_metadata.as_ref())
+            .resolve_raw_modrinth_deps(manifest, &candidate, native_metadata.as_ref(), None, false)
             .await;
 
         let operation = if update {
@@ -927,9 +1194,31 @@ impl Resolver {
             gv = urlencoding::encode(&manifest.minecraft_version),
             ld = urlencoding::encode(&manifest.loader),
         );
+        self.fetch_raw_modrinth_versions_url(&url).await
+    }
 
+    /// Fetch loader-compatible versions without restricting Minecraft version.
+    /// This is only used after an explicit closest-version opt-in so a normal
+    /// resolution remains strict about the target instance version.
+    async fn list_raw_modrinth_versions_closest(
+        &self,
+        manifest: &InstanceManifest,
+        project_id: &str,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
+        let url = format!(
+            "https://api.modrinth.com/v2/project/{pid}/version?loaders=[\"{ld}\"]",
+            pid = urlencoding::encode(project_id),
+            ld = urlencoding::encode(&manifest.loader),
+        );
+        self.fetch_raw_modrinth_versions_url(&url).await
+    }
+
+    async fn fetch_raw_modrinth_versions_url(
+        &self,
+        url: &str,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         let versions: Vec<ModrinthApiVersion> =
-            http_client::checked_get_json(&self.ctx.http_clients, ClientCategory::Modrinth, &url)
+            http_client::checked_get_json(&self.ctx.http_clients, ClientCategory::Modrinth, url)
                 .await?;
 
         Ok(versions
@@ -1048,6 +1337,8 @@ impl Resolver {
         manifest: &InstanceManifest,
         root: &RawModrinthVersionCandidate,
         root_native_metadata: Option<&crate::dependency_ops::JarDeps>,
+        batch: Option<&BatchContext>,
+        allow_closest_version: bool,
     ) -> Vec<ResolvedDep> {
         let installed_ids: HashSet<String> = all_installed(manifest)
             .filter_map(|item| item.modrinth_id.as_ref())
@@ -1063,9 +1354,17 @@ impl Resolver {
             })
             .collect();
 
-        let native_project_mappings = root_native_metadata
+        let mut native_project_mappings = root_native_metadata
             .map(|metadata| self.native_dependency_project_mappings(metadata))
             .unwrap_or_default();
+        if let Some(batch) = batch {
+            for (loader_id, project_id) in &batch.loader_project_ids {
+                native_project_mappings
+                    .entry(loader_id.clone())
+                    .or_insert_with(|| project_id.clone());
+            }
+        }
+        let mut native_project_lookup_attempted = HashSet::new();
         let mut queue = VecDeque::new();
         for dep in effective_raw_modrinth_dependencies(
             root,
@@ -1082,6 +1381,9 @@ impl Resolver {
 
         let mut expanded = BTreeMap::<String, Requirement>::new();
         let mut resolved = BTreeMap::<String, ResolvedDep>::new();
+        // Every project id encountered during the traversal, used to hydrate
+        // display names and page links in one batched Modrinth request.
+        let mut project_ids = HashMap::<String, String>::new();
 
         while let Some((project_id, version_id, requirement)) = queue.pop_front() {
             let Some(pid) = project_id else {
@@ -1101,6 +1403,8 @@ impl Resolver {
                                 mod_jar_id: loader_id.to_string(),
                                 requirement,
                                 source: DepSource::Jar,
+                                display_name: None,
+                                page_url: None,
                                 disposition: DepDisposition::ReuseExisting {
                                     mod_jar_id: loader_id.to_string(),
                                     installed_filename: installed
@@ -1109,21 +1413,57 @@ impl Resolver {
                                 },
                             },
                         );
-                    } else {
-                        resolved.insert(
-                            loader_key,
-                            ResolvedDep {
-                                mod_jar_id: loader_id.to_string(),
-                                requirement,
-                                source: DepSource::Jar,
-                                disposition: DepDisposition::Unresolved {
-                                    reason: format!(
-                                        "No enabled artifact provides loader capability '{loader_id}'."
-                                    ),
+                        continue;
+                    } else if let Some(batch) = batch {
+                        if let Some(target_filename) = batch.target_filename_for(loader_id) {
+                            // Native metadata identifies a sibling by its
+                            // loader id (for example `terrablender`), while
+                            // the batch root is usually identified by an
+                            // opaque Modrinth project id.
+                            resolved.insert(
+                                loader_key,
+                                ResolvedDep {
+                                    mod_jar_id: loader_id.to_string(),
+                                    requirement,
+                                    source: DepSource::Jar,
+                                    display_name: None,
+                                    page_url: None,
+                                    disposition: DepDisposition::IncludedInBatch {
+                                        target_filename: target_filename.to_string(),
+                                    },
                                 },
-                            },
-                        );
+                            );
+                            continue;
+                        }
                     }
+                    if let Some(project_id) = native_project_mappings.get(&loader_key).cloned() {
+                        queue.push_front((Some(project_id), None, requirement));
+                        continue;
+                    }
+                    if native_project_lookup_attempted.insert(loader_key.clone()) {
+                        if let Some(project_id) =
+                            self.lookup_modrinth_project_for_loader(loader_id).await
+                        {
+                            native_project_mappings.insert(loader_key.clone(), project_id.clone());
+                            queue.push_front((Some(project_id), None, requirement));
+                            continue;
+                        }
+                    }
+                    resolved.insert(
+                        loader_key,
+                        ResolvedDep {
+                            mod_jar_id: loader_id.to_string(),
+                            requirement,
+                            source: DepSource::Jar,
+                            display_name: None,
+                            page_url: None,
+                            disposition: DepDisposition::Unresolved {
+                                reason: format!(
+                                    "No Modrinth project or enabled artifact provides loader capability '{loader_id}'."
+                                ),
+                            },
+                        },
+                    );
                     continue;
                 }
                 resolved.insert(
@@ -1132,6 +1472,8 @@ impl Resolver {
                         mod_jar_id: identity,
                         requirement,
                         source: DepSource::Manifest,
+                        display_name: None,
+                        page_url: None,
                         disposition: DepDisposition::Unresolved {
                             reason: "Modrinth dependency omitted its project ID.".into(),
                         },
@@ -1140,6 +1482,9 @@ impl Resolver {
                 continue;
             };
             let key = pid.to_ascii_lowercase();
+            project_ids
+                .entry(key.clone())
+                .or_insert_with(|| pid.clone());
             let should_expand = match expanded.get(&key) {
                 Some(Requirement::Required) => false,
                 Some(Requirement::Optional) if requirement == Requirement::Optional => false,
@@ -1169,6 +1514,8 @@ impl Resolver {
                         mod_jar_id: pid.clone(),
                         requirement,
                         source: DepSource::Manifest,
+                        display_name: None,
+                        page_url: None,
                         disposition: DepDisposition::ReuseExisting {
                             mod_jar_id: pid,
                             installed_filename: installed
@@ -1179,18 +1526,83 @@ impl Resolver {
                 );
                 continue;
             }
+            if let Some(batch) = batch {
+                if let Some(target_filename) = batch.target_filename_for(&key) {
+                    // Another root item of this batch installs the dependency,
+                    // so the batch's own artifact satisfies it. Skipping the
+                    // pin lookup also prevents a stale pinned version from
+                    // blocking the whole install.
+                    resolved.insert(
+                        key,
+                        ResolvedDep {
+                            mod_jar_id: pid.clone(),
+                            requirement,
+                            source: DepSource::Manifest,
+                            display_name: None,
+                            page_url: None,
+                            disposition: DepDisposition::IncludedInBatch {
+                                target_filename: target_filename.to_string(),
+                            },
+                        },
+                    );
+                    continue;
+                }
+            }
 
-            let candidates = self.list_raw_modrinth_versions(manifest, &pid).await.ok();
+            let candidates = match self.list_raw_modrinth_versions(manifest, &pid).await {
+                Ok(mut candidates) => {
+                    if allow_closest_version && candidates.is_empty() {
+                        if let Ok(fallback) = self
+                            .list_raw_modrinth_versions_closest(manifest, &pid)
+                            .await
+                        {
+                            candidates = fallback;
+                        }
+                    }
+                    Some(candidates)
+                }
+                Err(_) => None,
+            };
             let (disposition, child_deps) = match candidates {
                 Some(candidates) => {
-                    match select_raw_modrinth_candidate(&candidates, version_id.as_deref()) {
+                    // A pinned dependency version may be filtered out by the
+                    // instance's MC/loader filters even though the project has
+                    // compatible releases; fall back to the best available
+                    // candidate so a stale pin cannot block the install.
+                    let selected =
+                        select_raw_modrinth_candidate(&candidates, version_id.as_deref()).or_else(
+                            |pinned_error| {
+                                if version_id.is_some() {
+                                    select_raw_modrinth_candidate(&candidates, None)
+                                        .map_err(|_| pinned_error)
+                                } else {
+                                    Err(pinned_error)
+                                }
+                            },
+                        );
+                    match selected {
                         Ok(candidate) => {
                             let native_metadata =
                                 self.native_loader_metadata(manifest, candidate).await;
+                            if let Some(native_metadata) = native_metadata.as_ref() {
+                                for provided_id in native_metadata.all_mod_ids() {
+                                    native_project_mappings
+                                        .entry(provided_id.to_ascii_lowercase())
+                                        .or_insert_with(|| pid.clone());
+                                }
+                            }
                             let child_mappings = native_metadata
                                 .as_ref()
                                 .map(|metadata| self.native_dependency_project_mappings(metadata))
-                                .unwrap_or_default();
+                                .map(|mut mappings| {
+                                    for (loader_id, project_id) in &native_project_mappings {
+                                        mappings
+                                            .entry(loader_id.clone())
+                                            .or_insert_with(|| project_id.clone());
+                                    }
+                                    mappings
+                                })
+                                .unwrap_or_else(|| native_project_mappings.clone());
                             let children = effective_raw_modrinth_dependencies(
                                 candidate,
                                 native_metadata.as_ref(),
@@ -1229,6 +1641,8 @@ impl Resolver {
                     mod_jar_id: pid.clone(),
                     requirement,
                     source: DepSource::Manifest,
+                    display_name: None,
+                    page_url: None,
                     disposition,
                 },
             );
@@ -1242,7 +1656,138 @@ impl Resolver {
             }
         }
 
+        // Hydrate display names and page links for every dependency project
+        // in one batched Modrinth request. Failures are non-fatal: the UI
+        // falls back to the raw id when the metadata is unavailable.
+        if let Some(batch) = batch {
+            for (key, project_id) in &batch.project_ids {
+                project_ids
+                    .entry(key.clone())
+                    .or_insert_with(|| project_id.clone());
+            }
+        }
+        let project_info = self.fetch_batch_project_info(&project_ids).await;
+
+        // A loader's native id and its Modrinth dependency edge often use
+        // different identities. For example, the JAR declares `glitchcore`
+        // while Modrinth declares project `s3dmwKy5`. Collapse the native
+        // evidence into the real dependency row instead of showing a
+        // duplicate unresolved error.
+        collapse_native_project_dependencies(
+            &mut resolved,
+            &project_info,
+            &native_project_mappings,
+        );
+
+        for dep in resolved.values_mut() {
+            let project_info_entry = project_info
+                .get(&dep.mod_jar_id.to_ascii_lowercase())
+                .or_else(|| {
+                    batch
+                        .and_then(|batch| batch.project_id_for_loader(&dep.mod_jar_id))
+                        .and_then(|project_id| project_info.get(project_id))
+                });
+            if let Some((name, url)) = project_info_entry {
+                dep.display_name = Some(name.clone());
+                dep.page_url = url.clone();
+            }
+        }
+
         resolved.into_values().collect()
+    }
+
+    /// Resolve a native loader id to a Modrinth project when the loader
+    /// metadata did not carry a project id and the curated registry has no
+    /// alias for it. Queries are bounded and results are accepted only when
+    /// the project identity is a close match to the native id.
+    async fn lookup_modrinth_project_for_loader(&self, loader_id: &str) -> Option<String> {
+        let normalized = normalize_project_identity(loader_id);
+        let base = native_loader_search_identity(loader_id);
+        let queries = if base != normalized && base.len() >= 4 {
+            vec![loader_id.replace('_', " "), base.clone()]
+        } else {
+            vec![loader_id.replace('_', " ")]
+        };
+
+        for query in queries {
+            let url = format!(
+                "https://api.modrinth.com/v2/search?query={}&limit=5",
+                urlencoding::encode(&query)
+            );
+            let Ok(response) = http_client::checked_get_json::<ModrinthSearchResponse>(
+                &self.ctx.http_clients,
+                ClientCategory::Modrinth,
+                &url,
+            )
+            .await
+            else {
+                continue;
+            };
+            if let Some(hit) = response.hits.into_iter().find(|hit| {
+                hit.project_type == "mod"
+                    && project_search_identity_matches(&base, &hit.title, &hit.slug)
+            }) {
+                return Some(hit.project_id);
+            }
+        }
+        None
+    }
+
+    /// Batched Modrinth project lookup for dependency display names and page
+    /// URLs. Tolerates per-chunk failures (missing projects are just absent).
+    async fn fetch_batch_project_info(
+        &self,
+        project_ids: &HashMap<String, String>,
+    ) -> HashMap<String, (String, Option<String>)> {
+        let mut info = HashMap::new();
+        let ids: Vec<&String> = project_ids.values().collect();
+        for chunk in ids.chunks(100) {
+            let encoded = serde_json::to_string(chunk).unwrap_or_else(|_| "[]".to_string());
+            let url = format!(
+                "https://api.modrinth.com/v2/projects?ids={}",
+                urlencoding::encode(&encoded)
+            );
+            let projects = match http_client::checked_get_json::<Vec<ModrinthBatchProject>>(
+                &self.ctx.http_clients,
+                ClientCategory::Modrinth,
+                &url,
+            )
+            .await
+            {
+                Ok(projects) => projects,
+                Err(_) => {
+                    // Keep metadata enrichment resilient when the bulk
+                    // endpoint is unavailable or one opaque id is rejected.
+                    // The individual endpoint preserves the same allowlisted
+                    // Modrinth client policy and is only used as a fallback.
+                    let mut fallback = Vec::new();
+                    for project_id in chunk {
+                        let single_url = format!(
+                            "https://api.modrinth.com/v2/project/{}",
+                            urlencoding::encode(project_id)
+                        );
+                        if let Ok(project) = http_client::checked_get_json::<ModrinthBatchProject>(
+                            &self.ctx.http_clients,
+                            ClientCategory::Modrinth,
+                            &single_url,
+                        )
+                        .await
+                        {
+                            fallback.push(project);
+                        }
+                    }
+                    fallback
+                }
+            };
+            for project in projects {
+                let page_url = project
+                    .slug
+                    .map(|slug| format!("https://modrinth.com/{}/{}", project.project_type, slug))
+                    .or_else(|| Some(format!("https://modrinth.com/project/{}", project.id)));
+                info.insert(project.id.to_ascii_lowercase(), (project.title, page_url));
+            }
+        }
+        info
     }
 
     // ------------------------------------------------------------------
@@ -1254,42 +1799,181 @@ impl Resolver {
         manifest: &InstanceManifest,
         items: &[crate::install_pipeline::BatchInstallItem],
         registry_revision: String,
+        allow_closest_version: bool,
+        skip_items: &[String],
     ) -> LauncherResult<PreparedPlan> {
+        // Phase 1: resolve every root artifact before any dependency work so
+        // the batch can treat its own items as satisfied dependencies.
+        let mut roots: Vec<(
+            crate::install_pipeline::BatchInstallItem,
+            ResolvedArtifact,
+            Option<RawModrinthVersionCandidate>,
+            Option<crate::dependency_ops::JarDeps>,
+        )> = Vec::new();
+        let active_items: Vec<_> = items
+            .iter()
+            .filter(|item| {
+                !skip_items
+                    .iter()
+                    .any(|skipped| skipped.eq_ignore_ascii_case(&item.item_id))
+            })
+            .collect();
+        if active_items.is_empty() {
+            return Err(LauncherError::Generic {
+                code: "ERR_BATCH_EMPTY".into(),
+                message: "No batch items remain after skipping incompatible items.".into(),
+            });
+        }
+        for item in active_items {
+            let root_result = async {
+                Ok::<_, LauncherError>(match item.source_type {
+                    SourceType::Curated => (
+                        self.resolve_curated_artifact(
+                            manifest,
+                            &item.item_id,
+                            item.candidate_version.as_deref(),
+                            allow_closest_version,
+                        )
+                        .await?,
+                        None,
+                    ),
+                    SourceType::Modrinth => {
+                        let (candidate, artifact) = self
+                            .resolve_raw_modrinth_artifact(
+                                manifest,
+                                &item.item_id,
+                                item.candidate_version.as_deref(),
+                                allow_closest_version,
+                            )
+                            .await?;
+                        (artifact, Some(candidate))
+                    }
+                    SourceType::Manual => {
+                        let prepared = resolve_manual_install(
+                            &item.item_id,
+                            item.candidate_version.as_deref(),
+                            registry_revision.clone(),
+                        )?;
+                        let artifact = match prepared.operation {
+                            ResolvedOperation::Install { artifact } => artifact,
+                            _ => unreachable!(
+                                "manual install always resolves to an install operation"
+                            ),
+                        };
+                        (artifact, None)
+                    }
+                })
+            }
+            .await;
+            let (artifact, candidate) = match root_result {
+                Ok(root) => root,
+                Err(LauncherError::VersionNotFound) => {
+                    let source = match item.source_type {
+                        SourceType::Curated => "curated",
+                        SourceType::Modrinth => "Modrinth",
+                        SourceType::Manual => "manual",
+                    };
+                    let closest = self
+                        .closest_version_summary(manifest, item.source_type.clone(), &item.item_id)
+                        .await
+                        .map(|summary| format!(" Closest available: {summary}."))
+                        .unwrap_or_default();
+                    return Err(LauncherError::Generic {
+                        code: "ERR_VERSION_NOT_FOUND".into(),
+                        message: format!(
+                            "No compatible version found for {source} item '{}' on Minecraft {} / {}.{} Try the closest available version or skip this item from the batch.",
+                            item.item_id, manifest.minecraft_version, manifest.loader, closest
+                        ),
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            let native_metadata = match candidate.as_ref() {
+                Some(candidate) => self.native_loader_metadata(manifest, candidate).await,
+                None => None,
+            };
+            roots.push((item.clone(), artifact, candidate, native_metadata));
+        }
+
+        let mut batch_ctx =
+            BatchContext::from_artifacts(roots.iter().map(|(_, artifact, _, _)| artifact));
+        for (_, artifact, _, native_metadata) in &roots {
+            if let Some(native_metadata) = native_metadata {
+                batch_ctx.add_native_metadata(artifact, native_metadata);
+            }
+        }
+
+        // Phase 2: build the operations and resolve dependencies with the
+        // batch context so an item's dependency on a sibling batch item is
+        // satisfied by the sibling's own artifact.
         let mut operations = Vec::new();
         let mut deps_map = BTreeMap::<String, ResolvedDep>::new();
         let mut conflicts_map = BTreeMap::<String, DepConflict>::new();
 
-        for item in items {
-            let prepared = match item.source_type {
+        for (item, artifact, candidate, native_metadata) in roots {
+            let (dependencies, conflicts) = match item.source_type {
                 SourceType::Curated => {
-                    self.resolve_curated_install(
-                        manifest,
-                        &item.item_id,
-                        item.candidate_version.as_deref(),
-                        registry_revision.clone(),
-                        false,
-                    )
-                    .await?
+                    self.resolve_curated_dependencies(manifest, &item.item_id, Some(&batch_ctx))
+                        .await?
                 }
                 SourceType::Modrinth => {
-                    self.resolve_raw_modrinth_install(
-                        manifest,
-                        &item.item_id,
-                        item.candidate_version.as_deref(),
-                        registry_revision.clone(),
-                        false,
-                    )
-                    .await?
+                    let candidate = candidate.expect("modrinth roots always carry a candidate");
+                    let dependencies = self
+                        .resolve_raw_modrinth_deps(
+                            manifest,
+                            &candidate,
+                            native_metadata.as_ref(),
+                            Some(&batch_ctx),
+                            allow_closest_version,
+                        )
+                        .await;
+                    (dependencies, Vec::new())
                 }
-                SourceType::Manual => resolve_manual_install(
-                    &item.item_id,
-                    item.candidate_version.as_deref(),
-                    registry_revision.clone(),
-                )?,
+                SourceType::Manual => (Vec::new(), Vec::new()),
             };
-            operations.push(prepared.operation);
-            merge_deps(&mut deps_map, prepared.dependencies);
-            for conflict in prepared.conflicts {
+            operations.push(ResolvedOperation::Install { artifact });
+            merge_deps(&mut deps_map, dependencies);
+            for conflict in conflicts {
+                conflicts_map.insert(conflict.conflict_id.clone(), conflict);
+            }
+        }
+
+        // Batch-level known-conflict pass: conflicts between two batch roots
+        // or between different roots' dependency closures are invisible to
+        // the per-root passes (each only sees its own closure), so check the
+        // union here. Duplicates against per-root conflicts collapse on
+        // conflict_id.
+        {
+            let (known_conflicts, alias_pairs) = {
+                let conn = open_registry_db(&self.ctx.paths.registry_db())?;
+                (
+                    registry::get_known_conflicts(&conn)?,
+                    registry::get_all_mod_aliases(&conn)?,
+                )
+            };
+            let aliases = AliasMap::from_pairs(&alias_pairs);
+            let installed_set: HashSet<String> = all_installed(manifest)
+                .flat_map(|item| {
+                    let ids: [Option<&str>; 3] = [
+                        item.registry_id.as_deref(),
+                        item.modrinth_id.as_deref(),
+                        item.mod_jar_id.as_deref(),
+                    ];
+                    ids.into_iter()
+                        .flatten()
+                        .map(|id| aliases.resolve_or_self(id).to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let incoming: HashSet<String> = batch_ctx
+                .identities
+                .iter()
+                .map(|identity| aliases.resolve_or_self(identity).to_ascii_lowercase())
+                .chain(deps_map.keys().cloned())
+                .collect();
+            for conflict in
+                build_known_conflicts(&known_conflicts, &aliases, &incoming, &installed_set)
+            {
                 conflicts_map.insert(conflict.conflict_id.clone(), conflict);
             }
         }
@@ -1300,6 +1984,55 @@ impl Resolver {
             conflicts: conflicts_map.into_values().collect(),
             registry_revision,
         })
+    }
+
+    async fn closest_version_summary(
+        &self,
+        manifest: &InstanceManifest,
+        source_type: SourceType,
+        item_id: &str,
+    ) -> Option<String> {
+        match source_type {
+            SourceType::Modrinth => {
+                let candidates = self
+                    .list_raw_modrinth_versions_closest(manifest, item_id)
+                    .await
+                    .ok()?;
+                let candidate = select_closest_raw_modrinth_candidate(
+                    &candidates,
+                    &manifest.minecraft_version,
+                )?;
+                Some(format!(
+                    "{} ({}) for {}",
+                    candidate.version,
+                    candidate.filename,
+                    candidate.mc_versions.join(", ")
+                ))
+            }
+            SourceType::Curated => {
+                let item = {
+                    let conn = open_registry_db(&self.ctx.paths.registry_db()).ok()?;
+                    registry::get_item_by_id(&conn, item_id).ok()??
+                };
+                let candidates = self
+                    .list_curated_versions(&item, &manifest.minecraft_version, &manifest.loader)
+                    .await
+                    .ok()?;
+                let candidate =
+                    select_closest_curated_candidate(&candidates, &manifest.minecraft_version)?;
+                Some(format!(
+                    "{} ({}){}",
+                    candidate.version,
+                    candidate.filename,
+                    candidate
+                        .mc_version
+                        .as_deref()
+                        .map(|version| format!(" for {version}"))
+                        .unwrap_or_default()
+                ))
+            }
+            SourceType::Manual => None,
+        }
     }
 
     async fn resolve_batch_update(
@@ -1328,6 +2061,7 @@ impl Resolver {
                     normalize_requested_version(Some(&item.target_version)),
                     registry_revision.clone(),
                     true,
+                    false,
                 )
                 .await?
             } else {
@@ -1338,6 +2072,7 @@ impl Resolver {
                     normalize_requested_version(Some(&item.target_version)),
                     registry_revision.clone(),
                     true,
+                    false,
                 )
                 .await?
             };
@@ -1405,6 +2140,109 @@ fn effective_raw_modrinth_dependencies(
         }
     }
     merged
+}
+
+fn project_identity_matches_loader(
+    loader_id: &str,
+    project_name: &str,
+    page_url: Option<&str>,
+) -> bool {
+    let loader_identity = normalize_project_identity(loader_id);
+    if loader_identity.is_empty() {
+        return false;
+    }
+    normalize_project_identity(project_name) == loader_identity
+        || page_url
+            .and_then(|url| url.rsplit('/').next())
+            .map(normalize_project_identity)
+            .is_some_and(|identity| identity == loader_identity)
+}
+
+fn collapse_native_project_dependencies(
+    resolved: &mut BTreeMap<String, ResolvedDep>,
+    project_info: &HashMap<String, (String, Option<String>)>,
+    native_project_mappings: &HashMap<String, String>,
+) {
+    let replacements: Vec<(String, String, Requirement)> = resolved
+        .iter()
+        .filter_map(|(loader_key, loader_dep)| {
+            if loader_dep.source != DepSource::Jar
+                || !matches!(loader_dep.disposition, DepDisposition::Unresolved { .. })
+            {
+                return None;
+            }
+            let mapped_project_key = native_project_mappings
+                .get(loader_key)
+                .map(|project_id| project_id.to_ascii_lowercase())
+                .filter(|project_key| {
+                    resolved
+                        .get(project_key)
+                        .is_some_and(|project_dep| project_dep.source == DepSource::Manifest)
+                });
+            let project_key = mapped_project_key.or_else(|| {
+                resolved.iter().find_map(|(project_key, project_dep)| {
+                    if project_key == loader_key || project_dep.source != DepSource::Manifest {
+                        return None;
+                    }
+                    let (name, page_url) = project_info.get(project_key)?;
+                    project_identity_matches_loader(loader_key, name, page_url.as_deref())
+                        .then(|| project_key.clone())
+                })
+            })?;
+            Some((loader_key.clone(), project_key, loader_dep.requirement))
+        })
+        .collect();
+    for (loader_key, project_key, requirement) in replacements {
+        if let Some(project_dep) = resolved.get_mut(&project_key) {
+            if requirement == Requirement::Required {
+                project_dep.requirement = Requirement::Required;
+            }
+        }
+        resolved.remove(&loader_key);
+    }
+}
+
+fn normalize_project_identity(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn native_loader_search_identity(loader_id: &str) -> String {
+    let lower = loader_id.to_ascii_lowercase();
+    if lower == "wm_binaries" {
+        return "watermedia".into();
+    }
+    let without_version = lower
+        .rfind("_v")
+        .filter(|index| {
+            lower[*index + 2..]
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        })
+        .map(|index| &lower[..index])
+        .unwrap_or(&lower);
+    let without_module_suffix = ["_key_modifiers", "_binaries", "_api"]
+        .iter()
+        .find_map(|suffix| without_version.strip_suffix(suffix))
+        .unwrap_or(without_version);
+    normalize_project_identity(without_module_suffix)
+}
+
+fn project_search_identity_matches(base: &str, title: &str, slug: &str) -> bool {
+    if base.is_empty() {
+        return false;
+    }
+    let title = normalize_project_identity(title);
+    let slug = normalize_project_identity(slug);
+    title == base
+        || slug == base
+        || title.contains(base)
+        || slug.contains(base)
+        || base.contains(&title)
+        || base.contains(&slug)
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,6 +2542,19 @@ pub fn select_curated_candidate<'a>(
         .ok_or(LauncherError::VersionNotFound)
 }
 
+fn select_closest_curated_candidate<'a>(
+    candidates: &'a [ModVersionCandidate],
+    target_minecraft_version: &str,
+) -> Option<&'a ModVersionCandidate> {
+    candidates.iter().min_by_key(|candidate| {
+        candidate
+            .mc_version
+            .as_deref()
+            .map(|version| minecraft_version_distance(version, target_minecraft_version))
+            .unwrap_or(u64::MAX)
+    })
+}
+
 fn is_installable_github_asset(filename: &str) -> bool {
     let lower = filename.to_ascii_lowercase();
     let Some(stem) = lower.strip_suffix(".jar") else {
@@ -1733,6 +2584,40 @@ pub fn select_raw_modrinth_candidate<'a>(
     candidates.first().ok_or(LauncherError::VersionNotFound)
 }
 
+fn select_closest_raw_modrinth_candidate<'a>(
+    candidates: &'a [RawModrinthVersionCandidate],
+    target_minecraft_version: &str,
+) -> Option<&'a RawModrinthVersionCandidate> {
+    candidates.iter().min_by_key(|candidate| {
+        candidate
+            .mc_versions
+            .iter()
+            .map(|version| minecraft_version_distance(version, target_minecraft_version))
+            .min()
+            .unwrap_or(u64::MAX)
+    })
+}
+
+fn minecraft_version_distance(left: &str, right: &str) -> u64 {
+    let parse = |value: &str| {
+        let mut parts = value
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0));
+        [
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+            parts.next().unwrap_or(0),
+        ]
+    };
+    let left = parse(left);
+    let right = parse(right);
+    left.into_iter()
+        .zip(right)
+        .enumerate()
+        .map(|(index, (a, b))| a.abs_diff(b) * 10_u64.pow((2 - index) as u32))
+        .sum()
+}
+
 /// Normalize a requested version string: trim whitespace, reject empty/"available"/"latest".
 pub fn normalize_requested_version(requested: Option<&str>) -> Option<&str> {
     requested
@@ -1748,32 +2633,7 @@ fn curated_artifact(
     item: &crate::registry::RegistryItem,
     candidate: &ModVersionCandidate,
 ) -> LauncherResult<ResolvedArtifact> {
-    let mut hashes = Vec::new();
-    if let Some(sha512) = valid_hash(candidate.sha512.as_deref(), 128) {
-        hashes.push(HashedValue {
-            algorithm: HashAlgorithm::Sha512,
-            value: sha512,
-        });
-    }
-    let sha256 = valid_hash(candidate.sha256.as_deref(), 64)
-        .or_else(|| valid_hash(Some(&item.sha256), 64))
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_HASH_UNAVAILABLE".into(),
-            message: format!(
-                "No trusted SHA-256 is available for {} {}.",
-                item.id, candidate.version
-            ),
-        })?;
-    hashes.push(HashedValue {
-        algorithm: HashAlgorithm::Sha256,
-        value: sha256,
-    });
-    if let Some(sha1) = valid_hash(candidate.sha1.as_deref(), 40) {
-        hashes.push(HashedValue {
-            algorithm: HashAlgorithm::Sha1,
-            value: sha1,
-        });
-    }
+    let hashes = curated_hashes(item, candidate)?;
 
     Ok(ResolvedArtifact::Download(ResolvedDownload {
         item_id: item.id.clone(),
@@ -1781,7 +2641,7 @@ fn curated_artifact(
         source: ArtifactSource::Download {
             url: candidate.download_url.clone(),
         },
-        hashes: HashSpec { values: hashes },
+        hashes,
         size: candidate.size.unwrap_or(0),
         filename: candidate.filename.clone(),
         metadata: ArtifactMetadata {
@@ -1792,6 +2652,49 @@ fn curated_artifact(
             version: Some(candidate.version.clone()),
         },
     }))
+}
+
+fn curated_hashes(
+    item: &crate::registry::RegistryItem,
+    candidate: &ModVersionCandidate,
+) -> LauncherResult<HashSpec> {
+    let mut hashes = Vec::new();
+    if let Some(sha512) = valid_hash(candidate.sha512.as_deref(), 128) {
+        hashes.push(HashedValue {
+            algorithm: HashAlgorithm::Sha512,
+            value: sha512,
+        });
+    }
+    if let Some(sha256) = valid_hash(candidate.sha256.as_deref(), 64) {
+        hashes.push(HashedValue {
+            algorithm: HashAlgorithm::Sha256,
+            value: sha256,
+        });
+    }
+    if let Some(sha1) = valid_hash(candidate.sha1.as_deref(), 40) {
+        hashes.push(HashedValue {
+            algorithm: HashAlgorithm::Sha1,
+            value: sha1,
+        });
+    }
+
+    // A registry item hash may pin one historical artifact. It is only a safe
+    // fallback when the selected candidate published no hashes at all; never
+    // combine it with hashes belonging to a different version.
+    if hashes.is_empty() {
+        let sha256 = valid_hash(Some(&item.sha256), 64).ok_or_else(|| LauncherError::Generic {
+            code: "ERR_HASH_UNAVAILABLE".into(),
+            message: format!(
+                "No trusted hash is available for {} {}.",
+                item.id, candidate.version
+            ),
+        })?;
+        hashes.push(HashedValue {
+            algorithm: HashAlgorithm::Sha256,
+            value: sha256,
+        });
+    }
+    Ok(HashSpec { values: hashes })
 }
 
 fn raw_modrinth_artifact(
@@ -2318,6 +3221,61 @@ mod tests {
     }
 
     #[test]
+    fn curated_artifact_does_not_mix_stale_item_hash_with_version_hashes() {
+        let item = crate::registry::RegistryItem {
+            id: "xaeros-minimap".into(),
+            name: "Xaero's Minimap".into(),
+            content_type: "mod".into(),
+            download_strategy: "modrinth_id".into(),
+            source_identifier: "1bokaNcj".into(),
+            sha256: "a".repeat(64),
+            upvotes: 0,
+            downvotes: 0,
+            net_score: 0,
+            velocity: 0.0,
+            status: "active".into(),
+            is_immune: false,
+            immunity_reason: None,
+            allow_comments: true,
+            icon_url: None,
+            gallery_urls_json: None,
+            date_added: None,
+            compatible_versions_json: None,
+            description: None,
+            body_markdown: None,
+            page_url: None,
+            license_id: None,
+            source_updated_at: None,
+            modrinth_id: Some("1bokaNcj".into()),
+            recommendation_reason: None,
+            recommendation_overlap: None,
+        };
+        let candidate = ModVersionCandidate {
+            version: "fabric-26.2-26.4.2".into(),
+            filename: "xaerominimap-fabric-26.2-26.4.2.jar".into(),
+            download_url: "https://example.com/xaero.jar".into(),
+            mc_version: Some("26.2".into()),
+            loader: Some("fabric".into()),
+            release_date: None,
+            is_compatible: true,
+            sha1: Some("b".repeat(40)),
+            sha256: None,
+            sha512: Some("c".repeat(128)),
+            size: Some(1),
+            version_compat: "compatible".into(),
+        };
+
+        let hashes = curated_hashes(&item, &candidate).unwrap();
+        assert!(hashes.values.iter().any(|hash| {
+            hash.algorithm == HashAlgorithm::Sha512 && hash.value == "c".repeat(128)
+        }));
+        assert!(!hashes
+            .values
+            .iter()
+            .any(|hash| hash.algorithm == HashAlgorithm::Sha256));
+    }
+
+    #[test]
     fn test_parse_link_total_pages() {
         assert_eq!(parse_link_total_pages(None), 1);
         assert_eq!(
@@ -2770,5 +3728,223 @@ mod tests {
             vec![10, 9, 8],
             "tail pages needed when page 1 has no compatible"
         );
+    }
+
+    #[test]
+    fn test_batch_context_matches_all_artifact_identities() {
+        let artifact = ResolvedArtifact::Download(ResolvedDownload {
+            item_id: "terrablender".into(),
+            version_id: "v1".into(),
+            source: ArtifactSource::Download {
+                url: "https://example.com/terrablender.jar".into(),
+            },
+            hashes: HashSpec { values: vec![] },
+            size: 100,
+            filename: "TerraBlender-fabric-3.3.0.10.jar".into(),
+            metadata: ArtifactMetadata {
+                source_type: SourceType::Curated,
+                registry_id: Some("terrablender".into()),
+                modrinth_id: Some("terrablender".into()),
+                content_type: "mod".into(),
+                version: Some("3.3.0.10".into()),
+            },
+        });
+
+        let ctx = BatchContext::from_artifacts([&artifact]);
+        assert_eq!(
+            ctx.target_filename_for("terrablender"),
+            Some("TerraBlender-fabric-3.3.0.10.jar")
+        );
+        // Case-insensitive identity matching across item/registry/modrinth ids.
+        assert_eq!(
+            ctx.target_filename_for("TERRABLENDER"),
+            Some("TerraBlender-fabric-3.3.0.10.jar")
+        );
+        assert!(ctx.target_filename_for("some-other-mod").is_none());
+    }
+
+    #[test]
+    fn test_batch_context_matches_native_loader_identity_to_sibling_project() {
+        let artifact = ResolvedArtifact::Download(ResolvedDownload {
+            item_id: "TerraBlender-Project".into(),
+            version_id: "v1".into(),
+            source: ArtifactSource::Download {
+                url: "https://example.com/terrablender.jar".into(),
+            },
+            hashes: HashSpec { values: vec![] },
+            size: 100,
+            filename: "TerraBlender-fabric.jar".into(),
+            metadata: ArtifactMetadata {
+                source_type: SourceType::Modrinth,
+                registry_id: None,
+                modrinth_id: Some("TerraBlender-Project".into()),
+                content_type: "mod".into(),
+                version: Some("1.0.0".into()),
+            },
+        });
+        let native_metadata = crate::dependency_ops::JarDeps {
+            mod_jar_id: Some("terrablender".into()),
+            ..Default::default()
+        };
+
+        let mut ctx = BatchContext::from_artifacts([&artifact]);
+        ctx.add_native_metadata(&artifact, &native_metadata);
+
+        assert_eq!(
+            ctx.target_filename_for("TerraBlender"),
+            Some("TerraBlender-fabric.jar")
+        );
+        assert_eq!(
+            ctx.project_id_for_loader("terrablender"),
+            Some("terrablender-project")
+        );
+        assert_eq!(
+            ctx.project_ids
+                .get("terrablender-project")
+                .map(String::as_str),
+            Some("TerraBlender-Project")
+        );
+    }
+
+    #[test]
+    fn test_project_identity_matches_loader_name_or_slug() {
+        assert!(project_identity_matches_loader(
+            "glitchcore",
+            "GlitchCore",
+            Some("https://modrinth.com/mod/glitchcore")
+        ));
+        assert!(project_identity_matches_loader(
+            "terra_blender",
+            "A different title",
+            Some("https://modrinth.com/mod/terra-blender")
+        ));
+        assert!(!project_identity_matches_loader(
+            "another-mod",
+            "GlitchCore",
+            Some("https://modrinth.com/mod/glitchcore")
+        ));
+        assert_eq!(
+            native_loader_search_identity("yet_another_config_lib_v3"),
+            "yetanotherconfiglib"
+        );
+        assert_eq!(native_loader_search_identity("wm_binaries"), "watermedia");
+        assert!(project_search_identity_matches(
+            "yetanotherconfiglib",
+            "YetAnotherConfigLib (YACL)",
+            "yacl"
+        ));
+    }
+
+    #[test]
+    fn test_native_loader_dependency_collapses_into_modrinth_project_dependency() {
+        let mut resolved = BTreeMap::from([
+            (
+                "glitchcore".into(),
+                ResolvedDep {
+                    mod_jar_id: "glitchcore".into(),
+                    requirement: Requirement::Required,
+                    source: DepSource::Jar,
+                    display_name: None,
+                    page_url: None,
+                    disposition: DepDisposition::Unresolved {
+                        reason: "native capability evidence".into(),
+                    },
+                },
+            ),
+            (
+                "s3dmwky5".into(),
+                ResolvedDep {
+                    mod_jar_id: "s3dmwKy5".into(),
+                    requirement: Requirement::Optional,
+                    source: DepSource::Manifest,
+                    display_name: Some("GlitchCore".into()),
+                    page_url: Some("https://modrinth.com/mod/glitchcore".into()),
+                    disposition: DepDisposition::InstallCandidate {
+                        artifact: ResolvedArtifact::Download(ResolvedDownload {
+                            item_id: "s3dmwKy5".into(),
+                            version_id: "v1".into(),
+                            source: ArtifactSource::Download {
+                                url: "https://example.com/glitchcore.jar".into(),
+                            },
+                            hashes: HashSpec { values: vec![] },
+                            size: 1,
+                            filename: "GlitchCore.jar".into(),
+                            metadata: ArtifactMetadata {
+                                source_type: SourceType::Modrinth,
+                                registry_id: None,
+                                modrinth_id: Some("s3dmwKy5".into()),
+                                content_type: "mod".into(),
+                                version: Some("1.0.0".into()),
+                            },
+                        }),
+                    },
+                },
+            ),
+        ]);
+        let project_info = HashMap::from([(
+            "s3dmwky5".into(),
+            (
+                "GlitchCore".into(),
+                Some("https://modrinth.com/mod/glitchcore".into()),
+            ),
+        )]);
+
+        collapse_native_project_dependencies(&mut resolved, &project_info, &HashMap::new());
+
+        assert!(!resolved.contains_key("glitchcore"));
+        assert_eq!(
+            resolved["s3dmwky5"].requirement,
+            Requirement::Required,
+            "native required evidence must promote the real project edge"
+        );
+    }
+
+    #[test]
+    fn test_pinned_modrinth_dep_falls_back_to_best_candidate() {
+        let candidates = vec![
+            RawModrinthVersionCandidate {
+                version: "2.0.0".into(),
+                version_id: "best-available".into(),
+                name: "current".into(),
+                filename: "dep-2.0.0.jar".into(),
+                download_url: "https://example.com/dep-2.0.0.jar".into(),
+                sha1: Some("b".repeat(40)),
+                sha512: None,
+                size: Some(10),
+                mc_versions: vec!["1.21".into()],
+                loaders: vec!["fabric".into()],
+                release_date: None,
+                primary: false,
+                changelog: None,
+                dependencies: vec![],
+            },
+            RawModrinthVersionCandidate {
+                version: "1.0.0".into(),
+                version_id: "old-pinned".into(),
+                name: "old".into(),
+                filename: "dep-1.0.0.jar".into(),
+                download_url: "https://example.com/dep-1.0.0.jar".into(),
+                sha1: Some("a".repeat(40)),
+                sha512: None,
+                size: Some(10),
+                mc_versions: vec!["1.20.1".into()],
+                loaders: vec!["fabric".into()],
+                release_date: None,
+                primary: false,
+                changelog: None,
+                dependencies: vec![],
+            },
+        ];
+
+        // The pinned version is not present in the filtered list...
+        assert!(matches!(
+            select_raw_modrinth_candidate(&candidates, Some("pinned-elsewhere")),
+            Err(LauncherError::VersionNotFound)
+        ));
+        // ...so dependency resolution must fall back to the best available.
+        let selected = select_raw_modrinth_candidate(&candidates, None).unwrap();
+        assert_eq!(selected.version_id, "best-available");
+        let closest = select_closest_raw_modrinth_candidate(&candidates, "1.20.1").unwrap();
+        assert_eq!(closest.version_id, "old-pinned");
     }
 }

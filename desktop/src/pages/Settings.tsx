@@ -90,6 +90,8 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
   const [aiChatEnabled, setAiChatEnabled] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
   const [alwaysPreTouch, setAlwaysPreTouch] = useState(true);
+  const [autoConfirmCleanInstalls, setAutoConfirmCleanInstalls] = useState(false);
+  const [alwaysAutoConfirmInstalls, setAlwaysAutoConfirmInstalls] = useState(false);
   const [loading, setLoading] = useState(true);
   const [directLaunch, setDirectLaunch] = useState(false);
 
@@ -178,6 +180,8 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
     setAiChatEnabled(ts.values.aiChatEnabled as boolean ?? false);
     setLauncherPath(ts.values.launcherPath as string ?? '');
     setAlwaysPreTouch(ts.values.alwaysPreTouch as boolean ?? true);
+    setAutoConfirmCleanInstalls(ts.values.autoConfirmCleanInstalls as boolean ?? false);
+    setAlwaysAutoConfirmInstalls(ts.values.alwaysAutoConfirmInstalls as boolean ?? false);
     setDirectLaunch((ts.values.launchMode as string) === 'direct');
     setJavaRuntimeMode((ts.values.javaRuntimeMode as string) as 'automatic' | 'prompt' | 'manual' || 'automatic');
     setGlobalJavaPath((ts.values.javaPath as string) ?? '');
@@ -571,6 +575,33 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
     }
   };
 
+  const toggleAutoConfirmCleanInstalls = async (value: boolean) => {
+    const previousAlways = alwaysAutoConfirmInstalls;
+    setAutoConfirmCleanInstalls(value);
+    if (!value) setAlwaysAutoConfirmInstalls(false);
+    try {
+      await ts.update(SETTINGS.autoConfirmCleanInstalls, value);
+      if (!value && previousAlways) {
+        await ts.update(SETTINGS.alwaysAutoConfirmInstalls, false);
+      }
+    } catch (e) {
+      setAutoConfirmCleanInstalls(!value);
+      if (!value && previousAlways) setAlwaysAutoConfirmInstalls(true);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleAlwaysAutoConfirmInstalls = async (value: boolean) => {
+    if (!autoConfirmCleanInstalls) return;
+    setAlwaysAutoConfirmInstalls(value);
+    try {
+      await ts.update(SETTINGS.alwaysAutoConfirmInstalls, value);
+    } catch (e) {
+      setAlwaysAutoConfirmInstalls(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
   // --- Launcher path actions ---
 
   const clearLauncherPathFeedback = () => {
@@ -674,6 +705,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
         {[
           ['settings-appearance', 'Appearance'],
           ['settings-general', 'General'],
+          ['settings-installation', 'Installation'],
           ['settings-services', 'Services'],
           ['settings-accounts', 'Accounts'],
           ['settings-launching', 'Launching'],
@@ -712,6 +744,43 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
         <p className="text-xs text-muted-foreground">
           Reveal JVM arguments, garbage collector settings, custom commands, and other power-user options.
         </p>
+      </div>
+
+      <div id="settings-installation" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
+        <h3 className="font-semibold">Installation</h3>
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm">Auto-confirm clean installs</span>
+          <input
+            type="checkbox"
+            aria-label="Auto-confirm clean installs"
+            checked={autoConfirmCleanInstalls}
+            onChange={(e) => toggleAutoConfirmCleanInstalls(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Skip the review screen only when the plan has no errors, warnings, conflicts, new dependencies, or existing files to change. Plans that need decisions always open for review.
+        </p>
+        {ts.statuses['install_auto_confirm_clean']?.status === 'error' && (
+          <p className="text-xs text-destructive">{ts.statuses['install_auto_confirm_clean']?.error}</p>
+        )}
+        <label className="flex items-center justify-between gap-4 border-t border-border pt-3">
+          <span className="text-sm">Always auto-confirm installs</span>
+          <input
+            type="checkbox"
+            aria-label="Always auto-confirm installs"
+            checked={alwaysAutoConfirmInstalls}
+            disabled={!autoConfirmCleanInstalls}
+            onChange={(e) => toggleAlwaysAutoConfirmInstalls(e.target.checked)}
+            className="h-5 w-5 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Skip dependency details too and accept the default of not installing optional dependencies. Enable Auto-confirm clean installs first.
+        </p>
+        {ts.statuses['install_always_auto_confirm']?.status === 'error' && (
+          <p className="text-xs text-destructive">{ts.statuses['install_always_auto_confirm']?.error}</p>
+        )}
       </div>
 
       {loading ? (

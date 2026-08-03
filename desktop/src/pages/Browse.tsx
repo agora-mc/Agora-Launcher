@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Leaf, List, LayoutGrid, Search } from 'lucide-react';
+import { Check, ChevronDown, Download, Leaf, List, LayoutGrid, Search } from 'lucide-react';
 import {
   browseSearch,
   browseLoadMore,
@@ -25,6 +25,22 @@ import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import { BrowseListResults } from '../components/browse/BrowseListResults';
 import { BrowseTileResults } from '../components/browse/BrowseTileResults';
+import { InstallFlow } from '../components/InstallFlow';
+import { usePackInstall } from '../components/PackInstallProgress';
+import { showToast } from '../components/Toast';
+import {
+  resolveInstallPlan,
+  type BatchInstallItem,
+  type InstallIntent,
+  type ResolvedInstallPlan,
+  planNeedsUserReview,
+} from '../lib/installFlow';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from '../components/ui/dialog';
 import type { BrowseItemContext as ItemContext } from '../components/browse/types';
 import '../components/browse/browse-cards.css';
 import { agoraRepositoryUrl } from '../lib/brandConfig';
@@ -224,6 +240,32 @@ function presentationFields(registryItem: RegistryItem | null, modrinthResult: M
   };
 }
 
+function failedBatchRootItemId(plan: ResolvedInstallPlan, error: string): string | undefined {
+  if (plan.intent.action.type !== 'batch-install') return undefined;
+  const filename = error.match(/verification failed for ([^:]+):/i)?.[1]?.trim();
+  if (!filename) return undefined;
+  const rootIds = new Set(plan.intent.action.items.map((item) => item.itemId));
+  const find = (operation: ResolvedInstallPlan['operation']): string | undefined => {
+    switch (operation.type) {
+      case 'install':
+        return operation.artifact.filename === filename && rootIds.has(operation.artifact.itemId)
+          ? operation.artifact.itemId
+          : undefined;
+      case 'update':
+        return operation.newArtifact.filename === filename && rootIds.has(operation.newArtifact.itemId)
+          ? operation.newArtifact.itemId
+          : undefined;
+      case 'batch-install':
+      case 'batch-update':
+      case 'reconcile':
+        return operation.operations.map(find).find((itemId): itemId is string => Boolean(itemId));
+      default:
+        return undefined;
+    }
+  };
+  return find(plan.operation);
+}
+
 // NOTE: the modrinthResults branch is currently unused (For You sort passes []).
 // Kept for future Modrinth_raw integration.
 function mergeItems(
@@ -341,7 +383,7 @@ function RegistryRecoveryShell({
   );
 }
 
-export function Browse({ onSelectMod, initialInstanceId, initialContentType }: { onSelectMod?: (id: string, instanceId?: string) => void; initialInstanceId?: string; initialContentType?: string }) {
+export function Browse({ onSelectMod, onOpenInstance, initialInstanceId, initialContentType }: { onSelectMod?: (id: string, instanceId?: string) => void; onOpenInstance?: (instanceId: string) => void; initialInstanceId?: string; initialContentType?: string }) {
   // Registry availability — show recovery panel when missing.
   // This is the ONLY hook call in this component, so the hook count is stable.
   const registry = useRegistryState();
@@ -372,11 +414,12 @@ export function Browse({ onSelectMod, initialInstanceId, initialContentType }: {
     );
   }
 
-  return <BrowseContent onSelectMod={onSelectMod} initialInstanceId={initialInstanceId} initialContentType={initialContentType} registryState={registry.state} registryStatus={registry.status} registryError={registry.error} registryActions={registry.actions} />;
+  return <BrowseContent onSelectMod={onSelectMod} onOpenInstance={onOpenInstance} initialInstanceId={initialInstanceId} initialContentType={initialContentType} registryState={registry.state} registryStatus={registry.status} registryError={registry.error} registryActions={registry.actions} />;
 }
 
 function BrowseContent({
   onSelectMod,
+  onOpenInstance,
   initialInstanceId,
   initialContentType,
   registryState: regState,
@@ -385,6 +428,7 @@ function BrowseContent({
   registryActions: regActions,
 }: {
   onSelectMod?: (id: string, instanceId?: string) => void;
+  onOpenInstance?: (instanceId: string) => void;
   initialInstanceId?: string;
   initialContentType?: string;
   registryState: import('../lib/useRegistryState').RegistryState;
@@ -441,6 +485,160 @@ function BrowseContent({
   const [activeInstance, setActiveInstance] = useState<InstanceDetail | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
+  const [autoConfirmCleanInstalls, setAutoConfirmCleanInstalls] = useState(false);
+  const [alwaysAutoConfirmInstalls, setAlwaysAutoConfirmInstalls] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      getSetting('install_auto_confirm_clean'),
+      getSetting('install_always_auto_confirm'),
+    ])
+      .then(([autoConfirm, alwaysConfirm]) => {
+        if (!cancelled) {
+          setAutoConfirmCleanInstalls(parseBool(autoConfirm));
+          setAlwaysAutoConfirmInstalls(parseBool(alwaysConfirm));
+        }
+      })
+      .catch(() => {
+        // Missing or unavailable settings fail closed: keep the review screen.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ---- Multi-select bulk install ----
+  // Keyed by `${source}:${id}`; the map holds the item so the selection
+  // survives list refreshes (load-more, retries) between toggling and install.
+  const [selectedItems, setSelectedItems] = useState<Map<string, BrowseItem>>(new Map());
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerInstanceId, setPickerInstanceId] = useState('');
+  const [installTarget, setInstallTarget] = useState<{
+    intent: InstallIntent;
+    instanceName: string;
+    initialPlan?: ResolvedInstallPlan | null;
+    initialError?: { message: string; code?: string; skipItemId?: string } | null;
+  } | null>(null);
+  const { startResolvingPlan, startPlan } = usePackInstall();
+  // Guards against double-clicks spawning concurrent installs while a batch
+  // attempt is resolving.
+  const bulkInstallBusyRef = useRef(false);
+
+  const clearSelection = useCallback(() => setSelectedItems(new Map()), []);
+
+  const toggleSelect = useCallback((item: BrowseItem) => {
+    setSelectedItems((current) => {
+      const next = new Map(current);
+      const key = `${item.source}:${item.id}`;
+      if (next.has(key)) next.delete(key);
+      else next.set(key, item);
+      return next;
+    });
+  }, []);
+
+  // Installed items cannot be bulk-selected: re-installing them is a
+  // per-mod decision made from the details page (with version choice).
+  const handleToggleSelect = (item: BrowseItem) => {
+    if (contextFor(item)?.installed) {
+      showToast(
+        `${item.name} is already installed in ${activeInstance?.row.name ?? 'this instance'}.`,
+        'error',
+      );
+      return;
+    }
+    toggleSelect(item);
+  };
+
+  const buildBatchInstallIntent = (instanceId: string, items: Iterable<BrowseItem>): InstallIntent => {
+    const batchItems: BatchInstallItem[] = [...items].map((item) => ({
+      sourceType: item.source === 'curated' ? 'curated' : 'modrinth',
+      itemId: item.id,
+    }));
+    return {
+      action: { type: 'batch-install', items: batchItems },
+      targetInstance: instanceId,
+      // Resolve the default bulk behavior during background preparation. The
+      // review still shows optional rows unchecked, but confirming without
+      // opting in no longer causes a second review cycle.
+      optionalDeps: { type: 'exclude-all' },
+      requestedBy: 'interactive',
+      overrides: {
+        allowReplace: false,
+        skipHealthScan: false,
+        forceConflictResolution: {},
+      },
+    };
+  };
+
+  const bulkInstallLabel = (count: number) => `Installing ${count} selected item${count === 1 ? '' : 's'}`;
+
+  const startBulkInstall = (instanceId: string) => {
+    if (bulkInstallBusyRef.current) return;
+    bulkInstallBusyRef.current = true;
+    const instance = instances.find((candidate) => candidate.instance_id === instanceId);
+    const instanceName = instance?.name ?? instanceId;
+    const intent = buildBatchInstallIntent(instanceId, selectedItems.values());
+    const count = selectedItems.size;
+    const label = bulkInstallLabel(count);
+
+    // Resolve in the corner first, then promote anything needing attention to
+    // the focused review dialog. Clean plans only skip review when the user
+    // explicitly enabled auto-confirm in Settings.
+    const resolving = startResolvingPlan(label, instanceName);
+    const promoteApplyFailure = (failedPlan: ResolvedInstallPlan, error: string) => {
+      resolving.dismiss();
+      bulkInstallBusyRef.current = false;
+      setInstallTarget({
+        intent,
+        instanceName,
+        initialPlan: failedPlan,
+        initialError: {
+          message: error,
+          code: 'ERR_APPLY',
+          skipItemId: failedBatchRootItemId(failedPlan, error),
+        },
+      });
+    };
+    void resolveInstallPlan(intent)
+      .then((plan) => {
+        const needsAttention = !autoConfirmCleanInstalls || planNeedsUserReview(plan, {
+          ignoreDependencies: alwaysAutoConfirmInstalls,
+        });
+        if (needsAttention) {
+          resolving.dismiss();
+          bulkInstallBusyRef.current = false;
+          setInstallTarget({ intent, instanceName, initialPlan: plan });
+        } else {
+          clearSelection();
+          resolving.apply(plan, (error, failedPlan) => promoteApplyFailure(failedPlan, error));
+        }
+      })
+      .catch(() => {
+        bulkInstallBusyRef.current = false;
+        resolving.dismiss();
+        // Keep resolution failures actionable: the focused flow offers retry
+        // and close instead of hiding the error in a toast.
+        setInstallTarget({ intent, instanceName });
+      });
+  };
+
+  const handleInstallSelected = () => {
+    if (selectedItems.size === 0) return;
+    if (activeInstanceId) {
+      startBulkInstall(activeInstanceId);
+    } else {
+      setPickerInstanceId('');
+      setPickerOpen(true);
+    }
+  };
+
+  const confirmPickerInstall = () => {
+    if (!pickerInstanceId) return;
+    setPickerOpen(false);
+    startBulkInstall(pickerInstanceId);
+  };
+
+  const installBarTargetName = activeInstance?.row.name
+    ?? instances.find((candidate) => candidate.instance_id === activeInstanceId)?.name;
 
   const visibleCuratedCategories = useMemo(
     () => categories.filter((item) => curatedCategoryMatchesContentType(item, contentType)),
@@ -547,6 +745,13 @@ function BrowseContent({
       }),
     [sort, category, contentType, mcVersion, loader, debouncedQuery],
   );
+
+  // Clear the selection whenever the filter set changes so stale selections
+  // never survive into a different result set. Pagination (load-more) keeps
+  // the selection because it leaves the query key unchanged.
+  useEffect(() => {
+    setSelectedItems(new Map());
+  }, [queryKey]);
 
   // ---- Load category metadata — separate from search ----
   useEffect(() => {
@@ -1086,12 +1291,16 @@ function BrowseContent({
           items={items}
           contextFor={contextFor}
           onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+          selectedItems={selectedItems}
+          onToggleSelect={handleToggleSelect}
         />
       ) : (
         <BrowseListResults
           items={items}
           contextFor={contextFor}
           onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+          selectedItems={selectedItems}
+          onToggleSelect={handleToggleSelect}
         />
       )}
 
@@ -1118,6 +1327,128 @@ function BrowseContent({
       )}
       {!hasMore && items.length > 0 && (
         <p className="py-4 text-center text-xs text-muted-foreground">All results loaded</p>
+      )}
+
+      {/* Bulk-selection install bar */}
+      {selectedItems.size > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 rounded-full border border-border bg-card px-4 py-2 shadow-xl">
+            <span className="text-sm font-medium" data-testid="browse-selection-count">
+              {selectedItems.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={handleInstallSelected}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              <Download aria-hidden size={14} />
+              Install {selectedItems.size}
+              {installBarTargetName ? ` to ${installBarTargetName}` : ''}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedItems(new Map())}
+              className="rounded-full border border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Instance picker for bulk install when no instance context is set */}
+      <Dialog open={pickerOpen} onOpenChange={(open) => { if (!open) setPickerOpen(false); }}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>
+            Install {selectedItems.size} selected item{selectedItems.size === 1 ? '' : 's'}
+          </DialogTitle>
+          <DialogDescription>
+            Choose an instance. The latest compatible version of each item will be installed.
+          </DialogDescription>
+          {instances.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No instances yet. Create an instance from My Instances first.
+            </p>
+          ) : (
+            <>
+              <select
+                value={pickerInstanceId}
+                onChange={(e) => setPickerInstanceId(e.target.value)}
+                aria-label="Target instance"
+                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Choose an instance…</option>
+                {instances.map((instance) => (
+                  <option key={instance.instance_id} value={instance.instance_id}>
+                    {instance.name} — {instance.loader} · MC {instance.minecraft_version}
+                  </option>
+                ))}
+              </select>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(false)}
+                  className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmPickerInstall}
+                  disabled={!pickerInstanceId}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Install {selectedItems.size} item{selectedItems.size === 1 ? '' : 's'}
+                </button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Canonical install pipeline for the selected batch */}
+      {installTarget && (
+        <InstallFlow
+          open
+           intent={installTarget.intent}
+           instanceName={installTarget.instanceName}
+           initialPlan={installTarget.initialPlan}
+           initialError={installTarget.initialError}
+           background
+           autoBackground={autoConfirmCleanInstalls}
+           alwaysAutoConfirm={alwaysAutoConfirmInstalls}
+          onBackgroundStart={(plan) => {
+            const count = plan.intent.action.type === 'batch-install'
+              ? plan.intent.action.items.length
+              : 1;
+            clearSelection();
+             startPlan(
+               plan,
+               bulkInstallLabel(count),
+               installTarget.instanceName,
+               (error, failedPlan) => {
+                 bulkInstallBusyRef.current = false;
+                 setInstallTarget({
+                   intent: installTarget.intent,
+                   instanceName: installTarget.instanceName,
+                   initialPlan: failedPlan,
+                   initialError: {
+                     message: error,
+                     code: 'ERR_APPLY',
+                     skipItemId: failedBatchRootItemId(failedPlan, error),
+                   },
+                 });
+               },
+             );
+          }}
+          onOpenInstance={onOpenInstance}
+          onClose={() => {
+            // Keep the selection when the review is cancelled so the user can
+            // adjust it and try again; background starts clear it themselves.
+            setInstallTarget(null);
+            bulkInstallBusyRef.current = false;
+          }}
+        />
       )}
     </div>
   );

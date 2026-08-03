@@ -1084,7 +1084,10 @@ fn health_from_inventory(
     //     WARNING;
     //   - soft + version outside the range => NO finding;
     //   - self-declared conflict => discarded;
-    //   - curated ManifestDeps declaring the pair compatible => suppressed.
+    //   - curated ManifestDeps declaring the pair compatible => suppresses
+    //     unconditional/soft metadata, but never a hard version-range
+    //     violation; curated compatibility cannot override Fabric's loader
+    //     failure for a specific installed version.
     //
     // Also backfill decls from older JAR parses that populated the flat
     // `incompatible_deps` list but emitted no `incompatibility_decls` (e.g.
@@ -1195,7 +1198,7 @@ fn health_from_inventory(
                     });
                     source_side || target_side
                 });
-            if curated_override {
+            if curated_override && (!decl.source.is_hard() || decl.version_ranges.is_empty()) {
                 continue;
             }
 
@@ -2557,7 +2560,7 @@ type="required"
         write_jar(
             &mods_dir,
             "b.jar",
-            &[("fabric.mod.json", r#"{"id":"b","version":"1.5"}"#)],
+            &[("fabric.mod.json", r#"{"id":"b","version":"1.11.1+mc26.2"}"#)],
         );
         let manifest = tracked_manifest(&[("a.jar", "a"), ("b.jar", "b")]);
         let report = health(&dir, &manifest, None);
@@ -2565,6 +2568,38 @@ type="required"
         assert_eq!(report.blockers.len(), 1);
         assert_eq!(report.blockers[0].kind, BlockerKind::IncompatibleMod);
         assert_eq!(report.blockers[0].mod_id.as_deref(), Some("b"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_hard_version_breaks_override_curated_pair_compatibility() {
+        // The curated manifest says B requires A, but A's Fabric metadata
+        // explicitly breaks B at or below 1.11.1. The installed version with
+        // Minecraft build metadata must still
+        // block; a curated relationship is not a version-range exemption.
+        let dir = fresh_instance("curated_pair_version_break");
+        let mods_dir = dir.join("mods");
+        write_jar(
+            &mods_dir,
+            "a.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"a","version":"0.9.1+mc26.2","breaks":{"b":"<=1.11.1"}}"#,
+            )],
+        );
+        write_jar(
+            &mods_dir,
+            "b.jar",
+            &[("fabric.mod.json", r#"{"id":"b","version":"1.5"}"#)],
+        );
+        let manifest = tracked_manifest(&[("a.jar", "a"), ("b.jar", "b")]);
+        let registry_path = dir.join("registry.db");
+        build_manifest_dependency_registry(&registry_path, "b", &["a"]);
+
+        let report = health(&dir, &manifest, Some(&registry_path));
+        assert_eq!(report.score, HealthScore::Red);
+        assert_eq!(report.blockers.len(), 1);
+        assert_eq!(report.blockers[0].kind, BlockerKind::IncompatibleMod);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2811,6 +2846,24 @@ type="required"
             )
             .expect("insert alias");
         }
+    }
+
+    fn build_manifest_dependency_registry(path: &Path, item_id: &str, required: &[&str]) {
+        let conn = rusqlite::Connection::open(path).expect("open registry db");
+        conn.execute_batch(
+            "CREATE TABLE mod_manual_dependencies (
+                item_id TEXT NOT NULL,
+                required_json TEXT,
+                optional_json TEXT,
+                incompatible_json TEXT
+            );",
+        )
+        .expect("create manifest dependencies");
+        conn.execute(
+            "INSERT INTO mod_manual_dependencies (item_id, required_json, optional_json, incompatible_json) VALUES (?1, ?2, '[]', '[]')",
+            rusqlite::params![item_id, serde_json::to_string(required).expect("serialize required deps")],
+        )
+        .expect("insert manifest dependencies");
     }
 
     #[test]

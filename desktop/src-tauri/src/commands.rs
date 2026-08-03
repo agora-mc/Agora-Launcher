@@ -3797,7 +3797,17 @@ pub async fn resolve_install_plan(
     let ctx = crate::core_context(&app)?;
     let service = agora_core::install_service::InstallService::new(ctx.clone());
     let reporter = InstallProgressEmitter { app };
-    let plan = service.resolve(intent, &reporter).await?;
+    let target_instance = intent.target_instance.clone();
+    let action_debug = format!("{:?}", intent.action);
+    let plan = match service.resolve(intent, &reporter).await {
+        Ok(plan) => plan,
+        Err(error) => {
+            crate::auth::log_line(&format!(
+                "[install-resolve] target={target_instance} action={action_debug} error={error}"
+            ));
+            return Err(error);
+        }
+    };
     ctx.operation_manager
         .insert_plan(plan.fingerprint.clone(), plan.clone());
     Ok(plan)

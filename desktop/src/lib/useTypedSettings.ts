@@ -99,6 +99,8 @@ export const SETTINGS = {
   javaPath: nullableDef('java_path', stringDef('java_path')),
   javaRuntimeMode: enumDef('java_runtime_mode', ['automatic', 'prompt', 'manual'] as const, 'automatic'),
   alwaysPreTouch: boolDef('always_pre_touch'),
+  autoConfirmCleanInstalls: boolDef('install_auto_confirm_clean'),
+  alwaysAutoConfirmInstalls: boolDef('install_always_auto_confirm'),
   launchMode: enumDef('launch_mode', ['direct', 'delegation'] as const, 'delegation'),
   onboardingComplete: boolDef('onboarding_complete'),
 } as const;

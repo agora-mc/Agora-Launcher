@@ -535,6 +535,7 @@ export default function App() {
               <div className={showModDetail ? 'hidden' : undefined}>
                 <Browse
                   onSelectMod={handleBrowseSelectMod}
+                  onOpenInstance={navigateToInstanceDetail}
                   initialInstanceId={browseInstanceId}
                   initialContentType={browseContentType}
                 />

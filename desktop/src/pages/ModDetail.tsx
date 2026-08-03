@@ -10,6 +10,7 @@ import {
   getCuratedAnnotation,
   getGovernanceSummary,
   getGovernanceConfig,
+  getInstanceDetail,
   getItemVote,
   getRegistryItem,
   isModrinthEnabled,
@@ -29,6 +30,8 @@ import {
   type CuratedAnnotation,
   type GovernanceSummary,
   type GovernanceConfig,
+  type InstalledMod,
+  type InstanceDetail,
   type ItemVote,
   type ItemVoteState,
   type InstanceRow,
@@ -144,6 +147,13 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   // Versions tab install: instance picker
   const [versionsTabInstances, setVersionsTabInstances] = useState<InstanceRow[]>([]);
   const [versionsTabInstanceId, setVersionsTabInstanceId] = useState<string | null>(null);
+
+  // Installed-state awareness: which entry (if any) of the relevant instance
+  // manifest corresponds to this mod. Separate trackers for the header
+  // (browse-context instance), the install-flow dialog, and the versions tab.
+  const [contextInstalledEntry, setContextInstalledEntry] = useState<InstalledMod | null>(null);
+  const [flowInstalledEntry, setFlowInstalledEntry] = useState<InstalledMod | null>(null);
+  const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
 
   // Versions tab: GitHub release version list (for mods without modrinth_id)
   const [githubTabVersions, setGithubTabVersions] = useState<ModVersionCandidate[]>([]);
@@ -452,19 +462,25 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     return () => { cancelled = true; };
   }, [item]);
 
-  // Fetch instances for the versions tab install picker.
+  // Fetch instances for the versions tab install picker. When arriving with
+  // an instance context, preselect it so installed-state markers show
+  // immediately.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const all = await listInstances();
-        if (!cancelled) setVersionsTabInstances(all);
+        if (cancelled) return;
+        setVersionsTabInstances(all);
+        if (initialInstanceId && all.some((instance) => instance.instance_id === initialInstanceId)) {
+          setVersionsTabInstanceId((current) => current ?? initialInstanceId);
+        }
       } catch {
         // Silent — the picker will simply be empty.
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [initialInstanceId]);
 
   // ═══════════════════════════════════════════════════════════════
   // Hooks (useCallback, useEffect) MUST be called every render.
@@ -474,6 +490,68 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
 
   // item may still be null during loading renders; fall back to false.
   const isModrinthInstall = !!(item?.modrinth_id && modrinthProject);
+
+  // Find the manifest entry (if any) that corresponds to this mod in an
+  // instance detail. Matches registry id, Modrinth project id, or the
+  // resolved jar id so curated, Modrinth-linked, and raw installs all work.
+  const findInstalledEntry = useCallback((detail: InstanceDetail | null): InstalledMod | null => {
+    if (!detail?.manifest) return null;
+    const modrinthId = item?.modrinth_id ?? null;
+    const collections = [
+      detail.manifest.mods,
+      detail.manifest.resourcepacks,
+      detail.manifest.shaders,
+      detail.manifest.datapacks,
+      detail.manifest.worlds,
+    ];
+    for (const collection of collections) {
+      const entry = collection.find((installed) =>
+        installed.registry_id === itemId
+        || installed.modrinth_id === itemId
+        || (modrinthId !== null && installed.modrinth_id === modrinthId)
+        || installed.mod_jar_id === itemId,
+      );
+      if (entry) return entry;
+    }
+    return null;
+  }, [itemId, item?.modrinth_id]);
+
+  // Header banner: when arriving with an instance context, surface the
+  // installed state up front.
+  useEffect(() => {
+    if (!initialInstanceId) {
+      setContextInstalledEntry(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await getInstanceDetail(initialInstanceId);
+        if (!cancelled) setContextInstalledEntry(findInstalledEntry(detail));
+      } catch {
+        if (!cancelled) setContextInstalledEntry(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [initialInstanceId, findInstalledEntry]);
+
+  // Versions tab: track the installed entry for the picked instance.
+  useEffect(() => {
+    if (!versionsTabInstanceId) {
+      setVersionsTabInstalledEntry(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await getInstanceDetail(versionsTabInstanceId);
+        if (!cancelled) setVersionsTabInstalledEntry(findInstalledEntry(detail));
+      } catch {
+        if (!cancelled) setVersionsTabInstalledEntry(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [versionsTabInstanceId, findInstalledEntry]);
 
   const loadMoreVersions = useCallback(async () => {
     if (!selectedInstanceId || loadingMoreVersions || !hasMoreVersions) return;
@@ -615,6 +693,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     setCandidates([]);
     setSelectedCandidate(null);
     setInstances([]);
+    setFlowInstalledEntry(null);
     setInstancesLoading(true);
     try {
       const all = await listInstances();
@@ -644,6 +723,8 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     setHasMoreVersions(false);
     setLoadingMoreVersions(false);
     try {
+      const detail = await getInstanceDetail(selectedInstanceId).catch(() => null);
+      setFlowInstalledEntry(findInstalledEntry(detail));
       if (isModrinthInstall) {
         const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, item.content_type);
         setModrinthCandidates(vers);
@@ -714,6 +795,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     setModrinthCandidates([]);
     setSelectedCandidate(null);
     setSelectedModrinthCandidate(null);
+    setFlowInstalledEntry(null);
   };
 
   // Inline create: submit handler
@@ -825,6 +907,20 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           {item.immunity_reason && (
             <p className="mt-1 text-xs opacity-90">{item.immunity_reason}</p>
           )}
+        </div>
+      )}
+
+      {contextInstalledEntry && (
+        <div className="rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 font-semibold">
+            <span aria-hidden>✓</span>
+            <span>Already installed in {versionsTabInstances.find((instance) => instance.instance_id === initialInstanceId)?.name ?? initialInstanceId}</span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Version {contextInstalledEntry.version ?? 'unknown'} · {contextInstalledEntry.filename}
+            {contextInstalledEntry.enabled === false ? ' (disabled)' : ''}. Installing another version
+            below will replace the installed file.
+          </p>
         </div>
       )}
 
@@ -1101,6 +1197,13 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
             {/* Step 2: Version picker */}
             {selectedInstanceId && phase !== 'idle' && phase !== 'installing' && phase !== 'done' && (
               <div>
+                {flowInstalledEntry && (
+                  <div className="mb-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+                    <strong>Already installed:</strong> version {flowInstalledEntry.version ?? 'unknown'} ({flowInstalledEntry.filename}
+                    {flowInstalledEntry.enabled === false ? ', disabled' : ''}). Installing a different
+                    version will replace it.
+                  </div>
+                )}
                 <p className="text-xs font-medium mb-2">Available versions</p>
                 {phase === 'loadingVersions' ? (
                   <div className="text-center py-4">
@@ -1124,9 +1227,14 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium truncate">{cand.version}</span>
-                          {cand.primary && (
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">primary</span>
-                          )}
+                          <span className="flex items-center gap-2 shrink-0">
+                            {flowInstalledEntry?.version === cand.version && (
+                              <span className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                            )}
+                            {cand.primary && (
+                              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">primary</span>
+                            )}
+                          </span>
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
@@ -1161,13 +1269,18 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-medium">{cand.version}</span>
-                          {cand.version_compat === 'compatible' ? (
-                            <span className="text-xs text-green-600 dark:text-green-400">✓ compatible</span>
-                          ) : cand.version_compat === 'major_match' ? (
-                            <span className="text-xs text-yellow-600 dark:text-yellow-400">⚠ may not match your exact version</span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">may not match your instance</span>
-                          )}
+                          <span className="flex items-center gap-2">
+                            {flowInstalledEntry?.version === cand.version && (
+                              <span className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                            )}
+                            {cand.version_compat === 'compatible' ? (
+                              <span className="text-xs text-green-600 dark:text-green-400">✓ compatible</span>
+                            ) : cand.version_compat === 'major_match' ? (
+                              <span className="text-xs text-yellow-600 dark:text-yellow-400">⚠ may not match your exact version</span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">may not match your instance</span>
+                            )}
+                          </span>
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
@@ -1189,7 +1302,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                     disabled={!!(isModrinthInstall && selectedModrinthCandidate && !selectedModrinthCandidate.sha1)}
                     className="mt-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
-                    Install {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
+                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
                   </button>
                 )}
               </div>
@@ -1408,7 +1521,12 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                                 : 'hover:bg-accent'
                             }`}
                           >
-                            <td className="py-2 pr-3 font-medium break-all">{v.name || v.version}</td>
+                            <td className="py-2 pr-3 font-medium break-all">
+                              {v.name || v.version}
+                              {versionsTabInstalledEntry?.version === v.version && (
+                                <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                              )}
+                            </td>
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_versions.join(', ') || '—'}</td>
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loaders.join(', ') || '—'}</td>
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
@@ -1473,7 +1591,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                         disabled={!versionsTabInstanceId}
                         className="w-full rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                       >
-                        Review install plan
+                        {versionsTabInstalledEntry ? 'Review replace plan' : 'Review install plan'}
                       </button>
                     </div>
                   </div>
@@ -1518,7 +1636,12 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                                 : 'hover:bg-accent'
                             }`}
                           >
-                            <td className="py-2 pr-3 font-medium break-all">{v.version}</td>
+                            <td className="py-2 pr-3 font-medium break-all">
+                              {v.version}
+                              {versionsTabInstalledEntry?.version === v.version && (
+                                <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                              )}
+                            </td>
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.mc_version || '—'}</td>
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.loader || '—'}</td>
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
@@ -1570,7 +1693,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                         disabled={!versionsTabInstanceId}
                         className="w-full rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                       >
-                        Review install plan
+                        {versionsTabInstalledEntry ? 'Review replace plan' : 'Review install plan'}
                       </button>
                     </div>
                   </div>

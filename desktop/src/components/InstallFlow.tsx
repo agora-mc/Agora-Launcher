@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import {
   type InstallIntent,
+  type ResolvedArtifact,
   type ResolvedInstallPlan,
   type InstallOutcome,
   type ProgressEvent,
@@ -10,8 +11,9 @@ import {
   applyInstallPlan,
   cancelInstall,
   subscribeProgress,
+  planNeedsUserReview,
 } from '../lib/installFlow';
-import { formatError, restoreSnapshot } from '../lib/tauri';
+import { formatError, getSetting, parseLauncherError, restoreSnapshot } from '../lib/tauri';
 import {
   Dialog,
   DialogContent,
@@ -37,12 +39,12 @@ type FlowState =
   | { phase: 'review'; plan: ResolvedInstallPlan; choices: PlanChoices; dirty: boolean }
   | { phase: 'executing'; plan: ResolvedInstallPlan; progress: ProgressEvent }
   | { phase: 'result'; outcome: InstallOutcome }
-  | { phase: 'error'; message: string; retryable: boolean }
+  | { phase: 'error'; message: string; retryable: boolean; code?: string }
   | { phase: 'closed' };
 
 type FlowAction =
   | { type: 'resolved'; plan: ResolvedInstallPlan }
-  | { type: 'resolve-error'; error: string }
+  | { type: 'resolve-error'; error: string; code?: string }
   | { type: 'patch-choice'; modJarId: string; included: boolean }
   | { type: 'resolve-conflict'; conflictId: string; resolution: string }
   | { type: 'confirm' }
@@ -65,7 +67,7 @@ function flowReducer(state: FlowState, action: FlowAction): FlowState {
       };
 
     case 'resolve-error':
-      return { phase: 'error', message: action.error, retryable: true };
+      return { phase: 'error', message: action.error, retryable: true, code: action.code };
 
     case 'patch-choice':
       if (state.phase !== 'review') return state;
@@ -129,11 +131,18 @@ function flowReducer(state: FlowState, action: FlowAction): FlowState {
 }
 
 function defaultChoices(plan: ResolvedInstallPlan): PlanChoices {
+  // For bulk installs optional dependencies default to UNselected: most are
+  // author recommendations rather than functional requirements, and selecting
+  // a dozen extras by accident is worse than opting in deliberately. Single
+  // installs keep the previous include-by-default behavior.
+  const includeOptionalByDefault = plan.intent.action.type !== 'batch-install';
   return {
     optionalIncluded: new Set(
-      plan.dependencies
-        .filter((d) => d.requirement === 'optional')
-        .map((d) => d.modJarId),
+      includeOptionalByDefault
+        ? plan.dependencies
+            .filter((d) => d.requirement === 'optional')
+            .map((d) => d.modJarId)
+        : [],
     ),
     conflictResolutions: new Map(
       plan.conflicts
@@ -141,6 +150,27 @@ function defaultChoices(plan: ResolvedInstallPlan): PlanChoices {
         .map((c) => [c.conflictId, c.chosen!]),
     ),
   };
+}
+
+function failedBatchItemId(intent: InstallIntent, message: string): string | undefined {
+  if (intent.action.type !== 'batch-install') return undefined;
+  const match = message.match(/(?:curated|Modrinth|manual) item '([^']+)'/);
+  const itemId = match?.[1];
+  return itemId && intent.action.items.some((item) => item.itemId === itemId)
+    ? itemId
+    : undefined;
+}
+
+function failedBlockingBatchItemId(plan: ResolvedInstallPlan): string | undefined {
+  if (plan.intent.action.type !== 'batch-install') return undefined;
+  const error = plan.blockingErrors.find((candidate) =>
+    candidate.code === 'ERR_HASH_UNAVAILABLE'
+    || candidate.message.includes('has no acceptable published hash'),
+  );
+  const itemId = error?.message.match(/^([^ ]+) has no acceptable published hash/)?.[1];
+  return itemId && plan.intent.action.items.some((item) => item.itemId === itemId)
+    ? itemId
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +185,14 @@ interface InstallFlowProps {
   onBackgroundStart?: (plan: ResolvedInstallPlan) => void;
   background?: boolean;
   open: boolean;
+  /** Pre-resolved plan (e.g. resolved by the caller in the background). Used once on open. */
+  initialPlan?: ResolvedInstallPlan | null;
+  /** Apply failure promoted from a background task. */
+  initialError?: { message: string; code?: string; skipItemId?: string } | null;
+  /** When set, a clean plan starts immediately in the background. */
+  autoBackground?: boolean;
+  /** When enabled with autoBackground, dependency details are also skipped. */
+  alwaysAutoConfirm?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,31 +207,112 @@ export function InstallFlow({
   onBackgroundStart,
   background = false,
   open,
+  initialPlan,
+  initialError,
+  autoBackground = false,
+  alwaysAutoConfirm = false,
 }: InstallFlowProps) {
   const [state, dispatch] = useReducer(flowReducer, { phase: 'closed' } as FlowState);
   const [resolutionIntent, setResolutionIntent] = useState(intent);
+  const [settingAutoConfirmClean, setSettingAutoConfirmClean] = useState(false);
+  const [settingAlwaysAutoConfirm, setSettingAlwaysAutoConfirm] = useState(false);
+  const initialPlanRef = useRef<ResolvedInstallPlan | null>(initialPlan ?? null);
+  const recheckPlanRef = useRef<ResolvedInstallPlan | null>(null);
+  const forceFinalReviewRef = useRef(false);
+  const [newlyAddedFiles, setNewlyAddedFiles] = useState<Set<string>>(new Set());
+  const [reviewNotice, setReviewNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!background) return;
+    let cancelled = false;
+    void Promise.all([
+      getSetting('install_auto_confirm_clean'),
+      getSetting('install_always_auto_confirm'),
+    ])
+      .then(([value, alwaysValue]) => {
+        if (!cancelled) {
+          setSettingAutoConfirmClean(value === true || value === 'true' || value === 1 || value === '1');
+          setSettingAlwaysAutoConfirm(alwaysValue === true || alwaysValue === 'true' || alwaysValue === 1 || alwaysValue === '1');
+        }
+      })
+      .catch(() => {
+        // Fail closed: a setting read failure must not auto-apply changes.
+      });
+    return () => { cancelled = true; };
+  }, [background]);
 
   // Start resolving on first open.
   useEffect(() => {
     if (!open) return;
     setResolutionIntent(intent);
+    recheckPlanRef.current = null;
+    forceFinalReviewRef.current = false;
+    setNewlyAddedFiles(new Set());
+    setReviewNotice(null);
+    if (initialError) {
+      initialPlanRef.current = null;
+      dispatch({ type: 'resolve-error', error: initialError.message, code: initialError.code });
+      return;
+    }
     dispatch({ type: 'retry' });
-  }, [open, intent]);
+  }, [open, intent, initialError]);
 
-  // Resolve when entering resolving phase.
+  // Resolve when entering resolving phase. A pre-resolved plan skips the
+  // network round-trip entirely.
   useEffect(() => {
     if (state.phase !== 'resolving') return;
+    const preResolved = initialPlanRef.current;
+    initialPlanRef.current = null;
+    if (preResolved) {
+      dispatch({ type: 'resolved', plan: preResolved });
+      return;
+    }
     let cancelled = false;
     (async () => {
-      try {
-        const plan = await resolveInstallPlan(resolutionIntent);
-        if (!cancelled) dispatch({ type: 'resolved', plan });
-      } catch (e) {
-        if (!cancelled) dispatch({ type: 'resolve-error', error: formatError(e) });
+        try {
+          const plan = await resolveInstallPlan(resolutionIntent);
+          if (!cancelled) {
+            const previousPlan = recheckPlanRef.current;
+            if (previousPlan) {
+              recheckPlanRef.current = null;
+              forceFinalReviewRef.current = true;
+              const previousFiles = new Set(previousPlan.filesToAdd.map((file) => file.targetFilename));
+              setNewlyAddedFiles(new Set(
+                plan.filesToAdd
+                  .map((file) => file.targetFilename)
+                  .filter((filename) => !previousFiles.has(filename)),
+              ));
+              setReviewNotice('New options have been checked. Review the highlighted additions before installing.');
+            }
+            dispatch({ type: 'resolved', plan });
+          }
+        } catch (e) {
+          if (!cancelled) {
+            recheckPlanRef.current = null;
+            forceFinalReviewRef.current = false;
+            const parsed = parseLauncherError(e);
+          dispatch({ type: 'resolve-error', error: parsed.message, code: parsed.code });
+        }
       }
     })();
     return () => { cancelled = true; };
   }, [state.phase, resolutionIntent]);
+
+  // When the resolved plan needs no choices and nothing blocks it, proceed in
+  // the background instead of waiting on the focused review dialog.
+  useEffect(() => {
+    if (!background || (!autoBackground && !settingAutoConfirmClean)) return;
+    if (recheckPlanRef.current || forceFinalReviewRef.current) return;
+    if (state.phase !== 'review' || state.dirty) return;
+    const effectiveAutoConfirm = autoBackground || settingAutoConfirmClean;
+    if (planNeedsUserReview(state.plan, {
+      ignoreDependencies: (alwaysAutoConfirm || settingAlwaysAutoConfirm)
+        && effectiveAutoConfirm,
+    })) return;
+    onBackgroundStart?.(state.plan);
+    dispatch({ type: 'close' });
+    onClose?.();
+  }, [alwaysAutoConfirm, autoBackground, background, settingAlwaysAutoConfirm, settingAutoConfirmClean, state, onBackgroundStart, onClose]);
 
   // Execute plan.
   useEffect(() => {
@@ -239,6 +358,10 @@ export function InstallFlow({
   const handleConfirm = useCallback(() => {
     if (state.phase !== 'review') return;
     if (state.dirty || state.plan.pendingChoices.length > 0) {
+      recheckPlanRef.current = state.plan;
+      forceFinalReviewRef.current = false;
+      setNewlyAddedFiles(new Set());
+      setReviewNotice(null);
       setResolutionIntent({
         ...resolutionIntent,
         optionalDeps: {
@@ -254,6 +377,7 @@ export function InstallFlow({
       return;
     }
     if (background) {
+      forceFinalReviewRef.current = false;
       onBackgroundStart?.(state.plan);
       dispatch({ type: 'close' });
       onClose?.();
@@ -270,16 +394,35 @@ export function InstallFlow({
   const renderContent = () => {
     switch (state.phase) {
       case 'resolving':
-        return <ResolvingView />;
+        return <ResolvingView rechecking={Boolean(recheckPlanRef.current)} />;
       case 'review':
-        return <ReviewView
-          plan={state.plan}
-          choices={state.choices}
-          onToggleOptional={(id, inc) => dispatch({ type: 'patch-choice', modJarId: id, included: inc })}
-          onResolveConflict={(id, res) => dispatch({ type: 'resolve-conflict', conflictId: id, resolution: res })}
-          onConfirm={handleConfirm}
-          onCancel={handleCancel}
-        />;
+        {
+          const skippedItemId = failedBlockingBatchItemId(state.plan);
+          const onSkip = skippedItemId
+            ? () => {
+              setResolutionIntent((current) => ({
+                ...current,
+                overrides: {
+                  ...current.overrides,
+                  skipItems: [...new Set([...(current.overrides.skipItems ?? []), skippedItemId])],
+                },
+              }));
+              dispatch({ type: 'retry' });
+            }
+            : undefined;
+          return <ReviewView
+           plan={state.plan}
+           choices={state.choices}
+           newlyAddedFiles={newlyAddedFiles}
+           reviewNotice={reviewNotice}
+           onToggleOptional={(id, inc) => dispatch({ type: 'patch-choice', modJarId: id, included: inc })}
+           onResolveConflict={(id, res) => dispatch({ type: 'resolve-conflict', conflictId: id, resolution: res })}
+             onRetry={() => dispatch({ type: 'retry' })}
+             onSkip={onSkip}
+            onConfirm={handleConfirm}
+            onCancel={handleCancel}
+         />;
+        }
       case 'executing':
         return <ProgressView progress={state.progress} onCancel={handleCancel} />;
       case 'result':
@@ -290,12 +433,38 @@ export function InstallFlow({
           onClose={handleClose}
         />;
       case 'error':
+        {
+          const skippedItemId = initialError?.skipItemId ?? failedBatchItemId(resolutionIntent, state.message);
         return <ErrorView
           message={state.message}
           retryable={state.retryable}
           onRetry={() => dispatch({ type: 'retry' })}
+          canTryClosest={state.code === 'ERR_VERSION_NOT_FOUND'}
+          canSkip={Boolean(skippedItemId)}
+          onSkip={() => {
+            if (!skippedItemId) return;
+            setResolutionIntent((current) => ({
+              ...current,
+              overrides: {
+                ...current.overrides,
+                skipItems: [...new Set([...(current.overrides.skipItems ?? []), skippedItemId])],
+              },
+            }));
+            dispatch({ type: 'retry' });
+          }}
+          onTryClosest={() => {
+            setResolutionIntent((current) => ({
+              ...current,
+              overrides: {
+                ...current.overrides,
+                allowClosestVersion: true,
+              },
+            }));
+            dispatch({ type: 'retry' });
+          }}
           onClose={handleClose}
         />;
+        }
       default:
         return null;
     }
@@ -303,12 +472,14 @@ export function InstallFlow({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleCancel(); }}>
-      <DialogContent className="max-w-2xl">
-        <DialogTitle>Review Instance Changes</DialogTitle>
-        <DialogDescription>
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden flex flex-col gap-3">
+        <DialogTitle className="shrink-0">Review Instance Changes</DialogTitle>
+        <DialogDescription className="shrink-0">
           {instanceName}
         </DialogDescription>
-        {renderContent()}
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
+          {renderContent()}
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -318,11 +489,13 @@ export function InstallFlow({
 // Sub-views
 // ---------------------------------------------------------------------------
 
-function ResolvingView() {
+function ResolvingView({ rechecking }: { rechecking: boolean }) {
   return (
     <div className="flex flex-col items-center justify-center py-8 gap-3">
       <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      <p className="text-sm text-muted-foreground">Resolving dependencies…</p>
+      <p className="text-sm text-muted-foreground">
+        {rechecking ? 'Checking newly selected dependencies…' : 'Resolving dependencies…'}
+      </p>
     </div>
   );
 }
@@ -332,15 +505,23 @@ function ReviewView({
   choices,
   onToggleOptional,
   onResolveConflict,
+  onRetry,
+  onSkip,
   onConfirm,
   onCancel,
+  newlyAddedFiles,
+  reviewNotice,
 }: {
   plan: ResolvedInstallPlan;
   choices: PlanChoices;
   onToggleOptional: (id: string, inc: boolean) => void;
   onResolveConflict: (id: string, res: string) => void;
+  onRetry: () => void;
+  onSkip?: () => void;
   onConfirm: () => void;
   onCancel: () => void;
+  newlyAddedFiles: Set<string>;
+  reviewNotice: string | null;
 }) {
   const canInstall = plan.blockingErrors.length === 0;
   const hasUnresolvedBlockingConflict = plan.conflicts.some(
@@ -358,9 +539,22 @@ function ReviewView({
       : plan.intent.action.type === 'batch-install'
         ? 'Install Batch'
         : 'Install';
+  const selectedVersions = operationArtifacts(plan.operation)
+    .map((artifact) => ({
+      filename: artifact.filename,
+      version: artifact.metadata.version,
+      isNew: newlyAddedFiles.has(artifact.filename),
+    }))
+    .filter((artifact) => artifact.version);
 
   return (
     <div className="space-y-4">
+      {reviewNotice && (
+        <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
+          {reviewNotice}
+        </div>
+      )}
+
       {/* Warnings */}
       {plan.warnings.length > 0 && (
         <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300 space-y-1">
@@ -381,7 +575,13 @@ function ReviewView({
           <h4 className="text-sm font-semibold mb-2">Dependencies</h4>
           <div className="space-y-1 max-h-40 overflow-y-auto">
             {plan.dependencies.map((dep, i) => (
-              <DepRow key={i} dep={dep} checked={choices.optionalIncluded.has(dep.modJarId)} onToggle={onToggleOptional} />
+              <DepRow
+                key={i}
+                dep={dep}
+                checked={choices.optionalIncluded.has(dep.modJarId)}
+                onToggle={onToggleOptional}
+                highlighted={dependencyIsNew(dep, newlyAddedFiles)}
+              />
             ))}
           </div>
         </div>
@@ -411,6 +611,31 @@ function ReviewView({
         </div>
       )}
 
+      {selectedVersions.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold mb-2">Versions to Install</h4>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            {selectedVersions.map((artifact, index) => (
+              <p key={`${artifact.filename}-${index}`}>
+                <span className={artifact.isNew ? 'rounded bg-primary/15 px-1 font-medium text-primary' : 'font-medium text-foreground'}>
+                  {artifact.isNew ? 'NEW ' : ''}{artifact.version}
+                </span>{' '}
+                {artifact.filename}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {newlyAddedFiles.size > 0 && (
+        <div className="rounded-lg border border-primary/30 bg-primary/10 p-3">
+          <h4 className="text-sm font-semibold text-primary mb-2">New Items From Optional Dependencies</h4>
+          <ul className="space-y-1 text-xs text-primary">
+            {[...newlyAddedFiles].map((filename) => <li key={filename}>+ {filename}</li>)}
+          </ul>
+        </div>
+      )}
+
       {/* Snapshot info */}
       <div className="text-xs text-muted-foreground">
         Snapshot: {plan.snapshot.label} ({formatBytes(plan.snapshot.estimatedBytes)})
@@ -418,6 +643,16 @@ function ReviewView({
 
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">
+        {plan.blockingErrors.length > 0 && (
+          <button onClick={onRetry} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
+            Retry Resolution
+          </button>
+        )}
+        {onSkip && (
+          <button onClick={onSkip} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
+            Skip This Mod
+          </button>
+        )}
         <button onClick={onCancel} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">Cancel</button>
         <button
           onClick={onConfirm}
@@ -437,28 +672,65 @@ function ReviewView({
   );
 }
 
-function DepRow({ dep, checked, onToggle }: { dep: ResolvedDep; checked: boolean; onToggle: (id: string, inc: boolean) => void }) {
+function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; checked: boolean; onToggle: (id: string, inc: boolean) => void; highlighted: boolean }) {
   const isOptional = dep.requirement === 'optional';
+  const displayName = dep.displayName ?? dep.modJarId;
   return (
-    <div className="flex items-center gap-2 text-sm">
+    <div className={`flex items-center gap-2 rounded px-1 text-sm ${highlighted ? 'bg-primary/10 ring-1 ring-primary/30' : ''}`}>
       {isOptional && (
         <input
           type="checkbox"
           checked={checked}
           onChange={(e) => onToggle(dep.modJarId, e.target.checked)}
           className="rounded"
+          aria-label={`Include optional dependency ${displayName}`}
         />
       )}
-      <span className={isOptional ? '' : 'font-medium'}>{dep.modJarId}</span>
-      <span className="text-xs text-muted-foreground">{dep.requirement}</span>
-      {dep.disposition.type !== 'reuse-existing' && dep.disposition.type !== 'excluded' && (
-        <span className="text-xs text-muted-foreground">⬇ will be installed</span>
-      )}
+      <span className={`min-w-0 truncate ${isOptional ? '' : 'font-medium'}`} title={displayName}>
+        {displayName}
+      </span>
+      <span className="shrink-0 text-xs text-muted-foreground">{dep.requirement}</span>
       {dep.disposition.type === 'reuse-existing' && (
-        <span className="text-xs text-green-600">✓ already installed</span>
+        <span className="shrink-0 text-xs text-green-600">✓ already installed</span>
       )}
+      {dep.disposition.type === 'install-candidate' && (
+        <span className="shrink-0 text-xs text-muted-foreground">⬇ will be installed</span>
+      )}
+      {dep.disposition.type === 'included-in-batch' && (
+        <span className="shrink-0 text-xs text-green-600">✓ included in this batch</span>
+      )}
+      {dep.disposition.type === 'unresolved' && (
+        <span className="shrink-0 text-xs text-destructive" title={dep.disposition.reason}>⚠ unresolved</span>
+      )}
+      {dep.pageUrl?.startsWith('https://') && (
+        <a
+          href={dep.pageUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 text-xs text-primary hover:underline"
+        >
+          View mod page ↗
+        </a>
+      )}
+      {highlighted && <span className="shrink-0 text-xs font-medium text-primary">new</span>}
     </div>
   );
+}
+
+function dependencyIsNew(dep: ResolvedDep, newlyAddedFiles: Set<string>): boolean {
+  return dep.disposition.type === 'install-candidate'
+    && newlyAddedFiles.has(dep.disposition.artifact.filename);
+}
+
+function operationArtifacts(operation: ResolvedInstallPlan['operation']): ResolvedArtifact[] {
+  switch (operation.type) {
+    case 'install': return [operation.artifact];
+    case 'update': return [operation.newArtifact];
+    case 'batch-install':
+    case 'batch-update':
+    case 'reconcile': return operation.operations.flatMap(operationArtifacts);
+    default: return [];
+  }
 }
 
 function ConflictRow({ conflict, selected, onSelect }: { conflict: DepConflict; selected?: string; onSelect: (r: string) => void }) {
@@ -637,10 +909,14 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
   );
 }
 
-function ErrorView({ message, retryable, onRetry, onClose }: {
+function ErrorView({ message, retryable, onRetry, canTryClosest, onTryClosest, canSkip, onSkip, onClose }: {
   message: string;
   retryable: boolean;
   onRetry: () => void;
+  canTryClosest: boolean;
+  onTryClosest: () => void;
+  canSkip: boolean;
+  onSkip: () => void;
   onClose: () => void;
 }) {
   return (
@@ -648,6 +924,16 @@ function ErrorView({ message, retryable, onRetry, onClose }: {
       <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{message}</div>
       <div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">Close</button>
+        {canTryClosest && (
+          <button onClick={onTryClosest} className="rounded-lg border border-primary px-4 py-2 text-sm font-medium text-primary hover:bg-primary/10">
+            Try Closest Version
+          </button>
+        )}
+        {canSkip && (
+          <button onClick={onSkip} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
+            Skip This Mod
+          </button>
+        )}
         {retryable && <button onClick={onRetry} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">Retry</button>}
       </div>
     </div>

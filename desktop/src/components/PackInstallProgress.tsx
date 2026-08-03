@@ -41,9 +41,18 @@ type PackInstallContextValue = {
   revision: number;
   tasks: PackInstallTask[];
   getTaskForInstance: (instanceId: string) => PackInstallTask | null;
-  startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string) => void;
+  startPlan: (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => void;
   startModrinthPack: (downloadUrl: string, label: string, packIconUrl?: string | null) => void;
   startPackFile: (sourcePath: string, label: string) => void;
+  /** Start a corner task that resolves an install intent in the background. */
+  startResolvingPlan: (label: string, instanceName: string) => {
+    taskId: string;
+    /** Promote the resolved plan to a running install on the same task. */
+    apply: (plan: ResolvedInstallPlan, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => void;
+    /** Remove the corner task (e.g. the flow moved to a focused dialog). */
+    dismiss: () => void;
+  };
+  dismissTask: (taskId: string) => void;
 };
 
 const PackInstallContext = createContext<PackInstallContextValue | null>(null);
@@ -119,7 +128,7 @@ function phaseLabel(phase: string): string {
     case 'health-scan': return 'Checking pack health';
     case 'done': return 'Finishing installation';
     case 'failed': return 'Installation failed';
-    default: return 'Installing pack';
+    default: return 'Installing';
   }
 }
 
@@ -185,7 +194,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     setTaskMap((current) => updateTask(current, id, {
       status: success ? 'completed' : 'failed',
       phase: success ? 'done' : outcome.type,
-      message: success ? 'Pack installed successfully.' : 'Pack installation did not complete.',
+      message: success ? 'Installation completed successfully.' : 'Installation did not complete.',
       progress: success ? 1 : null,
       error: success ? null : outcome.type === 'failed' ? outcome.error : 'Installation was cancelled.',
     }));
@@ -204,7 +213,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     setTaskMap((current) => updateTask(current, id, {
       status: 'failed',
       phase: 'failed',
-      message: 'Pack installation failed.',
+      message: 'Installation failed.',
       error,
     }));
     setRevision((value) => value + 1);
@@ -238,7 +247,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     }, 8000);
   };
 
-  const startPlan = (plan: ResolvedInstallPlan, label: string, instanceName?: string) => {
+  const startPlan = (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => {
     const id = `pack-plan-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const task = {
       ...initialTask(id, label, 'plan', plan.intent.targetInstance, instanceName ?? plan.intent.targetInstance),
@@ -246,8 +255,47 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
     };
     setTaskMap((current) => ({ ...current, [id]: task }));
     void applyInstallPlan(plan)
-      .then((outcome) => completeTask(id, outcome))
+      .then((outcome) => {
+        if (outcome.type === 'failed') onFailed?.(outcome.error, plan);
+        completeTask(id, outcome);
+      })
       .catch((cause) => failTask(id, formatError(cause)));
+  };
+
+  const dismissTask = (id: string) => {
+    setTaskMap((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const startResolvingPlan = (label: string, instanceName: string) => {
+    const id = `plan-resolve-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setTaskMap((current) => ({
+      ...current,
+      [id]: initialTask(id, label, 'plan', null, instanceName),
+    }));
+    return {
+      taskId: id,
+      apply: (plan: ResolvedInstallPlan, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => {
+        setTaskMap((current) =>
+          updateTask(current, id, {
+            planId: plan.fingerprint,
+            instanceId: plan.intent.targetInstance,
+            phase: 'staging',
+            message: 'Loading files…',
+          }),
+        );
+        void applyInstallPlan(plan)
+          .then((outcome) => {
+            if (outcome.type === 'failed') onFailed?.(outcome.error, plan);
+            completeTask(id, outcome);
+          })
+          .catch((cause) => failTask(id, formatError(cause)));
+      },
+      dismiss: () => dismissTask(id),
+    };
   };
 
   const startModrinthPack = (downloadUrl: string, label: string, packIconUrl?: string | null) => {
@@ -282,6 +330,8 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       startPlan,
       startModrinthPack,
       startPackFile,
+      startResolvingPlan,
+      dismissTask,
     };
   }, [revision, taskMap]);
 
@@ -311,7 +361,7 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
     <div className={compact ? 'mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2' : 'space-y-2'} aria-live="polite">
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">
-          {task.status === 'completed' ? 'Pack installed' : task.status === 'failed' ? 'Pack installation failed' : phaseLabel(task.phase)}
+          {task.status === 'completed' ? 'Installation complete' : task.status === 'failed' ? 'Installation failed' : phaseLabel(task.phase)}
         </p>
         {percent !== null && <span className="shrink-0 text-xs text-muted-foreground">{percent}%</span>}
       </div>

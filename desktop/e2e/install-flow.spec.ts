@@ -440,7 +440,8 @@ async function triggerInlineInstallFlow(page: Page) {
   await page.getByRole('button', { name: 'Next: Choose Version' }).click();
   // Click the first version entry
   await page.getByText('test-mod-1.0.0.jar').click();
-  await page.getByRole('button', { name: /Install test-mod-1.0.0.jar/ }).click();
+  // test-mod is installed in test-instance, so the flow offers a replacement.
+  await page.getByRole('button', { name: /(Install|Replace with) test-mod-1.0.0.jar/ }).click();
 }
 
 // ---------------------------------------------------------------------------
@@ -506,8 +507,8 @@ test.describe('Release C3 — Install flow entry points', () => {
       await selects.last().selectOption('test-instance');
     }
 
-    // Click "Review install plan"
-    await page.getByRole('button', { name: 'Review install plan' }).click();
+    // Click "Review install plan" (a replace plan, since the mod is installed)
+    await page.getByRole('button', { name: /Review (install|replace) plan/ }).click();
 
     // InstallFlow opens and resolves
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
@@ -634,8 +635,50 @@ test.describe('Release C3 — Install flow entry points', () => {
     });
   });
 
-  test('ModDetail Back restores Browse scroll position', async ({ page }) => {
+  test('installed mod shows installed state and allows version replacement', async ({ page }) => {
     await installFlowMock(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Browse', exact: true }).click();
+    await page.locator('#browse-instance-context').selectOption('test-instance');
+    await expect(page.getByText('Installed').first()).toBeVisible();
+    await page.getByRole('button', { name: 'View Details', exact: true }).click();
+
+    // The header banner communicates the installed state and version.
+    await expect(page.getByRole('heading', { name: 'Test Mod', exact: true })).toBeVisible();
+    await expect(page.getByText(/Already installed in Test Instance/)).toBeVisible();
+    await expect(page.getByText(/Version 1\.0\.0 · installed-test-mod\.jar/)).toBeVisible();
+
+    // The versions tab preselects the browse instance, marks the installed
+    // version, and labels the action as a replacement.
+    await page.getByRole('button', { name: 'Versions' }).click();
+    await page.getByRole('row', { name: /1\.0\.0/ }).first().click();
+    await expect(page.getByText('installed', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Review replace plan' })).toBeVisible();
+
+    // The inline flow shows the installed notice, marks the row, and offers
+    // "Replace with" instead of "Install".
+    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await page.getByRole('button', { name: 'Next: Choose Version' }).click();
+    await expect(page.getByText(/Already installed: version 1\.0\.0/)).toBeVisible();
+    await page.getByText('test-mod-1.0.0.jar', { exact: true }).click();
+    await page.getByRole('button', { name: 'Replace with test-mod-1.0.0.jar' }).click();
+
+    // The canonical review still resolves and applies the replacement.
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
+    const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate((idx) => (window as any).__installCalls[idx]?.args, resolveIdx);
+    expect(args.intent.action.type).toBe('install');
+    expect(args.intent.action.candidateVersion).toBe('1.0.0');
+    await resolveInstallCall(page, resolveIdx, makePlan());
+    await expectReviewView(page);
+    await page.getByRole('button', { name: 'Install' }).click();
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
+    const applyIdx = await lastInstallCall(page, 'apply_install_plan');
+    await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
+    await expectResultView(page);
+  });
+
+  test('ModDetail Back restores Browse scroll position', async ({ page }) => {    await installFlowMock(page);
     await page.goto('/');
     await page.getByRole('button', { name: 'Browse', exact: true }).click();
     await expect(page.getByRole('button', { name: 'View Details', exact: true })).toBeVisible();

@@ -105,10 +105,23 @@ test('boolean settings are sent to Tauri as JSON booleans', async ({ page }) => 
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByText('Modrinth Integration', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Always auto-confirm installs', { exact: true })).toBeDisabled();
   await page.locator('#settings-services input[type="checkbox"]').first().check();
 
   await expect.poll(async () => page.evaluate(() => (window as any).__settingWrites)).toContainEqual({
     key: 'modrinth_enabled',
+    value: true,
+  });
+
+  await page.getByLabel('Auto-confirm clean installs', { exact: true }).check();
+  await expect.poll(async () => page.evaluate(() => (window as any).__settingWrites)).toContainEqual({
+    key: 'install_auto_confirm_clean',
+    value: true,
+  });
+
+  await page.getByLabel('Always auto-confirm installs', { exact: true }).check();
+  await expect.poll(async () => page.evaluate(() => (window as any).__settingWrites)).toContainEqual({
+    key: 'install_always_auto_confirm',
     value: true,
   });
 });

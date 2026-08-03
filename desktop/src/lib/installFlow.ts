@@ -30,6 +30,8 @@ export type RequestSource = 'interactive' | 'cli' | 'auto-update';
 export interface PlanOverrides {
   allowReplace: boolean;
   skipHealthScan: boolean;
+  allowClosestVersion?: boolean;
+  skipItems?: string[];
   forceConflictResolution: Record<string, string>;
 }
 
@@ -62,6 +64,27 @@ export interface ResolvedInstallPlan {
   registryRevision: string;
 }
 
+/**
+ * Clean plans can be applied without an interactive review. Anything that
+ * adds a dependency, reports a warning/error, presents a conflict, or
+ * changes an existing file stays in the focused review flow.
+ */
+export function planNeedsUserReview(
+  plan: ResolvedInstallPlan,
+  options: { ignoreDependencies?: boolean } = {},
+): boolean {
+  return plan.blockingErrors.length > 0
+    || plan.pendingChoices.length > 0
+    || plan.warnings.length > 0
+    || plan.conflicts.length > 0
+    || plan.filesToRemove.length > 0
+    || plan.filesToDisable.length > 0
+    || plan.dependencies.some((dependency) =>
+      dependency.disposition.type === 'unresolved'
+      || (!options.ignoreDependencies && dependency.disposition.type === 'install-candidate'),
+    );
+}
+
 export type ResolvedOperation =
   | { type: 'install'; artifact: ResolvedArtifact }
   | { type: 'update'; oldVersionId: string; newArtifact: ResolvedArtifact }
@@ -80,6 +103,7 @@ export interface ArtifactMetadata {
   registryId: string | null;
   modrinthId: string | null;
   contentType: string;
+  version?: string | null;
 }
 
 export type ArtifactSource = { type: 'download'; url: string } | { type: 'local-file'; path: string };
@@ -93,11 +117,16 @@ export interface ResolvedDep {
   requirement: 'required' | 'optional';
   source: 'jar' | 'manifest';
   disposition: DepDisposition;
+  /** Human-readable project name when known; falls back to modJarId. */
+  displayName?: string | null;
+  /** Canonical upstream page URL when known. */
+  pageUrl?: string | null;
 }
 
 export type DepDisposition =
   | { type: 'reuse-existing'; modJarId: string; installedFilename: string }
   | { type: 'install-candidate'; artifact: ResolvedArtifact }
+  | { type: 'included-in-batch'; targetFilename: string }
   | { type: 'excluded' }
   | { type: 'unresolved'; reason: string };
 

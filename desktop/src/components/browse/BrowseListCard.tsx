@@ -1,4 +1,4 @@
-import { ExternalLink } from 'lucide-react';
+import { Check, ExternalLink } from 'lucide-react';
 import { BrowseIcon } from './BrowseIcon';
 import { BrowseContextLabels, BrowseStats, BrowseVersions, CuratedBadge } from './BrowseContextLabels';
 import type { BrowseCardProps } from './types';
@@ -12,9 +12,21 @@ function sourceSummary(item: BrowseCardProps['item']): string {
   return source;
 }
 
-export function BrowseListCard({ item, context, onSelectMod }: BrowseCardProps) {
+export function BrowseListCard({ item, context, onSelectMod, selected = false, onToggleSelect }: BrowseCardProps) {
   return (
-    <li className="browse-list-card">
+    <li
+      className={[
+        'browse-list-card',
+        onToggleSelect ? 'browse-card--selectable' : '',
+        selected ? 'browse-card--selected' : '',
+      ].join(' ')}
+      onClick={onToggleSelect}
+    >
+      {selected && (
+        <span className="browse-card-check" aria-hidden>
+          <Check size={14} />
+        </span>
+      )}
       <div className="browse-list-card__layout">
         <BrowseIcon iconUrl={item.iconUrl} name={item.name} className="browse-list-card__icon" />
         <div className="browse-list-card__main">
@@ -38,11 +50,24 @@ export function BrowseListCard({ item, context, onSelectMod }: BrowseCardProps) 
           <div className="browse-list-card__actions">
             <BrowseContextLabels context={context} />
             <div className="browse-card-action-row">
-              <button type="button" onClick={() => onSelectMod?.(item.id)} className="browse-primary-action">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelectMod?.(item.id);
+                }}
+                className="browse-primary-action"
+              >
                 View Details
               </button>
               {item.sourcePageUrl && (
-                <a href={item.sourcePageUrl} target="_blank" rel="noopener noreferrer" className="browse-source-link">
+                <a
+                  href={item.sourcePageUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(event) => event.stopPropagation()}
+                  className="browse-source-link"
+                >
                   View source <ExternalLink aria-hidden size={12} />
                 </a>
               )}

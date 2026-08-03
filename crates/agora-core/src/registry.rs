@@ -689,6 +689,49 @@ pub fn browse_items(
     Ok(out)
 }
 
+/// Fetch registry items by their ids in one batched read session.
+///
+/// Returns a map keyed by the item id as stored. Items that are not present
+/// in the registry are simply absent from the map.
+pub fn get_items_by_ids(
+    conn: &Connection,
+    item_ids: &[String],
+) -> LauncherResult<HashMap<String, RegistryItem>> {
+    let mut items = HashMap::new();
+    if item_ids.is_empty() {
+        return Ok(items);
+    }
+    for chunk in item_ids.chunks(500) {
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "SELECT {REGISTRY_ITEM_COLUMNS} FROM registry_items ri WHERE ri.id IN ({placeholders})"
+        );
+        let mut statement = conn
+            .prepare(&query)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_INVALID_QUERY".to_string(),
+                message: error.to_string(),
+            })?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(chunk.iter()), row_to_item)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_INVALID_QUERY".to_string(),
+                message: error.to_string(),
+            })?;
+        for row in rows {
+            let item = row.map_err(|error| LauncherError::Generic {
+                code: "ERR_INVALID_QUERY".to_string(),
+                message: error.to_string(),
+            })?;
+            items.insert(item.id.clone(), item);
+        }
+    }
+    Ok(items)
+}
+
 /// Fetch a single registry item by ID.
 pub fn get_item_by_id(conn: &Connection, item_id: &str) -> LauncherResult<Option<RegistryItem>> {
     let mut stmt = conn

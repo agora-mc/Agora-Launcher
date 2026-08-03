@@ -11,4 +11,6 @@ export interface BrowseCardProps {
   item: BrowseItem;
   context: BrowseItemContext | null;
   onSelectMod?: (id: string) => void;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }
