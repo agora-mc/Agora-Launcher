@@ -271,7 +271,8 @@ class TestLoaderManifestEnrichment(unittest.TestCase):
             os.unlink(jar_path)
         self.assertEqual(entries[0]["provided_versions"], {"neoforge": "21.1.181"})
         self.assertEqual(entries[0]["release_channel"], "stable")
-        # Language-loader capabilities are never derived.
+        # Invalid pinned metadata fails closed rather than inventing a
+        # NeoForge language-provider capability.
         self.assertNotIn("javafml", entries[0]["provided_versions"])
         self.assertNotIn("lowcodefml", entries[0]["provided_versions"])
 
@@ -289,8 +290,33 @@ class TestLoaderManifestEnrichment(unittest.TestCase):
             entries = fetch_loader_manifests._fetch_forge(["1.21"])
         finally:
             os.unlink(jar_path)
-        self.assertEqual(entries[0]["provided_versions"], {"forge": "51.0.0"})
+        self.assertEqual(
+            entries[0]["provided_versions"],
+            {"forge": "51.0.0", "javafml": "51", "lowcodefml": "51"},
+        )
         self.assertEqual(entries[0]["release_channel"], "stable")
+
+    def test_neoforge_language_providers_come_from_pinned_fml_profile(self):
+        profile = {
+            "libraries": [
+                {"name": "net.neoforged.fancymodloader:loader:4.0.39"},
+            ]
+        }
+        self.assertEqual(
+            fetch_loader_manifests._extract_neoforge_language_capabilities(profile),
+            {"javafml": "4.0.39", "lowcodefml": "4.0.39"},
+        )
+
+    def test_malformed_neoforge_fml_profile_fails_closed(self):
+        profile = {
+            "libraries": [
+                {"name": "net.neoforged.fancymodloader:loader:"},
+            ]
+        }
+        self.assertEqual(
+            fetch_loader_manifests._extract_neoforge_language_capabilities(profile),
+            {},
+        )
 
     # -- Append-only enrichment in _merge_entries -----------------------------
 

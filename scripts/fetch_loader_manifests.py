@@ -83,14 +83,15 @@ ENRICHABLE_ENTRY_FIELDS = (
 )
 
 # The capability each loader family's distribution provides under its own id.
-# This is the identity written for new entries; language-loader capabilities
-# (javafml/lowcodefml) are never derived from a Forge/NeoForge release.
+# This is the identity written for new entries.
 DISTRIBUTION_CAPABILITY = {
     "fabric": "fabricloader",
     "quilt": "quilt_loader",
     "forge": "forge",
     "neoforge": "neoforge",
 }
+
+FORGE_LANGUAGE_PROVIDERS = ("javafml", "lowcodefml")
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +182,63 @@ def _extract_version_json(jar_path: Path) -> dict[str, Any] | None:
     except (zipfile.BadZipFile, OSError, json.JSONDecodeError) as exc:
         logger.warning("Could not read version.json from %s: %s", jar_path.name, exc)
     return None
+
+
+def _forge_language_capabilities(loader_version: str) -> dict[str, str]:
+    """Return Forge's documented built-in language-provider versions.
+
+    Forge defines both javafml and lowcodefml as the major Forge version. This
+    derives only the major component, never the full distribution version.
+    """
+    major = loader_version.split(".", 1)[0]
+    if not major.isascii() or not major.isdigit():
+        return {}
+    return {provider: major for provider in FORGE_LANGUAGE_PROVIDERS}
+
+
+def _extract_neoforge_language_capabilities(
+    version_json: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Extract NeoForge provider capabilities from its pinned version profile.
+
+    Newer profiles may publish a direct ``languageProviders`` map. The 1.21.1
+    profile instead pins an FML loader Maven coordinate. FML's built-in
+    providers report their containing FML JAR version, so that exact pinned
+    coordinate is the authoritative version for both javafml and lowcodefml.
+    Unknown shapes fail closed and leave the capability absent.
+    """
+    if not isinstance(version_json, dict):
+        return {}
+    direct = version_json.get("languageProviders")
+    if isinstance(direct, dict):
+        capabilities: dict[str, str] = {}
+        for provider in FORGE_LANGUAGE_PROVIDERS:
+            value = direct.get(provider)
+            if isinstance(value, str) and value.strip():
+                capabilities[provider] = value.strip()
+            elif isinstance(value, dict):
+                version = value.get("version")
+                if isinstance(version, str) and version.strip():
+                    capabilities[provider] = version.strip()
+        if capabilities:
+            return capabilities
+
+    libraries = version_json.get("libraries")
+    if not isinstance(libraries, list):
+        return {}
+    for library in libraries:
+        if not isinstance(library, dict):
+            continue
+        coordinate = library.get("name")
+        if not isinstance(coordinate, str):
+            continue
+        parts = coordinate.split(":")
+        if len(parts) < 3 or parts[0] != "net.neoforged.fancymodloader" or parts[1] != "loader":
+            continue
+        fml_version = parts[2].strip()
+        if fml_version:
+            return {provider: fml_version for provider in FORGE_LANGUAGE_PROVIDERS}
+    return {}
 
 
 def _stable_json_sha256(data: bytes, drop: set[str] | None = None) -> str:
@@ -608,6 +666,7 @@ def _fetch_neoforge(
 
         jar_sha = _sha256_hex(jar_path.read_bytes())
         version_json_sha = _extract_version_json_sha256(jar_path)
+        version_json = _extract_version_json(jar_path)
 
         install = _extract_install_profile(jar_path)
         file_name = f"neoforge-{version}-installer.jar"
@@ -625,7 +684,10 @@ def _fetch_neoforge(
             "sha256": jar_sha,
             "file_name": file_name,
             "file_type": "installer_jar",
-            "provided_versions": {"neoforge": version},
+            "provided_versions": {
+                "neoforge": version,
+                **_extract_neoforge_language_capabilities(version_json),
+            },
             "release_channel": _release_channel(version),
         }
         if version_json_sha:
@@ -718,7 +780,10 @@ def _fetch_forge(
             "sha256": jar_sha,
             "file_name": file_name,
             "file_type": "installer_jar",
-            "provided_versions": {"forge": loader_version},
+            "provided_versions": {
+                "forge": loader_version,
+                **_forge_language_capabilities(loader_version),
+            },
             "release_channel": _release_channel(loader_version),
         }
         if version_json_sha:

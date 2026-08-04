@@ -39,7 +39,7 @@ jobs:
         run: |
           python scripts/refresh_loader_manifests.py \
             --auto-versions \
-            --latest-per-mc 5 \
+            --latest-per-mc 10 \
             --keep-others \
             --skip-sign \
             --verify-changed-only \

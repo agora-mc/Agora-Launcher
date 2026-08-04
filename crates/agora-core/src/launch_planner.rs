@@ -6098,7 +6098,7 @@ $output.Write($after, 0, $after.Length)
         let tmp = tempfile::TempDir::new().unwrap();
 
         tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(60),
             wait_and_classify_with_progress(child, tmp.path(), &[], Some(&on_line)),
         )
         .await

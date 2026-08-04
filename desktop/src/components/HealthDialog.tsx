@@ -52,6 +52,80 @@ function verdictLabel(verdict: RequirementVerdict): string {
   return 'Unsupported';
 }
 
+function verdictKey(verdict: RequirementVerdict): string {
+  return typeof verdict === 'string' ? verdict : `unsupported:${verdict.unsupported.reason}`;
+}
+
+interface RequirementGroup {
+  targetId: string;
+  versionRanges: string[];
+  candidateVersion: string | null;
+  verdict: RequirementVerdict;
+  modIds: string[];
+}
+
+function groupRequirements(issue: LoaderCompatibilityIssue, satisfied: boolean): RequirementGroup[] {
+  const groups = new Map<string, RequirementGroup>();
+  for (const requirement of issue.requirements) {
+    const isSatisfied = requirement.verdict === 'satisfied';
+    if (isSatisfied !== satisfied) continue;
+    const key = [
+      requirement.target_id,
+      requirement.version_ranges.join('\u0000'),
+      requirement.candidate_version ?? '',
+      verdictKey(requirement.verdict),
+    ].join('\u0001');
+    const group = groups.get(key) ?? {
+      targetId: requirement.target_id,
+      versionRanges: requirement.version_ranges,
+      candidateVersion: requirement.candidate_version,
+      verdict: requirement.verdict,
+      modIds: [],
+    };
+    const modIds = requirement.declaring_mod_ids ?? (
+      requirement.declaring_mod_id ? [requirement.declaring_mod_id] : []
+    );
+    for (const modId of modIds) {
+      if (!group.modIds.includes(modId)) group.modIds.push(modId);
+    }
+    group.modIds.sort();
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((left, right) => left.targetId.localeCompare(right.targetId));
+}
+
+function RequirementGroupCard({ group }: { group: RequirementGroup }) {
+  const predicate = group.versionRanges.length > 0
+    ? group.versionRanges.join(' or ')
+    : 'any version';
+  const affectedLabel = group.modIds.length === 1
+    ? '1 affected mod'
+    : `${group.modIds.length} affected mods`;
+  return (
+    <div className="rounded border border-border bg-background/60 p-2">
+      <p className="text-xs font-medium">
+        {group.targetId} {predicate}
+        <span className="ml-1 text-muted-foreground">({verdictLabel(group.verdict)})</span>
+      </p>
+      {group.candidateVersion && (
+        <p className="text-xs text-muted-foreground">
+          Current loader provides {group.candidateVersion}
+        </p>
+      )}
+      {group.modIds.length > 0 && (
+        <details className="mt-1">
+          <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+            {affectedLabel}
+          </summary>
+          <p className="mt-1 break-words text-xs text-muted-foreground">
+            {group.modIds.join(', ')}
+          </p>
+        </details>
+      )}
+    </div>
+  );
+}
+
 /**
  * Specialized loader repair card rendered when a health finding carries a
  * structured `loader_compatibility` payload. All decisions come from the
@@ -75,6 +149,8 @@ function LoaderCompatibilityCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const indeterminateVersions = issue.indeterminate_versions ?? [];
+  const unresolvedRequirements = groupRequirements(issue, false);
+  const satisfiedRequirements = groupRequirements(issue, true);
   const switchableCandidates = issue.compatible_versions.filter(
     (version) => version !== issue.current_version,
   );
@@ -163,10 +239,22 @@ function LoaderCompatibilityCard({
         </div>
       )}
 
-      {(issue.requirements.length > 0 || issue.conflicts.length > 0 || indeterminateVersions.length > 0) && (
+      {unresolvedRequirements.length > 0 && (
+        <div className="mt-2 space-y-2">
+          <p className="text-xs font-medium text-destructive">
+            Unresolved requirements ({unresolvedRequirements.length})
+          </p>
+          {unresolvedRequirements.map((group, index) => (
+            <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
+          ))}
+        </div>
+      )}
+
+      {(issue.conflicts.length > 0 || indeterminateVersions.length > 0 || satisfiedRequirements.length > 0) && (
         <details className="mt-2">
           <summary className="cursor-pointer select-none text-xs font-medium">
-            View requirements ({issue.requirements.length})
+            View compatibility evidence
+            {satisfiedRequirements.length > 0 ? ` (${satisfiedRequirements.length} satisfied)` : ''}
             {issue.conflicts.length > 0 ? ` · ${issue.conflicts.length} conflict${issue.conflicts.length > 1 ? 's' : ''}` : ''}
           </summary>
           <div className="mt-2 space-y-2">
@@ -176,24 +264,8 @@ function LoaderCompatibilityCard({
                 require explicit confirmation because at least one capability is unverified.
               </p>
             )}
-            {issue.requirements.map((requirement, index) => (
-              <div key={index} className="rounded border border-border bg-background/60 p-2">
-                <p className="text-xs font-medium">
-                  {requirement.declaring_mod_id ?? 'Unowned requirement'}
-                  {' '}→ {requirement.target_id}
-                  <span className="ml-1 text-muted-foreground">
-                    ({verdictLabel(requirement.verdict)})
-                  </span>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Predicates: {requirement.version_ranges.length > 0
-                    ? requirement.version_ranges.join(' or ')
-                    : 'any version'}
-                  {requirement.candidate_version
-                    ? ` · installed candidate provides ${requirement.candidate_version}`
-                    : ''}
-                </p>
-              </div>
+            {satisfiedRequirements.map((group, index) => (
+              <RequirementGroupCard key={`${group.targetId}-${index}`} group={group} />
             ))}
             {issue.conflicts.map((conflict, index) => (
               <div key={`conflict-${index}`} className="rounded border border-destructive bg-background/60 p-2">
@@ -231,6 +303,7 @@ export function HealthDialog({
   });
   const [fixing, setFixing] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const [confirmingBlockers, setConfirmingBlockers] = useState(false);
 
   // Scroll container ref — reset to top whenever the report changes so a long
   // list of findings always starts at the top instead of clipping out of view.
@@ -322,10 +395,23 @@ export function HealthDialog({
   } as const;
 
   const sc = scoreColors[effectiveScore];
+  const requestLaunch = () => {
+    if (activeBlockers.length > 0) {
+      setConfirmingBlockers(true);
+      return;
+    }
+    void handleConfirm();
+  };
+
+  const confirmBlockedLaunch = () => {
+    setConfirmingBlockers(false);
+    void handleConfirm();
+  };
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !launching) onCancel(); }}>
-      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-3">
+    <>
+      <Dialog open onOpenChange={(open) => { if (!open && !launching) onCancel(); }}>
+        <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-3">
         <DialogTitle>Health Check</DialogTitle>
         <DialogDescription>
           {reviewOnly
@@ -511,15 +597,42 @@ export function HealthDialog({
         {error && <p className="text-sm text-destructive">{error}</p>}
         <div className="flex gap-2 justify-end pt-3 border-t border-border">
           <Button variant="outline" onClick={onCancel} disabled={launching}>{reviewOnly ? 'Close' : 'Cancel'}</Button>
-          {reviewOnly ? null : activeBlockers.length > 0 ? (
-            <Button variant="destructive" disabled>
-              Resolve {activeBlockers.length} blocker{activeBlockers.length > 1 ? 's' : ''}
+          {reviewOnly ? null : (
+            <Button
+              variant={activeBlockers.length > 0 ? 'destructive' : 'default'}
+              onClick={requestLaunch}
+              disabled={launching}
+            >
+              {launching ? 'Launching…' : 'Launch Anyway'}
             </Button>
-          ) : (
-            <Button onClick={handleConfirm} disabled={launching}>{launching ? 'Launching…' : 'Launch Anyway'}</Button>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmingBlockers} onOpenChange={setConfirmingBlockers}>
+        <DialogContent className="z-[60] max-w-md gap-4">
+          <DialogTitle>Launch despite blockers?</DialogTitle>
+          <DialogDescription>
+            Agora found {activeBlockers.length} blocker{activeBlockers.length === 1 ? '' : 's'}.
+            Continuing may cause a failed launch, crash, or unstable gameplay.
+          </DialogDescription>
+          <div role="alert" className="rounded border border-destructive bg-destructive/10 p-3 text-sm">
+            <p className="font-medium text-destructive">The runtime loader will still validate this mod set.</p>
+            <p className="mt-1 text-muted-foreground">
+              Agora will not change mods or loader settings. Review the findings first if you want to repair them.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setConfirmingBlockers(false)}>
+              Review Blockers
+            </Button>
+            <Button variant="destructive" onClick={confirmBlockedLaunch}>
+              I Understand, Launch Anyway
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

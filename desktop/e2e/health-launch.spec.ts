@@ -52,6 +52,22 @@ async function installHealthMock(page: Page, options: {
         if (command === 'plugin:event|unlisten') return Promise.resolve(1);
         if (command.startsWith('plugin:event|')) return Promise.resolve(1);
         if (command === 'list_instances') return Promise.resolve([row]);
+        if (command === 'get_instance_detail') {
+          return Promise.resolve({
+            row,
+            manifest: {
+              instance_id: row.instance_id,
+              name: row.name,
+              minecraft_version: row.minecraft_version,
+              loader: row.loader,
+              loader_version: row.loader_version,
+              mods: [], resourcepacks: [], shaders: [], datapacks: [], worlds: [],
+              user_preferences: {},
+            },
+            snapshot_readiness: 'ready',
+            snapshot_error: null,
+          });
+        }
         if (command === 'check_instance_crash') return Promise.resolve(null);
         if (command === 'check_instance_health') {
           return Promise.resolve({
@@ -179,6 +195,21 @@ test('cancel performs no launch and filename-backed disable uses the filename', 
   expect(await page.evaluate(() => (window as any).__commandCounts.launch_instance_direct ?? 0)).toBe(0);
 });
 
+test('blockers require an explicit risk confirmation before launch override', async ({ page }) => {
+  await installHealthMock(page, { direct: true, blocker: true, filename: null });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'My Instances' }).click();
+  await page.getByRole('button', { name: 'Launch' }).first().click();
+
+  await page.getByRole('button', { name: 'Launch Anyway' }).click();
+  await expect(page.getByRole('heading', { name: 'Launch despite blockers?' })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__commandCounts.launch_instance_direct ?? 0)).toBe(0);
+
+  await page.getByRole('button', { name: 'I Understand, Launch Anyway' }).click();
+  await expect(page.getByText(/Running \(PID 4242\)/)).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__lastCommandArgs.launch_instance_direct.allowHealthBlockers)).toBe(true);
+});
+
 test('finding without filename has no Disable action', async ({ page }) => {
   await installHealthMock(page, { direct: true, blocker: true, filename: null });
   await page.goto('/');
@@ -200,6 +231,19 @@ test('periodic all-instance health scan alerts the card and reuses repair dialog
   await page.getByRole('button', { name: 'Disable' }).click();
   expect(await page.evaluate(() => (window as any).__lastCommandArgs.disable_mod_for_test.filename)).toBe('example.jar');
   expect(await page.evaluate(() => (window as any).__commandCounts.launch_instance_direct ?? 0)).toBe(0);
+});
+
+test('instance editor mirrors the shared health review alert', async ({ page }) => {
+  await installHealthMock(page, { direct: true, periodicBlocker: true });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'My Instances' }).click();
+  await expect(page.getByRole('alert', { name: '1 health issue detected' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit' }).first().click();
+  await expect(page.getByRole('alert', { name: '1 health issue detected' })).toBeVisible();
+  await page.getByRole('button', { name: 'Review & repair' }).click();
+  await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
+  await expect(page.getByText("'example.jar' requires 'fabric-api' but no enabled artifact provides it.")).toBeVisible();
 });
 
 test('game-exited event clears running state in UI', async ({ page }) => {
@@ -339,16 +383,17 @@ test('loader blocker Choose compatible version switches to the selected candidat
   expect(args.action).toEqual({ type: 'SwitchLoader', target_version: '0.18.6' });
 });
 
-test('loader blocker View requirements discloses raw predicates and declarer', async ({ page }) => {
+test('loader blocker groups unresolved predicates and discloses affected mods', async ({ page }) => {
   await installHealthMock(page, { direct: true, blocker: true, loaderIssue: loaderIssueFixture });
   await page.goto('/');
   await page.getByRole('button', { name: 'My Instances' }).click();
   await page.getByRole('button', { name: 'Launch' }).first().click();
 
-  await page.getByText('View requirements (1)').click();
-  await expect(page.getByText(/moda → fabricloader/)).toBeVisible();
-  await expect(page.getByText('Predicates: >=0.19.0')).toBeVisible();
-  await expect(page.getByText(/installed candidate provides 0.16/)).toBeVisible();
+  await expect(page.getByText('Unresolved requirements (1)')).toBeVisible();
+  await expect(page.getByText(/>=0.19.0/)).toBeVisible();
+  await expect(page.getByText('Current loader provides 0.16')).toBeVisible();
+  await page.getByText('1 affected mod').click();
+  await expect(page.getByText('moda')).toBeVisible();
 });
 
 test('loader blocker with no compatible candidate surfaces conflicts and no switch action', async ({ page }) => {
@@ -361,7 +406,7 @@ test('loader blocker with no compatible candidate surfaces conflicts and no swit
   await expect(page.getByRole('button', { name: 'Switch and launch' })).toHaveCount(0);
   await expect(page.getByRole('combobox', { name: 'Choose compatible version' })).toHaveCount(0);
 
-  await page.getByText('View requirements (1) · 1 conflict').click();
+  await page.getByText('View compatibility evidence · 1 conflict').click();
   await expect(page.getByText('conflict between moda and modb: no signed loader candidate satisfies both')).toBeVisible();
 });
 

@@ -3,6 +3,7 @@ import type { LucideIcon } from 'lucide-react';
 import { ChevronLeft, ChevronRight, Command } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import type { Tab } from '../lib/useDestination';
+import type { RegistryStatus } from '../lib/tauri';
 
 interface SidebarProps {
   tabs: { id: Tab; label: string; icon: LucideIcon }[];
@@ -14,6 +15,7 @@ interface SidebarProps {
   onCollapsedChange: (collapsed: boolean) => void;
   onWidthChange: (width: number) => void;
   onWidthCommit: (width: number) => void;
+  registryStatus?: RegistryStatus | null;
 }
 
 const MIN_WIDTH = 180;
@@ -34,6 +36,7 @@ export function Sidebar({
   onCollapsedChange,
   onWidthChange,
   onWidthCommit,
+  registryStatus,
 }: SidebarProps) {
   const latestWidth = useRef(width);
 
@@ -147,7 +150,18 @@ export function Sidebar({
       )}
 
       {!collapsed && (
-        <div className="border-t border-border p-4 text-xs text-muted-foreground">v0.1.0 · Community curated</div>
+        <div className="border-t border-border p-4 text-xs text-muted-foreground">
+          <div>v0.1.0 · Community curated</div>
+          <div className="mt-1">
+            {registryStatus?.has_cached_db ? (
+              registryStatus.cached_tag
+                ? `Registry ${registryStatus.cached_tag}`
+                : `Local registry · schema v${registryStatus.cached_schema_version ?? '—'}`
+            ) : (
+              'No registry loaded'
+            )}
+          </div>
+        </div>
       )}
     </aside>
   );

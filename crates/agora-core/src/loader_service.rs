@@ -205,7 +205,7 @@ impl LoaderService {
             .indeterminate_versions
             .iter()
             .any(|candidate| candidate.loader_version == target_version);
-        if !target_satisfies_all && !(allow_indeterminate && target_is_indeterminate) {
+        if !(target_satisfies_all || allow_indeterminate && target_is_indeterminate) {
             return Err(LauncherError::Generic {
                 code: "ERR_LOADER_CHANGE_REJECTED".into(),
                 message: format!(
@@ -704,6 +704,7 @@ fn no_loader_requirements_error(instance_id: &str) -> LauncherError {
 /// update matches no row (instance absent or tuple changed concurrently), the
 /// original manifest is restored through the same atomic writer and a clear
 /// error is surfaced — including when the rollback itself fails.
+#[allow(clippy::too_many_arguments)]
 fn commit_loader_version_change(
     manifest_path: &Path,
     manifest: &InstanceManifest,

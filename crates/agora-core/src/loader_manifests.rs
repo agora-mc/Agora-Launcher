@@ -34,8 +34,9 @@ pub enum LoaderReleaseChannel {
 ///
 /// `provided_versions` maps a normalized (lowercase) capability name to the
 /// version this distribution provides for it. Explicit entries win over and
-/// augment the legacy distribution identity; language-loader capabilities
-/// (javafml/lowcodefml) are never synthesized from a Forge/NeoForge release.
+/// augment the legacy distribution identity. Forge's javafml and lowcodefml
+/// are the documented major Forge version; NeoForge language providers remain
+/// explicit catalog metadata because their version space is independent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoaderCapabilities {
     /// The loader family, e.g. `fabric`, `quilt`, `forge`, `neoforge`.
@@ -132,18 +133,16 @@ impl<'de> Deserialize<'de> for LoaderEntry {
 
 fn infer_release_channel(version: &str) -> LoaderReleaseChannel {
     let lower = version.to_ascii_lowercase();
-    let prerelease = lower
-        .split(|character: char| matches!(character, '.' | '-' | '_'))
-        .any(|token| {
-            token == "alpha"
-                || token == "beta"
-                || token == "snapshot"
-                || token == "pre"
-                || token.starts_with("alpha")
-                || token.starts_with("beta")
-                || token.starts_with("rc")
-                || token.starts_with("snapshot")
-        });
+    let prerelease = lower.split(['.', '-', '_']).any(|token| {
+        token == "alpha"
+            || token == "beta"
+            || token == "snapshot"
+            || token == "pre"
+            || token.starts_with("alpha")
+            || token.starts_with("beta")
+            || token.starts_with("rc")
+            || token.starts_with("snapshot")
+    });
     if prerelease {
         LoaderReleaseChannel::Prerelease
     } else {
@@ -216,9 +215,10 @@ impl LoaderEntry {
     /// legacy identity). When absent, a legacy catalog yields the
     /// distribution identity only for the exact pinned catalog tuple:
     /// `fabric` → `fabricloader`, `quilt` → `quilt_loader`, `forge` → `forge`,
-    /// `neoforge` → `neoforge`, each equal to the pinned loader version.
-    /// Language-loader capabilities (javafml/lowcodefml) are NEVER
-    /// synthesized from a visible Forge/NeoForge release.
+    /// `neoforge` → `neoforge`, each equal to the pinned loader version. Forge
+    /// additionally supplies javafml and lowcodefml at its documented major
+    /// Forge version. NeoForge language-provider values are never inferred
+    /// from its visible distribution version.
     ///
     /// Capability names are normalized to lowercase deterministically.
     pub fn capability_version(&self, loader: &str, capability: &str) -> Option<&str> {
@@ -237,6 +237,16 @@ impl LoaderEntry {
                 return self.provided_versions.get(folded).map(String::as_str);
             }
         }
+        if loader.eq_ignore_ascii_case("forge")
+            && matches!(capability.as_str(), "javafml" | "lowcodefml")
+        {
+            return forge_language_provider_version(&self.loader_version);
+        }
+        if loader.eq_ignore_ascii_case("neoforge")
+            && matches!(capability.as_str(), "javafml" | "lowcodefml")
+        {
+            return legacy_neoforge_language_provider_version(&self.loader_version);
+        }
         let legacy = DISTRIBUTION_CAPABILITY
             .iter()
             .any(|(family, own)| *family == loader && *own == capability);
@@ -247,8 +257,9 @@ impl LoaderEntry {
     ///
     /// The distribution identity (the family's own capability) is always
     /// present: explicitly via `provided_versions`, or via the legacy
-    /// fallback for the exact pinned catalog tuple. Language-loader
-    /// capabilities are never synthesized.
+    /// fallback for the exact pinned catalog tuple. Forge's documented
+    /// language-provider capabilities are included for legacy entries;
+    /// NeoForge language-provider capabilities remain explicit.
     pub fn capabilities(&self, loader: &str) -> LoaderCapabilities {
         let distribution_id = loader.to_lowercase();
         let mut provided_versions = self.provided_versions.clone();
@@ -259,6 +270,26 @@ impl LoaderEntry {
             provided_versions
                 .entry(own.to_string())
                 .or_insert_with(|| self.loader_version.clone());
+        }
+        if distribution_id == "forge" {
+            if let Some(version) = forge_language_provider_version(&self.loader_version) {
+                provided_versions
+                    .entry("javafml".into())
+                    .or_insert_with(|| version.into());
+                provided_versions
+                    .entry("lowcodefml".into())
+                    .or_insert_with(|| version.into());
+            }
+        }
+        if distribution_id == "neoforge" {
+            if let Some(version) = legacy_neoforge_language_provider_version(&self.loader_version) {
+                provided_versions
+                    .entry("javafml".into())
+                    .or_insert_with(|| version.into());
+                provided_versions
+                    .entry("lowcodefml".into())
+                    .or_insert_with(|| version.into());
+            }
         }
         let distribution_version = DISTRIBUTION_CAPABILITY
             .iter()
@@ -271,6 +302,26 @@ impl LoaderEntry {
             provided_versions,
         }
     }
+}
+
+fn forge_language_provider_version(version: &str) -> Option<&str> {
+    let major = version.split('.').next()?;
+    (!major.is_empty() && major.bytes().all(|byte| byte.is_ascii_digit())).then_some(major)
+}
+
+/// Temporary compatibility bridge for bundled legacy 1.21.1 NeoForge entries
+/// that predate explicit provider metadata. Their pinned FML Loader artifacts
+/// are generation 4.x, and built-in providers report their FML JAR version.
+/// This deliberately exposes only the proven major lower bound rather than
+/// transforming the visible NeoForge distribution version; unknown generations
+/// remain unverified until the signed catalog supplies explicit values.
+fn legacy_neoforge_language_provider_version(version: &str) -> Option<&'static str> {
+    let mut components = version.split('.');
+    matches!(
+        (components.next(), components.next(), components.next()),
+        (Some("21"), Some("1"), Some(patch)) if !patch.is_empty() && patch.bytes().all(|byte| byte.is_ascii_digit())
+    )
+    .then_some("4")
 }
 
 impl LoaderCatalog {
@@ -890,17 +941,59 @@ mod tests {
     }
 
     #[test]
-    fn legacy_catalog_never_synthesizes_language_loader_capability() {
+    fn legacy_documented_language_provider_fallbacks_are_bounded() {
         let forge = test_entry("51.0.0");
-        assert_eq!(forge.capability_version("forge", "javafml"), None);
-        assert_eq!(forge.capability_version("forge", "lowcodefml"), None);
+        assert_eq!(forge.capability_version("forge", "javafml"), Some("51"));
+        assert_eq!(forge.capability_version("forge", "lowcodefml"), Some("51"));
         let neoforge = test_entry("21.1.181");
-        assert_eq!(neoforge.capability_version("neoforge", "javafml"), None);
+        assert_eq!(
+            neoforge.capability_version("neoforge", "javafml"),
+            Some("4")
+        );
+        assert_eq!(
+            neoforge.capability_version("neoforge", "lowcodefml"),
+            Some("4")
+        );
+        let unknown_neoforge = test_entry("21.2.0");
+        assert_eq!(
+            unknown_neoforge.capability_version("neoforge", "javafml"),
+            None
+        );
         // Unrelated capabilities are never fabricated either.
         assert_eq!(
             neoforge.capability_version("neoforge", "quilt_loader"),
             None
         );
+    }
+
+    #[test]
+    fn legacy_neoforge_bridge_does_not_claim_exact_fml_patch_versions() {
+        use crate::version_match::maven_range_matches;
+
+        // The bridge exposes only the proven major lower bound for bundled
+        // legacy 21.1.x entries. A broad range such as [4,) is satisfied,
+        // but an exact pinned patch like [4.0.39,) is NOT — matching a mod
+        // against a legacy entry must not claim an FML version the bridge
+        // cannot prove. Refreshed catalog entries carry the exact pinned FML
+        // coordinate (see _extract_neoforge_language_capabilities in
+        // scripts/fetch_loader_manifests.py), which satisfies such ranges.
+        let legacy = test_entry("21.1.181");
+        assert_eq!(legacy.capability_version("neoforge", "javafml"), Some("4"));
+        assert!(maven_range_matches("[4,)", "4"));
+        assert!(!maven_range_matches("[4.0.39,)", "4"));
+
+        let mut refreshed = test_entry("21.1.181");
+        refreshed
+            .provided_versions
+            .insert("javafml".into(), "4.0.39".into());
+        refreshed
+            .provided_versions
+            .insert("lowcodefml".into(), "4.0.39".into());
+        assert_eq!(
+            refreshed.capability_version("neoforge", "javafml"),
+            Some("4.0.39")
+        );
+        assert!(maven_range_matches("[4.0.39,)", "4.0.39"));
     }
 
     #[test]

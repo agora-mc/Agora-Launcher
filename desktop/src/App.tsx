@@ -20,6 +20,7 @@ import { ToastContainer } from './components/Toast';
 import { useDestination, type Destination, type Tab } from './lib/useDestination';
 import { useProcessController } from './lib/useProcessController';
 import { useInstanceHealthMonitor } from './lib/useInstanceHealthMonitor';
+import { useRegistryState } from './lib/useRegistryState';
 import { BrandMark } from './components/BrandMark';
 import { PackInstallProvider } from './components/PackInstallProgress';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Landmark, SettingsIcon } from 'lucide-react';
@@ -187,6 +188,27 @@ export default function App() {
     report: HealthReport;
   } | null>(null);
   const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
+  const registry = useRegistryState();
+
+  // Fetch the latest signed registry at launch so the app always starts on a
+  // fresh catalog. Skipped when registry sync is disabled in Privacy settings
+  // (the backend errors on that case; a launch-time alert would nag every start).
+  useEffect(() => {
+    if (onboardingComplete !== true) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const value = await getSetting('network_registry_sync_enabled');
+        if (cancelled || value === false || value === 'false') return;
+      } catch {
+        // Fail-open: attempt the sync when the setting cannot be read.
+      }
+      await registry.actions.sync();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onboardingComplete, registry.actions]);
 
   useEffect(() => {
     if (destination.type === 'tab' && destination.tab === 'browse') {
@@ -482,6 +504,7 @@ export default function App() {
               return next;
             });
           }}
+          registryStatus={registry.status}
         />
 
         {processState.phase === 'failed' && processState.healthReport ? (
@@ -597,6 +620,8 @@ export default function App() {
                   onKillProcess={killProcess}
                   onInvestigate={handleInstanceEditorInvestigate}
                   processLogs={processLogs}
+                  healthReport={healthMonitor.reports[instanceEditorId] ?? null}
+                  onReviewHealth={openHealthReview}
                 />
               </div>
             )}

@@ -108,6 +108,17 @@ export function useRegistryState(): {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Refresh status when the window regains focus so consumers reflect registry
+  // updates (e.g. a sync on another page or the launch-time check) without a
+  // restart.
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshStatus();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshStatus]);
+
   const hasCachedDb = status?.has_cached_db ?? false;
 
   // Derive state

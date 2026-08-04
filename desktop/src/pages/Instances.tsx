@@ -502,7 +502,9 @@ function InstanceCard({
               {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
             </p>
             <p className="truncate text-muted-foreground">
-              {healthBlocked ? 'Launch is blocked until these are resolved.' : 'Review recommended before launch.'}
+              {healthBlocked
+                ? 'Review before launching. You can continue after confirming risk.'
+                : 'Review recommended before launch.'}
             </p>
           </div>
           <button

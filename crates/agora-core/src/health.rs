@@ -153,6 +153,10 @@ pub struct LoaderCompatibilityIssue {
 pub struct LoaderRequirementIssue {
     /// The declaring mod id, when known.
     pub declaring_mod_id: Option<String>,
+    /// All mods with this identical capability predicate. This aggregates
+    /// file-level language-loader metadata without hiding affected content.
+    #[serde(default)]
+    pub declaring_mod_ids: Vec<String>,
     /// The capability the requirement targets (e.g. `fabricloader`).
     pub target_id: String,
     /// Raw version ranges in the loader-native grammar.
@@ -187,11 +191,13 @@ struct CachedHealth {
 }
 
 const HEALTH_CACHE_CAPACITY: usize = 64;
-/// v3: reports carry structured loader-compatibility findings and source-JAR
-/// repair targets for missing dependencies; earlier cached reports are stale.
-const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 3;
+/// v6: JAR parser variable expansion changed; reports written before the
+/// matching parser cache schema can retain literal `${...}` constraints.
+const HEALTH_REPORT_CACHE_SCHEMA_VERSION: u32 = 6;
 const JAR_METADATA_CACHE_SCHEMA_VERSION: u32 = 1;
-const JAR_METADATA_PARSER_SCHEMA_VERSION: u32 = 1;
+// v2 resolves Forge/NeoForge TOML variables and distinguishes third-party
+// language-provider mods from built-in FML loader capabilities.
+const JAR_METADATA_PARSER_SCHEMA_VERSION: u32 = 2;
 static HEALTH_CACHE_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static HEALTH_CACHE: LazyLock<Mutex<HashMap<HealthCacheKey, CachedHealth>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -1735,6 +1741,7 @@ fn loader_compatibility_issue(
             .iter()
             .map(|result: &LoaderRequirementResult| LoaderRequirementIssue {
                 declaring_mod_id: result.declaration.declaring_mod_id.clone(),
+                declaring_mod_ids: result.declaring_mod_ids.clone(),
                 target_id: result.declaration.target_id.clone(),
                 version_ranges: result.declaration.version_ranges.clone(),
                 importance: result.declaration.importance,

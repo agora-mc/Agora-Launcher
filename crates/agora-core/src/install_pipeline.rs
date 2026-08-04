@@ -1872,6 +1872,7 @@ fn conflict_resolution_option(resolution: &ConflictResolution) -> ConflictResolu
 /// artifacts cannot contribute evidence before staging without downloading at
 /// resolve time (a redesign), so they remain covered by the post-install
 /// health scan.
+#[allow(clippy::too_many_arguments)]
 fn apply_loader_change_policy(
     manifest: &crate::models::InstanceManifest,
     intent: &InstallIntent,
@@ -1985,6 +1986,7 @@ fn apply_loader_change_policy(
             .iter()
             .map(|result| crate::health::LoaderRequirementIssue {
                 declaring_mod_id: result.declaration.declaring_mod_id.clone(),
+                declaring_mod_ids: result.declaring_mod_ids.clone(),
                 target_id: result.declaration.target_id.clone(),
                 version_ranges: result.declaration.version_ranges.clone(),
                 importance: result.declaration.importance,

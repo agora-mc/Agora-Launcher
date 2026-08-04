@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRegistryState } from '../lib/useRegistryState';
+import { RegistryStatusView } from '../components/registry-status-view';
 import {
   checkInstanceCrash,
   detectDrift,
@@ -10,7 +11,6 @@ import {
   restoreSnapshot,
   forYouItems,
   setSetting,
-  checkRegistryUpdate,
   type InstanceRow,
   type RegistryItem,
 } from '../lib/tauri';
@@ -38,7 +38,7 @@ export function Home({
   processState: ProcessState;
   onKillProcess: () => Promise<void>;
 }) {
-  const { state: regState, hasCachedDb } = useRegistryState();
+  const { state, status, error, hasCachedDb, actions } = useRegistryState();
 
   const [instances, setInstances] = useState<InstanceRow[]>([]);
   const [instancesLoading, setInstancesLoading] = useState(true);
@@ -281,11 +281,14 @@ export function Home({
         />
       )}
 
-      {regState === 'missing' && (
-        <RegistryAlert
-          hasCachedDb={hasCachedDb}
-        />
-      )}
+      {/* Zone A: Alerts — registry status with manual update check */}
+      <RegistryStatusView
+        variant="banner"
+        state={state}
+        status={status}
+        error={error}
+        actions={actions}
+      />
 
       {/* Zone B: Hero — Continue Playing */}
       <ContinuePlayingCard
@@ -357,36 +360,6 @@ function CrashAlert({ instanceName, crashFilename, canRestore, onRestore }: {
       </div>
       <button onClick={onRestore} className="rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:bg-destructive/90">
         {canRestore ? 'View & restore' : 'View instance'}
-      </button>
-    </div>
-  );
-}
-
-function RegistryAlert({ hasCachedDb }: {
-  hasCachedDb: boolean;
-}) {
-  const [downloading, setDownloading] = useState(false);
-
-  const handleDownload = async () => {
-    setDownloading(true);
-    try {
-      await checkRegistryUpdate(true);
-    } catch {
-      // error handled by the registry status view
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  return (
-    <div className="rounded-lg border border-amber-500 bg-amber-50 dark:bg-amber-900/20 p-3 flex items-center justify-between gap-3">
-      <p className="text-xs text-amber-700 dark:text-amber-300">
-        {hasCachedDb
-          ? 'Using cached registry — updates, recommendations, and governance are offline.'
-          : 'Registry not downloaded yet. Download it to enable updates, recommendations, and governance.'}
-      </p>
-      <button onClick={handleDownload} disabled={downloading} className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
-        {downloading ? 'Downloading…' : 'Download registry'}
       </button>
     </div>
   );

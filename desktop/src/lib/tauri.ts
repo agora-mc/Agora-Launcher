@@ -652,6 +652,7 @@ export interface LoaderCompatibilityIssue {
  * `health::LoaderRequirementIssue`). */
 export interface LoaderRequirementIssue {
   declaring_mod_id: string | null;
+  declaring_mod_ids?: string[];
   target_id: string;
   version_ranges: string[];
   importance: DependencyImportance;
@@ -785,6 +786,7 @@ export type CurrentLoaderStatus =
 /** Serialized `loader_compatibility::LoaderRequirementResult`. */
 export interface LoaderRequirementResult {
   declaration: DependencyDecl;
+  declaring_mod_ids?: string[];
   capability: string;
   kind: 'framework' | 'language_loader';
   candidate_provided_version: string | null;

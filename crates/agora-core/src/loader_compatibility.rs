@@ -9,9 +9,9 @@
 //!
 //! - Declarations targeting a known framework capability (`fabricloader`,
 //!   `quilt_loader`, `forge`, `neoforge`), and
-//! - All Forge/NeoForge language-loader declarations (sources
-//!   [`DependencySource::ForgeLanguageLoader`] /
-//!   [`DependencySource::NeoForgeLanguageLoader`]).
+//! - Built-in Forge/NeoForge language-loader declarations (`javafml` and
+//!   `lowcodefml`). Third-party language providers such as KotlinForForge are
+//!   ordinary installed mod dependencies, not distribution capabilities.
 //!
 //! Minecraft, Java, and general mod dependencies are never treated as loader
 //! requirements. Unknown language capabilities are `Unsupported` and thereby
@@ -31,6 +31,11 @@ use std::cmp::Ordering;
 /// Known framework capabilities that count as loader requirements.
 pub const KNOWN_FRAMEWORK_TARGETS: [&str; 4] =
     ["fabricloader", "quilt_loader", "forge", "neoforge"];
+
+/// Language providers supplied by Forge/NeoForge itself. Other `modLoader`
+/// values are provided by installed mod JARs and must use ordinary dependency
+/// checks instead of loader-catalog compatibility logic.
+pub const BUILTIN_FML_LANGUAGE_PROVIDERS: [&str; 2] = ["javafml", "lowcodefml"];
 
 // ---------------------------------------------------------------------------
 // Public request / report types
@@ -82,8 +87,8 @@ pub enum LoaderRequirementKind {
     /// Targets a known framework capability (`fabricloader`, `quilt_loader`,
     /// `forge`, `neoforge`).
     Framework,
-    /// A Forge/NeoForge `modLoader`/`loaderVersion` language-loader
-    /// declaration (e.g. `javafml`, `lowcodefml`).
+    /// A built-in Forge/NeoForge `modLoader`/`loaderVersion` declaration
+    /// (`javafml` or `lowcodefml`).
     LanguageLoader,
 }
 
@@ -113,6 +118,11 @@ impl From<RequirementEvaluation> for RequirementVerdict {
 pub struct LoaderRequirementResult {
     /// The original requirement declaration.
     pub declaration: DependencyDecl,
+    /// Every declaring mod represented by this semantically identical
+    /// requirement. Grouping keeps one file-level language-loader predicate
+    /// from producing a separate solver/UI row for every affected mod.
+    #[serde(default)]
+    pub declaring_mod_ids: Vec<String>,
     /// The normalized (lowercase) capability name that was evaluated.
     pub capability: String,
     pub kind: LoaderRequirementKind,
@@ -226,10 +236,12 @@ pub fn is_loader_requirement(decl: &DependencyDecl) -> Option<LoaderRequirementK
     let target = decl.target_id.to_lowercase();
     if KNOWN_FRAMEWORK_TARGETS.contains(&target.as_str()) {
         Some(LoaderRequirementKind::Framework)
-    } else if matches!(
-        decl.source,
-        DependencySource::ForgeLanguageLoader | DependencySource::NeoForgeLanguageLoader
-    ) {
+    } else if BUILTIN_FML_LANGUAGE_PROVIDERS.contains(&target.as_str())
+        && matches!(
+            decl.source,
+            DependencySource::ForgeLanguageLoader | DependencySource::NeoForgeLanguageLoader
+        )
+    {
         Some(LoaderRequirementKind::LanguageLoader)
     } else {
         None
@@ -243,17 +255,7 @@ pub fn evaluate_loader_compatibility(
 ) -> LoaderCompatibilityReport {
     let family = request.loader.to_lowercase();
 
-    let specs: Vec<LoaderRequirementSpec> = request
-        .requirements
-        .iter()
-        .filter_map(|decl| {
-            is_loader_requirement(decl).map(|kind| LoaderRequirementSpec {
-                decl,
-                kind,
-                capability: decl.target_id.to_lowercase(),
-            })
-        })
-        .collect();
+    let specs = grouped_loader_requirement_specs(request.requirements);
 
     let candidates: Vec<&LoaderEntry> = request
         .catalog
@@ -308,6 +310,7 @@ pub fn evaluate_loader_compatibility(
                 };
                 LoaderRequirementResult {
                     declaration: spec.decl.clone(),
+                    declaring_mod_ids: spec.declaring_mod_ids.clone(),
                     capability: spec.capability.clone(),
                     kind: spec.kind,
                     candidate_provided_version: None,
@@ -321,7 +324,7 @@ pub fn evaluate_loader_compatibility(
     let hard_positions: Vec<usize> = specs
         .iter()
         .enumerate()
-        .filter(|(_, spec)| is_hard(spec.decl))
+        .filter(|(_, spec)| is_hard(&spec.decl))
         .map(|(index, _)| index)
         .collect();
 
@@ -340,7 +343,7 @@ pub fn evaluate_loader_compatibility(
         .filter(|candidate| {
             let mut has_unsupported = false;
             for (result, spec) in candidate.results.iter().zip(&specs) {
-                if !is_hard(spec.decl) {
+                if !is_hard(&spec.decl) {
                     continue;
                 }
                 match &result.evaluation {
@@ -431,10 +434,43 @@ pub fn evaluate_loader_compatibility(
 // Internals
 // ---------------------------------------------------------------------------
 
-struct LoaderRequirementSpec<'a> {
-    decl: &'a DependencyDecl,
+struct LoaderRequirementSpec {
+    decl: DependencyDecl,
+    declaring_mod_ids: Vec<String>,
     kind: LoaderRequirementKind,
     capability: String,
+}
+
+fn grouped_loader_requirement_specs(requirements: &[DependencyDecl]) -> Vec<LoaderRequirementSpec> {
+    let mut specs: Vec<LoaderRequirementSpec> = Vec::new();
+    for decl in requirements {
+        let Some(kind) = is_loader_requirement(decl) else {
+            continue;
+        };
+        let capability = decl.target_id.to_lowercase();
+        if let Some(existing) = specs.iter_mut().find(|existing| {
+            existing.kind == kind
+                && existing.capability == capability
+                && existing.decl.version_ranges == decl.version_ranges
+                && existing.decl.importance == decl.importance
+                && existing.decl.grammar == decl.grammar
+        }) {
+            if let Some(mod_id) = &decl.declaring_mod_id {
+                if !existing.declaring_mod_ids.contains(mod_id) {
+                    existing.declaring_mod_ids.push(mod_id.clone());
+                    existing.declaring_mod_ids.sort();
+                }
+            }
+            continue;
+        }
+        specs.push(LoaderRequirementSpec {
+            decl: decl.clone(),
+            declaring_mod_ids: decl.declaring_mod_id.iter().cloned().collect(),
+            kind,
+            capability,
+        });
+    }
+    specs
 }
 
 struct EvaluatedCandidate<'a> {
@@ -444,13 +480,13 @@ struct EvaluatedCandidate<'a> {
 }
 
 impl<'a> EvaluatedCandidate<'a> {
-    fn new(entry: &'a LoaderEntry, family: &str, specs: &[LoaderRequirementSpec<'a>]) -> Self {
+    fn new(entry: &'a LoaderEntry, family: &str, specs: &[LoaderRequirementSpec]) -> Self {
         let results: Vec<LoaderRequirementResult> = specs
             .iter()
             .map(|spec| evaluate_spec_against(entry, family, spec))
             .collect();
         let usable = results.iter().zip(specs).all(|(result, spec)| {
-            !is_hard(spec.decl) || matches!(result.evaluation, RequirementEvaluation::Satisfied)
+            !is_hard(&spec.decl) || matches!(result.evaluation, RequirementEvaluation::Satisfied)
         });
         EvaluatedCandidate {
             entry,
@@ -471,7 +507,7 @@ fn evaluate_spec_against(
 ) -> LoaderRequirementResult {
     let provided = entry.capability_version(family, &spec.capability);
     let evaluation = match provided {
-        Some(version) => evaluate_requirement(spec.decl, version),
+        Some(version) => evaluate_requirement(&spec.decl, version),
         None => match spec.kind {
             // A known framework capability the candidate does not provide can
             // be proven unmet — the distribution simply does not carry it.
@@ -488,6 +524,7 @@ fn evaluate_spec_against(
     };
     LoaderRequirementResult {
         declaration: spec.decl.clone(),
+        declaring_mod_ids: spec.declaring_mod_ids.clone(),
         capability: spec.capability.clone(),
         kind: spec.kind,
         candidate_provided_version: provided.map(str::to_string),
@@ -536,7 +573,7 @@ fn channel_priority(channel: LoaderReleaseChannel) -> u8 {
 /// candidate (unknown syntax or capability) never produce a conflict claim.
 fn pair_conflicts<'a>(
     evaluated: &[EvaluatedCandidate<'a>],
-    specs: &[LoaderRequirementSpec<'a>],
+    specs: &[LoaderRequirementSpec],
     hard_positions: &[usize],
 ) -> Vec<LoaderConflict> {
     let mut satisfying: Vec<Vec<usize>> = Vec::with_capacity(hard_positions.len());
@@ -569,8 +606,8 @@ fn pair_conflicts<'a>(
                 .all(|index| !satisfying[second].contains(index));
             if disjoint {
                 conflicts.push(LoaderConflict::new(
-                    specs[hard_positions[first]].decl,
-                    specs[hard_positions[second]].decl,
+                    &specs[hard_positions[first]].decl,
+                    &specs[hard_positions[second]].decl,
                 ));
             }
         }
@@ -824,11 +861,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Forge / NeoForge: no synthesized language capability
+    // Forge / NeoForge language-provider capabilities
     // -----------------------------------------------------------------------
 
     #[test]
-    fn forge_language_loader_without_explicit_capability_is_unsupported() {
+    fn forge_language_loader_uses_documented_major_provider_version() {
         let catalog = catalog(
             "forge",
             vec![entry("51.0.0", LoaderReleaseChannel::Stable, None, &[])],
@@ -836,25 +873,118 @@ mod tests {
         let decl = DependencyDecl {
             declaring_mod_id: Some("moda".into()),
             target_id: "javafml".into(),
-            version_ranges: vec!["[3,)".into()],
+            version_ranges: vec!["[51,)".into()],
             importance: DependencyImportance::Required,
             grammar: VersionGrammar::Maven,
             source: DependencySource::ForgeLanguageLoader,
         };
         let report =
             evaluate_loader_compatibility(&request("forge", Some("51.0.0"), &[decl], &catalog));
-        // The requirement cannot be verified, so the current status is
-        // indeterminate and nothing is recommended.
-        assert_eq!(report.current_status, CurrentLoaderStatus::Indeterminate);
-        assert!(report.recommended_version.is_none());
-        assert!(report.compatible_versions.is_empty());
-        assert_eq!(report.indeterminate_versions.len(), 1);
-        assert_eq!(report.indeterminate_versions[0].loader_version, "51.0.0");
-        assert!(matches!(
-            &report.requirements[0].verdict,
-            RequirementVerdict::Unsupported { reason }
-                if reason == "candidate does not provide language loader capability 'javafml'"
+        assert_eq!(report.current_status, CurrentLoaderStatus::Compatible);
+        assert_eq!(result_version(&report), Some("51.0.0"));
+        assert_eq!(
+            report.requirements[0].candidate_provided_version.as_deref(),
+            Some("51")
+        );
+        assert_eq!(
+            report.requirements[0].verdict,
+            RequirementVerdict::Satisfied
+        );
+    }
+
+    #[test]
+    fn legacy_neoforge_1211_profile_provides_both_builtin_language_loaders() {
+        let catalog = catalog(
+            "neoforge",
+            vec![entry("21.1.172", LoaderReleaseChannel::Stable, None, &[])],
+        );
+        let requirements = vec![
+            DependencyDecl {
+                declaring_mod_id: Some("structory".into()),
+                target_id: "javafml".into(),
+                version_ranges: vec!["[1,)".into()],
+                importance: DependencyImportance::Required,
+                grammar: VersionGrammar::Maven,
+                source: DependencySource::NeoForgeLanguageLoader,
+            },
+            DependencyDecl {
+                declaring_mod_id: Some("structory_towers".into()),
+                target_id: "lowcodefml".into(),
+                version_ranges: vec!["[1,)".into()],
+                importance: DependencyImportance::Required,
+                grammar: VersionGrammar::Maven,
+                source: DependencySource::NeoForgeLanguageLoader,
+            },
+        ];
+        let report = evaluate_loader_compatibility(&request(
+            "neoforge",
+            Some("21.1.172"),
+            &requirements,
+            &catalog,
         ));
+        assert_eq!(report.current_status, CurrentLoaderStatus::Compatible);
+        assert_eq!(report.requirements.len(), 2);
+        assert!(report
+            .requirements
+            .iter()
+            .all(|result| result.verdict == RequirementVerdict::Satisfied));
+    }
+
+    #[test]
+    fn identical_language_requirements_group_declaring_mods() {
+        let catalog = catalog(
+            "forge",
+            vec![entry("47.4.10", LoaderReleaseChannel::Stable, None, &[])],
+        );
+        let requirements = [
+            DependencyDecl {
+                declaring_mod_id: Some("mod_a".into()),
+                target_id: "javafml".into(),
+                version_ranges: vec!["[47,)".into()],
+                importance: DependencyImportance::Required,
+                grammar: VersionGrammar::Maven,
+                source: DependencySource::ForgeLanguageLoader,
+            },
+            DependencyDecl {
+                declaring_mod_id: Some("mod_b".into()),
+                target_id: "javafml".into(),
+                version_ranges: vec!["[47,)".into()],
+                importance: DependencyImportance::Required,
+                grammar: VersionGrammar::Maven,
+                source: DependencySource::ForgeLanguageLoader,
+            },
+        ];
+        let report = evaluate_loader_compatibility(&request(
+            "forge",
+            Some("47.4.10"),
+            &requirements,
+            &catalog,
+        ));
+        assert_eq!(report.requirements.len(), 1);
+        assert_eq!(
+            report.requirements[0].declaring_mod_ids,
+            vec!["mod_a".to_string(), "mod_b".to_string()]
+        );
+    }
+
+    #[test]
+    fn third_party_language_provider_is_not_a_distribution_requirement() {
+        let catalog = catalog(
+            "forge",
+            vec![entry("51.0.0", LoaderReleaseChannel::Stable, None, &[])],
+        );
+        let decl = DependencyDecl {
+            declaring_mod_id: Some("moda".into()),
+            target_id: "kotlinforforge".into(),
+            version_ranges: vec!["[5,)".into()],
+            importance: DependencyImportance::Required,
+            grammar: VersionGrammar::Maven,
+            source: DependencySource::ForgeLanguageLoader,
+        };
+        let report =
+            evaluate_loader_compatibility(&request("forge", Some("51.0.0"), &[decl], &catalog));
+        assert_eq!(report.current_status, CurrentLoaderStatus::Compatible);
+        assert!(report.requirements.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1481,7 +1611,7 @@ mod tests {
         let a = evaluate_loader_compatibility(&request(
             "fabric",
             Some("0.18.6"),
-            &[decl.clone()],
+            std::slice::from_ref(&decl),
             &forward,
         ));
         let b =

@@ -2,6 +2,7 @@ use crate::dependency_ops::{
     DependencyDecl, DependencyImportance, DependencySource, IncompatibilityDecl,
     IncompatibilitySource, JarDeps, ProvidedMod, ProvidedModSource, VersionGrammar,
 };
+use crate::loader_compatibility::BUILTIN_FML_LANGUAGE_PROVIDERS;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek};
@@ -1355,6 +1356,7 @@ struct ParsedForgeMetadata {
     version: Option<String>,
     dependencies: Vec<PendingForgeDep>,
     language_loader: Option<LanguageLoaderField>,
+    partial: bool,
 }
 
 /// Top-level Forge/NeoForge `modLoader` + `loaderVersion` pair, or an
@@ -1371,27 +1373,84 @@ enum LanguageLoaderField {
 /// Parse the top-level `modLoader` / `loaderVersion` language-loader
 /// requirement. A wrong-typed field yields [`LanguageLoaderField::Invalid`]
 /// (the caller records `Partial` instead of inventing a constraint).
-fn parse_language_loader(document: &toml::Value) -> Option<LanguageLoaderField> {
+fn substitute_forge_variables(value: &str, variables: &BTreeMap<String, String>) -> Option<String> {
+    let mut expanded = value.to_string();
+    for _ in 0..8 {
+        let mut output = String::with_capacity(expanded.len());
+        let mut remainder = expanded.as_str();
+        let mut replaced = false;
+        while let Some(start) = remainder.find("${") {
+            output.push_str(&remainder[..start]);
+            let token = &remainder[start + 2..];
+            let end = token.find('}')?;
+            let key = &token[..end];
+            let replacement = variables.get(key)?;
+            output.push_str(replacement);
+            remainder = &token[end + 1..];
+            replaced = true;
+        }
+        output.push_str(remainder);
+        if !replaced {
+            return Some(expanded);
+        }
+        expanded = output;
+    }
+    (!expanded.contains("${")).then_some(expanded)
+}
+
+fn top_level_forge_variables(document: &toml::Value) -> BTreeMap<String, String> {
+    document
+        .as_table()
+        .into_iter()
+        .flat_map(|table| table.iter())
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+        .collect()
+}
+
+fn parse_language_loader(
+    document: &toml::Value,
+    variables: &BTreeMap<String, String>,
+) -> Option<LanguageLoaderField> {
     let loader = document.get("modLoader")?;
-    let Some(name) = loader
+    let Some(raw_name) = loader
         .as_str()
         .map(str::trim)
         .filter(|name| !name.is_empty())
     else {
         return Some(LanguageLoaderField::Invalid);
     };
+    let Some(name) = substitute_forge_variables(raw_name, variables) else {
+        return Some(LanguageLoaderField::Invalid);
+    };
     let version = match document.get("loaderVersion") {
         None => None,
         Some(value) => match value.as_str() {
-            Some(version) if !version.trim().is_empty() => Some(version.to_string()),
+            Some(version) if !version.trim().is_empty() => {
+                let Some(version) = substitute_forge_variables(version, variables) else {
+                    return Some(LanguageLoaderField::Invalid);
+                };
+                Some(version)
+            }
             Some(_) => None,
             None => return Some(LanguageLoaderField::Invalid),
         },
     };
-    Some(LanguageLoaderField::Valid {
-        name: name.to_string(),
-        version,
-    })
+    Some(LanguageLoaderField::Valid { name, version })
+}
+
+fn parse_forge_version_range(
+    table: &toml::map::Map<String, toml::Value>,
+    variables: &BTreeMap<String, String>,
+    partial: &mut bool,
+) -> Option<String> {
+    let raw = table.get("versionRange")?.as_str()?;
+    match substitute_forge_variables(raw, variables) {
+        Some(value) => Some(value),
+        None => {
+            *partial = true;
+            None
+        }
+    }
 }
 
 /// Parse the Forge/NeoForge TOML document with a real TOML parser.
@@ -1403,6 +1462,7 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
         .parse::<toml::Value>()
         .map_err(|_| "Forge metadata is malformed TOML.".to_string())?;
     let mut parsed = ParsedForgeMetadata::default();
+    let variables = top_level_forge_variables(&document);
     if let Some(mods) = document.get("mods") {
         let mods = mods
             .as_array()
@@ -1457,10 +1517,11 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
                             .and_then(toml::Value::as_str)
                             .map(str::to_string),
                         mandatory: table.get("mandatory").and_then(toml::Value::as_bool),
-                        version_range: table
-                            .get("versionRange")
-                            .and_then(toml::Value::as_str)
-                            .map(str::to_string),
+                        version_range: parse_forge_version_range(
+                            table,
+                            &variables,
+                            &mut parsed.partial,
+                        ),
                     });
                 }
             }
@@ -1482,10 +1543,11 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
                         .and_then(toml::Value::as_str)
                         .map(str::to_string),
                     mandatory: table.get("mandatory").and_then(toml::Value::as_bool),
-                    version_range: table
-                        .get("versionRange")
-                        .and_then(toml::Value::as_str)
-                        .map(str::to_string),
+                    version_range: parse_forge_version_range(
+                        table,
+                        &variables,
+                        &mut parsed.partial,
+                    ),
                 });
             }
         } else {
@@ -1493,7 +1555,7 @@ fn parse_forge_metadata(content: &str) -> Result<ParsedForgeMetadata, String> {
         }
     }
 
-    parsed.language_loader = parse_language_loader(&document);
+    parsed.language_loader = parse_language_loader(&document, &variables);
 
     Ok(parsed)
 }
@@ -1511,6 +1573,9 @@ fn merge_forge_metadata(
     dep_source: DependencySource,
     status: &mut ParseStatus,
 ) {
+    if parsed.partial {
+        status.record_partial();
+    }
     if mod_id_out.is_none() {
         *mod_id_out = parsed.mod_ids.iter().next().cloned();
     }
@@ -1523,20 +1588,39 @@ fn merge_forge_metadata(
                 .filter(|v| v.trim() != "*" && !v.trim().is_empty())
                 .map(|v| vec![v])
                 .unwrap_or_default();
-            dependency_decls_out.push(DependencyDecl {
-                declaring_mod_id: mod_id_out.clone(),
-                target_id: name,
-                version_ranges,
-                importance: DependencyImportance::Required,
-                grammar: VersionGrammar::Maven,
-                source: match dep_source {
-                    DependencySource::ForgeDependency => DependencySource::ForgeLanguageLoader,
-                    DependencySource::NeoForgeDependency => {
-                        DependencySource::NeoForgeLanguageLoader
-                    }
-                    _ => dep_source,
-                },
-            });
+            if BUILTIN_FML_LANGUAGE_PROVIDERS.contains(&name.to_ascii_lowercase().as_str()) {
+                dependency_decls_out.push(DependencyDecl {
+                    declaring_mod_id: mod_id_out.clone(),
+                    target_id: name,
+                    version_ranges,
+                    importance: DependencyImportance::Required,
+                    grammar: VersionGrammar::Maven,
+                    source: match dep_source {
+                        DependencySource::ForgeDependency => DependencySource::ForgeLanguageLoader,
+                        DependencySource::NeoForgeDependency => {
+                            DependencySource::NeoForgeLanguageLoader
+                        }
+                        _ => dep_source,
+                    },
+                });
+            } else {
+                // Third-party language providers such as KotlinForForge and
+                // GML are installed mod JARs, not capabilities supplied by
+                // Forge/NeoForge itself. Feed them to normal dependency
+                // presence checks rather than loader-version repair. Names
+                // are normalized to lowercase so presence matching against
+                // the lowercase alias/provider key spaces stays consistent.
+                let normalized = name.to_ascii_lowercase();
+                required_out.insert(normalized.clone());
+                dependency_decls_out.push(DependencyDecl {
+                    declaring_mod_id: mod_id_out.clone(),
+                    target_id: normalized,
+                    version_ranges,
+                    importance: DependencyImportance::Required,
+                    grammar: VersionGrammar::Maven,
+                    source: dep_source,
+                });
+            }
         }
         Some(LanguageLoaderField::Invalid) => status.record_partial(),
         None => {}
@@ -3034,6 +3118,110 @@ type="required"
         // The loader version must not leak into the visible distribution.
         assert!(meta.mod_version.is_none());
         assert!(meta.provided_mods.is_empty());
+    }
+
+    #[test]
+    fn forge_language_loader_range_resolves_top_level_property() {
+        let jar = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "loader_version_range=\"[4,)\"\nmodLoader=\"javafml\"\nloaderVersion=\"${loader_version_range}\"\nmodId=\"m\"\n",
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+        let decl = meta
+            .dependency_decls
+            .iter()
+            .find(|decl| decl.source == DependencySource::ForgeLanguageLoader)
+            .expect("resolved JavaFML declaration");
+        assert_eq!(decl.version_ranges, vec!["[4,)".to_string()]);
+    }
+
+    #[test]
+    fn unresolved_forge_language_loader_property_is_partial_not_a_false_constraint() {
+        let jar = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "modLoader=\"javafml\"\nloaderVersion=\"${loader_version_range}\"\nmodId=\"m\"\n",
+        )]);
+        let result = parse_jar_metadata_result(&jar);
+        let _ = std::fs::remove_file(&jar);
+        assert_eq!(result.status, ParseStatus::Partial);
+        assert!(!result
+            .metadata
+            .dependency_decls
+            .iter()
+            .any(|decl| decl.source == DependencySource::ForgeLanguageLoader));
+    }
+
+    #[test]
+    fn neoforge_dependency_range_resolves_top_level_property() {
+        let jar = build_test_jar(&[(
+            "META-INF/neoforge.mods.toml",
+            "neo_version=\"[21.1.0,)\"\nmodLoader=\"javafml\"\nloaderVersion=\"[4,)\"\nmodId=\"m\"\n[[dependencies.m]]\nmodId=\"neoforge\"\ntype=\"required\"\nversionRange=\"${neo_version}\"\n",
+        )]);
+        let meta = parse_jar_metadata(&jar);
+        let _ = std::fs::remove_file(&jar);
+        let decl = meta
+            .dependency_decls
+            .iter()
+            .find(|decl| decl.target_id == "neoforge")
+            .expect("resolved NeoForge dependency declaration");
+        assert_eq!(decl.version_ranges, vec!["[21.1.0,)".to_string()]);
+    }
+
+    #[test]
+    fn third_party_language_loaders_are_ordinary_required_mods() {
+        let forge = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "modLoader=\"kotlinforforge\"\nloaderVersion=\"[5,)\"\nmodId=\"kff_user\"\n",
+        )]);
+        let neoforge = build_test_jar(&[(
+            "META-INF/neoforge.mods.toml",
+            "modLoader=\"gml\"\nloaderVersion=\"[7,)\"\nmodId=\"gml_user\"\n",
+        )]);
+        let forge_meta = parse_jar_metadata(&forge);
+        let neoforge_meta = parse_jar_metadata(&neoforge);
+        let _ = std::fs::remove_file(&forge);
+        let _ = std::fs::remove_file(&neoforge);
+
+        assert!(forge_meta
+            .depends_on
+            .contains(&"kotlinforforge".to_string()));
+        assert!(neoforge_meta.depends_on.contains(&"gml".to_string()));
+        assert!(forge_meta.dependency_decls.iter().any(|decl| {
+            decl.target_id == "kotlinforforge" && decl.source == DependencySource::ForgeDependency
+        }));
+        assert!(neoforge_meta.dependency_decls.iter().any(|decl| {
+            decl.target_id == "gml" && decl.source == DependencySource::NeoForgeDependency
+        }));
+        assert!(!forge_meta
+            .dependency_decls
+            .iter()
+            .any(|decl| { decl.source == DependencySource::ForgeLanguageLoader }));
+        assert!(!neoforge_meta
+            .dependency_decls
+            .iter()
+            .any(|decl| { decl.source == DependencySource::NeoForgeLanguageLoader }));
+    }
+
+    #[test]
+    fn third_party_language_loader_names_normalize_to_lowercase() {
+        let forge = build_test_jar(&[(
+            "META-INF/mods.toml",
+            "modLoader=\"KotlinForForge\"\nloaderVersion=\"[5,)\"\nmodId=\"kff_user\"\n",
+        )]);
+        let meta = parse_jar_metadata(&forge);
+        let _ = std::fs::remove_file(&forge);
+
+        assert!(
+            meta.depends_on.contains(&"kotlinforforge".to_string()),
+            "mixed-case third-party provider name must be stored lowercase"
+        );
+        let decl = meta
+            .dependency_decls
+            .iter()
+            .find(|decl| decl.target_id == "kotlinforforge")
+            .expect("lowercase normalized third-party dependency declaration");
+        assert_eq!(decl.version_ranges, vec!["[5,)".to_string()]);
     }
 
     #[test]

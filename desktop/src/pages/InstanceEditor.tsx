@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
@@ -48,8 +48,6 @@ import {
   deleteLoadoutProfile,
   openInstanceFolder,
   revealPath,
-  planLoaderChange,
-  changeLoaderVersion,
   type InstanceDetail,
   type InstanceManifest,
   type JavaRuntimeSummary,
@@ -66,17 +64,10 @@ import {
   type LoadoutProfile,
   type LockfileDriftReport,
   type MemoryRecommendation,
-  type LoaderChangePlan,
-  type CompatibleLoaderCandidate,
+  type HealthReport,
 } from '../lib/tauri';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from '../components/ui/select';
 import { ImagePlus, Play } from 'lucide-react';
 
 function installedModKey(mod: InstalledMod): string {
@@ -188,26 +179,6 @@ function storedGcMode(value: string | undefined): GcMode {
   }
 }
 
-function loaderCandidateLabel(
-  candidate: CompatibleLoaderCandidate,
-  currentVersion: string,
-  recommendedVersion: string | null,
-  indeterminate = false,
-): string {
-  const parts = [candidate.loader_version];
-  if (candidate.loader_version === currentVersion) {
-    parts.push('(Current)');
-  } else if (candidate.loader_version === recommendedVersion) {
-    parts.push('(Recommended)');
-  } else if (indeterminate) {
-    parts.push('(Manual confirmation)');
-  } else {
-    parts.push('(Compatible)');
-  }
-  if (candidate.release_channel === 'prerelease') parts.push('Prerelease');
-  return parts.join(' ');
-}
-
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
   const first = Number(parts[0]);
@@ -219,7 +190,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void> }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
   const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
@@ -275,14 +246,6 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [instanceJavaAllowOverride, setInstanceJavaAllowOverride] = useState(false);
   const [instanceJavaSaving, setInstanceJavaSaving] = useState(false);
   const [playBusy, setPlayBusy] = useState(false);
-
-  // Loader compatibility (Work Package 7): plan-based switching control.
-  const [loaderPlan, setLoaderPlan] = useState<LoaderChangePlan | null>(null);
-  const [loaderChangeTarget, setLoaderChangeTarget] = useState<string | null>(null);
-  const [loaderChangeBusy, setLoaderChangeBusy] = useState(false);
-  const [loaderChangeError, setLoaderChangeError] = useState<string | null>(null);
-
-
 
   const [canonicalOperation, setCanonicalOperation] = useState<{
     intent: InstallIntent;
@@ -1038,26 +1001,6 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const row = detail?.row;
   const manifest = detail?.manifest;
-  const indeterminateLoaderCandidates = loaderPlan?.current_report.indeterminate_versions ?? [];
-  const loaderCandidates = loaderPlan
-    ? [
-        ...loaderPlan.current_report.compatible_versions,
-        ...indeterminateLoaderCandidates.filter(
-          (candidate) => !loaderPlan.current_report.compatible_versions.some(
-            (compatible) => compatible.loader_version === candidate.loader_version,
-          ),
-        ),
-      ]
-    : [];
-  const selectedLoaderCandidate = loaderChangeTarget
-    ? loaderCandidates.find((candidate) => candidate.loader_version === loaderChangeTarget)
-    : undefined;
-  const selectedLoaderIndeterminate = !!(
-    selectedLoaderCandidate
-    && indeterminateLoaderCandidates.some(
-      (candidate) => candidate.loader_version === selectedLoaderCandidate.loader_version,
-    )
-  );
   const mods = manifest?.mods ?? [];
   const displayedContentRows = contentRowsLoaded ? contentRows : fallbackContentRows(manifest ?? null);
   const packInstall = getTaskForInstance(instanceId);
@@ -1076,6 +1019,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const playDisabled = playBusy || recoveryBlocked || processLaunching || processStopping || processDelegated || anotherProcessActive;
   const recoveryPending = detail?.snapshot_readiness === 'pending';
   const snapshotOperationPending = recoveryPending || packInstall?.status === 'running';
+  const healthIssueCount = healthReport
+    ? healthReport.blockers.length + healthReport.warnings.length
+    : 0;
+  const healthBlocked = (healthReport?.blockers.length ?? 0) > 0;
 
   useEffect(() => {
     if (packInstall?.status === 'failed' && packInstall.error) {
@@ -1088,50 +1035,6 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       setError(detail.snapshot_error);
     }
   }, [detail?.snapshot_error, detail?.snapshot_readiness]);
-
-  const refreshLoaderPlan = useCallback(async () => {
-    try {
-      const plan = await planLoaderChange(instanceId);
-      setLoaderPlan(plan);
-      setLoaderChangeError(null);
-    } catch {
-      // No enabled mod declares loader requirements (or planning is
-      // unavailable); the control stays hidden rather than pretending a
-      // version is safe.
-      setLoaderPlan(null);
-    }
-  }, [instanceId]);
-
-  useEffect(() => {
-    if (!detail) return;
-    let cancelled = false;
-    setLoaderChangeTarget(null);
-    planLoaderChange(instanceId)
-      .then((plan) => {
-        if (!cancelled) setLoaderPlan(plan);
-      })
-      .catch(() => {
-        if (!cancelled) setLoaderPlan(null);
-      });
-    return () => { cancelled = true; };
-  }, [instanceId, detail]);
-
-  const handleConfirmLoaderChange = async () => {
-    if (!loaderChangeTarget) return;
-    setLoaderChangeBusy(true);
-    setLoaderChangeError(null);
-    try {
-      await changeLoaderVersion(instanceId, loaderChangeTarget, selectedLoaderIndeterminate);
-      setLoaderChangeTarget(null);
-      const refreshed = await getInstanceDetail(instanceId);
-      if (refreshed) setDetail(refreshed);
-      await refreshLoaderPlan();
-    } catch (cause) {
-      setLoaderChangeError(formatError(cause));
-    } finally {
-      setLoaderChangeBusy(false);
-    }
-  };
 
   const handleOpenInstalledMod = (mod: InstalledContentRow | InstalledMod) => {
     const itemId = mod.registry_id || mod.modrinth_id || mod.mod_jar_id;
@@ -1197,117 +1100,33 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             <p className="text-xs text-muted-foreground mt-1">
               MC {row?.minecraft_version} · {manifest?.loader} {manifest?.loader_version}
             </p>
-            {loaderPlan && (
-              <div className="mt-3 max-w-md rounded-lg border border-border bg-background p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-semibold">Loader compatibility</p>
-                  <span className="text-xs text-muted-foreground">
-                    {loaderPlan.current_report.current_status === 'compatible'
-                      ? 'Current loader satisfies enabled mod requirements'
-                      : loaderPlan.current_report.current_status === 'incompatible'
-                        ? 'Current loader does not satisfy enabled mod requirements'
-                        : 'Loader compatibility cannot be verified'}
-                  </span>
-                </div>
-                {loaderCandidates.length > 0 ? (
-                  <div className="mt-2">
-                    <label className="text-xs text-muted-foreground">
-                      {loaderPlan.current_report.current_status === 'indeterminate'
-                        ? 'Choose a signed version for manual confirmation'
-                        : 'Switch to a signed compatible version'}
-                    </label>
-                    <Select
-                      value={loaderChangeTarget ?? ''}
-                      onValueChange={(version) => {
-                        setLoaderChangeTarget(version);
-                        setLoaderChangeError(null);
-                      }}
-                      disabled={loaderChangeBusy || recoveryBlocked || !!row?.is_locked}
-                    >
-                      <SelectTrigger
-                        className="mt-1 h-8 w-full text-xs"
-                        aria-label="Select loader version"
-                      >
-                        {loaderChangeTarget
-                          ? loaderCandidateLabel(
-                              selectedLoaderCandidate!,
-                              loaderPlan.current_loader_version,
-                              loaderPlan.recommended_loader_version,
-                              selectedLoaderIndeterminate,
-                            )
-                          : <span className="text-muted-foreground">Choose a version…</span>}
-                      </SelectTrigger>
-                      <SelectContent>
-                        {loaderCandidates.map((candidate) => {
-                          const indeterminate = indeterminateLoaderCandidates.some(
-                            (item) => item.loader_version === candidate.loader_version,
-                          );
-                          return (
-                          <SelectItem
-                            key={candidate.loader_version}
-                            value={candidate.loader_version}
-                            disabled={candidate.loader_version === loaderPlan.current_loader_version}
-                          >
-                            {loaderCandidateLabel(
-                              candidate,
-                              loaderPlan.current_loader_version,
-                              loaderPlan.recommended_loader_version,
-                              indeterminate,
-                            )}
-                          </SelectItem>
-                          );
-                        })}
-                      </SelectContent>
-                    </Select>
-                    {loaderChangeTarget && (
-                      <div className="mt-2 rounded border border-border bg-muted/30 p-2">
-                        <p className="text-xs">
-                          Switch {manifest?.loader} {manifest?.loader_version} to{' '}
-                          {loaderChangeTarget}? The signed loader is installed first, then the
-                          instance manifest and database are updated. Installed mods are not
-                          modified.
-                        </p>
-                        {selectedLoaderIndeterminate && (
-                          <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                            This candidate has an unverified loader capability. Confirming is an
-                            advanced manual choice; the runtime loader remains the final validator.
-                          </p>
-                        )}
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void handleConfirmLoaderChange()}
-                            disabled={loaderChangeBusy || recoveryBlocked || !!row?.is_locked}
-                            className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {loaderChangeBusy ? 'Switching…' : 'Confirm switch'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLoaderChangeTarget(null)}
-                            disabled={loaderChangeBusy}
-                            className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {loaderChangeError && (
-                      <p className="mt-2 text-xs text-destructive">{loaderChangeError}</p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {loaderPlan.current_report.current_status === 'indeterminate'
-                      ? 'The installed loader tuple or a declared requirement cannot be verified against the signed catalog, so no version is proven safe to switch to. Review the enabled mods manually.'
-                      : loaderPlan.current_report.conflicts.length > 0
-                        ? 'Enabled mods declare conflicting hard loader requirements; no signed version satisfies all of them.'
-                        : 'No signed loader version satisfies every hard requirement of the enabled mods.'}
-                    {loaderPlan.current_report.conflicts.length > 0 &&
-                      ` ${loaderPlan.current_report.conflicts.length} conflict${loaderPlan.current_report.conflicts.length > 1 ? 's' : ''} detected.`}
+            {healthReport && healthIssueCount > 0 && (
+              <div
+                className={`mt-3 flex max-w-md items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${
+                  healthBlocked
+                    ? 'border-destructive/60 bg-destructive/10'
+                    : 'border-amber-500/60 bg-amber-500/10'
+                }`}
+                role="alert"
+                aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
+              >
+                <div className="min-w-0">
+                  <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
+                    {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
                   </p>
-                )}
+                  <p className="truncate text-muted-foreground">
+                    {healthBlocked
+                      ? 'Review before launching. You can continue after confirming risk.'
+                      : 'Review recommended before launch.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onReviewHealth?.(instanceId, row?.name ?? 'Instance', healthReport)}
+                  className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
+                >
+                  Review & repair
+                </button>
               </div>
             )}
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

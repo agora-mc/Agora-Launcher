@@ -59,8 +59,27 @@ function DefaultCard({
   );
 }
 
-function BannerView({ state, status: _status, error, actions }: BannerProps) {
-  if (state === 'ready') return null;
+function BannerView({ state, status, error, actions }: BannerProps) {
+  if (state === 'ready') {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs">
+        <span className="min-w-0 truncate text-muted-foreground">
+          {status?.cached_tag ? `Registry ${status.cached_tag}` : 'Registry ready.'}
+          {status?.latest_tag && status.latest_tag !== status.cached_tag && (
+            <span className="text-amber-600 dark:text-amber-400">
+              {' '}· Update available: {status.latest_tag}
+            </span>
+          )}
+        </span>
+        <button
+          onClick={actions.sync}
+          className="shrink-0 rounded px-2 py-0.5 font-medium text-primary hover:bg-accent disabled:opacity-50"
+        >
+          Check for Updates
+        </button>
+      </div>
+    );
+  }
 
   const isSyncing = state === 'loading';
 
@@ -68,7 +87,7 @@ function BannerView({ state, status: _status, error, actions }: BannerProps) {
     <div className="flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs">
       <span className="text-amber-700 dark:text-amber-300">
         {error && state === 'missing'
-          ? 'Registry not available.'
+          ? 'Registry not downloaded yet. Download it to enable updates, recommendations, and governance.'
           : error && state === 'offline'
             ? 'Using cached registry. Updates unavailable.'
             : isSyncing
@@ -80,7 +99,7 @@ function BannerView({ state, status: _status, error, actions }: BannerProps) {
         disabled={isSyncing}
         className="shrink-0 rounded px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/40 disabled:opacity-50"
       >
-        {isSyncing ? 'Refreshing…' : 'Retry'}
+        {isSyncing ? 'Refreshing…' : state === 'missing' ? 'Download Registry' : 'Retry'}
       </button>
     </div>
   );
