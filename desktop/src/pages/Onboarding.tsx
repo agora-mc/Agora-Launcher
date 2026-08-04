@@ -106,7 +106,7 @@ function Stepper({ current }: { current: Step }) {
   ];
   const currentIndex = steps.findIndex((s) => s.id === current);
   return (
-    <div className="mb-6 flex items-center gap-2">
+    <div className="mb-6 flex flex-wrap items-center gap-x-2 gap-y-1.5">
       {steps.map((s, i) => (
         <div key={s.id} className="flex items-center gap-2">
           <span
@@ -122,7 +122,7 @@ function Stepper({ current }: { current: Step }) {
             {s.label}
           </span>
           {i < steps.length - 1 && (
-            <span className="mx-1 h-px w-6 bg-gray-300 dark:bg-gray-600" />
+            <span className="mx-0.5 h-px w-4 bg-gray-300 dark:bg-gray-600" />
           )}
         </div>
       ))}

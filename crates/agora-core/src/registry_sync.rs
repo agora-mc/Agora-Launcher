@@ -27,9 +27,15 @@ pub fn resolve_registry_repo(cli_override: Option<&str>) -> String {
 }
 
 /// Ed25519 public key (hex) for verifying registry.db signatures.
+///
+/// Treat an empty `AGORA_REGISTRY_PUBKEY` as unset: CI builds that reference
+/// a missing secret/variable receive an empty string, which would otherwise
+/// compile a keyless binary that refuses to verify any registry. The fallback
+/// is the current registry signing key (matches `ED25519_PRIVATE_KEY` held by
+/// the CI compiler workflow).
 const REGISTRY_PUBKEY_HEX: &str = match option_env!("AGORA_REGISTRY_PUBKEY") {
-    Some(v) => v,
-    None => "47adee76cf587ee618f79eb2fa5bde003824d3bfc2dbb5080d33073c5a8f8c18",
+    Some(v) if !v.is_empty() => v,
+    _ => "47adee76cf587ee618f79eb2fa5bde003824d3bfc2dbb5080d33073c5a8f8c18",
 };
 
 /// App-side expected schema version for registry.db.

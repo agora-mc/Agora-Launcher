@@ -146,7 +146,7 @@ repo Settings → Secrets and variables → Actions → **Variables** tab:
 | Variable | Purpose | Sensitive? | Example |
 |---|---|---|---|
 | `AGORA_OAUTH_CLIENT_ID` | GitHub OAuth App client ID for in-app sign-in (Device Flow) | ❌ Public | `Iv1.xxxxxxxxxxxxxxxx` |
-| `AGORA_REGISTRY_PUBKEY` | Ed25519 public key (hex) for verifying downloaded `registry.db` signatures | ❌ Public | `a7f07f88d56cb93c84010ed82c253a305b8528810113e51fc6920fd70a42e6e0` |
+| `AGORA_REGISTRY_PUBKEY` | Ed25519 public key (hex) for verifying downloaded `registry.db` signatures | ❌ Public | `47adee76cf587ee618f79eb2fa5bde003824d3bfc2dbb5080d33073c5a8f8c18` |
 
 Without these, the desktop app fails fast with clear errors at the affected
 feature (`ERR_AUTH_NOT_CONFIGURED` for OAuth, `ERR_REGISTRY_PUBKEY_NOT_CONFIGURED`
@@ -221,7 +221,7 @@ Then set the resulting public key (without the `AGORA_REGISTRY_PUBKEY=`
 prefix) in your shell before building:
 
 ```powershell
-$env:AGORA_REGISTRY_PUBKEY = "a7f07f88d56cb93c84010ed82c253a305b8528810113e51fc6920fd70a42e6e0"
+$env:AGORA_REGISTRY_PUBKEY = "47adee76cf587ee618f79eb2fa5bde003824d3bfc2dbb5080d33073c5a8f8c18"
 npm run tauri:dev
 ```
 
@@ -254,7 +254,7 @@ Add these as GitHub repository secrets (Settings → Secrets and variables → A
 | Secret | Description | Example |
 |---|---|---|
 | `AGORA_OAUTH_CLIENT_ID` | GitHub OAuth App client ID (same one used for local dev) | `Iv1.xxxxxxxxxxxxxxxx` |
-| `AGORA_REGISTRY_PUBKEY` | Ed25519 public key (hex) matching the compiler's signing key | `a7f07f88d56b...` |
+| `AGORA_REGISTRY_PUBKEY` | Ed25519 public key (hex) matching the compiler's signing key. Public, so it can live as an Actions variable; the release workflow reads `vars.AGORA_REGISTRY_PUBKEY || secrets.AGORA_REGISTRY_PUBKEY` | `47adee76cf587e...` |
 
 `AGORA_REGISTRY_REPO` is set automatically by the workflow from `github.repository`. `GITHUB_TOKEN` is provided automatically by Actions.
 

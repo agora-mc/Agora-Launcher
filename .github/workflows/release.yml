@@ -95,7 +95,9 @@ jobs:
           AGORA_OAUTH_CLIENT_ID: ${{ secrets.AGORA_OAUTH_CLIENT_ID }}
           AGORA_REGISTRY_REPO: ${{ github.repository }}
           VITE_AGORA_REPOSITORY: ${{ github.repository }}
-          AGORA_REGISTRY_PUBKEY: ${{ secrets.AGORA_REGISTRY_PUBKEY }}
+          # Public key (not a secret); read from the Actions variable when
+          # present and fall back to a secret for legacy setups.
+          AGORA_REGISTRY_PUBKEY: ${{ vars.AGORA_REGISTRY_PUBKEY || secrets.AGORA_REGISTRY_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           projectPath: desktop
