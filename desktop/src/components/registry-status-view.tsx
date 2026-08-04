@@ -86,7 +86,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
   return (
     <div className="flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs">
       <span className="text-amber-700 dark:text-amber-300">
-        {error && state === 'missing'
+        {state === 'missing'
           ? 'Registry not downloaded yet. Download it to enable updates, recommendations, and governance.'
           : error && state === 'offline'
             ? 'Using cached registry. Updates unavailable.'
