@@ -3,6 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agora_core::clone::ClonePrefs;
 use agora_core::crash_service::CrashService;
@@ -2123,6 +2124,7 @@ async fn run_command(
                     anyhow::bail!("--symlink-saves is not supported for URL imports");
                 }
                 let result = svc.run_mrpack_url(&url).await?;
+                wait_for_initial_snapshot(ctx, &result.instance_id)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 } else {
@@ -2151,6 +2153,7 @@ async fn run_command(
                 symlink_saves,
             };
             let result = svc.run_import(request).await?;
+            wait_for_initial_snapshot(ctx, &result.instance_id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -3054,9 +3057,14 @@ async fn run_launch_service(
         health_scan_token: None,
     };
     let progress = ConsoleLaunchProgress { json, timings };
+    let launch_started = std::time::Instant::now();
     let result = agora_core::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
         .await?;
+    eprintln!(
+        "[timing] total-cli-session (incl. game runtime): {} ms",
+        launch_started.elapsed().as_millis()
+    );
     if json {
         println!(
             "{}",
@@ -3078,11 +3086,66 @@ async fn run_launch_service(
     }
 }
 
+/// Wait for an import's background initial recovery snapshot to settle.
+///
+/// The import service spawns the initial snapshot on a background worker so
+/// interactive callers can start browsing immediately, but a CLI process
+/// exits right after the import future completes — killing the worker and
+/// leaving a dead-owner `.agora_snapshot_pending` marker that blocks launch.
+/// This blocks until the snapshot manifest is durable (Ready), surfaces a
+/// failed snapshot, or times out.
+fn wait_for_initial_snapshot(
+    ctx: &agora_core::ctx::Ctx,
+    instance_id: &str,
+) -> anyhow::Result<()> {
+    const SNAPSHOT_SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
+    const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+    let instance_dir = ctx.paths.instance_dir(instance_id)?;
+    let started = std::time::Instant::now();
+    loop {
+        use agora_core::snapshot::SnapshotReadiness;
+        match agora_core::snapshot::snapshot_readiness(&instance_dir) {
+            SnapshotReadiness::Failed => {
+                let reason = agora_core::snapshot::snapshot_readiness_error(&instance_dir)
+                    .unwrap_or_else(|| "unknown snapshot failure".into());
+                anyhow::bail!("initial recovery snapshot failed: {reason}");
+            }
+            SnapshotReadiness::Pending => {
+                if started.elapsed() >= SNAPSHOT_SETTLE_TIMEOUT {
+                    anyhow::bail!(
+                        "timed out waiting for the initial recovery snapshot ({} s)",
+                        SNAPSHOT_SETTLE_TIMEOUT.as_secs()
+                    );
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            SnapshotReadiness::Ready => {
+                let has_manifest = agora_core::snapshot::list_snapshots(&instance_dir)
+                    .map(|snapshots| !snapshots.is_empty())
+                    .unwrap_or(false);
+                if has_manifest {
+                    eprintln!(
+                        "[timing] initial-snapshot: settled in {} ms",
+                        started.elapsed().as_millis()
+                    );
+                    return Ok(());
+                }
+                if started.elapsed() >= SNAPSHOT_SETTLE_TIMEOUT {
+                    anyhow::bail!(
+                        "timed out waiting for the initial recovery snapshot ({} s)",
+                        SNAPSHOT_SETTLE_TIMEOUT.as_secs()
+                    );
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MCP stdio transport
-// ---------------------------------------------------------------------------
-
-/// Build a JSON-RPC 2.0 success response envelope.
+// ---------------------------------------------------------------------------/// Build a JSON-RPC 2.0 success response envelope.
 fn build_jsonrpc_response(id: &serde_json::Value, result: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",

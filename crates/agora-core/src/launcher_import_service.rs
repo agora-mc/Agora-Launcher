@@ -1815,6 +1815,10 @@ impl LauncherImportService {
                 let _ = db::delete_instance_import_job(&conn, &job_id);
                 job_guard.disarm();
 
+                // The extraction rewrote tracked content; a pre-launch
+                // snapshot reuse must not outlive the import.
+                let _ = crate::snapshot::mark_instance_mutated(&final_dir);
+
                 drop(lock);
                 // Release the lock before returning.
 
@@ -2102,6 +2106,10 @@ impl LauncherImportService {
                 // ── Clean up job ─────────────────────────────────────────
                 let _ = db::delete_instance_import_job(&conn, &job_id);
                 job_guard.disarm();
+
+                // The update rewrote tracked content; a pre-launch snapshot
+                // reuse must not outlive the update.
+                let _ = crate::snapshot::mark_instance_mutated(&final_dir);
 
                 drop(lock);
 

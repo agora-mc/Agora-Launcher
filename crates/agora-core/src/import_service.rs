@@ -414,6 +414,9 @@ impl ImportService {
         // blocking worker so browsing can begin immediately.
         if let Ok(instance_dir) = self.ctx.paths.instance_dir(&result.instance_id) {
             if instance_dir.exists() {
+                // The extraction rewrote tracked content; the pre-launch
+                // snapshot reuse must not outlive the import.
+                let _ = crate::snapshot::mark_instance_mutated(&instance_dir);
                 crate::snapshot::mark_snapshot_pending(&instance_dir).map_err(|error| {
                     let _ = rollback();
                     let _ = crate::db::delete_instance(&conn, &result.instance_id);

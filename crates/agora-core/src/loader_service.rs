@@ -237,6 +237,9 @@ impl LoaderService {
         // Invalidate health and launch-plan caches after the commit so the
         // next scan and handoff observe the new tuple.
         let instance_dir = self.ctx.paths.instance_dir(instance_id)?;
+        // Tracked content changed; the next launch must not reuse a recovery
+        // snapshot taken under the previous loader tuple.
+        let _ = crate::snapshot::mark_instance_mutated(&instance_dir);
         // The metadata commit is complete at this point. Cache cleanup is
         // advisory because both health and launch-plan keys include the new
         // manifest/loader tuple; never report a completed switch as failed

@@ -12,7 +12,6 @@ use crate::network::NetworkPolicy;
 use crate::process_identity::ProcessIdentity;
 use crate::process_session_manager::ProcessSession;
 use crate::runtime_manager::RuntimeProgress;
-use crate::snapshot::create_snapshot;
 use crate::task_scheduler::BlockingPriority;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -120,6 +119,7 @@ struct LaunchInputs {
     minecraft_root: PathBuf,
     assets_dir: PathBuf,
     runtimes_root: PathBuf,
+    java_inventory_path: PathBuf,
     receipts_root: PathBuf,
     registry_db: Option<PathBuf>,
     network_policy: NetworkPolicy,
@@ -381,6 +381,7 @@ impl LaunchService {
             minecraft_root,
             assets_dir: layout.assets,
             runtimes_root: self.ctx.paths.java_runtimes_root(),
+            java_inventory_path: self.ctx.paths.java_inventory(),
             receipts_root: self.ctx.paths.loader_receipts(),
             registry_db: self
                 .ctx
@@ -537,10 +538,11 @@ impl LaunchService {
             Vec::new()
         } else if request.java_candidates.is_empty() {
             let runtimes_root = request.runtimes_root.clone();
+            let java_inventory_path = request.java_inventory_path.clone();
             self.ctx
                 .task_scheduler
                 .run_blocking(BlockingPriority::Launch, move || {
-                    cached_java_candidates(&runtimes_root)
+                    cached_java_candidates(&runtimes_root, &java_inventory_path)
                 })
                 .await
                 .map_err(|error| LauncherError::Generic {
@@ -869,7 +871,7 @@ impl LaunchService {
     }
 }
 
-fn cached_java_candidates(runtimes_root: &Path) -> Vec<JavaInstallation> {
+fn cached_java_candidates(runtimes_root: &Path, java_inventory_path: &Path) -> Vec<JavaInstallation> {
     let minecraft_dir = crate::paths::minecraft_dir();
     let key = format!(
         "{}|{}",
@@ -882,12 +884,28 @@ fn cached_java_candidates(runtimes_root: &Path) -> Vec<JavaInstallation> {
     if let Ok(cache) = JAVA_DISCOVERY_CACHE.lock() {
         if let Some((fetched_at, candidates)) = cache.get(&key) {
             if fetched_at.elapsed() < JAVA_DISCOVERY_CACHE_TTL {
+                eprintln!(
+                    "[launch-timing] java-discovery: in-memory cache hit ({} candidates)",
+                    candidates.len()
+                );
                 return candidates.clone();
             }
         }
     }
-    let candidates =
-        crate::java::detect_java_candidates(Some(runtimes_root), minecraft_dir.as_deref());
+    // The persistent inventory is validated against executable metadata and
+    // runtime-root directory state, so warm launches reuse the last discovery
+    // without spawning `java -version` probes for every JRE on the machine.
+    let discovery_started = Instant::now();
+    let candidates = crate::java::java_candidates_cached(
+        java_inventory_path,
+        runtimes_root,
+        minecraft_dir.as_deref(),
+    );
+    eprintln!(
+        "[launch-timing] java-discovery: {} candidates in {} ms",
+        candidates.len(),
+        discovery_started.elapsed().as_millis()
+    );
     if let Ok(mut cache) = JAVA_DISCOVERY_CACHE.lock() {
         cache.insert(key, (Instant::now(), candidates.clone()));
     }
@@ -920,48 +938,114 @@ fn loader_info(manifest: &InstanceManifest) -> Option<LoaderInfo> {
 }
 
 fn create_or_reuse_snapshot(instance_dir: &Path) -> LauncherResult<String> {
+    let started = Instant::now();
     let lkg = crate::lkg::read_lkg_state(instance_dir).map_err(|error| LauncherError::Generic {
         code: "ERR_LKG_READ".into(),
         message: error.to_string(),
     })?;
-    let metadata_fingerprint = crate::snapshot::live_metadata_fingerprint(instance_dir).ok();
-    if let Some(snapshot_id) = lkg.current_lkg_snapshot_id {
-        if metadata_fingerprint.as_deref().is_some_and(|fingerprint| {
-            crate::snapshot::read_snapshot_metadata_fingerprint(instance_dir, &snapshot_id)
-                .as_deref()
-                == Some(fingerprint)
-        }) {
-            return Ok(snapshot_id);
-        }
+    // Pre-launch snapshots cover the mod/config/layout state that causes
+    // launch failures; world data (`saves/`) is handled by install/import and
+    // explicit backup snapshots instead of being re-walked and re-hashed on
+    // every launch.
+    let scope = crate::snapshot::prelaunch_tracked_entries();
+    let Some(snapshot_id) = lkg.current_lkg_snapshot_id else {
+        let snapshot_id = create_fresh_prelaunch_snapshot(instance_dir, scope)?;
+        eprintln!(
+            "[launch-timing] snapshot: no LKG snapshot, created fresh in {} ms",
+            started.elapsed().as_millis()
+        );
+        return Ok(snapshot_id);
+    };
 
-        // Legacy snapshots and receipts written before this optimization still
-        // receive the exact content comparison once.  A successful comparison
-        // upgrades the snapshot with a metadata receipt for future launches.
-        if crate::snapshot::snapshot_matches_live_incremental(instance_dir, &snapshot_id)
-            .unwrap_or(false)
-        {
-            if let Some(fingerprint) = metadata_fingerprint.as_deref() {
-                let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
-                    instance_dir,
-                    &snapshot_id,
-                    fingerprint,
-                );
-            }
-            return Ok(snapshot_id);
+    // O(1) reuse: the mutation journal is untouched since the snapshot was
+    // verified, so no filesystem walk is needed to prove the state is current.
+    if crate::snapshot::prelaunch_snapshot_is_reusable(instance_dir, &snapshot_id) {
+        eprintln!(
+            "[launch-timing] snapshot: O(1) journal reuse in {} ms",
+            started.elapsed().as_millis()
+        );
+        return Ok(snapshot_id);
+    }
+    eprintln!(
+        "[launch-timing] snapshot: journal mismatch/missing, falling back to fingerprint verification"
+    );
+
+    let fingerprint_started = Instant::now();
+    let metadata_fingerprint =
+        crate::snapshot::live_metadata_fingerprint_scoped(instance_dir, scope).ok();
+    eprintln!(
+        "[launch-timing] snapshot: metadata fingerprint walk took {} ms",
+        fingerprint_started.elapsed().as_millis()
+    );
+    if metadata_fingerprint.as_deref().is_some_and(|fingerprint| {
+        crate::snapshot::read_snapshot_metadata_fingerprint(instance_dir, &snapshot_id)
+            .as_deref()
+            == Some(fingerprint)
+    }) {
+        if let Some(fingerprint) = metadata_fingerprint.as_deref() {
+            let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
+                instance_dir,
+                &snapshot_id,
+                fingerprint,
+            );
         }
+        eprintln!(
+            "[launch-timing] snapshot: fingerprint verified reuse in {} ms",
+            started.elapsed().as_millis()
+        );
+        return Ok(snapshot_id);
     }
 
-    let snapshot = create_snapshot(instance_dir, Some("pre-launch")).map_err(|error| {
-        LauncherError::Generic {
+    // Legacy snapshots and receipts written before this optimization still
+    // receive the exact content comparison once.  A successful comparison
+    // upgrades the snapshot with a metadata receipt for future launches.
+    let incremental_started = Instant::now();
+    if crate::snapshot::snapshot_matches_live_incremental_scoped(
+        instance_dir,
+        &snapshot_id,
+        scope,
+    )
+    .unwrap_or(false)
+    {
+        if let Some(fingerprint) = metadata_fingerprint.as_deref() {
+            let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
+                instance_dir,
+                &snapshot_id,
+                fingerprint,
+            );
+        }
+        eprintln!(
+            "[launch-timing] snapshot: incremental verified reuse in {} ms",
+            incremental_started.elapsed().as_millis()
+        );
+        return Ok(snapshot_id);
+    }
+
+    let create_started = Instant::now();
+    let snapshot_id = create_fresh_prelaunch_snapshot(instance_dir, scope)?;
+    eprintln!(
+        "[launch-timing] snapshot: created new snapshot in {} ms (total {} ms)",
+        create_started.elapsed().as_millis(),
+        started.elapsed().as_millis()
+    );
+    Ok(snapshot_id)
+}
+
+fn create_fresh_prelaunch_snapshot(
+    instance_dir: &Path,
+    scope: &[&str],
+) -> LauncherResult<String> {
+    let snapshot = crate::snapshot::create_snapshot_scoped(instance_dir, Some("pre-launch"), scope)
+        .map_err(|error| LauncherError::Generic {
             code: "ERR_SNAPSHOT_CREATE".into(),
             message: error.to_string(),
-        }
-    })?;
-    if let Some(fingerprint) = metadata_fingerprint.as_deref() {
+        })?;
+    if let Ok(fingerprint) = crate::snapshot::live_metadata_fingerprint_scoped(instance_dir, scope)
+    {
         let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
             instance_dir,
             &snapshot.id,
-            fingerprint,
+            &fingerprint,
         );
     }
     Ok(snapshot.id)
@@ -1074,5 +1158,47 @@ mod tests {
             }
             _ => panic!("expected SwitchLoader"),
         }
+    }
+
+    #[test]
+    fn prelaunch_snapshot_excludes_saves_and_reuses_in_o1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = tmp.path().join("instance");
+        std::fs::create_dir_all(inst.join("mods")).unwrap();
+        std::fs::write(inst.join("mods").join("test.jar"), b"mod content").unwrap();
+        std::fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
+        std::fs::write(
+            inst.join("saves").join("world1").join("level.dat"),
+            b"world data",
+        )
+        .unwrap();
+        std::fs::write(inst.join("options.txt"), b"render_distance=12").unwrap();
+        std::fs::write(inst.join("instance_manifest.json"), b"{}").unwrap();
+
+        let first = create_or_reuse_snapshot(&inst).unwrap();
+        let index = crate::snapshot::snapshot_file_index(&inst, &first).unwrap();
+        assert!(index.iter().all(|entry| !entry.path.starts_with("saves/")));
+
+        // Promote it as the LKG so the next launch takes the reuse path.
+        let lkg = crate::lkg::LkgState {
+            current_lkg_snapshot_id: Some(first.clone()),
+            ..Default::default()
+        };
+        std::fs::write(inst.join("lkg.json"), serde_json::to_vec(&lkg).unwrap()).unwrap();
+
+        let second = create_or_reuse_snapshot(&inst).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            crate::snapshot::list_snapshots(&inst).unwrap().len(),
+            1,
+            "an unchanged instance must reuse its snapshot instead of creating a new one"
+        );
+
+        // A launcher-driven mutation invalidates journal reuse but the
+        // fingerprint verification path still reuses the same snapshot.
+        crate::snapshot::mark_instance_mutated(&inst).unwrap();
+        let third = create_or_reuse_snapshot(&inst).unwrap();
+        assert_eq!(first, third);
+        assert_eq!(crate::snapshot::list_snapshots(&inst).unwrap().len(), 1);
     }
 }

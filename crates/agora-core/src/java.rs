@@ -17,6 +17,10 @@
 use crate::launch::VersionInfo;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 // ---------------------------------------------------------------------------
 // Test injection point for inspect_java
@@ -83,7 +87,7 @@ pub enum JavaSource {
 // ---------------------------------------------------------------------------
 
 /// A discovered or provisioned Java runtime.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JavaInstallation {
     /// Absolute path to the `java` (or `java.exe`) executable.
     pub path: PathBuf,
@@ -572,6 +576,233 @@ pub fn detect_system_jres() -> Vec<JavaInstallation> {
 }
 
 // ---------------------------------------------------------------------------
+// Persistent inventory
+// ---------------------------------------------------------------------------
+//
+// Full discovery spawns a `java -XshowSettings:properties -version` probe per
+// candidate, which is the dominant cold-start cost of the resolve phase.  The
+// inventory persists the last discovery result and trusts it while every
+// recorded executable still matches its recorded file metadata and the runtime
+// root directories have not changed.  A stale inventory simply falls back to
+// full discovery, which rewrites it.
+
+const JAVA_INVENTORY_SCHEMA_VERSION: u32 = 1;
+
+/// Inventories older than this are re-discovered even when every recorded
+/// executable still matches, so newly installed system JREs surface within a
+/// bounded time without a user-initiated refresh.
+const JAVA_INVENTORY_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
+
+#[derive(Debug, Serialize, Deserialize)]
+struct JavaInventoryRoot {
+    path: String,
+    modified_ns: u128,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct JavaInventoryEntry {
+    path: PathBuf,
+    version: u32,
+    version_string: String,
+    source: JavaSource,
+    arch: Option<String>,
+    file_size: u64,
+    modified_ns: u128,
+    file_identity: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct JavaInventory {
+    schema_version: u32,
+    recorded_at: String,
+    roots: Vec<JavaInventoryRoot>,
+    candidates: Vec<JavaInventoryEntry>,
+}
+
+/// Return the persisted Java inventory when it can still be trusted without
+/// re-running discovery.  The inventory is valid only when every recorded
+/// executable exists with unchanged size, modification time, and platform
+/// file identity, the runtime root directories are unchanged, and the
+/// inventory is not older than [`JAVA_INVENTORY_MAX_AGE`].
+pub fn persisted_java_candidates(
+    inventory_path: &Path,
+    runtimes_root: &Path,
+    minecraft_dir: Option<&Path>,
+) -> Option<Vec<JavaInstallation>> {
+    let bytes = std::fs::read(inventory_path).ok()?;
+    let inventory = serde_json::from_slice::<JavaInventory>(&bytes).ok()?;
+    if inventory.schema_version != JAVA_INVENTORY_SCHEMA_VERSION {
+        return None;
+    }
+    let recorded_at = chrono::DateTime::parse_from_rfc3339(&inventory.recorded_at).ok()?;
+    if chrono::Utc::now()
+        .signed_duration_since(recorded_at.with_timezone(&chrono::Utc))
+        > JAVA_INVENTORY_MAX_AGE
+    {
+        return None;
+    }
+
+    let mut current_roots = vec![inventory_root_state(runtimes_root)];
+    if let Some(minecraft_dir) = minecraft_dir {
+        current_roots.push(inventory_root_state(&minecraft_dir.join("runtime")));
+    }
+    if current_roots.len() != inventory.roots.len() {
+        return None;
+    }
+    for (current, recorded) in current_roots.iter().zip(&inventory.roots) {
+        if current.path != recorded.path || current.modified_ns != recorded.modified_ns {
+            return None;
+        }
+    }
+
+    let mut candidates = Vec::with_capacity(inventory.candidates.len());
+    for entry in &inventory.candidates {
+        let (file_size, modified_ns, file_identity) = inventory_file_state(&entry.path)?;
+        if file_size != entry.file_size
+            || modified_ns != entry.modified_ns
+            || file_identity != entry.file_identity
+        {
+            return None;
+        }
+        candidates.push(JavaInstallation {
+            path: entry.path.clone(),
+            version: entry.version,
+            version_string: entry.version_string.clone(),
+            source: entry.source,
+            arch: entry.arch.clone(),
+        });
+    }
+    Some(candidates)
+}
+
+/// Persist a discovery result for future sessions.  Best-effort: failure only
+/// costs a re-discovery on the next launch.
+pub fn persist_java_inventory(
+    inventory_path: &Path,
+    runtimes_root: &Path,
+    minecraft_dir: Option<&Path>,
+    candidates: &[JavaInstallation],
+) {
+    let mut roots = vec![inventory_root_state(runtimes_root)];
+    if let Some(minecraft_dir) = minecraft_dir {
+        roots.push(inventory_root_state(&minecraft_dir.join("runtime")));
+    }
+    let entries = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let (file_size, modified_ns, file_identity) = inventory_file_state(&candidate.path)?;
+            Some(JavaInventoryEntry {
+                path: candidate.path.clone(),
+                version: candidate.version,
+                version_string: candidate.version_string.clone(),
+                source: candidate.source,
+                arch: candidate.arch.clone(),
+                file_size,
+                modified_ns,
+                file_identity,
+            })
+        })
+        .collect();
+    let inventory = JavaInventory {
+        schema_version: JAVA_INVENTORY_SCHEMA_VERSION,
+        recorded_at: chrono::Utc::now().to_rfc3339(),
+        roots,
+        candidates: entries,
+    };
+    let Ok(bytes) = serde_json::to_vec(&inventory) else {
+        return;
+    };
+    let parent = inventory_path.parent();
+    if parent.is_some_and(|dir| std::fs::create_dir_all(dir).is_err()) {
+        return;
+    }
+    let temp = inventory_path.with_extension(format!(
+        "json.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    if std::fs::write(&temp, &bytes).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return;
+    }
+    let _ = std::fs::remove_file(inventory_path);
+    if std::fs::rename(&temp, inventory_path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+/// Cache-first combined discovery: use the persisted inventory when valid,
+/// otherwise run full discovery and refresh the inventory.  This is the entry
+/// point for launch and Java-listing paths that want subprocess-free warm
+/// launches.
+pub fn java_candidates_cached(
+    inventory_path: &Path,
+    runtimes_root: &Path,
+    minecraft_dir: Option<&Path>,
+) -> Vec<JavaInstallation> {
+    let started = std::time::Instant::now();
+    if let Some(candidates) =
+        persisted_java_candidates(inventory_path, runtimes_root, minecraft_dir)
+    {
+        eprintln!(
+            "[launch-timing] java-discovery: persistent inventory hit ({} candidates, no JVM probes) in {} ms",
+            candidates.len(),
+            started.elapsed().as_millis()
+        );
+        return candidates;
+    }
+    eprintln!(
+        "[launch-timing] java-discovery: inventory miss, running full discovery (JVM probes)"
+    );
+    let candidates = detect_java_candidates(Some(runtimes_root), minecraft_dir);
+    persist_java_inventory(inventory_path, runtimes_root, minecraft_dir, &candidates);
+    candidates
+}
+
+fn inventory_root_state(path: &Path) -> JavaInventoryRoot {
+    let modified_ns = std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        })
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    JavaInventoryRoot {
+        path: path.to_string_lossy().into_owned(),
+        modified_ns,
+    }
+}
+
+fn inventory_file_state(path: &Path) -> Option<(u64, u128, Option<String>)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    #[cfg(unix)]
+    let file_identity = Some(format!("unix:{}:{}", metadata.dev(), metadata.ino()));
+    #[cfg(windows)]
+    let file_identity = Some(format!(
+        "windows:creation-time:{}",
+        metadata.creation_time()
+    ));
+    #[cfg(not(any(unix, windows)))]
+    let file_identity = None;
+    Some((metadata.len(), modified_ns, file_identity))
+}
+
+// ---------------------------------------------------------------------------
 // JavaRequirement — derived from an already-resolved VersionInfo
 // ---------------------------------------------------------------------------
 
@@ -748,6 +979,166 @@ mod tests {
         assert!(source_priority(&JavaSource::Override) < source_priority(&JavaSource::Managed));
         assert!(source_priority(&JavaSource::Managed) < source_priority(&JavaSource::Mojang));
         assert!(source_priority(&JavaSource::Mojang) < source_priority(&JavaSource::System));
+    }
+
+    // --- persistent inventory ---
+
+    #[test]
+    fn persisted_inventory_roundtrip_is_valid_when_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes_root = tmp.path().join("runtimes");
+        let inventory_path = tmp.path().join("java-inventory.json");
+        let fake_java = tmp.path().join("java.exe");
+        std::fs::write(&fake_java, b"fake java binary").unwrap();
+
+        let candidate = JavaInstallation {
+            path: fake_java.clone(),
+            version: 21,
+            version_string: "21.0.1".into(),
+            source: JavaSource::System,
+            arch: Some("amd64".into()),
+        };
+        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate.clone()]);
+        assert_eq!(
+            persisted_java_candidates(&inventory_path, &runtimes_root, None),
+            Some(vec![candidate])
+        );
+    }
+
+    #[test]
+    fn persisted_inventory_is_invalidated_by_executable_metadata_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes_root = tmp.path().join("runtimes");
+        let inventory_path = tmp.path().join("java-inventory.json");
+        let fake_java = tmp.path().join("java.exe");
+        std::fs::write(&fake_java, b"fake java binary").unwrap();
+
+        let candidate = JavaInstallation {
+            path: fake_java.clone(),
+            version: 21,
+            version_string: "21.0.1".into(),
+            source: JavaSource::System,
+            arch: None,
+        };
+        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate]);
+        std::fs::write(&fake_java, b"replaced java binary").unwrap();
+        assert_eq!(
+            persisted_java_candidates(&inventory_path, &runtimes_root, None),
+            None
+        );
+    }
+
+    #[test]
+    fn persisted_inventory_is_invalidated_by_missing_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes_root = tmp.path().join("runtimes");
+        let inventory_path = tmp.path().join("java-inventory.json");
+        let fake_java = tmp.path().join("java.exe");
+        std::fs::write(&fake_java, b"fake java binary").unwrap();
+
+        let candidate = JavaInstallation {
+            path: fake_java.clone(),
+            version: 21,
+            version_string: "21.0.1".into(),
+            source: JavaSource::System,
+            arch: None,
+        };
+        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate]);
+        std::fs::remove_file(&fake_java).unwrap();
+        assert_eq!(
+            persisted_java_candidates(&inventory_path, &runtimes_root, None),
+            None
+        );
+    }
+
+    #[test]
+    fn persisted_inventory_is_invalidated_by_runtime_root_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes_root = tmp.path().join("runtimes");
+        let inventory_path = tmp.path().join("java-inventory.json");
+        let fake_java = tmp.path().join("java.exe");
+        std::fs::write(&fake_java, b"fake java binary").unwrap();
+
+        let candidate = JavaInstallation {
+            path: fake_java.clone(),
+            version: 21,
+            version_string: "21.0.1".into(),
+            source: JavaSource::Managed,
+            arch: None,
+        };
+        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate]);
+        std::fs::create_dir_all(runtimes_root.join("temurin").join("21")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            persisted_java_candidates(&inventory_path, &runtimes_root, None),
+            None
+        );
+    }
+
+    #[test]
+    fn java_candidates_cached_skips_discovery_on_valid_inventory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes_root = tmp.path().join("runtimes");
+        let inventory_path = tmp.path().join("java-inventory.json");
+        let fake_java = tmp.path().join("java.exe");
+        std::fs::write(&fake_java, b"fake java binary").unwrap();
+
+        let candidate = JavaInstallation {
+            path: fake_java.clone(),
+            version: 21,
+            version_string: "21.0.1".into(),
+            source: JavaSource::System,
+            arch: None,
+        };
+        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate.clone()]);
+
+        // Discovery is mocked to find nothing; a cache hit must not call it.
+        let _guard = set_mock_inspect(Some(mock_inspect_none));
+        assert_eq!(
+            java_candidates_cached(&inventory_path, &runtimes_root, None),
+            vec![candidate]
+        );
+    }
+
+    fn mock_inspect_none(_: &Path) -> Option<JavaInstallation> {
+        None
+    }
+
+    #[test]
+    fn java_candidates_cached_rediscovers_and_refreshes_inventory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtimes_root = tmp.path().join("runtimes");
+        let inventory_path = tmp.path().join("java-inventory.json");
+        let fake_java = tmp.path().join("bin").join("java");
+        std::fs::create_dir_all(fake_java.parent().unwrap()).unwrap();
+        std::fs::write(&fake_java, b"java1").unwrap();
+
+        let candidate = JavaInstallation {
+            path: fake_java.clone(),
+            version: 21,
+            version_string: "21.0.1".into(),
+            source: JavaSource::System,
+            arch: None,
+        };
+        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate]);
+        assert!(persisted_java_candidates(&inventory_path, &runtimes_root, None).is_some());
+
+        // Executable content changes invalidate the inventory.
+        std::fs::write(&fake_java, b"java2").unwrap();
+        assert!(persisted_java_candidates(&inventory_path, &runtimes_root, None).is_none());
+
+        // The cached path therefore re-discovers (mock-driven, no real JVM
+        // probes) and persists a refreshed inventory that is trusted again.
+        let _guard = set_mock_inspect(Some(mock_managed_java));
+        java_candidates_cached(&inventory_path, &runtimes_root, None);
+        drop(_guard);
+
+        let loaded = persisted_java_candidates(&inventory_path, &runtimes_root, None);
+        assert!(loaded.is_some());
+        if let Some(loaded) = loaded {
+            // Every entry carries the mock's version, never a real probe's.
+            assert!(loaded.iter().all(|candidate| candidate.version == 21));
+        }
     }
 
     fn mock_managed_java(path: &Path) -> Option<JavaInstallation> {

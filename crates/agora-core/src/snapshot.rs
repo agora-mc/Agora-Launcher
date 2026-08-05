@@ -29,6 +29,30 @@ const TRACKED_ENTRIES: &[&str] = &[
     "instance_manifest.json",
 ];
 
+/// Tracked entries captured by the mandatory pre-launch snapshot.
+///
+/// World data (`saves/`) is deliberately excluded: it changes on every game
+/// session, so including it forced the pre-launch path to re-walk and re-hash
+/// potentially gigabytes of world files each launch.  Pre-launch recovery
+/// points therefore cover the mod/config/layout state that actually causes
+/// launch failures; world data remains protected by the full snapshots taken
+/// by install, import, and explicit backup operations.
+const PRELAUNCH_TRACKED_ENTRIES: &[&str] = &[
+    "mods",
+    "config",
+    "resourcepacks",
+    "shaderpacks",
+    "datapacks",
+    "options.txt",
+    "instance_manifest.json",
+];
+
+/// The tracked-entry set captured by mandatory pre-launch snapshots
+/// (everything except `saves/`).
+pub fn prelaunch_tracked_entries() -> &'static [&'static str] {
+    PRELAUNCH_TRACKED_ENTRIES
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub id: String,
@@ -110,6 +134,104 @@ pub fn mark_snapshot_failed(instance_dir: &Path, error: &str) -> Result<(), Stri
     fs::remove_file(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
     fs::write(instance_dir.join(SNAPSHOT_FAILED_MARKER), error.as_bytes())
         .map_err(|e| format!("failed to record snapshot failure: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Mutation journal
+// ---------------------------------------------------------------------------
+//
+// The journal is the O(1) staleness oracle for pre-launch snapshot reuse.
+// Every launcher-driven instance mutation (install, removal, import, loader
+// change, restore) bumps the generation.  The pre-launch snapshot receipt
+// records the generation at snapshot time; when they still agree the snapshot
+// is reused without walking the instance tree.  A journal gap or mismatch
+// falls back to the metadata-fingerprint verification path, which rewrites
+// the receipt and converges back to O(1).
+
+const MUTATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
+
+/// How long a journal-trusted snapshot may stay in service before the
+/// fingerprint verification path runs once more.  This bounds staleness from
+/// mutations the launcher cannot observe (files edited outside the app) while
+/// keeping the daily-launch path O(1).
+const JOURNAL_TRUST_MAX_AGE: chrono::Duration = chrono::Duration::days(7);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MutationJournal {
+    schema_version: u32,
+    generation: u64,
+}
+
+fn mutation_journal_path(instance_dir: &Path) -> PathBuf {
+    snapshots_dir(instance_dir).join("mutation-journal.json")
+}
+
+fn read_mutation_journal(instance_dir: &Path) -> Option<MutationJournal> {
+    let bytes = fs::read(mutation_journal_path(instance_dir)).ok()?;
+    let journal: MutationJournal = serde_json::from_slice(&bytes).ok()?;
+    (journal.schema_version == MUTATION_JOURNAL_SCHEMA_VERSION).then_some(journal)
+}
+
+/// Bump the instance's mutation generation.  Called after any launcher-driven
+/// change to tracked content so the next launch does not reuse a stale
+/// recovery snapshot.  Missing journals are created; the operation is
+/// best-effort and never blocks the mutation it accompanies.
+pub fn mark_instance_mutated(instance_dir: &Path) -> Result<(), String> {
+    let generation = ensure_mutation_journal(instance_dir)?.saturating_add(1);
+    let journal = MutationJournal {
+        schema_version: MUTATION_JOURNAL_SCHEMA_VERSION,
+        generation,
+    };
+    let bytes =
+        serde_json::to_vec(&journal).map_err(|e| format!("failed to serialize journal: {e}"))?;
+    atomic_write(&mutation_journal_path(instance_dir), &bytes)
+}
+
+/// Read the mutation generation, creating a generation-0 journal when none
+/// exists yet so a freshly snapshotted instance converges to O(1) reuse on
+/// its first verified launch.
+fn ensure_mutation_journal(instance_dir: &Path) -> Result<u64, String> {
+    if let Some(journal) = read_mutation_journal(instance_dir) {
+        return Ok(journal.generation);
+    }
+    fs::create_dir_all(snapshots_dir(instance_dir))
+        .map_err(|e| format!("failed to create snapshots dir: {e}"))?;
+    let journal = MutationJournal {
+        schema_version: MUTATION_JOURNAL_SCHEMA_VERSION,
+        generation: 0,
+    };
+    let bytes =
+        serde_json::to_vec(&journal).map_err(|e| format!("failed to serialize journal: {e}"))?;
+    atomic_write(&mutation_journal_path(instance_dir), &bytes)?;
+    Ok(0)
+}
+
+/// Whether a snapshot recorded by the mandatory pre-launch path can be reused
+/// without any filesystem walk.  O(1): a receipt read plus a journal read.
+pub fn prelaunch_snapshot_is_reusable(instance_dir: &Path, snapshot_id: &str) -> bool {
+    let Some(receipt) = read_snapshot_reuse_receipt(instance_dir, snapshot_id) else {
+        return false;
+    };
+    let (Some(receipt_generation), Some(recorded_at)) =
+        (receipt.mutation_generation, receipt.recorded_at.as_deref())
+    else {
+        // Legacy receipts without generation/age data always verify via the
+        // fingerprint path, which upgrades them on the same launch.
+        return false;
+    };
+    let journal_matches = read_mutation_journal(instance_dir)
+        .is_some_and(|journal| journal.generation == receipt_generation);
+    if !journal_matches {
+        return false;
+    }
+    let within_trust_window = chrono::DateTime::parse_from_rfc3339(recorded_at)
+        .map(|timestamp| {
+            chrono::Utc::now()
+                .signed_duration_since(timestamp.with_timezone(&chrono::Utc))
+                <= JOURNAL_TRUST_MAX_AGE
+        })
+        .unwrap_or(false);
+    within_trust_window && snapshot_manifest_path(instance_dir, snapshot_id).is_file()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -327,9 +449,18 @@ pub fn live_file_index(instance_dir: &Path) -> Result<Vec<crate::lkg::FileEntry>
 /// only to decide whether the last exact snapshot can be reused; whenever the
 /// receipt is absent or differs, callers fall back to [`live_file_index`].
 pub fn live_metadata_fingerprint(instance_dir: &Path) -> Result<String, String> {
+    live_metadata_fingerprint_scoped(instance_dir, TRACKED_ENTRIES)
+}
+
+/// [`live_metadata_fingerprint`] restricted to an explicit tracked-entry set
+/// (e.g. the pre-launch set that excludes world data).
+pub fn live_metadata_fingerprint_scoped(
+    instance_dir: &Path,
+    entries: &[&str],
+) -> Result<String, String> {
     let mut hasher = sha2::Sha256::new();
     hasher.update(b"agora-snapshot-metadata-v1");
-    for entry_name in TRACKED_ENTRIES {
+    for entry_name in entries {
         let path = instance_dir.join(entry_name);
         if path.is_file() {
             append_metadata_record(&mut hasher, entry_name, &path)?;
@@ -352,6 +483,18 @@ pub fn snapshot_matches_live_incremental(
     instance_dir: &Path,
     snapshot_id: &str,
 ) -> Result<bool, String> {
+    snapshot_matches_live_incremental_scoped(instance_dir, snapshot_id, TRACKED_ENTRIES)
+}
+
+/// [`snapshot_matches_live_incremental`] restricted to an explicit
+/// tracked-entry set. The reference side comes from the snapshot manifest, so
+/// an old full-scope snapshot simply compares unequal against a pre-launch
+/// scope and forces one replacement snapshot.
+pub fn snapshot_matches_live_incremental_scoped(
+    instance_dir: &Path,
+    snapshot_id: &str,
+    entries: &[&str],
+) -> Result<bool, String> {
     validate_snapshot_id(snapshot_id)?;
     let reference = snapshot_file_index(instance_dir, snapshot_id)?;
     let reference = reference
@@ -364,7 +507,7 @@ pub fn snapshot_matches_live_incremental(
             .map(|entry| (entry.relative_path.clone(), entry))
             .collect::<std::collections::HashMap<_, _>>()
     });
-    let current = collect_live_file_metadata(instance_dir)?;
+    let current = collect_live_file_metadata(instance_dir, entries)?;
     let mut refreshed = Vec::with_capacity(current.len());
     let mut matches = current.len() == reference.len();
 
@@ -445,9 +588,12 @@ fn write_live_file_index_cache(
     atomic_write(&live_file_index_cache_path(instance_dir), &bytes)
 }
 
-fn collect_live_file_metadata(instance_dir: &Path) -> Result<Vec<LiveFileIndexEntry>, String> {
+fn collect_live_file_metadata(
+    instance_dir: &Path,
+    entries: &[&str],
+) -> Result<Vec<LiveFileIndexEntry>, String> {
     let mut result = Vec::new();
-    for entry_name in TRACKED_ENTRIES {
+    for entry_name in entries {
         let path = instance_dir.join(entry_name);
         if path.is_file() {
             result.push(live_file_metadata_entry(entry_name, &path)?);
@@ -551,6 +697,23 @@ pub fn read_snapshot_metadata_fingerprint(
     instance_dir: &Path,
     snapshot_id: &str,
 ) -> Option<String> {
+    read_snapshot_reuse_receipt(instance_dir, snapshot_id).map(|receipt| receipt.fingerprint)
+}
+
+/// Complete durable reuse receipt for a snapshot: the metadata fingerprint of
+/// the live state at verification time, plus the mutation-journal generation
+/// and recording timestamp that power O(1) pre-launch reuse.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotReuseReceipt {
+    pub fingerprint: String,
+    pub mutation_generation: Option<u64>,
+    pub recorded_at: Option<String>,
+}
+
+fn read_snapshot_reuse_receipt(
+    instance_dir: &Path,
+    snapshot_id: &str,
+) -> Option<SnapshotReuseReceipt> {
     if validate_snapshot_id(snapshot_id).is_err() {
         return None;
     }
@@ -562,7 +725,11 @@ pub fn read_snapshot_metadata_fingerprint(
         && receipt.snapshot_id == snapshot_id
         && receipt.snapshot_manifest_sha256 == manifest_sha256
     {
-        Some(receipt.fingerprint)
+        Some(SnapshotReuseReceipt {
+            fingerprint: receipt.fingerprint,
+            mutation_generation: receipt.mutation_generation,
+            recorded_at: receipt.recorded_at,
+        })
     } else {
         None
     }
@@ -570,6 +737,8 @@ pub fn read_snapshot_metadata_fingerprint(
 
 /// Persist the metadata identity for a snapshot.  Failure is reported to the
 /// caller, but launch code may safely treat it as a cache miss on the next run.
+/// The receipt also records the current mutation-journal generation and
+/// timestamp so the next launch can reuse the snapshot in O(1).
 pub fn write_snapshot_metadata_fingerprint(
     instance_dir: &Path,
     snapshot_id: &str,
@@ -578,11 +747,16 @@ pub fn write_snapshot_metadata_fingerprint(
     validate_snapshot_id(snapshot_id)?;
     let manifest_bytes = fs::read(snapshot_manifest_path(instance_dir, snapshot_id))
         .map_err(|error| format!("failed to read snapshot manifest for fingerprint: {error}"))?;
+    // Ensure the journal exists so the recorded generation is stable across
+    // launches; a fresh instance converges to O(1) reuse immediately.
+    let mutation_generation = ensure_mutation_journal(instance_dir).ok();
     let receipt = SnapshotMetadataFingerprint {
         schema_version: LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION,
         snapshot_id: snapshot_id.to_string(),
         fingerprint: fingerprint.to_string(),
         snapshot_manifest_sha256: sha256_hex(&manifest_bytes),
+        mutation_generation,
+        recorded_at: Some(chrono::Utc::now().to_rfc3339()),
     };
     let bytes = serde_json::to_vec(&receipt)
         .map_err(|error| format!("failed to serialize snapshot fingerprint: {error}"))?;
@@ -598,6 +772,10 @@ struct SnapshotMetadataFingerprint {
     snapshot_id: String,
     fingerprint: String,
     snapshot_manifest_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mutation_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recorded_at: Option<String>,
 }
 
 fn walk_metadata(hasher: &mut sha2::Sha256, directory: &Path, prefix: &str) -> Result<(), String> {
@@ -688,7 +866,21 @@ fn walk_and_hash(
 /// into SHA-256 named objects in the shared snapshot object store. This avoids
 /// Deflate CPU cost and lets unchanged files be reused by later snapshots.
 /// Legacy ZIP snapshots are still understood by restore and listing.
+///
+/// The full [`TRACKED_ENTRIES`] scope (including `saves/`) is captured, which
+/// is the right policy for install rollback points, imports, and explicit
+/// backups. The mandatory pre-launch path should use
+/// [`create_snapshot_scoped`] with [`PRELAUNCH_TRACKED_ENTRIES`] instead.
 pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snapshot, String> {
+    create_snapshot_scoped(instance_dir, label, TRACKED_ENTRIES)
+}
+
+/// [`create_snapshot`] restricted to an explicit tracked-entry set.
+pub fn create_snapshot_scoped(
+    instance_dir: &Path,
+    label: Option<&str>,
+    entries: &[&str],
+) -> Result<Snapshot, String> {
     let id = uuid::Uuid::new_v4().to_string();
 
     fs::create_dir_all(snapshots_dir(instance_dir))
@@ -701,7 +893,7 @@ pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snaps
         .into_iter()
         .map(|entry| (entry.relative_path.clone(), entry))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let current = collect_live_file_metadata(instance_dir)?;
+    let current = collect_live_file_metadata(instance_dir, entries)?;
     let mut files: Vec<SnapshotFileEntry> = Vec::with_capacity(current.len());
     let mut live_index = Vec::with_capacity(current.len());
     let mut total_size: u64 = 0;
@@ -993,6 +1185,10 @@ fn restore_snapshot_impl(
     }
 
     let _ = fs::remove_dir_all(&extract_dir);
+
+    // A restore rewrites tracked content; the next pre-launch snapshot must
+    // not be reused from before the restore.
+    let _ = mark_instance_mutated(instance_dir);
 
     Ok(())
 }
@@ -1702,6 +1898,83 @@ mod tests {
         manifest.push(b'\n');
         fs::write(manifest_path, manifest).unwrap();
         assert!(read_snapshot_metadata_fingerprint(&inst, &snapshot.id).is_none());
+    }
+
+    #[test]
+    fn prelaunch_scope_excludes_saves() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
+        fs::write(inst.join("saves").join("world1").join("level.dat"), b"world data").unwrap();
+
+        let scoped =
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries())
+                .unwrap();
+        let index = snapshot_file_index(&inst, &scoped.id).unwrap();
+        assert!(index.iter().all(|entry| !entry.path.starts_with("saves/")));
+
+        let full = create_snapshot(&inst, Some("backup")).unwrap();
+        let full_index = snapshot_file_index(&inst, &full.id).unwrap();
+        assert!(full_index.iter().any(|entry| entry.path.starts_with("saves/")));
+    }
+
+    #[test]
+    fn mutation_journal_bumps_and_reads_generation() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        mark_instance_mutated(&inst).unwrap();
+        mark_instance_mutated(&inst).unwrap();
+        assert_eq!(read_mutation_journal(&inst).unwrap().generation, 2);
+    }
+
+    #[test]
+    fn prelaunch_reuse_follows_mutation_journal() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let snapshot =
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries())
+                .unwrap();
+        let fingerprint = live_metadata_fingerprint_scoped(&inst, prelaunch_tracked_entries())
+            .unwrap();
+        write_snapshot_metadata_fingerprint(&inst, &snapshot.id, &fingerprint).unwrap();
+        assert!(prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
+
+        mark_instance_mutated(&inst).unwrap();
+        assert!(!prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
+    }
+
+    #[test]
+    fn legacy_receipt_without_generation_is_not_journal_reused() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let snapshot =
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries())
+                .unwrap();
+        let manifest_bytes = fs::read(snapshot_manifest_path(&inst, &snapshot.id)).unwrap();
+        let receipt = serde_json::json!({
+            "schema_version": LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION,
+            "snapshot_id": snapshot.id,
+            "fingerprint": "legacy-fingerprint",
+            "snapshot_manifest_sha256": sha256_hex(&manifest_bytes),
+        });
+        fs::write(
+            snapshot_fingerprint_path(&inst, &snapshot.id),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        assert!(!prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
+    }
+
+    #[test]
+    fn restore_bumps_the_mutation_journal() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        mark_instance_mutated(&inst).unwrap();
+        let before = read_mutation_journal(&inst).unwrap().generation;
+        let snap = create_snapshot(&inst, None).unwrap();
+        fs::write(inst.join("mods").join("test.jar"), b"modified").unwrap();
+        restore_snapshot(&inst, &snap.id).unwrap();
+        assert!(read_mutation_journal(&inst).unwrap().generation > before);
     }
 
     #[test]

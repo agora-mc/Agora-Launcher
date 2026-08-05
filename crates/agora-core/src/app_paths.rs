@@ -99,6 +99,16 @@ impl AppPaths {
         self.root.join("runtimes")
     }
 
+    /// Persistent Java discovery inventory (`java-inventory.json`).
+    ///
+    /// Caches the result of the (subprocess-heavy) full Java discovery scan
+    /// between app sessions so a warm launch never re-probes every JRE on the
+    /// machine. The cache is validated against executable metadata and the
+    /// runtime root directories before it is trusted.
+    pub fn java_inventory(&self) -> PathBuf {
+        self.root.join("java-inventory.json")
+    }
+
     /// Root directory for loader cache (`loader-cache/`).
     pub fn loader_cache(&self) -> PathBuf {
         self.root.join("loader-cache")

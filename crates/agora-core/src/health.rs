@@ -271,6 +271,10 @@ pub fn cached_health(
                 .map(|token| token == cached.report.scan_token)
                 .unwrap_or(true);
             if cached.metadata_fingerprint == metadata_fingerprint && token_is_current {
+                eprintln!(
+                    "[launch-timing] health: in-memory report cache hit for {}",
+                    instance_dir.display()
+                );
                 return cached.report.clone();
             }
         }
@@ -279,6 +283,10 @@ pub fn cached_health(
     if let Some(report) =
         load_persistent_health(instance_dir, &metadata_fingerprint, expected_scan_token)
     {
+        eprintln!(
+            "[launch-timing] health: durable report cache hit for {}",
+            instance_dir.display()
+        );
         if let Ok(mut cache) = HEALTH_CACHE.lock() {
             cache.insert(
                 key,
@@ -290,6 +298,11 @@ pub fn cached_health(
         }
         return report;
     }
+
+    eprintln!(
+        "[launch-timing] health: cache miss, running full scan for {}",
+        instance_dir.display()
+    );
 
     let report = health_from_inventory(
         instance_dir,

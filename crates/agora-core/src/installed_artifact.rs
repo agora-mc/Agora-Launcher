@@ -650,6 +650,9 @@ pub fn adopt_asset_objects(
             message: format!("Failed to parse {}: {e}", index_path.display()),
         })?;
 
+    let started = std::time::Instant::now();
+    let total_objects = index.objects.len();
+
     for (logical_name, object) in &index.objects {
         if object.hash.len() < 2
             || !object.hash.bytes().all(|b| b.is_ascii_hexdigit())
@@ -746,6 +749,12 @@ pub fn adopt_asset_objects(
             ),
         });
     }
+
+    eprintln!(
+        "[launch-timing] materialize: verified {} asset objects in {} ms",
+        total_objects,
+        started.elapsed().as_millis()
+    );
 
     Ok(())
 }

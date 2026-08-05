@@ -146,6 +146,8 @@ impl CrashService {
             return Err(error);
         }
 
+        let _ = crate::snapshot::mark_instance_mutated(&dir);
+
         Ok(())
     }
 
@@ -183,6 +185,8 @@ impl CrashService {
             }
             return Err(error);
         }
+
+        let _ = crate::snapshot::mark_instance_mutated(&dir);
 
         Ok(())
     }

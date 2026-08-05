@@ -421,18 +421,26 @@ fn asset_completion_matches(
     let Ok(marker) = serde_json::from_slice::<AssetCompletionMarker>(&bytes) else {
         return false;
     };
+    let fingerprint_started = std::time::Instant::now();
     let Ok(storage_fingerprint) =
         asset_storage_metadata_fingerprint(assets_dir, grouped, virtual_, map_to_resources)
     else {
         return false;
     };
-    marker.schema_version == ASSET_COMPLETION_SCHEMA_VERSION
+    let matched = marker.schema_version == ASSET_COMPLETION_SCHEMA_VERSION
         && marker.index_sha1 == index_sha1
         && marker.object_count == grouped.len()
         && marker.total_expected_size == total_expected_asset_size(grouped)
         && marker.virtual_ == virtual_
         && marker.map_to_resources == map_to_resources
-        && marker.storage_fingerprint == storage_fingerprint
+        && marker.storage_fingerprint == storage_fingerprint;
+    eprintln!(
+        "[launch-timing] materialize: asset completion {} for {} objects in {} ms",
+        if matched { "matched" } else { "MISSED" },
+        grouped.len(),
+        fingerprint_started.elapsed().as_millis()
+    );
+    matched
 }
 
 fn write_asset_completion_marker(
@@ -477,14 +485,17 @@ fn total_expected_asset_size(grouped: &GroupedAssets) -> u64 {
 /// This preserves the warm-path win (no content hashing) while ensuring a
 /// deleted, replaced, truncated, or normally modified cache file invalidates
 /// the marker instead of letting direct launch proceed with missing assets.
+///
+/// The per-file metadata collection is parallelized: a launch verifies
+/// thousands of asset objects, and each `stat` is a full syscall round trip.
+/// The hash itself remains deterministic (single thread, records in index
+/// order), so existing completion markers stay valid.
 fn asset_storage_metadata_fingerprint(
     assets_dir: &Path,
     grouped: &GroupedAssets,
     virtual_: bool,
     map_to_resources: bool,
 ) -> Result<String, String> {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(b"agora-asset-storage-metadata-v1");
     let virtual_root = if virtual_ {
         Some(assets_dir.join("virtual").join("legacy"))
     } else if map_to_resources {
@@ -493,40 +504,95 @@ fn asset_storage_metadata_fingerprint(
         None
     };
 
+    let mut records: Vec<(String, PathBuf, u64)> = Vec::new();
     for (hash, (size, logical_names)) in grouped {
         let expected_size = u64::try_from(*size)
             .map_err(|_| format!("asset {hash} has an invalid negative size"))?;
         let object_path = assets_dir.join("objects").join(&hash[..2]).join(hash);
-        append_asset_file_metadata(
-            &mut hasher,
-            &format!("object:{hash}"),
-            &object_path,
-            expected_size,
-        )?;
+        records.push((format!("object:{hash}"), object_path, expected_size));
 
         if let Some(root) = virtual_root.as_ref() {
             for logical_name in logical_names {
                 let relative = safe_relative_path(logical_name).map_err(|error| {
                     format!("asset index contains an unsafe virtual path: {error}")
                 })?;
-                append_asset_file_metadata(
-                    &mut hasher,
-                    &format!("virtual:{logical_name}"),
-                    &root.join(relative),
+                records.push((
+                    format!("virtual:{logical_name}"),
+                    root.join(relative),
                     expected_size,
-                )?;
+                ));
             }
         }
+    }
+
+    let states = collect_asset_metadata_parallel(&records)?;
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-asset-storage-metadata-v1");
+    for ((identity, _, _), state) in records.iter().zip(states) {
+        hasher.update((identity.len() as u64).to_le_bytes());
+        hasher.update(identity.as_bytes());
+        hasher.update(state.len.to_le_bytes());
+        hasher.update(state.modified_ns.to_le_bytes());
+        #[cfg(unix)]
+        {
+            hasher.update(state.dev.to_le_bytes());
+            hasher.update(state.ino.to_le_bytes());
+        }
+        #[cfg(windows)]
+        hasher.update(state.creation_time.to_le_bytes());
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn append_asset_file_metadata(
-    hasher: &mut sha2::Sha256,
-    identity: &str,
-    path: &Path,
-    expected_size: u64,
-) -> Result<(), String> {
+/// File metadata captured for one asset completion-marker record.  Hashed in
+/// the exact field order the sequential implementation used.
+struct AssetFileMetadata {
+    len: u64,
+    modified_ns: u128,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(windows)]
+    creation_time: u64,
+}
+
+/// Stat every asset record in parallel and return the metadata in record
+/// order.  Any failed or mismatched record produces the same per-record error
+/// the sequential path produced; the first error (in record order) wins.
+fn collect_asset_metadata_parallel(
+    records: &[(String, PathBuf, u64)],
+) -> Result<Vec<AssetFileMetadata>, String> {
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let thread_count = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4)
+        .clamp(1, 8);
+    let chunk_size = records.len().div_ceil(thread_count);
+    let mut results: Vec<Option<Result<AssetFileMetadata, String>>> =
+        (0..records.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let mut remaining = results.as_mut_slice();
+        for chunk in records.chunks(chunk_size) {
+            let (slots, rest) = remaining.split_at_mut(chunk.len());
+            remaining = rest;
+            scope.spawn(move || {
+                for (index, (_, path, expected_size)) in chunk.iter().enumerate() {
+                    slots[index] = Some(asset_file_metadata(path, *expected_size));
+                }
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|slot| slot.unwrap_or_else(|| Err("asset metadata worker ended unexpectedly".into())))
+        .collect()
+}
+
+fn asset_file_metadata(path: &Path, expected_size: u64) -> Result<AssetFileMetadata, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("asset {} is unavailable: {error}", path.display()))?;
     if !metadata.is_file() || metadata.len() != expected_size {
@@ -546,18 +612,16 @@ fn append_asset_file_metadata(
             )
         })?
         .as_nanos();
-    hasher.update((identity.len() as u64).to_le_bytes());
-    hasher.update(identity.as_bytes());
-    hasher.update(metadata.len().to_le_bytes());
-    hasher.update(modified_ns.to_le_bytes());
-    #[cfg(unix)]
-    {
-        hasher.update(metadata.dev().to_le_bytes());
-        hasher.update(metadata.ino().to_le_bytes());
-    }
-    #[cfg(windows)]
-    hasher.update(metadata.creation_time().to_le_bytes());
-    Ok(())
+    Ok(AssetFileMetadata {
+        len: metadata.len(),
+        modified_ns,
+        #[cfg(unix)]
+        dev: metadata.dev(),
+        #[cfg(unix)]
+        ino: metadata.ino(),
+        #[cfg(windows)]
+        creation_time: metadata.creation_time(),
+    })
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -572,6 +636,7 @@ struct ResolvedPlanCacheEntry {
 /// missing, malformed, stale, or unusable entry falls back to the canonical
 /// resolver and is replaced after success.
 pub async fn resolve_cached(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPlan> {
+    let started = std::time::Instant::now();
     let key = resolved_plan_cache_key(&request);
     let cache_path = request
         .cache_dir
@@ -588,11 +653,18 @@ pub async fn resolve_cached(request: ResolveRequest) -> LauncherResult<ResolvedL
                 // remains safe to use when the user is offline, so use the
                 // current policy for any later materialization miss.
                 plan.network_policy = request.network_policy.clone();
+                eprintln!(
+                    "[launch-timing] resolve: durable plan cache hit in {} ms",
+                    started.elapsed().as_millis()
+                );
                 return Ok(plan);
             }
         }
     }
 
+    eprintln!(
+        "[launch-timing] resolve: durable plan cache miss, running canonical resolver"
+    );
     let plan = resolve(request.clone()).await?;
     // Resolution may populate previously missing version/profile metadata.
     // Bind the durable entry to the post-resolution state so the very next
@@ -606,6 +678,10 @@ pub async fn resolve_cached(request: ResolveRequest) -> LauncherResult<ResolvedL
     if let Ok(bytes) = serde_json::to_vec(&entry) {
         let _ = atomic_write(&cache_path, &bytes);
     }
+    eprintln!(
+        "[launch-timing] resolve: resolved plan in {} ms",
+        started.elapsed().as_millis()
+    );
     Ok(plan)
 }
 
@@ -1142,6 +1218,7 @@ async fn materialize_adopted_profile(
     logging_dir: &Path,
     natives_dir: &Path,
 ) -> LauncherResult<MaterializedLaunchPlan> {
+    let materialize_started = std::time::Instant::now();
     let source = crate::installed_artifact::InstalledArtifactSource::new(
         adopted_profile.minecraft_dir.clone(),
     );
@@ -1239,8 +1316,13 @@ async fn materialize_adopted_profile(
         sha1: client_download.sha1.clone(),
         size: client_download.size,
     };
+    eprintln!(
+        "[launch-timing] materialize: client jar adopted in {} ms",
+        materialize_started.elapsed().as_millis()
+    );
 
     // Libraries and natives
+    let libraries_started = std::time::Instant::now();
     let mut classpath = Vec::new();
     let mut native_archives = Vec::new();
 
@@ -1436,6 +1518,11 @@ async fn materialize_adopted_profile(
 
     classpath.push(client_jar.clone());
     extract_natives_atomically(&native_archives, natives_dir)?;
+    eprintln!(
+        "[launch-timing] materialize: {} libraries verified in {} ms",
+        classpath.len() - 1,
+        libraries_started.elapsed().as_millis()
+    );
 
     // Asset index
     let asset_index =
@@ -1485,6 +1572,7 @@ async fn materialize_adopted_profile(
     }
 
     // Asset objects: cache -> installed source -> network for each hash.
+    let assets_started = std::time::Instant::now();
     {
         let index_bytes = std::fs::read(&asset_index_path).map_err(|e| LauncherError::Generic {
             code: "ERR_ASSET_INDEX_READ".into(),
@@ -1626,6 +1714,10 @@ async fn materialize_adopted_profile(
             );
         }
     }
+    eprintln!(
+        "[launch-timing] materialize: asset index + objects stage took {} ms",
+        assets_started.elapsed().as_millis()
+    );
 
     // Logging config: cache -> installed source -> network fallback.
     let logging_config_path = if let Some(logging) = resolved
@@ -1670,6 +1762,12 @@ async fn materialize_adopted_profile(
         None
     };
 
+    eprintln!(
+        "[launch-timing] materialize: adopted profile materialized {} classpath entries in {} ms",
+        classpath.len(),
+        materialize_started.elapsed().as_millis()
+    );
+
     Ok(MaterializedLaunchPlan {
         resolved,
         classpath,
@@ -1678,9 +1776,7 @@ async fn materialize_adopted_profile(
         asset_index_path,
         logging_config_path,
     })
-}
-
-fn adopted_client_jar_path(versions_dir: &Path, profile_id: &str) -> PathBuf {
+}fn adopted_client_jar_path(versions_dir: &Path, profile_id: &str) -> PathBuf {
     versions_dir
         .join(profile_id)
         .join(format!("{profile_id}.jar"))
@@ -2832,8 +2928,16 @@ fn extract_natives_atomically(
     }
     let archive_key = native_archive_key(archives)?;
     if native_marker_matches(destination, &archive_key) {
+        eprintln!(
+            "[launch-timing] materialize: natives completion marker hit (O(1), {} archives)",
+            archives.len()
+        );
         return Ok(());
     }
+    eprintln!(
+        "[launch-timing] materialize: natives marker miss, extracting {} archives",
+        archives.len()
+    );
     // Never reuse a predictable staging path: another launch may be extracting
     // the same native set concurrently.
     let staging = atomic_temp_path(destination);

@@ -2762,6 +2762,9 @@ fn apply_transaction(
             Err(rollback_error) => Err(format!("{error}; fast rollback failed: {rollback_error}")),
         };
     }
+    // Tracked content changed; the next launch must not reuse a pre-install
+    // recovery snapshot from before the apply.
+    let _ = crate::snapshot::mark_instance_mutated(instance_dir);
     Ok(())
 }
 

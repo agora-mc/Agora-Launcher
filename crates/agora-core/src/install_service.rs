@@ -332,6 +332,7 @@ impl InstallService {
 
         crate::helpers::push_to_content_array(&mut manifest, &installed_mod);
         crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        let _ = crate::snapshot::mark_instance_mutated(&dir);
 
         Ok(installed_mod)
     }
@@ -364,6 +365,8 @@ impl InstallService {
                 crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
             }
         }
+
+        let _ = crate::snapshot::mark_instance_mutated(&dir);
 
         Ok(removed)
     }
@@ -483,6 +486,7 @@ impl InstallService {
         };
         crate::helpers::push_to_content_array(&mut manifest, &installed_mod);
         crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        let _ = crate::snapshot::mark_instance_mutated(&dir);
 
         Ok(installed_mod)
     }

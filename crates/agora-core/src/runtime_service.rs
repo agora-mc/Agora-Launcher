@@ -38,8 +38,12 @@ impl RuntimeService {
     pub fn list_candidates(&self) -> LauncherResult<Vec<JavaInstallation>> {
         let runtimes_root = self.ctx.paths.java_runtimes_root();
         let minecraft_dir = crate::paths::minecraft_dir();
-        Ok(java::detect_java_candidates(
-            Some(&runtimes_root),
+        // Cache-first discovery: the persisted inventory skips the per-JRE
+        // subprocess probes on warm starts; a stale inventory re-discovers
+        // and refreshes it.
+        Ok(java::java_candidates_cached(
+            &self.ctx.paths.java_inventory(),
+            &runtimes_root,
             minecraft_dir.as_deref(),
         ))
     }
