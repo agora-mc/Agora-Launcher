@@ -92,7 +92,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AGORA_OAUTH_CLIENT_ID: ${{ secrets.AGORA_OAUTH_CLIENT_ID }}
+          # Public OAuth app ID (not a secret); read from the Actions variable
+          # when present and fall back to a secret for legacy setups.
+          AGORA_OAUTH_CLIENT_ID: ${{ vars.AGORA_OAUTH_CLIENT_ID || secrets.AGORA_OAUTH_CLIENT_ID }}
           AGORA_REGISTRY_REPO: ${{ github.repository }}
           VITE_AGORA_REPOSITORY: ${{ github.repository }}
           # Public key (not a secret); read from the Actions variable when

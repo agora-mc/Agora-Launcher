@@ -153,7 +153,9 @@ export function Sidebar({
         <div className="border-t border-border p-4 text-xs text-muted-foreground">
           <div>v0.1.0 · Community curated</div>
           <div className="mt-1">
-            {registryStatus?.has_cached_db ? (
+            {registryStatus == null ? (
+              'Checking registry…'
+            ) : registryStatus.has_cached_db ? (
               registryStatus.cached_tag
                 ? `Registry ${registryStatus.cached_tag}`
                 : `Local registry · schema v${registryStatus.cached_schema_version ?? '—'}`

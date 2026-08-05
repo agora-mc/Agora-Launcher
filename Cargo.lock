@@ -120,6 +120,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-cli",
  "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
  "tauri-plugin-sql",
  "tauri-plugin-store",
  "tauri-plugin-updater",
@@ -5874,6 +5875,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3214becf9ef5783c0ae99a3bb25adf5353a7a16ebf53e74b909e29205735c6c"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
+ "zbus 5.18.0",
+]
+
+[[package]]
 name = "tauri-plugin-sql"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7702,6 +7719,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus"
+version = "5.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe18fb60dc696039e738717b76eaea21e7a4489bbb1885020b43c94236d7e98a"
+dependencies = [
+ "async-broadcast 0.7.2",
+ "async-executor",
+ "async-io 2.6.0",
+ "async-lock 3.4.2",
+ "async-process 2.5.0",
+ "async-recursion",
+ "async-task",
+ "async-trait",
+ "blocking",
+ "enumflags2",
+ "event-listener 5.4.1",
+ "futures-core",
+ "futures-lite 2.6.1",
+ "hex",
+ "libc",
+ "ordered-stream",
+ "rustix 1.1.4",
+ "serde",
+ "serde_repr",
+ "tracing",
+ "uds_windows",
+ "uuid",
+ "windows-sys 0.61.2",
+ "winnow 1.0.3",
+ "zbus_macros 5.18.0",
+ "zbus_names 4.3.4",
+ "zvariant 5.13.1",
+]
+
+[[package]]
 name = "zbus_macros"
 version = "3.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7729,6 +7781,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus_macros"
+version = "5.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe96480bed92df2b442a1a30df364e12d08eed03aeb061f2b8dc6afb2be91119"
+dependencies = [
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+ "zbus_names 4.3.4",
+ "zvariant 5.13.1",
+ "zvariant_utils 3.5.0",
+]
+
+[[package]]
 name = "zbus_names"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7748,6 +7815,17 @@ dependencies = [
  "serde",
  "static_assertions",
  "zvariant 4.2.0",
+]
+
+[[package]]
+name = "zbus_names"
+version = "4.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8bf88b4a3ff53e883001e0e0115b297a9d53c31b9c1edd2bfdd853e3428624e"
+dependencies = [
+ "serde",
+ "winnow 1.0.3",
+ "zvariant 5.13.1",
 ]
 
 [[package]]
@@ -7926,6 +8004,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zvariant"
+version = "5.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bee2a0bcd2a907786a456fff45aaaaf54c9ba5f50b71ae9ec1a4edd200c94911"
+dependencies = [
+ "endi",
+ "enumflags2",
+ "serde",
+ "winnow 1.0.3",
+ "zvariant_derive 5.13.1",
+ "zvariant_utils 3.5.0",
+]
+
+[[package]]
 name = "zvariant_derive"
 version = "3.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7952,6 +8044,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zvariant_derive"
+version = "5.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a708216a18780796770bfe3f4739c7c83a3e8f789b755534bbbc06e4e23e12"
+dependencies = [
+ "proc-macro-crate 3.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+ "zvariant_utils 3.5.0",
+]
+
+[[package]]
 name = "zvariant_utils"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7971,4 +8076,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "zvariant_utils"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90cb9383f9b45290407a1258b202d3f8f01db719eb60b4e4055c6375af4fc7c7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.118",
+ "winnow 1.0.3",
 ]

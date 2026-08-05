@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
   checkInstanceUpdates,
+  cloneInstance,
   createInstance,
   createSnapshot,
   deleteInstance,
@@ -14,6 +15,7 @@ import {
   listManifestLoaders,
   listManifestMcVersions,
   formatError,
+  type ClonePrefs,
   type CreateInstanceRequest,
   type InstanceRow,
   type JavaRuntimeProgressEvent,
@@ -77,6 +79,7 @@ export function Instances({
   const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [cloneTarget, setCloneTarget] = useState<InstanceRow | null>(null);
   const { getTaskForInstance, revision: packInstallRevision } = usePackInstall();
 
   // Load direct launch mode once
@@ -223,6 +226,7 @@ export function Instances({
                 iconSrc={instanceIcons[instance.instance_id] ?? null}
                 onChanged={refresh}
                 onEdit={() => onEditInstance(instance.instance_id)}
+                onClone={() => setCloneTarget(instance)}
                 onOpenCrashInvestigator={openCrashInvestigator}
                 isRunning={isRunning}
                 runningPid={isRunning ? processState.pid : null}
@@ -274,6 +278,17 @@ export function Instances({
         />
       )}
 
+      {cloneTarget && (
+        <CloneInstanceDialog
+          instance={cloneTarget}
+          onClose={() => setCloneTarget(null)}
+          onCloned={() => {
+            setCloneTarget(null);
+            refresh();
+          }}
+        />
+      )}
+
       <LauncherImportWizard
         open={showImport}
         onClose={() => setShowImport(false)}
@@ -308,6 +323,7 @@ function InstanceCard({
   iconSrc,
   onChanged,
   onEdit,
+  onClone,
   onOpenCrashInvestigator,
   isRunning,
   runningPid,
@@ -337,6 +353,7 @@ function InstanceCard({
   iconSrc: string | null;
   onChanged: () => void;
   onEdit: () => void;
+  onClone: () => void;
   onOpenCrashInvestigator: (id: string) => void;
   isRunning: boolean;
   runningPid: number | null;
@@ -456,7 +473,7 @@ function InstanceCard({
             />
           )}
           <div className="min-w-0">
-            <h3 className="font-semibold">{instance.name}</h3>
+            <h3 className="break-words font-semibold">{instance.name}</h3>
             {instance.import_source && (
               <span className="mt-1 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 Imported from {instance.import_source === 'curse_forge' || instance.import_source === 'curseforge'
@@ -465,7 +482,10 @@ function InstanceCard({
               </span>
             )}
             <p className="text-xs text-muted-foreground">
-              {instance.loader} {instance.loader_version} · MC {instance.minecraft_version}
+              {instance.loader === 'vanilla' || !instance.loader_version
+                ? instance.loader
+                : `${instance.loader} ${instance.loader_version}`}
+              {' '}· MC {instance.minecraft_version}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               {isRunning ? (
@@ -747,6 +767,13 @@ function InstanceCard({
           className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
           Edit
+        </button>
+        <button
+          onClick={onClone}
+          disabled={effectiveBusy || recoveryBlocked || instance.is_locked}
+          className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
+        >
+          Clone
         </button>
         <button
           onClick={() => onOpenCrashInvestigator(instance.instance_id)}
@@ -1086,7 +1113,9 @@ function CreateInstanceDialog({
     (async () => {
       if (!loader) return;
       try {
-        const filtered = await listManifestMcVersions(loader);
+        const filtered = loader === 'vanilla'
+          ? await listManifestMcVersions()
+          : await listManifestMcVersions(loader);
         if (cancelled) return;
         if (filtered.length > 0) {
           setMcVersions(filtered);
@@ -1101,6 +1130,11 @@ function CreateInstanceDialog({
     return () => {
       cancelled = true;
     };
+  }, [loader]);
+
+  // Vanilla instances have no loader to pin; clear any stale version.
+  useEffect(() => {
+    if (loader === 'vanilla') setLoaderVersion('');
   }, [loader]);
 
   // Progress event listener during creation
@@ -1123,7 +1157,7 @@ function CreateInstanceDialog({
         .replace(/[^a-z0-9-_]+/g, '-')
         .replace(/^-+|-+$/g, '');
       if (!instanceId) throw new Error('Enter a valid instance name.');
-      if (!loaderVersion) throw new Error('No pinned loader version selected.');
+      if (!loaderVersion && loader !== 'vanilla') throw new Error('No pinned loader version selected.');
 
       const request: CreateInstanceRequest = {
         name,
@@ -1147,7 +1181,9 @@ function CreateInstanceDialog({
       <DialogContent className="max-w-lg">
         <DialogTitle>Create Custom Instance</DialogTitle>
         <DialogDescription>
-          Set up a new isolated modpack profile with a verified modloader.
+          {loader === 'vanilla'
+            ? 'Set up a new vanilla Minecraft instance with no mod loader.'
+            : 'Set up a new isolated modpack profile with a verified modloader.'}
         </DialogDescription>
 
         <div className="space-y-4">
@@ -1184,30 +1220,32 @@ function CreateInstanceDialog({
                 onChange={(e) => setLoader(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
               >
-                {loaders.map((l) => (
+                {['vanilla', ...loaders.filter((l) => l !== 'vanilla')].map((l) => (
                   <option key={l} value={l}>
-                    {l}
+                    {l === 'vanilla' ? 'Vanilla' : l}
                   </option>
                 ))}
               </select>
             </label>
           </div>
 
-          <label className="block">
-            <span className="text-sm font-medium">Loader version</span>
-            <select
-              value={loaderVersion}
-              onChange={(e) => setLoaderVersion(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
-            >
-              {loaderVersions.length === 0 && <option value="">No pinned versions</option>}
-              {loaderVersions.map((v) => (
-                <option key={v.loader_version} value={v.loader_version}>
-                  {v.loader_version} ({v.file_type})
-                </option>
-              ))}
-            </select>
-          </label>
+          {loader !== 'vanilla' && (
+            <label className="block">
+              <span className="text-sm font-medium">Loader version</span>
+              <select
+                value={loaderVersion}
+                onChange={(e) => setLoaderVersion(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              >
+                {loaderVersions.length === 0 && <option value="">No pinned versions</option>}
+                {loaderVersions.map((v) => (
+                  <option key={v.loader_version} value={v.loader_version}>
+                    {v.loader_version} ({v.file_type})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <label className="block">
             <span className="flex items-center justify-between text-sm font-medium">
@@ -1261,6 +1299,88 @@ function CreateInstanceDialog({
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const DEFAULT_CLONE_PREFS: ClonePrefs = {
+  copy_saves: true,
+  copy_mods: true,
+  copy_resource_packs: true,
+  copy_shader_packs: true,
+  copy_screenshots: true,
+  copy_config: true,
+  copy_servers: true,
+  copy_options: true,
+  use_hard_links: false,
+  use_sym_links: false,
+};
+
+function CloneInstanceDialog({
+  instance,
+  onClose,
+  onCloned,
+}: {
+  instance: InstanceRow;
+  onClose: () => void;
+  onCloned: () => void;
+}) {
+  const [name, setName] = useState(`Copy of ${instance.name}`);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!name.trim()) {
+      setError('Enter a name for the clone.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await cloneInstance(instance.instance_id, name.trim(), DEFAULT_CLONE_PREFS);
+      onCloned();
+    } catch (e) {
+      setError(formatError(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogTitle>Clone Instance</DialogTitle>
+        <DialogDescription>
+          Creates a full copy of "{instance.name}" including saves, mods, resource packs,
+          shaders, config, and options. The original instance is not modified.
+        </DialogDescription>
+        <div className="space-y-4">
+          <label className="block">
+            <span className="text-sm font-medium">New instance name</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+            />
+          </label>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {busy ? 'Cloning…' : 'Clone'}
           </button>
         </div>
       </DialogContent>

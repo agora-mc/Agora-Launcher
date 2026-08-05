@@ -183,8 +183,11 @@ impl ProcessSessionManager {
     fn kill_pid(pid: u32) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
-            let output = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F", "/T"])
+            let mut command = std::process::Command::new("taskkill");
+            command.args(["/PID", &pid.to_string(), "/F", "/T"]);
+            // Prevent an empty command prompt window from flashing on kill.
+            crate::helpers::hide_console_window(&mut command);
+            let output = command
                 .output()
                 .map_err(|e| format!("Failed to spawn taskkill: {e}"))?;
             if output.status.success() {

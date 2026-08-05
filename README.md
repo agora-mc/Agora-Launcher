@@ -145,12 +145,12 @@ repo Settings → Secrets and variables → Actions → **Variables** tab:
 
 | Variable | Purpose | Sensitive? | Example |
 |---|---|---|---|
-| `AGORA_OAUTH_CLIENT_ID` | GitHub OAuth App client ID for in-app sign-in (Device Flow) | ❌ Public | `Iv1.xxxxxxxxxxxxxxxx` |
+| `AGORA_OAUTH_CLIENT_ID` | GitHub OAuth App client ID for in-app sign-in (Device Flow) | ❌ Public | `Iv23ctVA40Yy1ZUkvemh` |
 | `AGORA_REGISTRY_PUBKEY` | Ed25519 public key (hex) for verifying downloaded `registry.db` signatures | ❌ Public | `47adee76cf587ee618f79eb2fa5bde003824d3bfc2dbb5080d33073c5a8f8c18` |
 
-Without these, the desktop app fails fast with clear errors at the affected
-feature (`ERR_AUTH_NOT_CONFIGURED` for OAuth, `ERR_REGISTRY_PUBKEY_NOT_CONFIGURED`
-for signature verification) rather than silently misbehaving.
+Both values are also compiled in as fallbacks (`auth.rs`, `registry_sync.rs`),
+so a build that receives an unset or empty variable still ships with working
+GitHub auth and registry verification instead of failing at runtime.
 
 #### `AGORA_OAUTH_CLIENT_ID` — GitHub OAuth (in-app sign-in)
 
@@ -225,10 +225,12 @@ $env:AGORA_REGISTRY_PUBKEY = "47adee76cf587ee618f79eb2fa5bde003824d3bfc2dbb5080d
 npm run tauri:dev
 ```
 
-In debug builds (`npm run tauri:dev`), an unset `AGORA_REGISTRY_PUBKEY` is
-non-fatal: signature verification is skipped with a console warning, to
-keep the local-dev loop smooth. In release builds (`npm run tauri:build`),
-the app refuses to verify any registry without the key compiled in.
+An unset or empty `AGORA_REGISTRY_PUBKEY` falls back to the compiled-in
+registry signing key in all builds, so signature verification is always
+enabled and a keyless binary cannot be produced accidentally (a missing CI
+variable previously compiled an empty key that made release builds refuse
+to verify any registry). Developers who sign the registry with a different
+key must export their public key as `AGORA_REGISTRY_PUBKEY` before building.
 
 ## Compiler `.env` variables
 
@@ -253,7 +255,7 @@ Add these as GitHub repository secrets (Settings → Secrets and variables → A
 
 | Secret | Description | Example |
 |---|---|---|
-| `AGORA_OAUTH_CLIENT_ID` | GitHub OAuth App client ID (same one used for local dev) | `Iv1.xxxxxxxxxxxxxxxx` |
+| `AGORA_OAUTH_CLIENT_ID` | GitHub OAuth App client ID (same one used for local dev). Public, so it can live as an Actions variable; the release workflow reads `vars.AGORA_OAUTH_CLIENT_ID || secrets.AGORA_OAUTH_CLIENT_ID` | `Iv23ctVA40Yy1ZUkvemh` |
 | `AGORA_REGISTRY_PUBKEY` | Ed25519 public key (hex) matching the compiler's signing key. Public, so it can live as an Actions variable; the release workflow reads `vars.AGORA_REGISTRY_PUBKEY || secrets.AGORA_REGISTRY_PUBKEY` | `47adee76cf587e...` |
 
 `AGORA_REGISTRY_REPO` is set automatically by the workflow from `github.repository`. `GITHUB_TOKEN` is provided automatically by Actions.

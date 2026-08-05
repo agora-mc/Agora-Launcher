@@ -126,8 +126,10 @@ impl OAuthHttpClient for MockOAuthClient {
 }
 
 pub const AGORA_OAUTH_CLIENT_ID: &str = match option_env!("AGORA_OAUTH_CLIENT_ID") {
-    Some(v) => v,
-    None => "Iv23ctVA40Yy1ZUkvemh",
+    // An empty value (e.g. a CI build referencing a missing secret) must not
+    // bypass the compiled-in client ID, or the shipped app loses GitHub auth.
+    Some(v) if !v.is_empty() => v,
+    _ => "Iv23ctVA40Yy1ZUkvemh",
 };
 
 const KEYRING_SERVICE: &str = "com.agoramc";

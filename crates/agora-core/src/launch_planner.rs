@@ -1824,6 +1824,9 @@ pub fn spawn(prepared: &PreparedCommand) -> LauncherResult<tokio::process::Child
         .envs(&prepared.env)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Prevent an empty command prompt window from flashing when Java starts
+    // (the GUI app has no console of its own).
+    crate::helpers::hide_console_window_async(&mut command);
     let child = command.spawn().map_err(|error| LauncherError::Generic {
         code: "ERR_LAUNCH_SPAWN".into(),
         message: format!("Failed to spawn Java: {error}"),

@@ -873,7 +873,8 @@ async fn run_installer_process(
     loader: &str,
     minecraft_root: &Path,
 ) -> LauncherResult<InstallerProcessResult> {
-    let mut child = tokio::process::Command::new(java_path)
+    let mut command = tokio::process::Command::new(java_path);
+    command
         .args([
             std::ffi::OsString::from("-jar"),
             installer_path.as_os_str().to_owned(),
@@ -884,12 +885,14 @@ async fn run_installer_process(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| LauncherError::Generic {
-            code: "ERR_INSTALLER_FAILED".into(),
-            message: format!("Failed to spawn {loader} installer: {error}"),
-        })?;
+        .kill_on_drop(true);
+    // Prevent an empty command prompt window from flashing while the Java
+    // installer runs (the GUI app has no console of its own).
+    crate::helpers::hide_console_window_async(&mut command);
+    let mut child = command.spawn().map_err(|error| LauncherError::Generic {
+        code: "ERR_INSTALLER_FAILED".into(),
+        message: format!("Failed to spawn {loader} installer: {error}"),
+    })?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_task = tokio::spawn(read_pipe_bounded(stdout));

@@ -142,13 +142,15 @@ pub fn inspect_java(path: &Path) -> Option<JavaInstallation> {
     let path_for_result = path.to_path_buf();
     let cloned = path.to_path_buf();
 
-    let child = std::process::Command::new(&cloned)
+    let mut command = std::process::Command::new(&cloned);
+    command
         .arg("-XshowSettings:properties")
         .arg("-version")
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
+        .stderr(std::process::Stdio::piped());
+    // Prevent an empty command prompt window from flashing during the probe.
+    crate::helpers::hide_console_window(&mut command);
+    let child = command.spawn().ok()?;
 
     let pid = child.id();
 

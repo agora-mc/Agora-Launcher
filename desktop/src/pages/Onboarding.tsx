@@ -19,6 +19,12 @@ import { LauncherImportWizard } from '../components/LauncherImportWizard';
 
 type Step = 'welcome' | 'services' | 'java' | 'github' | 'registry' | 'import';
 
+const STEP_ORDER: Step[] = ['welcome', 'services', 'java', 'github', 'registry', 'import'];
+
+function isStep(value: unknown): value is Step {
+  return typeof value === 'string' && (STEP_ORDER as string[]).includes(value);
+}
+
 interface OnboardingProps {
   onComplete: () => void;
 }
@@ -27,6 +33,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   const [step, setStep] = useState<Step>('welcome');
   const [services, setServices] = useState({ modrinth: false, aiMcp: false, aiChat: false });
   const [servicesLoading, setServicesLoading] = useState(true);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   // Persisted across Back/Forward so a registry auto-download triggered on
   // the first entry is not re-triggered when the user revisits the step.
   const registryAutoDownloaded = useRef(false);
@@ -37,17 +44,32 @@ export function Onboarding({ onComplete }: OnboardingProps) {
       getSetting('modrinth_enabled'),
       getSetting('ai_mcp_enabled'),
       getSetting('ai_chat_enabled'),
-    ]).then(([modrinth, aiMcp, aiChat]) => {
+      getSetting('onboarding_step'),
+    ]).then(([modrinth, aiMcp, aiChat, savedStep]) => {
       if (cancelled) return;
       setServices({
         modrinth: modrinth.status === 'fulfilled' ? parseBooleanSetting(modrinth.value) : false,
         aiMcp: aiMcp.status === 'fulfilled' ? parseBooleanSetting(aiMcp.value) : false,
         aiChat: aiChat.status === 'fulfilled' ? parseBooleanSetting(aiChat.value) : false,
       });
+      // Resume an interrupted wizard at the step it was on, so closing or
+      // restarting during onboarding does not silently discard progress.
+      if (savedStep.status === 'fulfilled' && isStep(savedStep.value)) {
+        setStep(savedStep.value);
+      }
       setServicesLoading(false);
+      setSettingsLoaded(true);
     });
     return () => { cancelled = true; };
   }, []);
+
+  // Persist the current step so an interrupted onboarding can be resumed.
+  // Gated on the initial load: persisting before the saved step is read would
+  // race the resume and could clobber it back to 'welcome'.
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    void setSetting('onboarding_step', step).catch(() => {});
+  }, [step, settingsLoaded]);
 
   const finish = async () => {
     try {
@@ -234,6 +256,16 @@ function ServicesStep({
     }
   };
 
+  // Persist each toggle as it changes so an interrupted onboarding does not
+  // lose choices the user already made. Best-effort; the Continue handler is
+  // still the authoritative save.
+  const handleToggle = (
+    key: 'modrinth_enabled' | 'ai_mcp_enabled' | 'ai_chat_enabled',
+    value: boolean,
+  ) => {
+    void setSetting(key, value).catch(() => {});
+  };
+
   return (
     <div>
       <Stepper current="services" />
@@ -247,19 +279,28 @@ function ServicesStep({
           title="Modrinth Integration"
           description="Include Modrinth-hosted catalog entries and enable live Modrinth features when permitted by Privacy settings."
           checked={values.modrinth}
-          onChange={(modrinth) => onChange({ ...values, modrinth })}
+          onChange={(modrinth) => {
+            onChange({ ...values, modrinth });
+            handleToggle('modrinth_enabled', modrinth);
+          }}
         />
         <ServiceToggle
           title="AI / MCP Server"
           description="Enable the local MCP server for external AI tools to interact with Agora."
           checked={values.aiMcp}
-          onChange={(aiMcp) => onChange({ ...values, aiMcp })}
+          onChange={(aiMcp) => {
+            onChange({ ...values, aiMcp });
+            handleToggle('ai_mcp_enabled', aiMcp);
+          }}
         />
         <ServiceToggle
           title="Integrated AI Assistant"
           description="Built-in AI chat using free GitHub Models. Get instant crash analysis and mod help without any external setup."
           checked={values.aiChat}
-          onChange={(aiChat) => onChange({ ...values, aiChat })}
+          onChange={(aiChat) => {
+            onChange({ ...values, aiChat });
+            handleToggle('ai_chat_enabled', aiChat);
+          }}
         />
       </div>
 
@@ -309,6 +350,7 @@ function ServiceToggle({
           type="button"
           role="switch"
           aria-checked={checked}
+          aria-label={title}
           onClick={() => onChange(!checked)}
           className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
             checked ? 'bg-primary' : 'bg-muted'
@@ -426,6 +468,7 @@ function JavaStep({
             type="button"
             role="switch"
             aria-checked={checked}
+            aria-label="Prepare Java 21 for modern Minecraft"
             onClick={() => {
               if (!busy) setChecked(!checked);
             }}

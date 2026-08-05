@@ -5645,9 +5645,12 @@ fn reveal_in_explorer(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let path_str = path.to_string_lossy().to_string();
+        // Explorer parses its command line itself and does not treat the path
+        // as a separate argv token. `/select,` and the path must be a single
+        // argument, or paths containing spaces fail with "Location is not
+        // available" while the file actually exists.
         std::process::Command::new("explorer")
-            .arg("/select,")
-            .arg(&path_str)
+            .arg(format!("/select,{path_str}"))
             .spawn()
             .map_err(|e| format!("Failed to reveal file: {e}"))?;
     }

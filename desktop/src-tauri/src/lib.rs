@@ -66,6 +66,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_sql::Builder::new().build())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second launch focuses the existing window instead of starting
+            // a duplicate process (which previously could leave orphaned
+            // windows such as the Microsoft sign-in webview behind).
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .invoke_handler(tauri::generate_handler![
             commands::browse_items,
             commands::for_you_items,
@@ -323,10 +331,18 @@ pub fn run() {
             });
             Ok(())
         })
-        .on_window_event(|app, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Some(manager) = app.try_state::<crate::mcp::McpServerManager>() {
+                if let Some(manager) = window.try_state::<crate::mcp::McpServerManager>() {
                     manager.request_shutdown();
+                }
+                // Closing the main window must also close a pending Microsoft
+                // sign-in webview; otherwise the app stays alive with an
+                // orphaned login window and a relaunch starts a second process.
+                if window.label() == "main" {
+                    if let Some(msa_window) = window.get_webview_window("msa-login") {
+                        let _ = msa_window.destroy();
+                    }
                 }
             }
         })

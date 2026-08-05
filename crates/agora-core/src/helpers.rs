@@ -3,6 +3,40 @@ use crate::error::{LauncherError, LauncherResult};
 use crate::models::{InstalledMod, InstanceManifest};
 use std::path::Path;
 
+// ---------------------------------------------------------------------------
+// Child process helpers — no flashing console windows on Windows
+// ---------------------------------------------------------------------------
+
+/// Windows `CREATE_NO_WINDOW` creation flag: the spawned process runs without
+/// a console window. The GUI app has no console, so spawning console-subsystem
+/// programs (java, taskkill, fsutil) without this flag briefly flashes an
+/// empty command prompt window for each invocation.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Suppress the console window for a synchronous child process spawn.
+#[cfg(target_os = "windows")]
+pub fn hide_console_window(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+/// Suppress the console window for an async (`tokio::process`) child spawn.
+#[cfg(target_os = "windows")]
+pub fn hide_console_window_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_console_window(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_console_window_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    cmd
+}
+
 /// Map a content_type string to the instance subdirectory name.
 pub fn content_subdir(content_type: &str) -> &str {
     match content_type {
@@ -203,11 +237,10 @@ const MIN_DISK_SPACE_BYTES: u64 = 500_000_000;
 #[cfg(target_os = "windows")]
 pub fn available_disk_space_bytes(path: &Path) -> Option<u64> {
     let root = path.ancestors().last()?;
-    let output = std::process::Command::new("fsutil")
-        .args(["volume", "diskfree"])
-        .arg(root)
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("fsutil");
+    command.args(["volume", "diskfree"]).arg(root);
+    hide_console_window(&mut command);
+    let output = command.output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("Available free bytes:") {
