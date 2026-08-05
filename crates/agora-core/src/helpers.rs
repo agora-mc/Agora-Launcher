@@ -23,7 +23,9 @@ pub fn hide_console_window(cmd: &mut std::process::Command) -> &mut std::process
 
 /// Suppress the console window for an async (`tokio::process`) child spawn.
 #[cfg(target_os = "windows")]
-pub fn hide_console_window_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+pub fn hide_console_window_async(
+    cmd: &mut tokio::process::Command,
+) -> &mut tokio::process::Command {
     cmd.creation_flags(CREATE_NO_WINDOW)
 }
 
@@ -33,7 +35,9 @@ pub fn hide_console_window(cmd: &mut std::process::Command) -> &mut std::process
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn hide_console_window_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+pub fn hide_console_window_async(
+    cmd: &mut tokio::process::Command,
+) -> &mut tokio::process::Command {
     cmd
 }
 

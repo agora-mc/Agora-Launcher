@@ -372,10 +372,17 @@ impl ImportService {
                     if let Ok(manifest) =
                         serde_json::from_str::<crate::models::InstanceManifest>(&raw)
                     {
-                        let report = health::health(
+                        // Use the cache-aware scan so the durable report is
+                        // published here and the first launch of the imported
+                        // instance does not repeat the full JAR parse (11s+
+                        // for a large pack). The report is identical to the
+                        // uncached scan; publishing only happens when the
+                        // scanned state is stable.
+                        let report = health::cached_health(
                             &instance_dir,
                             &manifest,
                             Some(&self.ctx.paths.registry_db()),
+                            None,
                         );
                         if report.score == HealthScore::Red {
                             let details = report

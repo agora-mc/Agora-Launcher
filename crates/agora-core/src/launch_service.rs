@@ -871,7 +871,10 @@ impl LaunchService {
     }
 }
 
-fn cached_java_candidates(runtimes_root: &Path, java_inventory_path: &Path) -> Vec<JavaInstallation> {
+fn cached_java_candidates(
+    runtimes_root: &Path,
+    java_inventory_path: &Path,
+) -> Vec<JavaInstallation> {
     let minecraft_dir = crate::paths::minecraft_dir();
     let key = format!(
         "{}|{}",
@@ -978,15 +981,20 @@ fn create_or_reuse_snapshot(instance_dir: &Path) -> LauncherResult<String> {
         fingerprint_started.elapsed().as_millis()
     );
     if metadata_fingerprint.as_deref().is_some_and(|fingerprint| {
-        crate::snapshot::read_snapshot_metadata_fingerprint(instance_dir, &snapshot_id)
-            .as_deref()
+        crate::snapshot::read_snapshot_metadata_fingerprint_scoped(
+            instance_dir,
+            &snapshot_id,
+            scope,
+        )
+        .as_deref()
             == Some(fingerprint)
     }) {
         if let Some(fingerprint) = metadata_fingerprint.as_deref() {
-            let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
+            let _ = crate::snapshot::write_snapshot_metadata_fingerprint_scoped(
                 instance_dir,
                 &snapshot_id,
                 fingerprint,
+                scope,
             );
         }
         eprintln!(
@@ -1000,18 +1008,15 @@ fn create_or_reuse_snapshot(instance_dir: &Path) -> LauncherResult<String> {
     // receive the exact content comparison once.  A successful comparison
     // upgrades the snapshot with a metadata receipt for future launches.
     let incremental_started = Instant::now();
-    if crate::snapshot::snapshot_matches_live_incremental_scoped(
-        instance_dir,
-        &snapshot_id,
-        scope,
-    )
-    .unwrap_or(false)
+    if crate::snapshot::snapshot_matches_live_incremental_scoped(instance_dir, &snapshot_id, scope)
+        .unwrap_or(false)
     {
         if let Some(fingerprint) = metadata_fingerprint.as_deref() {
-            let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
+            let _ = crate::snapshot::write_snapshot_metadata_fingerprint_scoped(
                 instance_dir,
                 &snapshot_id,
                 fingerprint,
+                scope,
             );
         }
         eprintln!(
@@ -1031,23 +1036,14 @@ fn create_or_reuse_snapshot(instance_dir: &Path) -> LauncherResult<String> {
     Ok(snapshot_id)
 }
 
-fn create_fresh_prelaunch_snapshot(
-    instance_dir: &Path,
-    scope: &[&str],
-) -> LauncherResult<String> {
+fn create_fresh_prelaunch_snapshot(instance_dir: &Path, scope: &[&str]) -> LauncherResult<String> {
     let snapshot = crate::snapshot::create_snapshot_scoped(instance_dir, Some("pre-launch"), scope)
         .map_err(|error| LauncherError::Generic {
             code: "ERR_SNAPSHOT_CREATE".into(),
             message: error.to_string(),
         })?;
-    if let Ok(fingerprint) = crate::snapshot::live_metadata_fingerprint_scoped(instance_dir, scope)
-    {
-        let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
-            instance_dir,
-            &snapshot.id,
-            &fingerprint,
-        );
-    }
+    // create_snapshot_scoped writes the scoped reuse receipt from the same
+    // metadata traversal that created the snapshot.
     Ok(snapshot.id)
 }
 

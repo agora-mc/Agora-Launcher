@@ -3094,10 +3094,7 @@ async fn run_launch_service(
 /// leaving a dead-owner `.agora_snapshot_pending` marker that blocks launch.
 /// This blocks until the snapshot manifest is durable (Ready), surfaces a
 /// failed snapshot, or times out.
-fn wait_for_initial_snapshot(
-    ctx: &agora_core::ctx::Ctx,
-    instance_id: &str,
-) -> anyhow::Result<()> {
+fn wait_for_initial_snapshot(ctx: &agora_core::ctx::Ctx, instance_id: &str) -> anyhow::Result<()> {
     const SNAPSHOT_SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
     const POLL_INTERVAL: Duration = Duration::from_millis(250);
 

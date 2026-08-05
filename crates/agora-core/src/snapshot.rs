@@ -15,7 +15,7 @@ const RESTORE_MARKER: &str = ".agora_restore_in_progress";
 const SNAPSHOT_PENDING_MARKER: &str = ".agora_snapshot_pending";
 const SNAPSHOT_FAILED_MARKER: &str = ".agora_snapshot_failed";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
-const LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION: u32 = 3;
+const LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION: u32 = 4;
 const LIVE_FILE_INDEX_SCHEMA_VERSION: u32 = 1;
 
 const TRACKED_ENTRIES: &[&str] = &[
@@ -51,6 +51,20 @@ const PRELAUNCH_TRACKED_ENTRIES: &[&str] = &[
 /// (everything except `saves/`).
 pub fn prelaunch_tracked_entries() -> &'static [&'static str] {
     PRELAUNCH_TRACKED_ENTRIES
+}
+
+/// Stable identity for the exact roots covered by a snapshot receipt.
+///
+/// The scope is part of the reuse contract: a full backup that includes
+/// `saves/` must never be mistaken for the lightweight pre-launch snapshot.
+fn snapshot_scope_id(entries: &[&str]) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-snapshot-scope-v1");
+    for entry in entries {
+        hasher.update((entry.len() as u64).to_le_bytes());
+        hasher.update(entry.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,9 +223,15 @@ fn ensure_mutation_journal(instance_dir: &Path) -> Result<u64, String> {
 /// Whether a snapshot recorded by the mandatory pre-launch path can be reused
 /// without any filesystem walk.  O(1): a receipt read plus a journal read.
 pub fn prelaunch_snapshot_is_reusable(instance_dir: &Path, snapshot_id: &str) -> bool {
-    let Some(receipt) = read_snapshot_reuse_receipt(instance_dir, snapshot_id) else {
+    let Some(validated) = read_snapshot_reuse_receipt(instance_dir, snapshot_id) else {
         return false;
     };
+    let expected_scope = snapshot_scope_id(PRELAUNCH_TRACKED_ENTRIES);
+    if validated.scope_id.as_deref() != Some(expected_scope.as_str()) {
+        return false;
+    }
+    let receipt = validated.receipt;
+
     let (Some(receipt_generation), Some(recorded_at)) =
         (receipt.mutation_generation, receipt.recorded_at.as_deref())
     else {
@@ -226,8 +246,7 @@ pub fn prelaunch_snapshot_is_reusable(instance_dir: &Path, snapshot_id: &str) ->
     }
     let within_trust_window = chrono::DateTime::parse_from_rfc3339(recorded_at)
         .map(|timestamp| {
-            chrono::Utc::now()
-                .signed_duration_since(timestamp.with_timezone(&chrono::Utc))
+            chrono::Utc::now().signed_duration_since(timestamp.with_timezone(&chrono::Utc))
                 <= JOURNAL_TRUST_MAX_AGE
         })
         .unwrap_or(false);
@@ -458,20 +477,8 @@ pub fn live_metadata_fingerprint_scoped(
     instance_dir: &Path,
     entries: &[&str],
 ) -> Result<String, String> {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(b"agora-snapshot-metadata-v1");
-    for entry_name in entries {
-        let path = instance_dir.join(entry_name);
-        if path.is_file() {
-            append_metadata_record(&mut hasher, entry_name, &path)?;
-        } else if path.is_dir() {
-            append_metadata_record(&mut hasher, entry_name, &path)?;
-            walk_metadata(&mut hasher, &path, entry_name)?;
-        } else {
-            hasher.update(format!("missing:{entry_name}").as_bytes());
-        }
-    }
-    Ok(format!("{:x}", hasher.finalize()))
+    collect_live_file_metadata_with_fingerprint(instance_dir, entries)
+        .map(|(_, fingerprint)| fingerprint)
 }
 
 /// Compare the current live state with a snapshot while reusing the durable
@@ -592,23 +599,62 @@ fn collect_live_file_metadata(
     instance_dir: &Path,
     entries: &[&str],
 ) -> Result<Vec<LiveFileIndexEntry>, String> {
+    collect_live_file_metadata_with_fingerprint(instance_dir, entries).map(|(entries, _)| entries)
+}
+
+/// Enumerate the tracked tree once and produce both the durable file index and
+/// the metadata fingerprint used by pre-launch reuse.
+///
+/// The previous implementation performed one traversal to create a snapshot
+/// and a second traversal immediately afterward to create its reuse receipt.
+/// On a cold Windows filesystem those duplicate directory walks dominate the
+/// snapshot phase. Keeping both products on one traversal also avoids a second
+/// metadata lookup for every file.
+fn collect_live_file_metadata_with_fingerprint(
+    instance_dir: &Path,
+    entries: &[&str],
+) -> Result<(Vec<LiveFileIndexEntry>, String), String> {
     let mut result = Vec::new();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"agora-snapshot-metadata-v2");
+    hasher.update(snapshot_scope_id(entries).as_bytes());
+
     for entry_name in entries {
         let path = instance_dir.join(entry_name);
-        if path.is_file() {
-            result.push(live_file_metadata_entry(entry_name, &path)?);
-        } else if path.is_dir() {
-            walk_file_metadata(&path, entry_name, &mut result)?;
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                append_metadata_record_from_metadata(&mut hasher, entry_name, &metadata);
+                result.push(live_file_metadata_entry_from_metadata(
+                    entry_name, &metadata,
+                ));
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                append_metadata_record_from_metadata(&mut hasher, entry_name, &metadata);
+                walk_file_metadata(&path, entry_name, &mut result, &mut hasher)?;
+            }
+            Ok(_) => {
+                hasher.update(format!("unsupported:{entry_name}").as_bytes());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                hasher.update(format!("missing:{entry_name}").as_bytes());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect tracked entry {}: {error}",
+                    path.display()
+                ));
+            }
         }
     }
     result.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(result)
+    Ok((result, format!("{:x}", hasher.finalize())))
 }
 
 fn walk_file_metadata(
     directory: &Path,
     prefix: &str,
     result: &mut Vec<LiveFileIndexEntry>,
+    hasher: &mut sha2::Sha256,
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(directory)
         .map_err(|error| format!("failed to scan {}: {error}", directory.display()))?
@@ -621,34 +667,67 @@ fn walk_file_metadata(
         let file_type = entry
             .file_type()
             .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+        // Preserve the old behaviour of ignoring symlinks/reparse-like
+        // entries rather than following them outside the instance tree.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
         if file_type.is_dir() {
-            walk_file_metadata(&path, &relative, result)?;
+            append_metadata_record_from_metadata(hasher, &relative, &metadata);
+            walk_file_metadata(&path, &relative, result, hasher)?;
         } else if file_type.is_file() {
-            result.push(live_file_metadata_entry(&relative, &path)?);
+            append_metadata_record_from_metadata(hasher, &relative, &metadata);
+            result.push(live_file_metadata_entry_from_metadata(&relative, &metadata));
         }
     }
     Ok(())
 }
 
-fn live_file_metadata_entry(
+fn live_file_metadata_entry_from_metadata(
     relative_path: &str,
-    path: &Path,
-) -> Result<LiveFileIndexEntry, String> {
-    let metadata = fs::metadata(path)
-        .map_err(|error| format!("failed to inspect live {}: {error}", path.display()))?;
+    metadata: &fs::Metadata,
+) -> LiveFileIndexEntry {
     let modified_ns = metadata
         .modified()
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    Ok(LiveFileIndexEntry {
+    LiveFileIndexEntry {
         relative_path: relative_path.to_string(),
         size: metadata.len(),
         modified_ns,
-        file_identity: metadata_file_identity(&metadata),
+        file_identity: metadata_file_identity(metadata),
         sha256: String::new(),
-    })
+    }
+}
+
+fn append_metadata_record_from_metadata(
+    hasher: &mut sha2::Sha256,
+    relative: &str,
+    metadata: &fs::Metadata,
+) {
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    hasher.update((relative.len() as u64).to_le_bytes());
+    hasher.update(relative.as_bytes());
+    hasher.update([if metadata.is_dir() { 1 } else { 2 }]);
+    hasher.update(metadata.len().to_le_bytes());
+    hasher.update(modified_ns.to_le_bytes());
+    #[cfg(unix)]
+    {
+        hasher.update(metadata.dev().to_le_bytes());
+        hasher.update(metadata.ino().to_le_bytes());
+    }
+    #[cfg(windows)]
+    hasher.update(metadata.creation_time().to_le_bytes());
 }
 
 #[cfg(unix)]
@@ -697,7 +776,20 @@ pub fn read_snapshot_metadata_fingerprint(
     instance_dir: &Path,
     snapshot_id: &str,
 ) -> Option<String> {
-    read_snapshot_reuse_receipt(instance_dir, snapshot_id).map(|receipt| receipt.fingerprint)
+    read_snapshot_metadata_fingerprint_scoped(instance_dir, snapshot_id, TRACKED_ENTRIES)
+}
+
+/// Return a snapshot fingerprint only when it was created for the same
+/// tracked-entry scope as the caller.
+pub fn read_snapshot_metadata_fingerprint_scoped(
+    instance_dir: &Path,
+    snapshot_id: &str,
+    entries: &[&str],
+) -> Option<String> {
+    let validated = read_snapshot_reuse_receipt(instance_dir, snapshot_id)?;
+    let expected_scope = snapshot_scope_id(entries);
+    (validated.scope_id.as_deref() == Some(expected_scope.as_str()))
+        .then_some(validated.receipt.fingerprint)
 }
 
 /// Complete durable reuse receipt for a snapshot: the metadata fingerprint of
@@ -710,29 +802,57 @@ pub struct SnapshotReuseReceipt {
     pub recorded_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ValidatedSnapshotReuseReceipt {
+    receipt: SnapshotReuseReceipt,
+    scope_id: Option<String>,
+}
+
 fn read_snapshot_reuse_receipt(
     instance_dir: &Path,
     snapshot_id: &str,
-) -> Option<SnapshotReuseReceipt> {
+) -> Option<ValidatedSnapshotReuseReceipt> {
     if validate_snapshot_id(snapshot_id).is_err() {
         return None;
     }
     let bytes = fs::read(snapshot_fingerprint_path(instance_dir, snapshot_id)).ok()?;
     let receipt: SnapshotMetadataFingerprint = serde_json::from_slice(&bytes).ok()?;
-    let manifest_bytes = fs::read(snapshot_manifest_path(instance_dir, snapshot_id)).ok()?;
-    let manifest_sha256 = sha256_hex(&manifest_bytes);
-    if receipt.schema_version == LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION
-        && receipt.snapshot_id == snapshot_id
-        && receipt.snapshot_manifest_sha256 == manifest_sha256
+    if receipt.schema_version != LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION
+        || receipt.snapshot_id != snapshot_id
     {
-        Some(SnapshotReuseReceipt {
+        return None;
+    }
+
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
+    if !crate::artifact_receipt::is_verified(
+        &manifest_path,
+        "sha256",
+        &receipt.snapshot_manifest_sha256,
+        None,
+    ) {
+        // Legacy or invalidated manifest receipt: pay for one full read, then
+        // persist a metadata-bound verification receipt for future cold
+        // launches. Normal launches never read/hash the large manifest again.
+        let manifest_bytes = fs::read(&manifest_path).ok()?;
+        if sha256_hex(&manifest_bytes) != receipt.snapshot_manifest_sha256 {
+            return None;
+        }
+        let _ = crate::artifact_receipt::record_verified(
+            &manifest_path,
+            "sha256",
+            &receipt.snapshot_manifest_sha256,
+            None,
+        );
+    }
+
+    Some(ValidatedSnapshotReuseReceipt {
+        receipt: SnapshotReuseReceipt {
             fingerprint: receipt.fingerprint,
             mutation_generation: receipt.mutation_generation,
             recorded_at: receipt.recorded_at,
-        })
-    } else {
-        None
-    }
+        },
+        scope_id: receipt.scope_id,
+    })
 }
 
 /// Persist the metadata identity for a snapshot.  Failure is reported to the
@@ -744,9 +864,27 @@ pub fn write_snapshot_metadata_fingerprint(
     snapshot_id: &str,
     fingerprint: &str,
 ) -> Result<(), String> {
+    write_snapshot_metadata_fingerprint_scoped(
+        instance_dir,
+        snapshot_id,
+        fingerprint,
+        TRACKED_ENTRIES,
+    )
+}
+
+/// Persist a reuse receipt bound to both the immutable snapshot manifest and
+/// the exact tracked-entry scope used to produce its fingerprint.
+pub fn write_snapshot_metadata_fingerprint_scoped(
+    instance_dir: &Path,
+    snapshot_id: &str,
+    fingerprint: &str,
+    entries: &[&str],
+) -> Result<(), String> {
     validate_snapshot_id(snapshot_id)?;
-    let manifest_bytes = fs::read(snapshot_manifest_path(instance_dir, snapshot_id))
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
+    let manifest_bytes = fs::read(&manifest_path)
         .map_err(|error| format!("failed to read snapshot manifest for fingerprint: {error}"))?;
+    let snapshot_manifest_sha256 = sha256_hex(&manifest_bytes);
     // Ensure the journal exists so the recorded generation is stable across
     // launches; a fresh instance converges to O(1) reuse immediately.
     let mutation_generation = ensure_mutation_journal(instance_dir).ok();
@@ -754,16 +892,26 @@ pub fn write_snapshot_metadata_fingerprint(
         schema_version: LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION,
         snapshot_id: snapshot_id.to_string(),
         fingerprint: fingerprint.to_string(),
-        snapshot_manifest_sha256: sha256_hex(&manifest_bytes),
+        snapshot_manifest_sha256: snapshot_manifest_sha256.clone(),
         mutation_generation,
         recorded_at: Some(chrono::Utc::now().to_rfc3339()),
+        scope_id: Some(snapshot_scope_id(entries)),
     };
     let bytes = serde_json::to_vec(&receipt)
         .map_err(|error| format!("failed to serialize snapshot fingerprint: {error}"))?;
     atomic_write(
         &snapshot_fingerprint_path(instance_dir, snapshot_id),
         &bytes,
-    )
+    )?;
+    // The manifest is immutable after publication. Record its verified state
+    // so prelaunch_snapshot_is_reusable only needs metadata checks next time.
+    let _ = crate::artifact_receipt::record_verified(
+        &manifest_path,
+        "sha256",
+        &snapshot_manifest_sha256,
+        None,
+    );
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -776,56 +924,8 @@ struct SnapshotMetadataFingerprint {
     mutation_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recorded_at: Option<String>,
-}
-
-fn walk_metadata(hasher: &mut sha2::Sha256, directory: &Path, prefix: &str) -> Result<(), String> {
-    let mut entries = fs::read_dir(directory)
-        .map_err(|e| format!("failed to scan {}: {e}", directory.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("failed to scan {}: {e}", directory.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let relative = format!("{prefix}/{}", entry.file_name().to_string_lossy());
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("failed to inspect {}: {e}", path.display()))?;
-        if file_type.is_dir() {
-            append_metadata_record(hasher, &relative, &path)?;
-            walk_metadata(hasher, &path, &relative)?;
-        } else if file_type.is_file() {
-            append_metadata_record(hasher, &relative, &path)?;
-        }
-    }
-    Ok(())
-}
-
-fn append_metadata_record(
-    hasher: &mut sha2::Sha256,
-    relative: &str,
-    path: &Path,
-) -> Result<(), String> {
-    let metadata = fs::metadata(path)
-        .map_err(|e| format!("failed to inspect live metadata {}: {e}", path.display()))?;
-    let modified_ns = metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    hasher.update((relative.len() as u64).to_le_bytes());
-    hasher.update(relative.as_bytes());
-    hasher.update([if metadata.is_dir() { 1 } else { 2 }]);
-    hasher.update(metadata.len().to_le_bytes());
-    hasher.update(modified_ns.to_le_bytes());
-    #[cfg(unix)]
-    {
-        hasher.update(metadata.dev().to_le_bytes());
-        hasher.update(metadata.ino().to_le_bytes());
-    }
-    #[cfg(windows)]
-    hasher.update(metadata.creation_time().to_le_bytes());
-    Ok(())
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope_id: Option<String>,
 }
 
 fn walk_and_hash(
@@ -893,7 +993,8 @@ pub fn create_snapshot_scoped(
         .into_iter()
         .map(|entry| (entry.relative_path.clone(), entry))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let current = collect_live_file_metadata(instance_dir, entries)?;
+    let (current, metadata_fingerprint) =
+        collect_live_file_metadata_with_fingerprint(instance_dir, entries)?;
     let mut files: Vec<SnapshotFileEntry> = Vec::with_capacity(current.len());
     let mut live_index = Vec::with_capacity(current.len());
     let mut total_size: u64 = 0;
@@ -943,6 +1044,14 @@ pub fn create_snapshot_scoped(
         .map_err(|e| format!("failed to serialize manifest: {e}"))?;
     atomic_write(&snapshot_manifest_path(instance_dir, &id), &manifest_json)?;
     let _ = write_live_file_index_cache(instance_dir, live_index);
+    // Reuse the fingerprint produced by the same traversal that built the
+    // snapshot. This removes the former second full tree walk.
+    let _ = write_snapshot_metadata_fingerprint_scoped(
+        instance_dir,
+        &id,
+        &metadata_fingerprint,
+        entries,
+    );
     mark_snapshot_ready(instance_dir)?;
     Ok(snapshot)
 }
@@ -1060,19 +1169,80 @@ fn blob_file_matches(path: &Path, expected_hash: &str, expected_size: u64) -> bo
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
-    let temp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("snapshot")
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("snapshot metadata path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("failed to create snapshot metadata directory: {e}"))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("snapshot");
+    let temp = parent.join(format!(
+        ".{file_name}.{}-{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
     ));
-    let mut file =
-        fs::File::create(&temp).map_err(|e| format!("failed to create snapshot manifest: {e}"))?;
-    file.write_all(contents)
-        .map_err(|e| format!("failed to write snapshot manifest: {e}"))?;
-    file.sync_all()
-        .map_err(|e| format!("failed to sync snapshot manifest: {e}"))?;
-    fs::rename(&temp, path).map_err(|e| format!("failed to commit snapshot manifest: {e}"))
+
+    let write_result = (|| {
+        let mut file = fs::File::create(&temp)
+            .map_err(|e| format!("failed to create snapshot metadata: {e}"))?;
+        file.write_all(contents)
+            .map_err(|e| format!("failed to write snapshot metadata: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("failed to sync snapshot metadata: {e}"))
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Err(error) = fs::rename(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(format!("failed to commit snapshot metadata: {error}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    {
+        match fs::rename(&temp, path) {
+            Ok(()) => return Ok(()),
+            Err(first_error) => {
+                // Modern Windows filesystems normally support replacement,
+                // but keep a rollback fallback for platform/filesystem cases
+                // where replacing an existing destination is rejected.
+                if !path.exists() {
+                    let _ = fs::remove_file(&temp);
+                    return Err(format!("failed to commit snapshot metadata: {first_error}"));
+                }
+                let backup = parent.join(format!(
+                    ".{file_name}.{}-{}.bak",
+                    std::process::id(),
+                    uuid::Uuid::new_v4()
+                ));
+                if let Err(stage_error) = fs::rename(path, &backup) {
+                    let _ = fs::remove_file(&temp);
+                    return Err(format!(
+                        "failed to commit snapshot metadata: {first_error}; \
+                         replacement fallback could not stage the old file: {stage_error}"
+                    ));
+                }
+                if let Err(commit_error) = fs::rename(&temp, path) {
+                    let _ = fs::remove_file(&temp);
+                    let _ = fs::rename(&backup, path);
+                    return Err(format!(
+                        "failed to commit snapshot metadata after staging the old file: \
+                         {commit_error}"
+                    ));
+                }
+                let _ = fs::remove_file(&backup);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Restore an instance to a snapshot.
@@ -1669,6 +1839,11 @@ pub fn delete_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<(), Str
         }
         fs::remove_file(&manifest_path)
             .map_err(|e| format!("failed to delete snapshot manifest: {e}"))?;
+        if let Some(name) = manifest_path.file_name().and_then(|name| name.to_str()) {
+            let _ = fs::remove_file(
+                manifest_path.with_file_name(format!("{name}.agora-verified.json")),
+            );
+        }
     } else {
         fs::remove_file(&zip_path).map_err(|e| format!("failed to delete snapshot zip: {e}"))?;
     }
@@ -1905,17 +2080,22 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let inst = make_instance(&tmp);
         fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
-        fs::write(inst.join("saves").join("world1").join("level.dat"), b"world data").unwrap();
+        fs::write(
+            inst.join("saves").join("world1").join("level.dat"),
+            b"world data",
+        )
+        .unwrap();
 
         let scoped =
-            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries())
-                .unwrap();
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries()).unwrap();
         let index = snapshot_file_index(&inst, &scoped.id).unwrap();
         assert!(index.iter().all(|entry| !entry.path.starts_with("saves/")));
 
         let full = create_snapshot(&inst, Some("backup")).unwrap();
         let full_index = snapshot_file_index(&inst, &full.id).unwrap();
-        assert!(full_index.iter().any(|entry| entry.path.starts_with("saves/")));
+        assert!(full_index
+            .iter()
+            .any(|entry| entry.path.starts_with("saves/")));
     }
 
     #[test]
@@ -1932,14 +2112,41 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let inst = make_instance(&tmp);
         let snapshot =
-            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries())
-                .unwrap();
-        let fingerprint = live_metadata_fingerprint_scoped(&inst, prelaunch_tracked_entries())
-            .unwrap();
-        write_snapshot_metadata_fingerprint(&inst, &snapshot.id, &fingerprint).unwrap();
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries()).unwrap();
+        // Scoped snapshot creation now writes the reuse receipt from the same
+        // tree traversal.
         assert!(prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
 
         mark_instance_mutated(&inst).unwrap();
+        assert!(!prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
+    }
+
+    #[test]
+    fn snapshot_metadata_receipts_can_be_replaced() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let snapshot = create_snapshot(&inst, Some("replace-receipt")).unwrap();
+
+        write_snapshot_metadata_fingerprint(&inst, &snapshot.id, "first").unwrap();
+        write_snapshot_metadata_fingerprint(&inst, &snapshot.id, "second").unwrap();
+
+        assert_eq!(
+            read_snapshot_metadata_fingerprint(&inst, &snapshot.id).as_deref(),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn prelaunch_reuse_rejects_a_full_scope_receipt() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let snapshot =
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries()).unwrap();
+        assert!(prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
+
+        let full_scope_fingerprint = live_metadata_fingerprint(&inst).unwrap();
+        write_snapshot_metadata_fingerprint(&inst, &snapshot.id, &full_scope_fingerprint).unwrap();
+
         assert!(!prelaunch_snapshot_is_reusable(&inst, &snapshot.id));
     }
 
@@ -1948,8 +2155,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let inst = make_instance(&tmp);
         let snapshot =
-            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries())
-                .unwrap();
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries()).unwrap();
         let manifest_bytes = fs::read(snapshot_manifest_path(&inst, &snapshot.id)).unwrap();
         let receipt = serde_json::json!({
             "schema_version": LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION,

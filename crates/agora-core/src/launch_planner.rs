@@ -662,9 +662,7 @@ pub async fn resolve_cached(request: ResolveRequest) -> LauncherResult<ResolvedL
         }
     }
 
-    eprintln!(
-        "[launch-timing] resolve: durable plan cache miss, running canonical resolver"
-    );
+    eprintln!("[launch-timing] resolve: durable plan cache miss, running canonical resolver");
     let plan = resolve(request.clone()).await?;
     // Resolution may populate previously missing version/profile metadata.
     // Bind the durable entry to the post-resolution state so the very next
@@ -1776,7 +1774,8 @@ async fn materialize_adopted_profile(
         asset_index_path,
         logging_config_path,
     })
-}fn adopted_client_jar_path(versions_dir: &Path, profile_id: &str) -> PathBuf {
+}
+fn adopted_client_jar_path(versions_dir: &Path, profile_id: &str) -> PathBuf {
     versions_dir
         .join(profile_id)
         .join(format!("{profile_id}.jar"))

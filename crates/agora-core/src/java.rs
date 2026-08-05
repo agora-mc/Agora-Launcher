@@ -16,11 +16,11 @@
 
 use crate::launch::VersionInfo;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Test injection point for inspect_java
@@ -635,8 +635,7 @@ pub fn persisted_java_candidates(
         return None;
     }
     let recorded_at = chrono::DateTime::parse_from_rfc3339(&inventory.recorded_at).ok()?;
-    if chrono::Utc::now()
-        .signed_duration_since(recorded_at.with_timezone(&chrono::Utc))
+    if chrono::Utc::now().signed_duration_since(recorded_at.with_timezone(&chrono::Utc))
         > JAVA_INVENTORY_MAX_AGE
     {
         return None;
