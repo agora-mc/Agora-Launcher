@@ -3,7 +3,7 @@
 # Comprehensive quality enforcement — formatting, linting, tests, builds,
 # and architecture-boundary checks — without modifying application code.
 # Reuses the same Rust toolchain, cache, and Python/Node setup patterns as
-# the existing launch-planner.yml, release-desktop.yml, and e2e.yml to keep
+# the existing launch-planner.yml, release.yml, and e2e.yml to keep
 # infrastructure consistent.
 #
 # Jobs:
@@ -15,6 +15,8 @@
 #   frontend     — desktop TypeScript check + Vite build
 #   boundaries   — architecture boundary analysis (HARD FAILURES for violations)
 #   tauri-bindings — Tauri command binding name-manifest consistency (typed sigs waived)
+#   docs         — hermetic documentation quality gates (internal links, guide
+#                  integrity, stale claims; stdlib only, no network requests)
 
 name: "CI Enforcement"
 
@@ -28,6 +30,12 @@ on:
       - "desktop/**"
       - "compiler/**"
       - "scripts/**"
+      - "README.md"
+      - "AGENTS.md"
+      - "CODE_OF_ENGAGEMENT.md"
+      - "REGISTRY_CURATION_REFERENCE.md"
+      - "docs/**"
+      - "web/**"
       - ".github/workflows/ci-enforcement.yml"
   pull_request:
     paths:
@@ -37,6 +45,12 @@ on:
       - "desktop/**"
       - "compiler/**"
       - "scripts/**"
+      - "README.md"
+      - "AGENTS.md"
+      - "CODE_OF_ENGAGEMENT.md"
+      - "REGISTRY_CURATION_REFERENCE.md"
+      - "docs/**"
+      - "web/**"
       - ".github/workflows/ci-enforcement.yml"
   workflow_dispatch:
 
@@ -164,3 +178,13 @@ jobs:
           python-version: "3.12"
       - name: Check Tauri command bindings are in sync (name-presence only; typed signatures waived)
         run: python scripts/check_tauri_bindings.py --check
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Documentation quality gates (internal links, guide integrity, stale claims)
+        run: python scripts/check_docs.py

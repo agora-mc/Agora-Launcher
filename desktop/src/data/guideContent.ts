@@ -80,7 +80,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Open a pack, read its description and supported Minecraft versions, then choose Create Instance from Pack.',
             'Keep the suggested loader and memory unless the pack says otherwise.',
             'Launch the new instance. Resolve any health warnings before selecting Launch Anyway.',
-            'Play for at least 60 seconds so Agora can establish a last-known-good recovery point.',
+            'Play for at least 60 seconds so Agora can establish a Last Known Good recovery point.',
           ],
         },
       ],
@@ -119,7 +119,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'tip',
             title: 'Prefer explicit checks',
-            text: 'When preparing an offline machine, download the registry, loader metadata, required mods, and Java runtime before enabling Lockdown mode.',
+            text: 'When preparing an offline machine, download the registry, loader metadata, required mods, and Java runtime, then disable each Privacy endpoint individually. The current Lockdown toggle alone does not enforce a backend-wide network block.',
           },
         },
       ],
@@ -201,7 +201,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Start from a known-good snapshot.',
             'Apply a reviewed install plan.',
             'Launch and exercise the affected game area.',
-            'If stable, name a new snapshot or let a successful session promote the last-known-good state.',
+            'If stable, name a new snapshot or let a successful session promote the Last Known Good state.',
             'If unstable, restore and revise the dependency or version choice.',
           ],
         },
@@ -270,7 +270,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'note',
             title: 'Recovery is deliberate',
-            text: 'Restoring a last-known-good state creates an undo snapshot first, so the current state is not silently discarded.',
+            text: 'Restoring a Last Known Good state creates an undo snapshot first, so the current state is not silently discarded.',
           },
         },
         {
@@ -432,7 +432,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Work through degraded states',
-          body: 'When the registry is loading, missing, or offline, read the status panel before assuming no content exists. Download or refresh the registry when allowed. In Lockdown mode, expect only already cached data and locally available artifacts.',
+          body: 'When the registry is loading, missing, or offline, read the status panel before assuming no content exists. Download or refresh the registry when allowed. When the individual Privacy endpoint permissions are disabled, expect only already cached data and locally available artifacts.',
           callout: {
             tone: 'tip',
             title: 'Use reproducible references',
@@ -618,6 +618,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Use delegated launch for the simplest account and launcher setup.',
             'Use direct launch when you need in-app process status and console output.',
             'Change the mode in Settings under Launching.',
+            'Instances stored with Auto follow the global mode. The current interface does not expose a per-instance override selector.',
           ],
         },
         {
@@ -629,6 +630,22 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Disable a suspect only if you understand the dependent impact.',
             'Use Launch Anyway only for a deliberate, recoverable test.',
           ],
+        },
+        {
+          title: 'Repair a loader mismatch',
+          body: 'When enabled mods require another loader version, Agora can compare their hard requirements with signed loader-catalog candidates. Keep the current version when it is compatible; otherwise review the recommended version and the affected mods before switching.',
+          steps: [
+            'Read the unresolved loader requirements and affected mods.',
+            'Use Switch and launch when the recommended signed version satisfies every understood hard requirement. A review-only health screen labels the same action Switch version.',
+            'Use Choose compatible version when you need another valid candidate.',
+            'When no signed candidate satisfies every requirement, automatic switching is unavailable. Manual candidates are signed but require confirmation because a capability is unverified.',
+            'Rerun health after a manual or failed switch.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'Language providers are part of the loader',
+            text: 'Forge and NeoForge can provide language capabilities such as javafml and lowcodefml. They are not ordinary mod JAR dependencies when the selected loader supplies the required provider version.',
+          },
         },
         {
           title: 'During and after launch',
@@ -669,7 +686,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Crash diagnosis and recovery',
     shortTitle: 'Crashes & recovery',
     category: 'Recover',
-    description: 'Use Crash Doctor, evidence-based testing, and last-known-good recovery.',
+    description: 'Use Crash Doctor, evidence-based testing, and Last Known Good recovery.',
     keywords: ['crash doctor', 'crash report', 'suspect', 'disable relaunch', 'restore'],
     basic: {
       summary: 'Crashes are usually solved fastest by preserving the current state, reading the first useful evidence, and testing one likely cause at a time. Crash Doctor guides that process.',
@@ -744,7 +761,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       summary: 'Snapshots restore files to an earlier state. Loadout profiles remember which installed mods are enabled. They solve different problems and work well together.',
       outcomes: [
         'Create, compare, restore, and delete snapshots.',
-        'Understand automatic last-known-good promotion.',
+        'Understand automatic Last Known Good promotion.',
         'Save and apply an enabled-mod loadout.',
       ],
       sections: [
@@ -754,11 +771,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Compare and restore',
-          body: 'Show diff lists added, removed, and modified files relative to the snapshot. Restore returns the instance to that state and first creates an undo snapshot. Delete removes only the selected recovery point.',
+          body: 'Show diff lists added, removed, and modified files relative to the snapshot. Restore returns the instance to that state and first creates an undo snapshot. Delete removes only the selected recovery point. Automatic pre-launch recovery intentionally excludes saves so launch does not rescan large worlds; full manual and transactional snapshots use a broader scope.',
           callout: {
             tone: 'note',
             title: 'Last Known Good is automatic',
-            text: 'After a successful play session of at least 60 seconds, Agora can promote the exact pre-launch snapshot as the current Last Known Good state.',
+            text: 'After a successful play session of at least 60 seconds, Agora can promote the exact pre-launch snapshot as the current Last Known Good state. Last Known Good protects mod and configuration state, not world saves.',
           },
         },
         {
@@ -785,7 +802,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Plan external backup',
-          body: 'Snapshots and profiles live in Agora\'s local state and instance storage. They are not cloud sync and should not be your only backup for valuable worlds. Export a pack or lockfile for reconstruction and back up irreplaceable saves separately.',
+          body: 'Snapshots and profiles live in Agora\'s local state and instance storage. Automatic pre-launch snapshots exclude saves, while full snapshots may include them. Neither is cloud sync or an independent backup. Export a pack or lockfile for reconstruction and back up irreplaceable saves separately.',
           callout: {
             tone: 'warning',
             title: 'A lockfile is not a world backup',
@@ -823,7 +840,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Choose an export',
-          body: 'Use Modrinth Pack (.mrpack) for broad compatibility. Use Agora Pack (.json) for Agora-native metadata. The exported file location opens in your system file manager after a successful export.',
+          body: 'The editor labels the formats Export as Modrinth Pack (.mrpack) and Export as Agora Pack (.json). The Agora-native file is written as .agora-pack.json. The exported file location opens in your system file manager after a successful export.',
         },
         {
           title: 'Share responsibly',
@@ -1044,7 +1061,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Trace the enablement chain',
-          body: 'For live Modrinth access, service consent, Modrinth API network permission, CDN permission, and the absence of global Lockdown must align. Similar chains apply to registry updates, governance, runtime downloads, and authentication.',
+          body: 'For live Modrinth access, service consent, the Modrinth API permission, and the CDN permission must align. Similar endpoint-permission chains apply to registry updates, governance, runtime downloads, and authentication. The current Lockdown toggle is not part of backend enforcement.',
         },
         {
           title: 'Diagnose account state',
@@ -1056,7 +1073,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'tip',
             title: 'Separate diagnosis by layer',
-            text: 'Check feature toggle, account state, endpoint permission, global Lockdown, and connectivity in that order.',
+            text: 'Check feature toggle, account state, endpoint permission, and connectivity in that order.',
           },
         },
       ],
@@ -1070,10 +1087,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'See every network category, disable egress, and prepare Agora for offline operation.',
     keywords: ['privacy', 'network', 'lockdown', 'offline', 'telemetry', 'endpoints'],
     basic: {
-      summary: 'Agora makes no automated telemetry calls. The Privacy section documents functional network destinations and lets Advanced-mode users disable them individually or all at once.',
+      summary: 'Agora makes no automated telemetry calls. The Privacy section documents functional network destinations and lets Advanced-mode users disable the enforced endpoint groups individually.',
       outcomes: [
         'Understand why Agora contacts each service category.',
-        'Use Lockdown mode intentionally.',
+        'Understand the current Lockdown limitation.',
         'Prepare cached data before going offline.',
       ],
       sections: [
@@ -1082,12 +1099,12 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Network access can support Modrinth discovery and files, GitHub registry updates and governance, Mojang metadata and content, loader downloads, Microsoft authentication, Java runtime downloads, application updates, and optional AI services.',
         },
         {
-          title: 'Use Lockdown mode',
-          body: 'Enable Advanced mode, open Privacy, and turn on Lockdown to block all external network calls. Local instances, cached catalog data, installed content, snapshots, and other offline operations remain available.',
+          title: 'Do not rely on Lockdown alone',
+          body: 'Enable Advanced mode and open Privacy. Disable every endpoint switch individually before an offline test. The current Lockdown toggle persists its UI state and disables those controls, but the Rust backend does not read it as a global network policy.',
           callout: {
             tone: 'warning',
             title: 'Online launch may need the network',
-            text: 'Authentication, missing game files, loaders, runtimes, or mods cannot be fetched while Lockdown is active.',
+            text: 'Authentication, missing game files, loaders, runtimes, or mods cannot be fetched after their endpoint permissions are disabled or the machine is offline.',
           },
         },
         {
@@ -1097,7 +1114,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Launch each required instance once so game and loader files are present.',
             'Confirm the selected Java runtime is installed.',
             'Download planned mods and packs before disconnecting.',
-            'Enable Lockdown and test the exact launch workflow while you still have time to correct missing files.',
+            'Disable every endpoint group and test the exact launch workflow while you still have time to correct missing files.',
           ],
           body: 'Offline readiness is instance-specific. One prepared instance does not guarantee that another has all required artifacts.',
         },
@@ -1113,7 +1130,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Apply capability-based policy',
-          body: 'Enable only the endpoint groups needed for the workflow: registry, governance, mod discovery, launch, runtime, authentication, updates, or AI. Global Lockdown overrides individual choices.',
+          body: 'Enable only the endpoint groups needed for the workflow: registry, governance, mod discovery, launch, runtime, authentication, updates, or AI. The individual choices are the enforced policy; Lockdown currently does not override them in the backend.',
           bullets: [
             'Disabling the Modrinth API also prevents the associated CDN workflow.',
             'Runtime access is separate from Mojang game content and loader content.',
@@ -1122,7 +1139,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Audit degraded behavior',
-          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. The UI preference is persisted, while the Rust backend is responsible for enforcing requests.',
+          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. Individual endpoint preferences are persisted and enforced by the Rust backend. Lockdown is currently only a persisted UI preference.',
         },
         {
           title: 'Protect shared diagnostics',
@@ -1230,7 +1247,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Protect your data',
-          body: 'Assistant messages and attached crash context are sent to GitHub Copilot. Review logs for personal paths, usernames, server addresses, tokens, or private chat before submitting them.',
+          body: 'Assistant messages are sent to GitHub Copilot. When opened from Crash Doctor, the first message can also include the instance ID, selected crash log, matched signatures, and ranked suspects. Review all of that context for personal paths, usernames, server addresses, tokens, or private chat before submitting it.',
           callout: {
             tone: 'warning',
             title: 'AI can be wrong',
@@ -1249,7 +1266,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Use structured context',
-          body: 'When opened from Crash Doctor, the assistant can receive the crash log, matched signatures, and ranked suspects. Ask it to cite the exact evidence for each hypothesis and to preserve Crash Doctor\'s one-variable testing discipline.',
+          body: 'When opened from Crash Doctor, the assistant can receive the instance ID, crash log, matched signatures, and ranked suspects in the first message. A mod-list request can send the selected instance\'s installed-mod context. Ask it to cite the exact evidence for each hypothesis and preserve Crash Doctor\'s one-variable testing discipline.',
         },
         {
           title: 'Work within service limits',
@@ -1284,11 +1301,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Choose integrated AI or MCP',
-          body: 'Use Integrated AI for chat inside Agora. Use MCP when you already operate an external AI client and want it to list instances, analyze crashes, or request supported management actions through Agora\'s tool interface.',
+          body: 'Use Integrated AI for GitHub Copilot chat inside Agora. Use MCP when you already operate an external AI client and want it to inspect instances, read bounded crash evidence, search local knowledge, or request supported enable/disable actions through Agora\'s tool interface.',
         },
         {
           title: 'Connect a client',
-          body: 'Enable Advanced mode and AI / MCP Server in Settings. Start the server, use the displayed local server URL and configuration instructions for your client, and provide the generated Bearer token where the client supports authorization.',
+          body: 'Enable Advanced mode and AI / MCP Server in Settings. The desktop server binds only to 127.0.0.1:39741 and exposes SSE at /sse plus streamable HTTP at /mcp. Every request must send the generated token in the Authorization: Bearer <token> header; query-string tokens are not accepted.',
           steps: [
             'Start the MCP server only when needed.',
             'Copy the configuration for Kilo Code, Opencode, Claude Desktop, or another compatible client.',
@@ -1318,11 +1335,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Secure the connection',
-          body: 'Use the displayed 127.0.0.1 SSE endpoint, never expose it through port forwarding or a public reverse proxy, and include the Bearer token through the client\'s supported authorization method. Regeneration invalidates the previous token and requires updating every client.',
+          body: 'Use http://127.0.0.1:39741/sse for SSE or http://127.0.0.1:39741/mcp for streamable HTTP. Never expose either endpoint through port forwarding or a public reverse proxy. Send the token only in the Authorization header. Regeneration invalidates the previous token and requires updating every client.',
         },
         {
           title: 'Scope tool approvals',
-          body: 'Use per-instance approval settings for modifying tools such as disable_mod. Default to confirmation or denial for valuable instances. Read-only inspection is lower risk but can still expose instance names, file metadata, or crash context to the connected AI provider.',
+          body: 'The ten tools are list_instances, list_instance_mods, read_mod_manifest, get_system_context, search_crash_signatures, search_knowledge_base, disable_mod, enable_mod, read_latest_crash, and suggest_mod_incompatibility. Use per-instance approval settings for modifying tools. Read-only inspection is lower risk but can still expose instance names, file metadata, or crash context to the connected AI provider.',
         },
         {
           title: 'Troubleshoot methodically',

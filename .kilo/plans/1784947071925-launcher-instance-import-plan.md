@@ -1,5 +1,7 @@
 # V1 Launcher Instance Migration Plan
 
+> Historical implementation plan. Core launcher-import discovery, preview, copy, provenance, and UI work was implemented by 2026-08-05. This file is retained for decision rationale and is not current player documentation; verify remaining edge cases against source and tests.
+
 ## Goal
 
 Add a browser-style **Import from another launcher** flow that detects Prism Launcher, CurseForge, and Modrinth App installations, previews their instances, and copies selected instances into Agora without modifying or depending on the source launcher. A successful import must produce an Agora-owned, independently launchable instance; unsupported instances are skipped before mutation with a precise reason.

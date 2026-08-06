@@ -90,9 +90,9 @@ Check each item after building with `npm run tauri build` (or `cargo tauri dev` 
 ## 9. Snapshot & Restore
 
 - [ ] Automatic snapshot created before install/update/remove
-- [ ] Last-known-good marker established after successful launch
-- [ ] Restore to last-known-good returns files and manifest to saved state
-- [ ] Diff view shows changes since last-known-good
+- [ ] Last Known Good marker established after successful launch
+- [ ] Restore to Last Known Good returns files and manifest to saved state
+- [ ] Diff view shows changes since Last Known Good
 
 ## 10. Settings
 

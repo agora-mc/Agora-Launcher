@@ -1,7 +1,7 @@
 # Agora workspace.
 #
-# Multi-crate layout introduced in the v1 launcher refactor (see
-# `.kilo/plans/1782611768583-agora-v1-launcher-refactor.md`, Phase 1).
+# Multi-crate layout introduced in the v1 launcher refactor. Current ownership
+# rules live in `docs/architecture/layer-ownership.md`.
 #
 # Members:
 #   - crates/agora-core : shared library, all business logic, no tauri/clap/MCP types

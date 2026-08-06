@@ -139,6 +139,253 @@ fn assert_json_stdout(output: &std::process::Output) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("stdout must be valid JSON: {e}\nstdout:\n{stdout}"))
 }
 
+const TOP_LEVEL_COMMANDS: &[&str] = &[
+    "list-instances",
+    "paths",
+    "get-instance",
+    "instance",
+    "mod",
+    "health",
+    "inventory",
+    "registry",
+    "snapshots",
+    "import",
+    "launch",
+    "auth",
+    "sync",
+    "runtime",
+    "loader",
+    "settings",
+    "mcp",
+    "crash",
+    "migrate-data",
+    "pack",
+    "export",
+    "loadout",
+    "lockfile",
+];
+
+const NESTED_COMMANDS: &[&[&str]] = &[
+    &["instance", "create"],
+    &["instance", "clone"],
+    &["instance", "rename"],
+    &["instance", "lock"],
+    &["instance", "unlock"],
+    &["instance", "repair-loader"],
+    &["instance", "recommend-memory"],
+    &["instance", "delete"],
+    &["mod", "list"],
+    &["mod", "search"],
+    &["mod", "install"],
+    &["mod", "remove"],
+    &["mod", "update"],
+    &["mod", "update-all"],
+    &["mod", "enable"],
+    &["mod", "disable"],
+    &["registry", "status"],
+    &["registry", "sync"],
+    &["snapshots", "list"],
+    &["snapshots", "create"],
+    &["snapshots", "restore"],
+    &["snapshots", "delete"],
+    &["auth", "login"],
+    &["auth", "status"],
+    &["auth", "logout"],
+    &["runtime", "list"],
+    &["runtime", "ensure"],
+    &["runtime", "remove-unused"],
+    &["runtime", "inspect"],
+    &["loader", "list"],
+    &["loader", "install"],
+    &["settings", "list"],
+    &["settings", "get"],
+    &["settings", "set"],
+    &["mcp", "serve"],
+    &["crash", "list"],
+    &["crash", "inspect"],
+    &["crash", "investigate"],
+    &["pack", "install"],
+    &["loadout", "create"],
+    &["loadout", "list"],
+    &["loadout", "apply"],
+    &["loadout", "delete"],
+    &["lockfile", "export"],
+    &["lockfile", "verify"],
+    &["lockfile", "repair"],
+    &["lockfile", "import"],
+];
+
+// ---------------------------------------------------------------------------
+// Public help contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_flag_prints_package_version() {
+    let mut command = Command::new(AGORA_BIN);
+    command.arg("--version");
+    let output = run_command(command, &["--version"]);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("agora {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn top_level_help_lists_public_commands_and_global_flags() {
+    let mut command = Command::new(AGORA_BIN);
+    command.arg("--help");
+    let output = run_command(command, &["--help"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for command in TOP_LEVEL_COMMANDS {
+        assert!(
+            stdout.contains(command),
+            "missing command {command} in:\n{stdout}"
+        );
+    }
+    for flag in [
+        "--data-dir",
+        "--json",
+        "--output",
+        "--registry-repo",
+        "--log-file",
+    ] {
+        assert!(
+            stdout.contains(flag),
+            "missing global flag {flag} in:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn every_command_help_exits_zero() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for command in TOP_LEVEL_COMMANDS {
+        let output = run_agora(&data_dir, &[*command, "--help"]);
+        assert!(
+            output.status.success(),
+            "{command} --help failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    for command in NESTED_COMMANDS {
+        let mut args = command.to_vec();
+        args.push("--help");
+        let output = run_agora(&data_dir, &args);
+        assert!(
+            output.status.success(),
+            "{} --help failed:\n{}",
+            command.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn critical_command_flags_remain_in_help() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for (command, flags) in [
+        (&["launch"][..], &["--yes", "--timings"][..]),
+        (&["import"][..], &["--url", "--symlink-saves"][..]),
+        (
+            &["mod", "install"][..],
+            &[
+                "--dry-run",
+                "--include-optional",
+                "--exclude-optional",
+                "--replace-conflicts",
+                "--abort-conflicts",
+                "--allow-replace",
+                "--skip-health-scan",
+            ][..],
+        ),
+        (&["mcp", "serve"][..], &["--stdio"][..]),
+    ] {
+        let mut args = command.to_vec();
+        args.push("--help");
+        let output = run_agora(&data_dir, &args);
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for flag in flags {
+            assert!(
+                stdout.contains(flag),
+                "missing {flag} from {} help:\n{stdout}",
+                command.join(" ")
+            );
+        }
+    }
+}
+
+#[test]
+fn documentation_examples_use_public_command_names() {
+    let docs = include_str!("../../../docs/CLI.md");
+    for flag in [
+        "--data-dir",
+        "--output",
+        "--yes",
+        "--timings",
+        "--url",
+        "--dry-run",
+        "--include-optional",
+        "--exclude-optional",
+        "--replace-conflicts",
+        "--abort-conflicts",
+        "--allow-replace",
+        "--skip-health-scan",
+        "--stdio",
+    ] {
+        assert!(
+            docs.contains(flag),
+            "docs/CLI.md is missing critical flag {flag}"
+        );
+    }
+    let mut checked = 0;
+    let mut in_fence = false;
+    for line in docs.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            continue;
+        }
+        let Some(example) = line.trim().strip_prefix("agora ") else {
+            continue;
+        };
+        if example.starts_with('[') {
+            continue;
+        }
+        let tokens: Vec<_> = example.split_whitespace().collect();
+        if tokens
+            .iter()
+            .any(|token| matches!(*token, "--version" | "--help"))
+        {
+            checked += 1;
+            continue;
+        }
+        let command = tokens
+            .iter()
+            .find(|token| TOP_LEVEL_COMMANDS.contains(token))
+            .unwrap_or_else(|| panic!("documented example has no public command: {line}"));
+        assert!(TOP_LEVEL_COMMANDS.contains(command));
+        checked += 1;
+    }
+    assert!(
+        checked >= 40,
+        "expected broad CLI example coverage, found {checked}"
+    );
+}
+
+#[test]
+fn ndjson_is_rejected_until_a_streaming_contract_exists() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["--output", "ndjson", "paths"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid value 'ndjson'"));
+}
+
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------

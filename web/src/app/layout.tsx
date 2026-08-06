@@ -5,7 +5,7 @@ import { Shell } from '@/components/Shell';
 export const metadata: Metadata = {
   title: 'Agora Minecraft Mod Launcher',
   description:
-    'A decentralized, ad-free, boutique Minecraft mod launcher and discovery platform.',
+    'A community-curated Minecraft launcher with dependency-aware installs, recovery tools, direct or delegated launch, and an ad-free public catalog.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

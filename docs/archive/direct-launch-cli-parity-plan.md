@@ -1,5 +1,7 @@
 # Agora Launcher Architecture, Direct Launch, and CLI Parity Plan
 
+> Archived 2026-08-05. Status: mandatory architecture, direct-launch, CLI parity, and stdio MCP scope completed. This is a historical implementation plan, not current product documentation. Optional daemon commands, generated TypeScript bindings, and further HTTP MCP hardening remain future work. Use [`docs/CLI.md`](../CLI.md), [`layer-ownership.md`](../architecture/layer-ownership.md), current source, and tests for live behavior.
+
 ## 1. Objective
 
 Refactor Agora so that:

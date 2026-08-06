@@ -16,11 +16,11 @@ pip install -r requirements.txt
 Build the database:
 
 ```bash
-python compile.py --out ../registry.db
+python compile.py --skip-sign --no-governance-write --governance-mode off --out ../registry.db
 ```
 
-The compiler also supports signing via the `ED25519_PRIVATE_KEY` environment variable (a 64-byte hex-encoded Ed25519 private key seed). If the key is missing or PyNaCl is not installed, the compiler emits an empty `.sig` placeholder and logs a warning.
+Use `--skip-sign` only for local development. A signed build requires the `ED25519_PRIVATE_KEY` environment variable and signing dependencies; if signing was requested but cannot complete, the compiler exits non-zero rather than emitting an empty signature placeholder. Never copy the private key into documentation, source, or shell transcripts.
 
 ## CI
 
-`.github/workflows/compile.yml` runs the compiler every night at 02:00 UTC and on `workflow_dispatch`. It uploads `registry.db` and `registry.db.sig` as workflow artifacts. Release-asset deployment is left as a placeholder step requiring a release token secret.
+`.github/workflows/compile.yml` runs the compiler every night at 02:00 UTC and on `workflow_dispatch`. It verifies the database and governance state, uploads the signed database and web export as workflow artifacts, and deploys them to the current date-tagged registry release.

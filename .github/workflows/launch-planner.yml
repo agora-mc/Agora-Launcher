@@ -7,11 +7,10 @@
 # dependent-compile check.
 #
 # A cross-platform Python script asserts that the desktop UI's launch_mode
-# default remains "delegation" — the fundamental security invariant that Agora
-# delegates JVM execution to the official Mojang launcher rather than spawning
-# Java directly.
+# default remains "delegation" - the security invariant that direct launch is
+# opt-in rather than the global default.
 #
-# Reuses the same Rust toolchain and cache actions as release-desktop.yml.
+# Reuses the same Rust toolchain and cache actions as release.yml.
 # Does NOT require Tauri system libraries (libwebkit2gtk, etc.) because only
 # agora-core and agora-cli are compiled, not the Tauri desktop app.
 

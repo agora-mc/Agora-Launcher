@@ -22,7 +22,7 @@ export default function AboutPage() {
             <strong>$0/month server footprint.</strong> Data ships through GitHub Release Assets and static sites.
           </li>
           <li>
-            <strong>Security by delegation.</strong> The app does not handle Microsoft/Xbox auth or run the JVM; it delegates all of that to the official Mojang launcher.
+            <strong>Security by delegation.</strong> Delegated launch is the default and leaves Microsoft/Xbox authentication and JVM startup to the official Minecraft Launcher. Users may opt into Agora's direct launch mode for integrated process status and console output.
           </li>
           <li>
             <strong>Curated, not warehoused.</strong> Every entry is community reviewed and voted on.

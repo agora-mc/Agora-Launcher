@@ -95,17 +95,23 @@ impl agora_core::launch_service::LaunchProgress for ConsoleLaunchProgress {
 enum OutputFormat {
     Human,
     Json,
-    Ndjson,
 }
 
 impl OutputFormat {
     fn is_json_output(self) -> bool {
-        matches!(self, OutputFormat::Json | OutputFormat::Ndjson)
+        matches!(self, OutputFormat::Json)
     }
 }
 
 #[derive(Parser)]
-#[command(name = "agora", about = "Agora Minecraft Launcher CLI")]
+#[command(
+    name = "agora",
+    version,
+    about = "Manage Agora instances, content, recovery, and direct launches",
+    long_about = "Agora's standalone command-line interface uses the same core services as the desktop application. It can synchronize the signed registry, create and inspect instances, resolve content changes, run health checks, manage snapshots and lockfiles, investigate crashes, and launch Minecraft directly.",
+    after_help = "Start with `agora paths`, `agora registry status`, and `agora list-instances`. Use `--data-dir` for an isolated test profile. See docs/CLI.md for safety guidance, examples, structured output, and exit codes.",
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -123,7 +129,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        help = "Output format: human, json, or ndjson. Overrides --json."
+        help = "Output format: human or json. Overrides --json."
     )]
     output: Option<OutputFormat>,
 
@@ -140,34 +146,38 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// List every local instance.
     ListInstances,
+    /// Print resolved Agora data, database, cache, runtime, and instance paths.
     Paths,
-    GetInstance {
-        id: String,
-    },
+    /// Print one instance by ID.
+    GetInstance { id: String },
+    /// Create, clone, lock, rename, repair, or delete instances.
     Instance {
         #[command(subcommand)]
         action: InstanceCmd,
     },
+    /// Search, install, remove, update, enable, or disable content.
     #[command(name = "mod")]
     Mods {
         #[command(subcommand)]
         action: ModsCmd,
     },
-    Health {
-        instance: String,
-    },
-    Inventory {
-        instance: String,
-    },
+    /// Run the local health scanner for an instance.
+    Health { instance: String },
+    /// Inspect the installed content inventory for an instance.
+    Inventory { instance: String },
+    /// Inspect or synchronize the signed Agora registry.
     Registry {
         #[command(subcommand)]
         action: RegistryCmd,
     },
+    /// Create, list, restore, or delete recovery snapshots.
     Snapshots {
         #[command(subcommand)]
         action: SnapshotsCmd,
     },
+    /// Import a local supported pack or a remote .mrpack URL.
     Import {
         #[arg(required_unless_present = "url")]
         path: Option<PathBuf>,
@@ -180,6 +190,7 @@ enum Commands {
         #[arg(long, help = "Symlink saves instead of copying")]
         symlink_saves: bool,
     },
+    /// Launch an instance directly through Agora core.
     Launch {
         instance: String,
         #[arg(long, help = "Skip health check confirmation")]
@@ -187,27 +198,34 @@ enum Commands {
         #[arg(long, help = "Print launch phase timings to stderr")]
         timings: bool,
     },
+    /// Manage the Microsoft account used for direct launch.
     Auth {
         #[command(subcommand)]
         action: AuthCmd,
     },
+    /// Synchronize the signed registry.
     Sync,
+    /// Discover, inspect, provision, or clean managed Java runtimes.
     Runtime {
         #[command(subcommand)]
         action: RuntimeCmd,
     },
+    /// List or install pinned loader profiles.
     Loader {
         #[command(subcommand)]
         action: LoaderCmd,
     },
+    /// Read or write Agora settings.
     Settings {
         #[command(subcommand)]
         action: SettingsCmd,
     },
+    /// Run Agora's MCP server over standard input/output.
     Mcp {
         #[command(subcommand)]
         action: McpCmd,
     },
+    /// List, inspect, or investigate crash evidence.
     Crash {
         #[command(subcommand)]
         action: CrashCmd,
@@ -228,10 +246,7 @@ enum Commands {
         action: PackCmd,
     },
     /// Export an instance to a standalone server environment.
-    Export {
-        instance: String,
-        dest: PathBuf,
-    },
+    Export { instance: String, dest: PathBuf },
     /// Manage loadout profiles for an instance (enable/disable sets of content).
     Loadout {
         #[command(subcommand)]
@@ -3555,11 +3570,6 @@ mod tests {
     #[test]
     fn output_format_json_is_json() {
         assert!(OutputFormat::Json.is_json_output());
-    }
-
-    #[test]
-    fn output_format_ndjson_is_json() {
-        assert!(OutputFormat::Ndjson.is_json_output());
     }
 
     // --- JSON-safe behavior tests ---

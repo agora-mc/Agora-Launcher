@@ -31,6 +31,12 @@ export default async function HomePage() {
           >
             Browse the database
           </Link>
+          <Link
+            href="/docs"
+            className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white/10"
+          >
+            Read the docs
+          </Link>
           <a
             href={GITHUB_REPO_URL}
             className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white/10"
@@ -42,6 +48,35 @@ export default async function HomePage() {
         </div>
         <div className="mt-6">
           <DownloadButton />
+        </div>
+      </section>
+
+      <section>
+        <div className="flex flex-col gap-6 rounded-2xl border bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800 md:flex-row md:items-start md:justify-between">
+          <div className="max-w-2xl">
+            <h2 className="text-2xl font-bold">More than a catalog</h2>
+            <p className="mt-3 leading-7 text-gray-600 dark:text-gray-300">
+              Agora keeps Minecraft setups isolated, resolves dependency-aware install plans,
+              checks health before launch, recommends compatible loader versions, and creates
+              recovery points before risky changes.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-3">
+            <Link
+              href="/docs"
+              className="rounded-lg bg-indigo-600 px-4 py-2 font-semibold text-white hover:bg-indigo-700"
+            >
+              First-run guide
+            </Link>
+            <a
+              href={GITHUB_RELEASES_URL}
+              className="rounded-lg border px-4 py-2 font-semibold hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-700"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Releases
+            </a>
+          </div>
         </div>
       </section>
 
@@ -74,7 +109,7 @@ export default async function HomePage() {
           </p>
           <div className="mt-4 flex flex-wrap gap-3 text-sm">
             <a
-              href={`${GITHUB_REPO_URL}/blob/main/REGISTRY_CURATION_REFERENCE.md`}
+              href={`${GITHUB_REPO_URL}/blob/HEAD/REGISTRY_CURATION_REFERENCE.md`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-amber-700 underline hover:text-amber-900 dark:text-amber-400"

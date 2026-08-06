@@ -2,13 +2,13 @@
 
 ## Mission & Ethos
 
-Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite registry, and the app delegates authentication and game execution to the official Mojang launcher.
+Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite registry. Delegated launch is the global default; an explicit direct mode performs Microsoft authentication and JVM execution inside Agora.
 
 > "If CurseForge were a beer, this would be Agora."
 
 Core values:
 - **$0.00/month server footprint.** No backend services; data ships via GitHub Release Assets and static sites.
-- **Security by delegation.** No Microsoft/Xbox auth or custom JVM execution inside the app.
+- **Secure defaults.** Delegated launch keeps Microsoft/Xbox auth and JVM execution in the official launcher by default; direct launch is explicit and optional.
 - **Curated, not warehoused.** Boutique quality over infinite inventory; every entry is community reviewed.
 
 ## Directory Map
@@ -74,19 +74,18 @@ The compiler governance pipeline (`compiler/governance.py`) detects vote-surge a
 - **Repo resolution**: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`.
 - **Decisions**: Curators edit `registry/governance/quarantine_decisions.json` (compiler never writes it). Each entry maps `event_id` to `accepted` (lift quarantine) or `rejected` (permanently exclude).
 - **Recovery**: production CI rejects missing, malformed, mismatched, duplicate, or incomplete state. Restore the last valid file from Git history or commit a curator-approved empty production envelope, then run `python scripts/validate_governance_state.py registry/governance/governance-state.json`.
-- **Production is currently `read-only`**: the CI workflow does not activate `monitor` mode until sandbox gates and manual curator sign-off are completed.
+- **Production currently uses `monitor`**: `.github/workflows/compile.yml` pins the production policy, validates the tracked state, requires alert configuration, and may commit meaningful state transitions.
 - **Workflow ownership**: the loader-refresh workflow is the sole committer for `loader-manifests/`. The nightly governance commit stages only `registry/governance/governance-state.json`; signed registry artifacts are release assets, not Git commits.
 
 ### Local diagnostics
 
 ```powershell
-# ⚠️  Use --governance-policy sandbox to avoid affecting production state or alerts
-cd compiler; $env:GITHUB_TOKEN = "ghp_..."
-python compile.py --skip-sign --governance-mode read-only --out ..\registry.db  # never writes state
+# Read-only does not write monitor state or send monitor alerts.
+$env:GITHUB_TOKEN = (gh auth token)
+python compiler/compile.py --skip-sign --governance-mode read-only --governance-policy production --governance-repo agora-mc/Agora-Launcher --governance-state-in registry/governance/governance-state.json --out tmp/governance-read-only/registry.db
 ```
 
 ## Environment Variables
 
 - `ED25519_PRIVATE_KEY` — CI-only Ed25519 key used to sign `registry.db`. Never expose or bundle it.
-- `LAUNCHER_MCP_TOKEN` — Optional Bearer token for the local Agora launcher MCP server.
 - `GITHUB_TOKEN` — Standard GitHub token for compiler and CI operations.

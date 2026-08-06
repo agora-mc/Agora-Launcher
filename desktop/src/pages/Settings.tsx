@@ -995,7 +995,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                 <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
                   <h4 className="text-sm font-semibold">Bearer Token</h4>
                   <p className="text-xs text-muted-foreground">
-                    All MCP connections require this token. Present it as <code className="bg-muted px-1 py-0.5 rounded">Authorization: Bearer &lt;token&gt;</code> header or <code className="bg-muted px-1 py-0.5 rounded">?token=&lt;token&gt;</code> query parameter.
+                    All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
                   </p>
                   {mcpToken?.token ? (
                     <>
@@ -1128,7 +1128,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                   <div className="space-y-1.5 pt-2 border-t border-border">
                     <h5 className="text-xs font-semibold">Skill content</h5>
                     <p className="text-xs text-muted-foreground">
-                      The skill teaches your AI agent what the 6 Agora tools do and when to use them. Place it in your agent's skills directory.
+                      The skill teaches your AI agent what the 10 Agora tools do and when to use them. Place it in your agent's skills directory.
                     </p>
                     <div className="flex gap-2">
                       <button

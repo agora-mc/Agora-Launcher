@@ -1,5 +1,7 @@
 # Health, Crash Doctor, Auth, Memory, and Launch Plan
 
+> Historical implementation plan. The v1 health, Crash Doctor, authentication, memory, and launch work described here was substantially implemented by 2026-08-05. This file is retained for decision rationale and is not current product documentation; verify behavior against source, tests, and the in-app guide.
+
 ## Goal
 
 Deliver a local-first v1 diagnostic and launch overhaul that removes avoidable launch friction, makes Crash Doctor useful without copy/paste, preserves safe recovery, refreshes account sessions reliably, recommends memory without overriding users, and improves measured launch performance.
