@@ -156,7 +156,8 @@ impl InstanceLockfile {
         if self.instance.name.trim().is_empty()
             || self.instance.minecraft_version.trim().is_empty()
             || self.instance.loader.trim().is_empty()
-            || self.instance.loader_version.trim().is_empty()
+            || (!matches!(self.instance.loader.as_str(), "vanilla")
+                && self.instance.loader_version.trim().is_empty())
         {
             return Err("Lockfile instance identity is incomplete.".into());
         }
@@ -568,6 +569,33 @@ mod tests {
         let mut future = lockfile();
         future.schema_version += 1;
         assert!(future.validate().unwrap_err().contains("Unsupported"));
+    }
+
+    #[test]
+    fn vanilla_lockfile_with_empty_loader_version_validates() {
+        let mut vanilla = lockfile();
+        vanilla.instance.loader = "vanilla".into();
+        vanilla.instance.loader_version = String::new();
+        vanilla.loader = LockedLoader {
+            source_url: None,
+            sha256: None,
+        };
+        vanilla.content_hash = vanilla.recompute_content_hash().unwrap();
+        vanilla.validate().unwrap();
+
+        let json = vanilla.to_pretty_json().unwrap();
+        InstanceLockfile::parse_and_validate(&json).unwrap();
+    }
+
+    #[test]
+    fn non_vanilla_lockfile_with_empty_loader_version_is_rejected() {
+        let mut missing = lockfile();
+        missing.instance.loader_version = String::new();
+        missing.content_hash = missing.recompute_content_hash().unwrap();
+        assert!(missing
+            .validate()
+            .unwrap_err()
+            .contains("identity is incomplete"));
     }
 
     #[test]

@@ -2011,6 +2011,9 @@ async fn run_command(
                     );
                     println!("Update avail:  {}", status.update_available);
                     println!("Message:       {}", status.message);
+                    if !status.has_cached_db {
+                        println!("Hint:          Run `agora registry sync` to download it.");
+                    }
                 }
             }
             RegistryCmd::Sync => {

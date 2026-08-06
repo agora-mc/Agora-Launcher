@@ -212,7 +212,7 @@ Common planning options:
 
 The default source is Agora's curated strategy. Use `--source modrinth` only when the optional Modrinth integration and its network permissions are enabled.
 
-Known defect: `mod enable` and `mod disable` currently return success when the named file does not exist. Confirm the filename with `mod list` and verify the resulting state rather than trusting the success line alone.
+`mod enable` and `mod disable` fail with a clear error and a nonzero exit when the named file does not exist. Confirm the filename with `mod list` if the error is unexpected.
 
 ### Packs, import, and export
 
@@ -266,7 +266,7 @@ A lockfile describes reproducible artifact state. It is not a backup of private 
 
 Review a lockfile's source before importing it. Hashes prove byte identity, not safety or licensing.
 
-Known defect: a lockfile exported from a vanilla instance can contain an empty loader version, and the current `lockfile verify` command rejects that export as incomplete. Do not present export-then-verify as a working vanilla round trip until the product bug is fixed.
+A lockfile exported from a vanilla instance passes `lockfile verify` immediately; export-then-verify is a valid round trip for vanilla and modded instances alike.
 
 ### Java runtimes
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { check } from '@tauri-apps/plugin-updater';
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { listen } from '@tauri-apps/api/event';
@@ -33,6 +34,7 @@ import {
   getMCPToken,
   regenerateMCPToken,
   testLauncherPath,
+  openDataFolder,
 } from '../lib/tauri';
 import type { CopilotToken, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
 import { Privacy } from './Privacy';
@@ -94,6 +96,8 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
   const [alwaysAutoConfirmInstalls, setAlwaysAutoConfirmInstalls] = useState(false);
   const [loading, setLoading] = useState(true);
   const [directLaunch, setDirectLaunch] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [dataFolderOpening, setDataFolderOpening] = useState(false);
 
   // MCP server state
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
@@ -201,6 +205,15 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
         if (!cancelled) setMsaLoading(false);
       }
     })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load the packaged app version on mount
+  useEffect(() => {
+    let cancelled = false;
+    getVersion()
+      .then((v) => { if (!cancelled) setAppVersion(v); })
+      .catch(() => { /* version label is optional */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -1650,29 +1663,53 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
 
           <div id="settings-updates" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
             <h3 className="font-semibold">Software Updates</h3>
-            <button
-              onClick={async () => {
-                try {
-                  const update = await check();
-                  if (update?.available) {
-                    const ok = await window.confirm(
-                      `Update available: ${update.version}\n\n${update.body ?? ''}\n\nDownload and install now?`
-                    );
-                    if (ok) {
-                      await update.downloadAndInstall();
-                      await invoke('plugin:process|restart');
+            {appVersion && (
+              <p className="text-xs text-muted-foreground">
+                Agora Launcher <span className="font-medium">{appVersion}</span>
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const update = await check();
+                    if (update?.available) {
+                      const ok = await window.confirm(
+                        `Update available: ${update.version}\n\n${update.body ?? ''}\n\nDownload and install now?`
+                      );
+                      if (ok) {
+                        await update.downloadAndInstall();
+                        await invoke('plugin:process|restart');
+                      }
+                    } else {
+                      showToast('You are running the latest version of Agora.', 'success');
                     }
-                  } else {
-                    showToast('You are running the latest version of Agora.', 'success');
+                  } catch (e) {
+                    showToast(formatError(e), 'error');
                   }
-                } catch (e) {
-                  showToast(formatError(e), 'error');
-                }
-              }}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              Check for Updates
-            </button>
+                }}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                Check for Updates
+              </button>
+              <button
+                onClick={async () => {
+                  if (dataFolderOpening) return;
+                  setDataFolderOpening(true);
+                  try {
+                    await openDataFolder();
+                  } catch (e) {
+                    showToast(formatError(e), 'error');
+                  } finally {
+                    setDataFolderOpening(false);
+                  }
+                }}
+                disabled={dataFolderOpening}
+                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+              >
+                {dataFolderOpening ? 'Opening...' : 'Open application data folder'}
+              </button>
+            </div>
             <p className="text-xs text-muted-foreground">
               Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.
             </p>

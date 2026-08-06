@@ -530,6 +530,7 @@ export const revertInstance = (instanceId: string) =>
   invoke<void>('revert_instance', { instanceId });
 export const openInstanceFolder = (instanceId: string) =>
   invoke<void>('open_instance_folder', { instanceId });
+export const openDataFolder = () => invoke<void>('open_data_folder');
 export const revealPath = (path: string) =>
   invoke<void>('reveal_path', { path });
 export const launchInstance = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>

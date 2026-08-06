@@ -102,6 +102,6 @@ Detailed compiler configuration, release mechanics, governance incident recovery
 
 ## License and community
 
-Agora workspace packages declare [GPL-3.0-only](https://www.gnu.org/licenses/gpl-3.0.html). The repository does not currently include a root license text; release maintainers should correct that packaging gap before relying on this link as the complete license distribution.
+Agora workspace packages declare [GPL-3.0-only](LICENSE).
 
 Join the [project Discord](https://discord.gg/56tpsa2sTZ) for community support. Contributions and reviews follow the project [Code of Engagement](./CODE_OF_ENGAGEMENT.md): keep discussion technical, focused, respectful, and relevant to the asset or change under review.

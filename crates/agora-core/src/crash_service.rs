@@ -34,7 +34,7 @@ impl CrashService {
     /// Validates instance ID and filename, acquires an instance lock, and
     /// updates the manifest to mark the mod as disabled. Never clobbers an
     /// existing `.disabled` file. Returns `Ok(())` if the mod is already
-    /// disabled or if the source file does not exist.
+    /// disabled, and an error if the named file does not exist.
     pub fn disable_mod(&self, instance_id: &str, filename: &str) -> LauncherResult<()> {
         let sanitized = validate_instance_id(instance_id)?;
         validate_filename(filename)?;
@@ -54,7 +54,10 @@ impl CrashService {
         }
 
         if !source.exists() {
-            return Ok(());
+            return Err(LauncherError::Generic {
+                code: "ERR_MOD_FILE_NOT_FOUND".into(),
+                message: format!("Mod file '{filename}' not found in instance '{instance_id}'."),
+            });
         }
 
         std::fs::rename(&source, &dest).map_err(|e| LauncherError::Generic {
@@ -73,7 +76,8 @@ impl CrashService {
     ///
     /// Validates instance ID and filename, acquires an instance lock, and
     /// updates the manifest to mark the mod as enabled. Never clobbers an
-    /// existing target file. Returns `Ok(())` if the mod is already enabled.
+    /// existing target file. Returns `Ok(())` if the mod is already enabled,
+    /// and an error if the named file does not exist.
     pub fn enable_mod(&self, instance_id: &str, filename: &str) -> LauncherResult<()> {
         let sanitized = validate_instance_id(instance_id)?;
         validate_filename(filename)?;
@@ -89,7 +93,13 @@ impl CrashService {
         let source = mods_dir.join(filename);
 
         if !disabled_path.exists() {
-            return Ok(());
+            if source.exists() {
+                return Ok(());
+            }
+            return Err(LauncherError::Generic {
+                code: "ERR_MOD_FILE_NOT_FOUND".into(),
+                message: format!("Mod file '{filename}' not found in instance '{instance_id}'."),
+            });
         }
 
         if source.exists() {
@@ -1550,12 +1560,22 @@ mod tests {
     }
 
     #[test]
-    fn test_disable_mod_missing_source_noop() {
+    fn test_disable_mod_missing_source_errors() {
         let (ctx, tmp) = setup_ctx();
         let svc = CrashService::new(ctx.clone());
         create_instance(&ctx, "test-instance", &["other.jar"]);
 
-        svc.disable_mod("test-instance", "nonexistent.jar").unwrap();
+        let err = svc
+            .disable_mod("test-instance", "nonexistent.jar")
+            .expect_err("disable should fail for a missing file");
+        match err {
+            LauncherError::Generic { code, message } => {
+                assert_eq!(code, "ERR_MOD_FILE_NOT_FOUND");
+                assert!(message.contains("nonexistent.jar"));
+                assert!(message.contains("test-instance"));
+            }
+            other => panic!("expected ERR_MOD_FILE_NOT_FOUND, got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1602,6 +1622,27 @@ mod tests {
 
         svc.enable_mod("test-instance", "testmod.jar").unwrap();
         assert_mod_exists(&ctx, "test-instance", "testmod.jar");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_enable_mod_missing_file_errors() {
+        let (ctx, tmp) = setup_ctx();
+        let svc = CrashService::new(ctx.clone());
+        create_instance(&ctx, "test-instance", &["other.jar"]);
+
+        let err = svc
+            .enable_mod("test-instance", "nonexistent.jar")
+            .expect_err("enable should fail for a missing file");
+        match err {
+            LauncherError::Generic { code, message } => {
+                assert_eq!(code, "ERR_MOD_FILE_NOT_FOUND");
+                assert!(message.contains("nonexistent.jar"));
+                assert!(message.contains("test-instance"));
+            }
+            other => panic!("expected ERR_MOD_FILE_NOT_FOUND, got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -245,10 +245,11 @@ export default function DocsPage() {
       <section className="space-y-4">
         <h2 className="text-2xl font-bold">Data, logs, versions, and support</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Use <code>agora paths</code> or an instance's <strong>Open in Folder</strong> action instead of hardcoding platform
-          paths. Game logs, crash reports, CLI diagnostics, and compiler workflow logs serve different
-          purposes and can contain different personal data. Agora does not currently provide a
-          one-click support bundle or an in-app exact-version field.
+          Use <code>agora paths</code>, an instance's <strong>Open in Folder</strong> action, or
+          <strong> Settings &gt; Software Updates &gt; Open application data folder</strong> instead of hardcoding
+          platform paths. The same Settings section displays the exact packaged version. Game logs,
+          crash reports, CLI diagnostics, and compiler workflow logs serve different purposes and can
+          contain different personal data. Agora does not currently provide a one-click support bundle.
         </p>
         <a
           href={githubDoc('docs/SUPPORT.md')}

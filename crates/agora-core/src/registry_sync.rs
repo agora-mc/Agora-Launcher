@@ -250,7 +250,7 @@ pub fn get_status(app_data_dir: &Path, local_state_path: &Path) -> RegistryStatu
         message: if has_cached_db {
             "Using cached registry.".to_string()
         } else {
-            "No registry database found. Click Check for Updates.".to_string()
+            "No registry database found.".to_string()
         },
     }
 }

@@ -125,3 +125,81 @@ test('boolean settings are sent to Tauri as JSON booleans', async ({ page }) => 
     value: true,
   });
 });
+
+test('software updates section shows the packaged app version from Tauri', async ({ page }) => {
+  await page.addInitScript(() => {
+    const callbacks = new Map<number, (...args: unknown[]) => void>();
+    let callbackId = 0;
+    const internals = {
+      transformCallback(callback: (...args: unknown[]) => void) {
+        const id = ++callbackId;
+        callbacks.set(id, callback);
+        return id;
+      },
+      unregisterCallback(id: number) { callbacks.delete(id); },
+      invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'get_setting') {
+          const key = args.key as string;
+          if (key === 'onboarding_complete') return Promise.resolve(true);
+          return Promise.resolve(null);
+        }
+        if (command === 'plugin:app|version') return Promise.resolve('9.8.7-test');
+        if (command === 'get_windows_accent_color') return Promise.resolve(null);
+        if (command === 'list_instances') return Promise.resolve([]);
+        if (command.startsWith('plugin:event|')) return Promise.resolve(1);
+        return Promise.resolve(null);
+      },
+    };
+    Object.assign(window as unknown as Record<string, unknown>, {
+      __TAURI_INTERNALS__: internals,
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Software Updates' })).toBeVisible();
+  await expect(page.locator('#settings-updates')).toContainText('Agora Launcher 9.8.7-test');
+});
+
+test('open application data folder invokes the open_data_folder command', async ({ page }) => {
+  await page.addInitScript(() => {
+    const callbacks = new Map<number, (...args: unknown[]) => void>();
+    let callbackId = 0;
+    const calls: string[] = [];
+    const internals = {
+      transformCallback(callback: (...args: unknown[]) => void) {
+        const id = ++callbackId;
+        callbacks.set(id, callback);
+        return id;
+      },
+      unregisterCallback(id: number) { callbacks.delete(id); },
+      invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'open_data_folder') {
+          calls.push(command);
+          return Promise.resolve();
+        }
+        if (command === 'get_setting') {
+          const key = args.key as string;
+          if (key === 'onboarding_complete') return Promise.resolve(true);
+          return Promise.resolve(null);
+        }
+        if (command === 'plugin:app|version') return Promise.resolve('0.1.0');
+        if (command === 'get_windows_accent_color') return Promise.resolve(null);
+        if (command === 'list_instances') return Promise.resolve([]);
+        if (command.startsWith('plugin:event|')) return Promise.resolve(1);
+        return Promise.resolve(null);
+      },
+    };
+    Object.assign(window as unknown as Record<string, unknown>, {
+      __TAURI_INTERNALS__: internals,
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
+      __dataFolderCalls: calls,
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Open application data folder' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__dataFolderCalls)).toEqual(['open_data_folder']);
+});

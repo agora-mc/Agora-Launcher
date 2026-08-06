@@ -223,6 +223,7 @@ pub fn run() {
             commands::recommend_instance_memory,
             commands::cancel_java_runtime,
             commands::open_instance_folder,
+            commands::open_data_folder,
             commands::reveal_path,
         ])
         .setup(|app| {

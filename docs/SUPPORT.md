@@ -12,9 +12,7 @@ agora paths
 
 If the CLI was started with `--data-dir` or the desktop was started with `AGORA_DATA_DIR`, run `agora paths` with the same override. The output identifies the root, instances, registry database, runtime caches, snapshots, staging area, and local state database.
 
-For one instance, open its editor and choose **Open in Folder**. This is safer than reconstructing an instance path by hand.
-
-Agora does not currently provide an in-app **Open application data folder** action. Treat that as a product gap; do not guess a platform path when `agora paths` or the instance action can identify the required location.
+For one instance, open its editor and choose **Open in Folder**. For the application data root, choose **Settings > Software Updates > Open application data folder**; it opens the same root that `agora paths` reports. This is safer than reconstructing a platform path by hand.
 
 ## Identify the installed version
 
@@ -24,7 +22,7 @@ For the standalone CLI:
 agora --version
 ```
 
-The desktop currently has no dedicated About field that displays its exact version. Record the version shown by the operating system's installed-application or package metadata and the `v*` release from which the package came. **Check for Updates** reports update availability but is not a substitute for an exact current-version label. For a source build, record the Git commit as well.
+The desktop shows its exact packaged version in **Settings > Software Updates** in the form `Agora Launcher 0.1.0`. Record it together with the `v*` release from which the package came. **Check for Updates** reports update availability but is not a substitute for the displayed current-version label. For a source build, record the Git commit as well.
 
 ## Know which log is which
 

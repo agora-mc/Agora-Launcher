@@ -5612,6 +5612,13 @@ pub async fn open_instance_folder(
 }
 
 #[tauri::command]
+pub async fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let path = crate::paths::app_data_dir(&app)
+        .map_err(|e| format!("Failed to resolve application data folder: {e}"))?;
+    open_path_in_explorer(&path)
+}
+
+#[tauri::command]
 pub async fn reveal_path(path: String) -> Result<(), String> {
     reveal_in_explorer(std::path::Path::new(&path))
 }

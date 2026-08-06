@@ -26,13 +26,13 @@ Do not treat a successful registry release as proof that a desktop package was b
 
 ### Build and inspect
 
-The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. It tests core and CLI code, builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, assembles a draft release, and then publishes it after all build jobs succeed.
+The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. It tests core and CLI code, builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
 
 Public desktop build variables and secret boundaries are documented once in [DEVELOPMENT.md](./DEVELOPMENT.md). Confirm the workflow has every required public value and protected signing credential without copying their values into release notes or logs.
 
 Do not rely on fixed installer filenames or package sizes in documentation. Tauri and platform tooling can change both.
 
-The current workflow does not contain a manual approval gate: `assemble-release` changes the release from draft to published after the desktop and CLI jobs succeed. Inspect the draft while the workflow is running when practical, and cancel the run if any of these are wrong:
+The workflow leaves the release as a draft with all artifacts uploaded and `SHA256SUMS` generated. It never publishes automatically. Inspect the draft after the workflow finishes before publishing, and cancel or re-run the workflow if any of these are wrong:
 
 - platform and architecture coverage;
 - version shown by the application;
@@ -64,7 +64,12 @@ The registry public-key check is release-critical. A package that builds success
 
 ### Publish
 
-The workflow currently publishes automatically, before a human packaged smoke test can be recorded. Treat that as a release-process gap: verify artifacts immediately, stop promotion when validation fails, and correct the workflow before claiming a mandatory pre-publication approval.
+The workflow leaves the release as a draft after all build jobs succeed. The desktop and CLI artifacts and `SHA256SUMS` are already attached; publication is the one manual step a maintainer performs after a packaged smoke test.
+
+After the packaged smoke test passes, publish the draft:
+
+- click **Publish release** on the draft's GitHub page, or
+- run `gh release edit "$TAG" --draft=false --repo agora-mc/Agora-Launcher`.
 
 After publishing:
 

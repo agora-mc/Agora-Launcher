@@ -1069,6 +1069,22 @@ fn registry_status_does_not_panic() {
     );
 }
 
+#[test]
+fn registry_status_no_desktop_button_instruction() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let output = run_agora(&data_dir, &["registry", "status"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("Click") && !stderr.contains("Click"),
+        "registry status must not tell terminal users to click a desktop button:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("agora registry sync"),
+        "registry status should point terminal users at the CLI command:\n{stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Launch helpers
 // ---------------------------------------------------------------------------
@@ -1648,6 +1664,91 @@ fn mod_install_dry_run_no_filesystem_mutation() {
 }
 
 // ---------------------------------------------------------------------------
+// mod enable / disable — missing file must fail loudly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mod_disable_missing_file_fails() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "mod-disable-missing", &["real.jar"]);
+
+    let output = run_agora(
+        &data_dir,
+        &["mod", "disable", "mod-disable-missing", "ghost.jar"],
+    );
+    assert!(
+        !output.status.success(),
+        "mod disable on a missing file must exit nonzero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ghost.jar") && stderr.contains("not found"),
+        "stderr should name the missing file:\n{stderr}"
+    );
+
+    assert!(
+        data_dir
+            .join("instances/mod-disable-missing/mods")
+            .join("real.jar")
+            .exists(),
+        "existing mods must be untouched"
+    );
+}
+
+#[test]
+fn mod_enable_missing_file_fails() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "mod-enable-missing", &["real.jar"]);
+
+    let output = run_agora(
+        &data_dir,
+        &["mod", "enable", "mod-enable-missing", "ghost.jar"],
+    );
+    assert!(
+        !output.status.success(),
+        "mod enable on a missing file must exit nonzero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ghost.jar") && stderr.contains("not found"),
+        "stderr should name the missing file:\n{stderr}"
+    );
+}
+
+#[test]
+fn mod_enable_disable_missing_file_json_exit_code() {
+    let (_tmp, data_dir) = temp_data_dir();
+    create_loader_instance(&data_dir, "mod-enable-json", &["real.jar"]);
+
+    let output = run_agora_json(
+        &data_dir,
+        &["mod", "disable", "mod-enable-json", "ghost.jar"],
+    );
+    assert!(
+        !output.status.success(),
+        "mod disable --json on a missing file must exit nonzero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let json_start = stderr.rfind('{').unwrap_or_else(|| {
+        panic!("stderr must contain JSON envelope:\n{stderr}");
+    });
+    let json_end = stderr[json_start..]
+        .rfind('}')
+        .map(|i| json_start + i + 1)
+        .unwrap_or_else(|| {
+            panic!("JSON envelope must have closing '}}':\n{stderr}");
+        });
+    let json_text = &stderr[json_start..json_end];
+    let parsed: serde_json::Value = serde_json::from_str(json_text)
+        .unwrap_or_else(|e| panic!("failed to parse JSON envelope: {e}\ntext:\n{json_text}"));
+    assert!(
+        parsed["error"].as_str().unwrap_or("").contains("ghost.jar"),
+        "{parsed}"
+    );
+    assert!(parsed["exitCode"].as_i64().unwrap_or(0) != 0, "{parsed}");
+}
+
+// ---------------------------------------------------------------------------
 // Pack install smoke (local manifest, no network)
 // ---------------------------------------------------------------------------
 
@@ -2136,10 +2237,54 @@ fn lockfile_export_json_output() {
 }
 
 #[test]
+fn lockfile_vanilla_export_then_verify_passes() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    create_vanilla_instance(&data_dir, "lf-vanilla", "1.21");
+
+    let lf_path = data_dir.join("lf-vanilla.json");
+    let export = run_agora(
+        &data_dir,
+        &[
+            "lockfile",
+            "export",
+            "lf-vanilla",
+            "--out",
+            &lf_path.to_string_lossy(),
+        ],
+    );
+    assert!(
+        export.status.success(),
+        "vanilla lockfile export should succeed:\n{}",
+        String::from_utf8_lossy(&export.stderr),
+    );
+
+    let text = std::fs::read_to_string(&lf_path).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).expect("vanilla lockfile should be valid JSON");
+    assert_eq!(parsed["instance"]["loader"], "vanilla");
+    assert_eq!(parsed["instance"]["loaderVersion"], "");
+
+    let verify = run_agora(
+        &data_dir,
+        &["lockfile", "verify", &lf_path.to_string_lossy()],
+    );
+    assert!(
+        verify.status.success(),
+        "vanilla export must immediately pass lockfile verify:\n{}",
+        String::from_utf8_lossy(&verify.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        stdout.contains("Lockfile is valid") || stdout.contains("valid"),
+        "stdout should confirm validity:\n{stdout}"
+    );
+}
+
+#[test]
 fn lockfile_verify_valid() {
     let (_tmp, data_dir) = temp_data_dir();
     create_loader_instance(&data_dir, "lf-verify", &["sodium.jar"]);
-
     let lf_path = data_dir.join("lf-verify.json");
     run_agora(
         &data_dir,
