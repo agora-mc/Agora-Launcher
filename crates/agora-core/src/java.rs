@@ -1132,8 +1132,13 @@ mod tests {
         persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate]);
         assert!(persisted_java_candidates(&inventory_path, &runtimes_root, None).is_some());
 
-        // Executable content changes invalidate the inventory.
-        std::fs::write(&fake_java, b"java2").unwrap();
+        // Executable content changes invalidate the inventory.  Use a
+        // different-size payload: a same-size rewrite can be invisible to
+        // the invalidation checks on filesystems with coarse mtime
+        // granularity (on Windows, in-place overwrite keeps the creation
+        // time, so only the mtime advances), which made this assertion
+        // timing-dependent in CI.
+        std::fs::write(&fake_java, b"java2-tampered").unwrap();
         assert!(persisted_java_candidates(&inventory_path, &runtimes_root, None).is_none());
 
         // The cached path therefore re-discovers (mock-driven, no real JVM
