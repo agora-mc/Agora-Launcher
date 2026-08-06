@@ -997,7 +997,12 @@ mod tests {
             source: JavaSource::System,
             arch: Some("amd64".into()),
         };
-        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate.clone()]);
+        persist_java_inventory(
+            &inventory_path,
+            &runtimes_root,
+            None,
+            std::slice::from_ref(&candidate),
+        );
         assert_eq!(
             persisted_java_candidates(&inventory_path, &runtimes_root, None),
             Some(vec![candidate])
@@ -1089,7 +1094,12 @@ mod tests {
             source: JavaSource::System,
             arch: None,
         };
-        persist_java_inventory(&inventory_path, &runtimes_root, None, &[candidate.clone()]);
+        persist_java_inventory(
+            &inventory_path,
+            &runtimes_root,
+            None,
+            std::slice::from_ref(&candidate),
+        );
 
         // Discovery is mocked to find nothing; a cache hit must not call it.
         let _guard = set_mock_inspect(Some(mock_inspect_none));
