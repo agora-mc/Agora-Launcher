@@ -37,6 +37,8 @@ import {
   lockInstance,
   renameInstance,
   revertInstance,
+  planLoaderChange,
+  changeLoaderVersion,
   listSnapshots,
   createSnapshot,
   restoreSnapshot,
@@ -65,8 +67,16 @@ import {
   type LockfileDriftReport,
   type MemoryRecommendation,
   type HealthReport,
+  type LoaderChangePlan,
 } from '../lib/tauri';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
+import { LoaderChooser } from '../components/LoaderChooser';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { ImagePlus, Play } from 'lucide-react';
 
@@ -230,6 +240,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [lockfileBusy, setLockfileBusy] = useState<'export' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
   const [lockfileReport, setLockfileReport] = useState<LockfileDriftReport | null>(null);
   const [lockfileNotice, setLockfileNotice] = useState<string | null>(null);
+
+  // Loader version chooser state
+  const [loaderChooserOpen, setLoaderChooserOpen] = useState(false);
+  const [loaderPlan, setLoaderPlan] = useState<LoaderChangePlan | null>(null);
+  const [loaderPlanError, setLoaderPlanError] = useState<string | null>(null);
+  const [loaderSwitchBusy, setLoaderSwitchBusy] = useState(false);
+  const [loaderSwitchError, setLoaderSwitchError] = useState<string | null>(null);
 
   // Java & Args state
   const [instanceJavaPath, setInstanceJavaPath] = useState('');
@@ -790,6 +807,36 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     }
   };
 
+  // Loader version chooser — lets the user change the loader version on their
+  // own, without waiting for an install or health review to prompt them.
+  const openLoaderChooser = () => {
+    setLoaderChooserOpen(true);
+    setLoaderPlan(null);
+    setLoaderPlanError(null);
+    setLoaderSwitchError(null);
+    void planLoaderChange(instanceId)
+      .then((plan) => setLoaderPlan(plan))
+      .catch((e) => setLoaderPlanError(formatError(e)));
+  };
+
+  const handleChooseLoaderVersion = async (version: string) => {
+    if (loaderSwitchBusy) return;
+    setLoaderSwitchBusy(true);
+    setLoaderSwitchError(null);
+    const indeterminate = loaderPlan?.current_report.indeterminate_versions?.some(
+      (candidate) => candidate.loader_version === version,
+    ) ?? false;
+    try {
+      await changeLoaderVersion(instanceId, version, indeterminate);
+      setLoaderChooserOpen(false);
+      await refreshDetail();
+    } catch (e) {
+      setLoaderSwitchError(formatError(e));
+    } finally {
+      setLoaderSwitchBusy(false);
+    }
+  };
+
   const handleImportPack = async () => {
     setError(null);
     setStatus(null);
@@ -1099,6 +1146,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               MC {row?.minecraft_version} · {manifest?.loader} {manifest?.loader_version}
+              {' '}
+              {manifest?.loader && manifest.loader !== 'vanilla' && (
+                <button
+                  type="button"
+                  onClick={openLoaderChooser}
+                  disabled={recoveryBlocked || Boolean(row?.is_locked)}
+                  className="underline text-primary hover:text-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={recoveryBlocked
+                    ? 'Wait for the recovery snapshot to finish.'
+                    : row?.is_locked
+                      ? 'Unlock the instance to change the loader version.'
+                      : 'Change the loader version for this instance.'}
+                >
+                  Change loader version
+                </button>
+              )}
             </p>
             {healthReport && healthIssueCount > 0 && (
               <div
@@ -2389,6 +2452,63 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                .catch((cause) => setError(formatError(cause)));
            }}
         />
+      )}
+
+      {loaderChooserOpen && (
+        <Dialog
+          open={loaderChooserOpen}
+          onOpenChange={(open) => { if (!open) setLoaderChooserOpen(false); }}
+        >
+          <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden flex flex-col gap-3">
+            <DialogTitle className="shrink-0">Change Loader Version</DialogTitle>
+            <DialogDescription className="shrink-0">
+              {row?.name ?? instanceId}
+            </DialogDescription>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1 space-y-3">
+              {loaderPlanError && (
+                <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+                  {loaderPlanError}
+                </div>
+              )}
+              {loaderPlan && (
+                <LoaderChooser
+                  loader={loaderPlan.loader}
+                  currentVersion={loaderPlan.current_loader_version}
+                  recommendedVersion={loaderPlan.recommended_loader_version}
+                  compatibleVersions={loaderPlan.current_report.compatible_versions.map((candidate) => candidate.loader_version)}
+                  indeterminateVersions={(loaderPlan.current_report.indeterminate_versions ?? []).map((candidate) => candidate.loader_version)}
+                  requirements={loaderPlan.current_report.requirements.map((requirement) => ({
+                    targetId: requirement.declaration.target_id,
+                    versionRanges: requirement.declaration.version_ranges,
+                    candidateVersion: requirement.candidate_provided_version,
+                    verdict: requirement.verdict,
+                    modIds: requirement.declaring_mod_ids
+                      ?? (requirement.declaration.declaring_mod_id ? [requirement.declaration.declaring_mod_id] : []),
+                  }))}
+                  conflicts={loaderPlan.current_report.conflicts}
+                  busy={loaderSwitchBusy}
+                  error={loaderSwitchError}
+                  switchLabel="Switch & Reload"
+                  onChoose={handleChooseLoaderVersion}
+                />
+              )}
+              {!loaderPlan && !loaderPlanError && (
+                <div className="flex flex-col items-center justify-center py-8 gap-3">
+                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  <p className="text-sm text-muted-foreground">Checking loader compatibility…</p>
+                </div>
+              )}
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setLoaderChooserOpen(false)}
+                  className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

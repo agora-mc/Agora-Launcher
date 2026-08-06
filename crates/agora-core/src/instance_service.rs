@@ -514,13 +514,6 @@ impl InstanceService {
                 });
             }
         };
-        if source_row.is_locked {
-            op.fail(format!("Source instance '{source_id}' is locked."));
-            return Err(LauncherError::Generic {
-                code: "ERR_INSTANCE_LOCKED".into(),
-                message: format!("Source instance '{source_id}' is locked."),
-            });
-        }
         drop(conn);
 
         // Check destination does not exist before acquiring the ordered locks.
@@ -640,6 +633,9 @@ impl InstanceService {
         let new_manifest = InstanceManifest {
             instance_id: new_id.clone(),
             name: request.new_name.trim().to_owned(),
+            // A clone is always a fresh, unlocked working copy — never inherit
+            // the source's locked flag (the DB row and manifest must agree).
+            is_locked: false,
             ..source_manifest
         };
 
@@ -1207,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn clone_fails_when_source_is_locked() {
+    fn clone_succeeds_when_source_is_locked_and_clone_is_unlocked() {
         let (ctx, root) = context();
         let request = CreateInstanceRequest {
             name: "Locked".into(),
@@ -1228,24 +1224,40 @@ mod tests {
         crate::db::upsert_instance(&conn, &row).unwrap();
         crate::db::set_locked(&conn, "locked", true).unwrap();
         drop(conn);
+        // Fully lock the source: DB row AND manifest.
         let src_dir = ctx.paths.instance_dir("locked").unwrap();
         std::fs::create_dir_all(&src_dir).unwrap();
+        let mut manifest = manifest_from_request("locked", &request);
+        manifest.is_locked = true;
         std::fs::write(
             ctx.paths.instance_manifest("locked").unwrap(),
-            serde_json::to_vec(&manifest_from_request("locked", &request)).unwrap(),
+            serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
 
-        let service = InstanceService::new(ctx);
+        let service = InstanceService::new(ctx.clone());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt
+        let clone_row = rt
             .block_on(service.clone(CloneRequest {
                 source_instance_id: "locked".into(),
                 new_name: "Clone".into(),
                 prefs: ClonePrefs::default(),
             }))
-            .unwrap_err();
-        assert_eq!(err.code(), "ERR_INSTANCE_LOCKED");
+            .unwrap();
+
+        // Clones are always fresh, unlocked working copies — never inherit the
+        // source's locked flag in either the DB row or the manifest.
+        assert!(!clone_row.is_locked);
+        let cloned_conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let cloned_row = crate::db::get_instance(&cloned_conn, "Clone")
+            .unwrap()
+            .unwrap();
+        assert!(!cloned_row.is_locked);
+        let cloned_manifest =
+            read_manifest(&ctx.paths.instance_manifest("Clone").unwrap())
+                .unwrap()
+                .unwrap();
+        assert!(!cloned_manifest.is_locked);
 
         let _ = std::fs::remove_dir_all(root);
     }

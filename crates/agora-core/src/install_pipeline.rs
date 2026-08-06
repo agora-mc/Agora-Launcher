@@ -25,9 +25,10 @@
 //! artifacts whose loader requirements the current loader does not satisfy,
 //! the resolve phase surfaces a structured `PendingChoice::LoaderChange`.
 //! Approval is a backend override (`PlanOverrides::approve_loader_version`
-//! matching the signed-catalog recommendation); the accepted switch is
-//! committed inside the same manifest transaction, so the loader version and
-//! the mod files change atomically and roll back together.
+//! naming a signed-catalog version that satisfies every hard requirement —
+//! usually the recommendation); the accepted switch is committed inside the
+//! same manifest transaction, so the loader version and the mod files change
+//! atomically and roll back together.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -470,11 +471,12 @@ pub struct PlanOverrides {
     pub skip_items: Vec<String>,
     /// Override applied conflict resolutions by conflict_id.
     pub force_conflict_resolution: BTreeMap<String, ConflictResolution>,
-    /// Explicit approval to switch the instance loader to this exact
-    /// recommended version so the incoming mods' loader requirements are
-    /// satisfied. The change is applied inside the same install transaction.
-    /// Only the recommended version from the signed catalog is accepted; any
-    /// other value leaves the `PendingChoice::LoaderChange` unresolved.
+    /// Explicit approval to switch the instance loader to a signed-catalog
+    /// version that satisfies every hard requirement of the incoming mods, so
+    /// the install can proceed. The change is applied inside the same install
+    /// transaction. Any compatible version from the signed catalog is
+    /// accepted (the recommended version is the common case); any other value
+    /// leaves the `PendingChoice::LoaderChange` unresolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approve_loader_version: Option<String>,
 }
@@ -1959,17 +1961,22 @@ fn apply_loader_change_policy(
     if report.current_status != CurrentLoaderStatus::Incompatible {
         return None;
     }
-    if intent
-        .overrides
-        .approve_loader_version
-        .as_deref()
-        .is_some_and(|approved| approved == recommended.loader_version)
-    {
-        return Some(LoaderChangePlan {
-            loader: manifest.loader.clone(),
-            from_version: manifest.loader_version.clone(),
-            to_version: recommended.loader_version.clone(),
-        });
+    if let Some(approved) = intent.overrides.approve_loader_version.as_deref() {
+        // Accept any signed-catalog version that satisfies every hard
+        // requirement — not just the recommendation — so the UI can offer the
+        // full set of compatible versions and still commit the switch
+        // atomically with the file changes.
+        if report
+            .compatible_versions
+            .iter()
+            .any(|candidate| candidate.loader_version == approved)
+        {
+            return Some(LoaderChangePlan {
+                loader: manifest.loader.clone(),
+                from_version: manifest.loader_version.clone(),
+                to_version: approved.to_string(),
+            });
+        }
     }
     pending_choices.push(PendingChoice::LoaderChange {
         choice_id: "loader-change".into(),
@@ -4632,7 +4639,7 @@ mod tests {
     }
 
     #[test]
-    fn loader_change_approval_with_wrong_version_keeps_choice() {
+    fn loader_change_approval_with_incompatible_version_keeps_choice() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         let source_path = tmp.path().join("needy.jar");
@@ -4644,7 +4651,7 @@ mod tests {
             "needy.jar",
             PlanOverrides {
                 skip_health_scan: true,
-                approve_loader_version: Some("0.17.0".into()),
+                approve_loader_version: Some("0.16.0".into()),
                 ..PlanOverrides::default()
             },
         );
@@ -4652,6 +4659,40 @@ mod tests {
         assert!(plan.loader_change.is_none());
         assert!(loader_change_choice(&plan).is_some());
         assert!(!plan.is_fully_resolved());
+    }
+
+    #[test]
+    fn loader_change_approval_accepts_any_compatible_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let source_path = tmp.path().join("needy.jar");
+        write_loader_requiring_fabric_jar(&source_path, ">=0.17.0");
+
+        // 0.17.0 satisfies the requirement and is a signed catalog candidate,
+        // but is not the recommended 0.19.3 — it must still be accepted so the
+        // UI can offer every compatible version, not just the recommendation.
+        let plan = resolve_local_plan_with_overrides(
+            &instance_dir,
+            &source_path,
+            "needy.jar",
+            PlanOverrides {
+                skip_health_scan: true,
+                approve_loader_version: Some("0.17.0".into()),
+                ..PlanOverrides::default()
+            },
+        );
+
+        assert!(plan.pending_choices.is_empty());
+        assert_eq!(
+            plan.loader_change,
+            Some(LoaderChangePlan {
+                loader: "fabric".into(),
+                from_version: "0.16.0".into(),
+                to_version: "0.17.0".into(),
+            })
+        );
+        assert!(plan.is_fully_resolved());
+        assert_eq!(plan.files_to_add.len(), 1);
     }
 
     #[test]

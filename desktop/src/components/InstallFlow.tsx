@@ -20,6 +20,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { LoaderChooser } from './LoaderChooser';
 
 // ---------------------------------------------------------------------------
 // User choices model
@@ -171,6 +172,30 @@ function failedBlockingBatchItemId(plan: ResolvedInstallPlan): string | undefine
   return itemId && plan.intent.action.items.some((item) => item.itemId === itemId)
     ? itemId
     : undefined;
+}
+
+/**
+ * Batch items to skip when the user declines a loader change during a batch
+ * install. Prefer the batch items whose ids match the declaring mod ids of the
+ * unsatisfied loader requirements; if no item can be matched, skip the whole
+ * batch (the safest interpretation of "skip the incompatible mods").
+ */
+function loaderMismatchSkipItems(plan: ResolvedInstallPlan): string[] {
+  if (plan.intent.action.type !== 'batch-install') return [];
+  const batchIds = plan.intent.action.items.map((item) => item.itemId);
+  if (batchIds.length === 0) return [];
+  const choice = plan.pendingChoices.find((candidate) => candidate.type === 'loader-change');
+  if (!choice) return batchIds;
+  const unsatisfied = new Set<string>();
+  for (const requirement of choice.requirements) {
+    if (requirement.verdict === 'satisfied') continue;
+    const ids = requirement.declaring_mod_ids
+      ?? (requirement.declaring_mod_id ? [requirement.declaring_mod_id] : []);
+    for (const id of ids) unsatisfied.add(id.toLowerCase());
+  }
+  if (unsatisfied.size === 0) return batchIds;
+  const matched = batchIds.filter((id) => unsatisfied.has(id.toLowerCase()));
+  return matched.length > 0 ? matched : batchIds;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +416,50 @@ export function InstallFlow({
     onClose?.();
   }, [onClose]);
 
+  /**
+   * Approve switching the instance loader to a signed-catalog compatible
+   * version. The backend folds the switch into the same atomic install
+   * transaction, so we just re-resolve with the approval recorded.
+   */
+  const handleChooseLoaderVersion = useCallback((version: string) => {
+    setResolutionIntent((current) => ({
+      ...current,
+      overrides: {
+        ...current.overrides,
+        approveLoaderVersion: version,
+      },
+    }));
+    dispatch({ type: 'retry' });
+  }, []);
+
+  /**
+   * Escape hatch from a loader mismatch: don't switch the loader, skip the
+   * mods that don't fit it. A single install is skipped outright; a batch
+   * re-resolves with the incompatible items excluded.
+   */
+  const handleSkipLoaderMismatch = useCallback(() => {
+    const action = resolutionIntent.action;
+    if (action.type === 'install') {
+      // Nothing else to install for a single mod — closing means "don't install".
+      dispatch({ type: 'close' });
+      onClose?.();
+      return;
+    }
+    if (action.type === 'batch-install') {
+      const itemsToSkip = loaderMismatchSkipItems(state.plan);
+      setResolutionIntent((current) => ({
+        ...current,
+        overrides: {
+          ...current.overrides,
+          skipItems: [
+            ...new Set([...(current.overrides.skipItems ?? []), ...itemsToSkip]),
+          ],
+        },
+      }));
+      dispatch({ type: 'retry' });
+    }
+  }, [resolutionIntent, state.plan, onClose]);
+
   const renderContent = () => {
     switch (state.phase) {
       case 'resolving':
@@ -419,6 +488,8 @@ export function InstallFlow({
            onResolveConflict={(id, res) => dispatch({ type: 'resolve-conflict', conflictId: id, resolution: res })}
              onRetry={() => dispatch({ type: 'retry' })}
              onSkip={onSkip}
+             onChooseLoaderVersion={handleChooseLoaderVersion}
+             onSkipLoaderMismatch={handleSkipLoaderMismatch}
             onConfirm={handleConfirm}
             onCancel={handleCancel}
          />;
@@ -507,6 +578,8 @@ function ReviewView({
   onResolveConflict,
   onRetry,
   onSkip,
+  onChooseLoaderVersion,
+  onSkipLoaderMismatch,
   onConfirm,
   onCancel,
   newlyAddedFiles,
@@ -518,6 +591,8 @@ function ReviewView({
   onResolveConflict: (id: string, res: string) => void;
   onRetry: () => void;
   onSkip?: () => void;
+  onChooseLoaderVersion: (version: string) => void;
+  onSkipLoaderMismatch: () => void;
   onConfirm: () => void;
   onCancel: () => void;
   newlyAddedFiles: Set<string>;
@@ -530,6 +605,8 @@ function ReviewView({
       && !choices.conflictResolutions.has(conflict.conflictId),
   );
   const needsReplan = plan.pendingChoices.length > 0;
+  const loaderChoice = plan.pendingChoices.find((choice) => choice.type === 'loader-change');
+  const needsLoaderDecision = Boolean(loaderChoice);
   const actionLabel = plan.intent.action.type === 'remove'
     ? 'Remove Safely'
     : plan.intent.action.type === 'batch-remove'
@@ -552,6 +629,39 @@ function ReviewView({
       {reviewNotice && (
         <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
           {reviewNotice}
+        </div>
+      )}
+
+      {/* Loader version change — show the launcher chooser instead of blocking */}
+      {loaderChoice && (
+        <LoaderChooser
+          loader={loaderChoice.loader}
+          currentVersion={loaderChoice.currentVersion}
+          recommendedVersion={loaderChoice.recommendedVersion}
+          compatibleVersions={loaderChoice.compatibleVersions}
+          requirements={loaderChoice.requirements.map((requirement) => ({
+            targetId: requirement.target_id,
+            versionRanges: requirement.version_ranges,
+            candidateVersion: requirement.candidate_version,
+            verdict: requirement.verdict,
+            modIds: requirement.declaring_mod_ids
+              ?? (requirement.declaring_mod_id ? [requirement.declaring_mod_id] : []),
+          }))}
+          conflicts={loaderChoice.conflicts}
+          onChoose={onChooseLoaderVersion}
+          onSkip={onSkipLoaderMismatch}
+          skipLabel={plan.intent.action.type === 'batch-install'
+            ? 'Skip incompatible mods instead'
+            : 'Skip this mod instead'}
+        />
+      )}
+
+      {/* Approved loader switch, committed atomically with the file changes */}
+      {plan.loaderChange && (
+        <div className="rounded-lg border border-green-600/30 bg-green-500/10 p-3 text-xs text-green-700 dark:text-green-300">
+          This change will switch the {plan.loaderChange.loader} loader from{' '}
+          {plan.loaderChange.fromVersion} to {plan.loaderChange.toVersion} in the same
+          atomic transaction as the mod files.
         </div>
       )}
 
@@ -656,16 +766,18 @@ function ReviewView({
         <button onClick={onCancel} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">Cancel</button>
         <button
           onClick={onConfirm}
-          disabled={!canInstall || hasUnresolvedBlockingConflict}
+          disabled={!canInstall || hasUnresolvedBlockingConflict || needsLoaderDecision}
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {hasUnresolvedBlockingConflict
-            ? 'Resolve Conflicts First'
-            : !canInstall
-              ? 'Cannot Apply'
-              : needsReplan
-                ? 'Review Selected Changes'
-                : actionLabel}
+          {needsLoaderDecision
+            ? 'Choose a loader version or skip'
+            : hasUnresolvedBlockingConflict
+              ? 'Resolve Conflicts First'
+              : !canInstall
+                ? 'Cannot Apply'
+                : needsReplan
+                  ? 'Review Selected Changes'
+                  : actionLabel}
         </button>
       </div>
     </div>

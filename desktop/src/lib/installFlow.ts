@@ -188,6 +188,7 @@ export interface LoaderChangePlan { loader: string; fromVersion: string; toVersi
  */
 export interface LoaderRequirementIssue {
   declaring_mod_id: string | null;
+  declaring_mod_ids?: string[];
   target_id: string;
   version_ranges: string[];
   importance: 'required' | 'recommended' | 'suggested';

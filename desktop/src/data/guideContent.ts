@@ -640,6 +640,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Use Choose compatible version when you need another valid candidate.',
             'When no signed candidate satisfies every requirement, automatic switching is unavailable. Manual candidates are signed but require confirmation because a capability is unverified.',
             'Rerun health after a manual or failed switch.',
+            'Change a loader version proactively from the instance editor using the Change loader version button next to the loader label.',
+            'When an install hits a loader mismatch, the review dialog shows the loader chooser: switch to a compatible version there, or skip the incompatible mods to install only what fits your current loader.',
           ],
           callout: {
             tone: 'note',
