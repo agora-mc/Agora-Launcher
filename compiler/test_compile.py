@@ -19,6 +19,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 # Ensure we can import the compiler module from the repo root.
 sys.path.insert(0, os.path.dirname(__file__))
@@ -573,6 +574,47 @@ class TestModSocialMetrics(unittest.TestCase):
         m.reactions.append(r)
         self.assertEqual(len(m.reactions), 1)
         self.assertEqual(m.reactions[0].user, "alice")
+
+
+class TestHydrateGithubSocialMetricsLabelGating(unittest.TestCase):
+    """The registry-vote label is REQUIRED to harvest reactions (votes)."""
+
+    def _issue(self, num: int, mod_id: str, labels: list[str]) -> dict:
+        return {
+            "number": num,
+            "body": f"### Mod Registry ID\n{mod_id}\n\n",
+            "labels": [{"name": name} for name in labels],
+            "user": {"login": "alice"},
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+
+    def test_reactions_only_harvested_from_registry_vote_labeled_issues(self):
+        """Votes are harvested only from registry-vote-labeled issues."""
+        issues = [
+            self._issue(1, "sodium", ["registry-vote"]),
+            self._issue(2, "sodium", ["community-review"]),
+        ]
+        with mock.patch.object(_compile, "_load_github_token", return_value="token"), \
+             mock.patch.object(_compile, "_get_registry_repo", return_value="owner/repo"), \
+             mock.patch.object(_compile, "_load_poll_blacklist", return_value=set()), \
+             mock.patch.object(_compile, "_github_paginate", return_value=issues), \
+             mock.patch.object(_compile, "_fetch_reactions_for_issue", return_value=[]) as fetch:
+            items = [{"id": "sodium", "name": "Sodium"}]
+            _compile._hydrate_github_social_metrics(items)
+        called_issue_numbers = [call.args[2] for call in fetch.call_args_list]
+        self.assertEqual(called_issue_numbers, [1])
+
+    def test_unlabeled_issue_harvests_no_reactions(self):
+        """An issue with neither label must not contribute votes."""
+        issues = [self._issue(1, "sodium", [])]
+        with mock.patch.object(_compile, "_load_github_token", return_value="token"), \
+             mock.patch.object(_compile, "_get_registry_repo", return_value="owner/repo"), \
+             mock.patch.object(_compile, "_load_poll_blacklist", return_value=set()), \
+             mock.patch.object(_compile, "_github_paginate", return_value=issues), \
+             mock.patch.object(_compile, "_fetch_reactions_for_issue", return_value=[]) as fetch:
+            items = [{"id": "sodium", "name": "Sodium"}]
+            _compile._hydrate_github_social_metrics(items)
+        fetch.assert_not_called()
 
 
 class TestSybilDiversityWeight(unittest.TestCase):

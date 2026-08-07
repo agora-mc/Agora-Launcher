@@ -28,8 +28,10 @@ from typing import Any
 import requests
 
 from governance import (
+    COMMUNITY_REVIEW_LABEL,
     GovernanceMode,
     GovernancePolicy,
+    REGISTRY_VOTE_LABEL,
     enrich_governance_tables,
     enrich_registry_item_scores,
     resolve_governance_repo,
@@ -459,6 +461,19 @@ def _load_poll_blacklist() -> set[str]:
         return set()
 
 
+def _get_label_names(labels: list[Any]) -> list[str]:
+    """Return label names from a GitHub labels field (dict or string form)."""
+    out: list[str] = []
+    for label in labels:
+        if isinstance(label, dict):
+            name = label.get("name", "")
+            if name:
+                out.append(name)
+        elif isinstance(label, str):
+            out.append(label)
+    return out
+
+
 def _extract_mod_id(issue_body: str | None) -> str | None:
     """Extract the mod registry ID from a review-form issue body."""
     if not issue_body:
@@ -584,6 +599,8 @@ def _hydrate_github_social_metrics(
         mod_id = _extract_mod_id(issue.get("body"))
         if not mod_id or mod_id not in mod_ids_present:
             continue
+        labels = _get_label_names(issue.get("labels") or [])
+        is_vote_issue = REGISTRY_VOTE_LABEL in labels
         review_text = _extract_review_text(issue.get("body"))
         author_obj = issue.get("user") or {}
         author = author_obj.get("login")
@@ -595,6 +612,20 @@ def _hydrate_github_social_metrics(
                 "issue_number": issue_number,
                 "created_at": created_at_str,
             })
+        # The `registry-vote` label is REQUIRED for an issue to contribute
+        # votes. Community-review issues are review sources only.
+        if not is_vote_issue:
+            if COMMUNITY_REVIEW_LABEL not in labels:
+                logger.warning(
+                    "Issue #%d maps to mod '%s' but lacks the '%s' label; "
+                    "reactions (votes) not harvested.",
+                    issue_number, mod_id, REGISTRY_VOTE_LABEL,
+                )
+            metrics = by_mod.get(mod_id)
+            if metrics is None:
+                metrics = ModSocialMetrics(mod_id=mod_id, issue_number=issue_number)
+                by_mod[mod_id] = metrics
+            continue
         try:
             reactions = _fetch_reactions_for_issue(
                 owner, repo, issue_number, token=token, blacklist=blacklist,

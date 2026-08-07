@@ -424,7 +424,7 @@ class TestStateIO(unittest.TestCase):
         p = Path(self.tmp)/"q.json"; p.write_text(json.dumps({"schema_version": 1, "decisions": []}), encoding="utf-8")
         orig = p.read_text(encoding="utf-8")
         _clear()
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1, "a", "sodium", "x"*100)]
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1, "a", "sodium", "x"*100, labels=["registry-vote"])]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"a","-1")]
         vi = Path(self.tmp)/"vi.json"; vi.write_text(json.dumps({"schema_version":1,"items":{"sodium":{"issue_number":1}}}), encoding="utf-8")
         gs = Path(self.tmp)/"gs.json"
@@ -539,7 +539,7 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(r["sodium"]["review_count"], 1)
 
     def test_full_pipeline(self):
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100)]
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100, labels=["registry-vote"])]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"alice","+1"), _reaction(2,"bob","-1")]
         r = gov.run_governance_pipeline([{"id":"sodium","name":"Sodium"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="owner/repo", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertIn("sodium", r)
@@ -553,12 +553,67 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(r["sodium"]["status_reason"], "normal")
         self.assertIn("velocity", r["sodium"])
 
+    def test_vote_issue_without_registry_vote_label_is_ignored(self):
+        """A mapped issue lacking the registry-vote label must yield no votes."""
+        _clear()
+        gov.INJECTED_USER_PROFILES = {"alice": _profile("alice", 100), "bob": _profile("bob", 100)}
+        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: [
+            _make_issue(1, "alice", "sodium", "x" * 100, labels=["community-review"])
+        ]
+        gov.INJECTED_FETCH_REACTIONS = lambda o, r, i, token: [
+            _reaction(1, "alice", "+1"), _reaction(2, "bob", "-1")
+        ]
+        r = gov.run_governance_pipeline(
+            [{"id": "sodium", "name": "S"}], mode=gov.GovernanceMode.READ_ONLY,
+            policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t",
+            blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs,
+            governance_state_out_path=self.gs, quarantine_decisions_path=self.qd,
+            discord_webhook_url=None,
+        )
+        self.assertIn("sodium", r)
+        self.assertEqual(r["sodium"]["raw_upvotes"], 0)
+        self.assertEqual(r["sodium"]["raw_downvotes"], 0)
+        self.assertEqual(r["sodium"]["counted_upvotes"], 0)
+        self.assertEqual(r["sodium"]["counted_downvotes"], 0)
+        self.assertEqual(r["sodium"]["registry_status"], "active")
+        self.assertEqual(r["sodium"]["status_reason"], "vote_issue_unlabeled")
+        self.assertFalse(r["sodium"]["anomaly"])
+
+    def test_surge_on_unlabeled_issue_does_not_trigger_under_review(self):
+        """A downvote surge on an unlabeled issue must NOT set under_review."""
+        _clear()
+        gov.INJECTED_USER_PROFILES = {f"u{i}": _profile(f"u{i}", 100) for i in range(1, 6)}
+        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: [
+            _make_issue(1, "u1", "sodium", "x" * 100, labels=["community-review"])
+        ]
+        created = datetime.now(timezone.utc).isoformat()
+        gov.INJECTED_FETCH_REACTIONS = lambda o, r, i, token: [
+            _reaction(i, f"u{i}", "-1", created) for i in range(1, 6)
+        ]
+        r = gov.run_governance_pipeline(
+            [{"id": "sodium", "name": "S"}], mode=gov.GovernanceMode.MONITOR,
+            policy=gov.GovernancePolicy.SANDBOX, governance_repo="o/r", token="t",
+            blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs,
+            governance_state_out_path=self.gs, quarantine_decisions_path=self.qd,
+            discord_webhook_url=None,
+        )
+        # 5 downvotes would exceed the sandbox raid threshold (3), but because
+        # the issue lacks the registry-vote label, nothing is parsed.
+        self.assertEqual(r["sodium"]["counted_downvotes"], 0)
+        self.assertFalse(r["sodium"]["anomaly"])
+        self.assertEqual(r["sodium"]["registry_status"], "active")
+        self.assertEqual(r["sodium"]["status_reason"], "vote_issue_unlabeled")
+        state = json.loads(self.gs.read_text(encoding="utf-8"))
+        self.assertEqual(len(state.get("events", [])), 0)
+
     def test_canonical_pack_id_participates_in_governance(self):
         self.vi.write_text(json.dumps({
             "schema_version": 1,
             "items": {"optimized-survival": {"issue_number": 6}},
         }), encoding="utf-8")
-        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: []
+        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: [
+            _make_issue(6, "alice", "optimized-survival", "x" * 100, labels=["registry-vote"])
+        ]
         gov.INJECTED_FETCH_REACTIONS = lambda o, r, i, token: [
             _reaction(1, "alice", "+1")
         ]
@@ -580,7 +635,7 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(result["optimized-survival"]["counted_upvotes"], 1)
 
     def test_state_persistence_no_new_event_if_unchanged(self):
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100)]
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100, labels=["registry-vote"])]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"alice","+1")]
         r1 = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         self.assertIn("sodium", r1)
@@ -595,7 +650,9 @@ class TestPipelineMocked(unittest.TestCase):
     def test_anomaly_growth_merges_one_event_and_alerts_once_per_change(self):
         users = ("alice", "bob", "charlie", "dave")
         gov.INJECTED_USER_PROFILES = {user: _profile(user, 100) for user in users}
-        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: []
+        gov.INJECTED_FETCH_ISSUES = lambda o, r, token: [
+            _make_issue(1, "alice", "sodium", "x" * 100, labels=["registry-vote"])
+        ]
         created = datetime.now(timezone.utc).isoformat()
         reactions = [
             _reaction(index + 1, user, "-1", created)
@@ -662,7 +719,7 @@ class TestPipelineMocked(unittest.TestCase):
             "charlie": _profile("charlie", 100), "dave": _profile("dave", 100),
             "eve": _profile("eve", 100), "frank": _profile("frank", 100),
         }
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100)]
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100, labels=["registry-vote"])]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [
             _reaction(1,"alice","+1"), _reaction(2,"bob","-1"),
             _reaction(3,"charlie","-1"), _reaction(4,"dave","-1"),
@@ -690,7 +747,7 @@ class TestPipelineMocked(unittest.TestCase):
             "charlie": _profile("charlie", 100), "dave": _profile("dave", 100),
             "eve": _profile("eve", 100),
         }
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100)]
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100, labels=["registry-vote"])]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [
             _reaction(1,"alice","+1"), _reaction(2,"bob","-1"),
             _reaction(3,"charlie","-1"), _reaction(4,"dave","-1"),
@@ -705,7 +762,7 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(r["sodium"]["quarantined_downvotes"], 4)
 
     def test_state_written_only_in_monitor(self):
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100)]
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [_make_issue(1,"alice","sodium","x"*100, labels=["registry-vote"])]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"alice","+1")]
         gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.READ_ONLY, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
         state = gov.load_governance_state(self.gs)

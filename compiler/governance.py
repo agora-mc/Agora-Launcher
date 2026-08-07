@@ -58,6 +58,7 @@ class DecisionStatus(Enum):
 # ---------------------------------------------------------------------------
 
 COMMUNITY_REVIEW_LABEL = "community-review"
+REGISTRY_VOTE_LABEL = "registry-vote"
 VOTE_DIRECTIONS = frozenset({"+1", "-1"})
 REVIEW_MIN_LENGTH = 100
 PRODUCTION_ACCOUNT_AGE_DAYS = 30
@@ -637,6 +638,15 @@ def run_governance_pipeline(
             )
     known_issue_nums = set(item_issue_map.values())
 
+    # The `registry-vote` label is REQUIRED for an issue to be parsed as a
+    # registry vote. Build the set of issue numbers that carry it; mapped
+    # items whose issue is not in this set get no votes and no under_review.
+    registry_vote_issue_nums: set[int] = {
+        issue.get("number") for issue in all_issues
+        if isinstance(issue.get("number"), int)
+        and REGISTRY_VOTE_LABEL in _get_label_names(issue.get("labels") or [])
+    }
+
     # Load previous state and curator decisions
     state_data = load_governance_state(governance_state_in_path, governance_repo=governance_repo, policy=policy.value)
     prev_events: list[dict[str, Any]] = state_data.get("events", [])
@@ -714,6 +724,16 @@ def run_governance_pipeline(
         if item_id in immune_ids:
             continue
         if issue_number not in known_issue_nums:
+            continue
+        # An issue without the `registry-vote` label is NOT a valid vote
+        # source: count no votes and never flag the item under_review from it.
+        if issue_number not in registry_vote_issue_nums:
+            logger.warning(
+                "Item '%s' maps to issue #%s but that issue lacks the "
+                "'%s' label; votes and under_review skipped.",
+                item_id, issue_number, REGISTRY_VOTE_LABEL,
+            )
+            results[item_id]["status_reason"] = "vote_issue_unlabeled"
             continue
         try:
             reactions = _fetch_reactions(owner, repo_name, issue_number, token=token)

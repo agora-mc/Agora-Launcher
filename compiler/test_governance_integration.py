@@ -256,7 +256,7 @@ class TestEndToEndMocked(unittest.TestCase):
         gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [
             {"number":1,"user":{"login":"alice"},
              "body":"### Mod Registry ID\nsodium\n\n### Registry Item ID\nsodium\n\n### Technical Review\n"+("x"*100)+"\n",
-             "labels":[{"name":"community-review"}],"created_at":"2026-06-01T00:00:00Z"},
+             "labels":[{"name":"registry-vote"}],"created_at":"2026-06-01T00:00:00Z"},
         ]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [
             {"id":1,"user":{"login":"alice"},"content":"+1","created_at":"2026-06-01T00:00:00Z"},
@@ -335,7 +335,10 @@ class TestEndToEndMocked(unittest.TestCase):
             "status": "pending", "detected_at": "2026-07-20T00:00:00Z",
             "affected_reactions": [1,2,3,4,5], "details_json": "{}",
         }]}), encoding="utf-8")
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: []
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [
+            {"number":1,"user":{"login":"alice"},"body":"### Mod Registry ID\nsodium\n\n",
+             "labels":[{"name":"registry-vote"}],"created_at":"2026-06-01T00:00:00Z"},
+        ]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"a","+1")]
         gov.INJECTED_USER_PROFILES = {"a": {"login":"a","created_at":"2025-01-01T00:00:00Z"}}
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
@@ -355,7 +358,10 @@ class TestEndToEndMocked(unittest.TestCase):
             "affected_reactions": [1], "details_json": json.dumps({"issue_number": 1}),
         }]}), encoding="utf-8")
         self.qd.write_text(json.dumps({"schema_version":1,"decisions":[{"event_id":eid,"status":"rejected"}]}), encoding="utf-8")
-        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: []
+        gov.INJECTED_FETCH_ISSUES = lambda o,r,token: [
+            {"number":1,"user":{"login":"alice"},"body":"### Mod Registry ID\nsodium\n\n",
+             "labels":[{"name":"registry-vote"}],"created_at":"2026-06-01T00:00:00Z"},
+        ]
         gov.INJECTED_FETCH_REACTIONS = lambda o,r,i,token: [_reaction(1,"a","-1")]
         gov.INJECTED_USER_PROFILES = {"a": {"login":"a","created_at":"2025-01-01T00:00:00Z"}}
         r = gov.run_governance_pipeline([{"id":"sodium","name":"S"}], mode=gov.GovernanceMode.MONITOR, policy=gov.GovernancePolicy.PRODUCTION, governance_repo="o/r", token="t", blacklist=set(), vote_issues_path=self.vi, governance_state_in_path=self.gs, governance_state_out_path=self.gs, quarantine_decisions_path=self.qd, discord_webhook_url=None)
