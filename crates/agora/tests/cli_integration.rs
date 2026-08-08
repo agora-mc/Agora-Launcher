@@ -1912,14 +1912,11 @@ fn export_json_output_valid() {
 // ---------------------------------------------------------------------------
 
 fn create_minimal_instance(data_dir: &std::path::Path, id: &str) {
-    let src = tempdir();
-    let instance_src = src.path().join(id);
-    std::fs::create_dir_all(instance_src.join("mods")).unwrap();
-    std::fs::write(instance_src.join("mods").join("sodium.jar"), b"sodium").unwrap();
-    std::fs::write(instance_src.join("mods").join("lithium.jar"), b"lithium").unwrap();
-    std::fs::write(instance_src.join("mods").join("phosphor.jar"), b"phosphor").unwrap();
-    let import = run_agora(data_dir, &["import", &instance_src.to_string_lossy()]);
-    assert!(import.status.success(), "import {id} should succeed");
+    // Loadout tests only need a registered instance with some mod files. Set
+    // that fixture up directly instead of going through `import`, whose
+    // asynchronous recovery snapshot makes these unrelated tests sensitive
+    // to Windows filesystem timing under CI load.
+    create_loader_instance(data_dir, id, &["sodium.jar", "lithium.jar", "phosphor.jar"]);
 }
 
 #[test]
