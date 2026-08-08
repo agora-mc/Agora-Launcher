@@ -522,31 +522,33 @@ export function HealthDialog({
                   return (
                     <div key={i} className={`rounded border p-2 text-sm ${isSilenced ? 'border-border bg-muted/50 opacity-60' : 'border-amber-500 bg-amber-500/10'}`}>
                       <p className={isSilenced ? 'text-muted-foreground line-through' : 'text-amber-600 dark:text-amber-400'}>{w.message}</p>
-                      <div className="flex items-center justify-between mt-2">
-                        <div className="flex items-center gap-2 text-xs">
-                          <Switch
-                            checked={!isSilenced}
-                            onCheckedChange={() => handleSilence(key, isSilenced)}
-                            aria-label="Show this warning"
-                          />
-                          <span className="text-muted-foreground">
-                            {isSilenced ? 'Muted' : 'Show on next launch'}
-                          </span>
-                        </div>
+                      <div className="mt-2 space-y-2">
                         {w.suggested_action && !isSilenced && (
-                          <span className="text-xs text-muted-foreground">{w.suggested_action}</span>
+                          <p className="text-xs text-muted-foreground">{w.suggested_action}</p>
                         )}
-                        {(w.kind === 'missing_required_dependency_unverified' || w.kind === 'incompatible_mod_unverified' || w.kind === 'incompatible_mod_soft' || w.kind === 'curated_conflict_soft') && w.filename && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={fixing === key}
-                            title="Disable this mod and scan health again"
-                            onClick={() => handleFixDisable(w.filename!, key)}
-                          >
-                            {fixing === key ? 'Fixing...' : 'Disable'}
-                          </Button>
-                        )}
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex shrink-0 items-center gap-2 text-xs">
+                            <Switch
+                              checked={!isSilenced}
+                              onCheckedChange={() => handleSilence(key, isSilenced)}
+                              aria-label="Show this warning"
+                            />
+                            <span className="text-muted-foreground">
+                              {isSilenced ? 'Muted' : 'Show on next launch'}
+                            </span>
+                          </div>
+                          {(w.kind === 'missing_required_dependency_unverified' || w.kind === 'incompatible_mod_unverified' || w.kind === 'incompatible_mod_soft' || w.kind === 'curated_conflict_soft') && w.filename && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={fixing === key}
+                              title="Disable this mod and scan health again"
+                              onClick={() => handleFixDisable(w.filename!, key)}
+                            >
+                              {fixing === key ? 'Fixing...' : 'Disable'}
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );

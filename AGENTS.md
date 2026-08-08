@@ -43,11 +43,10 @@ Core values:
 
 - Treat `AGENTS.md` and `.kilo/plans/MASTER_SPEC.md` as the source of truth. `MASTER_SPEC.md` §0-§18 are the original design spec; §19 captures architectural-evolution decisions and supersedes the earlier prose where they conflict. When the architecture genuinely pivots, append a new subsection under §19 (do NOT rewrite §0-§18 design prose as drive-by edits -- those are preserved for decision-rationale value).
 - Prefer the smallest change that satisfies the request; avoid drive-by refactoring.
-- Edit files via Kilo tools. Do not manually stage or edit files outside the project directory.
+- Edit files via tools. Do not manually stage or edit files outside the project directory unless asked.
 - After registry/loader/crash-signature changes, run `/registry`.
 - After desktop changes, run `/desktop`.
 - After web changes, run `/web`.
-- Never commit or push from an agent session unless explicitly requested.
 - Do not modify `.lock` files or existing data history in `registry/archived/`.
 - Security defaults:
   - **Whitelist over denylist** for capabilities, shell scopes, and network access.

@@ -62,6 +62,14 @@ test('font, scale, contrast, and reduced motion persist', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--font-scale'))).toBe('1.15');
 });
 
+test('text scale slider extends to 200%', async ({ page }) => {
+  const slider = page.getByLabel('Text scale');
+  await expect(slider).toHaveAttribute('max', '2');
+  await slider.fill('2');
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--font-scale'))).toBe('2');
+  await expect(page.getByText('200%')).toBeVisible();
+});
+
 test('background, text, density, scale, corners, effects, and fonts apply broadly', async ({ page }) => {
   const appearance = page.getByTestId('appearance-settings');
   const sampleText = appearance.getByText('Color, readability, spacing, and motion preferences apply immediately.');

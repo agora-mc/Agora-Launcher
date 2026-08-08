@@ -83,7 +83,7 @@ function validatePreferences(value: unknown): UiPreferences | null {
   if (candidate.version !== 1) return null;
 
   const fontScale = typeof candidate.fontScale === 'number'
-    ? Math.min(1.25, Math.max(0.85, candidate.fontScale))
+    ? Math.min(2.0, Math.max(0.85, candidate.fontScale))
     : DEFAULT_UI_PREFERENCES.fontScale;
   const surfaceOpacity = typeof candidate.surfaceOpacity === 'number'
     ? Math.min(1, Math.max(0.35, candidate.surfaceOpacity))

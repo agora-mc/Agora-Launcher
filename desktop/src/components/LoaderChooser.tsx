@@ -104,7 +104,7 @@ export function LoaderChooser({
   conflicts,
   busy = false,
   error,
-  switchLabel = 'Switch & Continue',
+  switchLabel,
   onChoose,
   onSkip,
   skipLabel = 'Skip this mod instead',
@@ -128,6 +128,9 @@ export function LoaderChooser({
 
   const currentLabel = currentVersion ? `${loader} ${currentVersion}` : loader;
   const hasUnresolvedRequirements = requirements.some((r) => r.verdict !== 'satisfied');
+  const switchButtonLabel = switchLabel ?? (recommendedVersion
+    ? `Switch to ${recommendedVersion} & Continue`
+    : 'Switch & Continue');
 
   return (
     <div className="rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm">
@@ -167,7 +170,7 @@ export function LoaderChooser({
               disabled={disabled}
               onClick={() => void runChoose(recommendedVersion)}
             >
-              {busy ? 'Switching…' : `Switch to ${recommendedVersion} & Continue`}
+              {busy ? 'Switching…' : switchButtonLabel}
             </Button>
           )}
           <Select

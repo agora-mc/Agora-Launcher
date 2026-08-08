@@ -247,7 +247,7 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
           type="range"
           aria-label="Text scale"
           min="0.85"
-          max="1.25"
+          max="2"
           step="0.05"
           value={preferences.fontScale}
           onChange={(event) => setPreferences({ fontScale: Number(event.target.value) })}

@@ -1253,10 +1253,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!cloned_row.is_locked);
-        let cloned_manifest =
-            read_manifest(&ctx.paths.instance_manifest("Clone").unwrap())
-                .unwrap()
-                .unwrap();
+        let cloned_manifest = read_manifest(&ctx.paths.instance_manifest("Clone").unwrap())
+            .unwrap()
+            .unwrap();
         assert!(!cloned_manifest.is_locked);
 
         let _ = std::fs::remove_dir_all(root);

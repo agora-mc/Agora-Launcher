@@ -445,7 +445,9 @@ export function InstallFlow({
       onClose?.();
       return;
     }
-    if (action.type === 'batch-install') {
+    // The mismatch escape hatch is only offered on the review screen, where a
+    // resolved plan is guaranteed to exist.
+    if (action.type === 'batch-install' && state.phase === 'review') {
       const itemsToSkip = loaderMismatchSkipItems(state.plan);
       setResolutionIntent((current) => ({
         ...current,
@@ -458,7 +460,7 @@ export function InstallFlow({
       }));
       dispatch({ type: 'retry' });
     }
-  }, [resolutionIntent, state.plan, onClose]);
+  }, [resolutionIntent, state.phase, onClose]);
 
   const renderContent = () => {
     switch (state.phase) {
