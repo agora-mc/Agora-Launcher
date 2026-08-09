@@ -222,7 +222,7 @@ export function Privacy() {
         <div className="space-y-1">
           <h3 className="font-semibold">Privacy &amp; Transparency</h3>
           <p className="text-xs text-muted-foreground max-w-prose leading-relaxed">
-            Agora makes zero automated telemetry calls. Below is every network endpoint the app can reach, each independently toggleable and enforced by the backend. Disable every endpoint individually before testing offline behavior.
+            Agora makes zero automated telemetry calls. Below is every network endpoint the app can reach, each independently toggleable and enforced by the backend. Lockdown Mode blocks them all at once; the individual toggles fine-tune access when Lockdown is off.
           </p>
         </div>
         <Badge
@@ -250,7 +250,7 @@ export function Privacy() {
           <div>
             <span className="text-sm font-medium">Lockdown Mode</span>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Known limitation: this toggle currently changes the UI only. It does not override the backend endpoint permissions.
+              Blocks every network endpoint in the backend. When on, the endpoint toggles below are disabled and no feature requests are sent.
             </p>
           </div>
           <Switch
@@ -310,7 +310,7 @@ export function Privacy() {
 
       {/* Footer note */}
       <p className="text-[10px] text-muted-foreground pt-1 border-t border-border">
-        Individual endpoint toggles persist and are enforced by the Rust backend. Lockdown is not yet a global backend policy.
+        Individual endpoint toggles persist and are enforced by the Rust backend. Lockdown Mode is a global backend network block that overrides them.
       </p>
     </div>
   );

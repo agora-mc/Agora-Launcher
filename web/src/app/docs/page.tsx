@@ -55,7 +55,7 @@ const screenshots = [
   },
   {
     src: '/screenshots/privacy-lockdown.png',
-    alt: 'Privacy settings showing endpoint controls and the documented Lockdown limitation.',
+    alt: 'Privacy settings showing endpoint controls and the Lockdown Mode toggle.',
     caption: 'Privacy and Lockdown controls in Agora 0.1.0, captured 2026-08-05 with no account data.',
   },
 ];
@@ -205,19 +205,20 @@ export default async function DocsPage() {
         <p className="leading-7 text-gray-700 dark:text-gray-300">
           Offline readiness is instance-specific. Cache the registry, Java runtime, game, loader,
           and mod artifacts, then test the exact launch mode before disconnecting. Individual
-          Privacy endpoint switches are enforced by the backend.
+          Privacy endpoint switches are enforced by the backend, and Lockdown Mode disables them
+          all at once.
         </p>
-        <p className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
-          Known defect: the current Lockdown toggle persists its UI state and disables the endpoint
-          controls, but the backend does not read it as a global network block. Disable every
-          endpoint individually before enabling Lockdown, or enforce offline behavior outside Agora.
+        <p className="rounded-lg border border-green-300 bg-green-50 p-4 text-sm text-green-900 dark:border-green-800 dark:bg-green-950 dark:text-green-200">
+          Lockdown Mode in the desktop Privacy settings is a global backend network block: while it
+          is on, every endpoint permission is disabled and Agora sends no feature requests. Use it
+          to force offline behavior; turn individual endpoints back on for finer control.
         </p>
       </section>
 
       <section className="space-y-4">
         <h2 className="text-2xl font-bold">Integrated AI and MCP</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
-          The optional integrated assistant uses GitHub Copilot. Assistant messages leave the
+          The optional integrated assistant uses gpt-4o throughGitHub Copilot. Assistant messages leave the
           machine. A Crash Doctor handoff can also send the instance ID, selected crash log, matched
           signatures, and ranked suspects in the first message; a mod-list request can send installed
           mod context. Review logs before submitting them.

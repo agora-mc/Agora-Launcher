@@ -101,6 +101,7 @@ const BOOLEAN_SETTING_KEYS: &[&str] = &[
     "network_mojang_metadata_enabled",
     "network_mojang_content_enabled",
     "network_loader_enabled",
+    "network_lockdown_enabled",
 ];
 
 /// Convert legacy boolean encodings to genuine JSON booleans on startup.
@@ -419,18 +420,36 @@ pub fn get_setting(conn: &Connection, key: &str) -> anyhow::Result<Option<serde_
 
 /// Check if a specific network feature is enabled in settings.
 /// Returns `true` if enabled (or setting not found, for backward compatibility),
-/// `false` if explicitly disabled.
+/// `false` if explicitly disabled, or if Lockdown Mode is enabled.
 /// Setting keys: `network_modrinth_enabled`, `network_modrinth_cdn_enabled`,
 /// `network_registry_sync_enabled`, `network_github_oauth_enabled`,
 /// `network_msa_enabled`, `network_adoptium_enabled`,
 /// `network_mojang_metadata_enabled`, `network_mojang_content_enabled`,
-/// `network_loader_enabled`.
+/// `network_loader_enabled`. Lockdown Mode (`network_lockdown_enabled`) is a
+/// global override that disables every endpoint.
 pub fn is_network_enabled(conn: &Connection, key: &str) -> bool {
+    // Lockdown Mode blocks every network endpoint regardless of the per-endpoint
+    // toggle, so the backend never sends outbound feature requests while on.
+    if is_lockdown_enabled(conn) {
+        return false;
+    }
     get_setting(conn, key)
         .ok()
         .flatten()
         .map(|v| is_value_enabled(&v))
         .unwrap_or(true)
+}
+
+/// Whether Lockdown Mode (global network block) is enabled.
+///
+/// Lockdown overrides every per-endpoint toggle. It defaults to off when the
+/// setting has never been written.
+pub fn is_lockdown_enabled(conn: &Connection) -> bool {
+    get_setting(conn, "network_lockdown_enabled")
+        .ok()
+        .flatten()
+        .map(|v| is_value_enabled(&v))
+        .unwrap_or(false)
 }
 
 /// Parse a stored setting value as a boolean, accepting both JSON booleans
@@ -1460,6 +1479,45 @@ mod tests {
         assert!(!is_network_enabled(&conn, "rt_key"));
         set_setting(&conn, "rt_key", &serde_json::Value::String("true".into())).unwrap();
         assert!(is_network_enabled(&conn, "rt_key"));
+    }
+
+    // ---- Lockdown Mode (global network block) ----
+
+    #[test]
+    fn test_lockdown_defaults_to_off() {
+        let (conn, _path) = test_db();
+        assert!(!is_lockdown_enabled(&conn));
+    }
+
+    #[test]
+    fn test_lockdown_disables_all_endpoints() {
+        let (conn, _path) = test_db();
+        set_setting(&conn, "network_modrinth_enabled", &serde_json::json!(true)).unwrap();
+        set_setting(
+            &conn,
+            "network_registry_sync_enabled",
+            &serde_json::json!(true),
+        )
+        .unwrap();
+        set_setting(&conn, "network_lockdown_enabled", &serde_json::json!(true)).unwrap();
+
+        assert!(is_lockdown_enabled(&conn));
+        // Every endpoint is blocked, even ones that are individually enabled
+        // and keys that have never been written.
+        assert!(!is_network_enabled(&conn, "network_modrinth_enabled"));
+        assert!(!is_network_enabled(&conn, "network_registry_sync_enabled"));
+        assert!(!is_network_enabled(&conn, "network_github_oauth_enabled"));
+        assert!(!is_network_enabled(&conn, "nonexistent_network_key"));
+    }
+
+    #[test]
+    fn test_lockdown_off_does_not_block_endpoints() {
+        let (conn, _path) = test_db();
+        set_setting(&conn, "network_lockdown_enabled", &serde_json::json!(false)).unwrap();
+        set_setting(&conn, "network_modrinth_enabled", &serde_json::json!(true)).unwrap();
+
+        assert!(!is_lockdown_enabled(&conn));
+        assert!(is_network_enabled(&conn, "network_modrinth_enabled"));
     }
 
     // ---- record_co_crash ----

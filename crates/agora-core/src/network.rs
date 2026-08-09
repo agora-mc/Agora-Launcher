@@ -136,6 +136,11 @@ impl NetworkPolicy {
 /// setting key is absent from the database. Matches the first-party-network-defaults
 /// behaviour where missing keys are treated as enabled.
 fn is_network_enabled_default_true(conn: &rusqlite::Connection, key: &str) -> bool {
+    // Lockdown Mode is a global network block: when enabled the launch planner
+    // refuses every category even though these keys default to enabled.
+    if db::is_lockdown_enabled(conn) {
+        return false;
+    }
     db::get_setting(conn, key)
         .ok()
         .flatten()
@@ -519,6 +524,43 @@ mod tests {
         assert!(!policy.is_enabled(NetworkCategory::LoaderMetadataAndContent));
         assert!(!policy.is_enabled(NetworkCategory::MicrosoftAuthentication));
         assert!(!policy.is_enabled(NetworkCategory::JavaRuntime));
+    }
+
+    #[test]
+    fn from_db_lockdown_disables_all_categories() {
+        let conn = test_db();
+        // All launch-network keys enabled, but Lockdown Mode on.
+        crate::db::set_setting(
+            &conn,
+            "network_lockdown_enabled",
+            &serde_json::Value::Bool(true),
+        )
+        .unwrap();
+
+        let policy = NetworkPolicy::from_db(&conn);
+        assert!(!policy.is_enabled(NetworkCategory::MojangMetadata));
+        assert!(!policy.is_enabled(NetworkCategory::MojangContent));
+        assert!(!policy.is_enabled(NetworkCategory::LoaderMetadataAndContent));
+        assert!(!policy.is_enabled(NetworkCategory::MicrosoftAuthentication));
+        assert!(!policy.is_enabled(NetworkCategory::JavaRuntime));
+    }
+
+    #[test]
+    fn from_db_lockdown_off_keeps_defaults() {
+        let conn = test_db();
+        crate::db::set_setting(
+            &conn,
+            "network_lockdown_enabled",
+            &serde_json::Value::Bool(false),
+        )
+        .unwrap();
+
+        let policy = NetworkPolicy::from_db(&conn);
+        assert!(policy.is_enabled(NetworkCategory::MojangMetadata));
+        assert!(policy.is_enabled(NetworkCategory::MojangContent));
+        assert!(policy.is_enabled(NetworkCategory::LoaderMetadataAndContent));
+        assert!(policy.is_enabled(NetworkCategory::MicrosoftAuthentication));
+        assert!(policy.is_enabled(NetworkCategory::JavaRuntime));
     }
 
     #[test]

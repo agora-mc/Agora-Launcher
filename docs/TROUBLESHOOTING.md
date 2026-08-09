@@ -117,7 +117,7 @@ Before disconnecting:
 
 Microsoft online identity, missing artifacts, updates, and uncached downloads cannot complete offline.
 
-The current Lockdown toggle persists its UI state and disables the endpoint controls, but the backend does not read it as a global network policy. Do not rely on that toggle alone to block traffic. Disable the individual endpoint switches before enabling Lockdown, or enforce offline behavior outside Agora. This is a known product defect, not a documentation exception.
+Lockdown Mode in **Settings > Privacy** is a global backend network block: while it is on, every endpoint permission is disabled and Agora sends no feature requests. Use it to force offline behavior, and turn individual endpoints back on when you need finer-grained access than an all-or-nothing block.
 
 ## Snapshots and world safety
 

@@ -119,7 +119,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'tip',
             title: 'Prefer explicit checks',
-            text: 'When preparing an offline machine, download the registry, loader metadata, required mods, and Java runtime, then disable each Privacy endpoint individually. The current Lockdown toggle alone does not enforce a backend-wide network block.',
+            text: 'When preparing an offline machine, download the registry, loader metadata, required mods, and Java runtime. Lockdown Mode blocks every network endpoint in the backend; test the exact launch workflow while you still have time to fix missing files.',
           },
         },
       ],
@@ -1063,7 +1063,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Trace the enablement chain',
-          body: 'For live Modrinth access, service consent, the Modrinth API permission, and the CDN permission must align. Similar endpoint-permission chains apply to registry updates, governance, runtime downloads, and authentication. The current Lockdown toggle is not part of backend enforcement.',
+          body: 'For live Modrinth access, service consent, the Modrinth API permission, and the CDN permission must align. Similar endpoint-permission chains apply to registry updates, governance, runtime downloads, and authentication. Lockdown Mode is a global backend block that overrides every endpoint permission.'
         },
         {
           title: 'Diagnose account state',
@@ -1092,7 +1092,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       summary: 'Agora makes no automated telemetry calls. The Privacy section documents functional network destinations and lets Advanced-mode users disable the enforced endpoint groups individually.',
       outcomes: [
         'Understand why Agora contacts each service category.',
-        'Understand the current Lockdown limitation.',
+        'Use Lockdown Mode as a global network block.',
         'Prepare cached data before going offline.',
       ],
       sections: [
@@ -1101,8 +1101,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Network access can support Modrinth discovery and files, GitHub registry updates and governance, Mojang metadata and content, loader downloads, Microsoft authentication, Java runtime downloads, application updates, and optional AI services.',
         },
         {
-          title: 'Do not rely on Lockdown alone',
-          body: 'Enable Advanced mode and open Privacy. Disable every endpoint switch individually before an offline test. The current Lockdown toggle persists its UI state and disables those controls, but the Rust backend does not read it as a global network policy.',
+          title: 'Use Lockdown Mode for a global block',
+          body: 'Enable Advanced mode and open Privacy. Lockdown Mode disables every endpoint switch and blocks all outbound feature requests in the backend. Turn individual endpoints back on when you need finer control than an all-or-nothing block.',
           callout: {
             tone: 'warning',
             title: 'Online launch may need the network',
@@ -1132,7 +1132,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Apply capability-based policy',
-          body: 'Enable only the endpoint groups needed for the workflow: registry, governance, mod discovery, launch, runtime, authentication, updates, or AI. The individual choices are the enforced policy; Lockdown currently does not override them in the backend.',
+          body: 'Enable only the endpoint groups needed for the workflow: registry, governance, mod discovery, launch, runtime, authentication, updates, or AI. The individual choices are the enforced policy; Lockdown Mode overrides all of them at once for a total block.',
           bullets: [
             'Disabling the Modrinth API also prevents the associated CDN workflow.',
             'Runtime access is separate from Mojang game content and loader content.',
@@ -1141,7 +1141,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Audit degraded behavior',
-          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. Individual endpoint preferences are persisted and enforced by the Rust backend. Lockdown is currently only a persisted UI preference.',
+          body: 'When a feature fails, compare its service consent with its endpoint permission and the live Online/Offline indicator. Individual endpoint preferences are persisted and enforced by the Rust backend; Lockdown Mode is a global backend block that overrides them.'
         },
         {
           title: 'Protect shared diagnostics',
