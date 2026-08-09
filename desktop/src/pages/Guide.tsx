@@ -126,8 +126,14 @@ function pageText(page: GuidePage) {
   ].join(' ');
 }
 
-export function Guide({ onNavigateTab }: { onNavigateTab: (tab: Tab) => void }) {
-  const initialState = useMemo(loadGuideState, []);
+export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: Tab) => void; initialTopicId?: string }) {
+  const initialState = useMemo(() => {
+    const stored = loadGuideState();
+    if (initialTopicId && GUIDE_TOPICS.some((topic) => topic.id === initialTopicId)) {
+      return { ...stored, topicId: initialTopicId };
+    }
+    return stored;
+  }, [initialTopicId]);
   const [selectedTopicId, setSelectedTopicId] = useState(initialState.topicId);
   const [level, setLevel] = useState<GuideLevel>(initialState.level);
   const [query, setQuery] = useState('');

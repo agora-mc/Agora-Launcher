@@ -24,7 +24,10 @@ import { useInstanceHealthMonitor } from './lib/useInstanceHealthMonitor';
 import { useRegistryState } from './lib/useRegistryState';
 import { BrandMark } from './components/BrandMark';
 import { PackInstallProvider } from './components/PackInstallProgress';
-import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, SettingsIcon } from 'lucide-react';
+import { GUIDE_TOPICS } from './data/guideContent';
+import { LabShell } from './features/interactive/lab/LabShell';
+import type { StandardDestination } from './features/interactive/domain/intents';
+import { BookOpen, Bot, Boxes, Compass, FlaskConical, HomeIcon, Info, Landmark, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
   { id: 'home' as Tab, label: 'Home', icon: HomeIcon },
@@ -32,9 +35,14 @@ const BASE_TABS = [
   { id: 'instances' as Tab, label: 'My Instances', icon: Boxes },
   { id: 'governance' as Tab, label: 'Community Governance', icon: Landmark },
   { id: 'guide' as Tab, label: 'Help & Guide', icon: BookOpen },
+  { id: 'lab' as Tab, label: 'Agora Lab', icon: FlaskConical },
   { id: 'about' as Tab, label: 'The Agora Difference', icon: Info },
   { id: 'settings' as Tab, label: 'Settings', icon: SettingsIcon },
 ];
+
+const GUIDE_TOPIC_LABELS: Record<string, string> = Object.fromEntries(
+  GUIDE_TOPICS.map((topic) => [topic.id, topic.title]),
+);
 
 const AI_TAB = {
   id: 'ai' as Tab,
@@ -177,6 +185,7 @@ export default function App() {
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [aiChatEnabled, setAiChatEnabled] = useState<boolean>(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [guideTopic, setGuideTopic] = useState<string | null>(null);
   const [shellLayout, setShellLayout] = useState<ShellLayout>(loadShellLayout);
   const [crashInvestigation, setCrashInvestigation] = useState<{
     instanceId: string;
@@ -343,6 +352,7 @@ export default function App() {
     BASE_TABS[4],
     BASE_TABS[5],
     BASE_TABS[6],
+    BASE_TABS[7],
   ];
 
   // Resolve the current UI state from the destination.
@@ -464,6 +474,22 @@ export default function App() {
     navigateToModDetail(id);
   };
 
+  // Agora Lab handoffs: end the simulation by navigating to the real feature.
+  const handleOpenGuide = (topicId: string) => {
+    setGuideTopic(topicId);
+    navigateToTab('guide');
+  };
+
+  const handleNavigateStandard = (dest: StandardDestination) => {
+    if (dest.type === 'tab') {
+      navigateToTab(dest.tab);
+    } else if (dest.type === 'instance-detail') {
+      navigateToInstanceDetail(dest.instanceId);
+    } else if (dest.type === 'mod-detail') {
+      navigateToModDetail(dest.itemId, dest.browseInstanceId);
+    }
+  };
+
   return (
     <PackInstallProvider>
       <div className="flex h-screen w-screen overflow-hidden">
@@ -583,7 +609,20 @@ export default function App() {
                 )}
                 {effectiveTab === 'governance' && <Governance />}
                 {effectiveTab === 'ai' && aiChatEnabled && <AiChatPage />}
-                {effectiveTab === 'guide' && <Guide onNavigateTab={navigateToTab} />}
+                {effectiveTab === 'guide' && (
+                  <Guide
+                    key={guideTopic ?? 'default'}
+                    onNavigateTab={navigateToTab}
+                    initialTopicId={guideTopic ?? undefined}
+                  />
+                )}
+                {effectiveTab === 'lab' && (
+                  <LabShell
+                    onOpenGuide={handleOpenGuide}
+                    onNavigateStandard={handleNavigateStandard}
+                    guideTopicLabels={GUIDE_TOPIC_LABELS}
+                  />
+                )}
                 {effectiveTab === 'about' && <About />}
                 {effectiveTab === 'settings' && (
                   <Settings

@@ -236,7 +236,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     // The app initializes from the history state seeded above, so ModDetail
     // renders immediately. The Agora tab appears because get_curated_annotation
     // returns data.
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -248,7 +248,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_NO_VOTE });
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -262,7 +262,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -275,7 +275,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     await installModDetailMock(page);
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -294,7 +294,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     });
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -306,7 +306,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -318,7 +318,7 @@ test.describe('ModDetail Governance / Agora tab', () => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
@@ -336,7 +336,7 @@ test.describe('ModDetail Governance summary fields', () => {
     await installModDetailMock(page, { governanceSummary: GOV_SUMMARY_WITH_VOTE });
     await page.goto('/');
 
-    const agoraTab = page.getByRole('button', { name: 'Agora' });
+    const agoraTab = page.getByRole('button', { name: 'Agora', exact: true });
     await expect(agoraTab).toBeVisible();
     await agoraTab.click();
 
