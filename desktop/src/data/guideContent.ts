@@ -62,7 +62,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           },
         },
         {
-          title: 'Complete first-run setup',
+          title: 'Onboarding, you did this already!',
           body: 'The onboarding wizard checks the optional services and local tools Agora can use. You can skip optional connections and change them later in Settings.',
           steps: [
             'Review the service switches. Leave Modrinth on for a larger live catalog, or off to use only Agora-curated data.',

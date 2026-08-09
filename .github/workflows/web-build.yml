@@ -12,7 +12,9 @@ on:
   push:
     paths:
       - "web/**"
+      - "docs/**"
       - "scripts/fetch_registry_db.py"
+      - "scripts/build_docs_web.py"
       - ".github/workflows/web-build.yml"
 
 permissions:
@@ -45,6 +47,9 @@ jobs:
         run: |
           pip install -r compiler/requirements.txt
           python compiler/compile.py --skip-sign --governance-mode off
+
+      - name: Generate docs-web.json from markdown documentation
+        run: python scripts/build_docs_web.py
 
 
       - name: Install dependencies

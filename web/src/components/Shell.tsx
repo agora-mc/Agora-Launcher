@@ -1,8 +1,20 @@
 import Link from 'next/link';
 import { CONTENT_TYPES, contentTypeLabel } from '@/lib/db';
 import { GITHUB_REPO_URL, GITHUB_RELEASES_URL } from '@/lib/site';
+import { NavLinks, type NavItem } from './NavLinks';
 
 export function Shell({ children }: { children: React.ReactNode }) {
+  const navItems: NavItem[] = [
+    { href: '/', label: 'Home', match: 'exact' },
+    ...CONTENT_TYPES.map((type) => ({
+      href: `/${type}s`,
+      label: contentTypeLabel(type as any),
+      match: 'prefix' as const,
+    })),
+    { href: '/docs', label: 'Docs', match: 'prefix' },
+    { href: '/about', label: 'About', match: 'prefix' },
+  ];
+
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
       <a
@@ -16,26 +28,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <Link href="/" className="text-xl font-bold">
             Agora
           </Link>
-          <nav aria-label="Primary" className="flex flex-wrap gap-4 text-sm">
-            <Link href="/" className="hover:text-indigo-600 dark:hover:text-indigo-400">
-              Home
-            </Link>
-            {CONTENT_TYPES.map((type) => (
-              <Link
-                key={type}
-                href={`/${type}s`}
-                className="hover:text-indigo-600 dark:hover:text-indigo-400"
-              >
-                {contentTypeLabel(type as any)}
-              </Link>
-            ))}
-            <Link href="/docs" className="hover:text-indigo-600 dark:hover:text-indigo-400">
-              Docs
-            </Link>
-            <Link href="/about" className="hover:text-indigo-600 dark:hover:text-indigo-400">
-              About
-            </Link>
-          </nav>
+          <NavLinks items={navItems} />
         </div>
       </header>
 
@@ -43,7 +36,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <footer className="border-t bg-white px-6 py-6 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
         <div className="mx-auto flex max-w-6xl flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <p>Agora — a boutique, community-curated Minecraft mod launcher.</p>
+          <p>Agora — a bespoke, boutique, community-curated Minecraft mod launcher.</p>
           <div className="flex gap-4">
             <Link href="/docs" className="hover:text-indigo-600 dark:hover:text-indigo-400">
               Docs

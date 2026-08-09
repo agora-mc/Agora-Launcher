@@ -222,17 +222,19 @@ export function Guide({ onNavigateTab }: { onNavigateTab: (tab: Tab) => void }) 
   const currentTopicIndex = GUIDE_TOPICS.findIndex((topic) => topic.id === selectedTopic.id);
 
   return (
-    <div className="mx-auto max-w-[1500px] space-y-6" data-testid="guide-page">
+    <div className="space-y-6" data-testid="guide-page">
       <header className="relative overflow-hidden rounded-2xl border border-primary/25 bg-[linear-gradient(125deg,hsl(var(--midnight)),hsl(var(--aegean)))] p-6 text-white shadow-lg sm:p-8">
         <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full border border-white/10" aria-hidden="true" />
         <div className="absolute -bottom-28 right-20 h-64 w-64 rounded-full border border-white/10" aria-hidden="true" />
         <div className="relative grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-end">
           <div className="max-w-3xl">
-            <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20">
-              <BookOpen className="h-6 w-6" aria-hidden="true" />
+            <div className="mb-4 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/20">
+                <BookOpen className="h-4 w-4" aria-hidden="true" />
+              </div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/65">Agora field guide</p>
             </div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/65">Agora field guide</p>
-            <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Learn the launcher. Understand your modded game.</h1>
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Learn the launcher. Understand your modded game.</h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75 sm:text-base">
               {GUIDE_TOPICS.length} topics, each with a beginner-friendly walkthrough and a separate advanced guide.
               Start anywhere and move at your own pace.

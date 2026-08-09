@@ -1,3 +1,37 @@
+import Link from 'next/link';
+import { GITHUB_REPO_URL, DISCORD_URL } from '@/lib/site';
+
+const PILLARS = [
+  {
+    title: 'Customizable to you',
+    body: 'Theme every corner of Agora — fonts, colors, density, corners, motion, and more. If it does not feel like yours, keep tuning until it does.',
+  },
+  {
+    title: 'Democratic community voting',
+    body: 'The community votes on what belongs in the curated list. No corporate editors, no pay-to-play — the players decide what is worth keeping.',
+  },
+  {
+    title: 'Open source',
+    body: 'Every line of the launcher, the compiler, and the registry is public. Anyone can read it, audit it, and contribute to it.',
+  },
+  {
+    title: 'Free and ad-free',
+    body: 'Agora costs nothing and shows no ads. There is no data-mining business model hiding behind the launcher — it exists to serve the community.',
+  },
+  {
+    title: 'Transparent',
+    body: 'The registry, the votes, the review history, and the moderation log are all public. What changed, who voted, and why is never hidden.',
+  },
+  {
+    title: 'Donations, not for-profit',
+    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data.',
+  },
+  {
+    title: 'Autonomous and decentralized',
+    body: 'Agora does not depend on a corporate backend. Data ships through GitHub Release Assets and static files, so the platform keeps working on your terms.',
+  },
+];
+
 export const metadata = {
   title: 'About — Agora',
 };
@@ -6,45 +40,80 @@ export default function AboutPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-8">
       <div>
-        <h1 className="text-3xl font-bold">About Agora</h1>
+        <h1 className="text-3xl font-bold">The Agora Difference</h1>
         <p className="mt-2 text-gray-600 dark:text-gray-400">
           A different kind of Minecraft mod platform.
         </p>
       </div>
 
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">The mission</h2>
-        <p>
-          Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. The goal is to return control to the community instead of locking it inside corporate infrastructure.
+      <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-6 dark:border-indigo-900 dark:bg-indigo-950/30">
+        <p className="text-lg font-medium leading-7">
+          Agora is a bespoke boutique, not a warehouse. Every entry in the catalog is curated,
+          tailored, and made accessible for you — a hand-picked selection of the best Minecraft
+          has to offer, free of ads, tracking, and bloat.
         </p>
-        <ul className="list-disc space-y-2 pl-6">
-          <li>
-            <strong>$0/month server footprint.</strong> Data ships through GitHub Release Assets and static sites.
-          </li>
-          <li>
-            <strong>Security by delegation.</strong> Delegated launch is the default and leaves Microsoft/Xbox authentication and JVM startup to the official Minecraft Launcher. Users may opt into Agora's direct launch mode for integrated process status and console output.
-          </li>
-          <li>
-            <strong>Curated, not warehoused.</strong> Every entry is community reviewed and voted on.
-          </li>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-semibold">What makes Agora unique</h2>
+        <p className="leading-7 text-gray-700 dark:text-gray-300">
+          Most launchers and mod platforms are run for profit, are littered with ads, or bury
+          great mods under a mountain of mediocre downloads. Agora is the opposite — it puts the
+          community in charge and keeps the experience personal, private, and free.
+        </p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-semibold">The pillars</h2>
+        <ul className="grid gap-4 sm:grid-cols-2">
+          {PILLARS.map((pillar) => (
+            <li key={pillar.title} className="rounded-xl border border-gray-200 p-5 dark:border-gray-700">
+              <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{pillar.title}</h3>
+              <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-400">{pillar.body}</p>
+            </li>
+          ))}
         </ul>
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-xl font-semibold">How it works</h2>
-        <p>
-          Mods, packs, shaders, and other assets are stored as flat JSON files in this repository. A nightly compiler reads those files, resolves release metadata, and builds a signed SQLite database called <code>registry.db</code>.
-        </p>
-        <p>
-          The desktop launcher downloads that database, verifies its signature, and uses it to browse, install, and launch curated content. The website renders the same catalog as a public, search-engine-friendly directory.
+        <h2 className="text-xl font-semibold">Tailored and accessible for you</h2>
+        <p className="leading-7 text-gray-700 dark:text-gray-300">
+          Agora is built for the person in front of the screen. Interface scaling, high-contrast
+          themes, reduced motion, screen-reader-friendly labels, and a curated catalog that gets
+          out of your way — all of it is designed so the launcher works the way you need it to,
+          not the way a marketing team wants you to use it.
         </p>
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-xl font-semibold">Open source</h2>
-        <p>
-          All curation, governance, and code is public. Reviews and votes happen through structured GitHub interactions, and the audit log is transparent by design.
+        <h2 className="text-xl font-semibold">Get involved</h2>
+        <p className="leading-7 text-gray-700 dark:text-gray-300">
+          Agora is a community project. Browse the source, review and vote on entries, join the
+          conversation, or support the project with a donation so it can stay free and ad-free for
+          everyone. You can also{' '}
+          <Link href="/docs" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
+            read the docs
+          </Link>{' '}
+          to learn how it all fits together.
         </p>
+        <div className="flex flex-wrap gap-3 pt-1">
+          <a
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-800 hover:border-indigo-400 hover:text-indigo-600 dark:border-gray-600 dark:text-gray-200 dark:hover:border-indigo-400 dark:hover:text-indigo-400"
+          >
+            GitHub Repository
+          </a>
+          <a
+            href={DISCORD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg bg-[#5865F2] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4752c4]"
+          >
+            Join the Discord
+          </a>
+        </div>
       </section>
     </div>
   );

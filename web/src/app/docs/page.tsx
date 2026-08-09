@@ -1,6 +1,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { GITHUB_REPO_URL, GITHUB_RELEASES_URL } from '@/lib/site';
+import { getAllDocs } from '@/lib/docs';
 
 export const metadata = {
   title: 'Documentation - Agora',
@@ -59,9 +60,8 @@ const screenshots = [
   },
 ];
 
-const githubDoc = (path: string) => `${GITHUB_REPO_URL}/blob/HEAD/${path}`;
-
-export default function DocsPage() {
+export default async function DocsPage() {
+  const docs = await getAllDocs();
   return (
     <div className="mx-auto max-w-5xl space-y-12">
       <header>
@@ -72,7 +72,8 @@ export default function DocsPage() {
         <p className="mt-4 max-w-3xl text-lg text-gray-600 dark:text-gray-300">
           This page covers what you may need before the desktop app is installed. Agora also
           includes a searchable Help &amp; Guide with basic and advanced pages tied to the current
-          interface.
+          interface. The reference documentation below is rendered directly from the repository —
+          no need to open GitHub.
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
           <a
@@ -83,14 +84,12 @@ export default function DocsPage() {
           >
             Desktop downloads
           </a>
-          <a
-            href={githubDoc('docs/TROUBLESHOOTING.md')}
+          <Link
+            href="/docs/troubleshooting"
             className="rounded-lg border px-5 py-3 font-semibold hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
-            target="_blank"
-            rel="noopener noreferrer"
           >
             Troubleshooting reference
-          </a>
+          </Link>
         </div>
         <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
           Desktop packages use <code>v*</code> releases. <code>registry-*</code> releases contain data assets, not installers.
@@ -251,14 +250,12 @@ export default function DocsPage() {
           crash reports, CLI diagnostics, and compiler workflow logs serve different purposes and can
           contain different personal data. Agora does not currently provide a one-click support bundle.
         </p>
-        <a
-          href={githubDoc('docs/SUPPORT.md')}
+        <Link
+          href="/docs/support"
           className="inline-flex font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
-          target="_blank"
-          rel="noopener noreferrer"
         >
           Read the data and support-evidence reference
-        </a>
+        </Link>
       </section>
 
       <section className="space-y-4">
@@ -269,30 +266,46 @@ export default function DocsPage() {
           resolved paths and use an isolated data directory for experiments. Authentication uses the
           operating-system credential store and is not isolated by <code>--data-dir</code>.
         </p>
-        <a
-          href={githubDoc('docs/CLI.md')}
+        <Link
+          href="/docs/cli"
           className="inline-flex font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
-          target="_blank"
-          rel="noopener noreferrer"
         >
           Read the CLI reference
-        </a>
+        </Link>
+      </section>
+
+      <section className="space-y-5">
+        <h2 className="text-2xl font-bold">Documentation library</h2>
+        <p className="text-gray-600 dark:text-gray-300">
+          Every reference below is rendered from the repository’s markdown. Use the sidebar on any
+          page to jump between documents.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {docs.map((doc) => (
+            <Link
+              key={doc.slug}
+              href={`/docs/${doc.slug}`}
+              className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+            >
+              <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{doc.title}</h3>
+              {doc.description && (
+                <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
+                  {doc.description}
+                </p>
+              )}
+            </Link>
+          ))}
+        </div>
       </section>
 
       <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="text-xl font-bold">More documentation</h2>
+        <h2 className="text-xl font-bold">More</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <a href={githubDoc('docs/README.md')} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
-            Documentation index
-          </a>
-          <a href={githubDoc('docs/TROUBLESHOOTING.md')} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
-            Troubleshooting
-          </a>
           <a href={GITHUB_RELEASES_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
             Desktop downloads and release notes
           </a>
-          <a href={githubDoc('CODE_OF_ENGAGEMENT.md')} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
-            Code of Engagement
+          <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
+            Source code on GitHub
           </a>
           <Link href="/about" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
             How Agora works

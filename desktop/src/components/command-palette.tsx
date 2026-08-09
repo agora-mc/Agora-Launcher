@@ -24,6 +24,7 @@ const SETTINGS_ITEMS: { label: string; tab: Tab; icon: string }[] = [
   { label: 'My Instances', tab: 'instances', icon: '📦' },
   { label: 'Community Governance', tab: 'governance', icon: '🗳️' },
   { label: 'Help & Guide', tab: 'guide', icon: '' },
+  { label: 'About Agora', tab: 'about', icon: 'ℹ️' },
   { label: 'Settings', tab: 'settings', icon: '⚙️' },
 ];
 

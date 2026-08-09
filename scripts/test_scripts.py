@@ -19,6 +19,7 @@ import fetch_registry_db
 import deploy_release_assets
 import refresh_loader_manifests
 import validate_loader_catalog_delta
+import build_docs_web as bdw
 
 
 class TestFetchBytes(unittest.TestCase):
@@ -1687,6 +1688,87 @@ class TestGovernanceStateValidator(unittest.TestCase):
         finally:
             sys.argv = original_argv
             os.unlink(tmp_path)
+
+
+class TestBuildDocsWebSlugify(unittest.TestCase):
+    """Tests for build_docs_web.slugify."""
+
+    def test_docs_path_drops_prefix(self):
+        self.assertEqual(bdw.slugify(Path("docs/CLI.md")), "cli")
+
+    def test_nested_path(self):
+        self.assertEqual(bdw.slugify(Path("docs/architecture/baseline.md")), "architecture-baseline")
+
+    def test_root_doc(self):
+        self.assertEqual(bdw.slugify(Path("CODE_OF_ENGAGEMENT.md")), "code-of-engagement")
+
+    def test_underscores_and_case_normalized(self):
+        self.assertEqual(bdw.slugify(Path("docs/desktop-native-smoke-checklist.md")), "desktop-native-smoke-checklist")
+        self.assertEqual(bdw.slugify(Path("docs/RELEASING.md")), "releasing")
+
+
+class TestBuildDocsWebExtractTitle(unittest.TestCase):
+    """Tests for build_docs_web.extract_title."""
+
+    def test_first_h1_wins(self):
+        content = "Intro\n\n# Real Title\n\n## Not this\n"
+        self.assertEqual(bdw.extract_title(content, Path("docs/x.md")), "Real Title")
+
+    def test_fallback_to_filename(self):
+        content = "no heading here"
+        self.assertEqual(bdw.extract_title(content, Path("docs/my-doc.md")), "My Doc")
+
+
+class TestBuildDocsWebExtractDescription(unittest.TestCase):
+    """Tests for build_docs_web.extract_description."""
+
+    def test_first_paragraph(self):
+        content = "# Title\n\nThis is the first paragraph.\n\n# Second\n"
+        self.assertEqual(bdw.extract_description(content), "This is the first paragraph.")
+
+    def test_truncates_long(self):
+        content = "Word " * 200
+        desc = bdw.extract_description(content)
+        self.assertLessEqual(len(desc), 241)
+
+    def test_empty_returns_empty(self):
+        self.assertEqual(bdw.extract_description(""), "")
+
+
+class TestBuildDocsWebRewriteLinks(unittest.TestCase):
+    """Tests for build_docs_web.rewrite_links."""
+
+    def setUp(self):
+        self.slugs = {
+            "docs/CLI.md": "cli",
+            "docs/DEVELOPMENT.md": "development",
+            "CODE_OF_ENGAGEMENT.md": "code-of-engagement",
+        }
+
+    def test_rewrites_relative_md_link(self):
+        content = "[CLI reference](./CLI.md)"
+        out = bdw.rewrite_links(content, Path("docs/README.md"), self.slugs)
+        self.assertIn("](/docs/cli)", out)
+        self.assertNotIn("./CLI.md", out)
+
+    def test_rewrites_parent_link(self):
+        content = "[Code of Engagement](../CODE_OF_ENGAGEMENT.md)"
+        out = bdw.rewrite_links(content, Path("docs/README.md"), self.slugs)
+        self.assertIn("](/docs/code-of-engagement)", out)
+
+    def test_preserves_anchor(self):
+        content = "[CLI reference](./CLI.md#exit-codes)"
+        out = bdw.rewrite_links(content, Path("docs/README.md"), self.slugs)
+        self.assertIn("](/docs/cli#exit-codes)", out)
+
+    def test_leaves_absolute_urls(self):
+        content = "[Site](https://example.com/docs)"
+        self.assertEqual(bdw.rewrite_links(content, Path("docs/x.md"), self.slugs), content)
+
+    def test_leaves_unknown_markdown(self):
+        content = "[Missing](./NOPE.md)"
+        out = bdw.rewrite_links(content, Path("docs/x.md"), self.slugs)
+        self.assertEqual(out, content)
 
 
 if __name__ == "__main__":

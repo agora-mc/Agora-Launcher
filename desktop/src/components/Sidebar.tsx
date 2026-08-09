@@ -110,7 +110,7 @@ export function Sidebar({
         />
       )}
 
-      <nav className="flex-1 space-y-1 p-3" aria-label="Main navigation">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3" aria-label="Main navigation">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           const Icon = tab.icon;

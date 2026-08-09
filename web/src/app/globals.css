@@ -1,3 +1,198 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Typographic styles for rendered markdown documentation (docs-prose). */
+@layer components {
+  .docs-prose {
+    color: rgb(55 65 81);
+    font-size: 0.95rem;
+    line-height: 1.75;
+  }
+
+  .docs-prose > :first-child {
+    margin-top: 0;
+  }
+
+  .docs-prose h1,
+  .docs-prose h2,
+  .docs-prose h3,
+  .docs-prose h4,
+  .docs-prose h5,
+  .docs-prose h6 {
+    color: rgb(17 24 39);
+    font-weight: 700;
+    line-height: 1.3;
+    margin: 1.75em 0 0.6em;
+  }
+
+  .docs-prose h1 {
+    font-size: 1.875rem;
+  }
+
+  .docs-prose h2 {
+    border-bottom: 1px solid rgb(229 231 235);
+    font-size: 1.5rem;
+    padding-bottom: 0.3em;
+  }
+
+  .docs-prose h3 {
+    font-size: 1.25rem;
+  }
+
+  .docs-prose h4 {
+    font-size: 1.05rem;
+  }
+
+  .docs-prose p {
+    margin: 0.75em 0;
+  }
+
+  .docs-prose a {
+    color: rgb(79 70 229);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .docs-prose a:hover {
+    opacity: 0.8;
+  }
+
+  .docs-prose ul {
+    list-style: disc;
+    margin: 0.75em 0;
+    padding-left: 1.5em;
+  }
+
+  .docs-prose ol {
+    list-style: decimal;
+    margin: 0.75em 0;
+    padding-left: 1.5em;
+  }
+
+  .docs-prose li {
+    margin: 0.3em 0;
+  }
+
+  .docs-prose li > ul,
+  .docs-prose li > ol {
+    margin: 0.2em 0;
+  }
+
+  .docs-prose code {
+    background: rgb(243 244 246);
+    border-radius: 0.25rem;
+    color: rgb(120 53 15);
+    font-size: 0.85em;
+    padding: 0.1em 0.35em;
+  }
+
+  .docs-prose pre {
+    background: rgb(17 24 39);
+    border-radius: 0.5rem;
+    color: rgb(229 231 235);
+    margin: 1em 0;
+    overflow-x: auto;
+    padding: 1em;
+  }
+
+  .docs-prose pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+  }
+
+  .docs-prose blockquote {
+    border-left: 4px solid rgb(209 213 219);
+    color: rgb(107 114 128);
+    font-style: italic;
+    margin: 1em 0;
+    padding-left: 1em;
+  }
+
+  .docs-prose table {
+    border-collapse: collapse;
+    display: block;
+    font-size: 0.9em;
+    margin: 1em 0;
+    overflow-x: auto;
+    width: 100%;
+  }
+
+  .docs-prose th,
+  .docs-prose td {
+    border: 1px solid rgb(229 231 235);
+    padding: 0.5em 0.75em;
+    text-align: left;
+  }
+
+  .docs-prose th {
+    background: rgb(249 250 251);
+    font-weight: 600;
+  }
+
+  .docs-prose hr {
+    border: 0;
+    border-top: 1px solid rgb(229 231 235);
+    margin: 2em 0;
+  }
+
+  .docs-prose img {
+    border-radius: 0.5rem;
+    max-width: 100%;
+  }
+
+  .docs-prose details {
+    margin: 1em 0;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .docs-prose {
+      color: rgb(209 213 219);
+    }
+
+    .docs-prose h1,
+    .docs-prose h2,
+    .docs-prose h3,
+    .docs-prose h4,
+    .docs-prose h5,
+    .docs-prose h6 {
+      color: rgb(243 244 246);
+    }
+
+    .docs-prose h2 {
+      border-bottom-color: rgb(55 65 81);
+    }
+
+    .docs-prose a {
+      color: rgb(129 140 248);
+    }
+
+    .docs-prose code {
+      background: rgb(31 41 55);
+      color: rgb(253 230 138);
+    }
+
+    .docs-prose pre {
+      background: rgb(3 7 18);
+    }
+
+    .docs-prose blockquote {
+      border-left-color: rgb(75 85 99);
+      color: rgb(156 163 175);
+    }
+
+    .docs-prose th,
+    .docs-prose td {
+      border-color: rgb(55 65 81);
+    }
+
+    .docs-prose th {
+      background: rgb(31 41 55);
+    }
+
+    .docs-prose hr {
+      border-top-color: rgb(55 65 81);
+    }
+  }
+}
