@@ -65,6 +65,13 @@ pub struct AppState {
     pub user_cancelled_launches: HashSet<u64>,
     /// Instance IDs with an active install transaction.
     pub active_install_instances: HashSet<String>,
+    /// Instance IDs whose launch is active or starting (target-aware). This is
+    /// the inverse of `active_install_instances`: an install must never apply
+    /// while a launch for the same instance is starting/active, and a launch
+    /// must never start while an install is applying. Delegated launches have
+    /// no `launch_reservation`, so this marker covers them for the whole
+    /// delegated session.
+    pub active_launches: HashSet<String>,
     /// Per-instance serialization for LKG read/modify/write promotion. Delegated
     /// monitors can overlap a newer direct launch, so the global launch lock is
     /// not sufficient for protecting `lkg.json`.
@@ -99,6 +106,7 @@ impl AppState {
             launch_reservation: None,
             user_cancelled_launches: HashSet::new(),
             active_install_instances: HashSet::new(),
+            active_launches: HashSet::new(),
             lkg_locks: HashMap::new(),
             update_candidate_cache: HashMap::new(),
         }

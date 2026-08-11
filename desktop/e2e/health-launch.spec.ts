@@ -228,8 +228,12 @@ test('periodic all-instance health scan alerts the card and reuses repair dialog
 
   await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
   await expect(page.getByText("'example.jar' requires 'fabric-api' but no enabled artifact provides it.")).toBeVisible();
-  await page.getByRole('button', { name: 'Disable' }).click();
-  expect(await page.evaluate(() => (window as any).__lastCommandArgs.disable_mod_for_test.filename)).toBe('example.jar');
+  // The review-only dialog is health INSPECTION only (SOL-2 §18.5): the rejected
+  // direct disable repair (disable_mod_for_test) must not be reachable from a
+  // review-only surface. The Standard disable repair remains in the launch path.
+  await expect(page.getByRole('button', { name: 'Disable' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close' }).first().click();
+  expect(await page.evaluate(() => (window as any).__commandCounts.disable_mod_for_test ?? 0)).toBe(0);
   expect(await page.evaluate(() => (window as any).__commandCounts.launch_instance_direct ?? 0)).toBe(0);
 });
 

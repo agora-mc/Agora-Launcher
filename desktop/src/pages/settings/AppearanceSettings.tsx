@@ -1,8 +1,16 @@
+import { useState } from 'react';
 import {
   DEFAULT_UI_PREFERENCES,
   useUiPreferences,
   type UiPreferences,
 } from '../../components/theme/theme-provider';
+import {
+  loadPreference,
+  resumeHighInteractionView,
+  savePreference,
+  suspendHighInteraction,
+  type InteractionPreference,
+} from '../../features/interactive/live/presentationPreference';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
@@ -62,6 +70,17 @@ const PRESETS: Record<string, { label: string; preferences: UiPreferences }> = {
 
 export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => void }) {
   const { preferences, setPreferences, resetPreferences } = useUiPreferences();
+  // High Interaction is a presentation preference with its own versioned key
+  // (MASTER_ARCHITECTURE §5.3), so it is read/written directly rather than
+  // folded into the theme blob. §5.2 requires it to be selectable from a
+  // clearly named interaction control — this is that control.
+  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
+  const applyInteraction = (value: InteractionPreference) => {
+    setInteraction(value);
+    savePreference(value);
+    if (value === 'high-interaction') resumeHighInteractionView();
+    else suspendHighInteraction();
+  };
 
   return (
     <div id="settings-appearance" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-4" data-testid="appearance-settings">
@@ -272,6 +291,26 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
             <option value="full">Full motion</option>
           </select>
           <span className="block text-xs text-muted-foreground">Controls nonessential animations, transitions, and smooth scrolling throughout the app.</span>
+        </label>
+      </div>
+
+      <div className="space-y-2 rounded-lg border border-border bg-muted p-3">
+        <label className="block space-y-1 text-sm">
+          <span className="font-medium">Instance view</span>
+          <select
+            aria-label="Instance view mode"
+            value={interaction}
+            onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
+            className={`${selectClass} block w-full sm:w-72`}
+          >
+            <option value="standard">Standard</option>
+            <option value="high-interaction">High Interaction</option>
+          </select>
+          <span className="block text-xs text-muted-foreground">
+            High Interaction shows an instance as a visual workbench — content relationships, health, and
+            runtime at a glance. Reviews and content changes still open the Standard screens, which remain
+            the only place a change is applied. You can switch back at any time from the instance itself.
+          </span>
         </label>
       </div>
 

@@ -66,20 +66,31 @@ const DEFAULT_SHELL_LAYOUT: ShellLayout = {
 };
 
 function loadShellLayout(): ShellLayout {
+  // On narrow viewports the fixed (expanded) sidebar starves the main content
+  // and every page — including Agora Lab — overflows horizontally. Default the
+  // sidebar to collapsed below the `sm` breakpoint so content gets usable
+  // width; the user can still expand it with the sidebar toggle.
+  const narrow = typeof window !== 'undefined' && window.innerWidth < 640;
+  const collapseForNarrow = (layout: ShellLayout): ShellLayout =>
+    narrow
+      ? { ...layout, sidebar: { ...layout.sidebar, collapsed: true, width: 64 } }
+      : layout;
   try {
     const parsed = JSON.parse(localStorage.getItem(SHELL_LAYOUT_KEY) ?? 'null') as Partial<ShellLayout> | null;
     const sidebar = parsed?.sidebar;
-    if (parsed?.version !== 1 || !sidebar || typeof sidebar.width !== 'number') return DEFAULT_SHELL_LAYOUT;
+    if (parsed?.version !== 1 || !sidebar || typeof sidebar.width !== 'number') {
+      return collapseForNarrow(DEFAULT_SHELL_LAYOUT);
+    }
     const width = Math.min(420, Math.max(180, sidebar.width));
     const lastExpandedWidth = typeof sidebar.lastExpandedWidth === 'number'
       ? Math.min(420, Math.max(180, sidebar.lastExpandedWidth))
       : width;
-    return {
+    return collapseForNarrow({
       version: 1,
       sidebar: { collapsed: sidebar.collapsed === true, width, lastExpandedWidth },
-    };
+    });
   } catch {
-    return DEFAULT_SHELL_LAYOUT;
+    return collapseForNarrow(DEFAULT_SHELL_LAYOUT);
   }
 }
 

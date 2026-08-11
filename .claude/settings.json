@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run test:unit:*)",
+      "Bash(npm run check:boundaries:*)",
+      "Bash(npm ci:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite build:*)",
+      "Bash(npx playwright test:*)",
+      "Bash(node scripts/check-interactive-boundaries.mjs:*)",
+      "Bash(python scripts/check_architecture.py:*)",
+      "Bash(python scripts/check_docs.py:*)",
+      "Bash(python scripts/check_tauri_bindings.py:*)",
+      "Bash(python scripts/check_launch_mode.py:*)",
+      "Bash(python scripts/verify_db.py:*)",
+      "Bash(python scripts/test_scripts.py:*)",
+      "Bash(python scripts/validate_governance_state.py:*)",
+      "Bash(python compiler/test_compile.py:*)",
+      "Bash(python compiler/test_compile_integration.py:*)",
+      "Bash(python compiler/test_governance.py:*)",
+      "Bash(python compiler/test_governance_integration.py:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git stash list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./desktop/src-tauri/tokens.enc)",
+      "Read(./**/local_state.db)"
+    ]
+  }
+}

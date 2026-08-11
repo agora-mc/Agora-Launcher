@@ -100,6 +100,20 @@ export interface LabScenario<Scene = VisualScene> {
   realDestinations: StandardDestination[];
   initialScene(checkpoint?: number): Scene;
   /**
+   * Highest checkpoint that `initialScene` can reconstruct WITHOUT inventing a
+   * decision the player may not have made (TERRA-6 T6-2 / SOL §22).
+   *
+   * Some checkpoints are only reachable after a branching choice that progress
+   * does not record (include-vs-skip an optional, prepare-vs-leave content,
+   * which hypothesis was tested). Resuming into such a checkpoint would assert
+   * a choice on the player's behalf and, worse, silently rewrite a reviewed
+   * plan. Scenarios clamp resume to the last unambiguous stage instead; the
+   * player re-makes one small decision rather than inheriting a fabricated one.
+   *
+   * Defaults to identity when a scenario has no branching state.
+   */
+  safeResumeCheckpoint?(checkpoint: number): number;
+  /**
    * Deterministic reducer for a player decision.
    * @returns the next state and any feedback; may stay on the same checkpoint.
    */

@@ -23,7 +23,7 @@ import { isGuideTopicId } from '../domain/intents';
 import type { FeedbackEvent, LabDecision, LabEvent, LabLessonState } from './scenarioTypes';
 import { getScenario, listScenarios } from './simulationAdapter';
 import { initialLessonState, isLessonComplete, reduceLesson } from './lessonEngine';
-import { resolveDecisionGate } from './decisionGate';
+import { resolveDecisionGate, revalidateDecisionForConfirm } from './decisionGate';
 import { loadAdventureProgress, recordCheckpoint } from './progressStore';
 import { ScenarioView } from './ScenarioView';
 import { useReducedMotion } from '../visual/primitives/useReducedMotion';
@@ -98,6 +98,14 @@ export function LabShell({
     if (!scenario || !lesson) return;
     const reduction = reduceLesson(scenario, lesson, event);
     setLesson(reduction.state);
+    if (event.kind === 'reset') {
+      // Reset returns to the first checkpoint with no feedback, so the previous
+      // message must go too — otherwise step 1 still announced the outcome of
+      // the run that was just discarded (e.g. "Scan complete: 1 blocker…"
+      // while asking the player to run the scan).
+      setAnnouncement(null);
+      setLastAttempt(null);
+    }
     if (reduction.feedback) {
       setAnnouncement(reduction.feedback.message);
       if (event.kind === 'decision') {
@@ -111,7 +119,10 @@ export function LabShell({
     }
     const done = isLessonComplete(scenario, reduction.state);
     const completed = done ? scenario.checkpoints.length : reduction.state.checkpoint;
-    recordCheckpoint(scenario.id, scenario.version, completed, completed, done);
+    // Progress records how far the player got, but resume may only restore a
+    // checkpoint the scenario can rebuild without inventing a decision (T6-2).
+    const safeResume = scenario.safeResumeCheckpoint?.(completed) ?? completed;
+    recordCheckpoint(scenario.id, scenario.version, completed, safeResume, done);
   };
 
   /**
@@ -149,16 +160,21 @@ export function LabShell({
 
   /**
    * Revalidates the confirmed decision against the CURRENT lesson state before
-   * dispatch (SOL-1 BLOCKER 3). If the decision is no longer present or became
-   * disabled, the old confirmation cannot dispatch.
+   * dispatch (SOL-1 BLOCKER 3 / residual BLOCKER B). The confirmation is bound
+   * to the consequence (danger/title/body) the player reviewed: if the decision
+   * disappears, becomes disabled, or its consequence changed, the old
+   * confirmation cannot dispatch.
    */
   const confirmPendingDecision = () => {
     if (!pendingConfirm || !scenario || !lesson) return;
-    const checkpoint = scenario.checkpoints[lesson.checkpoint];
-    const current = checkpoint?.decisionsFor(lesson).find((candidate) => candidate.id === pendingConfirm.id);
-    if (!current || current.disabledReason) {
+    const revalidation = revalidateDecisionForConfirm(scenario, lesson, pendingConfirm.id, {
+      danger: pendingConfirm.danger === true,
+      confirmTitle: pendingConfirm.confirmTitle,
+      confirmBody: pendingConfirm.confirmBody,
+    });
+    if (!revalidation.valid) {
       closeConfirmation();
-      setAnnouncement('That action is no longer available at this step. Nothing changed.');
+      setAnnouncement(revalidation.reason + ' Nothing changed.');
       return;
     }
     dispatch({ kind: 'decision', decisionId: pendingConfirm.id });
@@ -193,7 +209,7 @@ export function LabShell({
   // ---------- Selection screen ----------
   if (!scenario || !lesson) {
     return (
-      <div className="space-y-6" data-testid="lab-shell">
+      <div className="w-full min-w-0 space-y-6 overflow-x-hidden" data-testid="lab-shell">
         <header>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-2xl font-bold text-foreground">Agora Lab</h2>
@@ -228,6 +244,9 @@ export function LabShell({
                   <button
                     type="button"
                     onClick={() => startAdventure(adventure.id, completed || !canResume ? 0 : record.lastSafeCheckpoint)}
+                    // Six buttons all named "Start" are indistinguishable in a
+                    // screen-reader button list (T6-9).
+                    aria-label={`${canResume ? 'Resume' : 'Start'} ${adventure.title}`}
                     className="flex-1 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
                   >
                     {canResume ? 'Resume' : 'Start'}
@@ -269,7 +288,7 @@ export function LabShell({
           : 'border-border bg-muted/40 text-foreground';
 
   return (
-    <div className="space-y-5" data-testid="lab-adventure">
+    <div className="w-full min-w-0 space-y-5 overflow-x-hidden" data-testid="lab-adventure">
       {/* Persistent Simulation label */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-indigo-500/50 bg-indigo-500/5 px-3 py-2">
         <span className="inline-flex items-center rounded-full border border-indigo-500/60 bg-indigo-500/10 px-2.5 py-0.5 text-xs font-bold text-indigo-700 dark:text-indigo-300">

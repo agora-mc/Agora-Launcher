@@ -55,8 +55,15 @@ export function RecoveryTimeline({
   onIntent,
   capabilities,
 }: RecoveryTimelineProps) {
-  // Newest first, current state always pinned separately at the top.
-  const ordered = [...snapshots].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  // Newest first. Authoritative ordering uses `sortKey` (ISO/epoch) when
+  // present; the display `createdAt` label is never used for ordering
+  // (FIX BEFORE LIVE MODE 4). Stable tie-break by id.
+  const ordered = [...snapshots].sort((a, b) => {
+    const ak = a.sortKey ?? a.createdAt;
+    const bk = b.sortKey ?? b.createdAt;
+    if (ak !== bk) return ak < bk ? 1 : -1;
+    return a.id < b.id ? 1 : -1;
+  });
 
   return (
     <section aria-label="Recovery timeline" className="space-y-3" data-source={source.kind}>
@@ -117,30 +124,53 @@ export function RecoveryTimeline({
           <p className="mt-1 text-xs text-muted-foreground">
             Open the compare view to see added, changed, and removed content plus the world/save boundary before anything is restored.
           </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const snapshot = ordered.find((candidate) => candidate.id === selection);
-                if (snapshot) onIntent({ kind: 'preview-snapshot', snapshotId: snapshot.id });
-              }}
-              className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-accent"
-            >
-              Compare
-            </button>
-            {capabilities.canRequestSnapshotRestore ? (
-              <button
-                type="button"
-                onClick={() => {
-                  const snapshot = ordered.find((candidate) => candidate.id === selection);
-                  if (snapshot) onIntent({ kind: 'request-snapshot-restore', snapshotId: snapshot.id });
-                }}
-                className="rounded-md border border-destructive/60 px-2.5 py-1 text-xs font-semibold text-destructive hover:bg-destructive/10"
-              >
-                Restore… (serious confirm follows)
-              </button>
-            ) : null}
-          </div>
+          {(() => {
+            const snapshot = ordered.find((candidate) => candidate.id === selection);
+            const available = snapshot?.availability === 'available';
+            const reason =
+              snapshot?.availability === 'locked'
+                ? 'Locked — this return point cannot be used right now.'
+                : snapshot?.availability === 'busy'
+                  ? 'Busy — an operation is using this instance.'
+                  : snapshot?.availability === 'unavailable'
+                    ? 'Unavailable — this return point is not usable right now.'
+                    : null;
+            return (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {capabilities.canPreviewSnapshot ? (
+                  <button
+                    type="button"
+                    disabled={!available}
+                    onClick={() => {
+                      const current = ordered.find((candidate) => candidate.id === selection);
+                      if (current) onIntent({ kind: 'preview-snapshot', snapshotId: current.id });
+                    }}
+                    className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Compare
+                  </button>
+                ) : null}
+                {capabilities.canRequestSnapshotRestore ? (
+                  <button
+                    type="button"
+                    disabled={!available}
+                    onClick={() => {
+                      const current = ordered.find((candidate) => candidate.id === selection);
+                      if (current) onIntent({ kind: 'request-snapshot-restore', snapshotId: current.id });
+                    }}
+                    className="rounded-md border border-destructive/60 px-2.5 py-1 text-xs font-semibold text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Restore… (serious confirm follows)
+                  </button>
+                ) : null}
+                {!available && reason ? (
+                  <span className="text-xs font-medium text-muted-foreground" role="status">
+                    {reason}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })()}
         </div>
       ) : null}
     </section>

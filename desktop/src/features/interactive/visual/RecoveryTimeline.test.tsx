@@ -52,6 +52,7 @@ describe('RecoveryTimeline', () => {
 
   it('emits a preview intent when Compare is chosen', () => {
     const onIntent = vi.fn();
+    const caps = { ...NO_CAPABILITIES, canPreviewSnapshot: true };
     render(
       <RecoveryTimeline
         snapshots={snapshots}
@@ -60,7 +61,7 @@ describe('RecoveryTimeline', () => {
         selection="lab:undo:snap:manual"
         onSelect={() => undefined}
         onIntent={onIntent}
-        capabilities={NO_CAPABILITIES}
+        capabilities={caps}
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Compare' }));

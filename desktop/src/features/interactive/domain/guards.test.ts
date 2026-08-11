@@ -43,8 +43,10 @@ describe('domain/guards', () => {
     expect(capabilityGate({ kind: 'select', entityId: 'x' }, NO_CAPABILITIES)).toEqual({ ok: true });
   });
 
-  it('freshness gate rejects stale or unknown scenes', () => {
+  it('freshness gate rejects refreshing, stale, and unknown scenes (FIX BEFORE LIVE MODE 1)', () => {
     expect(freshnessGate(liveSource)).toEqual({ ok: true });
+    // refreshing must wait for the mandatory re-read — never executable
+    expect(freshnessGate({ ...liveSource, freshness: 'refreshing' })).toEqual({ ok: false, reason: 'refreshing' });
     expect(freshnessGate({ ...liveSource, freshness: 'stale' })).toEqual({ ok: false, reason: 'stale' });
     expect(freshnessGate({ ...liveSource, freshness: 'unknown' })).toEqual({ ok: false, reason: 'unknown' });
     // simulation scenes are reducer-controlled

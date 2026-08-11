@@ -1,4 +1,4 @@
-import type { ExperienceSource, VisualId, VisualInstance } from '../domain/models';
+import type { Compatibility, ExperienceSource, VisualId, VisualInstance } from '../domain/models';
 import type { CapabilityFlags } from '../domain/models';
 import type { VisualIntent } from '../domain/intents';
 import { hasProposal } from '../domain/state';
@@ -32,16 +32,42 @@ export interface InstanceBenchProps {
   reducedMotion?: boolean;
 }
 
+/**
+ * Compatibility wording for the CURRENT loader (SOL §22.3).
+ *
+ * Previously only `compatible` produced a hint, so `incompatible`, `unknown`,
+ * and `indeterminate` all rendered as silence — visually identical to a
+ * verified-good loader. On the live surface `unknown` is the only value the
+ * read adapter ever produces, so "no marking" was the normal case for every
+ * real instance. Uncertainty must read as uncertainty, and must stay distinct
+ * from incompatibility. The bare "Unknown" chip is deliberately NOT reused
+ * here: TERRA-5 found it ambiguous next to confident data.
+ */
+const LOADER_COMPATIBILITY_HINT: Record<Compatibility, { text: string; tone: 'muted' | 'bad' | 'caution' }> = {
+  compatible: { text: 'Fits this setup', tone: 'muted' },
+  incompatible: { text: 'Does not fit this setup', tone: 'bad' },
+  indeterminate: { text: 'Needs review — not proven for this setup', tone: 'caution' },
+  unknown: { text: 'Not verified', tone: 'muted' },
+};
+
+const HINT_TONE_CLASS = {
+  muted: 'text-muted-foreground',
+  bad: 'font-semibold text-destructive',
+  caution: 'font-semibold text-amber-700 dark:text-amber-300',
+} as const;
+
 function FieldRow({
   label,
   current,
   proposed,
   hint,
+  hintTone = 'muted',
 }: {
   label: string;
   current: string;
   proposed?: string;
   hint?: string;
+  hintTone?: 'muted' | 'bad' | 'caution';
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
@@ -60,7 +86,7 @@ function FieldRow({
           </span>
         </>
       )}
-      {hint ? <span className="text-xs text-muted-foreground">{hint}</span> : null}
+      {hint ? <span className={`text-xs ${HINT_TONE_CLASS[hintTone]}`}>{hint}</span> : null}
     </div>
   );
 }
@@ -83,6 +109,9 @@ export function InstanceBench({
       aria-label={roleLabel ?? 'Instance bench'}
       className={`rounded-xl border bg-card p-4 ${selected ? 'border-primary ring-1 ring-primary/40' : highlight ? 'border-primary/60 ring-1 ring-primary/20' : 'border-border'} ${highlight ? '' : 'opacity-90'}`}
       data-source={source.kind}
+      data-testid="instance-bench"
+      data-launch-state={instance.launchState}
+      data-lock-state={instance.lockState}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
@@ -121,7 +150,8 @@ export function InstanceBench({
           label="Loader"
           current={loaderCurrent.family}
           proposed={loaderProposed ? `${loaderProposed.family}${loaderProposed.version ? ` ${loaderProposed.version}` : ''}` : undefined}
-          hint={loaderCurrent.compatibility === 'compatible' ? 'Fits this setup' : undefined}
+          hint={LOADER_COMPATIBILITY_HINT[loaderCurrent.compatibility].text}
+          hintTone={LOADER_COMPATIBILITY_HINT[loaderCurrent.compatibility].tone}
         />
       </div>
 
@@ -132,18 +162,18 @@ export function InstanceBench({
         </div>
       ) : null}
 
-      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-        <div className="rounded-lg bg-muted/40 p-2">
+      <div className="mt-3 grid min-w-0 grid-cols-3 gap-2 text-center">
+        <div className="min-w-0 rounded-lg bg-muted/40 p-2">
           <div className="text-lg font-bold text-foreground">{instance.contentSummary.enabled}</div>
           <div className="text-[0.7rem] font-medium text-muted-foreground">Enabled</div>
         </div>
-        <div className="rounded-lg bg-muted/40 p-2">
+        <div className="min-w-0 rounded-lg bg-muted/40 p-2">
           <div className="text-lg font-bold text-foreground">{instance.contentSummary.disabled}</div>
           <div className="text-[0.7rem] font-medium text-muted-foreground">Disabled</div>
         </div>
-        <div className="rounded-lg bg-muted/40 p-2">
+        <div className="min-w-0 rounded-lg bg-muted/40 p-2">
           <div className="text-lg font-bold text-foreground">{instance.contentSummary.needsAttention}</div>
-          <div className="text-[0.7rem] font-medium text-muted-foreground">Need attention</div>
+          <div className="break-words text-[0.7rem] font-medium leading-tight text-muted-foreground">Need attention</div>
         </div>
       </div>
     </section>

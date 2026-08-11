@@ -6,7 +6,11 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: 'html',
+  // Line reporter keeps the CLI attached to stdout and never auto-opens a
+  // browser; the HTML report is still written but only opened on demand via
+  // `npx playwright show-report`. (Auto-open + webServer teardown on Windows
+  // could leave the process alive after tests complete.)
+  reporter: [['line'], ['html', { open: 'never' }]],
   use: {
     baseURL: 'http://localhost:5173',
     trace: 'on-first-retry',

@@ -15,10 +15,18 @@ import { InstanceBench } from '../visual/InstanceBench';
 import { ContentGraph } from '../visual/ContentGraph';
 import { ChangeStaging } from '../visual/ChangeStaging';
 import { RecoveryTimeline } from '../visual/RecoveryTimeline';
+import { HealthLens } from '../visual/HealthLens';
+import { LoaderRail } from '../visual/LoaderRail';
+import { RuntimeWorkbench } from '../visual/RuntimeWorkbench';
+import { CrashEvidenceBoard } from '../visual/CrashEvidenceBoard';
+import { NetworkReadinessMap } from '../visual/NetworkReadinessMap';
 import { SeverityBadge, StatusChip } from '../visual/primitives/statusChips';
 import type { BuildItScene } from './scenarios/buildIt';
 import type { ModItScene } from './scenarios/modIt';
 import type { UndoItScene } from './scenarios/undoIt';
+import type { HealItScene } from './scenarios/healIt';
+import type { FixItScene } from './scenarios/fixIt';
+import type { OfflineScene } from './scenarios/takeItOffline';
 
 /** Capabilities that enable the simulated gestures the Lab teaches. */
 export function labCapabilities(): CapabilityFlags {
@@ -27,13 +35,13 @@ export function labCapabilities(): CapabilityFlags {
     canProposeUpdate: false,
     canProposeRemove: true,
     canProposeEnabled: false,
-    canReviewHealth: false,
-    canReviewLoader: false,
+    canReviewHealth: true,
+    canReviewLoader: true,
     canOpenCrashDoctor: false,
     canPreviewSnapshot: true,
     canRequestSnapshotRestore: true,
-    canProposeMemory: false,
-    canReviewOfflineReadiness: false,
+    canProposeMemory: true,
+    canReviewOfflineReadiness: true,
   };
 }
 
@@ -90,7 +98,11 @@ function BuildItView({
                 <span className={placed ? 'text-foreground line-through opacity-70' : 'text-foreground'}>
                   {tile.name}
                 </span>
-                <span className="text-xs text-muted-foreground">needs {tile.needs}</span>
+                {/* A tile with no prerequisite reads "needs —", which looks like
+                    missing data rather than "nothing required". */}
+                <span className="text-xs text-muted-foreground">
+                  {tile.needs && tile.needs !== '—' ? `needs ${tile.needs}` : 'no prerequisites'}
+                </span>
                 {placed ? <StatusChip label="Placed" /> : null}
                 {!placed && scene.named && tile.id.includes('notebot') && scene.loaderFamily !== 'Fabric' ? (
                   <SeverityBadge severity="blocker" />
@@ -117,7 +129,6 @@ function ModItView({
     <div className="space-y-4">
       <ContentGraph
         scene={scene}
-        source={scene.source}
         selection={selection}
         onSelect={onSelect}
         onIntent={onIntent}
@@ -126,7 +137,6 @@ function ModItView({
       />
       <ChangeStaging
         scene={scene}
-        source={scene.source}
         onIntent={onIntent}
         capabilities={labCapabilities()}
         reviewLabel="Apply simulated plan"
@@ -200,6 +210,101 @@ function UndoItView({
   );
 }
 
+function HealItView({
+  state,
+  selection,
+  onSelect,
+  onIntent,
+  reducedMotion,
+}: ScenarioViewProps<HealItScene>) {
+  const scene = state.scene;
+  return (
+    <div className="space-y-4">
+      <HealthLens
+        findings={scene.findings}
+        source={scene.source}
+        validated={scene.validated}
+        selection={selection}
+        onSelect={onSelect}
+        onIntent={onIntent}
+        capabilities={labCapabilities()}
+        reducedMotion={reducedMotion}
+      />
+      {scene.validated && !scene.blockerCleared ? (
+        <LoaderRail
+          candidates={scene.loaderCandidates}
+          source={scene.source}
+          selection={selection}
+          onSelect={onSelect}
+          onIntent={onIntent}
+          capabilities={labCapabilities()}
+          reducedMotion={reducedMotion}
+        />
+      ) : null}
+      {scene.validated ? (
+        <RuntimeWorkbench
+          runtime={scene.runtime}
+          source={scene.source}
+          selection={selection}
+          onSelect={onSelect}
+          onIntent={onIntent}
+          capabilities={labCapabilities()}
+          reducedMotion={reducedMotion}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function FixItView({
+  state,
+  selection,
+  onSelect,
+  onIntent,
+  reducedMotion,
+}: ScenarioViewProps<FixItScene>) {
+  const scene = state.scene;
+  return (
+    <div className="space-y-4">
+      <CrashEvidenceBoard
+        evidence={scene.evidence}
+        source={scene.source}
+        selection={selection}
+        onSelect={onSelect}
+        onIntent={onIntent}
+        capabilities={labCapabilities()}
+        reducedMotion={reducedMotion}
+      />
+      {scene.recoveryPointCreated ? <StatusChip label="Recovery point created" /> : null}
+      {scene.cancelled ? <StatusChip label="Experiment cancelled" /> : null}
+      {scene.playerConfirmed ? <StatusChip label="Recovery confirmed" /> : null}
+    </div>
+  );
+}
+
+function OfflineView({
+  state,
+  selection,
+  onSelect,
+  onIntent,
+  reducedMotion,
+}: ScenarioViewProps<OfflineScene>) {
+  const scene = state.scene;
+  return (
+    <div className="space-y-4">
+      <NetworkReadinessMap
+        readiness={scene.readiness}
+        source={scene.source}
+        selection={selection}
+        onSelect={onSelect}
+        onIntent={onIntent}
+        capabilities={labCapabilities()}
+        reducedMotion={reducedMotion}
+      />
+    </div>
+  );
+}
+
 export function ScenarioView<Scene>(props: ScenarioViewProps<Scene>) {
   const { scenario } = props;
   switch (scenario.id) {
@@ -209,6 +314,12 @@ export function ScenarioView<Scene>(props: ScenarioViewProps<Scene>) {
       return <ModItView {...(props as ScenarioViewProps<ModItScene>)} />;
     case 'undo':
       return <UndoItView {...(props as ScenarioViewProps<UndoItScene>)} />;
+    case 'heal':
+      return <HealItView {...(props as ScenarioViewProps<HealItScene>)} />;
+    case 'fix':
+      return <FixItView {...(props as ScenarioViewProps<FixItScene>)} />;
+    case 'offline':
+      return <OfflineView {...(props as ScenarioViewProps<OfflineScene>)} />;
     default:
       return null;
   }

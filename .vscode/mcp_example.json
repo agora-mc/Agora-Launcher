@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "agora-mc": {
+      "type": "http",
+      "url": "http://127.0.0.1:39741/sse",
+      "headers": {
+        "Authorization": "ADD_YOUR_TOKEN_HERE"
+      }
+    }
+  }
+}

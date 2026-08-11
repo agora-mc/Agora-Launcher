@@ -331,6 +331,11 @@ export function HealthDialog({
   }, [initialReport]);
 
   const handleFixDisable = useCallback(async (filename: string, key: string) => {
+    // SOL-2 §18.5: reviewOnly is the approved health INSPECTION surface only.
+    // The direct disable repair is a rejected seam (no dependency-aware plan,
+    // recovery point, grouped rollback, or authoritative group outcome) and is
+    // never reachable from a review-mode dialog.
+    if (reviewOnly) return;
     setFixing(key);
     try {
       await disableModForTest(instanceId, filename);
@@ -341,7 +346,7 @@ export function HealthDialog({
     } finally {
       setFixing(null);
     }
-  }, [instanceId, replaceReport]);
+  }, [reviewOnly, instanceId, replaceReport]);
 
   const handleSilence = useCallback(async (key: string, isMuted: boolean) => {
     const muted = new Set(preferences.mutedWarnings);
@@ -468,7 +473,7 @@ export function HealthDialog({
                         )}
                       </div>
                       <div className="flex items-center gap-3 mt-2">
-                        {(b.kind === 'missing_required_dependency' || b.kind === 'incompatible_mod' || b.kind === 'curated_conflict') && b.filename && (
+                        {!reviewOnly && (b.kind === 'missing_required_dependency' || b.kind === 'incompatible_mod' || b.kind === 'curated_conflict') && b.filename && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -537,7 +542,7 @@ export function HealthDialog({
                               {isSilenced ? 'Muted' : 'Show on next launch'}
                             </span>
                           </div>
-                          {(w.kind === 'missing_required_dependency_unverified' || w.kind === 'incompatible_mod_unverified' || w.kind === 'incompatible_mod_soft' || w.kind === 'curated_conflict_soft') && w.filename && (
+                          {!reviewOnly && (w.kind === 'missing_required_dependency_unverified' || w.kind === 'incompatible_mod_unverified' || w.kind === 'incompatible_mod_soft' || w.kind === 'curated_conflict_soft') && w.filename && (
                             <Button
                               size="sm"
                               variant="outline"

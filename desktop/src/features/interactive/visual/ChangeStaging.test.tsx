@@ -16,10 +16,13 @@ function scene(proposals: VisualProposal[]): VisualScene {
 
 const source = { kind: 'simulation' as const, scenarioId: 'mod', scenarioVersion: 1 };
 
+// Source lives on the scene envelope; ChangeStaging no longer takes a source prop.
+void source;
+
 describe('ChangeStaging', () => {
   it('shows an empty state when nothing is staged', () => {
     render(
-      <ChangeStaging scene={scene([])} source={source} onIntent={() => undefined} capabilities={NO_CAPABILITIES} />,
+      <ChangeStaging scene={scene([])} onIntent={() => undefined} capabilities={NO_CAPABILITIES} />,
     );
     expect(screen.getByText(/No changes staged/)).toBeInTheDocument();
   });
@@ -36,7 +39,7 @@ describe('ChangeStaging', () => {
       },
     ];
     render(
-      <ChangeStaging scene={scene(proposals)} source={source} onIntent={() => undefined} capabilities={NO_CAPABILITIES} />,
+      <ChangeStaging scene={scene(proposals)} onIntent={() => undefined} capabilities={NO_CAPABILITIES} />,
     );
     expect(screen.getByText('Remove Terrain Overhaul')).toBeInTheDocument();
     expect(screen.getByText('Proposed')).toBeInTheDocument();
@@ -59,7 +62,6 @@ describe('ChangeStaging', () => {
     render(
       <ChangeStaging
         scene={scene(proposals)}
-        source={source}
         onIntent={onIntent}
         capabilities={NO_CAPABILITIES}
         reviewLabel="Apply simulated plan"
@@ -73,7 +75,6 @@ describe('ChangeStaging', () => {
     render(
       <ChangeStaging
         scene={scene([])}
-        source={source}
         onIntent={() => undefined}
         capabilities={NO_CAPABILITIES}
         outcome={{
@@ -104,7 +105,6 @@ describe('ChangeStaging', () => {
     render(
       <ChangeStaging
         scene={scene(proposals)}
-        source={source}
         onIntent={() => undefined}
         capabilities={NO_CAPABILITIES}
         reviewLabel="Apply simulated plan"

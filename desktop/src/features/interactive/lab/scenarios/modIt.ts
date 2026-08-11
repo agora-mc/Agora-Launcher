@@ -168,8 +168,13 @@ function canonicalScene(checkpoint: number): ModItScene {
   };
   if (checkpoint >= 1) scene.staged = true;
   if (checkpoint >= 2) {
+    // Only decisions REQUIRED to reach this checkpoint are reconstructed. The
+    // optional recommendation is deliberately left undecided: it can be either
+    // included or skipped at checkpoint 2, and `decisionsFor` re-offers both.
+    // Previously this fabricated `optionalAdded = true`, so resuming silently
+    // reversed a player's "Skip optional textures" and grew their reviewed plan
+    // by an item they had declined (T6-2).
     scene.requiredAdded = true;
-    scene.optionalAdded = true;
     scene.conflictVisible = true;
   }
   if (checkpoint >= 3) {
@@ -209,8 +214,11 @@ function decisionsFor(state: LabLessonState<ModItScene>): LabDecision[] {
       label: 'Replace Terrain Overhaul',
       danger: true,
       confirmTitle: 'Confirm replacement',
-      confirmBody:
-        'This removes Terrain Overhaul from the simulated instance and installs BetterCaves (plus Core Lib) instead. A simulated return point is created before applying. Worlds are not part of this change.',
+      // Names the ACTUAL staged change: a static body under-described the plan
+      // whenever the optional recommendation had been included.
+      confirmBody: `This removes Terrain Overhaul from the simulated instance and installs BetterCaves, Core Lib${
+        scene.optionalAdded ? ', and Nice Textures' : ''
+      } instead. A simulated return point is created before applying. Worlds are not part of this change.`,
     });
     decisions.push({ id: 'keep-current', label: 'Keep current content' });
     return decisions;
@@ -271,10 +279,15 @@ function reduce(
 
   if (decisionId === 'add-core-lib' && !scene.requiredAdded) {
     const next = { ...scene, requiredAdded: true };
+    const done = next.optionalAdded || next.optionalSkipped;
+    // Entering the conflict checkpoint must REVEAL the conflict. Without this
+    // the goal said "A conflict surfaced" while the graph showed nothing, and
+    // the conflict existed only in staging-dock prose (T6-1). Derived arrays
+    // are rebuilt AFTER this flag so the relationship is included.
+    if (done) next.conflictVisible = true;
     next.content = contentNodes(next);
     next.relationships = relationships(next);
     next.proposals = proposals(next);
-    const done = next.optionalAdded || next.optionalSkipped;
     return {
       state: { ...state, checkpoint: done ? 2 : 1, scene: next, lastFeedback: null },
       feedback: { tone: 'success', message: 'Core Lib snaps into the required socket.' },
@@ -283,10 +296,11 @@ function reduce(
 
   if (decisionId === 'include-nice-textures' && !scene.optionalAdded && !scene.optionalSkipped) {
     const next = { ...scene, optionalAdded: true };
+    const done = next.requiredAdded;
+    if (done) next.conflictVisible = true;
     next.content = contentNodes(next);
     next.relationships = relationships(next);
     next.proposals = proposals(next);
-    const done = next.requiredAdded;
     return {
       state: { ...state, checkpoint: done ? 2 : 1, scene: next, lastFeedback: null },
       feedback: { tone: 'info', message: 'Nice Textures included as a recommendation — optional, not required.' },
@@ -295,10 +309,11 @@ function reduce(
 
   if (decisionId === 'skip-optional' && !scene.optionalAdded && !scene.optionalSkipped) {
     const next = { ...scene, optionalSkipped: true };
+    const done = next.requiredAdded;
+    if (done) next.conflictVisible = true;
     next.content = contentNodes(next);
     next.relationships = relationships(next);
     next.proposals = proposals(next);
-    const done = next.requiredAdded;
     return {
       state: { ...state, checkpoint: done ? 2 : 1, scene: next, lastFeedback: null },
       feedback: { tone: 'info', message: 'Optional textures skipped. The change still works without them.' },

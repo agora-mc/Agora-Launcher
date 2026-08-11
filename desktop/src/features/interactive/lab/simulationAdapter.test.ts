@@ -7,9 +7,16 @@ import { isGuideTopicId, isStandardDestination } from '../domain/intents';
 const BOUNDARY_SCRIPT = join(process.cwd(), 'scripts', 'check-interactive-boundaries.mjs');
 
 describe('simulationAdapter', () => {
-  it('exposes the three vertical-slice scenarios', () => {
+  it('exposes the six Lab adventures', () => {
     const scenarios = listScenarios();
-    expect(scenarios.map((scenario) => scenario.id).sort()).toEqual(['build', 'mod', 'undo']);
+    expect(scenarios.map((scenario) => scenario.id).sort()).toEqual([
+      'build',
+      'fix',
+      'heal',
+      'mod',
+      'offline',
+      'undo',
+    ]);
     for (const scenario of scenarios) {
       expect(getScenario(scenario.id)).toBe(scenario);
     }
@@ -27,6 +34,17 @@ describe('simulationAdapter', () => {
     // Runs the same automated check wired into `npm run build`.
     const result = execFileSync(process.execPath, [BOUNDARY_SCRIPT], { encoding: 'utf8' });
     expect(result).toContain('import-boundary check OK');
+  });
+
+  it('enforces the boundary negative fixtures: every bypass shape is rejected (BLOCKER 1)', () => {
+    const fixturesRoot = join(process.cwd(), 'scripts', 'boundary-fixtures', 'interactive');
+    const result = execFileSync(
+      process.execPath,
+      [BOUNDARY_SCRIPT, '--root', fixturesRoot, '--fixtures'],
+      { encoding: 'utf8' },
+    );
+    expect(result).toContain('fixtures OK');
+    expect(result).toContain('every fixture file produced a violation');
   });
 });
 

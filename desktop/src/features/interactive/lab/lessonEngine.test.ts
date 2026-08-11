@@ -142,7 +142,9 @@ describe('Mod It scenario', () => {
       kind: 'propose-install',
       contentId: 'lab:mod:better-caves',
     });
-    expect(staged).toEqual({ kind: 'decision', decisionId: 'stage-better-caves' });
+    expect(staged).toEqual({ decisionId: 'stage-better-caves' });
+    const review = modItScenario.intentToDecision?.(scene, { kind: 'review-staged-changes' });
+    expect(review).toBeNull(); // not staged yet
     const ignored = modItScenario.intentToDecision?.(scene, { kind: 'select', entityId: 'lab:mod:core-lib' });
     expect(ignored).toBeNull();
   });
@@ -193,18 +195,18 @@ describe('Undo It scenario', () => {
     expect(cancelled.state.scene.restored).toBe(false);
   });
 
-  it('maps snapshot preview intents to compare decisions', () => {
+  it('maps snapshot preview intents to proposed compare decisions', () => {
     const scene = undoItScenario.initialScene(0);
     const mapped = undoItScenario.intentToDecision?.(scene, {
       kind: 'preview-snapshot',
       snapshotId: 'lab:undo:snap:manual',
     });
-    expect(mapped).toEqual({ kind: 'decision', decisionId: 'compare-manual' });
+    expect(mapped).toEqual({ decisionId: 'compare-manual' });
     const restore = undoItScenario.intentToDecision?.(scene, {
       kind: 'request-snapshot-restore',
       snapshotId: 'lab:undo:snap:manual',
     });
-    expect(restore).toEqual({ kind: 'decision', decisionId: 'try-restore-now' });
+    expect(restore).toEqual({ decisionId: 'try-restore-now' });
   });
 
   it('restore makes the pre- and post-restore state visibly different', () => {
@@ -220,5 +222,75 @@ describe('Undo It scenario', () => {
     expect(state.scene.restoredSummary).not.toBeNull();
     expect(state.scene.snapshots.some((snapshot) => snapshot.role === 'undo-restore')).toBe(true);
     expect(state.scene.snapshots.some((snapshot) => snapshot.id === 'lab:undo:snap:undo')).toBe(true);
+  });
+});
+
+/**
+ * TERRA-6 T6-1 / T6-2 — the conflict lesson and resume fidelity.
+ *
+ * Both bugs came from the same place: `reduce()` (the PLAYED path) and
+ * `sceneAt()` (the RESUME path) disagreed about the scene. The played path
+ * never revealed the conflict; the resume path invented a decision.
+ */
+describe('Mod It — conflict visibility and resume fidelity', () => {
+  function play(...decisionIds: string[]) {
+    let state = initialLessonState(modItScenario);
+    for (const decisionId of decisionIds) {
+      state = modItScenario.reduce(state, { kind: 'decision', decisionId }).state;
+    }
+    return state;
+  }
+
+  it('reveals the conflict on the PLAYED path, not only after a resume (T6-1)', () => {
+    const state = play('stage-better-caves', 'add-core-lib', 'skip-optional');
+    expect(state.checkpoint).toBe(2);
+    const conflict = state.scene.relationships.find((r) => r.kind === 'conflicts-with');
+    expect(conflict).toBeDefined();
+    expect(conflict?.state).toBe('conflicting');
+    // Both endpoints must carry the conflict, so the graph can mark them.
+    const terrain = state.scene.content.find((n) => n.id.includes('terrain'));
+    expect(terrain?.relationshipSummary.conflicts).toBe(1);
+    expect(terrain?.health).toBe('blocked');
+  });
+
+  it('reveals the conflict regardless of which order the two decisions are made', () => {
+    const skipFirst = play('stage-better-caves', 'skip-optional', 'add-core-lib');
+    const includeFirst = play('stage-better-caves', 'include-nice-textures', 'add-core-lib');
+    for (const state of [skipFirst, includeFirst]) {
+      expect(state.checkpoint).toBe(2);
+      expect(state.scene.relationships.some((r) => r.kind === 'conflicts-with')).toBe(true);
+    }
+  });
+
+  it('a resumed scene never asserts an optional decision the player did not make (T6-2)', () => {
+    const resumed = modItScenario.initialScene(2);
+    expect(resumed.optionalAdded).toBe(false);
+    expect(resumed.optionalSkipped).toBe(false);
+    // Nice Textures must NOT appear as a proposed install on resume.
+    const niceTextures = resumed.content.find((n) => n.id.includes('nice-textures'));
+    expect(niceTextures?.presence.proposed).toBeUndefined();
+    // ...while the decisions REQUIRED to be here are reconstructed, and the
+    // conflict this checkpoint is about is visible.
+    expect(resumed.requiredAdded).toBe(true);
+    expect(resumed.conflictVisible).toBe(true);
+  });
+
+  it('re-offers the optional decision after resuming, so nothing is silently lost', () => {
+    const state = initialLessonState(modItScenario, 2);
+    const decisions = modItScenario.checkpoints[2].decisionsFor(state);
+    expect(decisions.map((d) => d.id)).toEqual(
+      expect.arrayContaining(['include-nice-textures', 'skip-optional', 'replace-terrain-overhaul']),
+    );
+  });
+
+  it('the replacement confirmation names the actual staged content', () => {
+    const withOptional = play('stage-better-caves', 'add-core-lib', 'include-nice-textures');
+    const withoutOptional = play('stage-better-caves', 'add-core-lib', 'skip-optional');
+    const bodyFor = (state: typeof withOptional) =>
+      modItScenario.checkpoints[2]
+        .decisionsFor(state)
+        .find((d) => d.id === 'replace-terrain-overhaul')?.confirmBody ?? '';
+    expect(bodyFor(withOptional)).toMatch(/Nice Textures/);
+    expect(bodyFor(withoutOptional)).not.toMatch(/Nice Textures/);
   });
 });

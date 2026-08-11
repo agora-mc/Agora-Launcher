@@ -14,7 +14,10 @@ import type { VisualIntent } from './intents';
 
 export type GateResult =
   | { ok: true }
-  | { ok: false; reason: 'simulation-source' | 'mixed-source' | 'missing-source' | 'capability' | 'stale' | 'unknown' };
+  | {
+      ok: false;
+      reason: 'simulation-source' | 'mixed-source' | 'missing-source' | 'capability' | 'refreshing' | 'stale' | 'unknown';
+    };
 
 export function isSimulationSource(source: ExperienceSource): boolean {
   return source.kind === 'simulation';
@@ -46,6 +49,10 @@ function capabilityFor(kind: VisualIntent['kind'], capabilities: CapabilityFlags
       return true; // navigation/exploration is always available
     case 'propose-install':
       return capabilities.canProposeInstall;
+    case 'review-staged-changes':
+      // Staged-change review routes to the install-flow bridge: gated by the
+      // same install capability so default (all-off) stays non-executable.
+      return capabilities.canProposeInstall;
     case 'propose-update':
       return capabilities.canProposeUpdate;
     case 'propose-remove':
@@ -72,15 +79,17 @@ function capabilityFor(kind: VisualIntent['kind'], capabilities: CapabilityFlags
 }
 
 /**
- * Freshness gate: a live intent carries a view revision; if the scene is
- * marked stale, the host must re-read before opening any review flow.
+ * Freshness gate: a live intent carries a view revision. A scene that is
+ * refreshing must WAIT for (or trigger) the mandatory re-read before any
+ * review flow — 'refreshing' is never executable (FIX BEFORE LIVE MODE 1).
  */
 export function freshnessGate(source: ExperienceSource): GateResult {
   if (source.kind !== 'live') return { ok: true }; // simulation scenes are controlled by the reducer
   switch (source.freshness) {
     case 'fresh':
-    case 'refreshing':
       return { ok: true };
+    case 'refreshing':
+      return { ok: false, reason: 'refreshing' };
     case 'stale':
       return { ok: false, reason: 'stale' };
     case 'unknown':
@@ -103,4 +112,13 @@ export function gateLiveIntent(
   const capability = capabilityGate(intent, capabilities);
   if (!capability.ok) return capability;
   return freshnessGate(scene.source);
+}
+
+/**
+ * True when an intent is permitted by the host's capability flags. Shared
+ * visuals use this to hide/disable operation-shaped commands (SOL-2 BLOCKER 3);
+ * the live controller enforces the same independently.
+ */
+export function isIntentEnabled(intent: VisualIntent, capabilities: CapabilityFlags): boolean {
+  return capabilityGate(intent, capabilities).ok;
 }

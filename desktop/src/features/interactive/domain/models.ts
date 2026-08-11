@@ -114,6 +114,12 @@ export type ContentKind = 'mod' | 'modpack' | 'resource-pack' | 'shader' | 'data
 export interface VisualContentNode {
   id: VisualId;
   name: string;
+  /**
+   * Exact on-disk filename, present only when `name` is a DERIVED label.
+   * Keeps the derivation honest: the authoritative identifier stays visible
+   * next to the friendly one (SOL §22.5).
+   */
+  fileLabel?: string;
   kind: ContentKind;
   version?: VisualValue<string | null>;
   presence: VisualValue<'installed' | 'not-installed'>;
@@ -193,7 +199,12 @@ export interface VisualInstallPlan {
 export interface VisualSnapshot {
   id: VisualId;
   label: string;
+  /** Display label for the creation time (e.g. "Today, 09:00"). */
   createdAt: string;
+  /** Authoritative sort key (ISO/epoch) — separate from the display label so
+   * ordering is chronological even when labels are localized (FIX BEFORE LIVE
+   * MODE 4). */
+  sortKey?: string;
   role: 'manual' | 'known-good' | 'current-known-good' | 'undo-restore' | 'automatic';
   sizeLabel: string;
   changeSummary?: { added: number; changed: number; removed: number };

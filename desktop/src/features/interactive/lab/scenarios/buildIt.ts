@@ -40,6 +40,12 @@ export interface BuildItScene extends VisualScene {
   loaderChosen: boolean;
   loaderFamily: string;
   loaderCompat: Compatibility;
+  /**
+   * A loader the player attempted that does NOT fit. It is shown as a rejected
+   * PROPOSAL, never as current state: an incompatible tile must not be able to
+   * force its way in, which is exactly what this step teaches (T6-3).
+   */
+  rejectedLoader: string | null;
   named: boolean;
   modPlaced: boolean;
   finishChosen: boolean;
@@ -92,6 +98,11 @@ function buildInstance(scene: BuildItScene): VisualInstance {
             compatibility: scene.loaderCompat as Compatibility,
           }
         : { family: '—', compatibility: 'unknown' },
+      // A rejected attempt renders as a PROPOSED loader marked incompatible,
+      // so current state is never claimed for something that does not fit.
+      ...(scene.rejectedLoader
+        ? { proposed: { family: scene.rejectedLoader, compatibility: 'incompatible' as Compatibility } }
+        : {}),
     },
     lockState: 'editable',
     recoveryReadiness: 'unknown',
@@ -99,7 +110,7 @@ function buildInstance(scene: BuildItScene): VisualInstance {
     contentSummary: {
       enabled: scene.modPlaced ? 1 : 0,
       disabled: 0,
-      needsAttention: scene.loaderChosen && scene.loaderFamily === 'Forge' ? 1 : 0,
+      needsAttention: scene.rejectedLoader ? 1 : 0,
     },
   };
 }
@@ -112,6 +123,7 @@ function baseScene(): Omit<BuildItScene, 'source' | 'instance' | 'content' | 're
     loaderChosen: false,
     loaderFamily: '',
     loaderCompat: 'unknown',
+    rejectedLoader: null,
     named: false,
     modPlaced: false,
     finishChosen: false,
@@ -220,16 +232,22 @@ function reduce(
     const family = decisionId === 'choose-fabric' ? 'Fabric' : decisionId === 'choose-vanilla' ? 'Vanilla' : 'Forge';
     const compatibility: Compatibility = family === 'Forge' ? 'incompatible' : 'compatible';
     if (family === 'Forge') {
-      const next = { ...scene, loaderChosen: true, loaderFamily: family, loaderCompat: compatibility, instance: buildInstance({ ...scene, loaderChosen: true, loaderFamily: family, loaderCompat: compatibility }) };
+      // The attempt is recorded as a REJECTED PROPOSAL, not as current state:
+      // the bench keeps its previous loader and shows "Forge — Incompatible"
+      // as a proposal. Previously Forge was written into the bench as the
+      // current loader, contradicting this step's own lesson (T6-3).
+      const rejected = { ...scene, rejectedLoader: family };
+      const next = { ...rejected, instance: buildInstance(rejected) };
       return {
         state: { ...state, scene: next, lastFeedback: null },
         feedback: {
           tone: 'caution',
-          message: 'Forge does not fit 1.20.1 for this mod. Choose Fabric or Vanilla instead.',
+          message: 'Forge needs Minecraft 1.21, but this instance is 1.20.1 — it cannot be applied. Choose Fabric or Vanilla instead.',
         },
       };
     }
-    const next = { ...scene, loaderChosen: true, loaderFamily: family, loaderCompat: compatibility, tray: [MOD_TILE], instance: buildInstance({ ...scene, loaderChosen: true, loaderFamily: family, loaderCompat: compatibility }) };
+    const accepted = { ...scene, loaderChosen: true, loaderFamily: family, loaderCompat: compatibility, rejectedLoader: null };
+    const next = { ...accepted, tray: [MOD_TILE], instance: buildInstance(accepted) };
     const feedback = family === 'Vanilla'
       ? { tone: 'info' as const, message: 'Vanilla works when no mods are needed. Your mod tile will still need Fabric.' }
       : { tone: 'success' as const, message: 'Fabric fits this setup. Now name it and place content.' };

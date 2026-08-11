@@ -13,6 +13,10 @@ __pycache__
 .env
 .env.*
 !.env.example
+
+# Local agent/MCP configs — carry per-developer endpoints and bearer tokens.
+.kilo/kilo.json
+.mcp.json
 playwright-report/
 test-results/
 local_state.db

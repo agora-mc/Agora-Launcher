@@ -27,7 +27,7 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -36,11 +36,12 @@ const ts = require('typescript');
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = resolve(SCRIPT_DIR, '..');
-const INTERACTIVE_ROOT = resolve(DESKTOP_ROOT, 'src', 'features', 'interactive');
 
 const args = process.argv.slice(2);
 const rootIndex = args.indexOf('--root');
-const ROOT = rootIndex >= 0 ? resolve(process.cwd(), args[rootIndex + 1]) : INTERACTIVE_ROOT;
+const ROOT = rootIndex >= 0
+  ? resolve(process.cwd(), args[rootIndex + 1])
+  : resolve(DESKTOP_ROOT, 'src', 'features', 'interactive');
 const FIXTURES_MODE = args.includes('--fixtures');
 
 // --- TypeScript config for module resolution (handles `@/*` alias + extensions) ---
@@ -53,15 +54,20 @@ if (configFile.error) {
 const parsedConfig = ts.parseJsonConfigFileContent(configFile.config, ts.sys, DESKTOP_ROOT);
 const compilerOptions = parsedConfig.options;
 
-// --- Area classification ---
+// --- Area classification (path-segment based, NOT string-prefix) ---
+const AREA_NAMES = ['domain', 'visual', 'lab', 'live', 'testing'];
+
+/** True when `file` is inside `root` (path-segment containment). */
+function isWithin(root, file) {
+  const rel = relative(root, file).replace(/\\/g, '/');
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
 function classify(file) {
-  const rel = file.replace(/\\/g, '/');
-  if (rel.includes('/domain/')) return 'domain';
-  if (rel.includes('/visual/')) return 'visual';
-  if (rel.includes('/lab/')) return 'lab';
-  if (rel.includes('/live/')) return 'live';
-  if (rel.includes('/testing/')) return 'testing';
-  return 'other';
+  if (!isWithin(ROOT, file)) return 'other';
+  const rel = relative(ROOT, file).replace(/\\/g, '/');
+  const first = rel.split('/')[0];
+  return AREA_NAMES.includes(first) ? first : 'other';
 }
 
 function isTestFile(file) {
@@ -161,15 +167,271 @@ const ALLOWED_VISUAL_CALLBACKS = new Set([
   'onLoad', 'onError', 'onResize', 'onToggle',
 ]);
 
+/**
+ * Enforce the shared-visual callback allowlist with the TypeScript AST so BOTH
+ * property signatures (`onReview?: () => void`) and method signatures
+ * (`onReview(): void`) are rejected. Only type declarations (interfaces and
+ * inline type literals) are inspected — JSX usage attributes are not.
+ */
 function checkVisualCallbacks(source, reportFn) {
-  const re = /\b(on[A-Z][A-Za-z0-9]*)\s*[:?]\s/g; // prop definition like `onReview?:`
-  let match;
-  while ((match = re.exec(source)) !== null) {
-    const name = match[1];
-    if (!ALLOWED_VISUAL_CALLBACKS.has(name)) {
-      reportFn(name);
+  const sf = ts.createSourceFile('visual.tsx', source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const checkMember = (member) => {
+    if (!member.name) return;
+    if (!ts.isIdentifier(member.name) && !ts.isStringLiteral(member.name)) return;
+    const name = member.name.text;
+    if (!/^on[A-Z]/.test(name)) return;
+    if (ALLOWED_VISUAL_CALLBACKS.has(name)) return;
+    const kind = ts.isMethodSignature(member) || ts.isMethodDeclaration(member) ? 'method' : 'property';
+    reportFn(name, kind);
+  };
+  const visit = (node) => {
+    if (ts.isInterfaceDeclaration(node)) {
+      node.members.forEach(checkMember);
+      return; // members handled; do not recurse into them
     }
-    re.lastIndex = match.index + 1;
+    if (ts.isTypeLiteralNode(node)) {
+      node.members.forEach(checkMember);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+}
+
+// --- Live subarea boundary (SOL-2 BLOCKER 5) ---
+// The `live/` layer is the only app-boundary, but it is NOT a free-for-all:
+// read adapters/loaders may invoke only read-only Tauri commands; the core
+// host may import tauri types only; only named operation bridges may host the
+// approved Standard controllers. Unknown live files and direct mutation
+// imports outside those boundaries must fail the build.
+
+/** Read-only Tauri commands the live READ layer may invoke. */
+const TAURI_READ_COMMANDS = new Set([
+  'listInstances',
+  'getInstanceDetail',
+  'listInstanceContent',
+  'enrichInstanceContent',
+  'queryLaunchState',
+  'checkInstanceHealth',
+  'checkAllInstanceHealth',
+  'listLoaderVersions',
+  'listSnapshots',
+  'detectDrift',
+  'listCrashReports',
+  'readCrashLog',
+  'checkInstanceCrash',
+  'triageCrashReport',
+  'investigateInstanceEvidence',
+  'pickAndInvestigateCrashEvidence',
+  'listJavaRuntimes',
+  'recommendInstanceMemory',
+  'getSetting',
+  'getRegistryStatus',
+  'listCategories',
+  'getRegistryItem',
+  'browseItems',
+  'forYouItems',
+]);
+
+/** Live subarea classification (SOL-2 BLOCKER 5). */
+function liveSubarea(file) {
+  const norm = file.replace(/\\/g, '/');
+  if (norm.includes('/live/readAdapters/')) return 'read';
+  if (norm.endsWith('/live/liveScene.ts')) return 'read';
+  if (norm.endsWith('/live/freshness.ts')) return 'read'; // read-pipeline helper (labels read results)
+  if (norm.includes('/live/operationBridges/')) return 'bridges';
+  if (norm.includes('/live/')) {
+    const knownCore = [
+      '/live/LiveInteractiveHost.tsx',
+      '/live/LiveSceneView.tsx',
+      '/live/liveCapabilities.ts',
+      '/live/presentationPreference.ts',
+      '/live/intentController.ts',
+    ];
+    return knownCore.some((name) => norm.endsWith(name)) ? 'core' : 'unknown';
+  }
+  return null;
+}
+
+/**
+ * Classify EVERY way a live file imports a specific specifier (SOL-2 BLOCKER C).
+ *
+ * Returns an ARRAY of `{ form, names }` — one entry per matching statement:
+ *   - 'none'            — type-only (or entirely type-annotated): safe anywhere;
+ *   - 'named'           — enumerable non-type ORIGINAL names (static import /
+ *                         named re-export), evaluated as
+ *                         `propertyName?.text ?? name.text` so an aliased
+ *                         mutation (`restoreSnapshot as getInstanceDetail`) is
+ *                         judged by its ORIGINAL name;
+ *   - 'namespace'       — `import * as ns from` (names cannot be verified);
+ *   - 'side-effect'     — `import '@/lib/tauri'` (no names at all);
+ *   - 'dynamic'         — `import('@/lib/tauri')`;
+ *   - 'reexport-star'   — `export * from` / `export * as ns from`;
+ *   - 'import-equals'   — `import tauri = require('@/lib/tauri')`.
+ *
+ * Aggregation closes the last-write-wins hole: a prohibited value import that
+ * appears anywhere in the file is never hidden by a later type-only or
+ * allowlisted import of the same specifier. Everything except 'none'/'named'
+ * is an UNVERIFIABLE value import and is rejected in the live layer — never
+ * silently treated as type-only.
+ */
+function tauriImportForms(source, targetSpecifier) {
+  const sf = ts.createSourceFile('live.tsx', source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const forms = [];
+  const visit = (node) => {
+    if (
+      ts.isImportDeclaration(node)
+      && node.moduleSpecifier
+      && ts.isStringLiteral(node.moduleSpecifier)
+      && node.moduleSpecifier.text === targetSpecifier
+    ) {
+      const clause = node.importClause;
+      if (!clause) { forms.push({ form: 'side-effect', names: [] }); return; }
+      if (clause.isTypeOnly) { forms.push({ form: 'none', names: [] }); return; }
+      const bindings = clause.namedBindings;
+      if (!bindings) { forms.push({ form: 'side-effect', names: [] }); return; }
+      if (ts.isNamedImports(bindings)) {
+        const valueNames = bindings.elements
+          .filter((element) => !element.isTypeOnly)
+          // Original imported name, NOT the local binding (alias-safe).
+          .map((element) => element.propertyName?.text ?? element.name.text);
+        forms.push(valueNames.length === 0
+          ? { form: 'none', names: [] }
+          : { form: 'named', names: valueNames });
+        return;
+      }
+      if (ts.isNamespaceImport(bindings)) { forms.push({ form: 'namespace', names: ['*'] }); return; }
+    }
+    if (
+      ts.isExportDeclaration(node)
+      && node.moduleSpecifier
+      && ts.isStringLiteral(node.moduleSpecifier)
+      && node.moduleSpecifier.text === targetSpecifier
+    ) {
+      if (node.isTypeOnly) { forms.push({ form: 'none', names: [] }); return; }
+      const clause = node.exportClause;
+      if (!clause || !ts.isNamedExports(clause)) { forms.push({ form: 'reexport-star', names: [] }); return; }
+      const valueNames = clause.elements
+        .filter((element) => !element.isTypeOnly)
+        .map((element) => element.propertyName?.text ?? element.name.text);
+      forms.push(valueNames.length === 0
+        ? { form: 'none', names: [] }
+        : { form: 'named', names: valueNames });
+      return;
+    }
+    if (
+      ts.isImportEqualsDeclaration(node)
+      && node.moduleReference
+      && ts.isExternalModuleReference(node.moduleReference)
+      && ts.isStringLiteral(node.moduleReference.expression)
+      && node.moduleReference.expression.text === targetSpecifier
+    ) {
+      forms.push({ form: 'import-equals', names: [] });
+      return;
+    }
+    if (
+      ts.isCallExpression(node)
+      && node.arguments.length === 1
+      && ts.isStringLiteral(node.arguments[0])
+      && node.arguments[0].text === targetSpecifier
+      && ((ts.isIdentifier(node.expression) && node.expression.text === 'import')
+        || node.expression.kind === ts.SyntaxKind.ImportKeyword)
+    ) {
+      forms.push({ form: 'dynamic', names: [] });
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return forms;
+}
+
+function describeTauriForm(form) {
+  switch (form) {
+    case 'named': return 'named imports';
+    case 'namespace': return 'a namespace import';
+    case 'side-effect': return 'a side-effect import';
+    case 'dynamic': return 'a dynamic import';
+    case 'reexport-star': return 'a star re-export';
+    case 'import-equals': return 'an import-equals';
+    default: return 'an unverifiable import form';
+  }
+}
+
+/** External packages a live subarea may import (narrow; no tauri, no app libs). */
+const LIVE_EXTERNAL = ['react', 'react/'];
+
+/** Allowed live subarea -> live subarea edges (SOL-2 BLOCKER C). */
+const LIVE_EDGES = {
+  read: new Set(['read']),
+  core: new Set(['read', 'core', 'bridges']),
+  bridges: new Set(['read', 'core', 'bridges']),
+};
+
+function checkLiveFile(file, source, rel, reportFn) {
+  if (isTestFile(file)) return; // test files get test-framework allowances
+  const subarea = liveSubarea(file);
+  if (subarea === null) return; // not a live file
+  if (subarea === 'unknown') {
+    reportFn(`${rel}: unclassified live/ file — add it to a known live subarea (read, core, or operationBridges)`);
+    return;
+  }
+  const allowedSubareas = LIVE_EDGES[subarea];
+
+  for (const spec of collectSpecifiers(source)) {
+    // Tauri is only reachable by the read layer via a narrow named import.
+    if (spec === '@/lib/tauri' || spec.startsWith('@/lib/tauri/')) {
+      const forms = tauriImportForms(source, spec);
+      if (forms.length === 0) continue; // specifier appears only in other files
+      let flagged = false;
+      for (const form of forms) {
+        if (form.form === 'none') continue; // type-only is allowed everywhere
+        if (subarea === 'read') {
+          if (form.form === 'named') {
+            const bad = form.names.filter((name) => !TAURI_READ_COMMANDS.has(name));
+            if (bad.length > 0) {
+              flagged = true;
+              reportFn(`${rel}: live read layer invokes non-read Tauri command(s): ${bad.join(', ')}`);
+            }
+          } else {
+            flagged = true;
+            reportFn(`${rel}: live read layer uses ${describeTauriForm(form.form)} from '${spec}' — command names cannot be verified read-only`);
+          }
+        } else {
+          flagged = true;
+          reportFn(`${rel}: live ${subarea} layer must not import '${spec}' at runtime (${describeTauriForm(form.form)}); type-only imports only`);
+        }
+      }
+      if (flagged) continue; // a prohibited form was already reported for this spec
+      continue;
+    }
+
+    const resolved = resolveSpecifier(spec, file);
+    if (resolved) {
+      if (isWithin(ROOT, resolved)) {
+        const targetArea = classify(resolved);
+        if (targetArea === 'live') {
+          const targetSubarea = liveSubarea(resolved);
+          if (targetSubarea === null || targetSubarea === 'unknown') {
+            reportFn(`${rel}: '${spec}' resolves to an unclassified live/ file (${relative(DESKTOP_ROOT, resolved)})`);
+          } else if (!allowedSubareas.has(targetSubarea)) {
+            reportFn(`${rel}: live ${subarea} -> ${targetSubarea} edge '${spec}' is not allowed`);
+          }
+        } else if (targetArea !== 'domain' && targetArea !== 'visual') {
+          reportFn(`${rel}: '${spec}' resolves to ${targetArea}/ which is not allowed for live ${subarea}`);
+        }
+      } else if (isWithin(DESKTOP_ROOT, resolved)) {
+        // resolved to a local module outside the scan root (app layer, e.g.
+        // lib/tauri via a relative path, or any other app module)
+        reportFn(`${rel}: '${spec}' resolves outside interactive to ${relative(DESKTOP_ROOT, resolved)} — app-layer dependency`);
+      } else if (!LIVE_EXTERNAL.some((prefix) => spec === prefix || spec.startsWith(prefix))) {
+        reportFn(`${rel}: external '${spec}' is not allowed for live ${subarea}`);
+      }
+    } else if (spec.startsWith('@/') || /^[./]/.test(spec)) {
+      reportFn(`${rel}: '${spec}' did not resolve — unknown local import`);
+    } else if (!LIVE_EXTERNAL.some((prefix) => spec === prefix || spec.startsWith(prefix))) {
+      reportFn(`${rel}: external '${spec}' is not allowed for live ${subarea}`);
+    }
   }
 }
 
@@ -198,20 +460,26 @@ function report(absFile, display, message) {
 function checkFile(file) {
   const source = readFileSync(file, 'utf8');
   const area = classify(file);
-  if (area === 'other' || area === 'live' || !ALLOWED[area]) return;
-  const isTest = isTestFile(file);
-  const allowedInternal = ALLOWED[area].internal;
   const rel = relative(DESKTOP_ROOT, file).replace(/\\/g, '/');
 
-  // Normalize path separators: TS resolution returns forward slashes on Windows.
-  const interactiveNorm = INTERACTIVE_ROOT.replace(/\\/g, '/');
-  const rootNorm = ROOT.replace(/\\/g, '/');
+  // `live/` is the designated app boundary, but it is enforced by subarea
+  // (read/core/bridges) rather than exempted (SOL-2 BLOCKER 5).
+  if (area === 'live') {
+    checkLiveFile(file, source, rel, (message) => report(file, rel, message));
+    return;
+  }
+  if (area === 'other') {
+    report(file, rel, 'unclassified source under the interactive scan root; only live/ subareas are classified');
+    return;
+  }
+
+  const isTest = isTestFile(file);
+  const allowedInternal = ALLOWED[area].internal;
 
   for (const spec of collectSpecifiers(source)) {
     const resolved = resolveSpecifier(spec, file);
     if (resolved) {
-      const resolvedNorm = resolved.replace(/\\/g, '/');
-      if (resolvedNorm.startsWith(interactiveNorm) || resolvedNorm.startsWith(rootNorm)) {
+      if (isWithin(ROOT, resolved)) {
         const targetArea = classify(resolved);
         if (targetArea === 'live') {
           report(file, rel, `'${spec}' imports from live/ — forbidden`);
@@ -225,7 +493,7 @@ function checkFile(file) {
           report(file, rel, `'${spec}' -> ${targetArea}/ is outside the allowed internal roots [${allowedInternal.join(', ')}]`);
         }
       } else {
-        // resolved to a local module outside interactive (app layer)
+        // resolved to a local module outside the scan root (app layer)
         report(file, rel, `'${spec}' resolves outside interactive to ${relative(DESKTOP_ROOT, resolved)} — app-layer dependency`);
       }
     } else if (spec.startsWith('@/') || /^[./]/.test(spec)) {
@@ -236,8 +504,8 @@ function checkFile(file) {
   }
 
   if (area === 'visual') {
-    checkVisualCallbacks(source, (name) =>
-      report(file, rel, `shared visual exposes operation-like callback '${name}'; emit a declared VisualIntent instead`),
+    checkVisualCallbacks(source, (name, kind) =>
+      report(file, rel, `shared visual exposes operation-like ${kind} '${name}'; emit a declared VisualIntent instead`),
     );
   }
 }

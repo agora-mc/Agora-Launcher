@@ -16,8 +16,18 @@ import type { LabScenario } from './scenarioTypes';
 import { buildItScenario } from './scenarios/buildIt';
 import { modItScenario } from './scenarios/modIt';
 import { undoItScenario } from './scenarios/undoIt';
+import { healItScenario } from './scenarios/healIt';
+import { fixItScenario } from './scenarios/fixIt';
+import { takeItOfflineScenario } from './scenarios/takeItOffline';
 
-const SCENARIOS: LabScenario[] = [buildItScenario, modItScenario, undoItScenario];
+const SCENARIOS: LabScenario[] = [
+  buildItScenario,
+  modItScenario,
+  healItScenario,
+  fixItScenario,
+  undoItScenario,
+  takeItOfflineScenario,
+];
 
 /** Explicit simulation origin for a scene. */
 export function simulationSource(scenarioId: string, scenarioVersion: number): ExperienceSource {

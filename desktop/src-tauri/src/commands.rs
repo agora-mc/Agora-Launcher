@@ -366,11 +366,20 @@ pub async fn launch_instance(
             message: "Instance ID is empty or invalid.".into(),
         });
     }
-    if state.lock().await.running_process.is_some() {
-        return Err(LauncherError::Generic {
-            code: "ERR_ALREADY_RUNNING".into(),
-            message: "Another launch is already running or starting.".into(),
-        });
+    {
+        let mut shared = state.lock().await;
+        if shared.running_process.is_some() {
+            return Err(LauncherError::Generic {
+                code: "ERR_ALREADY_RUNNING".into(),
+                message: "Another launch is already running or starting.".into(),
+            });
+        }
+        // SOL-2 §19.3: a target must never start a launch while its canonical
+        // install transaction is applying. Delegated launches have no
+        // launch_reservation, so an equivalent atomic start marker is
+        // registered here and cleared when the delegated session ends.
+        ensure_launch_admitted(&shared, &sanitized)?;
+        shared.active_launches.insert(sanitized.clone());
     }
 
     let ctx = crate::core_context(&app)?;
@@ -390,9 +399,16 @@ pub async fn launch_instance(
         health_policy: health_policy_for_approval(allow_health_blockers),
         health_scan_token,
     };
-    let result = agora_core::launch_service::LaunchService::new(ctx.clone())
+    let state_for_monitor = state.inner().clone();
+    let launch_result = agora_core::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
-        .await?;
+        .await;
+    if launch_result.is_err() {
+        // Normal failure cleanup: release the delegated start marker.
+        let mut shared = state.lock().await;
+        shared.active_launches.remove(&sanitized);
+    }
+    let result = launch_result?;
 
     let launched_at = std::time::SystemTime::now();
     let app_for_monitor = app.clone();
@@ -412,6 +428,9 @@ pub async fn launch_instance(
             launched_at,
         )
         .await;
+        // The delegated session ended: release the launch marker so an install
+        // for this instance is permitted again (SOL-2 §19.3).
+        state_for_monitor.lock().await.active_launches.remove(&id_for_monitor);
 
         use tauri::Emitter;
         let _ = app_for_monitor.emit(
@@ -540,6 +559,16 @@ pub async fn launch_instance_with_recovery(
     let (started_tx, started_rx) = oneshot::channel::<LauncherResult<u32>>();
     {
         let mut shared = state.lock().await;
+        // SOL-2 §19.3: the reservation is the atomic final transition. Re-check
+        // running/reservation AND reject an active install under the same lock
+        // (closes the preflight -> reservation race).
+        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+            return Err(LauncherError::Generic {
+                code: "ERR_ALREADY_RUNNING".into(),
+                message: "Another direct launch is already running or starting.".into(),
+            });
+        }
+        ensure_launch_admitted(&shared, &sanitized)?;
         shared.launch_reservation = Some(agora_core::state::LaunchReservation {
             instance_id: sanitized.clone(),
         });
@@ -625,6 +654,16 @@ pub async fn launch_instance_direct(
     let (started_tx, started_rx) = oneshot::channel::<LauncherResult<u32>>();
     {
         let mut shared = state.lock().await;
+        // SOL-2 §19.3: the reservation is the atomic final transition. Re-check
+        // running/reservation AND reject an active install under the same lock
+        // (closes the preflight -> reservation race).
+        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+            return Err(LauncherError::Generic {
+                code: "ERR_ALREADY_RUNNING".into(),
+                message: "Another direct launch is already running or starting.".into(),
+            });
+        }
+        ensure_launch_admitted(&shared, &sanitized)?;
         shared.launch_reservation = Some(agora_core::state::LaunchReservation {
             instance_id: sanitized.clone(),
         });
@@ -3937,6 +3976,67 @@ pub async fn resolve_install_plan(
     Ok(plan)
 }
 
+/// Atomic launch/process exclusion for install apply (SOL-2 §18.6 /
+/// MASTER_SPEC §19.15 / SAFETY_BOUNDARIES §6).
+///
+/// MUST be called while holding the application state lock so a launch cannot
+/// race between this check and install registration. Rejects an install while
+/// the TARGET instance is running or a launch is being prepared, and enforces
+/// the one-active-install invariant.
+fn ensure_install_apply_allowed(
+    shared: &crate::state::AppState,
+    instance_id: &str,
+) -> LauncherResult<()> {
+    if let Some(running) = &shared.running_process {
+        if running.instance_id == instance_id {
+            return Err(LauncherError::Generic {
+                code: "ERR_INSTALL_PROCESS_ACTIVE".into(),
+                message: "This instance is running — stop it before installing.".into(),
+            });
+        }
+    }
+    if let Some(reservation) = &shared.launch_reservation {
+        if reservation.instance_id == instance_id {
+            return Err(LauncherError::Generic {
+                code: "ERR_INSTALL_LAUNCH_RESERVED".into(),
+                message: "This instance is starting — wait for the launch to finish before installing.".into(),
+            });
+        }
+    }
+    // Delegated launches have no reservation; the target-aware marker covers
+    // the whole delegated session (SOL-2 §19.3).
+    if shared.active_launches.contains(instance_id) {
+        return Err(LauncherError::Generic {
+            code: "ERR_INSTALL_LAUNCH_ACTIVE".into(),
+            message: "This instance is starting a launch — wait for it to finish before installing.".into(),
+        });
+    }
+    if shared.active_install_instances.contains(instance_id) {
+        return Err(LauncherError::Generic {
+            code: "ERR_INSTALL_ACTIVE".into(),
+            message: "Another install transaction is already active for this instance.".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Target-aware launch admission (SOL-2 §19.3): a launch must never start
+/// while the target instance has an active install transaction. Evaluated
+/// under the same state lock that reserves/begins the launch, so an install
+/// cannot slip in between a preflight read and the reservation/start marker.
+fn ensure_launch_admitted(
+    shared: &crate::state::AppState,
+    instance_id: &str,
+) -> LauncherResult<()> {
+    if shared.active_install_instances.contains(instance_id) {
+        return Err(LauncherError::Generic {
+            code: "ERR_LAUNCH_INSTALL_ACTIVE".into(),
+            message: "This instance is being installed — wait for the install to finish before launching.".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Apply a fully-resolved install plan (staged, atomic, verified).
 #[tauri::command]
 pub async fn apply_install_plan(
@@ -3973,12 +4073,12 @@ pub async fn apply_install_plan(
     let instance_dir = service.load_instance(&instance_id)?.instance_dir;
     {
         let mut shared = state.lock().await;
-        if !shared.active_install_instances.insert(instance_id.clone()) {
-            return Err(LauncherError::Generic {
-                code: "ERR_INSTALL_ACTIVE".into(),
-                message: "Another install transaction is already active for this instance.".into(),
-            });
-        }
+        // Atomic exclusion (SOL-2 §18.6): reject an install while the target
+        // instance is running or a launch is being prepared, and enforce
+        // one-active-install. All checks share the state lock with the
+        // registration below, so a launch cannot race between them.
+        ensure_install_apply_allowed(&shared, &instance_id)?;
+        shared.active_install_instances.insert(instance_id.clone());
     }
 
     let reporter = InstallProgressEmitter { app: app.clone() };
@@ -5685,9 +5785,198 @@ fn reveal_in_explorer(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod command_helper_tests {
     use super::{
-        apply_lockfile_metadata, create_or_reuse_prelaunch_snapshot, installed_lockfile_identity,
-        lockfile_identity, normalize_lock_content_type, queue_game_log, QueuedGameLogLine,
+        apply_lockfile_metadata, create_or_reuse_prelaunch_snapshot, ensure_install_apply_allowed,
+        ensure_launch_admitted, installed_lockfile_identity, lockfile_identity,
+        normalize_lock_content_type, queue_game_log, QueuedGameLogLine,
     };
+    use crate::state::LauncherState;
+
+    #[test]
+    fn install_apply_rejects_running_target_instance() {
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.running_process = Some(crate::state::RunningProcess {
+                instance_id: "inst-a".into(),
+                pid: 42,
+                session_id: 1,
+            });
+        }
+        let shared = state.blocking_lock();
+        let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
+        assert_eq!(err.code(), "ERR_INSTALL_PROCESS_ACTIVE");
+        // A different instance is not blocked by the target check.
+        assert!(ensure_install_apply_allowed(&shared, "inst-b").is_ok());
+    }
+
+    #[test]
+    fn install_apply_rejects_launch_reservation_for_target() {
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.launch_reservation = Some(crate::state::LaunchReservation {
+                instance_id: "inst-a".into(),
+            });
+        }
+        let shared = state.blocking_lock();
+        let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
+        assert_eq!(err.code(), "ERR_INSTALL_LAUNCH_RESERVED");
+        assert!(ensure_install_apply_allowed(&shared, "inst-b").is_ok());
+    }
+
+    #[test]
+    fn install_apply_rejects_competing_install_and_recovers_after_completion() {
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_install_instances.insert("inst-a".into());
+        }
+        {
+            let shared = state.blocking_lock();
+            let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
+            assert_eq!(err.code(), "ERR_INSTALL_ACTIVE");
+            // Post-rejection state: the marker is left untouched (the apply
+            // never registered the competing transaction).
+            assert!(shared.active_install_instances.contains("inst-a"));
+        }
+        // Cancellation/completion removes the marker; apply is allowed again.
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_install_instances.remove("inst-a");
+        }
+        let shared = state.blocking_lock();
+        assert!(ensure_install_apply_allowed(&shared, "inst-a").is_ok());
+        assert!(!shared.active_install_instances.contains("inst-a"));
+    }
+
+    #[test]
+    fn install_apply_rejects_after_running_process_clears_then_allows() {
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.running_process = Some(crate::state::RunningProcess {
+                instance_id: "inst-a".into(),
+                pid: 7,
+                session_id: 2,
+            });
+        }
+        {
+            let shared = state.blocking_lock();
+            assert_eq!(
+                ensure_install_apply_allowed(&shared, "inst-a").unwrap_err().code(),
+                "ERR_INSTALL_PROCESS_ACTIVE"
+            );
+        }
+        // Process exits; apply is allowed and registers the marker.
+        {
+            let mut shared = state.blocking_lock();
+            shared.running_process = None;
+            ensure_install_apply_allowed(&shared, "inst-a").unwrap();
+            shared.active_install_instances.insert("inst-a".into());
+        }
+        let shared = state.blocking_lock();
+        assert!(shared.active_install_instances.contains("inst-a"));
+    }
+
+    // SOL-2 §19.3: launch admission is the inverse of install admission. A
+    // launch must never start while the target has an active install, and an
+    // install must never apply while the target has an active/reserved launch.
+
+    #[test]
+    fn launch_admission_rejects_active_install_for_target() {
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_install_instances.insert("inst-a".into());
+        }
+        let shared = state.blocking_lock();
+        let err = ensure_launch_admitted(&shared, "inst-a").unwrap_err();
+        assert_eq!(err.code(), "ERR_LAUNCH_INSTALL_ACTIVE");
+        // A different instance is not blocked by the target check.
+        assert!(ensure_launch_admitted(&shared, "inst-b").is_ok());
+    }
+
+    #[test]
+    fn launch_admission_catches_install_registered_between_preflight_and_reservation() {
+        // Direct/recovery preflight runs, then an install registers, then the
+        // reservation-block admission check must reject (the race Sol called out).
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            // Preflight sees neither a process nor a reservation...
+            assert!(ensure_launch_admitted(&shared, "inst-a").is_ok());
+            // ...an install registers in the gap...
+            shared.active_install_instances.insert("inst-a".into());
+        }
+        {
+            let shared = state.blocking_lock();
+            // ...the reservation-block check (the final transition) rejects.
+            let err = ensure_launch_admitted(&shared, "inst-a").unwrap_err();
+            assert_eq!(err.code(), "ERR_LAUNCH_INSTALL_ACTIVE");
+        }
+    }
+
+    #[test]
+    fn install_apply_rejects_active_launch_marker_and_recovers_after_cleanup() {
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_launches.insert("inst-a".into());
+        }
+        {
+            let shared = state.blocking_lock();
+            let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
+            assert_eq!(err.code(), "ERR_INSTALL_LAUNCH_ACTIVE");
+        }
+        // Cancellation/completion removes the delegated launch marker; install
+        // apply is permitted again.
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_launches.remove("inst-a");
+        }
+        let shared = state.blocking_lock();
+        assert!(ensure_install_apply_allowed(&shared, "inst-a").is_ok());
+    }
+
+    #[test]
+    fn mutual_exclusion_both_directions_with_cleanup_then_retry() {
+        // Install registers first: launch is rejected, then install cleanup
+        // permits a launch.
+        let state = LauncherState::default();
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_install_instances.insert("inst-a".into());
+        }
+        {
+            let shared = state.blocking_lock();
+            assert_eq!(
+                ensure_launch_admitted(&shared, "inst-a").unwrap_err().code(),
+                "ERR_LAUNCH_INSTALL_ACTIVE"
+            );
+        }
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_install_instances.remove("inst-a");
+            shared.active_launches.insert("inst-a".into());
+        }
+        {
+            let shared = state.blocking_lock();
+            // Install while the (delegated) launch marker is set is rejected.
+            assert_eq!(
+                ensure_install_apply_allowed(&shared, "inst-a").unwrap_err().code(),
+                "ERR_INSTALL_LAUNCH_ACTIVE"
+            );
+            // Launch is permitted once the install is gone.
+            assert!(ensure_launch_admitted(&shared, "inst-a").is_ok());
+        }
+        {
+            let mut shared = state.blocking_lock();
+            shared.active_launches.remove("inst-a");
+        }
+        let shared = state.blocking_lock();
+        assert!(ensure_launch_admitted(&shared, "inst-a").is_ok());
+        assert!(ensure_install_apply_allowed(&shared, "inst-a").is_ok());
+    }
 
     #[test]
     fn game_log_queue_drops_overflow_without_blocking() {

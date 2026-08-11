@@ -1,4 +1,4 @@
-import type { CapabilityFlags, ExperienceSource, VisualProposal, VisualScene } from '../domain/models';
+import type { CapabilityFlags, VisualProposal, VisualScene } from '../domain/models';
 import type { VisualIntent } from '../domain/intents';
 import { PhaseMark } from './primitives/stateMarks';
 import { Announcement } from './primitives/announce';
@@ -16,7 +16,6 @@ import { Announcement } from './primitives/announce';
 
 export interface ChangeStagingProps {
   scene: VisualScene;
-  source: ExperienceSource;
   onIntent: (intent: VisualIntent) => void;
   capabilities: CapabilityFlags;
   /** Presentational label for the review control (defaults to "Review changes"). */
@@ -30,7 +29,6 @@ export interface ChangeStagingProps {
 
 export function ChangeStaging({
   scene,
-  source,
   onIntent,
   reviewLabel = 'Review changes',
   reviewAvailable = true,
@@ -49,7 +47,7 @@ export function ChangeStaging({
     <section
       aria-label="Change staging"
       className="rounded-xl border-2 border-dashed border-indigo-500/50 bg-indigo-500/5 p-4"
-      data-source={source.kind}
+      data-source={scene.source.kind}
     >
       <Announcement message={announcement} />
       <div className="flex flex-wrap items-center justify-between gap-2">
