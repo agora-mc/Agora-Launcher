@@ -22,9 +22,12 @@ import {
   type InstanceRow,
 } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
+import { loadPreference } from '../features/interactive/live/presentationPreference';
 import { RegistryStatusView } from '../components/registry-status-view';
 import { BrowseListResults } from '../components/browse/BrowseListResults';
 import { BrowseTileResults } from '../components/browse/BrowseTileResults';
+import { BrowseBazaar } from '../components/browse/BrowseBazaar';
+import type { BazaarItem } from '../components/browse/bazaar-model';
 import { InstallFlow } from '../components/InstallFlow';
 import { usePackInstall } from '../components/PackInstallProgress';
 import { showToast } from '../components/Toast';
@@ -462,6 +465,10 @@ function BrowseContent({
     return 'list';
   });
 
+  // High Interaction Browse (the Bazaar, v5-browse port): default on when the
+  // presentation preference is High Interaction, switchable at any time.
+  const [bazaarMode, setBazaarMode] = useState<boolean>(() => loadPreference() === 'high-interaction');
+
   // ---- Separate loading/error state for metadata vs search ----
   const [metaLoading, setMetaLoading] = useState(true);
   const [metaError, setMetaError] = useState<string | null>(null);
@@ -731,6 +738,34 @@ function BrowseContent({
         : null,
     };
   };
+
+  // ---- The Bazaar (High Interaction Browse): owned set + item mapping ----
+  const bazaarOwnedIds = useMemo(() => {
+    if (!activeInstance?.manifest) return new Set<string>();
+    return new Set(
+      [
+        ...activeInstance.manifest.mods,
+        ...activeInstance.manifest.resourcepacks,
+        ...activeInstance.manifest.shaders,
+        ...activeInstance.manifest.datapacks,
+        ...activeInstance.manifest.worlds,
+      ].flatMap((entry) => [entry.registry_id, entry.modrinth_id, entry.mod_jar_id].filter((id): id is string => Boolean(id))),
+    );
+  }, [activeInstance?.manifest]);
+
+  const bazaarItems = useMemo<BazaarItem[]>(() => items.map((it) => ({
+    id: it.id,
+    name: it.name,
+    iconUrl: it.iconUrl,
+    description: it.description,
+    contentType: it.contentType,
+    author: it.author,
+    categories: it.categories ?? [],
+    supportedVersions: it.supportedVersions ?? [],
+    popular: (it.downloads ?? 0) >= 100000 || (it.follows ?? 0) >= 10000,
+  })), [items]);
+
+  const bazaarInstanceVersion = activeInstance?.row.minecraft_version ?? null;
 
   // ---- Build a stable query key from active filter params ----
   const queryKey = useMemo(
@@ -1285,6 +1320,24 @@ function BrowseContent({
               Clear Filters
             </button>
           )}
+        </div>
+      ) : bazaarMode ? (
+        <div className="space-y-3">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setBazaarMode(false)}
+              className="rounded-md border border-input bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent"
+            >
+              Back to list
+            </button>
+          </div>
+          <BrowseBazaar
+            items={bazaarItems}
+            instanceVersion={bazaarInstanceVersion}
+            ownedIds={bazaarOwnedIds}
+            onAdd={(item) => onSelectMod?.(item.id, activeInstanceId || undefined)}
+          />
         </div>
       ) : layout === 'grid' ? (
         <BrowseTileResults

@@ -5,7 +5,14 @@
       "name": "agora-desktop-web",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "desktop"],
-      "port": 5173
+      "port": 5173,
+      "autoPort": true
+    },
+    {
+      "name": "prototypes",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "5180", "--directory", "docs/interactive/prototypes"],
+      "port": 5180
     }
   ]
 }

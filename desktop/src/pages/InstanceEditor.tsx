@@ -11,6 +11,7 @@ import {
   resumeHighInteractionView,
   savePreference,
   suspendHighInteraction,
+  type InteractionPreference,
 } from '../features/interactive/live/presentationPreference';
 import { openBridge } from '../features/interactive/live/operationBridges';
 import type { LiveReviewRoute } from '../features/interactive/live/operationBridges';
@@ -1120,29 +1121,34 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     if (content.resolved_path) void revealPath(content.resolved_path).catch((cause) => setError(formatError(cause)));
   };
 
-  // High Interaction (read-only live view) toggle for this instance. The
-  // versioned presentation preference is the source of truth (SOL-0 §5.3).
-  const [highInteraction, setHighInteraction] = useState<boolean>(() => effectiveView() === 'high-interaction');
+  // Presentation preference for this instance (SOL-0 §5.3, V5-PORT-PLAN §10).
+  // `simple` and `high-interaction` both render the interactive surface; the
+  // difference is ambience/flourish (the AmbienceCoordinator maps the
+  // preference onto the background profile; the visuals here are the parts
+  // that make both modes useful).
+  const [presentation, setPresentation] = useState<InteractionPreference>(() => effectiveView());
+  const showInteractive = presentation === 'simple' || presentation === 'high-interaction';
   /**
    * Explicit user choice — this is the only path that writes the persisted
    * preference (SOL §22.4).
    */
-  const setHighInteractionPref = useCallback((value: boolean) => {
-    setHighInteraction(value);
-    savePreference(value ? 'high-interaction' : 'standard');
-    if (value) resumeHighInteractionView();
+  const setPresentationPref = useCallback((value: InteractionPreference) => {
+    setPresentation(value);
+    savePreference(value);
+    if (value === 'high-interaction' || value === 'simple') resumeHighInteractionView();
     else suspendHighInteraction();
   }, []);
   /**
-   * Bridge lifecycle (§18.4): leave High Interaction so the live host unmounts
-   * before Standard work begins, WITHOUT rewriting the user's saved preference.
+   * Bridge lifecycle (§18.4): leave the interactive view so the live host
+   * unmounts before Standard work begins, WITHOUT rewriting the user's saved
+   * preference.
    */
-  const leaveHighInteractionForBridge = useCallback(() => {
-    setHighInteraction(false);
+  const leaveInteractiveForBridge = useCallback(() => {
+    setPresentation('standard');
     suspendHighInteraction();
   }, []);
 
-  if (highInteraction) {
+  if (showInteractive) {
     return (
       <div className="space-y-6">
         {/* The host renders its own always-present "Use Standard view" escape;
@@ -1152,7 +1158,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </div>
         <LiveInteractiveHost
           instanceId={instanceId}
-          onUseStandardView={() => setHighInteractionPref(false)}
+          presentation={presentation}
+          onUseStandardView={() => setPresentationPref('standard')}
           onOpenStandardOperation={(route: LiveReviewRoute) => {
             // Narrow, typed contextual bridges: each re-reads/re-resolves live
             // data on the STANDARD surface before the operation opens.
@@ -1164,18 +1171,18 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 // Health becomes ORDINARY Standard navigation (the App-level
                 // HealthDialog is the standard review surface — reviewOnly,
                 // which hides every rejected repair/disable control).
-                leaveHighInteractionForBridge();
+                leaveInteractiveForBridge();
                 // Fresh health read on the Standard surface (never reused).
                 void checkInstanceHealth(id)
                   .then((report) => onReviewHealth?.(id, instanceName ?? row?.name ?? 'Instance', report))
                   .catch((cause) => setError(formatError(cause)));
               },
               openLoaderReview: () => {
-                leaveHighInteractionForBridge();
+                leaveInteractiveForBridge();
                 openLoaderChooser();
               },
               openSnapshotCompare: ({ instanceId: id, snapshotId }) => {
-                leaveHighInteractionForBridge();
+                leaveInteractiveForBridge();
                 setActiveTab('snapshots');
                 if (snapshotId) {
                   void detectDrift(id, snapshotId)
@@ -1187,7 +1194,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 // Leave High Interaction first: the CrashInvestigator is a
                 // Standard surface and closing it must not leave a stale live
                 // view behind. Re-entry performs a fresh read.
-                leaveHighInteractionForBridge();
+                leaveInteractiveForBridge();
                 // Triggers a fresh investigation on the Standard surface.
                 onInvestigate?.(instanceId);
               },
@@ -1203,16 +1210,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     const installed = freshManifest?.mods.find((mod) => mod.filename === filename);
                     if (action === 'remove' && filename) {
                       if (!installed) {
-                        leaveHighInteractionForBridge();
+                        leaveInteractiveForBridge();
                         setError(`"${filename}" is no longer installed — nothing to remove.`);
                         return;
                       }
-                      leaveHighInteractionForBridge();
+                      leaveInteractiveForBridge();
                       beginCanonicalOperationFor(id, fresh?.row.name ?? id, { type: 'remove', filename });
                       return;
                     }
                     if ((action === 'install' || action === 'update') && installed?.registry_id) {
-                      leaveHighInteractionForBridge();
+                      leaveInteractiveForBridge();
                       if (action === 'install') {
                         beginCanonicalOperationFor(id, fresh?.row.name ?? id, {
                           type: 'install',
@@ -1232,13 +1239,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     // route instance. Do NOT silently browse: leave High
                     // Interaction and surface the retained action so the user
                     // re-selects the content on the Standard surface.
-                    leaveHighInteractionForBridge();
+                    leaveInteractiveForBridge();
                     setError(
                       `The ${action} request for this content cannot be resolved — re-select it in the Standard install review.`,
                     );
                   })
                   .catch((cause) => {
-                    leaveHighInteractionForBridge();
+                    leaveInteractiveForBridge();
                     setError(formatError(cause));
                   });
               },
@@ -1279,7 +1286,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         <BackButton onBack={onBack} />
         <button
           type="button"
-          onClick={() => setHighInteractionPref(true)}
+          onClick={() => setPresentationPref('high-interaction')}
           className="rounded-md border border-border bg-card px-3 py-1.5 text-sm font-semibold text-foreground hover:bg-accent"
         >
           High Interaction view

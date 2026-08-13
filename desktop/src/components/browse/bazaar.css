@@ -1,0 +1,467 @@
+/* ── The Bazaar (High Interaction Browse, v5-browse port) ──────────────
+   Glass + semantic colour language carried over from the prototype's
+   `:root` tokens, mapped onto the app's HSL theme variables so light and
+   dark themes both read correctly. */
+
+.bazaar {
+  display: grid;
+  gap: 14px;
+  border-radius: 18px;
+  padding: 4px 0 8px;
+}
+
+.bazaar-head .bazaar-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.bazaar-head .bazaar-sub {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* market stalls */
+.bazaar-stalls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bazaar-stall {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--card) / 0.7);
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: transform 0.12s, background 0.15s, border-color 0.15s;
+}
+
+.bazaar-stall:hover {
+  transform: translateY(-1px);
+  background: hsl(var(--accent));
+}
+
+.bazaar-stall.on {
+  background: hsl(var(--primary));
+  border-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  box-shadow: 0 0 18px -6px hsl(var(--primary));
+}
+
+.bazaar-stall-emoji {
+  font-size: 15px;
+}
+
+/* vibe bars + gacha row */
+.bazaar-row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 720px) {
+  .bazaar-row {
+    grid-template-columns: 1fr 260px;
+  }
+}
+
+.bazaar-vibes,
+.bazaar-gacha {
+  border: 1px solid hsl(var(--border));
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: hsl(var(--card) / 0.6);
+}
+
+.bazaar-vibe-note {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: hsl(var(--muted-foreground));
+}
+
+.bazaar-vibe-list {
+  display: grid;
+  gap: 6px;
+}
+
+.bazaar-vibe {
+  display: grid;
+  grid-template-columns: 52px 1fr 34px;
+  align-items: center;
+  gap: 8px;
+}
+
+.bazaar-vibe-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  text-transform: capitalize;
+}
+
+.bazaar-vibe-track {
+  height: 8px;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+  overflow: hidden;
+}
+
+.bazaar-vibe-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.bazaar-vibe-fill.pos {
+  background: linear-gradient(90deg, hsl(174 52% 48%), hsl(120 60% 50%));
+}
+
+.bazaar-vibe-fill.neg {
+  background: linear-gradient(90deg, hsl(var(--destructive)), hsl(20 80% 55%));
+}
+
+.bazaar-vibe-val {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground));
+  text-align: right;
+}
+
+/* surprise me machine */
+.bazaar-gacha {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bazaar-gacha-art {
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
+  background: hsl(var(--muted) / 0.6);
+  border: 1px solid hsl(var(--border));
+  flex: none;
+}
+
+.bazaar-gacha-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bazaar-gacha-body strong {
+  font-size: 15px;
+}
+
+.bazaar-gacha-hint {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.35;
+}
+
+.bazaar-gacha-btn {
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: linear-gradient(180deg, hsl(35 95% 50%), hsl(25 95% 42%));
+  color: #2a1a00;
+  box-shadow: 0 6px 16px -8px hsl(35 95% 45%);
+  transition: transform 0.1s, filter 0.12s;
+}
+
+.bazaar-gacha-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.bazaar-gacha-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* the shelf */
+.bazaar-shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px;
+}
+
+.bazaar-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  padding: 24px 0;
+}
+
+.bazaar-tile {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.7);
+  transition: transform 0.14s, border-color 0.14s, box-shadow 0.14s;
+}
+
+.bazaar-tile:hover {
+  transform: translateY(-3px);
+  border-color: hsl(var(--ring));
+  box-shadow: 0 14px 30px -18px #000;
+}
+
+.bazaar-tile-art {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  border: 0;
+  border-radius: 12px;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: hsl(var(--muted));
+  display: grid;
+  place-items: center;
+}
+
+.bazaar-tile-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.bazaar-ribbon {
+  position: absolute;
+  top: 6px;
+  left: -22px;
+  transform: rotate(-32deg);
+  background: hsl(45 95% 50%);
+  color: #2a1a00;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 24px;
+}
+
+.bazaar-inbag {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: hsl(174 52% 48%);
+  color: #062622;
+  font-size: 12px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+
+.bazaar-tile-name {
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  padding: 0;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.bazaar-tile-by {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bazaar-fit {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.bazaar-fit.ok {
+  color: hsl(120 55% 45%);
+}
+
+.bazaar-fit.bad {
+  color: hsl(var(--destructive));
+}
+
+.bazaar-vote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.bazaar-vote-btn {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.5);
+  border-radius: 9px;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, transform 0.1s;
+}
+
+.bazaar-vote-btn:hover {
+  transform: translateY(-1px);
+}
+
+.bazaar-vote-btn.yes.on {
+  border-color: hsl(120 60% 45%);
+  background: hsl(120 60% 45% / 0.18);
+}
+
+.bazaar-vote-btn.no.on {
+  border-color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.14);
+}
+
+.bazaar-score {
+  font-size: 10.5px;
+  font-weight: 800;
+  color: hsl(174 52% 40%);
+  margin-left: auto;
+}
+
+.bazaar-add {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  border-radius: 9px;
+  padding: 5px 8px;
+  cursor: pointer;
+  margin-left: auto;
+  color: hsl(var(--foreground));
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.bazaar-add:hover:not(:disabled) {
+  background: hsl(var(--accent));
+  border-color: hsl(var(--ring));
+}
+
+.bazaar-add:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.bazaar-add.big {
+  font-size: 13px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  width: 100%;
+}
+
+.bazaar-add.ghost {
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+}
+
+/* detail dialog */
+.bazaar-detail-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(4, 10, 14, 0.6);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.bazaar-detail {
+  position: relative;
+  max-width: 380px;
+  width: 100%;
+  border: 1px solid hsl(var(--border));
+  border-radius: 20px;
+  background: hsl(var(--popover) / 0.96);
+  padding: 24px;
+  display: grid;
+  gap: 8px;
+  box-shadow: 0 40px 90px -40px #000;
+}
+
+.bazaar-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-size: 24px;
+  line-height: 1;
+  border: 0;
+  background: none;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+.bazaar-detail-art {
+  width: 120px;
+  height: 120px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: hsl(var(--muted));
+  display: grid;
+  place-items: center;
+}
+
+.bazaar-detail-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.bazaar-detail-name {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.bazaar-detail-by {
+  margin: 0;
+  font-size: 12.5px;
+  color: hsl(var(--muted-foreground));
+}
+
+.bazaar-detail-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+.bazaar-detail-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}

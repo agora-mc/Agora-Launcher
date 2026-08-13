@@ -34,6 +34,7 @@ import type {
   VisualScene,
 } from '../domain/models';
 import type { VisualIntent } from '../domain/intents';
+import type { InteractionPreference } from './presentationPreference';
 import { liveHighInteractionCapabilities } from './liveCapabilities';
 import { nextRevision, liveSource } from './freshness';
 import { assembleLiveScene, readLiveData, ok, err, type LiveReads } from './liveScene';
@@ -90,6 +91,9 @@ export interface LiveInteractiveHostProps {
   load?: (instanceId: string, revision: string) => Promise<LiveHostData>;
   capabilities?: CapabilityFlags;
   reducedMotion?: boolean;
+  /** The active presentation — `simple` renders the same useful structure
+   * without the decorative flourish (V5-PORT-PLAN §10). */
+  presentation?: InteractionPreference;
   /** Canonical app-level process state (useProcessController) when available. */
   processState?: CanonicalProcessState | null;
   /** True when a canonical install is ACTIVE (running) for this instance. */
@@ -152,6 +156,7 @@ export function LiveInteractiveHost({
   load = defaultLiveLoad,
   capabilities = liveHighInteractionCapabilities(),
   reducedMotion = false,
+  presentation = 'high-interaction',
   processState = null,
   installActive = false,
 }: LiveInteractiveHostProps) {
@@ -390,6 +395,7 @@ export function LiveInteractiveHost({
           onSelect={setSelection}
           onIntent={handleIntent}
           reducedMotion={reducedMotion}
+          presentation={presentation}
         />
       ) : null}
     </section>

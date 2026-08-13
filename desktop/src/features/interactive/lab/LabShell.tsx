@@ -34,6 +34,13 @@ export interface LabShellProps {
   onNavigateStandard: (dest: StandardDestination) => void;
   /** Friendly labels for Field Guide topic ids (from GUIDE_TOPICS). */
   guideTopicLabels?: Record<string, string>;
+  /**
+   * V5-PORT-PLAN §12.1: in the Lab, animation communicates causality, not
+   * decoration — so a bench drops ambience to `calm` while it is open and
+   * restores the previous profile (null) on close. The Lab itself never
+   * imports ambience; this callback is the app-boundary wire.
+   */
+  onAmbienceChange?: (profile: 'calm' | null) => void;
 }
 
 const DESTINATION_LABEL: Record<string, string> = {
@@ -57,6 +64,7 @@ export function LabShell({
   onOpenGuide,
   onNavigateStandard,
   guideTopicLabels,
+  onAmbienceChange,
 }: LabShellProps) {
   const reducedMotion = useReducedMotion();
   const scenarios = useMemo(() => listScenarios(), []);
@@ -82,6 +90,8 @@ export function LabShell({
     setConfirmOpen(false);
     setAnnouncement(null);
     setLastAttempt(null);
+    // a bench is a teaching surface: calm ambience, nothing moving on its own
+    onAmbienceChange?.('calm');
   };
 
   const leaveAdventure = () => {
@@ -92,6 +102,7 @@ export function LabShell({
     setConfirmOpen(false);
     setAnnouncement(null);
     setLastAttempt(null);
+    onAmbienceChange?.(null);
   };
 
   const dispatch = (event: LabEvent) => {

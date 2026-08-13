@@ -37,6 +37,8 @@ export interface LiveSceneViewProps {
   onSelect: (id: VisualId | null) => void;
   onIntent: (intent: VisualIntent) => void;
   reducedMotion?: boolean;
+  /** Presentation: `simple` hides the decorative flourish. */
+  presentation?: 'standard' | 'simple' | 'high-interaction';
 }
 
 function UnavailableNote({ label }: { label: string }) {
@@ -47,18 +49,19 @@ function UnavailableNote({ label }: { label: string }) {
   );
 }
 
-export function LiveSceneView({ data, capabilities, selection, onSelect, onIntent, reducedMotion }: LiveSceneViewProps) {
+export function LiveSceneView({ data, capabilities, selection, onSelect, onIntent, reducedMotion, presentation = 'high-interaction' }: LiveSceneViewProps) {
   const { scene } = data;
   const source = scene.source;
   const healthOk = data.health.status === 'ok';
   const snapshotsOk = data.snapshots.status === 'ok' ? data.snapshots.value : null;
   const crashOk = data.crashEvidence.status === 'ok' ? data.crashEvidence.value : null;
   const runtimeOk = data.runtime.status === 'ok' ? data.runtime.value : null;
+  const modeLabel = presentation === 'simple' ? 'Simple' : 'High Interaction';
 
   return (
-    <div className="space-y-5" data-testid="live-scene-view" data-source={source.kind}>
+    <div className="space-y-5" data-testid="live-scene-view" data-source={source.kind} data-presentation={presentation}>
       <div className="flex flex-wrap items-center gap-2">
-        <StatusChip label="High Interaction" />
+        <StatusChip label={modeLabel} />
         {source.kind === 'live' ? (
           <StatusChip label={source.freshness === 'fresh' ? 'Live' : source.freshness === 'refreshing' ? 'Refreshing…' : 'Live (degraded)'} />
         ) : null}

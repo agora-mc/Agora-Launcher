@@ -260,3 +260,240 @@
 :root main section:not(.bg-card) > .text-muted-foreground {
   color: hsl(var(--background-foreground) / 0.72);
 }
+
+/* ── Ambience layer (living background) ───────────────────────────────
+   The canvas stack from v4-world.html, mounted globally behind the shell.
+   The fx canvas sits above the shell (pointer-events: none) so particles
+   and the buddy can float over the UI exactly as the prototype drew them. */
+
+.ambience-canvas {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  display: block;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.ambience-vig {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 20%, transparent 30%, rgba(4, 12, 18, 0.55) 100%);
+}
+
+.ambience-fx {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 65;
+  pointer-events: none;
+}
+
+/* The app shell stacks above the canvas; when ambience is on, the shell
+   turns translucent so the world shows through (the prototype's glass
+   panels). Cards and interactive surfaces keep their own backgrounds. */
+:root[data-ambience="calm"] body,
+:root[data-ambience="full"] body {
+  background: transparent;
+}
+
+:root[data-ambience="calm"] main,
+:root[data-ambience="full"] main {
+  background-color: hsl(var(--background) / 0.6) !important;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+:root[data-ambience="calm"] aside nav,
+:root[data-ambience="full"] aside nav {
+  background-color: hsl(var(--nav-surface) / 0.92) !important;
+}
+
+/* ── toasts + carry tag (from v4-world #achv / #carryTag) ───────────── */
+.ambience-toasts {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.ambience-toast {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 15px 11px 11px;
+  border-radius: 15px;
+  background: hsl(var(--popover) / 0.9);
+  border: 1px solid var(--ambience-gold);
+  box-shadow: 0 0 30px -10px var(--ambience-gold), 0 16px 34px -18px #000;
+  backdrop-filter: blur(14px);
+  animation: ambience-toast-in 0.5s cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+
+@keyframes ambience-toast-in {
+  from { opacity: 0; transform: translateX(60px) scale(0.85); }
+  to { opacity: 1; transform: none; }
+}
+
+.ambience-toast-ico {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  background: linear-gradient(160deg, var(--ambience-gold), #ff9a3e);
+}
+
+.ambience-toast-t {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ambience-gold);
+}
+
+.ambience-toast-d {
+  display: block;
+  font-weight: 700;
+  font-size: 14.5px;
+}
+
+.ambience-carry-tag {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 70;
+  font-size: 12.5px;
+  font-weight: 700;
+  background: hsl(var(--popover) / 0.9);
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  padding: 6px 13px;
+  backdrop-filter: blur(10px);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 12px 30px -14px #000;
+}
+
+/* ── Field Journal (from v4-world #journalPanel) ────────────────────── */
+:root {
+  --ambience-gold: #ffd34e;
+  --ambience-rare: #63b4ff;
+}
+
+.ambience-journal {
+  display: grid;
+  gap: 6px;
+}
+
+.ambience-journal-note {
+  font-size: 12.5px;
+  color: hsl(var(--muted-foreground));
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.ambience-journal-ring {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.ambience-journal-ring-inner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: hsl(var(--card));
+  display: grid;
+  place-items: center;
+}
+
+.ambience-journal-pct {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ambience-journal-sec {
+  margin-top: 6px;
+}
+
+.ambience-journal-h {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: hsl(var(--muted-foreground));
+  margin: 12px 0 8px;
+  font-weight: 800;
+}
+
+.ambience-journal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.ambience-journal-card {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: hsl(var(--muted) / 0.5);
+  border: 1px solid hsl(var(--border));
+  font-size: 12px;
+}
+
+.ambience-journal-card.found {
+  border-color: hsl(var(--ambience-rare) / 0.5);
+}
+
+.ambience-journal-ico {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  background: hsl(var(--muted));
+}
+
+.ambience-journal-card.found .ambience-journal-ico {
+  background: linear-gradient(160deg, var(--ambience-rare), #2e7fd6);
+  color: #fff;
+}
+
+.ambience-journal-name {
+  display: block;
+  font-weight: 700;
+}
+
+.ambience-journal-hint {
+  display: block;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+}
+
+.ambience-journal-card.unfound .ambience-journal-name,
+.ambience-journal-card.unfound .ambience-journal-ico {
+  color: hsl(var(--muted-foreground));
+  opacity: 0.8;
+}

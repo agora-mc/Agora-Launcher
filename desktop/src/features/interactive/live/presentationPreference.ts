@@ -1,13 +1,16 @@
 /**
- * High Interaction presentation preference (versioned, local, safe default).
+ * Presentation preference (versioned, local, safe default).
  *
  * MASTER_ARCHITECTURE §5.2/5.3: High Interaction Mode is a reversible
- * presentation preference, not a data mode. Persist only the preference
- * (`standard` | `high-interaction`), versioned, with a safe default of
- * `standard`. No instance data is stored here.
+ * presentation preference, not a data mode. V5-PORT-PLAN §10 adds **Simple**
+ * mode: High Interaction's structure (hero play, icon shelf, bounded diagram,
+ * pre-flight health check) without the stimulation (no ambience, no eggs, no
+ * rarity tiers, no flourish). An unknown persisted value must still fall back
+ * to `standard`, so an old build reading a `simple` record degrades safely on
+ * its own. Version stays 1.
  */
 
-export type InteractionPreference = 'standard' | 'high-interaction';
+export type InteractionPreference = 'standard' | 'simple' | 'high-interaction';
 
 export interface InteractionPreferenceRecord {
   version: 1;
@@ -17,6 +20,11 @@ export interface InteractionPreferenceRecord {
 const STORAGE_KEY = 'agora-interaction-preference';
 const VERSION = 1 as const;
 const DEFAULT: InteractionPreference = 'standard';
+
+/** Dispatched on `window` whenever the preference changes, so the ambience
+ * coordinator (and anything else at the app boundary) can react without the
+ * interactive layer depending on the ambience layer. */
+export const PREFERENCE_CHANGED_EVENT = 'agora:interaction-preference-changed';
 
 function getStorage(): Storage | null {
   if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
@@ -31,7 +39,7 @@ export function loadPreference(): InteractionPreference {
     if (!raw) return DEFAULT;
     const parsed = JSON.parse(raw) as Partial<InteractionPreferenceRecord> | null;
     if (!parsed || parsed.version !== VERSION) return DEFAULT;
-    if (parsed.value === 'standard' || parsed.value === 'high-interaction') return parsed.value;
+    if (parsed.value === 'standard' || parsed.value === 'simple' || parsed.value === 'high-interaction') return parsed.value;
     return DEFAULT;
   } catch {
     return DEFAULT;
@@ -44,6 +52,9 @@ export function savePreference(value: InteractionPreference): InteractionPrefere
     const storage = getStorage();
     if (!storage) return record;
     storage.setItem(STORAGE_KEY, JSON.stringify(record));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent<InteractionPreference>(PREFERENCE_CHANGED_EVENT, { detail: value }));
+    }
   } catch {
     // Preference remains for the current session when storage is unavailable.
   }

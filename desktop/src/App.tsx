@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
 import { Home } from './pages/Home';
@@ -27,6 +27,9 @@ import { PackInstallProvider } from './components/PackInstallProgress';
 import { GUIDE_TOPICS } from './data/guideContent';
 import { LabShell } from './features/interactive/lab/LabShell';
 import type { StandardDestination } from './features/interactive/domain/intents';
+import { AmbienceProvider, useAmbience } from './features/ambience/AmbienceProvider';
+import { AmbienceToasts } from './features/ambience/AmbienceToasts';
+import { AmbienceCoordinator } from './components/ambience-coordinator';
 import { BookOpen, Bot, Boxes, Compass, FlaskConical, HomeIcon, Info, Landmark, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -43,6 +46,16 @@ const BASE_TABS = [
 const GUIDE_TOPIC_LABELS: Record<string, string> = Object.fromEntries(
   GUIDE_TOPICS.map((topic) => [topic.id, topic.title]),
 );
+
+/**
+ * Lab benches teach cause-and-effect, so they drop ambience to `calm` while
+ * open (V5-PORT-PLAN §12.1). The Lab itself never imports ambience — this
+ * bridge at the app boundary wires the callback.
+ */
+function LabShellWithAmbience(props: ComponentProps<typeof LabShell>) {
+  const { overrideProfile } = useAmbience();
+  return <LabShell {...props} onAmbienceChange={(p) => overrideProfile(p)} />;
+}
 
 const AI_TAB = {
   id: 'ai' as Tab,
@@ -503,6 +516,7 @@ export default function App() {
 
   return (
     <PackInstallProvider>
+      <AmbienceProvider>
       <div className="flex h-screen w-screen overflow-hidden">
         <OfflineBanner />
         <SandboxBanner />
@@ -628,7 +642,7 @@ export default function App() {
                   />
                 )}
                 {effectiveTab === 'lab' && (
-                  <LabShell
+                  <LabShellWithAmbience
                     onOpenGuide={handleOpenGuide}
                     onNavigateStandard={handleNavigateStandard}
                     guideTopicLabels={GUIDE_TOPIC_LABELS}
@@ -703,6 +717,9 @@ export default function App() {
           />
         )}
       </div>
+      <AmbienceToasts />
+      <AmbienceCoordinator activeTab={effectiveTab} />
+      </AmbienceProvider>
     </PackInstallProvider>
   );
 }

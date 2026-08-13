@@ -1,0 +1,517 @@
+<title>Agora — High Interaction prototype</title>
+<style>
+  :root {
+    --ground: #F2EFE6;
+    --surface: #FFFDF7;
+    --slot: #E7E2D4;
+    --slot-edge: #D2CBB8;
+    --ink: #12303A;
+    --ink-soft: #5A6E75;
+    --ink-faint: #8A9AA0;
+    --accent: #1C8C79;
+    --accent-soft: rgba(28, 140, 121, 0.14);
+    --play: #4E9E2A;
+    --play-edge: #3C7A1F;
+    --attention: #B4700E;
+    --attention-soft: rgba(180, 112, 14, 0.14);
+    --danger: #B23A30;
+    --line: rgba(18, 48, 58, 0.14);
+    --shadow: 0 1px 0 rgba(18,48,58,.06), 0 8px 24px -12px rgba(18,48,58,.28);
+    --radius: 10px;
+    --display: "Trebuchet MS", "Lucida Grande", "Segoe UI", sans-serif;
+    --body: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #11242C;
+      --surface: #17303A;
+      --slot: #1D3D49;
+      --slot-edge: #2A5464;
+      --ink: #EAF4F2;
+      --ink-soft: #9DB8BD;
+      --ink-faint: #6E8E96;
+      --accent: #3FBFA8;
+      --accent-soft: rgba(63, 191, 168, 0.16);
+      --play: #7BD44A;
+      --play-edge: #4E9E2A;
+      --attention: #F0A73C;
+      --attention-soft: rgba(240, 167, 60, 0.16);
+      --danger: #F2705F;
+      --line: rgba(234, 244, 242, 0.12);
+      --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #11242C; --surface: #17303A; --slot: #1D3D49; --slot-edge: #2A5464;
+    --ink: #EAF4F2; --ink-soft: #9DB8BD; --ink-faint: #6E8E96;
+    --accent: #3FBFA8; --accent-soft: rgba(63,191,168,.16);
+    --play: #7BD44A; --play-edge: #4E9E2A;
+    --attention: #F0A73C; --attention-soft: rgba(240,167,60,.16); --danger: #F2705F;
+    --line: rgba(234,244,242,.12);
+    --shadow: 0 1px 0 rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+  :root[data-theme="light"] {
+    --ground: #F2EFE6; --surface: #FFFDF7; --slot: #E7E2D4; --slot-edge: #D2CBB8;
+    --ink: #12303A; --ink-soft: #5A6E75; --ink-faint: #8A9AA0;
+    --accent: #1C8C79; --accent-soft: rgba(28,140,121,.14);
+    --play: #4E9E2A; --play-edge: #3C7A1F;
+    --attention: #B4700E; --attention-soft: rgba(180,112,14,.14); --danger: #B23A30;
+    --line: rgba(18,48,58,.14);
+    --shadow: 0 1px 0 rgba(18,48,58,.06), 0 8px 24px -12px rgba(18,48,58,.28);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--body); font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 20px 40px; }
+
+  .note {
+    display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+    font-size: 12.5px; color: var(--ink-faint);
+    border: 1px dashed var(--line); border-radius: var(--radius);
+    padding: 9px 12px; margin-bottom: 18px;
+  }
+  .note b { color: var(--ink-soft); font-weight: 600; }
+
+  /* ---------- world card: the hero ---------- */
+  .world {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 22px; align-items: center;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 16px; padding: 18px 20px; box-shadow: var(--shadow);
+  }
+  #worldArt {
+    width: 104px; height: 104px; border-radius: 12px; display: block;
+    border: 1px solid var(--slot-edge); image-rendering: pixelated;
+  }
+  .world-name {
+    font-family: var(--display); font-weight: 700; font-size: 30px;
+    letter-spacing: -0.015em; margin: 0 0 6px; text-wrap: balance;
+  }
+  .world-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip {
+    font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+    background: var(--slot); border: 1px solid var(--slot-edge); color: var(--ink-soft);
+  }
+  .status {
+    display: inline-flex; align-items: center; gap: 7px; margin-top: 12px;
+    font-size: 13.5px; font-weight: 600; padding: 6px 12px 6px 9px; border-radius: 999px;
+    background: var(--attention-soft); color: var(--attention);
+    border: 1px solid color-mix(in srgb, var(--attention) 35%, transparent);
+    cursor: pointer;
+  }
+  .status.ok { background: var(--accent-soft); color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .status .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+
+  .play {
+    font-family: var(--display); font-size: 25px; font-weight: 700; letter-spacing: .01em;
+    color: #0B2A06; background: var(--play);
+    border: 0; border-bottom: 4px solid var(--play-edge);
+    border-radius: 12px; padding: 16px 40px; cursor: pointer;
+    display: flex; align-items: center; gap: 12px;
+    transition: transform .12s ease, filter .12s ease;
+  }
+  .play:hover { filter: brightness(1.06); transform: translateY(-1px); }
+  .play:active { transform: translateY(2px); border-bottom-width: 2px; }
+  .play .tri {
+    width: 0; height: 0; border-left: 15px solid currentColor;
+    border-top: 10px solid transparent; border-bottom: 10px solid transparent;
+  }
+
+  /* ---------- shelf ---------- */
+  .shelf { margin-top: 18px; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+  .shelf-head {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+  }
+  .shelf-title { font-family: var(--display); font-weight: 700; font-size: 19px; margin: 0; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+  .tab {
+    font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    background: transparent; color: var(--ink-soft);
+    border: 1px solid var(--slot-edge); border-radius: 999px; padding: 5px 13px;
+  }
+  .tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--ground); }
+  .tab .n { font-family: var(--mono); font-size: 11px; opacity: .8; margin-left: 5px; }
+  .find {
+    font: inherit; font-size: 13.5px; padding: 7px 12px; border-radius: 999px; width: 190px;
+    background: var(--slot); border: 1px solid var(--slot-edge); color: var(--ink);
+  }
+  .find::placeholder { color: var(--ink-faint); }
+
+  .gridwrap { position: relative; max-height: 336px; overflow-y: auto; padding: 16px 18px 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 12px; position: relative; z-index: 1; }
+  #links { position: absolute; inset: 0; width: 100%; pointer-events: none; z-index: 2; overflow: visible; }
+
+  .slot {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    background: transparent; border: 0; padding: 0; cursor: pointer; font: inherit;
+    transition: transform .13s ease;
+  }
+  .slot .tile {
+    width: 100%; aspect-ratio: 1; border-radius: 12px; display: grid; place-items: center;
+    font-family: var(--display); font-weight: 700; font-size: 21px; color: #fff;
+    border: 1px solid var(--slot-edge);
+    box-shadow: inset 0 -3px 0 rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.28);
+    position: relative; overflow: hidden;
+  }
+  .slot .cap {
+    font-size: 11px; line-height: 1.25; color: var(--ink-soft); text-align: center;
+    max-width: 100%; overflow: hidden; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word;
+  }
+  .slot:hover { transform: translateY(-3px); }
+  .slot:hover .cap, .slot:focus-visible .cap { color: var(--ink); }
+  .slot:focus-visible { outline: none; }
+  .slot:focus-visible .tile { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .slot[aria-pressed="true"] .tile { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .slot .flag {
+    position: absolute; top: -5px; right: -5px; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--attention); color: #2A1A00; font-size: 13px; font-weight: 800;
+    display: grid; place-items: center; border: 2px solid var(--surface);
+  }
+  .gridwrap.focusing .slot { opacity: .28; }
+  .gridwrap.focusing .slot.lit { opacity: 1; }
+  .gridwrap.focusing .slot.lit .tile { box-shadow: inset 0 -3px 0 rgba(0,0,0,.22), 0 0 0 2px var(--accent); }
+
+  /* ---------- detail ---------- */
+  .detail {
+    position: fixed; right: 0; top: 0; bottom: 0; width: 340px; z-index: 30;
+    background: var(--surface); border-left: 1px solid var(--line);
+    box-shadow: -14px 0 40px -20px rgba(0,0,0,.5);
+    transform: translateX(100%); transition: transform .22s ease;
+    display: flex; flex-direction: column; padding: 20px;
+  }
+  .detail.open { transform: none; }
+  .detail h3 { font-family: var(--display); font-size: 21px; margin: 0; text-wrap: balance; }
+  .detail .kind { color: var(--ink-faint); font-size: 13px; margin: 2px 0 16px; }
+  .detail .bigtile { width: 74px; height: 74px; border-radius: 14px; margin-bottom: 14px;
+    display: grid; place-items: center; font-family: var(--display); font-weight: 700;
+    font-size: 30px; color: #fff; border: 1px solid var(--slot-edge);
+    box-shadow: inset 0 -4px 0 rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.28); }
+  .rel { margin-bottom: 14px; }
+  .rel h4 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--ink-faint); margin: 0 0 7px; font-weight: 700; }
+  .rel ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .rel li { font-size: 12.5px; background: var(--slot); border: 1px solid var(--slot-edge);
+    border-radius: 8px; padding: 4px 9px; }
+  .warnbox { background: var(--attention-soft); border: 1px solid color-mix(in srgb, var(--attention) 35%, transparent);
+    color: var(--attention); border-radius: 10px; padding: 10px 12px; font-size: 13px; font-weight: 600; margin-bottom: 14px; }
+  .detail .spacer { flex: 1; }
+  .btn {
+    font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; border-radius: 10px;
+    padding: 11px 16px; border: 1px solid var(--slot-edge); background: var(--slot); color: var(--ink);
+    width: 100%;
+  }
+  .btn.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+  .btn.danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .btn.ghost { background: transparent; }
+  .closeX { position: absolute; top: 14px; right: 14px; background: none; border: 0;
+    color: var(--ink-faint); font-size: 22px; cursor: pointer; line-height: 1; }
+
+  /* ---------- advanced drawer ---------- */
+  .adv { margin-top: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+  .adv > summary {
+    cursor: pointer; padding: 13px 18px; font-weight: 600; font-size: 14px; color: var(--ink-soft);
+    display: flex; align-items: center; gap: 9px; list-style: none;
+  }
+  .adv > summary::-webkit-details-marker { display: none; }
+  .adv > summary::before { content: "›"; font-size: 19px; transition: transform .18s ease; display: inline-block; }
+  .adv[open] > summary::before { transform: rotate(90deg); }
+  .adv-body { padding: 0 18px 16px; display: grid; gap: 8px; }
+  .adv-row { display: flex; align-items: center; gap: 12px; padding: 11px 13px;
+    background: var(--slot); border: 1px solid var(--slot-edge); border-radius: 10px; font-size: 13.5px; }
+  .adv-row .lbl { font-weight: 600; }
+  .adv-row .via { margin-left: auto; color: var(--ink-faint); font-size: 12px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px);
+    background: var(--ink); color: var(--ground); padding: 11px 16px; border-radius: 999px;
+    font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 14px;
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 40;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  .toast button { font: inherit; font-weight: 700; background: none; border: 0;
+    color: var(--play); cursor: pointer; text-decoration: underline; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+  @media (max-width: 720px) {
+    .world { grid-template-columns: auto 1fr; }
+    .play { grid-column: 1 / -1; justify-content: center; }
+    .detail { width: 100%; }
+  }
+</style>
+
+<div class="wrap">
+  <div class="note">
+    <b>Prototype</b>
+    <span>Layout and interaction study for High&nbsp;Interaction mode. Real mod names from Copy&nbsp;of&nbsp;COBBLEVERSE; item art is generated placeholder (production uses each mod's real icon). Nothing here touches a real instance.</span>
+  </div>
+
+  <section class="world">
+    <canvas id="worldArt" width="104" height="104" aria-hidden="true"></canvas>
+    <div>
+      <h1 class="world-name">Copy of COBBLEVERSE</h1>
+      <div class="world-meta">
+        <span class="chip">Minecraft 1.21.1</span>
+        <span class="chip">194 things inside</span>
+        <span class="chip">Never played</span>
+      </div>
+      <button class="status" id="statusPill">
+        <span class="dot"></span> One mod is missing its file
+      </button>
+    </div>
+    <button class="play"><span class="tri"></span> Play</button>
+  </section>
+
+  <section class="shelf">
+    <div class="shelf-head">
+      <h2 class="shelf-title">What's inside</h2>
+      <input class="find" id="find" type="search" placeholder="Find something…" aria-label="Find something inside this world">
+      <div class="tabs" id="tabs"></div>
+    </div>
+    <div class="gridwrap" id="gridwrap">
+      <svg id="links" aria-hidden="true"></svg>
+      <div class="grid" id="grid"></div>
+    </div>
+  </section>
+
+  <details class="adv">
+    <summary>Advanced</summary>
+    <div class="adv-body">
+      <div class="adv-row"><span class="lbl">Loader</span><span>Fabric 0.18.4</span><span class="via">Opens the Standard screen</span></div>
+      <div class="adv-row"><span class="lbl">Java &amp; memory</span><span>Automatic</span><span class="via">Opens the Standard screen</span></div>
+      <div class="adv-row"><span class="lbl">Restore points</span><span>Go back to an earlier setup</span><span class="via">Opens the Standard screen</span></div>
+      <div class="adv-row"><span class="lbl">If it crashes</span><span>Crash Doctor</span><span class="via">Opens the Standard screen</span></div>
+      <div class="adv-row"><span class="lbl">Suggestions</span><span>24 optional extras these mods can use</span><span class="via">Opens the Standard screen</span></div>
+    </div>
+  </details>
+</div>
+
+<aside class="detail" id="detail" aria-live="polite">
+  <button class="closeX" id="closeDetail" aria-label="Close">×</button>
+  <div class="bigtile" id="dTile"></div>
+  <h3 id="dName"></h3>
+  <p class="kind" id="dKind"></p>
+  <div id="dWarn"></div>
+  <div class="rel" id="dNeeds"></div>
+  <div class="rel" id="dNeededBy"></div>
+  <div class="spacer"></div>
+  <button class="btn danger" id="dRemove">Remove from this world</button>
+</aside>
+
+<div class="toast" id="toast"><span id="toastMsg"></span><button id="undo">Undo</button></div>
+
+<script>
+(function () {
+  var LIB = ["Architectury API", "Cloth Config API", "Balm", "Fabric API", "Athena", "Accessories"];
+  var MODS = ["Cobblemon","[EMF] Entity Model Features","[ETF] Entity Texture Features","Accessories","Accessories Compatibility Layer","Advancement Disable","Advancement Plaques","Architectury API","Athena","BadOptimizations","Balm","Beautify: Refabricated","Better Beds","Better F1 Reborn","Better Recipe Book","Better Third Person","BetterF3","Biome Replacer","Carved Wood","Catch Indicator","Cloth Config API","CobbleCuisine","CobbleDollars","CobbleFurnies","Cobblemon additions","Cobblemon Battle Extras","Cobblemon Better Pokedex Scanner","Cobblemon Capture XP","Cobblemon Catch Rate Display","Cobblemon Fight or Flight","Cobblemon Pasture Loot","Cobblemon Pokemas","Cobblemon Raid Dens","Cobblemon Tim Core","Cobblemon: Legendary Monuments","Cobbreeding","Controlling","Fabric API","Iceberg","Luckys Cozyhome","Particular","Sodium","Tweakeroo","Mod Menu","Jade","Waila Harvestability","Xaeros Minimap","Xaeros World Map","Simple Voice Chat","Farmers Delight","Sophisticated Backpacks","Storage Drawers","Iron Chests","Waystones","Journey Map","Terralith","Nature's Compass","Explorers Compass","AppleSkin","Inventory HUD+","Just Enough Items","Roughly Enough Items","Bookshelf","Cardinal Components","Fzzy Config","Geckolib","Kotlin for Forge","Language Reload","Lithium","Ferrite Core","Krypton","Starlight","Immediately Fast","Entity Culling","Dynamic FPS","Enhanced Block Entities","Continuity","Indium","Iris Shaders","Reeses Sodium Options","Sodium Extra","Zoomify","Chat Heads","Emojiful","Presence Footsteps","Ambient Sounds","Sound Physics","Visual Overhaul","Fresh Animations Support","Not Enough Animations","Eating Animation","First Person Model","Better Combat","Combat Roll","Dodge Roll","Elytra Trims","Trinkets","Curios API","Patchouli","Guide Me","Creative Core","Sign Edit","Item Highlighter","Durability Tooltip","Advancement Screenshot","Toast Manager","Prism Lib","Blur Plus","Dark Loading Screen","Sodium Shadowy","Skin Layers 3D","Custom Entity Models","Model Gap Fix","Cull Less Leaves","More Culling","Very Many Players","Concurrent Chunk Management","Async Locator","Threaded Regions","Memory Leak Fix","Debugify","Log Cleaner","Crash Assistant","Client Tweaks","Auth Me","Server Pinger","Cubes Without Borders","World Preview","Chunky Pregen","Better Ping Display","No Chat Reports","Suggestion Tweaker","Command Macros","Keybind Purge","Mouse Tweaks","Inventory Sorter","Quick Shulker","Shulker Preview","Tooltip Fix","Screenshot Viewer","Clear Despawn","Item Borders","Held Item Info","Craft Presence"];
+  var LOOKS = ["Faithful 32x","Stay True","Bare Bones","Better Leaves","Fresh Animations","Cobblemon HD Icons","Enhanced Boss Bars","Classic 3D","Ozocraft","Mythic Metals Skins","Complementary Shaders","BSL Shaders","Rethinking Voxels"];
+  var WORLDS = ["Terralith Structures","Village Expansion","Cobblemon Spawns","Better Dungeons","Nether Overhaul","End Remastered"];
+
+  var items = [];
+  function add(names, kind) { names.forEach(function (n) { items.push({ name: n, kind: kind }); }); }
+  add(MODS, "mod");
+  // pad Looks to a realistic 52 and Worlds to 6
+  var looks = LOOKS.slice();
+  for (var i = looks.length; i < 52; i++) looks.push("Texture Pack " + (i - LOOKS.length + 1));
+  add(looks, "look");
+  add(WORLDS, "world");
+
+  var KIND_LABEL = { mod: "A mod", look: "Looks and textures", world: "World content" };
+
+  // Deterministic relationships: Cobblemon add-ons need Cobblemon; many mods need a library.
+  var byName = {};
+  items.forEach(function (it) { it.needs = []; it.neededBy = []; byName[it.name] = it; });
+  function link(a, b) {
+    if (!byName[a] || !byName[b] || a === b) return;
+    if (byName[a].needs.indexOf(b) === -1) byName[a].needs.push(b);
+    if (byName[b].neededBy.indexOf(a) === -1) byName[b].neededBy.push(a);
+  }
+  items.forEach(function (it, idx) {
+    if (it.kind !== "mod") return;
+    if (/^Cobble|Cobblemon|Catch Indicator/.test(it.name)) link(it.name, "Cobblemon");
+    if (LIB.indexOf(it.name) === -1 && idx % 3 === 0) link(it.name, LIB[idx % LIB.length]);
+  });
+  link("Cobblemon", "Architectury API");
+  link("Cobblemon", "Fabric API");
+
+  byName["Particular"].missing = true;
+
+  function hue(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
+  function mono(s) {
+    var t = s.replace(/[^A-Za-z0-9 ]/g, " ").trim().split(/\s+/);
+    return ((t[0] || "?")[0] + (t[1] ? t[1][0] : "")).toUpperCase();
+  }
+  function paint(el, name) {
+    var h = hue(name);
+    el.style.background = "linear-gradient(160deg, hsl(" + h + " 62% 58%), hsl(" + ((h + 34) % 360) + " 58% 40%))";
+    el.textContent = mono(name);
+  }
+
+  // ---- world thumbnail: blocky terrain, drawn not imported ----
+  (function () {
+    var c = document.getElementById("worldArt"), x = c.getContext("2d"), S = 8;
+    var sky = ["#7EC0EE", "#9BD1F2"], dirt = "#7A5230", grass = "#5FA83A", stone = "#8A8A8A", leaf = "#3E7D2A", wood = "#5A3A1E";
+    for (var gy = 0; gy < 13; gy++) for (var gx = 0; gx < 13; gx++) {
+      var top = 6 + Math.round(Math.sin(gx * 0.9) * 1.2);
+      x.fillStyle = gy < top ? sky[(gx + gy) % 2] : gy === top ? grass : gy > top + 3 ? stone : dirt;
+      x.fillRect(gx * S, gy * S, S, S);
+    }
+    [[2, 4], [9, 3]].forEach(function (t) {
+      x.fillStyle = wood; x.fillRect(t[0] * S, t[1] * S + S, S, S * 2);
+      x.fillStyle = leaf;
+      x.fillRect((t[0] - 1) * S, t[1] * S - S, S * 3, S * 2);
+      x.fillRect(t[0] * S, t[1] * S - S * 2, S, S);
+    });
+  })();
+
+  // ---- shelf ----
+  var grid = document.getElementById("grid"), gridwrap = document.getElementById("gridwrap"),
+      links = document.getElementById("links"), tabs = document.getElementById("tabs"),
+      find = document.getElementById("find"), detail = document.getElementById("detail");
+  var filter = "all", query = "", selected = null;
+  var counts = { all: items.length, mod: 0, look: 0, world: 0 };
+  items.forEach(function (i) { counts[i.kind]++; });
+
+  [["all", "All"], ["mod", "Mods"], ["look", "Looks"], ["world", "Worlds"]].forEach(function (t) {
+    var b = document.createElement("button");
+    b.className = "tab"; b.type = "button"; b.dataset.k = t[0];
+    b.setAttribute("aria-pressed", t[0] === "all");
+    b.innerHTML = t[1] + '<span class="n">' + counts[t[0]] + "</span>";
+    b.onclick = function () {
+      filter = t[0];
+      [].forEach.call(tabs.children, function (c) { c.setAttribute("aria-pressed", c.dataset.k === filter); });
+      clearFocus(); render();
+    };
+    tabs.appendChild(b);
+  });
+
+  function visible() {
+    return items.filter(function (i) {
+      if (i.removed) return false;
+      if (filter !== "all" && i.kind !== filter) return false;
+      if (query && i.name.toLowerCase().indexOf(query) === -1) return false;
+      return true;
+    });
+  }
+
+  function render() {
+    grid.innerHTML = "";
+    visible().forEach(function (it) {
+      var b = document.createElement("button");
+      b.className = "slot"; b.type = "button";
+      b.setAttribute("aria-pressed", selected === it.name);
+      b.setAttribute("aria-label", it.name + (it.missing ? " — missing its file" : ""));
+      b.dataset.name = it.name;
+      var tile = document.createElement("span"); tile.className = "tile"; paint(tile, it.name);
+      if (it.missing) { var f = document.createElement("span"); f.className = "flag"; f.textContent = "!"; tile.appendChild(f); }
+      var cap = document.createElement("span"); cap.className = "cap"; cap.textContent = it.name;
+      b.appendChild(tile); b.appendChild(cap);
+      b.onclick = function () { select(it.name); };
+      grid.appendChild(b);
+    });
+    if (selected) drawLinks();
+  }
+
+  function slotEl(name) { return grid.querySelector('.slot[data-name="' + CSS.escape(name) + '"]'); }
+
+  function select(name) {
+    selected = name;
+    var it = byName[name];
+    [].forEach.call(grid.children, function (s) { s.setAttribute("aria-pressed", s.dataset.name === name); });
+    var related = {}; related[name] = 1;
+    it.needs.concat(it.neededBy).forEach(function (n) { related[n] = 1; });
+    gridwrap.classList.add("focusing");
+    [].forEach.call(grid.children, function (s) { s.classList.toggle("lit", !!related[s.dataset.name]); });
+
+    document.getElementById("dName").textContent = it.name;
+    document.getElementById("dKind").textContent = KIND_LABEL[it.kind];
+    paint(document.getElementById("dTile"), it.name);
+    document.getElementById("dWarn").innerHTML = it.missing
+      ? '<div class="warnbox">This mod\'s file is missing, so it will not load. Reinstalling the pack puts it back.</div>' : "";
+    fillRel("dNeeds", "Needs", it.needs);
+    fillRel("dNeededBy", it.neededBy.length ? "Needed by" : "", it.neededBy.slice(0, 8),
+            it.neededBy.length > 8 ? "+" + (it.neededBy.length - 8) + " more" : "");
+    detail.classList.add("open");
+    drawLinks();
+  }
+
+  function fillRel(id, title, list, extra) {
+    var el = document.getElementById(id);
+    if (!list.length) { el.innerHTML = ""; return; }
+    el.innerHTML = "<h4>" + title + "</h4><ul>" +
+      list.map(function (n) { return "<li>" + n + "</li>"; }).join("") +
+      (extra ? "<li>" + extra + "</li>" : "") + "</ul>";
+  }
+
+  function clearFocus() {
+    selected = null; gridwrap.classList.remove("focusing");
+    detail.classList.remove("open"); links.innerHTML = "";
+    [].forEach.call(grid.children, function (s) { s.setAttribute("aria-pressed", "false"); s.classList.remove("lit"); });
+  }
+
+  // The bounded neighbourhood diagram: real curves between real slots.
+  function drawLinks() {
+    links.innerHTML = "";
+    if (!selected) return;
+    var from = slotEl(selected); if (!from) return;
+    var base = grid.getBoundingClientRect();
+    links.setAttribute("width", base.width); links.setAttribute("height", grid.scrollHeight);
+    links.style.height = grid.scrollHeight + "px";
+    var a = from.getBoundingClientRect();
+    var ax = a.left - base.left + a.width / 2, ay = a.top - base.top + a.width / 2;
+    var it = byName[selected];
+    it.needs.concat(it.neededBy.slice(0, 8)).forEach(function (n) {
+      var t = slotEl(n); if (!t) return;
+      var r = t.getBoundingClientRect();
+      var bx = r.left - base.left + r.width / 2, by = r.top - base.top + r.width / 2;
+      var mx = (ax + bx) / 2, my = (ay + by) / 2 - Math.abs(bx - ax) * 0.18 - 14;
+      var p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", "M" + ax + "," + ay + " Q" + mx + "," + my + " " + bx + "," + by);
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke", "var(--accent)");
+      p.setAttribute("stroke-width", "2.5");
+      p.setAttribute("stroke-linecap", "round");
+      p.setAttribute("opacity", ".85");
+      links.appendChild(p);
+    });
+  }
+
+  find.oninput = function () { query = find.value.trim().toLowerCase(); clearFocus(); render(); };
+  document.getElementById("closeDetail").onclick = clearFocus;
+  gridwrap.addEventListener("scroll", function () { if (selected) drawLinks(); });
+  window.addEventListener("resize", function () { if (selected) drawLinks(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") clearFocus(); });
+
+  document.getElementById("statusPill").onclick = function () {
+    filter = "all"; find.value = "Particular"; query = "particular";
+    [].forEach.call(tabs.children, function (c) { c.setAttribute("aria-pressed", c.dataset.k === "all"); });
+    render(); select("Particular");
+  };
+
+  // Remove → optimistic tile exit + undo. Production hands this to the reviewed InstallFlow.
+  var toast = document.getElementById("toast"), lastRemoved = null;
+  document.getElementById("dRemove").onclick = function () {
+    var it = byName[selected]; if (!it) return;
+    it.removed = true; lastRemoved = it;
+    document.getElementById("toastMsg").textContent = "Removed " + it.name;
+    toast.classList.add("show");
+    clearFocus(); render();
+    clearTimeout(toast._t); toast._t = setTimeout(function () { toast.classList.remove("show"); }, 6000);
+  };
+  document.getElementById("undo").onclick = function () {
+    if (lastRemoved) { lastRemoved.removed = false; lastRemoved = null; render(); }
+    toast.classList.remove("show");
+  };
+
+  render();
+})();
+</script>

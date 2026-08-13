@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   DEFAULT_UI_PREFERENCES,
   useUiPreferences,
@@ -11,6 +11,8 @@ import {
   suspendHighInteraction,
   type InteractionPreference,
 } from '../../features/interactive/live/presentationPreference';
+import { useAmbience } from '../../features/ambience/AmbienceProvider';
+import type { AmbienceProfile } from '../../features/ambience/engine/engine';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
@@ -304,15 +306,19 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
             className={`${selectClass} block w-full sm:w-72`}
           >
             <option value="standard">Standard</option>
+            <option value="simple">Simple</option>
             <option value="high-interaction">High Interaction</option>
           </select>
           <span className="block text-xs text-muted-foreground">
             High Interaction shows an instance as a visual workbench — content relationships, health, and
-            runtime at a glance. Reviews and content changes still open the Standard screens, which remain
-            the only place a change is applied. You can switch back at any time from the instance itself.
+            runtime at a glance. Simple keeps that friendly structure with the stimulation turned off.
+            Reviews and content changes always open the Standard screens, which remain the only place a
+            change is applied. You can switch back at any time from the instance itself.
           </span>
         </label>
       </div>
+
+      <LivingBackgroundSettings />
 
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={resetPreferences} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
@@ -322,6 +328,94 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
           Reset layout
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Living background (ambience) settings. The ambience layer is the only thing
+ * allowed to touch these keys (V5-PORT-PLAN §2/§4). One toggle, one profile
+ * select, one music volume, one sound toggle, and a reduce-motion note that
+ * points at the OS/app motion setting.
+ */
+function LivingBackgroundSettings() {
+  const { enabled, setEnabled, profile, setProfile, soundOn, setSoundOn, musicVolume, setMusicVolume } = useAmbience();
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { setLoaded(true); }, []);
+  if (!loaded) return null;
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border bg-muted p-3">
+      <label className="flex items-center justify-between gap-3 text-sm">
+        <span>
+          <span className="block font-medium">Living background</span>
+          <span className="block text-xs text-muted-foreground">
+            A gentle living world — hills, weather, animals and small discoveries — behind every page.
+            Purely decorative; reduced motion turns off its animation.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          aria-label="Living background"
+          checked={enabled}
+          onChange={(event) => setEnabled(event.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+
+      {enabled && (
+        <>
+          <label className="block space-y-1 text-sm">
+            <span className="font-medium">Background intensity</span>
+            <select
+              aria-label="Living background intensity"
+              value={profile}
+              onChange={(event) => setProfile(event.target.value as AmbienceProfile)}
+              className={`${selectClass} block w-full sm:w-72`}
+            >
+              <option value="calm">Calm</option>
+              <option value="full">Full</option>
+            </select>
+            <span className="block text-xs text-muted-foreground">
+              Calm keeps the landscape and weather. Full adds animals, hidden discoveries, a cursor
+              companion and click sparkles. High Interaction mode uses Full automatically.
+            </span>
+          </label>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex items-center justify-between gap-3 text-sm">
+              <span>Ambient sounds</span>
+              <input
+                type="checkbox"
+                aria-label="Ambient sounds"
+                checked={soundOn}
+                onChange={(event) => setSoundOn(event.target.checked)}
+                className="h-5 w-5 accent-primary"
+              />
+            </label>
+            <label className="block space-y-1 text-sm">
+              <span className="flex justify-between">
+                <span>Music volume</span>
+                <span>{Math.round(musicVolume * 100)}%</span>
+              </span>
+              <input
+                type="range"
+                aria-label="Music volume"
+                min="0"
+                max="100"
+                step="5"
+                value={Math.round(musicVolume * 100)}
+                onChange={(event) => setMusicVolume(Number(event.target.value) / 100)}
+                className="w-full accent-primary"
+              />
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Animation follows your motion setting — reduce motion and the background still shows the
+            landscape, but nothing wanders.
+          </p>
+        </>
+      )}
     </div>
   );
 }
