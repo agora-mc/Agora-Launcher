@@ -9,8 +9,10 @@
  * Read-only by construction: no mutation command is called here.
  */
 
+import { fetchModrinthProject, getRegistryItem, isModrinthEnabled } from '@/lib/tauri';
 import type {
   CrashInvestigation,
+  DependencyEdge,
   HealthReport,
   InstanceDetail,
   InstanceRow,
@@ -137,6 +139,17 @@ export function contentToVisual(
   detail: InstanceDetail,
   health: HealthReport | null,
   healthKnown = true,
+  /**
+   * Mod-to-mod dependency edges from `getDependencyGraph`.
+   *
+   * Without these the ONLY relationships available are loader-version
+   * requirements lifted out of health blockers — which exist solely when the
+   * instance is unhealthy, and whose targets are loader ids that rarely resolve
+   * to another installed node. That left a healthy instance with an empty graph:
+   * no dependency curves to draw, and `requiredBy` stuck at 0 for everything,
+   * so every item came out `common`.
+   */
+  dependencyEdges: DependencyEdge[] = [],
 ): { content: import('../../domain/models').VisualContentNode[]; relationships: VisualRelationship[] } {
   const manifest = detail.manifest;
   const mods = manifest?.mods ?? [];
@@ -172,6 +185,7 @@ export function contentToVisual(
       ...(mod.version ? { version: { current: mod.version } } : {}),
       presence: { current: 'installed' as const },
       enabled: { current: mod.enabled },
+      catalogIds: { registryId: mod.registry_id, modrinthId: mod.modrinth_id },
       health: finding as 'healthy' | 'needs-attention' | 'blocked' | 'unknown',
       relationshipSummary: { requiredBy: 0, requires: 0, conflicts: 0 },
       availability: 'available' as const,
@@ -208,6 +222,26 @@ export function contentToVisual(
       });
     }
   }
+  // Real mod-to-mod edges. Both endpoints are installed by construction (core
+  // drops unresolved declarations), so every one of these is drawable.
+  for (const edge of dependencyEdges) {
+    const fromId = byFilename.get(edge.from_filename);
+    const toId = byFilename.get(edge.to_filename);
+    if (!fromId || !toId || fromId === toId) continue;
+    const required = edge.requirement === 'required';
+    relationships.push({
+      id: `live:dep:${fromId}:${toId}`,
+      fromId,
+      toId,
+      kind: required ? 'requires' : 'recommends',
+      state: 'satisfied',
+      importance: required ? 'required' : 'recommended',
+      explanation: required
+        ? `${edge.from_filename} requires ${edge.to_filename}`
+        : `${edge.from_filename} can use ${edge.to_filename}`,
+    });
+  }
+
   // Single pass to compute per-node summaries.
   const requiresByNode = new Map<string, number>();
   const requiredByByNode = new Map<string, number>();
@@ -404,4 +438,78 @@ export function runtimeToVisual(
     },
     availability: available ? 'available' : 'unavailable',
   };
+}
+
+// --- Per-item catalogue detail (lazy, on selection) ---
+
+/**
+ * The extra information the detail panel shows for one selected item.
+ *
+ * Deliberately fetched ONE AT A TIME, on selection. The obvious alternative —
+ * enriching every node when the scene loads — is a per-mod network/DB round trip
+ * for a 130-mod pack to populate a panel showing exactly one of them.
+ */
+export interface ContentDetail {
+  description: string | null;
+  categories: string[];
+  pageUrl: string | null;
+  /** Which catalogue answered: shown so the text is never misattributed. */
+  source: 'agora' | 'modrinth' | null;
+}
+
+export const EMPTY_CONTENT_DETAIL: ContentDetail = {
+  description: null,
+  categories: [],
+  pageUrl: null,
+  source: null,
+};
+
+/**
+ * Look up catalogue detail for an installed item.
+ *
+ * Agora's curated entry wins when there is one — it is the reviewed description,
+ * and this is Agora's own launcher. Modrinth is the fallback, and the only
+ * source of category slugs today.
+ *
+ * Every failure is swallowed into an empty result: a panel that cannot show a
+ * description must still show the name, the dependencies and the actions.
+ */
+export async function readContentDetail(
+  registryId: string | null,
+  modrinthId: string | null,
+): Promise<ContentDetail> {
+  let out: ContentDetail = { ...EMPTY_CONTENT_DETAIL };
+  if (registryId) {
+    try {
+      const item = await getRegistryItem(registryId);
+      if (item) {
+        out = {
+          description: item.description ?? null,
+          categories: [],
+          pageUrl: item.page_url ?? null,
+          source: 'agora',
+        };
+      }
+    } catch {
+      // fall through to Modrinth
+    }
+  }
+  // Categories only exist on the Modrinth side, so ask for them even when Agora
+  // already supplied the prose.
+  if (modrinthId && (out.categories.length === 0 || !out.description)) {
+    try {
+      if (await isModrinthEnabled()) {
+        const project = await fetchModrinthProject(modrinthId);
+        out = {
+          description: out.description ?? project.description ?? null,
+          categories: project.categories ?? [],
+          pageUrl: out.pageUrl ?? project.page_url ?? null,
+          source: out.source ?? 'modrinth',
+        };
+      }
+    } catch {
+      // keep whatever Agora gave us
+    }
+  }
+  return out;
 }

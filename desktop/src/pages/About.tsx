@@ -55,7 +55,7 @@ export function About() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <section className="relative overflow-hidden rounded-2xl border border-primary/25 bg-[linear-gradient(125deg,hsl(var(--midnight)),hsl(var(--aegean)))] p-6 text-white shadow-lg sm:p-8">
+      <section className="relative overflow-hidden agora-hero">
         <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full border border-white/10" aria-hidden="true" />
         <div className="absolute -bottom-28 right-20 h-64 w-64 rounded-full border border-white/10" aria-hidden="true" />
         <div className="relative">

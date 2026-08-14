@@ -688,6 +688,84 @@ pub fn find_dependents(installed: &[InstalledMod], target_mod_jar_id: &str) -> V
     find_dependents_with_aliases(installed, target_mod_jar_id, &AliasMap::from_pairs(&[]))
 }
 
+/// One edge of the installed-content dependency graph, in filename terms.
+///
+/// Filenames (not mod IDs) because that is the only identifier the desktop
+/// content list shares with this graph; resolving IDs is this function's job,
+/// not the caller's.
+#[derive(Debug, Clone, Serialize)]
+pub struct DependencyEdge {
+    /// Filename of the mod that declares the dependency.
+    pub from_filename: String,
+    /// Filename of the installed mod that satisfies it.
+    pub to_filename: String,
+    pub requirement: Requirement,
+}
+
+/// Build the whole installed-content dependency graph in one pass.
+///
+/// `find_dependents` answers "who needs THIS mod", which means a caller wanting
+/// the full picture has to invoke it once per mod — N queries to draw one
+/// diagram. This resolves every declaration against every supplied ID a single
+/// time instead, so a UI can show real relationships without a per-item round
+/// trip.
+///
+/// Only edges where BOTH ends are installed are returned: an unresolved
+/// declaration is a health finding, not a graph edge, and belongs to the health
+/// report rather than here.
+pub fn build_dependency_graph_with_aliases(
+    installed: &[InstalledMod],
+    aliases: &AliasMap,
+) -> Vec<DependencyEdge> {
+    // Every loader-visible ID -> the filename that supplies it.
+    let mut supplier: HashMap<String, &str> = HashMap::new();
+    for m in installed {
+        for id in installed_mod_ids(m, aliases) {
+            supplier.entry(id).or_insert(m.filename.as_str());
+        }
+    }
+
+    let mut edges: Vec<DependencyEdge> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for m in installed {
+        let mut push = |dep: &str, requirement: Requirement, edges: &mut Vec<DependencyEdge>| {
+            let key = aliases.resolve_or_self(dep).to_lowercase();
+            let Some(&to) = supplier.get(&key) else {
+                return;
+            };
+            if to == m.filename {
+                return; // a jar supplying its own declared id is not an edge
+            }
+            if !seen.insert((m.filename.clone(), to.to_string())) {
+                return; // required wins; a later optional edge for the same pair is noise
+            }
+            edges.push(DependencyEdge {
+                from_filename: m.filename.clone(),
+                to_filename: to.to_string(),
+                requirement,
+            });
+        };
+        for dep in &m.depends_on {
+            push(dep, Requirement::Required, &mut edges);
+        }
+        for dep in &m.optional_deps {
+            push(dep, Requirement::Optional, &mut edges);
+        }
+    }
+
+    edges.sort_by(|a, b| {
+        a.from_filename
+            .cmp(&b.from_filename)
+            .then_with(|| a.to_filename.cmp(&b.to_filename))
+    });
+    edges
+}
+
+/// Alias-free convenience wrapper for [`build_dependency_graph_with_aliases`].
+pub fn build_dependency_graph(installed: &[InstalledMod]) -> Vec<DependencyEdge> {
+    build_dependency_graph_with_aliases(installed, &AliasMap::from_pairs(&[]))
+}
+
 /// Detect disagreements between a jar's declared deps and a manifest's deps.
 ///
 /// For each dep mod_id present in either the jar or manifest (across required
@@ -848,6 +926,113 @@ mod tests {
             enabled: true,
             content_type: "mod".to_string(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // build_dependency_graph
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dependency_graph_links_installed_pairs_only() {
+        let mods = vec![
+            installed("caves.jar", Some("caves"), &["corelib"], &["textures"]),
+            installed("corelib.jar", Some("corelib"), &[], &[]),
+            installed("textures.jar", Some("textures"), &[], &[]),
+            // declares a dep nothing installed supplies -> health finding, not an edge
+            installed("lonely.jar", Some("lonely"), &["absent"], &[]),
+        ];
+        let edges = build_dependency_graph(&mods);
+        let pairs: Vec<(String, String)> = edges
+            .iter()
+            .map(|e| (e.from_filename.clone(), e.to_filename.clone()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("caves.jar".to_string(), "corelib.jar".to_string()),
+                ("caves.jar".to_string(), "textures.jar".to_string()),
+            ]
+        );
+        assert!(matches!(edges[0].requirement, Requirement::Required));
+        assert!(matches!(edges[1].requirement, Requirement::Optional));
+    }
+
+    #[test]
+    fn dependency_graph_ignores_self_supply_and_dedupes() {
+        let mods = vec![
+            // declares its own id, and names the same target as both required
+            // and optional; neither should produce a spurious edge
+            installed("a.jar", Some("a"), &["a", "b"], &["b"]),
+            installed("b.jar", Some("b"), &[], &[]),
+        ];
+        let edges = build_dependency_graph(&mods);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_filename, "a.jar");
+        assert_eq!(edges[0].to_filename, "b.jar");
+        assert!(matches!(edges[0].requirement, Requirement::Required));
+    }
+
+    #[test]
+    fn dependency_graph_resolves_provided_ids_and_aliases() {
+        let mut lib = installed("bundle.jar", Some("bundle"), &[], &[]);
+        lib.provided_mod_ids = vec!["corelib".to_string()];
+        let mods = vec![
+            installed("caves.jar", Some("caves"), &["CoreLib"], &[]),
+            lib,
+        ];
+        let edges = build_dependency_graph(&mods);
+        assert_eq!(
+            edges.len(),
+            1,
+            "case-insensitive match against a provided id"
+        );
+        assert_eq!(edges[0].to_filename, "bundle.jar");
+
+        let aliased = AliasMap::from_pairs(&[("oldname".to_string(), "corelib".to_string())]);
+        let mods2 = vec![
+            installed("caves.jar", Some("caves"), &["oldname"], &[]),
+            installed("corelib.jar", Some("corelib"), &[], &[]),
+        ];
+        let edges2 = build_dependency_graph_with_aliases(&mods2, &aliased);
+        assert_eq!(edges2.len(), 1, "alias resolves to the installed supplier");
+        assert_eq!(edges2[0].to_filename, "corelib.jar");
+    }
+
+    // -----------------------------------------------------------------------
+    // Wire format
+    // -----------------------------------------------------------------------
+
+    /// The TypeScript bindings hardcode these spellings. They were once declared
+    /// capitalised, which typechecks but compares false at runtime, so required
+    /// dependencies were silently never recognised. Pin the serialized form so a
+    /// casing change here has to break a test rather than a feature.
+    #[test]
+    fn requirement_and_source_serialize_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&Requirement::Required).unwrap(),
+            "\"required\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Requirement::Optional).unwrap(),
+            "\"optional\""
+        );
+        assert_eq!(serde_json::to_string(&DepSource::Jar).unwrap(), "\"jar\"");
+        assert_eq!(
+            serde_json::to_string(&DepSource::Manifest).unwrap(),
+            "\"manifest\""
+        );
+    }
+
+    #[test]
+    fn dependency_edge_serializes_with_lowercase_requirement() {
+        let edge = DependencyEdge {
+            from_filename: "a.jar".into(),
+            to_filename: "b.jar".into(),
+            requirement: Requirement::Required,
+        };
+        let json = serde_json::to_string(&edge).unwrap();
+        assert!(json.contains("\"requirement\":\"required\""), "got {json}");
+        assert!(json.contains("\"from_filename\":\"a.jar\""), "got {json}");
     }
 
     /// Construct a minimal `JarDeps` for tests.

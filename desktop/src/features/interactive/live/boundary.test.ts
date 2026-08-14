@@ -49,6 +49,10 @@ describe('live boundary', () => {
   });
 
   it('live/ imports only tauri, domain, visual, and its own modules (plus react)', () => {
+    // `react-dom` sits in the same tier as `react`: a rendering primitive, not an
+    // app-boundary or operation import. `createPortal` is needed because a fixed
+    // overlay nested inside a backdrop-filtered scroll container is positioned
+    // against that ancestor rather than the viewport.
     const root = join(INTERACTIVE, 'live');
     const violations: string[] = [];
     const allowedRoots = [join(INTERACTIVE, 'live'), join(INTERACTIVE, 'domain'), join(INTERACTIVE, 'visual')];
@@ -59,6 +63,7 @@ describe('live boundary', () => {
         const ok =
           spec === 'react'
           || spec === 'react/'
+          || spec === 'react-dom'
           || spec.startsWith('@/lib/tauri')
           || spec.includes('/domain/')
           || spec.includes('/visual/')

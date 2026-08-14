@@ -208,14 +208,25 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
     spawnRainbow: function () {
       if (this.flags.rainbowUp) return; this.flags.rainbowUp = true; this.flags.rainbowEnds = {};
       const lx = state.W * 0.22, rx = state.W * 0.78;
+      // F-rainbow: anchor the arc's ends to the terrain so the rainbow reads
+      // as rising from BEHIND the hills, not floating high in the sky. The
+      // draw uses `gy` (= this prop's y) as the arc's baseline; placing both
+      // ends at the lower of the two ground heights tucks them behind the
+      // nearest ridge.
+      const gy = Math.max(groundYWorld(state, lx, 2), groundYWorld(state, rx, 2));
       this.props.push({
-        key: 'rainbow-end', side: 'l', name: 'Rainbow (left end)', layer: 'sky', x: lx, y: state.H * 0.55, pairX: rx, w: 16, h: 16,
+        // fx/pairFx are the authority: absolute x is derived from the CURRENT
+        // width so the arc re-spans the viewport on resize instead of staying
+        // frozen at whatever the window was when it appeared.
+        key: 'rainbow-end', side: 'l', name: 'Rainbow (left end)', layer: 'sky',
+        x: lx, y: gy, pairX: rx, fx: 0.22, pairFx: 0.78, w: 16, h: 16,
         reaction: function () {
           (world.flags.rainbowEnds as Record<string, boolean>).l = true; opts.blip(700, 0.15); world.checkRainbow();
         },
       });
       this.props.push({
-        key: 'rainbow-end', side: 'r', name: 'Rainbow (right end)', layer: 'sky', x: rx, y: state.H * 0.55, pairX: lx, w: 16, h: 16,
+        key: 'rainbow-end', side: 'r', name: 'Rainbow (right end)', layer: 'sky',
+        x: rx, y: gy, pairX: lx, fx: 0.78, pairFx: 0.22, w: 16, h: 16,
         reaction: function () {
           (world.flags.rainbowEnds as Record<string, boolean>).r = true; opts.blip(760, 0.15); world.checkRainbow();
         },
@@ -573,9 +584,9 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
         }
         case 'cave': {
           ctx.fillStyle = '#1A1410';
-          ctx.beginPath();
-          ctx.ellipse(sx, gy - (p.h as number) * 0.5, (p.w as number) * 0.5, (p.h as number) * 0.5, 0, 0, 6.283);
-          ctx.fill();
+          // Blocky cave mouth: a dark rectangle with a stepped (rect-only) top
+          ctx.fillRect(Math.round(sx - (p.w as number) / 2), Math.round(gy - (p.h as number) * 0.6), p.w as number, Math.round((p.h as number) * 0.6));
+          ctx.fillRect(Math.round(sx - (p.w as number) / 4), Math.round(gy - (p.h as number)), Math.round((p.w as number) / 2), Math.round((p.h as number) * 0.4));
           if ((!state.reduce && (p.blink as number) > 0) || p.glow) {
             ctx.fillStyle = p.glow ? '#CFFF7A' : '#fff';
             ctx.fillRect(sx - 8, gy - (p.h as number) * 0.55, 2, 2);
@@ -603,8 +614,10 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
             ctx.fillStyle = '#5E5E64';
             ctx.fillRect(Math.round(sx - (p.w as number) / 2), Math.round(gy - (p.h as number)), p.w as number, p.h as number);
           } else {
+            // Rolled boulder: a flattened blocky rock, not an oval
             ctx.fillStyle = '#1A1410';
-            ctx.beginPath(); ctx.ellipse(sx, gy - 4, 10, 5, 0, 0, 6.283); ctx.fill();
+            ctx.fillRect(Math.round(sx - 11), Math.round(gy - 5), 22, 5);
+            ctx.fillRect(Math.round(sx - 5), Math.round(gy - 7), 10, 2);
           }
           break;
         }
@@ -614,19 +627,26 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
           break;
         }
         case 'anthill': {
+          // Blocky anthill: stacked rectangles instead of an oval
           ctx.fillStyle = '#6B4A2E';
-          ctx.beginPath(); ctx.ellipse(sx, gy - 4, 10, 6, 0, 0, 6.283); ctx.fill();
+          ctx.fillRect(Math.round(sx - 9), Math.round(gy - 4), 18, 4);
+          ctx.fillRect(Math.round(sx - 6), Math.round(gy - 6), 12, 2);
+          ctx.fillRect(Math.round(sx - 3), Math.round(gy - 8), 6, 2);
           break;
         }
         case 'snowpile': {
+          // Blocky snow pile: stacked rectangles, no oval
           ctx.fillStyle = '#F4F8FB';
-          ctx.beginPath(); ctx.ellipse(sx, gy - (p.h as number) * 0.4, (p.w as number) * 0.5, (p.h as number) * 0.5, 0, 0, 6.283); ctx.fill();
+          const pw = p.w as number, ph = p.h as number;
+          ctx.fillRect(Math.round(sx - pw / 2), Math.round(gy - ph * 0.5), pw, Math.round(ph * 0.5));
+          ctx.fillRect(Math.round(sx - pw / 4), Math.round(gy - ph * 0.8), Math.round(pw / 2), Math.round(ph * 0.3));
           break;
         }
         case 'snowman': {
+          // Blocky snowman: body + head as rectangles
           ctx.fillStyle = '#F4F8FB';
-          ctx.beginPath(); ctx.ellipse(sx, gy - 8, 9, 9, 0, 0, 6.283); ctx.fill();
-          ctx.beginPath(); ctx.ellipse(sx, gy - 20, 6, 6, 0, 0, 6.283); ctx.fill();
+          ctx.fillRect(Math.round(sx - 9), Math.round(gy - 17), 18, 17);
+          ctx.fillRect(Math.round(sx - 6), Math.round(gy - 26), 12, 12);
           ctx.fillStyle = '#D0392B'; ctx.fillRect(sx - 1, gy - 21, 2, 2);
           if (p.waved) { ctx.fillStyle = '#6B4A2E'; ctx.fillRect(sx + 6, gy - 26, 8, 2); }
           break;
@@ -639,18 +659,9 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
           break;
         }
         case 'rainbow-end': {
-          if (p.side === 'l') {
-            const cols = ['#E6533E', '#F4C542', '#5E9E4A', '#3EC7C0', '#63B4FF', '#C58BFF'];
-            const cxx = ((p.x as number) + (p.pairX as number)) / 2 + paraX(state, 'sky');
-            const rad = ((p.pairX as number) - (p.x as number)) / 2;
-            for (let ri = 0; ri < cols.length; ri++) {
-              ctx.strokeStyle = cols[ri];
-              ctx.lineWidth = 4;
-              ctx.beginPath();
-              ctx.arc(cxx, gy, rad - ri * 4 + 24, Math.PI, 0);
-              ctx.stroke();
-            }
-          }
+          // F-rainbow-layer: the rainbow arcs are drawn by the SKY pass (just
+          // in front of the sky, behind the terrain). These props stay as
+          // invisible hit targets for the egg — like sunmoon/clouds.
           break;
         }
         case 'sunmoon': case 'clouds': break; // rendered by the sky pass; these are invisible hit targets
@@ -728,8 +739,12 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
       }
       if (this.hover) this.drawHoverGlow(ctx, this.hover);
       if (this.carry) {
-        const cx = state.mx * state.W, cy = state.my * state.H;
-        ctx.font = '17px system-ui, sans-serif';
+        // Canvas-space pointer, not `mx * W`: that multiplied a VIEWPORT
+        // fraction by the CANVAS width, so the carried item drifted away from
+        // the cursor as soon as the two stopped being the same size (zoom).
+        const cx = state.pcx, cy = state.pcy;
+        // Item glyphs are emoji; the UI stack has no emoji face, so name one.
+        ctx.font = '17px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(ITEMS[this.carry] ? ITEMS[this.carry].glyph : '?', cx, cy - 22 + Math.sin(world.t * 4) * 2);
       }

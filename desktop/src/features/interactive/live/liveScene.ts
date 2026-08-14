@@ -12,6 +12,7 @@
 
 import {
   checkInstanceHealth,
+  getDependencyGraph,
   getInstanceDetail,
   investigateInstanceEvidence,
   listInstances,
@@ -20,6 +21,7 @@ import {
   queryLaunchState,
   recommendInstanceMemory,
   type CrashInvestigation,
+  type DependencyEdge,
   type HealthReport,
   type InstanceDetail,
   type InstanceRow,
@@ -56,6 +58,8 @@ export interface LiveReads {
   investigation: Fragment<CrashInvestigation | null>;
   memory: Fragment<MemoryRecommendation | null>;
   javas: Fragment<JavaRuntimeSummary[]>;
+  /** Mod-to-mod dependency edges; empty when the read failed. */
+  dependencies: Fragment<DependencyEdge[]>;
 }
 
 /** Loads every read needed for a live scene; each read failure is retained as an `error` fragment. */
@@ -67,7 +71,7 @@ export async function readLiveData(instanceId: string): Promise<LiveReads> {
       return err<T>();
     }
   };
-  const [detail, running, health, snapshots, investigation, memory, javas] = await Promise.all([
+  const [detail, running, health, snapshots, investigation, memory, javas, dependencies] = await Promise.all([
     safe(() => getInstanceDetail(instanceId)),
     safe(() => queryLaunchState()),
     safe(() => checkInstanceHealth(instanceId)),
@@ -75,8 +79,9 @@ export async function readLiveData(instanceId: string): Promise<LiveReads> {
     safe(() => investigateInstanceEvidence(instanceId)),
     safe(() => recommendInstanceMemory(instanceId)),
     safe(() => listJavaRuntimes()),
+    safe(() => getDependencyGraph(instanceId)),
   ]);
-  return { detail, running, health, snapshots, investigation, memory, javas };
+  return { detail, running, health, snapshots, investigation, memory, javas, dependencies };
 }
 
 /** True when every relevant fragment read succeeded. */
@@ -89,6 +94,7 @@ export function allReadsOk(reads: LiveReads): boolean {
     && reads.investigation.status === 'ok'
     && reads.memory.status === 'ok'
     && reads.javas.status === 'ok'
+    && reads.dependencies.status === 'ok'
   );
 }
 
@@ -118,7 +124,8 @@ export function assembleLiveScene(_instanceId: string, reads: LiveReads): Visual
   const health = reads.health.status === 'ok' ? reads.health.value : null;
   const healthKnown = reads.health.status === 'ok';
   const instance = instanceToVisual(detail, running, reads.running.status !== 'ok');
-  const { content, relationships } = contentToVisual(detail, health, healthKnown);
+  const dependencies = reads.dependencies.status === 'ok' ? reads.dependencies.value : [];
+  const { content, relationships } = contentToVisual(detail, health, healthKnown, dependencies);
   return {
     source,
     instance,

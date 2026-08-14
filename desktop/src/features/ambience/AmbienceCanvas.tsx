@@ -44,8 +44,15 @@ export function AmbienceCanvas({ profile, soundOn, musicVolume, musicOn, reduced
     // A user gesture unlocks audio (browsers block autoplay). The engine's
     // own pointerdown kick also starts music when musicOn; this is the
     // explicit resume for SFX.
-    const unlock = () => engine.unlockAudio();
-    window.addEventListener('pointerdown', unlock);
+    // ONE-SHOT. Browsers block audio until a gesture, so the first pointerdown
+    // unlocks it — but this used to stay registered, so every subsequent click
+    // anywhere in the app re-entered unlockAudio() and restarted the music with
+    // a freshly picked track. Clicking anything changed the song.
+    const unlock = () => {
+      window.removeEventListener('pointerdown', unlock);
+      engine.unlockAudio();
+    };
+    window.addEventListener('pointerdown', unlock, { once: true });
     return () => {
       window.removeEventListener('pointerdown', unlock);
       engine.stop();

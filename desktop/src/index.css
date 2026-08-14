@@ -7,7 +7,12 @@
 @layer base {
   :root {
     --font-scale: 1;
-    --font-ui: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    /* Emoji need their own font: none of the UI faces below carry colour emoji,
+       so ❤️/💔/🎒 fell back to whatever the renderer could find — usually a
+       monochrome glyph or a box. Appended to EVERY stack, including the custom
+       ones (Comic Sans, Georgia, Courier) which have no emoji coverage at all. */
+    --font-emoji: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI Symbol";
+    --font-ui: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif, var(--font-emoji);
     --midnight: 213 76% 12%;
     --aegean: 190 71% 28%;
     --sea-blue: 174 52% 48%;
@@ -93,28 +98,28 @@
   }
 
   :root[data-font="readable"] {
-    --font-ui: Verdana, Tahoma, Arial, sans-serif;
+    --font-ui: Verdana, Tahoma, Arial, sans-serif, var(--font-emoji);
     letter-spacing: 0.015em;
   }
 
   :root[data-font="rounded"] {
-    --font-ui: "Arial Rounded MT Bold", "Trebuchet MS", ui-sans-serif, system-ui, sans-serif;
+    --font-ui: "Arial Rounded MT Bold", "Trebuchet MS", ui-sans-serif, system-ui, sans-serif, var(--font-emoji);
   }
 
   :root[data-font="serif"] {
-    --font-ui: Georgia, Cambria, "Times New Roman", serif;
+    --font-ui: Georgia, Cambria, "Times New Roman", serif, var(--font-emoji);
   }
 
   :root[data-font="mono"] {
-    --font-ui: Consolas, "Cascadia Mono", "Courier New", monospace;
+    --font-ui: Consolas, "Cascadia Mono", "Courier New", monospace, var(--font-emoji);
   }
 
   :root[data-font="playful"] {
-    --font-ui: "Comic Sans MS", "Segoe Print", "Bradley Hand", cursive;
+    --font-ui: "Comic Sans MS", "Segoe Print", "Bradley Hand", cursive, var(--font-emoji);
   }
 
   :root[data-font="typewriter"] {
-    --font-ui: "Courier New", Courier, monospace;
+    --font-ui: "Courier New", Courier, monospace, var(--font-emoji);
     letter-spacing: 0.01em;
   }
 
@@ -296,6 +301,19 @@
   pointer-events: none;
 }
 
+/* The whole UI sits above the world, explicitly.
+   This is load-bearing. `.ambience-canvas` is position:fixed with z-index:0, so
+   it paints above any NON-positioned content — which is everything in the shell
+   by default. It only looked correct because `backdrop-filter: blur(2px)` on
+   `main` happened to create a stacking context. The Living Background page turns
+   that blur off (it wants the world unobscured), main lost its stacking context,
+   and the entire page dropped behind the canvas — invisible, unclickable.
+   Anchor the shell instead of depending on a side effect of a blur. */
+.app-shell {
+  position: relative;
+  z-index: 2;
+}
+
 /* The app shell stacks above the canvas; when ambience is on, the shell
    turns translucent so the world shows through (the prototype's glass
    panels). Cards and interactive surfaces keep their own backgrounds. */
@@ -314,6 +332,50 @@
 :root[data-ambience="calm"] aside nav,
 :root[data-ambience="full"] aside nav {
   background-color: hsl(var(--nav-surface) / 0.92) !important;
+}
+
+/* "Hide the standard background" (living background settings): hide ONLY the
+   flat page background color so the living world shows through — the UI stays
+   readable. `main` keeps a faint tint + soft blur over the world (so headings
+   and text directly on the page remain legible) but no solid color; cards and
+   panels stay opaque via their own surfaces. */
+:root[data-ambience-clear="on"] body {
+  background: transparent;
+  background-image: none !important;
+}
+
+:root[data-ambience-clear="on"] main {
+  /* No blur: "hide the standard background" means SEE the world, and a 6px
+     blur made it a smear. Legibility comes from a slightly stronger tint on
+     `main` plus the panels' own opaque surfaces, not from blurring the thing
+     the setting exists to reveal. */
+  background-color: hsl(var(--background) / 0.34) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:root[data-ambience-clear="on"] aside nav {
+  background-color: hsl(var(--nav-surface) / 0.94) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Living Background page: a full, un-blurred view of the living world. The
+   page shell drops its translucency and blur entirely so the canvas reads
+   edge to edge and stays interactive. The :root[data-ambience] prefix keeps
+   specificity above the ambience translucency rules. */
+:root[data-ambience] main.living-bg-active {
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 10px 16px 40px !important;
+}
+
+:root[data-ambience] main.living-bg-active :where(.bg-card, .bg-muted, .bg-secondary) {
+  background-color: hsl(var(--card) / 0.82) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 /* ── toasts + carry tag (from v4-world #achv / #carryTag) ───────────── */
@@ -497,3 +559,45 @@
   color: hsl(var(--muted-foreground));
   opacity: 0.8;
 }
+
+/* ── Agora hero panel ─────────────────────────────────────────────────
+   The gradient header treatment, used by every page header so the app reads as
+   one product.
+
+   Built from the USER'S appearance settings, not from fixed brand colours. The
+   theme provider drives `--card` from the "block colour" and `--primary` from
+   the "accent", so a hero is literally "block colour, washed with accent" — it
+   follows a custom accent or a custom block colour automatically. It previously
+   hardcoded `--midnight`/`--aegean`, which meant the headers stayed Agora-blue
+   no matter what the user chose.
+
+   Text uses `--card-foreground` rather than a pinned white, because the block
+   colour is dark in the dark theme and near-white in the light one; pinning
+   either colour makes one of the two themes unreadable. */
+.agora-hero {
+  position: relative;
+  border-radius: calc(var(--radius) * 1.6);
+  background:
+    linear-gradient(125deg, hsl(var(--card)), hsl(var(--primary) / 0.42)),
+    hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--primary) / 0.35);
+  box-shadow: 0 10px 30px -20px hsl(var(--foreground) / 0.55);
+  padding: 1.5rem;
+}
+@media (min-width: 640px) {
+  .agora-hero { padding: 2rem; }
+}
+/* Compact variant for control decks and secondary headers. */
+.agora-hero.compact { padding: 1rem 1.25rem; }
+
+.agora-hero h1,
+.agora-hero h2,
+.agora-hero h3 { color: hsl(var(--card-foreground)); }
+.agora-hero .text-muted-foreground { color: hsl(var(--card-foreground) / 0.72); }
+/* Pages written against the old always-dark hero use `text-white/NN` for their
+   prose. Remap those to the card foreground so they stay legible now that the
+   hero follows the user's block colour and can be light. Plain `text-white`
+   (buttons with their own brand background, e.g. Discord) is left alone. */
+.agora-hero [class*="text-white/"] { color: hsl(var(--card-foreground) / 0.78); }
+.agora-hero strong[class*="text-white"] { color: hsl(var(--card-foreground)); }

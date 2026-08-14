@@ -128,6 +128,48 @@ export interface SavedJournal {
   firstLoad: number;
 }
 
+/**
+ * Parse the persisted journal WITHOUT a live engine (used by the Field Guide
+ * page, which renders even when the living background is off). Returns the
+ * saved record, or null when nothing valid is stored.
+ */
+export function parseSavedJournal(raw: string | null): SavedJournal | null {
+  if (!raw) return null;
+  try {
+    const d = JSON.parse(raw) as Partial<SavedJournal>;
+    if (d.v !== 1 || typeof d.found !== 'object' || d.found === null) return null;
+    return {
+      v: 1,
+      found: d.found,
+      unlocked: Array.isArray(d.unlocked) ? d.unlocked : [],
+      firstLoad: typeof d.firstLoad === 'number' ? d.firstLoad : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Build a JournalData read model from a saved record (no engine needed). */
+export function journalFromSaved(saved: SavedJournal | null): JournalData {
+  const found = saved?.found ?? {};
+  const n = Object.keys(found).length;
+  return {
+    foundCount: n,
+    total: EGGS.length,
+    percent: Math.round(n / EGGS.length * 100),
+    tiers: [1, 2, 3].map((tier) => ({
+      tier,
+      name: TIER_NAME[tier],
+      entries: EGGS.filter((e) => e.tier === tier).map((e) => ({
+        id: e.id,
+        name: e.name,
+        hint: e.hint,
+        found: !!found[e.id],
+      })),
+    })),
+  };
+}
+
 export function loadJournalState(state: EngineState, raw: string | null): SavedJournal | null {
   if (!raw) {
     state.firstLoad = Date.now();

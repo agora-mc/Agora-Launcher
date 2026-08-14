@@ -260,7 +260,7 @@ export function Home({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <section>
+      <section className="agora-hero compact">
         <h2 className="text-2xl font-bold mb-2">Home</h2>
         <p className="text-muted-foreground">Your modding dashboard.</p>
       </section>

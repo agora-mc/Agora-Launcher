@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, Search, Trash2 } from 'lucide-react';
+import { ArrowUpCircle, ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, Search, Trash2 } from 'lucide-react';
 import { Switch } from '../ui/switch';
 import { formatError } from '../../lib/tauri';
 import type { InstalledContentRow, UpdateInfo } from '../../lib/tauri';
@@ -276,10 +276,30 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
       case 'size': return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap">{row.file_present ? formatBytes(row.size_bytes) : 'Missing'}</td>;
       case 'installed': return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap" title={row.installed_at}>{formatInstalledDate(row.installed_at)}</td>;
       case 'enabled': return <td key={column} className="px-3 py-2"><div className="flex items-center gap-2"><Switch checked={row.enabled} disabled={props.locked || pending[row.key]} onCheckedChange={() => void handleToggle(row)} aria-label={`${row.enabled ? 'Disable' : 'Enable'} ${row.display_name}`} /><span className="sr-only">{row.enabled ? 'Enabled' : 'Disabled'}</span>{!row.enabled ? <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Disabled</span> : null}</div></td>;
-      case 'actions': return <td key={column} className="px-3 py-2 text-right"><div className="flex items-center justify-end gap-1">
+      case 'actions': {
+      // An available update is the single most actionable thing about a row, so
+      // it belongs in Actions — not only in the optional `update_status`
+      // column, which is off by default and left updates effectively hidden.
+      // Rendered ONLY when an update actually exists, so the column stays quiet.
+      const rowUpdate = updateForRow(row);
+      const rowUpdatable = updateStatusForRow(row) === 'available' && rowUpdate;
+      return <td key={column} className="px-3 py-2 text-right"><div className="flex items-center justify-end gap-1">
+        {rowUpdatable ? (
+          <button
+            type="button"
+            disabled={props.locked}
+            onClick={() => props.onApplyUpdate?.(row, rowUpdate)}
+            className="rounded p-1.5 text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+            title={props.locked ? 'Unlock the instance to update content.' : `Update ${row.display_name} to ${rowUpdate.latest_version}`}
+            aria-label={`Update ${row.display_name} to ${rowUpdate.latest_version}`}
+          >
+            <ArrowUpCircle className="h-4 w-4" aria-hidden="true" />
+          </button>
+        ) : null}
         <button type="button" onClick={() => props.onRemove(row)} disabled={props.locked} className="rounded p-1.5 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? 'Unlock the instance to remove content.' : `Remove ${row.display_name}`} aria-label={`Remove ${row.display_name}`}><Trash2 className="h-4 w-4" aria-hidden="true" /></button>
         <details className="relative"><summary className="list-none rounded p-1.5 text-muted-foreground hover:bg-accent cursor-pointer" title="More actions" aria-label={`More actions for ${row.display_name}`}><MoreHorizontal className="h-4 w-4" aria-hidden="true" /></summary><div className={`absolute right-0 z-20 w-40 rounded-lg border border-border bg-card p-1 shadow-lg ${rowIndex >= visibleRows.length - 2 ? 'bottom-full mb-1' : 'top-full mt-1'}`}><button type="button" disabled={!row.resolved_path} onClick={() => props.onRevealFile?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Reveal file</button><button type="button" onClick={() => void navigator.clipboard.writeText(row.filename)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">Copy filename</button>{props.onSetCustomIcon ? <button type="button" disabled={props.locked} onClick={() => props.onSetCustomIcon?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Set custom image</button> : null}{row.registry_id || row.modrinth_id || row.mod_jar_id ? <button type="button" onClick={() => props.onOpenDetails?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">View details</button> : null}</div></details>
       </div></td>;
+      }
       case 'version': return <td key={column} className="px-3 py-2 text-sm">{row.version ?? 'Unknown'}</td>;
       case 'categories': return <td key={column} className="max-w-[220px] px-3 py-2 text-xs">{row.categories.join(', ') || 'Uncategorized'}</td>;
       case 'curation': return <td key={column} className="px-3 py-2 text-xs">{curationLabel(row.curation_status)}</td>;

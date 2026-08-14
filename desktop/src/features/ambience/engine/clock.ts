@@ -67,7 +67,8 @@ export function advanceClock(state: EngineState, clock: ClockState, dt: number, 
     if (aMax - aMin >= 0.85) world._findEgg?.('acorn-hunt');
   }
 
-  // weather cycle
+  // weather cycle — skipped while the player has pinned the weather by hand
+  if (state.weatherLocked) return;
   clock.weatherTimer += dt;
   const wasRain = state.weather === 1;
   const slot = Math.floor(clock.weatherTimer / WEATHER_CYCLE) % 4;

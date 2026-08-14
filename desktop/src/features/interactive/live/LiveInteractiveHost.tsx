@@ -38,6 +38,7 @@ import type { InteractionPreference } from './presentationPreference';
 import { liveHighInteractionCapabilities } from './liveCapabilities';
 import { nextRevision, liveSource } from './freshness';
 import { assembleLiveScene, readLiveData, ok, err, type LiveReads } from './liveScene';
+import { readContentDetail, EMPTY_CONTENT_DETAIL, type ContentDetail } from './readAdapters';
 import { crashToVisual, runtimeToVisual, snapshotsToVisual } from './readAdapters';
 import { routeLiveIntent } from './intentController';
 import type { AvailabilityInput } from './intentController';
@@ -87,6 +88,14 @@ export interface CanonicalProcessState {
 export interface LiveInteractiveHostProps {
   instanceId: string;
   onUseStandardView: () => void;
+  /**
+   * Rendered at the start of the host's control row (the page's Back button).
+   *
+   * Taking it as a slot rather than letting the page stack its own row above
+   * keeps Back, Refresh and the Standard escape on ONE line, instead of two
+   * rows of chrome above a view whose whole point is the view.
+   */
+  leading?: React.ReactNode;
   onOpenStandardOperation?: (route: LiveReviewRoute) => void;
   load?: (instanceId: string, revision: string) => Promise<LiveHostData>;
   capabilities?: CapabilityFlags;
@@ -98,6 +107,8 @@ export interface LiveInteractiveHostProps {
   processState?: CanonicalProcessState | null;
   /** True when a canonical install is ACTIVE (running) for this instance. */
   installActive?: boolean;
+  /** Runs the real launch (the Standard launch flow) from the Play button. */
+  onLaunch?: () => Promise<void> | void;
 }
 
 /** Map every canonical process phase conservatively onto the visual model. */
@@ -152,6 +163,7 @@ export function projectCanonical(scene: VisualScene, canonical: CanonicalInput):
 export function LiveInteractiveHost({
   instanceId,
   onUseStandardView,
+  leading,
   onOpenStandardOperation,
   load = defaultLiveLoad,
   capabilities = liveHighInteractionCapabilities(),
@@ -159,9 +171,20 @@ export function LiveInteractiveHost({
   presentation = 'high-interaction',
   processState = null,
   installActive = false,
+  onLaunch,
 }: LiveInteractiveHostProps) {
   const [state, setState] = useState<LiveHostState>({ kind: 'loading' });
   const [selection, setSelection] = useState<VisualId | null>(null);
+  /**
+   * Catalogue detail for the SELECTED item only.
+   *
+   * Fetched here rather than in the view because the view sits in live/core,
+   * which may not call Tauri — and fetched one at a time because enriching all
+   * 130 nodes up front to fill a one-item panel is exactly the kind of per-mod
+   * round trip that made the dependency read slow.
+   */
+  const [selectedDetail, setSelectedDetail] = useState<ContentDetail>(EMPTY_CONTENT_DETAIL);
+
   const revisionRef = useRef(nextRevision());
   // Monotonic request generation — NEVER reset (instance switches must not
   // collide with in-flight request ids).
@@ -236,6 +259,24 @@ export function LiveInteractiveHost({
       scene: projectCanonical(state.data.scene, { processState, installActive, instanceId }),
     };
   }, [state, processState, installActive, instanceId]);
+
+  // Look up the selected item's catalogue entry. Stale responses are discarded
+  // so a slow lookup can never overwrite a newer selection's detail.
+  useEffect(() => {
+    if (!selection) { setSelectedDetail(EMPTY_CONTENT_DETAIL); return; }
+    const node = displayData?.scene.content.find((n) => n.id === selection);
+    const ids = node?.catalogIds;
+    if (!ids || (!ids.registryId && !ids.modrinthId)) {
+      setSelectedDetail(EMPTY_CONTENT_DETAIL);
+      return;
+    }
+    let cancelled = false;
+    setSelectedDetail(EMPTY_CONTENT_DETAIL);
+    void readContentDetail(ids.registryId, ids.modrinthId).then((detail) => {
+      if (!cancelled) setSelectedDetail(detail);
+    });
+    return () => { cancelled = true; };
+  }, [selection, displayData]);
 
   const refresh = useCallback(() => {
     revisionRef.current = nextRevision();
@@ -338,7 +379,9 @@ export function LiveInteractiveHost({
   return (
     <section aria-label="High Interaction view" className="space-y-3" data-testid="live-host">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-base font-bold text-foreground">High Interaction</h3>
+        {/* No "High Interaction" heading: the surface announces itself, and the
+            label was a row of chrome that said nothing the view did not. */}
+        <div className="flex flex-wrap items-center gap-2">{leading}</div>
         <div className="flex flex-wrap items-center gap-2">
           {state.kind === 'scene' && state.refreshing ? <StatusChip label="Refreshing…" /> : null}
           <button
@@ -353,7 +396,7 @@ export function LiveInteractiveHost({
             onClick={onUseStandardView}
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
           >
-            Use Standard view
+            Use Standard view (more features)
           </button>
         </div>
       </div>
@@ -381,7 +424,7 @@ export function LiveInteractiveHost({
               onClick={onUseStandardView}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
             >
-              Use Standard view
+              Use Standard view (more features)
             </button>
           </div>
         </div>
@@ -392,8 +435,11 @@ export function LiveInteractiveHost({
           data={displayData}
           capabilities={capabilities}
           selection={selection}
+          selectedDetail={selectedDetail}
           onSelect={setSelection}
           onIntent={handleIntent}
+          onUseStandardView={onUseStandardView}
+          onLaunch={onLaunch}
           reducedMotion={reducedMotion}
           presentation={presentation}
         />

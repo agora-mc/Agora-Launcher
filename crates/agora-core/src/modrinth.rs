@@ -43,6 +43,10 @@ pub(crate) struct ModrinthProjectFullRaw {
     pub(crate) updated: Option<String>,
     #[serde(default)]
     pub(crate) gallery: Option<Vec<ModrinthGalleryImageRaw>>,
+    /// Modrinth's own category slugs ("adventure", "optimization", …). The API
+    /// has always returned these; we simply were not reading them.
+    #[serde(default)]
+    pub(crate) categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +200,9 @@ pub struct ModrinthProjectFull {
     pub license_id: Option<String>,
     pub source_updated_at: Option<String>,
     pub gallery_urls: Vec<String>,
+    /// Modrinth category slugs, lowercase as published.
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
 
 /// Enforce the Modrinth-enabled gate; returns `Err(ModrinthDisabled)` when off.
@@ -742,6 +749,7 @@ pub async fn fetch_project_full(
             .into_iter()
             .filter_map(|g| g.url.filter(|u| u.starts_with("https://")))
             .collect(),
+        categories: resp.categories.unwrap_or_default(),
     })
 }
 
@@ -1203,6 +1211,7 @@ impl ModrinthService {
                 .into_iter()
                 .filter_map(|g| g.url.filter(|u| u.starts_with("https://")))
                 .collect(),
+            categories: resp.categories.unwrap_or_default(),
         })
     }
 

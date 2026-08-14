@@ -180,6 +180,7 @@ pub fn run() {
             commands::enable_instance_mod,
             commands::confirm_crash_fix,
             commands::report_still_crashing,
+            commands::get_dependency_graph,
             commands::get_disable_plan,
             commands::get_removal_plan,
             commands::get_install_plan,

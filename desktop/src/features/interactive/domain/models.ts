@@ -125,6 +125,13 @@ export interface VisualContentNode {
   presence: VisualValue<'installed' | 'not-installed'>;
   enabled: VisualValue<boolean>;
   health: 'healthy' | 'needs-attention' | 'blocked' | 'unknown';
+  /**
+   * Public catalogue identities, when known. Not private authority data — these
+   * are the ids the reviewed Browse surface already shows — and they are what
+   * lets the detail panel look up a description without a per-mod fetch for the
+   * whole pack.
+   */
+  catalogIds?: { registryId: string | null; modrinthId: string | null };
   relationshipSummary: {
     requiredBy: number;
     requires: number;

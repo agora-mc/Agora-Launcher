@@ -224,6 +224,16 @@ export class MusicEngine {
   private userPicked = false;
   /** When set, music pauses while hidden (same rule as the world loop). */
   private suspendedForHidden = false;
+  /**
+   * Called once each time the current piece reaches its end.
+   *
+   * The player loops a single track indefinitely, which is right for "I picked
+   * this one" but wrong for auto mode: without a signal at the end of a piece,
+   * autoplay could only ever play whatever it started with. Fires at most once
+   * per loop boundary, no matter how many voices cross it.
+   */
+  onPieceEnd: (() => void) | null = null;
+  private announcedLoops = 0;
 
   setVolume(v: number): void {
     this.vol = Math.max(0, Math.min(1, v));
@@ -296,6 +306,7 @@ export class MusicEngine {
     this.shelf.gain.value = this.tame ? -7 : 0;
     if (!this.userPicked) this.instrument = instrument ?? track.instrument ?? 'chip';
     this.muted = {};
+    this.announcedLoops = 0;
     const t0 = ctx.currentTime + 0.08;
     this.stop();
     this.st = {
@@ -342,6 +353,11 @@ export class MusicEngine {
         }
       }
     });
+    // One notification per completed pass, not one per voice.
+    if (st.loops > this.announcedLoops) {
+      this.announcedLoops = st.loops;
+      if (this.onPieceEnd) this.onPieceEnd();
+    }
     if (!alive) this.stop();
   }
 

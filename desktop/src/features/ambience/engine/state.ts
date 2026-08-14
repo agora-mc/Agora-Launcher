@@ -51,12 +51,23 @@ export interface EngineState {
   tod: number;
   /** Index into WEATHER. */
   weather: number;
+  /** When true the automatic cycle leaves the weather alone (manual pick). */
+  weatherLocked: boolean;
   WEATHER: WeatherId[];
   /** Lightning flash overlay strength. */
   flash: number;
   /** Mouse position in 0..1 space. */
   mx: number;
   my: number;
+  /**
+   * Pointer position in CANVAS coordinates (zoom and pan undone).
+   *
+   * `mx`/`my` are viewport fractions, which stop matching the canvas the moment
+   * the canvas is not exactly the viewport — which it is not while zoomed. Draw
+   * anything that must sit under the cursor from these instead.
+   */
+  pcx: number;
+  pcy: number;
   reduce: boolean;
   drops: Drop[];
   flakes: Flake[];
@@ -79,24 +90,43 @@ export interface EngineState {
   unlocked: Record<string, boolean>;
   /** First-load timestamp, used by the "Quick Study" achievement. */
   firstLoad?: number;
-  /** Seeded PRNG — fixed seed: same world every load, so it's learnable. */
+  /**
+   * Seeded PRNG for world layout.
+   *
+   * Seeded RANDOMLY per session, then stable for the whole session: the world
+   * is a different place each time you open the app, but it does not reshuffle
+   * under you when the window resizes. It used to be a hardcoded seed, so every
+   * launch produced byte-identical terrain and prop placement.
+   */
   wrand: () => number;
+  /** This session's world seed (tests pin it; see `createEngineState`). */
+  worldSeed: number;
+  /** Ridge seeds derived from `worldSeed`, fixed for the session. */
+  ridgeSeeds: [number, number, number];
   /** Timestamp of the last shelf drag (prototype's `justDragged` guard). */
   justDragged?: number;
   /** Weather scheduler accumulator. */
   weatherTimer?: number;
 }
 
-export function createEngineState(reduce = reduceMotion()): EngineState {
+export function createEngineState(
+  reduce = reduceMotion(),
+  /** Pin the seed for a reproducible world (tests, screenshots). */
+  seed = Math.floor(Math.random() * 0x7fffffff),
+): EngineState {
+  const seedRand = mulberry32(seed);
   const state: EngineState = {
     W: 0,
     H: 0,
     tod: 0.3,
     weather: 0,
+    weatherLocked: false,
     WEATHER: ['clear', 'rain', 'snow'],
     flash: 0,
     mx: 0.5,
     my: 0.5,
+    pcx: 0,
+    pcy: 0,
     reduce,
     drops: [],
     flakes: [],
@@ -113,7 +143,11 @@ export function createEngineState(reduce = reduceMotion()): EngineState {
     lastTs: 0,
     soundOn: false,
     unlocked: {},
-    wrand: mulberry32(20260811),
+    wrand: mulberry32(seed),
+    worldSeed: seed,
+    // Spread the three ridges far apart in phase so they do not echo each other
+    // and read as one repeated hill shape.
+    ridgeSeeds: [seedRand() * 100, seedRand() * 100, seedRand() * 100],
   };
   // --- prototype initialisation, verbatim ---
   for (let i = 0; i < 220; i++) state.drops.push({ x: Math.random(), y: Math.random(), s: 0.5 + Math.random() });

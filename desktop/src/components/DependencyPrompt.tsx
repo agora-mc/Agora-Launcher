@@ -9,8 +9,10 @@ import {
 export interface DependencyPromptCandidate {
   key: string;
   label: string;
-  requirement: 'Required' | 'Optional';
-  source: 'Jar' | 'Manifest';
+  // Lowercase because that is what the backend sends: core derives these enums
+  // with #[serde(rename_all = "kebab-case")].
+  requirement: 'required' | 'optional';
+  source: 'jar' | 'manifest';
   isConflict?: boolean;
 }
 
@@ -39,7 +41,7 @@ export function DependencyPrompt({
   onCancel,
 }: DependencyPromptProps) {
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(candidates.filter((c) => c.requirement === 'Required').map((c) => c.key)),
+    new Set(candidates.filter((c) => c.requirement === 'required').map((c) => c.key)),
   );
 
   const toggle = (key: string) => {
@@ -87,24 +89,24 @@ export function DependencyPrompt({
                       <span
                         className={[
                           'rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-                          cand.requirement === 'Required'
+                          cand.requirement === 'required'
                             ? 'bg-destructive/10 text-destructive dark:bg-destructive/20 dark:text-destructive'
                             : 'bg-muted text-muted-foreground',
                         ].join(' ')}
                       >
-                        {cand.requirement}
+                        {cand.requirement === 'required' ? 'Required' : 'Optional'}
                       </span>
                       <span
                         className={[
                           'rounded-full px-1.5 py-0.5 text-[10px] font-medium',
-                          cand.source === 'Jar'
+                          cand.source === 'jar'
                             ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
                             : 'bg-muted text-muted-foreground',
                         ].join(' ')}
                       >
-                        {cand.source === 'Jar' ? 'from jar' : 'from manifest'}
+                        {cand.source === 'jar' ? 'from jar' : 'from manifest'}
                       </span>
-                      {cand.source === 'Jar' && (
+                      {cand.source === 'jar' && (
                         <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
                           Recommended
                         </span>
@@ -112,10 +114,10 @@ export function DependencyPrompt({
                     </div>
                     {cand.isConflict && (
                       <p className="text-[10px] text-amber-700 dark:text-amber-300 mt-1">
-                        Conflict: {cand.source === 'Jar' ? 'Jar' : 'Manifest'} classified as {cand.requirement}, but the opposite source has a different classification.
+                        Conflict: {cand.source === 'jar' ? 'Jar' : 'Manifest'} classified as {cand.requirement === 'required' ? 'Required' : 'Optional'}, but the opposite source has a different classification.
                       </p>
                     )}
-                    {!isChecked && cand.requirement === 'Required' && (
+                    {!isChecked && cand.requirement === 'required' && (
                       <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
                         Warning: Disabling may cause crashes.
                       </p>

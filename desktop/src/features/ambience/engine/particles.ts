@@ -25,6 +25,15 @@ export class ParticleLayer {
   }
 
   /** One cursor-trail sample from a pointermove (prototype's mousemove handler). */
+  /**
+   * The cursor reappeared somewhere else. Drop the existing trail rather than
+   * letting it draw a streak across the screen between the old position and the
+   * new one — that line was never a real movement.
+   */
+  pointerJumped(_x: number, _y: number): void {
+    this.trail.length = 0;
+  }
+
   pointerMoved(x: number, y: number): void {
     if (this.reduced) return;
     if (Math.random() < 0.5) this.trail.push({ x: x, y: y, life: 1, s: 2 + Math.random() * 3 });

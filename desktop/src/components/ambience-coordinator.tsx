@@ -36,7 +36,11 @@ function overrideFor(activeTab: string): AmbienceProfile | null {
     return null;
   }
   const caps = presentationCapabilities(pref);
-  if (pref === 'high-interaction' && activeTab === 'instances') {
+  // High Interaction wants the full living world (music, eggs, buddy, click
+  // sparkles) on EVERY page, not just the instances tab. The Lab is the one
+  // exception: it drops to `calm` itself while a bench is open so animation
+  // stays a teaching signal (V5-PORT-PLAN §12.1).
+  if (pref === 'high-interaction' && activeTab !== 'lab') {
     return caps.ambience;
   }
   // Standard / Simple: let the global setting stand.

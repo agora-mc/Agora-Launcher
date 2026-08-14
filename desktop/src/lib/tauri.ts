@@ -1279,6 +1279,8 @@ export interface ModrinthProjectFull {
     license_id: string | null;
     source_updated_at: string | null;
     gallery_urls: string[];
+    /** Modrinth category slugs, lowercase as published. */
+    categories: string[];
 }
 
 export const fetchModrinthProject = (projectId: string) =>
@@ -1469,9 +1471,19 @@ export const reportStillCrashing = (
 
 // --- Dependency Plans (PREVIEW) ---
 
-export type Requirement = 'Required' | 'Optional';
+/**
+ * These MUST stay lowercase: `dependency_ops::Requirement` and `DepSource` derive
+ * `#[serde(rename_all = "kebab-case")]`, so the wire values are `'required'` /
+ * `'optional'` and `'jar'` / `'manifest'`.
+ *
+ * They were previously declared capitalised, which typechecked fine and failed
+ * silently at runtime — `'required' === 'Required'` is just false, so required
+ * dependencies were never detected as required and never pre-ticked. Capitalise
+ * for DISPLAY at the point of rendering, never in the comparison.
+ */
+export type Requirement = 'required' | 'optional';
 
-export type DepSource = 'Jar' | 'Manifest';
+export type DepSource = 'jar' | 'manifest';
 
 export interface DependentInfo {
   mod_id: string;
@@ -1505,6 +1517,17 @@ export interface RemovalPlan {
 export interface DisablePlan {
   dependents: DependentInfo[];
 }
+
+/** Serialized `dependency_ops::DependencyEdge`. */
+export interface DependencyEdge {
+  from_filename: string;
+  to_filename: string;
+  requirement: Requirement;
+}
+
+/** Every dependency edge between installed content, in one read. */
+export const getDependencyGraph = (instanceId: string) =>
+  invoke<DependencyEdge[]>('get_dependency_graph', { instanceId });
 
 export const getDisablePlan = (instanceId: string, filename: string) =>
   invoke<DisablePlan>('get_disable_plan', { instanceId, filename });

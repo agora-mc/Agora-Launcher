@@ -166,7 +166,7 @@ export function Instances({
 
   return (
     <div className="space-y-6">
-      <section className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <section className="agora-hero compact flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-bold mb-2">My Instances</h2>
           <p className="text-muted-foreground">

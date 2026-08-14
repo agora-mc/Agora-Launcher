@@ -104,3 +104,26 @@ export function waterSpan(state: EngineState): { x0: number; x1: number } {
   if (a === null) return { x0: 0, x1: 1 };
   return { x0: (a * 12) - state.OVER, x1: ((z as number) * 12) - state.OVER };
 }
+
+/**
+ * Undo the view transform: screen point → canvas point.
+ *
+ * The zoom/pan is a CSS transform on the canvas element, so the pixels move but
+ * the canvas's own coordinate space does not. Hit tests must therefore be run on
+ * the inverse, or everything becomes clickable somewhere other than where it is
+ * drawn — which is exactly what happened as soon as you zoomed.
+ *
+ * Mirrors `transform: translate(tx, ty) scale(zoom)` with a 50%/50% origin.
+ */
+export function viewToCanvas(
+  clientX: number,
+  clientY: number,
+  view: { zoom: number; tx: number; ty: number },
+  w: number,
+  h: number,
+): { x: number; y: number } {
+  return {
+    x: (clientX - view.tx - w / 2) / view.zoom + w / 2,
+    y: (clientY - view.ty - h / 2) / view.zoom + h / 2,
+  };
+}

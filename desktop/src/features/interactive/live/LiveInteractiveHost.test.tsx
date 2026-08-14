@@ -73,8 +73,11 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     render(<LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} />);
     expect(screen.getByText('Loading live data…')).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    expect(screen.getAllByText('High Interaction').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByRole('button', { name: 'Use Standard view' })).toBeInTheDocument();
+    // No "High Interaction" heading: the surface announces itself, and the
+    // control row carries Back / Refresh / Standard on ONE line instead.
+    expect(screen.queryByRole('heading', { name: 'High Interaction' })).toBeNull();
+    expect(screen.getByRole('button', { name: /Use Standard view/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
   });
 
   it('shows a fail-closed error state with Retry and Standard escape on adapter failure', async () => {
@@ -84,7 +87,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     render(<LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} />);
     await waitFor(() => expect(screen.getByText(/could not load live data/i)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Use Standard view' }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('button', { name: /Use Standard view/ }).length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows an error when the scene has no instance (never a valid empty instance)', async () => {
@@ -241,7 +244,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         />,
       );
       await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-      const bench = screen.getByTestId('instance-bench');
+      const bench = screen.getByTestId('world-editor');
       expect(bench).toHaveAttribute('data-launch-state', c.launch);
       expect(bench).toHaveAttribute('data-lock-state', c.busy ? 'busy' : 'editable');
       unmount();
@@ -259,7 +262,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    const bench = screen.getByTestId('instance-bench');
+    const bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
   });
 
@@ -331,7 +334,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     const load = vi.fn(async (): Promise<LiveHostData> => makeData());
     render(<LiveInteractiveHost instanceId="inst-1" onUseStandardView={onUseStandardView} load={load} />);
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Use Standard view' }));
+    fireEvent.click(screen.getByRole('button', { name: /Use Standard view/ }));
     expect(onUseStandardView).toHaveBeenCalledTimes(1);
   });
 
@@ -346,7 +349,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    let bench = screen.getByTestId('instance-bench');
+    let bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
 
@@ -358,7 +361,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         processState={{ phase: 'launching', instanceId: 'inst-1' }}
       />,
     );
-    bench = screen.getByTestId('instance-bench');
+    bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'starting');
     expect(bench).toHaveAttribute('data-lock-state', 'busy');
 
@@ -371,7 +374,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         processState={{ phase: 'idle', instanceId: 'inst-1' }}
       />,
     );
-    bench = screen.getByTestId('instance-bench');
+    bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
   });
@@ -382,11 +385,11 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       <LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} installActive />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    let bench = screen.getByTestId('instance-bench');
+    let bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-lock-state', 'busy');
 
     rerender(<LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} installActive={false} />);
-    bench = screen.getByTestId('instance-bench');
+    bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
   });
 
@@ -415,7 +418,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
     // The accepted read is projected with the LATEST canonical state, not the
     // stale idle captured when the read started.
-    const bench = screen.getByTestId('instance-bench');
+    const bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'running');
     expect(bench).toHaveAttribute('data-lock-state', 'busy');
   });

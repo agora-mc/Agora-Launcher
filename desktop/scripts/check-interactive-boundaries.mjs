@@ -211,6 +211,7 @@ const TAURI_READ_COMMANDS = new Set([
   'getInstanceDetail',
   'listInstanceContent',
   'enrichInstanceContent',
+  'getDependencyGraph',
   'queryLaunchState',
   'checkInstanceHealth',
   'checkAllInstanceHealth',
@@ -229,6 +230,8 @@ const TAURI_READ_COMMANDS = new Set([
   'getRegistryStatus',
   'listCategories',
   'getRegistryItem',
+  'fetchModrinthProject',
+  'isModrinthEnabled',
   'browseItems',
   'forYouItems',
 ]);
@@ -247,6 +250,12 @@ function liveSubarea(file) {
       '/live/liveCapabilities.ts',
       '/live/presentationPreference.ts',
       '/live/intentController.ts',
+      // The v4-world foreground port (V5-PORT-PLAN §5 phase 4): presentation
+      // only, emits VisualIntent via the host, no tauri.
+      '/live/WorldEditor.tsx',
+      '/live/worldEditorData.ts',
+      // Persisted interaction achievements (pure localStorage, no tauri).
+      '/live/interactionAchievements.ts',
     ];
     return knownCore.some((name) => norm.endsWith(name)) ? 'core' : 'unknown';
   }
@@ -379,6 +388,9 @@ function checkLiveFile(file, source, rel, reportFn) {
   const allowedSubareas = LIVE_EDGES[subarea];
 
   for (const spec of collectSpecifiers(source)) {
+    // Styles are side-effect imports; the TS resolver cannot resolve .css and
+    // they carry no runtime dependency edge worth enforcing.
+    if (spec.endsWith('.css')) continue;
     // Tauri is only reachable by the read layer via a narrow named import.
     if (spec === '@/lib/tauri' || spec.startsWith('@/lib/tauri/')) {
       const forms = tauriImportForms(source, spec);
@@ -477,6 +489,8 @@ function checkFile(file) {
   const allowedInternal = ALLOWED[area].internal;
 
   for (const spec of collectSpecifiers(source)) {
+    // Styles are side-effect imports; they carry no runtime dependency edge.
+    if (spec.endsWith('.css')) continue;
     const resolved = resolveSpecifier(spec, file);
     if (resolved) {
       if (isWithin(ROOT, resolved)) {

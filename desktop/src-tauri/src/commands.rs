@@ -430,7 +430,11 @@ pub async fn launch_instance(
         .await;
         // The delegated session ended: release the launch marker so an install
         // for this instance is permitted again (SOL-2 §19.3).
-        state_for_monitor.lock().await.active_launches.remove(&id_for_monitor);
+        state_for_monitor
+            .lock()
+            .await
+            .active_launches
+            .remove(&id_for_monitor);
 
         use tauri::Emitter;
         let _ = app_for_monitor.emit(
@@ -1056,7 +1060,23 @@ pub async fn check_instance_health(
                         code: "ERR_INSTANCE_PATH".into(),
                         message: e.to_string(),
                     })?;
-                let manifest = load_manifest(&app, &sanitized)?;
+                let mut manifest = load_manifest(&app, &sanitized)?;
+
+                // Parse jar dependency metadata here, where the user already
+                // expects a scan to take a moment, and let it populate the
+                // per-instance cache. Two things follow: the health check itself
+                // reasons about CURRENT jar declarations rather than whatever the
+                // manifest happened to record at install time, and every later
+                // dependency read (graph, disable plan, removal plan) hits a warm
+                // cache instead of re-opening every jar.
+                //
+                // Best-effort: a jar that will not parse is a health finding, not
+                // a reason to fail the whole check.
+                let _ = dependency_ops::refresh_installed_jar_metadata(
+                    &app,
+                    &sanitized,
+                    &mut manifest.mods,
+                );
 
                 // Registry DB for curated known_conflicts â€” optional (Phase 3: never required)
                 let reg_path = paths::registry_db_path(&app).ok();
@@ -2460,6 +2480,27 @@ pub async fn report_still_crashing(
             &manifest.mods,
             &crash_log_text,
         )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Read the whole installed-content dependency graph for an instance.
+///
+/// Read-only, and one call rather than one per mod — a UI that draws
+/// relationships needs every edge at once, and `get_disable_plan` answers only
+/// "who needs THIS one". Edges are filename-to-filename because that is the
+/// identifier the content list already carries.
+#[tauri::command]
+pub async fn get_dependency_graph(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<dependency_ops::DependencyEdge>> {
+    tokio::task::spawn_blocking(move || {
+        let mut manifest = load_manifest(&app, &instance_id)?;
+        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        Ok(dependency_ops::build_dependency_graph(&manifest.mods))
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3999,7 +4040,9 @@ fn ensure_install_apply_allowed(
         if reservation.instance_id == instance_id {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTALL_LAUNCH_RESERVED".into(),
-                message: "This instance is starting — wait for the launch to finish before installing.".into(),
+                message:
+                    "This instance is starting — wait for the launch to finish before installing."
+                        .into(),
             });
         }
     }
@@ -4008,7 +4051,9 @@ fn ensure_install_apply_allowed(
     if shared.active_launches.contains(instance_id) {
         return Err(LauncherError::Generic {
             code: "ERR_INSTALL_LAUNCH_ACTIVE".into(),
-            message: "This instance is starting a launch — wait for it to finish before installing.".into(),
+            message:
+                "This instance is starting a launch — wait for it to finish before installing."
+                    .into(),
         });
     }
     if shared.active_install_instances.contains(instance_id) {
@@ -5863,7 +5908,9 @@ mod command_helper_tests {
         {
             let shared = state.blocking_lock();
             assert_eq!(
-                ensure_install_apply_allowed(&shared, "inst-a").unwrap_err().code(),
+                ensure_install_apply_allowed(&shared, "inst-a")
+                    .unwrap_err()
+                    .code(),
                 "ERR_INSTALL_PROCESS_ACTIVE"
             );
         }
@@ -5950,7 +5997,9 @@ mod command_helper_tests {
         {
             let shared = state.blocking_lock();
             assert_eq!(
-                ensure_launch_admitted(&shared, "inst-a").unwrap_err().code(),
+                ensure_launch_admitted(&shared, "inst-a")
+                    .unwrap_err()
+                    .code(),
                 "ERR_LAUNCH_INSTALL_ACTIVE"
             );
         }
@@ -5963,7 +6012,9 @@ mod command_helper_tests {
             let shared = state.blocking_lock();
             // Install while the (delegated) launch marker is set is rejected.
             assert_eq!(
-                ensure_install_apply_allowed(&shared, "inst-a").unwrap_err().code(),
+                ensure_install_apply_allowed(&shared, "inst-a")
+                    .unwrap_err()
+                    .code(),
                 "ERR_INSTALL_LAUNCH_ACTIVE"
             );
             // Launch is permitted once the install is gone.

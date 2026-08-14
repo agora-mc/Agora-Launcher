@@ -212,6 +212,15 @@ The existing shell needs a stacking context above the canvas and, where pages cu
 opaque background, a translucent panel treatment (the prototype's `--glass` + `--edge` tokens are a
 working reference).
 
+> **That stacking context must be explicit — `.app-shell { position: relative; z-index: 2 }`.**
+> This bit us once and the failure is silent. `.ambience-canvas` is `position: fixed; z-index: 0`,
+> which paints it above *every non-positioned element*, and the shell wrapper is non-positioned.
+> It appeared to work only because `backdrop-filter: blur(2px)` on `main` incidentally created a
+> stacking context. The Living Background page sets `backdrop-filter: none` — deliberately, so the
+> world is unobstructed — which removed that accident, and the entire page dropped behind the canvas:
+> invisible and unclickable, with no error anywhere. Never rely on a blur, transform, opacity or
+> filter to lift the UI above the world; those are visual choices and any page may turn them off.
+
 **Events.** The engine attaches its own `pointermove`/`click` listeners, exactly as the prototype
 does. It must **not** call `stopPropagation` — see §7.
 
@@ -420,7 +429,16 @@ against an explicit list, so adding a value means widening the guard in `loadPre
 
 - Play as the hero action; the screen reads as save-select, not a control panel
 - Inventory shelf of icon tiles using each mod's real `icon_url`
-- Bounded neighbourhood diagram on selection (real curves, capped node count)
+- Bounded neighbourhood diagram on selection (real curves, capped node count).
+  **This needs a real dependency read, and that read did not exist.** Relationships were built only
+  from `health.blockers[].loader_compatibility`, which (a) exists solely when the instance is
+  unhealthy and (b) describes mod→*loader version* requirements whose targets rarely resolve to
+  another installed node. A healthy instance therefore had an empty graph — no curves to draw, and
+  `requiredBy` stuck at 0 so **every item came out `common`**. Rarity and curves die together
+  because they share this one input. The fix is `get_dependency_graph`
+  (`agora_core::dependency_ops::build_dependency_graph`): one read, filename→filename edges, both
+  endpoints installed by construction. Rarity is then genuinely dependency-count-derived:
+  0 → common, 1+ → rare, 4+ → epic, 10+ → legendary.
 - The pre-flight health check, including "Show me" / "Play anyway"
 - Advanced drawer, closed by default
 - Plain language ("One mod is missing its file", never "1 blocker · 24 recommendations")

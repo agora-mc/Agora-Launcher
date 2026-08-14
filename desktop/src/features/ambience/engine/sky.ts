@@ -10,7 +10,7 @@
 
 import type { EngineState } from './state';
 import { mixc, rgba } from './state';
-import { carveBasin, ridge, waterSpan } from './terrain';
+import { carveBasin, groundYWorld, paraX, ridge, waterSpan } from './terrain';
 import type { WorldState } from './types';
 
 /**
@@ -31,23 +31,83 @@ function reanchorPond(state: EngineState): void {
   }
 }
 
+/**
+ * F-rainbow-layer: the rainbow is drawn in the SKY pass (after the clouds,
+ * before the parallax ridges) so it sits just in front of the sky and BEHIND
+ * the terrain. The rainbow-end props are invisible hit targets (their `y` is
+ * anchored to the terrain so the arc's flat ends read as rising from behind
+ * the hills).
+ */
+function drawRainbow(state: EngineState, ctx: CanvasRenderingContext2D): void {
+  const world = state.world as WorldState | null;
+  if (!world || !world.props) return;
+  const left = world.props.find(function (p) { return p.key === 'rainbow-end' && p.side === 'l'; });
+  if (!left) return;
+  const cols = ['#E6533E', '#F4C542', '#5E9E4A', '#3EC7C0', '#63B4FF', '#C58BFF'];
+  const cxx = ((left.x as number) + (left.pairX as number)) / 2 + paraX(state, 'sky');
+  const rad = ((left.pairX as number) - (left.x as number)) / 2;
+  const gy = left.y !== undefined ? left.y : state.H * 0.55;
+  for (let ri = 0; ri < cols.length; ri++) {
+    ctx.strokeStyle = cols[ri];
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cxx, gy, rad - ri * 4 + 24, Math.PI, 0);
+    ctx.stroke();
+  }
+}
+
 export function regenerateTerrain(state: EngineState): void {
   if (state.W === state.lastW) return;
   state.lastW = state.W;
-  state.R1 = ridge(1.3, 90, state.H * 0.62, 16, state.W, state.OVER);
-  state.R2 = ridge(4.7, 70, state.H * 0.74, 14, state.W, state.OVER);
-  state.R3 = ridge(8.1, 44, state.H * 0.86, 12, state.W, state.OVER);
+  const [s1, s2, s3] = state.ridgeSeeds;
+  state.R1 = ridge(s1, 90, state.H * 0.62, 16, state.W, state.OVER);
+  state.R2 = ridge(s2, 70, state.H * 0.74, 14, state.W, state.OVER);
+  state.R3 = ridge(s3, 44, state.H * 0.86, 12, state.W, state.OVER);
   state.BASIN = carveBasin(state.R3, 12, 0.30, 11, 46);
   // water fills the bowl up to its lowest rim — stays in the dip, never floods
   const b = state.BASIN;
   state.WATER_LEVEL = Math.max(state.R3[b.c - b.half], state.R3[b.c + b.half]);
   reanchorPond(state);
+  reanchorRainbow(state);
+}
+
+/**
+ * Re-span the rainbow across the new viewport.
+ *
+ * Its ends were positioned once, in absolute pixels, at spawn time — so after a
+ * resize the arc kept the old window's width and drifted away from the hills it
+ * is supposed to rise from.
+ */
+export function reanchorRainbow(state: EngineState): void {
+  const world = state.world as WorldState | null;
+  if (!world || !world.props) return;
+  for (const p of world.props) {
+    if (p.key !== 'rainbow-end') continue;
+    const fx = p.fx as number | undefined;
+    const pairFx = p.pairFx as number | undefined;
+    if (fx === undefined || pairFx === undefined) continue;
+    p.x = state.W * fx;
+    p.pairX = state.W * pairFx;
+  }
+  // Both ends sit on the lower of the two ground heights, as at spawn.
+  const l = world.props.find((p) => p.key === 'rainbow-end' && p.side === 'l');
+  const r = world.props.find((p) => p.key === 'rainbow-end' && p.side === 'r');
+  if (l && r) {
+    const gy = Math.max(
+      groundYWorld(state, l.x as number, 2),
+      groundYWorld(state, r.x as number, 2),
+    );
+    l.y = gy;
+    r.y = gy;
+  }
 }
 
 /** Render exactly one background frame at time `ts`. */
 export function skyFrame(state: EngineState, ctx: CanvasRenderingContext2D, ts: number): void {
+  // regenerateTerrain guards on `W !== lastW` itself (and sets lastW after
+  // generating); do NOT pre-set lastW here or the guard always early-returns
+  // and the terrain (ridges, basin, water) never renders (F-terrain).
   if (state.W !== state.lastW) {
-    state.lastW = state.W;
     regenerateTerrain(state);
   }
   const day = state.tod; // 0..1  (0 = deep night, .5 = noon)
@@ -94,6 +154,11 @@ export function skyFrame(state: EngineState, ctx: CanvasRenderingContext2D, ts: 
     ctx.fillRect(cx + 26, cy - 13, cw * 0.62, 15);
   }
   ctx.globalAlpha = 1;
+
+  // rainbow — drawn here, in the SKY pass, so it sits just in front of the
+  // sky and BEHIND the terrain ridges (F-rainbow-layer). The rainbow-end
+  // props remain invisible hit targets for the egg.
+  drawRainbow(state, ctx);
 
   // parallax ridges, far to near
   [[state.R1, mixc([16, 26, 46], [86, 124, 150], dl), 16, -26],

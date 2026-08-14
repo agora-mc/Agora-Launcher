@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide' | 'lab' | 'about' | 'settings';
+export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide' | 'field-guide' | 'living-background' | 'lab' | 'about' | 'settings';
 
 /**
  * A single typed application destination. Replaces the previous pattern of

@@ -15,7 +15,7 @@ import { AmbienceCanvas } from './AmbienceCanvas';
 import { AmbienceEngine, type AmbienceProfile } from './engine/engine';
 import type { AmbienceEvent } from './engine/state';
 import type { JournalData } from './engine/eggs';
-import { loadAmbienceSettings, saveAmbienceSettings } from './ambienceSettings';
+import { loadAmbienceSettings, saveAmbienceSettings, type AmbienceSettings } from './ambienceSettings';
 
 export interface AmbienceContextValue {
   /** The effective profile the canvas renders with. */
@@ -34,6 +34,21 @@ export interface AmbienceContextValue {
   lastEvent: AmbienceEvent | null;
   /** Force a profile while a surface is open (e.g. the Lab bench drops to calm). */
   overrideProfile: (p: AmbienceProfile | null) => void;
+  /** Hide the standard page background (0% opacity) behind the world. */
+  clearBackground: boolean;
+  setClearBackground: (on: boolean) => void;
+  /** Living-background page controls (proxied to the engine). */
+  setTod: (t: number) => void;
+  setWeather: (w: 'clear' | 'rain' | 'snow') => void;
+  setZoom: (z: number) => void;
+  setBuddy: (on: boolean) => void;
+  /** Rainbow: put one up now, or take it down. */
+  setRainbow: (on: boolean) => void;
+  /** Music: pick a piece, an instrument, or hand it back to autoplay. */
+  setTrack: (id: string) => void;
+  setInstrument: (id: string) => void;
+  musicAuto: boolean;
+  setMusicAuto: (on: boolean) => void;
   ready: boolean;
 }
 
@@ -50,7 +65,7 @@ function reducedMotionPref(): boolean {
 }
 
 export function AmbienceProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<{ enabled: boolean; profile: AmbienceProfile; musicVolume: number; sound: boolean } | null>(null);
+  const [settings, setSettings] = useState<AmbienceSettings | null>(null);
   const [override, setOverride] = useState<AmbienceProfile | null>(null);
   const [journal, setJournal] = useState<JournalData | null>(null);
   const [lastEvent, setLastEvent] = useState<AmbienceEvent | null>(null);
@@ -76,14 +91,18 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     const root = document.documentElement;
     const active = settings && settings.enabled ? (overrideRef.current ?? settings.profile) : 'off';
     root.setAttribute('data-ambience', active);
-    return () => { root.removeAttribute('data-ambience'); };
+    root.setAttribute('data-ambience-clear', settings?.clearBackground ? 'on' : 'off');
+    return () => {
+      root.removeAttribute('data-ambience');
+      root.removeAttribute('data-ambience-clear');
+    };
   }, [settings, override]);
 
   const effectiveProfile: AmbienceProfile = !settings || !settings.enabled
     ? 'off'
     : (overrideRef.current ?? settings.profile);
 
-  const persist = useCallback((patch: Partial<{ enabled: boolean; profile: AmbienceProfile; musicVolume: number; sound: boolean }>) => {
+  const persist = useCallback((patch: Partial<AmbienceSettings>) => {
     setSettings((cur) => {
       if (!cur) return cur;
       const next = { ...cur, ...patch };
@@ -108,11 +127,22 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setSoundOn: (on) => persist({ sound: on }),
     musicVolume: settings?.musicVolume ?? 0.35,
     setMusicVolume: (v) => persist({ musicVolume: v }),
+    clearBackground: settings?.clearBackground ?? false,
+    setClearBackground: (on) => persist({ clearBackground: on }),
     journal,
     lastEvent,
     overrideProfile: (p) => setOverride(p),
+    setTod: (t) => engine?.setTod(t),
+    setWeather: (w) => engine?.setWeather(w),
+    setZoom: (z) => engine?.setZoom(z),
+    setBuddy: (on) => engine?.setBuddy(on),
+    setRainbow: (on) => engine?.setRainbow(on),
+    setTrack: (id) => engine?.setTrack(id),
+    setInstrument: (id) => engine?.setInstrument(id),
+    musicAuto: settings?.musicAuto ?? true,
+    setMusicAuto: (on) => { persist({ musicAuto: on }); engine?.setMusicAuto(on); },
     ready: settings !== null,
-  }), [effectiveProfile, settings, journal, lastEvent, persist]);
+  }), [effectiveProfile, settings, journal, lastEvent, persist, engine]);
 
   // Music rides along with the full profile (optional in calm).
   const musicOn = effectiveProfile === 'full';

@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { createEngineState, type EngineState } from './engine/state';
 import { createWorld } from './engine/world';
-import { regenerateTerrain } from './engine/sky';
+import { regenerateTerrain, skyFrame } from './engine/sky';
 import { advanceClock, createClock, type ClockState } from './engine/clock';
 import { EGGS } from './engine/eggs';
 import { groundYWorld, waterSpan } from './engine/terrain';
@@ -31,6 +31,9 @@ import { SPECIES_BY_KEY } from './engine/species';
 import { noteFreq } from './engine/audio/music';
 import type { Species, WorldState } from './engine/types';
 import { AmbienceCanvas } from './AmbienceCanvas';
+
+/** The layout these tests were written against. */
+const PINNED_WORLD_SEED = 20260811;
 
 /* ── test world builder (no canvas) ─────────────────────────────────── */
 
@@ -44,7 +47,15 @@ interface TestWorld {
 function noop(): void { /* noop */ }
 
 function buildTestWorld(): TestWorld {
-  const state = createEngineState(false);
+  // Pin the world seed. The app seeds randomly per session so every launch is a
+  // different place, but egg reachability is asserted against a KNOWN layout —
+  // a random world would make this suite flaky for reasons unrelated to eggs.
+  const state = createEngineState(false, PINNED_WORLD_SEED);
+  state.ridgeSeeds = [1.3, 4.7, 8.1];
+  // The terrain golden values below come from the prototype, which used these
+  // three ridge seeds literally. The app now derives them from the session seed,
+  // so pin them here to keep comparing against the same landscape.
+  state.ridgeSeeds = [1.3, 4.7, 8.1];
   state.W = 1024;
   state.H = 768;
   const events: unknown[] = [];
@@ -215,6 +226,53 @@ describe('terrain (port fidelity)', () => {
       if (r3[i] > t.state.WATER_LEVEL) submerged++;
     }
     expect(submerged).toBeGreaterThan(3);
+  });
+
+  it('skyFrame generates terrain on a fresh state (F-terrain regression)', () => {
+    // The production bug: skyFrame set `state.lastW = state.W` BEFORE calling
+    // regenerateTerrain, whose own `W !== lastW` guard then always early-
+    // returned — the sky drew, but the terrain (ridges/basin/water) never
+    // rendered. This test drives skyFrame directly on a fresh state and
+    // asserts the ridges are actually generated.
+    // Pin the world seed. The app seeds randomly per session so every launch is a
+  // different place, but egg reachability is asserted against a KNOWN layout —
+  // a random world would make this suite flaky for reasons unrelated to eggs.
+  const state = createEngineState(false, PINNED_WORLD_SEED);
+    state.W = 1024;
+    state.H = 768;
+    const world = createWorld(state, { blip: noop, burst: noop, emit: noop });
+    state.world = world;
+    // jsdom has no canvas; a minimal stub context is enough for skyFrame to
+    // run (the terrain is generated before any drawing is consulted).
+    const ctx = {
+      createLinearGradient: () => ({ addColorStop: noop }),
+      fillRect: noop,
+      fillStyle: '',
+      globalAlpha: 1,
+      beginPath: noop,
+      moveTo: noop,
+      lineTo: noop,
+      closePath: noop,
+      fill: noop,
+      stroke: noop,
+      strokeStyle: '',
+      lineWidth: 1,
+      save: noop,
+      restore: noop,
+      translate: noop,
+      scale: noop,
+      arc: noop,
+      ellipse: noop,
+      clearRect: noop,
+    } as unknown as CanvasRenderingContext2D;
+    skyFrame(state, ctx, 0);
+    expect(state.R1?.length).toBeGreaterThan(0);
+    expect(state.R2?.length).toBeGreaterThan(0);
+    expect(state.R3?.length).toBeGreaterThan(0);
+    expect(state.BASIN).not.toBeNull();
+    // And a second frame (no resize) does not wipe them.
+    skyFrame(state, ctx, 16);
+    expect(state.R3?.length).toBeGreaterThan(0);
   });
 });
 

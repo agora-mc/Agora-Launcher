@@ -99,6 +99,11 @@ const MODRINTH_PROJECT_TYPES: Partial<Record<string, string>> = {
 
 const SUPPORTED_MODRINTH_PROJECT_TYPES = new Set(Object.values(MODRINTH_PROJECT_TYPES));
 
+/** Bazaar stall id ⇄ Browse content type. `null` content type = "Everything". */
+function contentTypeToStall(contentType: string | null): string {
+  return contentType ?? 'all';
+}
+
 function formatCategoryName(value: string): string {
   return value.replace(/[-_]/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
@@ -369,7 +374,7 @@ function RegistryRecoveryShell({
 }) {
   return (
     <div className="space-y-6">
-      <section>
+      <section className="agora-hero compact">
         <h2 className="text-2xl font-bold mb-2">Browse</h2>
         <p className="text-muted-foreground">
           Curated mods, packs, shaders, resource packs, and more.
@@ -468,6 +473,18 @@ function BrowseContent({
   // High Interaction Browse (the Bazaar, v5-browse port): default on when the
   // presentation preference is High Interaction, switchable at any time.
   const [bazaarMode, setBazaarMode] = useState<boolean>(() => loadPreference() === 'high-interaction');
+  /**
+   * The open Bazaar stall, mapped onto the same `contentType` the Browse list
+   * queries with. A stall is a different QUERY, not a filter over the loaded
+   * page: previously only `mod` was ever fetched, so every other stall showed an
+   * empty shelf. "Everything" clears the content type entirely.
+   */
+  const [bazaarStall, setBazaarStallState] = useState<string>(() => contentTypeToStall(initialContentType ?? 'mod'));
+  const setBazaarStall = useCallback((stallId: string) => {
+    setBazaarStallState(stallId);
+    setContentType(stallId === 'all' ? null : stallId);
+    setCategory(null);          // a category from the old stall cannot apply to the new one
+  }, []);
 
   // ---- Separate loading/error state for metadata vs search ----
   const [metaLoading, setMetaLoading] = useState(true);
@@ -578,13 +595,20 @@ function BrowseContent({
 
   const bulkInstallLabel = (count: number) => `Installing ${count} selected item${count === 1 ? '' : 's'}`;
 
-  const startBulkInstall = (instanceId: string) => {
+  // `sourceItems` lets callers (e.g. the Bazaar's staged bag) bulk-install a
+  // specific batch; the default is the current multi-select.
+  const startBulkInstall = (instanceId: string, sourceItems?: Iterable<BrowseItem>) => {
     if (bulkInstallBusyRef.current) return;
     bulkInstallBusyRef.current = true;
+    const batch = Array.from(sourceItems ?? selectedItems.values());
+    if (batch.length === 0) {
+      bulkInstallBusyRef.current = false;
+      return;
+    }
     const instance = instances.find((candidate) => candidate.instance_id === instanceId);
     const instanceName = instance?.name ?? instanceId;
-    const intent = buildBatchInstallIntent(instanceId, selectedItems.values());
-    const count = selectedItems.size;
+    const intent = buildBatchInstallIntent(instanceId, batch);
+    const count = batch.length;
     const label = bulkInstallLabel(count);
 
     // Resolve in the corner first, then promote anything needing attention to
@@ -762,10 +786,31 @@ function BrowseContent({
     author: it.author,
     categories: it.categories ?? [],
     supportedVersions: it.supportedVersions ?? [],
-    popular: (it.downloads ?? 0) >= 100000 || (it.follows ?? 0) >= 10000,
+    curated: it.source === 'curated',
+    downloads: it.downloads ?? undefined,
+    follows: it.follows ?? undefined,
   })), [items]);
 
   const bazaarInstanceVersion = activeInstance?.row.minecraft_version ?? null;
+
+  // The Bazaar's "N picked" button IS the bulk-install button: it hands the
+  // staged bag to the exact same reviewed batch pipeline as the standard
+  // selection bar (same intent, same review, same auto-confirm rules).
+  const handleBazaarInstall = useCallback((staged: BazaarItem[]) => {
+    const batch: BrowseItem[] = [];
+    for (const bi of staged) {
+      const found = items.find((it) => it.id === bi.id);
+      if (found) batch.push(found);
+    }
+    if (batch.length === 0) return;
+    setSelectedItems(new Map(batch.map((it) => [`${it.source}:${it.id}`, it])));
+    if (activeInstanceId) {
+      startBulkInstall(activeInstanceId, batch);
+    } else {
+      setPickerInstanceId('');
+      setPickerOpen(true);
+    }
+  }, [items, activeInstanceId, startBulkInstall]);
 
   // ---- Build a stable query key from active filter params ----
   const queryKey = useMemo(
@@ -988,18 +1033,154 @@ function BrowseContent({
     return () => observer.disconnect();
   }, [hasMore, searchLoading, loadMoreLoading, loadMoreError, loadNextPage]);
 
+
   // ---- Render ----
+  // The bulk-install dialogs (instance picker + canonical InstallFlow) are
+  // rendered by BOTH the standard page AND the Bazaar page — the Bazaar's
+  // "N picked" button drives the exact same reviewed pipeline, and it must
+  // open on the Bazaar rather than bouncing to the normal Browse view.
+  const bulkInstallDialogs = (
+    <>
+      {/* Instance picker for bulk install when no instance context is set */}
+      <Dialog open={pickerOpen} onOpenChange={(open) => { if (!open) setPickerOpen(false); }}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>
+            Install {selectedItems.size} selected item{selectedItems.size === 1 ? '' : 's'}
+          </DialogTitle>
+          <DialogDescription>
+            Choose an instance. The latest compatible version of each item will be installed.
+          </DialogDescription>
+          {instances.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No instances yet. Create an instance from My Instances first.
+            </p>
+          ) : (
+            <>
+              <select
+                value={pickerInstanceId}
+                onChange={(e) => setPickerInstanceId(e.target.value)}
+                aria-label="Target instance"
+                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Choose an instance…</option>
+                {instances.map((instance) => (
+                  <option key={instance.instance_id} value={instance.instance_id}>
+                    {instance.name} — {instance.loader} · MC {instance.minecraft_version}
+                  </option>
+                ))}
+              </select>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(false)}
+                  className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmPickerInstall}
+                  disabled={!pickerInstanceId}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Install {selectedItems.size} item{selectedItems.size === 1 ? '' : 's'}
+                </button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Canonical install pipeline for the selected batch */}
+      {installTarget && (
+        <InstallFlow
+          open
+          intent={installTarget.intent}
+          instanceName={installTarget.instanceName}
+          initialPlan={installTarget.initialPlan}
+          initialError={installTarget.initialError}
+          background
+          autoBackground={autoConfirmCleanInstalls}
+          alwaysAutoConfirm={alwaysAutoConfirmInstalls}
+          onBackgroundStart={(plan) => {
+            const count = plan.intent.action.type === 'batch-install'
+              ? plan.intent.action.items.length
+              : 1;
+            clearSelection();
+            startPlan(
+              plan,
+              bulkInstallLabel(count),
+              installTarget.instanceName,
+              (error, failedPlan) => {
+                bulkInstallBusyRef.current = false;
+                setInstallTarget({
+                  intent: installTarget.intent,
+                  instanceName: installTarget.instanceName,
+                  initialPlan: failedPlan,
+                  initialError: {
+                    message: error,
+                    code: 'ERR_APPLY',
+                    skipItemId: failedBatchRootItemId(failedPlan, error),
+                  },
+                });
+              },
+            );
+          }}
+          onOpenInstance={onOpenInstance}
+          onClose={() => {
+            // Keep the selection when the review is cancelled so the user can
+            // adjust it and try again; background starts clear it themselves.
+            setInstallTarget(null);
+            bulkInstallBusyRef.current = false;
+          }}
+        />
+      )}
+    </>
+  );
+
+  // High Interaction Browse (the Bazaar) is its own page: the standard search
+  // chrome stays off-screen so the playful presentation owns the whole view.
+  if (bazaarMode) {
+    return (
+      <div className="space-y-6">
+        <BrowseBazaar
+          items={bazaarItems}
+          instanceVersion={bazaarInstanceVersion}
+          ownedIds={bazaarOwnedIds}
+          onAdd={(item) => onSelectMod?.(item.id, activeInstanceId || undefined)}
+          onOpenMod={(item) => onSelectMod?.(item.id, activeInstanceId || undefined)}
+          onExit={() => setBazaarMode(false)}
+          hasMore={hasMore && !searchLoading}
+          loadMoreLoading={loadMoreLoading}
+          onLoadMore={loadNextPage}
+          onInstallBag={handleBazaarInstall}
+          stall={bazaarStall}
+          onStallChange={setBazaarStall}
+        />
+        {bulkInstallDialogs}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <section>
+      <section className="agora-hero compact">
         <div className="flex items-center gap-3 mb-2">
           <h2 className="text-2xl font-bold">Browse</h2>
+          <button
+            type="button"
+            onClick={() => setBazaarMode(true)}
+            className="ml-auto rounded-lg border border-primary bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-sm hover:bg-primary/90"
+            data-testid="open-bazaar"
+          >
+            The Bazaar 🎡
+          </button>
           {/* <span className="rounded-full bg-muted text-muted-foreground px-2 py-0.5 text-xs font-medium uppercase tracking-wide">
             Preview
           </span> */}
         </div>
         <p className="text-muted-foreground">
-          Curated mods, packs, shaders, resource packs, and more.
+          Curated mods, packs, shaders, resource packs, and more. High Interaction fans can wander The Bazaar instead.
         </p>
       </section>
 
@@ -1321,24 +1502,6 @@ function BrowseContent({
             </button>
           )}
         </div>
-      ) : bazaarMode ? (
-        <div className="space-y-3">
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => setBazaarMode(false)}
-              className="rounded-md border border-input bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent"
-            >
-              Back to list
-            </button>
-          </div>
-          <BrowseBazaar
-            items={bazaarItems}
-            instanceVersion={bazaarInstanceVersion}
-            ownedIds={bazaarOwnedIds}
-            onAdd={(item) => onSelectMod?.(item.id, activeInstanceId || undefined)}
-          />
-        </div>
       ) : layout === 'grid' ? (
         <BrowseTileResults
           items={items}
@@ -1409,100 +1572,8 @@ function BrowseContent({
         </div>
       )}
 
-      {/* Instance picker for bulk install when no instance context is set */}
-      <Dialog open={pickerOpen} onOpenChange={(open) => { if (!open) setPickerOpen(false); }}>
-        <DialogContent className="max-w-md">
-          <DialogTitle>
-            Install {selectedItems.size} selected item{selectedItems.size === 1 ? '' : 's'}
-          </DialogTitle>
-          <DialogDescription>
-            Choose an instance. The latest compatible version of each item will be installed.
-          </DialogDescription>
-          {instances.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No instances yet. Create an instance from My Instances first.
-            </p>
-          ) : (
-            <>
-              <select
-                value={pickerInstanceId}
-                onChange={(e) => setPickerInstanceId(e.target.value)}
-                aria-label="Target instance"
-                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value="">Choose an instance…</option>
-                {instances.map((instance) => (
-                  <option key={instance.instance_id} value={instance.instance_id}>
-                    {instance.name} — {instance.loader} · MC {instance.minecraft_version}
-                  </option>
-                ))}
-              </select>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen(false)}
-                  className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmPickerInstall}
-                  disabled={!pickerInstanceId}
-                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  Install {selectedItems.size} item{selectedItems.size === 1 ? '' : 's'}
-                </button>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Canonical install pipeline for the selected batch */}
-      {installTarget && (
-        <InstallFlow
-          open
-           intent={installTarget.intent}
-           instanceName={installTarget.instanceName}
-           initialPlan={installTarget.initialPlan}
-           initialError={installTarget.initialError}
-           background
-           autoBackground={autoConfirmCleanInstalls}
-           alwaysAutoConfirm={alwaysAutoConfirmInstalls}
-          onBackgroundStart={(plan) => {
-            const count = plan.intent.action.type === 'batch-install'
-              ? plan.intent.action.items.length
-              : 1;
-            clearSelection();
-             startPlan(
-               plan,
-               bulkInstallLabel(count),
-               installTarget.instanceName,
-               (error, failedPlan) => {
-                 bulkInstallBusyRef.current = false;
-                 setInstallTarget({
-                   intent: installTarget.intent,
-                   instanceName: installTarget.instanceName,
-                   initialPlan: failedPlan,
-                   initialError: {
-                     message: error,
-                     code: 'ERR_APPLY',
-                     skipItemId: failedBatchRootItemId(failedPlan, error),
-                   },
-                 });
-               },
-             );
-          }}
-          onOpenInstance={onOpenInstance}
-          onClose={() => {
-            // Keep the selection when the review is cancelled so the user can
-            // adjust it and try again; background starts clear it themselves.
-            setInstallTarget(null);
-            bulkInstallBusyRef.current = false;
-          }}
-        />
-      )}
+      {/* Bulk-install picker + InstallFlow (shared with the Bazaar page). */}
+      {bulkInstallDialogs}
     </div>
   );
 }

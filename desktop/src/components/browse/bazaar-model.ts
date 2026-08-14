@@ -13,16 +13,26 @@
  *  - Taste is linear and additive, exactly as the prototype.
  */
 
-export type Vibe = 'cosy' | 'wild' | 'silly' | 'pretty' | 'tricky';
+/**
+ * Taste axes are REAL Modrinth category slugs (adventure, decoration, magic,
+ * technology, optimization, utility, worldgen, mobs) — not invented words.
+ * The prototype's five fictional vibes were replaced because the labels were
+ * meaningless; these are the categories Agora actually ships with, so the
+ * bars and the reorder explain themselves.
+ */
+export const VIBES = ['adventure', 'decoration', 'magic', 'technology', 'optimization', 'utility', 'worldgen', 'mobs'] as const;
 
-export const VIBES: Vibe[] = ['cosy', 'wild', 'silly', 'pretty', 'tricky'];
+export type Vibe = (typeof VIBES)[number];
 
 export const VIBE_LABEL: Record<Vibe, string> = {
-  cosy: 'Cosy',
-  wild: 'Wild',
-  silly: 'Silly',
-  pretty: 'Pretty',
-  tricky: 'Tricky',
+  adventure: 'Adventure',
+  decoration: 'Decoration',
+  magic: 'Magic',
+  technology: 'Technology',
+  optimization: 'Optimization',
+  utility: 'Utility',
+  worldgen: 'Worldgen',
+  mobs: 'Mobs',
 };
 
 export interface BazaarItem {
@@ -32,10 +42,15 @@ export interface BazaarItem {
   description: string | null;
   contentType: string;
   author: string | null;
+  /** Real Modrinth category slugs (the source of the taste axes + tags). */
   categories: string[];
   supportedVersions: string[];
-  /** Marked popular (the prototype's `hot` ribbon). */
-  popular?: boolean;
+  /** True when this item comes from the curated registry (gets the shiny
+   * curated tint + CURATED tag; everything else stays plain). */
+  curated?: boolean;
+  /** Curatorial signals for sorting/interest. */
+  downloads?: number;
+  follows?: number;
 }
 
 export type VoteDirection = -1 | 0 | 1;
@@ -51,7 +66,7 @@ export interface BazaarState {
 
 export function initialBazaarState(): BazaarState {
   return {
-    taste: { cosy: 0, wild: 0, silly: 0, pretty: 0, tricky: 0 },
+    taste: Object.fromEntries(VIBES.map((v) => [v, 0])) as Record<Vibe, number>,
     votes: {},
     owned: {},
     staged: {},
@@ -64,37 +79,37 @@ export function isOwned(state: BazaarState, id: string): boolean {
 }
 
 /**
- * Map a curated item's categories + content type onto the five taste axes.
- * The mapping is deliberately transparent (a small table) so the recommender
- * can explain itself — the plan's "sorting you can see".
+ * The taste axes ARE the real Modrinth categories: an item's axes are exactly
+ * the categories it is tagged with (intersected with the axis set), so the
+ * recommender can explain itself with the catalog's own vocabulary.
  */
-const CATEGORY_VIBES: Array<[RegExp, Vibe[]]> = [
-  [/building|decoration|furniture|furnish|cosmetic|aesthetic|visual|quality of life|qol/i, ['cosy', 'pretty']],
-  [/adventure|worldgen|biome|creature|animal|exploration|dimension|terrain|nature/i, ['wild']],
-  [/fun|funny|meme|joke|silly|challenge/i, ['silly']],
-  [/shader|graphic|texture|resource|hd|realistic|beauty/i, ['pretty']],
-  [/technology|magic|mechanic|automation|storage|redstone|combat|difficulty|tech/i, ['tricky']],
-];
-
-const CONTENT_TYPE_VIBES: Record<string, Vibe[]> = {
-  shader: ['pretty'],
-  resourcepack: ['pretty', 'cosy'],
-  world: ['wild'],
-  datapack: ['tricky'],
-  server: ['wild', 'tricky'],
-};
-
-export function vibesFor(item: Pick<BazaarItem, 'contentType' | 'categories'>): Vibe[] {
+export function vibesFor(item: Pick<BazaarItem, 'categories'>): Vibe[] {
   const found = new Set<Vibe>();
-  (CONTENT_TYPE_VIBES[item.contentType] ?? []).forEach((v) => found.add(v));
   for (const category of item.categories ?? []) {
-    for (const [re, vibes] of CATEGORY_VIBES) {
-      if (re.test(category)) vibes.forEach((v) => found.add(v));
-    }
+    if ((VIBES as readonly string[]).includes(category)) found.add(category as Vibe);
   }
   // Every item has at least one axis so the shelf is never unjudgeable.
-  if (found.size === 0) found.add('cosy');
+  if (found.size === 0) found.add('utility');
   return VIBES.filter((v) => found.has(v));
+}
+
+/** Capitalise a modrinth category slug for display ("game-mechanics" → "Game mechanics"). */
+export function formatCategory(value: string): string {
+  return value.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** The real Modrinth category tags shown on a tile (capped, deduped). */
+export function categoryTags(item: Pick<BazaarItem, 'categories'>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of item.categories ?? []) {
+    const label = formatCategory(c);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    out.push(label);
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 /**
@@ -106,11 +121,14 @@ export function vibesFor(item: Pick<BazaarItem, 'contentType' | 'categories'>): 
 export function scoreOf(state: BazaarState, item: BazaarItem): number {
   let score = 0;
   for (const v of vibesFor(item)) score += state.taste[v] || 0;
-  return score + (item.popular ? 0.6 : 0) + (isOwned(state, item.id) ? -99 : 0);
+  // Curated picks earn a small, visible nudge on the shelf (not the -99
+  // owned treatment, just a taste-independent tiebreak).
+  return score + (item.curated ? 0.6 : 0) + (isOwned(state, item.id) ? -99 : 0);
 }
 
 /**
- * Prototype `vote`: 👍 = +1 to each of the item's vibes, 👎 = −1; tapping the
+ * Prototype `vote`: ❤️ ("more like this") = +1 to each of the item's vibes,
+ * 💔 ("not for me") = −1; tapping the
  * same button again cancels (returns to 0). Returns the new state.
  */
 export function vote(state: BazaarState, item: BazaarItem, direction: VoteDirection): BazaarState {
@@ -173,11 +191,22 @@ export function crank(state: BazaarState, pool: BazaarItem[]): BazaarItem | null
   return pick;
 }
 
-/** Sort the shelf: score desc, then name for stability. */
+/**
+ * Sort the shelf: taste score desc, then **the order the backend gave us**.
+ *
+ * The incoming array is already sorted by the selected Browse sort (net score by
+ * default), so falling back to the original index means the Bazaar agrees with
+ * the Browse page whenever taste is neutral — and taste starts neutral for
+ * everyone. Tie-breaking on `name` instead made a brand-new shelf look strictly
+ * alphabetical, which reads as "no ranking at all" and buries the good stuff
+ * under whatever starts with "A". This also keeps whichever sort the user picked
+ * meaningful, rather than hardcoding one.
+ */
 export function sortedShelf(state: BazaarState, items: BazaarItem[]): BazaarItem[] {
+  const rank = new Map(items.map((it, i) => [it.id, i]));
   return items.slice().sort((a, b) => {
     const d = scoreOf(state, b) - scoreOf(state, a);
-    return d !== 0 ? d : a.name.localeCompare(b.name);
+    return d !== 0 ? d : (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0);
   });
 }
 
@@ -190,13 +219,75 @@ export interface Stall {
 
 export const STALLS: Stall[] = [
   { id: 'all', label: 'Everything', emoji: '🧺' },
-  { id: 'mod', label: 'Add-ons', emoji: '🧩' },
-  { id: 'pack', label: 'Ready-made worlds', emoji: '🎁' },
-  { id: 'shader', label: 'Make it pretty', emoji: '✨' },
-  { id: 'resourcepack', label: 'Looks & textures', emoji: '🎨' },
-  { id: 'world', label: 'Maps to explore', emoji: '🗺️' },
-  { id: 'datapack', label: 'Tricky extras', emoji: '⚙️' },
+  { id: 'mod', label: 'Mods', emoji: '🧩' },
+  { id: 'pack', label: 'Modpacks', emoji: '🎁' },
+  { id: 'shader', label: 'Shaders', emoji: '✨' },
+  { id: 'resourcepack', label: 'Resource packs', emoji: '🎨' },
+  { id: 'world', label: 'Worlds to explore', emoji: '🗺️' },
+  { id: 'datapack', label: 'Data packs', emoji: '⚙️' },
 ];
+
+/* Blocky stall icons (the prototype's `ICON`), painted on a canvas. */
+export type StallIcon = (c: CanvasRenderingContext2D, w: number, h: number) => void;
+
+function iconPx(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, col: string): void {
+  c.fillStyle = col;
+  c.fillRect(x, y, w, h);
+}
+
+export const STALL_ICONS: Record<string, StallIcon> = {
+  all: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b, b, b * 1.4, b * 1.4, '#6FD3E8');
+    iconPx(c, b * 2.6, b, b * 1.4, b * 1.4, '#8BE24F');
+    iconPx(c, b, b * 2.6, b * 1.4, b * 1.4, '#FFB25E');
+    iconPx(c, b * 2.6, b * 2.6, b * 1.4, b * 1.4, '#B48CF2');
+  },
+  mod: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b * 0.8, b * 1.2, b * 1.8, b * 1.8, '#6FD3E8');
+    iconPx(c, b * 2.4, b * 1.2, b * 1.8, b * 1.8, '#B48CF2');
+    iconPx(c, b * 2.4, b * 1.9, b * 0.6, b * 0.6, '#0A1820');
+  },
+  pack: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b * 0.9, b * 1.5, b * 3.2, b * 2.2, '#B08A4A');
+    iconPx(c, b * 1.8, b * 0.9, b * 1.4, b * 0.7, '#8A6A34');
+  },
+  shader: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b * 0.8, b * 2.6, b * 3.4, b * 1.2, '#3A7CB0');
+    iconPx(c, b * 1.6, b * 0.9, b * 1.8, b * 1.8, '#FFD34E');
+  },
+  resourcepack: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b * 0.8, b * 2.6, b * 3.4, b * 1.2, '#3A7CB0');
+    iconPx(c, b * 1.6, b * 0.9, b * 1.8, b * 1.8, '#FFD34E');
+  },
+  world: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b * 0.9, b * 2.2, b * 3.2, b * 1.6, '#4C8F4F');
+    iconPx(c, b * 1.4, b * 1.4, b * 0.9, b * 0.9, '#8BE24F');
+    iconPx(c, b * 2.6, b * 1.1, b * 0.9, b * 1.2, '#6B4A2E');
+  },
+  datapack: (c, w, h) => {
+    const b = Math.min(w, h) / 5;
+    iconPx(c, b * 0.9, b * 1.4, b * 3.2, b * 2.2, '#B08A4A');
+    iconPx(c, b * 1.7, b * 1.9, b * 1.4, b * 1.2, '#6FD3E8');
+  },
+};
+
+/** The gacha machine's idle art (prototype `gachaArt`). */
+export function gachaMachineArt(c: CanvasRenderingContext2D, w: number, h: number): void {
+  const b = Math.min(w, h) / 9, cx = w / 2, base = h - b * 0.6;
+  iconPx(c, cx - b * 2.6, base - b * 7, b * 5.2, b * 4, '#2A4C5E'); // glass dome
+  ['#FF7A6B', '#FFD34E', '#8BE24F', '#6FD3E8', '#B48CF2'].forEach((col, i) => {
+    iconPx(c, cx - b * 2 + (i % 3) * b * 1.5, base - b * 6.2 + Math.floor(i / 3) * b * 1.4, b * 1.2, b * 1.2, col);
+  });
+  iconPx(c, cx - b * 3, base - b * 3, b * 6, b * 3, '#B0453A'); // body
+  iconPx(c, cx - b * 1, base - b * 2.2, b * 2, b * 1.6, '#1A2630'); // chute
+  iconPx(c, cx + b * 2.2, base - b * 2.2, b * 1.2, b * 1.2, '#FFD34E'); // crank
+}
 
 export function matchesStall(item: BazaarItem, stallId: string): boolean {
   if (stallId === 'all') return true;
@@ -260,8 +351,11 @@ export function loadBazaarState(): BazaarState {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return initialBazaarState();
     const parsed = JSON.parse(raw) as Partial<BazaarState>;
+    // Taste defaults now cover the real Modrinth category axes; the old
+    // fictional vibe keys are simply ignored (harmless drop).
+    const defaults = initialBazaarState().taste;
     return {
-      taste: { cosy: 0, wild: 0, silly: 0, pretty: 0, tricky: 0, ...(parsed.taste ?? {}) },
+      taste: { ...defaults, ...(parsed.taste ?? {}) },
       votes: parsed.votes ?? {},
       owned: parsed.owned ?? {},
       staged: parsed.staged ?? {},

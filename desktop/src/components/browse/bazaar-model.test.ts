@@ -6,6 +6,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  categoryTags,
   crank,
   fitFor,
   hashOf,
@@ -36,29 +37,28 @@ function item(over: Partial<BazaarItem> = {}): BazaarItem {
 }
 
 describe('bazaar taste model', () => {
-  it('maps categories onto the five axes transparently', () => {
-    expect(vibesFor(item({ contentType: 'shader' }))).toContain('pretty');
-    expect(vibesFor(item({ categories: ['adventure', 'biome'] }))).toContain('wild');
-    expect(vibesFor(item({ categories: ['technology'] }))).toContain('tricky');
-    expect(vibesFor(item({ categories: ['building', 'furniture'] }))).toContain('cosy');
-    expect(vibesFor(item({ categories: ['funny'] }))).toContain('silly');
-    // every item has at least one axis
-    expect(vibesFor(item({ categories: [] })).length).toBeGreaterThan(0);
+  it('maps real Modrinth categories onto the taste axes transparently', () => {
+    expect(vibesFor(item({ categories: ['adventure', 'worldgen'] }))).toEqual(['adventure', 'worldgen']);
+    expect(vibesFor(item({ categories: ['technology', 'optimization'] }))).toEqual(['technology', 'optimization']);
+    expect(vibesFor(item({ categories: ['decoration'] }))).toEqual(['decoration']);
+    expect(vibesFor(item({ categories: ['magic', 'mobs'] }))).toEqual(['magic', 'mobs']);
+    // every item has at least one axis, even without categories
+    expect(vibesFor(item({ categories: [] }))).toEqual(['utility']);
   });
 
-  it('👍 adds to the item vibes, 👎 subtracts, tapping again cancels', () => {
+  it("❤️ adds to the item's categories, 💔 subtracts, tapping again cancels", () => {
     const st = vote(initialBazaarState(), item({ categories: ['adventure'] }), 1);
-    expect(st.taste.wild).toBe(1);
+    expect(st.taste.adventure).toBe(1);
     const cancelled = vote(st, item({ categories: ['adventure'] }), 1);
-    expect(cancelled.taste.wild).toBe(0);
+    expect(cancelled.taste.adventure).toBe(0);
     const down = vote(cancelled, item({ categories: ['adventure'] }), -1);
-    expect(down.taste.wild).toBe(-1);
+    expect(down.taste.adventure).toBe(-1);
   });
 
   it('owned items sort to the back (scoreOf −99)', () => {
     const a = item({ id: 'a', name: 'Alpha', categories: ['adventure'] });
-    const b = item({ id: 'b', name: 'Beta', categories: ['funny'] });
-    const st = vote(initialBazaarState(), a, 1); // a scores +1 on wild
+    const b = item({ id: 'b', name: 'Beta', categories: ['magic'] });
+    const st = vote(initialBazaarState(), a, 1); // a scores +1 on adventure
     expect(scoreOf(st, a)).toBe(1);
     expect(scoreOf(st, b)).toBe(0);
     const owned = { ...st, owned: { a: true } };
@@ -68,17 +68,29 @@ describe('bazaar taste model', () => {
     expect(sorted[1].id).toBe('a');
   });
 
+  it('curated items get the small curated nudge in score', () => {
+    const a = item({ id: 'a', name: 'Alpha', categories: ['adventure'], curated: true });
+    const b = item({ id: 'b', name: 'Beta', categories: ['adventure'] });
+    const st = initialBazaarState();
+    expect(scoreOf(st, a)).toBeCloseTo(0.6);
+    expect(scoreOf(st, b)).toBe(0);
+  });
+
   it('topVibe and bar widths stay legible', () => {
     let st = initialBazaarState();
     st = vote(st, item({ id: 'a', categories: ['adventure'] }), 1);
     st = vote(st, item({ id: 'b', categories: ['technology'] }), 1);
-    st = vote(st, item({ id: 'c', categories: ['funny'] }), 1);
-    expect(topVibe(st)).toBe('wild');
+    st = vote(st, item({ id: 'c', categories: ['magic'] }), 1);
+    expect(topVibe(st)).toBe('adventure');
     const widths = vibeBarWidths(st);
-    expect(widths.wild).toBe(100);
-    expect(widths.tricky).toBe(100);
-    expect(widths.silly).toBe(100);
-    expect(widths.cosy).toBe(0);
+    expect(widths.adventure).toBe(100);
+    expect(widths.technology).toBe(100);
+    expect(widths.magic).toBe(100);
+    expect(widths.utility).toBe(0);
+  });
+
+  it('categoryTags formats real modrinth slugs and dedupes', () => {
+    expect(categoryTags(item({ categories: ['game-mechanics', 'utility', 'utility'] }))).toEqual(['Game Mechanics', 'Utility']);
   });
 
   it('hashOf is deterministic', () => {
@@ -138,5 +150,30 @@ describe('bazaar fit line', () => {
     const un = { ...st };
     delete un.staged.a;
     expect(isOwned(un, 'a')).toBe(false);
+  });
+});
+
+describe('sortedShelf preserves the backend ranking', () => {
+  const item = (id: string, name: string): BazaarItem => ({
+    id, name, iconUrl: null, description: null, contentType: 'mod',
+    author: null, categories: [], supportedVersions: [],
+  });
+  // Deliberately reverse-alphabetical, as a net-score ordering usually is.
+  const backendOrder = [item('1', 'Zebra'), item('2', 'Mango'), item('3', 'Apple')];
+
+  it('keeps the given order when taste is neutral (never alphabetises)', () => {
+    const state = initialBazaarState();
+    const out = sortedShelf(state, backendOrder).map((i) => i.name);
+    expect(out).toEqual(['Zebra', 'Mango', 'Apple']);
+  });
+
+  it('still lets taste outrank the backend order', () => {
+    const liked = { ...item('4', 'Aardvark'), categories: ['adventure'] };
+    const state = initialBazaarState();
+    state.taste.adventure = 5;
+    const out = sortedShelf(state, [...backendOrder, liked]).map((i) => i.name);
+    expect(out[0]).toBe('Aardvark');
+    // and the rest keep backend order behind it
+    expect(out.slice(1)).toEqual(['Zebra', 'Mango', 'Apple']);
   });
 });

@@ -704,7 +704,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
 
   return (
     <div className="space-y-6">
-      <section>
+      <section className="agora-hero compact">
         <h2 className="text-2xl font-bold mb-2">Settings</h2>
         <p className="text-muted-foreground">
           Integration toggles, launcher path, and application preferences.

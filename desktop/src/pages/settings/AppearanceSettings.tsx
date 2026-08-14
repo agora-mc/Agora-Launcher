@@ -339,7 +339,7 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
  * points at the OS/app motion setting.
  */
 function LivingBackgroundSettings() {
-  const { enabled, setEnabled, profile, setProfile, soundOn, setSoundOn, musicVolume, setMusicVolume } = useAmbience();
+  const { enabled, setEnabled, profile, setProfile, soundOn, setSoundOn, musicVolume, setMusicVolume, clearBackground, setClearBackground } = useAmbience();
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
@@ -410,6 +410,24 @@ function LivingBackgroundSettings() {
               />
             </label>
           </div>
+
+          <label className="flex items-center justify-between gap-3 text-sm">
+            <span>
+              <span className="block font-medium">Hide the standard background</span>
+              <span className="block text-xs text-muted-foreground">
+                Sets the page background to 0% opacity so the living world shows through
+                unobstructed (cards and panels stay readable).
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              aria-label="Hide the standard background"
+              checked={clearBackground}
+              onChange={(event) => setClearBackground(event.target.checked)}
+              className="h-5 w-5 accent-primary"
+            />
+          </label>
+
           <p className="text-xs text-muted-foreground">
             Animation follows your motion setting — reduce motion and the background still shows the
             landscape, but nothing wanders.

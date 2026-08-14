@@ -1,0 +1,458 @@
+/* ── The Workshop (Agora Lab, v5-lab port) ─────────────────────────────
+   Station map + bench modal + step rail + draggable pieces + say line,
+   mapped onto the app's HSL theme variables. In the Lab, motion is a
+   teaching signal: a snap or a reject is the consequence of what the learner
+   just did, so nothing here drifts for decoration. */
+
+.ws-wrap {
+  display: grid;
+  gap: 14px;
+}
+
+.ws-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.ws-header h1 {
+  font-size: 22px;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.ws-sub {
+  color: hsl(var(--muted-foreground));
+  font-size: 13.5px;
+}
+
+.ws-stamps {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.ws-stamp {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid hsl(var(--border));
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  background: hsl(var(--muted) / 0.5);
+  opacity: 0.35;
+}
+
+.ws-stamp.on {
+  opacity: 1;
+  background: hsl(120 60% 48% / 0.16);
+  border-color: hsl(120 60% 48% / 0.5);
+}
+
+/* ── station map ── */
+/* Tiles GROW with the window instead of multiplying.
+   `auto-fill, minmax(232px, 1fr)` packs in as many columns as will fit, so
+   widening the app made each tile SMALLER — at 1280px a tile was 248px wide, at
+   1920px only 215px. Maximising shrank the artwork, which is the opposite of
+   what anyone expects. Capping the column count means the extra width is spent
+   making the six stations bigger. */
+.ws-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (min-width: 760px) {
+  .ws-map { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1120px) {
+  .ws-map { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+.ws-station {
+  position: relative;
+  background: hsl(var(--card) / 0.72);
+  border: 1px solid hsl(var(--border));
+  border-radius: 18px;
+  padding: 14px;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.15s;
+  overflow: hidden;
+  font: inherit;
+  color: hsl(var(--foreground));
+  text-align: left;
+}
+
+.ws-station:hover { transform: translateY(-3px); border-color: hsl(var(--ring)); }
+.ws-station:focus-visible { outline: 2px solid hsl(174 52% 48%); outline-offset: 2px; }
+
+.ws-station-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* Wide enough that two rows of stations fit an 800px-tall window without a
+     scrollbar, but still square enough for the blocky icon (sized off the SHORT
+     edge) to read. The max-height stops a maximised window from turning the art
+     into a billboard. */
+  aspect-ratio: 2.1 / 1;
+  max-height: 160px;
+  border-radius: 12px;
+  background: hsl(var(--muted) / 0.6);
+}
+
+.ws-station h3 { margin: 10px 0 2px; font-size: 16px; }
+.ws-station p { margin: 0; color: hsl(var(--muted-foreground)); font-size: 12.8px; min-height: 30px; }
+
+.ws-go {
+  margin-top: 8px;
+  display: inline-block;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: hsl(var(--primary-foreground));
+  background: hsl(var(--primary));
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+.ws-done {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 16px;
+}
+
+.ws-prog {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 9px;
+  vertical-align: middle;
+}
+
+.ws-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: hsl(var(--muted-foreground) / 0.35);
+  display: block;
+}
+
+.ws-dot.on { background: hsl(var(--primary)); }
+
+/* ── bench modal ── */
+.ws-bench {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(4, 10, 14, 0.72);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+.ws-bench.show { opacity: 1; pointer-events: auto; }
+
+.ws-card {
+  position: relative;
+  width: min(920px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
+  background: hsl(var(--popover) / 0.97);
+  border: 1px solid hsl(var(--border));
+  border-radius: 22px;
+  padding: 20px 22px;
+}
+
+.ws-card h2 { margin: 0 0 2px; font-size: 20px; }
+.ws-card .why { color: hsl(var(--muted-foreground)); font-size: 13.5px; margin: 0 0 14px; }
+
+.ws-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  background: hsl(var(--muted) / 0.6);
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ── shared bits ── */
+.ws-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+
+.ws-tray {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px;
+  border-radius: 14px;
+  background: hsl(var(--muted) / 0.25);
+  border: 1px dashed hsl(var(--border));
+  min-height: 92px;
+  flex: 1 1 260px;
+}
+
+.ws-tray h4 {
+  width: 100%;
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: hsl(var(--muted-foreground));
+}
+
+.ws-piece {
+  position: relative;
+  width: 104px;
+  border-radius: 12px;
+  padding: 8px;
+  cursor: grab;
+  user-select: none;
+  background: hsl(var(--muted) / 0.5);
+  border: 1px solid hsl(var(--border));
+  text-align: center;
+  font: inherit;
+  color: hsl(var(--foreground));
+  transition: transform 0.12s, box-shadow 0.15s;
+}
+
+.ws-piece:active { cursor: grabbing; }
+.ws-piece canvas { display: block; width: 100%; height: 44px; }
+.ws-piece b { display: block; font-size: 12px; margin-top: 4px; font-weight: 600; }
+.ws-piece small { display: block; font-size: 10.5px; color: hsl(var(--muted-foreground)); }
+.ws-piece.ok { box-shadow: 0 0 0 2px hsl(120 60% 48%) inset; background: hsl(120 60% 48% / 0.12); }
+.ws-piece.bad { animation: ws-shake 0.32s; }
+
+@keyframes ws-shake {
+  0%,100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  45% { transform: translateX(6px); }
+  70% { transform: translateX(-4px); }
+}
+
+.ws-slotbig {
+  flex: 1 1 300px;
+  min-height: 180px;
+  border-radius: 16px;
+  border: 2px dashed hsl(var(--border));
+  padding: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  background: hsl(var(--muted) / 0.15);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ws-slotbig.hot { border-color: hsl(120 60% 48%); background: hsl(120 60% 48% / 0.08); }
+.ws-slotbig h4 { width: 100%; margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.7px; color: hsl(var(--muted-foreground)); }
+
+.ws-say {
+  margin-top: 14px;
+  padding: 11px 13px;
+  border-radius: 13px;
+  font-size: 14px;
+  background: hsl(174 52% 48% / 0.1);
+  border: 1px solid hsl(174 52% 48% / 0.28);
+  min-height: 44px;
+}
+
+.ws-say.good { background: hsl(120 60% 48% / 0.12); border-color: hsl(120 60% 48% / 0.36); }
+.ws-say.bad { background: hsl(var(--we-danger, 8 90% 60%) / 0.12); border-color: hsl(8 90% 60% / 0.36); }
+
+.ws-btn {
+  font: inherit;
+  background: hsl(var(--muted) / 0.6);
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 11px;
+  padding: 8px 15px;
+  cursor: pointer;
+}
+
+.ws-btn:hover { border-color: hsl(var(--ring)); }
+.ws-btn.p { background: hsl(120 60% 48%); color: #08131a; border-color: hsl(120 60% 48%); font-weight: 700; }
+.ws-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.ws-acts { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+
+/* step rail */
+.ws-rail { display: flex; gap: 7px; flex-wrap: wrap; margin: 0 0 12px; }
+
+.ws-pip {
+  font: inherit;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  background: hsl(var(--muted) / 0.4);
+  color: hsl(var(--muted-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  padding: 5px 13px;
+}
+
+.ws-pip u { text-decoration: none; font-weight: 800; opacity: 0.6; }
+.ws-pip:hover:not(:disabled) { border-color: hsl(var(--ring)); color: hsl(var(--foreground)); }
+.ws-pip.now { background: hsl(174 52% 48% / 0.16); border-color: hsl(174 52% 48%); color: hsl(var(--foreground)); font-weight: 600; }
+.ws-pip.ok { color: hsl(120 55% 42%); }
+.ws-pip.lock { opacity: 0.4; cursor: not-allowed; }
+
+.ws-lead { margin: 0 0 14px; font-size: 14.5px; }
+
+/* predict step */
+.ws-quiz { display: flex; flex-direction: column; gap: 8px; }
+
+.ws-opt {
+  font: inherit;
+  text-align: left;
+  background: hsl(var(--muted) / 0.35);
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.ws-opt-key {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 12px;
+  background: hsl(var(--muted) / 0.7);
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border));
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.ws-opt:hover:not(:disabled) { border-color: hsl(var(--ring)); transform: translateX(2px); }
+.ws-opt:hover:not(:disabled) .ws-opt-key { border-color: hsl(var(--primary)); }
+
+/* After answering: the correct option is highlighted with the accent (no
+   green/red icons — the letters are the identity, the text says why). */
+.ws-opt.right { background: hsl(var(--primary) / 0.12); border-color: hsl(var(--primary)); }
+.ws-opt.right .ws-opt-key { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border-color: hsl(var(--primary)); }
+.ws-opt.wrong { background: hsl(var(--muted) / 0.2); border-color: hsl(var(--border)); opacity: 0.72; }
+.ws-opt.picked:not(.right) .ws-opt-key { box-shadow: 0 0 0 2px hsl(var(--primary)); }
+.ws-opt:disabled { cursor: default; }
+
+.ws-quiz-continue { margin-top: 12px; }
+
+/* explain step */
+.ws-explain { font-size: 14.2px; line-height: 1.62; }
+.ws-explain h4 { margin: 14px 0 5px; font-size: 14.5px; color: hsl(174 52% 45%); }
+.ws-explain h4:first-child { margin-top: 0; }
+.ws-explain ul { margin: 6px 0; padding-left: 20px; }
+.ws-explain li { margin: 4px 0; }
+.ws-explain code { background: hsl(var(--muted) / 0.6); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+
+/* more info disclosure */
+.ws-grown { margin-top: 14px; border-top: 1px solid hsl(var(--border)); padding-top: 11px; }
+.ws-grown summary { cursor: pointer; color: hsl(var(--muted-foreground)); font-size: 12.8px; }
+.ws-grown p { font-size: 13px; color: hsl(var(--muted-foreground)); margin: 8px 0 0; }
+.ws-grown code { background: hsl(var(--muted) / 0.6); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+/* fix-it board */
+.ws-clues { display: flex; gap: 10px; flex-wrap: wrap; flex: 1 1 100%; }
+
+.ws-clue {
+  flex: 1 1 190px;
+  background: hsl(var(--muted) / 0.3);
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  padding: 10px;
+  font-size: 12.8px;
+  cursor: pointer;
+  font: inherit;
+  color: hsl(var(--foreground));
+  text-align: left;
+  transition: border-color 0.15s;
+}
+
+.ws-clue:hover { border-color: hsl(var(--ring)); }
+.ws-clue.read { border-color: hsl(45 95% 55% / 0.5); background: hsl(45 95% 55% / 0.1); }
+.ws-clue b { display: block; font-size: 12px; color: hsl(45 95% 50%); margin-bottom: 3px; }
+
+.ws-doors { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+
+.ws-door {
+  flex: 1 1 200px;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--border));
+  padding: 12px;
+  background: hsl(var(--muted) / 0.2);
+  cursor: pointer;
+  text-align: center;
+  font: inherit;
+  color: hsl(var(--foreground));
+  transition: transform 0.12s;
+}
+
+.ws-door:hover { transform: translateY(-2px); border-color: hsl(var(--ring)); }
+.ws-door canvas { display: block; width: 100%; height: 58px; }
+.ws-door b { display: block; margin-top: 6px; font-size: 13.5px; }
+.ws-door small { color: hsl(var(--muted-foreground)); font-size: 11.5px; }
+.ws-door.picked { box-shadow: 0 0 0 2px hsl(174 52% 48%) inset; }
+
+.ws-net {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12.8px;
+  background: hsl(120 60% 48% / 0.1);
+  border: 1px solid hsl(120 60% 48% / 0.3);
+}
+
+.ws-meter { height: 8px; border-radius: 99px; background: hsl(var(--muted) / 0.6); overflow: hidden; margin-top: 10px; }
+.ws-meter i { display: block; height: 100%; width: 0; background: hsl(120 60% 48%); transition: width 0.5s; }
+
+/* badge toast */
+.ws-toast {
+  position: fixed;
+  top: 60px;
+  right: 14px;
+  z-index: 72;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 15px 11px 11px;
+  border-radius: 15px;
+  background: hsl(var(--popover) / 0.94);
+  border: 1px solid hsl(45 95% 55%);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 0 30px -10px hsl(45 95% 55%);
+  animation: ws-achin 0.5s cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+@keyframes ws-achin { from { opacity: 0; transform: translateX(60px) scale(0.85); } to { opacity: 1; transform: none; } }
+.ws-ach-ico {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  background: linear-gradient(160deg, hsl(45 95% 55%), #ff9a3e);
+}
+.ws-toast .t { display: block; font-size: 10px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: hsl(45 95% 50%); }
+.ws-toast .d { display: block; font-weight: 700; font-size: 14.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-wrap *, .ws-wrap *::before, .ws-wrap *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

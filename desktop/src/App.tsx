@@ -6,6 +6,8 @@ import { Browse } from './pages/Browse';
 import { Instances } from './pages/Instances';
 import { Governance } from './pages/Governance';
 import { Guide } from './pages/Guide';
+import { FieldGuide } from './pages/FieldGuide';
+import { LivingBackground } from './pages/LivingBackground';
 import { About } from './pages/About';
 import { Settings } from './pages/Settings';
 import AiChatPage from './pages/AiChatPage';
@@ -30,7 +32,7 @@ import type { StandardDestination } from './features/interactive/domain/intents'
 import { AmbienceProvider, useAmbience } from './features/ambience/AmbienceProvider';
 import { AmbienceToasts } from './features/ambience/AmbienceToasts';
 import { AmbienceCoordinator } from './components/ambience-coordinator';
-import { BookOpen, Bot, Boxes, Compass, FlaskConical, HomeIcon, Info, Landmark, SettingsIcon } from 'lucide-react';
+import { BookOpen, Bot, Boxes, Compass, FlaskConical, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
   { id: 'home' as Tab, label: 'Home', icon: HomeIcon },
@@ -38,6 +40,7 @@ const BASE_TABS = [
   { id: 'instances' as Tab, label: 'My Instances', icon: Boxes },
   { id: 'governance' as Tab, label: 'Community Governance', icon: Landmark },
   { id: 'guide' as Tab, label: 'Help & Guide', icon: BookOpen },
+  { id: 'field-guide' as Tab, label: 'Field Guide', icon: NotebookPen },
   { id: 'lab' as Tab, label: 'Agora Lab', icon: FlaskConical },
   { id: 'about' as Tab, label: 'The Agora Difference', icon: Info },
   { id: 'settings' as Tab, label: 'Settings', icon: SettingsIcon },
@@ -55,6 +58,14 @@ const GUIDE_TOPIC_LABELS: Record<string, string> = Object.fromEntries(
 function LabShellWithAmbience(props: ComponentProps<typeof LabShell>) {
   const { overrideProfile } = useAmbience();
   return <LabShell {...props} onAmbienceChange={(p) => overrideProfile(p)} />;
+}
+
+/** Bridge so App can read whether the living background is enabled (for the
+ * conditional sidebar tab) without drilling props. Reports up via onChange. */
+function AmbienceEnabledBridge({ onChange }: { onChange: (enabled: boolean) => void }) {
+  const { enabled } = useAmbience();
+  useEffect(() => { onChange(enabled); }, [enabled, onChange]);
+  return null;
 }
 
 const AI_TAB = {
@@ -208,6 +219,7 @@ export default function App() {
 
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [aiChatEnabled, setAiChatEnabled] = useState<boolean>(false);
+  const [ambienceEnabled, setAmbienceEnabled] = useState<boolean>(true);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [guideTopic, setGuideTopic] = useState<string | null>(null);
   const [shellLayout, setShellLayout] = useState<ShellLayout>(loadShellLayout);
@@ -366,24 +378,33 @@ export default function App() {
     );
   }
 
-  // The AI Assistant tab appears between Governance and Settings when enabled.
+  // The AI Assistant tab appears between Governance and Settings when enabled;
+  // the Living Background tab only appears while the living background is on.
+  // Built by explicit reference (never by index — index-based construction
+  // silently drops any tab appended to BASE_TABS, e.g. Settings).
+  const [tabHome, tabBrowse, tabInstances, tabGovernance, tabGuide, tabFieldGuide, tabLab, tabAbout, tabSettings] = BASE_TABS;
   const tabs = [
-    BASE_TABS[0],
-    BASE_TABS[1],
-    BASE_TABS[2],
-    BASE_TABS[3],
+    tabHome,
+    tabBrowse,
+    tabInstances,
+    tabGovernance,
     ...(aiChatEnabled ? [AI_TAB] : []),
-    BASE_TABS[4],
-    BASE_TABS[5],
-    BASE_TABS[6],
-    BASE_TABS[7],
+    tabGuide,
+    tabFieldGuide,
+    ...(ambienceEnabled ? [{ id: 'living-background' as Tab, label: 'Living Background', icon: Mountain }] : []),
+    tabLab,
+    tabAbout,
+    tabSettings,
   ];
 
-  // Resolve the current UI state from the destination.
+  // Resolve the current UI state from the destination. A tab that became
+  // unavailable (e.g. living background toggled off while open) falls back.
   const effectiveTab: Tab =
     destination.type === 'tab' && destination.tab === 'ai' && !aiChatEnabled
       ? 'home'
-      : destToTab(destination);
+      : destination.type === 'tab' && destination.tab === 'living-background' && !ambienceEnabled
+        ? 'home'
+        : destToTab(destination);
 
   // Validate destination type — corrupt state or future versions must not
   // silently fall to home. This is a defense-in-depth check; the type system
@@ -517,7 +538,8 @@ export default function App() {
   return (
     <PackInstallProvider>
       <AmbienceProvider>
-      <div className="flex h-screen w-screen overflow-hidden">
+      <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
+      <div className="app-shell flex h-screen w-screen overflow-hidden">
         <OfflineBanner />
         <SandboxBanner />
         <Sidebar
@@ -587,7 +609,7 @@ export default function App() {
           />
         )}
 
-        <main ref={mainRef} className="flex-1 overflow-y-auto bg-background p-6 text-background-foreground">
+        <main ref={mainRef} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
           <div className="contents">
             {!isKnownDestType ? (
               <NotFoundView
@@ -641,6 +663,8 @@ export default function App() {
                     initialTopicId={guideTopic ?? undefined}
                   />
                 )}
+                {effectiveTab === 'field-guide' && <FieldGuide />}
+                {effectiveTab === 'living-background' && ambienceEnabled && <LivingBackground />}
                 {effectiveTab === 'lab' && (
                   <LabShellWithAmbience
                     onOpenGuide={handleOpenGuide}

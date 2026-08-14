@@ -1151,14 +1151,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   if (showInteractive) {
     return (
       <div className="space-y-6">
-        {/* The host renders its own always-present "Use Standard view" escape;
-            a second identical button here stacked directly above it (T6-14). */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <BackButton onBack={onBack} />
-        </div>
+        {/* Back sits on the host's own control row (passed as `leading`) so the
+            view is not pushed down by two separate strips of chrome. */}
         <LiveInteractiveHost
           instanceId={instanceId}
           presentation={presentation}
+          leading={<BackButton onBack={onBack} />}
           onUseStandardView={() => setPresentationPref('standard')}
           onOpenStandardOperation={(route: LiveReviewRoute) => {
             // Narrow, typed contextual bridges: each re-reads/re-resolves live
@@ -1253,6 +1251,18 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }}
           processState={processState}
           installActive={packInstall?.status === 'running'}
+          onLaunch={async () => {
+            if (!onLaunch || playDisabled) return;
+            setPlayBusy(true);
+            setError(null);
+            try {
+              await onLaunch(instanceId);
+            } catch (cause) {
+              setError(formatError(cause));
+            } finally {
+              setPlayBusy(false);
+            }
+          }}
         />
       </div>
     );

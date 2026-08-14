@@ -62,6 +62,7 @@ function reads(overrides: Partial<LiveReads> = {}): LiveReads {
     investigation: ok(null),
     memory: ok(null),
     javas: ok([]),
+    dependencies: ok([]),
     ...overrides,
   };
 }
