@@ -70,13 +70,6 @@ Per `AGENTS.md`: after registry/loader/crash-signature edits run the registry ga
   runs with `-D warnings`, so lints added after 1.96 fail CI while passing locally. A clean local
   clippy is not proof CI is clean — `rustup update` before trusting it on lint-sensitive work.
 
-## Web search
-
-**Load the `web-research` skill before searching the web or fetching a page.** Two providers are
-configured (built-in `WebSearch`/`WebFetch` and a self-hosted SearxNG at `localhost:8080`); they
-fail in opposite directions, and the skill carries the measured per-engine verdicts, the
-`categories: 'it'` routing rule, and two traps that return confident nonsense rather than errors.
-
 ## Architecture boundaries (enforced, not advisory)
 
 All three frontends (Tauri GUI, CLI, MCP) call the same `agora-core`. Business logic lives in

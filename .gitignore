@@ -27,5 +27,3 @@ tokens.enc
 registry-web.json
 registry-web.json.sig
 docs-web.json
-.claude/
-CLAUDE.md
