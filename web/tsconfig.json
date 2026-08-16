@@ -24,6 +24,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@guide/*": [
+        "../desktop/src/data/*"
       ]
     },
     "target": "ES2017"

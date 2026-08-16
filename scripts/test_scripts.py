@@ -1734,6 +1734,13 @@ class TestBuildDocsWebExtractDescription(unittest.TestCase):
     def test_empty_returns_empty(self):
         self.assertEqual(bdw.extract_description(""), "")
 
+    def test_strips_inline_markdown(self):
+        content = "# T\n\nThe `agora` binary is **fast** and [documented](./CLI.md).\n"
+        self.assertEqual(
+            bdw.extract_description(content),
+            "The agora binary is fast and documented.",
+        )
+
 
 class TestBuildDocsWebRewriteLinks(unittest.TestCase):
     """Tests for build_docs_web.rewrite_links."""
@@ -1769,6 +1776,68 @@ class TestBuildDocsWebRewriteLinks(unittest.TestCase):
         content = "[Missing](./NOPE.md)"
         out = bdw.rewrite_links(content, Path("docs/x.md"), self.slugs)
         self.assertEqual(out, content)
+
+
+class TestBuildDocsWebClassify(unittest.TestCase):
+    """Tests for build_docs_web.classify."""
+
+    def test_player_facing_reference(self):
+        self.assertEqual(bdw.classify(Path("docs/TROUBLESHOOTING.md")), ("user", "Fix a problem"))
+        self.assertEqual(bdw.classify(Path("docs/CLI.md")), ("user", "Power tools"))
+
+    def test_contributor_reference(self):
+        self.assertEqual(bdw.classify(Path("docs/DEVELOPMENT.md")), ("developer", "Build Agora"))
+        self.assertEqual(
+            bdw.classify(Path("CODE_OF_ENGAGEMENT.md")), ("developer", "Contribute and curate")
+        )
+
+    def test_directory_prefix_applies_to_children(self):
+        self.assertEqual(
+            bdw.classify(Path("docs/architecture/layer-ownership.md")), ("developer", "Architecture")
+        )
+        self.assertEqual(
+            bdw.classify(Path("docs/interactive/prototypes/V4-FIX-PLAN.md")),
+            ("internal", "Working notes"),
+        )
+
+    def test_unclassified_defaults_to_internal(self):
+        self.assertEqual(bdw.classify(Path("docs/brand-new-note.md")), bdw.DEFAULT_CATEGORY)
+        self.assertEqual(bdw.DEFAULT_CATEGORY[0], "internal")
+
+    def test_every_group_has_a_display_order(self):
+        groups = {group for _, group in bdw.DOC_CATEGORIES.values()}
+        groups.add(bdw.DEFAULT_CATEGORY[1])
+        self.assertEqual(groups - set(bdw.GROUP_ORDER), set())
+
+    def test_every_audience_has_a_display_order(self):
+        audiences = {audience for audience, _ in bdw.DOC_CATEGORIES.values()}
+        audiences.add(bdw.DEFAULT_CATEGORY[0])
+        self.assertEqual(audiences - set(bdw.AUDIENCE_ORDER), set())
+
+
+class TestBuildDocsWebStripTitle(unittest.TestCase):
+    """Tests for build_docs_web.strip_title."""
+
+    def test_removes_leading_h1_and_following_blank_lines(self):
+        content = "# Title\n\nFirst paragraph.\n"
+        self.assertEqual(bdw.strip_title(content), "First paragraph.")
+
+    def test_keeps_later_headings(self):
+        content = "# Title\n\n## Section\n\nBody.\n"
+        out = bdw.strip_title(content)
+        self.assertTrue(out.startswith("## Section"))
+        self.assertNotIn("# Title", out)
+
+    def test_no_leading_h1_is_unchanged(self):
+        content = "> A blockquote opener.\n\n# Later heading\n"
+        self.assertEqual(bdw.strip_title(content), content)
+
+    def test_tolerates_html_comment_preamble(self):
+        content = "<!-- generated -->\n\n# Title\n\nBody.\n"
+        self.assertEqual(bdw.strip_title(content), "<!-- generated -->\n\nBody.")
+
+    def test_empty_is_unchanged(self):
+        self.assertEqual(bdw.strip_title(""), "")
 
 
 if __name__ == "__main__":
