@@ -122,6 +122,93 @@ class TestValidateSha256(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# validate_download_strategy
+# ---------------------------------------------------------------------------
+
+class TestValidateDownloadStrategy(unittest.TestCase):
+    """Tests for validate_download_strategy.
+
+    direct_hash has no resolving API, so the compiler is the only place an
+    incomplete entry can be caught before it ships in a signed registry.
+    """
+
+    @staticmethod
+    def _direct_hash(**overrides):
+        item = {
+            "id": "self-hosted-mod",
+            "download_strategy": "direct_hash",
+            "source_identifier": "https://example.com/files/self-hosted-mod-1.2.3.jar",
+            "compatible_versions": [
+                {"mc_version": "1.21", "loader": "fabric", "mod_version": "1.2.3"}
+            ],
+        }
+        item.update(overrides)
+        return item
+
+    def test_known_strategies_pass_through(self):
+        for strategy in ("github_release", "modrinth_id", "curated_pack"):
+            item = {"id": "x", "download_strategy": strategy}
+            self.assertEqual(_compile.validate_download_strategy(item), strategy)
+
+    def test_unknown_strategy_rejected(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy({"id": "x", "download_strategy": "ftp_mirror"})
+
+    def test_missing_strategy_rejected(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy({"id": "x"})
+
+    def test_complete_direct_hash_accepted(self):
+        self.assertEqual(
+            _compile.validate_download_strategy(self._direct_hash()), "direct_hash"
+        )
+
+    def test_direct_hash_requires_https(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._direct_hash(source_identifier="http://example.com/files/mod-1.0.0.jar")
+            )
+
+    def test_direct_hash_requires_a_filename_in_the_url(self):
+        """The launcher names the file from the URL's last segment."""
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._direct_hash(source_identifier="https://example.com/download?id=12")
+            )
+
+    def test_direct_hash_requires_explicit_compatible_versions(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(self._direct_hash(compatible_versions=[]))
+        item = self._direct_hash()
+        del item["compatible_versions"]
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(item)
+
+    def test_direct_hash_rejects_the_latest_placeholder(self):
+        """'latest' is the unhydrated default; it cannot name a pinned file."""
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._direct_hash(
+                    compatible_versions=[
+                        {"mc_version": "1.21", "loader": "fabric", "mod_version": "latest"}
+                    ]
+                )
+            )
+
+    def test_direct_hash_rejects_incomplete_version_entries(self):
+        for entry in (
+            {"mc_version": "1.21", "loader": "fabric"},
+            {"mc_version": "1.21", "mod_version": "1.0.0"},
+            {"loader": "fabric", "mod_version": "1.0.0"},
+            "not-an-object",
+        ):
+            with self.assertRaises(SystemExit):
+                _compile.validate_download_strategy(
+                    self._direct_hash(compatible_versions=[entry])
+                )
+
+
+# ---------------------------------------------------------------------------
 # _get_registry_repo
 # ---------------------------------------------------------------------------
 

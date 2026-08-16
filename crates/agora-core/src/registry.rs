@@ -1278,6 +1278,37 @@ pub fn get_all_manifest_dependencies(
     Ok(out)
 }
 
+/// List `(item_id, display_name)` for every active catalog mod.
+///
+/// Used by the health scan to tell a player whether a missing dependency is
+/// something Agora can install for them or something they have to source
+/// themselves. Only the id and name are read, so this stays cheap enough to
+/// run on the pre-launch path.
+pub fn get_catalog_mod_names(conn: &Connection) -> LauncherResult<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name FROM registry_items \
+             WHERE content_type = 'mod' AND status = 'active'",
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            Ok((id, name))
+        })
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_INVALID_QUERY".to_string(),
+            message: e.to_string(),
+        })?;
+
+    Ok(rows.flatten().collect())
+}
+
 /// List all mod JAR aliases from the `mod_jar_aliases` table.
 ///
 /// Returns `(registry_id, alias)` tuples. Defensively returns an empty vec

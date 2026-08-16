@@ -951,6 +951,48 @@ fn is_fabric_api_module(id: &str) -> bool {
     id.starts_with("fabric-") || id.starts_with("fabric_")
 }
 
+/// Registry-derived inputs for one health scan: JAR alias pairs, curated
+/// dependency overrides keyed by registry id, and `(item_id, display_name)`
+/// for every active catalog mod. All three degrade to empty when `registry.db`
+/// is unavailable — per the Phase 3 decoupling property, health never requires it.
+type RegistryHealthInputs = (
+    Vec<(String, String)>,
+    HashMap<String, registry::ManifestDeps>,
+    Vec<(String, String)>,
+);
+
+/// Tell the player how to actually obtain a dependency that is not installed.
+///
+/// The health dialog renders `suggested_action` as plain muted text with no
+/// link or button affordance, so this string is the entire guidance a player
+/// gets. It therefore has to name a concrete next move rather than restate the
+/// problem: "Install 'X' to resolve this dependency" is a dead end whenever X
+/// is not something Agora stocks.
+///
+/// Only one axis matters — whether the catalog can supply it:
+///
+/// - **In the catalog**: point at Browse and give the filter to apply.
+/// - **Not in the catalog**: name the loader mod ID to search for (that ID is
+///   the only identifier the player actually holds; it is frequently not the
+///   mod's display name), say where to look, and say where the file goes. The
+///   closing clause also pre-explains the `UnknownMod` warning they will see
+///   on the next scan once they drop the JAR in.
+fn missing_dependency_guidance(
+    dependency_id: &str,
+    catalog_name: Option<&str>,
+    minecraft_version: &str,
+    loader: &str,
+) -> String {
+    match catalog_name {
+        Some(name) => format!(
+            "'{name}' is in Agora's catalog. Open Browse, filter to Minecraft {minecraft_version} / {loader}, and install it."
+        ),
+        None => format!(
+            "Agora's catalog has no mod with the ID '{dependency_id}'. Search Modrinth or CurseForge for a Minecraft {minecraft_version} / {loader} mod that provides that mod ID, then put the .jar in this instance's mods folder; Agora will launch it, but will not track or update it."
+        ),
+    }
+}
+
 fn compatibility_bridge_present(
     jars: &[ArtifactInventory],
     aliases: &AliasMap,
@@ -1065,20 +1107,27 @@ fn health_from_inventory(
 
     // 3a. Load aliases and curated deps from the registry for alias resolution
     //     in subsequent checks. (registry.db, optional — Phase 3 decoupling)
-    let (alias_pairs, curated_deps): (
-        Vec<(String, String)>,
-        HashMap<String, registry::ManifestDeps>,
-    ) = registry_db_path
+    let (alias_pairs, curated_deps, catalog_mods): RegistryHealthInputs = registry_db_path
         .filter(|path| path.exists())
         .and_then(|path| db::registry_connection(path).ok())
         .map(|conn| {
             (
                 registry::get_all_mod_aliases(&conn).unwrap_or_default(),
                 registry::get_all_manifest_dependencies(&conn).unwrap_or_default(),
+                registry::get_catalog_mod_names(&conn).unwrap_or_default(),
             )
         })
         .unwrap_or_default();
     let aliases = AliasMap::from_pairs(&alias_pairs);
+    // Catalog display names, keyed by lowercase item id, so a missing
+    // dependency can be reported as "install this from Browse" instead of the
+    // dead-end "install it" when Agora actually stocks it. Empty when the
+    // registry is unavailable, which downgrades every finding to the
+    // source-it-yourself wording rather than suppressing it.
+    let catalog_names: HashMap<String, String> = catalog_mods
+        .into_iter()
+        .map(|(id, name)| (id.to_lowercase(), name))
+        .collect();
 
     let curated_index: HashMap<String, &registry::ManifestDeps> = curated_deps
         .iter()
@@ -1159,6 +1208,16 @@ fn health_from_inventory(
                 } else {
                     dep.clone()
                 };
+                let catalog_name = catalog_names
+                    .get(&dep_resolved)
+                    .or_else(|| catalog_names.get(&dep.to_lowercase()))
+                    .map(String::as_str);
+                let guidance = missing_dependency_guidance(
+                    &display_name,
+                    catalog_name,
+                    &manifest.minecraft_version,
+                    &manifest.loader,
+                );
                 if inventory_incomplete {
                     warnings.push(Warning {
                         kind: WarningKind::MissingRequiredDependencyUnverified,
@@ -1168,7 +1227,9 @@ fn health_from_inventory(
                             "'{}' requires '{}', but Agora could not verify every enabled JAR.",
                             source, display_name
                         ),
-                        suggested_action: None,
+                        suggested_action: Some(format!(
+                            "An unreadable JAR may already provide it, so this can be a false alarm. If the game fails to start: {guidance}"
+                        )),
                         loader_compatibility: None,
                     });
                 } else {
@@ -1184,10 +1245,7 @@ fn health_from_inventory(
                             "'{}' requires '{}' but no enabled artifact provides it.",
                             source, display_name
                         ),
-                        suggested_action: Some(format!(
-                            "Install '{}' to resolve this dependency.",
-                            display_name
-                        )),
+                        suggested_action: Some(guidance),
                         loader_compatibility: None,
                     });
                 }
@@ -1490,6 +1548,10 @@ fn health_from_inventory(
                 } else {
                     dep.clone()
                 };
+                let catalog_name = catalog_names
+                    .get(&dep_resolved)
+                    .or_else(|| catalog_names.get(&dep.to_lowercase()))
+                    .map(String::as_str);
                 recommendations.push(Recommendation {
                     kind: RecommendationKind::MissingOptionalDependency,
                     mod_id: Some(display_name.clone()),
@@ -1498,7 +1560,15 @@ fn health_from_inventory(
                         "'{}' recommends '{}' but it is not installed. The mod may work without it.",
                         source, display_name
                     ),
-                    suggested_action: None,
+                    suggested_action: Some(format!(
+                        "To add it: {}",
+                        missing_dependency_guidance(
+                            &display_name,
+                            catalog_name,
+                            &manifest.minecraft_version,
+                            &manifest.loader,
+                        )
+                    )),
                 });
             }
         }
@@ -2508,6 +2578,59 @@ mandatory=true
             .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
             .expect("disabled provider must leave a missing dependency blocker");
         assert_eq!(dependency_blocker.filename.as_deref(), Some("consumer.jar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_dependency_guidance_points_at_browse_when_catalogued() {
+        let guidance = missing_dependency_guidance("sodium", Some("Sodium"), "1.21", "fabric");
+        assert!(guidance.contains("Sodium"), "{guidance}");
+        assert!(guidance.contains("Browse"), "{guidance}");
+        assert!(guidance.contains("1.21"), "{guidance}");
+        assert!(guidance.contains("fabric"), "{guidance}");
+    }
+
+    #[test]
+    fn missing_dependency_guidance_names_the_search_when_not_catalogued() {
+        let guidance = missing_dependency_guidance("moonlight", None, "1.20.1", "forge");
+        // The mod ID is the only identifier the player actually holds, so the
+        // advice has to hand it to them alongside where to search and where the
+        // downloaded file goes. Anything vaguer is the dead end this replaced.
+        assert!(guidance.contains("moonlight"), "{guidance}");
+        assert!(guidance.contains("Modrinth"), "{guidance}");
+        assert!(guidance.contains("CurseForge"), "{guidance}");
+        assert!(guidance.contains("1.20.1"), "{guidance}");
+        assert!(guidance.contains("forge"), "{guidance}");
+        assert!(guidance.contains("mods folder"), "{guidance}");
+        assert!(!guidance.contains("Browse"), "{guidance}");
+    }
+
+    #[test]
+    fn missing_dependency_blocker_carries_actionable_guidance() {
+        let dir = fresh_instance("dependency_guidance");
+        write_jar(
+            &dir.join("mods"),
+            "consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"consumer","depends":{"some-unstocked-mod":"*"}}"#,
+            )],
+        );
+        let manifest = tracked_manifest(&[("consumer.jar", "consumer")]);
+        // No registry.db, so nothing is catalogued and every missing dependency
+        // must fall back to the source-it-yourself wording.
+        let report = health(&dir, &manifest, None);
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .expect("missing dependency must still block");
+        let action = blocker
+            .suggested_action
+            .as_deref()
+            .expect("missing dependency must carry guidance");
+        assert!(action.contains("some-unstocked-mod"), "{action}");
+        assert!(action.contains("mods folder"), "{action}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -18,7 +18,7 @@ The `license` field must be a valid SPDX license identifier (e.g., `MIT`, `LGPL-
 
 - `github_release`: `source_identifier` is `owner/repo`; the compiler resolves the latest matching release asset.
 - `modrinth_id`: `source_identifier` is the Modrinth project ID; the compiler calls the Modrinth API and pins hashes.
-- `direct_hash`: `source_identifier` is a direct HTTPS URL and `sha256` is required and manually pinned.
+- `direct_hash`: fully hand-curated — no API resolves any part of it. `source_identifier` is a direct HTTPS URL that must end in the file's name (the launcher names the download from the URL's last path segment), `sha256` is manually pinned, and `compatible_versions` is **required** with a real `mod_version` on every entry (`"latest"` is rejected). The compiler fails the build on an incomplete entry. Not usable for CurseForge — its CDN has required API-key auth since July 2026.
 
 ## Package Signatures
 

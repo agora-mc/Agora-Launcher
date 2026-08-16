@@ -1952,6 +1952,99 @@ def validate_sha256(raw: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+VALID_DOWNLOAD_STRATEGIES = frozenset(
+    {"github_release", "modrinth_id", "direct_hash", "curated_pack"}
+)
+
+
+def validate_download_strategy(item: dict[str, Any]) -> str:
+    """Validate ``download_strategy`` and enforce the ``direct_hash`` contract.
+
+    ``direct_hash`` is the fully hand-curated escape hatch, used for content
+    that no upstream API can resolve: self-hosted files, a project's own site,
+    a release asset outside the GitHub release flow. Because nothing resolves
+    it at install time, everything the launcher needs must already be in the
+    manifest -- the pinned URL, the pinned hash, and an explicit statement of
+    which Minecraft versions and loaders the file supports.
+
+    The launcher rejects an under-specified entry at resolve time with
+    ``ERR_DIRECT_HASH_MANIFEST``. Checking the same contract here turns that
+    runtime failure into a compile failure, so a broken entry can never reach a
+    signed registry and appear browsable-but-uninstallable to players.
+    """
+    item_id = item.get("id", "<unknown>")
+    strategy = item.get("download_strategy")
+    if strategy not in VALID_DOWNLOAD_STRATEGIES:
+        logger.error(
+            "%s: download_strategy must be one of %s, got %r",
+            item_id,
+            ", ".join(sorted(VALID_DOWNLOAD_STRATEGIES)),
+            strategy,
+        )
+        raise SystemExit(1)
+    if strategy != "direct_hash":
+        return strategy
+
+    source = str(item.get("source_identifier", "")).strip()
+    if not source.startswith("https://"):
+        logger.error(
+            "%s: direct_hash source_identifier must be an https:// URL, got %r",
+            item_id,
+            source,
+        )
+        raise SystemExit(1)
+    # The manifest carries no filename field, so the launcher names the
+    # downloaded file from the URL's last path segment. A URL that does not end
+    # in one (e.g. ".../download?id=12") cannot be used.
+    filename = source.split("#")[0].split("?")[0].rsplit("/", 1)[-1]
+    if not filename or filename.startswith(".") or ".." in filename or "." not in filename:
+        logger.error(
+            "%s: direct_hash source_identifier must end in a filename "
+            "(e.g. https://example.com/files/my-mod-1.2.3.jar), got %r",
+            item_id,
+            source,
+        )
+        raise SystemExit(1)
+
+    declared = item.get("compatible_versions")
+    if not declared:
+        logger.error(
+            "%s: direct_hash requires an explicit compatible_versions list; "
+            "there is no API to infer one from",
+            item_id,
+        )
+        raise SystemExit(1)
+    for entry in declared:
+        if not isinstance(entry, dict):
+            logger.error(
+                "%s: each compatible_versions entry must be an object, got %r",
+                item_id,
+                entry,
+            )
+            raise SystemExit(1)
+        missing = [
+            key
+            for key in ("mc_version", "loader", "mod_version")
+            if not str(entry.get(key, "")).strip()
+        ]
+        if missing:
+            logger.error(
+                "%s: direct_hash compatible_versions entry %r is missing %s",
+                item_id,
+                entry,
+                ", ".join(missing),
+            )
+            raise SystemExit(1)
+        if str(entry["mod_version"]).strip() == "latest":
+            logger.error(
+                "%s: direct_hash compatible_versions needs a real mod_version, "
+                "not the 'latest' placeholder",
+                item_id,
+            )
+            raise SystemExit(1)
+    return strategy
+
+
 def default_compatible_versions(item: dict[str, Any]) -> list[dict[str, str]]:
     """Return a sensible compatibility fallback when none is provided."""
     return [
@@ -2004,6 +2097,7 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
     allow_comments = bool(governance.get("allow_comments", True))
 
     sha256 = validate_sha256(item.get("sha256"))
+    download_strategy = validate_download_strategy(item)
     gallery = item.get("gallery_urls", [])
     compatible_versions = (
         item.get("compatible_versions")
@@ -2067,7 +2161,7 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
             item["name"],
             item.get("author"),
             item.get("content_type", "mod"),
-            item["download_strategy"],
+            download_strategy,
             item["source_identifier"],
             sha256,
             _upvotes,

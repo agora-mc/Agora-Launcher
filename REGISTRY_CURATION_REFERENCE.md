@@ -103,6 +103,12 @@ The shortest valid manifest. The compiler queries Modrinth's API to hydrate icon
 
 For mods that are self-hosted and not on GitHub or Modrinth. The hash is **manually pinned** by the developer; if they silently change the file without a PR, every existing download is blocked for all users.
 
+This is the fully hand-curated escape hatch: **no API resolves any part of it**, so the manifest
+must carry everything the launcher needs. That makes `compatible_versions` **required** here (it
+is optional for every other strategy, where the compiler hydrates it), and each entry must name a
+real `mod_version` — the `"latest"` placeholder is rejected. The compiler fails the build on an
+incomplete `direct_hash` entry rather than shipping one that is browsable but uninstallable.
+
 ```json
 {
   "id": "proprietary-mod",
@@ -113,6 +119,10 @@ For mods that are self-hosted and not on GitHub or Modrinth. The hash is **manua
   "download_strategy": "direct_hash",
   "source_identifier": "https://developer.com/releases/mod-v1.0.0.jar",
   "sha256": "a1b2c3d4e5f6...(64 hex chars)",
+  "compatible_versions": [
+    { "mc_version": "1.21", "loader": "fabric", "mod_version": "1.0.0" },
+    { "mc_version": "1.21.1", "loader": "fabric", "mod_version": "1.0.0" }
+  ],
   "package_signatures": ["com.developer.mod"],
   "base_categories": ["content"],
   "community_categories": [],
@@ -125,6 +135,22 @@ For mods that are self-hosted and not on GitHub or Modrinth. The hash is **manua
 }
 ```
 
+Rules the compiler enforces for `direct_hash`:
+
+| Requirement | Why |
+|---|---|
+| `source_identifier` is an `https://` URL | Pinned artifacts are never fetched over plaintext. |
+| The URL ends in a filename (`.../mod-1.0.0.jar`) | There is no `filename` field; the launcher names the download from the URL's last path segment. A URL like `.../download?id=12` cannot be used. |
+| `sha256` is manually pinned | It is the only integrity guarantee — nothing else verifies this file. |
+| `compatible_versions` is present and non-empty | Nothing can infer which MC versions and loaders the file supports. |
+| Every entry has `mc_version`, `loader`, and a real `mod_version` | `"latest"` is the unhydrated placeholder and cannot identify a pinned file. |
+
+One entry describes one file. All declared `compatible_versions` point at the same pinned URL and
+hash, so a mod needing genuinely different files per Minecraft version needs one registry entry
+per file. Adding an optional `modrinth_id` is still worthwhile when the project also exists on
+Modrinth: it hydrates display metadata, and the launcher falls back to it if the pinned host is
+unreachable — the download is SHA-256-verified whichever source delivers it.
+
 ### Field reference
 
 | Field | Type | Required? | Description |
@@ -135,7 +161,7 @@ For mods that are self-hosted and not on GitHub or Modrinth. The hash is **manua
 | `author` | string | Yes | Creator or organization name. |
 | `license` | string | Yes | SPDX license identifier (see §3 below). |
 | `download_strategy` | string | Yes | One of: `github_release` (primary), `modrinth_id` (supplementary fallback), `direct_hash` (closed-source / self-hosted). |
-| `source_identifier` | string | Yes | Depends on strategy: `github_release` → GitHub `"owner/repo"`; `modrinth_id` → Modrinth project ID; `direct_hash` → direct HTTPS URL to the file. |
+| `source_identifier` | string | Yes | Depends on strategy: `github_release` → GitHub `"owner/repo"`; `modrinth_id` → Modrinth project ID; `direct_hash` → direct HTTPS URL ending in the file's name. |
 | `sha256` | string | Yes | SHA-256 hash of the downloadable file (64 lowercase hex chars). For `github_release` and `modrinth_id`, the compiler populates this from API metadata. For `direct_hash`, it MUST be manually provided. The launcher **blocks download** if the computed hash doesn't match. |
 | `package_signatures` | string[] | Recommended | Java package prefixes used to attribute crash-log stack frames to this mod (e.g. `me.jellysquid.mods.sodium`). Use 2+ segments; single top-level like `net` is too broad. |
 | `base_categories` | string[] | Recommended | Official curated category tags. Free-form lowercase strings. |
@@ -143,7 +169,7 @@ For mods that are self-hosted and not on GitHub or Modrinth. The hash is **manua
 | `curator_note` | string | Recommended | Human-written markdown writeup shown in the UI and used as AI semantic context. |
 | `icon_url` | string | Optional | CDN URL for the mod's icon. For `github_release`, provide manually (e.g. point to `raw.githubusercontent.com`). For `modrinth_id`, auto-populated. |
 | `gallery_urls` | string[] | Optional | Array of CDN URLs for screenshots. Auto-populated from Modrinth or manually provided. |
-| `compatible_versions` | array | Optional | Array of `{mc_version, loader, mod_version}` objects. If absent, the compiler queries Modrinth for real version data (when a `modrinth_id` is resolvable). Otherwise falls back to `[{mc_version: "1.21", loader: "fabric", mod_version: "latest"}]`. **Do not set this manually unless you need to override** — the hydrator does it for you. |
+| `compatible_versions` | array | Optional (**required for `direct_hash`**) | Array of `{mc_version, loader, mod_version}` objects. If absent, the compiler queries Modrinth for real version data (when a `modrinth_id` is resolvable). Otherwise falls back to `[{mc_version: "1.21", loader: "fabric", mod_version: "latest"}]`. **Do not set this manually unless you need to override** — the hydrator does it for you. The exception is `direct_hash`, where nothing hydrates: it must be supplied by hand, and the `"latest"` placeholder is rejected. |
 | `mod_dependencies` | object | Optional | `{required: [...], optional: [...], incompatible: [...]}`. Mod IDs this mod depends on / is incompatible with. If absent, the compiler extracts from the jar's `fabric.mod.json` / `mods.toml` at install time (desktop-side), so this is a curated override only. |
 | `mod_jar_aliases` | string[] | Optional | Alternate jar-declared IDs for cross-source matching (e.g. catalog `fabric-api` ↔ jar `fabric` ↔ Modrinth `fabric_api`). Lets the dependency-aware install system match across sources. Only needed when the jar-declared ID differs from the manifest `id`. |
 | `governance.immune` | boolean | Optional (default `false`) | If `true`, bypasses all automated triage, vote penalties, and velocity circuit breakers. |
@@ -405,9 +431,10 @@ For `github_release` and `modrinth_id` strategies, the compiler populates the ha
 ### Curation principles
 
 - **Boutique, not warehoused.** Every entry is community-reviewed. Quality over quantity.
-- **`github_release` is the preferred strategy** — it points directly to the developer's own GitHub release, with no intermediary. Use `modrinth_id` when the mod isn't on GitHub or as a supplementary metadata source. Use `direct_hash` only for closed-source / self-hosted mods.
+- **`github_release` is the preferred strategy** — it points directly to the developer's own GitHub release, with no intermediary. Use `modrinth_id` when the mod isn't on GitHub or as a supplementary metadata source. Use `direct_hash` only when neither API can resolve the file: closed-source, self-hosted, or a download that lives on the project's own site. It is the most manual option and every field must be maintained by hand, including a fresh `sha256` and `compatible_versions` on every version bump.
+- **`direct_hash` cannot be used for CurseForge.** Since July 2026 the CurseForge CDN requires API-key authentication; unauthenticated requests to `edge.forgecdn.net` / `mediafilez.forgecdn.net` are refused. A pinned `forgecdn` URL will not download, and Agora has nowhere to hold a key (secrets never enter manifests or source, and a key-holding proxy would mean running a backend). CurseForge-exclusive mods are simply out of scope.
 - **Curator notes matter.** The `curator_note` field is shown in the UI and used as semantic context for the AI crash investigator. Write a clear, 1-3 sentence summary of what the mod does and why a user would (or wouldn't) want it.
-- **Don't set `compatible_versions` manually** unless you have a specific reason to override. The compiler fetches real version data from Modrinth's API for any mod with a resolvable `modrinth_id` (or whose manifest `id` matches a Modrinth slug). Manual overrides should be rare.
+- **Don't set `compatible_versions` manually** unless you have a specific reason to override. The compiler fetches real version data from Modrinth's API for any mod with a resolvable `modrinth_id` (or whose manifest `id` matches a Modrinth slug). Manual overrides should be rare — `direct_hash` is the one strategy where it is mandatory.
 - **Immunity is rare.** `governance.immune: true` should only be set for mods that are foundational and shouldn't be subject to community vote triage (e.g. a core API). Always include `override_justification` when doing this.
 - **Archiving, not deleting.** To retire an entry, move its JSON file to `registry/archived/`. The compiler skips that directory entirely, so the entry disappears from the compiled database without losing git history.
 

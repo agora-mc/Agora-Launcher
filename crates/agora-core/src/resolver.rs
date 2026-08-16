@@ -854,6 +854,24 @@ impl Resolver {
                 )
                 .await
             }
+            // Fully hand-curated: no API call, the signed manifest is the
+            // source of truth. A Modrinth mirror, when the curator declared
+            // one, is still an acceptable fallback if the pinned host is down —
+            // the artifact is SHA-256-verified either way.
+            "direct_hash" => match direct_hash_versions_for_item(item, mc_version, loader) {
+                Ok(candidates) if !candidates.is_empty() => Ok(candidates),
+                Ok(_) | Err(_) if has_modrinth => {
+                    fetch_modrinth_versions_for_item(
+                        &self.ctx.http_clients,
+                        &item.source_identifier,
+                        item.modrinth_id.as_deref(),
+                        mc_version,
+                        loader,
+                    )
+                    .await
+                }
+                other => other,
+            },
             _ => Err(LauncherError::Generic {
                 code: "ERR_UNSUPPORTED_STRATEGY".into(),
                 message: format!(
@@ -2519,6 +2537,163 @@ async fn fetch_modrinth_versions_for_item(
 }
 
 // ---------------------------------------------------------------------------
+// Standalone functions: hand-curated `direct_hash` items
+// ---------------------------------------------------------------------------
+
+/// Derive the on-disk filename for a `direct_hash` download from its URL.
+///
+/// The manifest has no filename field, so the URL's last path segment is the
+/// only name available. The registry is signed, but a traversal-shaped segment
+/// must still never reach a path join, so anything that is not a plain
+/// `name.ext` is rejected outright rather than sanitized.
+fn direct_hash_filename(url: &str) -> Option<String> {
+    let segment = url
+        .split('#')
+        .next()?
+        .split('?')
+        .next()?
+        .rsplit('/')
+        .next()?;
+    let rejected = segment.is_empty()
+        || segment.starts_with('.')
+        || segment.contains('\\')
+        || segment.contains("..")
+        || !segment.contains('.');
+    (!rejected).then(|| segment.to_string())
+}
+
+/// Compatibility verdict for one curator-declared `(mc_version, loader)` pair.
+///
+/// Mirrors the rules in [`registry::compatibility_from_registry_json`], but per
+/// entry rather than collapsed across the whole array.
+fn declared_version_compat(
+    declared_mc: &str,
+    declared_loader: &str,
+    want_mc: &str,
+    want_loader: &str,
+) -> &'static str {
+    if !declared_loader.eq_ignore_ascii_case(want_loader) {
+        return "";
+    }
+    if declared_mc == want_mc {
+        return "compatible";
+    }
+    let major = |version: &str| version.split('.').take(2).collect::<Vec<_>>().join(".");
+    if major(declared_mc) == major(want_mc) {
+        "major_match"
+    } else {
+        ""
+    }
+}
+
+/// Build the candidate list for a fully hand-curated `direct_hash` item.
+///
+/// Unlike the other strategies there is no upstream API to query — the signed
+/// manifest *is* the source of truth. Every candidate therefore points at the
+/// same pinned URL and the same pinned SHA-256, and differs only in the
+/// `(mc_version, loader, mod_version)` tuple the curator declared. One entry
+/// describes one file; a curator who needs two files publishes two registry
+/// entries.
+///
+/// This is deliberately strict. A `direct_hash` manifest has no API to correct
+/// a curator's omission, so an under-specified one must fail loudly at resolve
+/// time instead of resolving to something plausible but wrong.
+fn direct_hash_versions_for_item(
+    item: &crate::registry::RegistryItem,
+    mc_version: &str,
+    loader: &str,
+) -> LauncherResult<Vec<ModVersionCandidate>> {
+    let invalid = |message: String| LauncherError::Generic {
+        code: "ERR_DIRECT_HASH_MANIFEST".into(),
+        message,
+    };
+
+    let url = item.source_identifier.trim();
+    if !url.starts_with("https://") {
+        return Err(invalid(format!(
+            "'{}' uses direct_hash but its source_identifier is not an https:// URL.",
+            item.id
+        )));
+    }
+    let filename = direct_hash_filename(url).ok_or_else(|| {
+        invalid(format!(
+            "'{}' uses direct_hash but its URL does not end in a filename, so the \
+             downloaded file cannot be named.",
+            item.id
+        ))
+    })?;
+    let sha256 = valid_hash(Some(&item.sha256), 64).ok_or_else(|| {
+        invalid(format!(
+            "'{}' uses direct_hash but has no valid pinned sha256.",
+            item.id
+        ))
+    })?;
+
+    #[derive(Deserialize)]
+    struct DeclaredVersion {
+        mc_version: String,
+        loader: String,
+        mod_version: Option<String>,
+    }
+
+    let declared: Vec<DeclaredVersion> = item
+        .compatible_versions_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default();
+    if declared.is_empty() {
+        return Err(invalid(format!(
+            "'{}' uses direct_hash but declares no compatible_versions; a hand-curated \
+             entry must state which Minecraft versions and loaders its file supports.",
+            item.id
+        )));
+    }
+
+    let mut candidates = Vec::new();
+    for entry in &declared {
+        // "latest" is the compiler's placeholder for an unhydrated entry. It is
+        // meaningless for a pinned file and would make version selection
+        // ambiguous, so it is rejected rather than accepted as a version.
+        let version = entry
+            .mod_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|version| !version.is_empty() && *version != "latest")
+            .ok_or_else(|| {
+                invalid(format!(
+                    "'{}' uses direct_hash but a compatible_versions entry has no explicit \
+                     mod_version.",
+                    item.id
+                ))
+            })?;
+        let compat = declared_version_compat(&entry.mc_version, &entry.loader, mc_version, loader);
+        candidates.push(ModVersionCandidate {
+            version: version.to_string(),
+            filename: filename.clone(),
+            download_url: url.to_string(),
+            mc_version: Some(entry.mc_version.clone()),
+            loader: Some(entry.loader.clone()),
+            release_date: None,
+            is_compatible: compat == "compatible",
+            version_compat: compat.to_string(),
+            sha1: None,
+            sha256: Some(sha256.clone()),
+            sha512: None,
+            size: None,
+        });
+    }
+
+    // `select_curated_candidate` takes the first compatible entry, so rank by
+    // verdict instead of letting manifest authoring order decide.
+    candidates.sort_by_key(|candidate| match candidate.version_compat.as_str() {
+        "compatible" => 0,
+        "major_match" => 1,
+        _ => 2,
+    });
+    Ok(candidates)
+}
+
+// ---------------------------------------------------------------------------
 // Candidate selection
 // ---------------------------------------------------------------------------
 
@@ -3218,6 +3393,164 @@ mod tests {
         };
         assert_eq!(artifact.version_id, "01J9MODRINTHVERSION");
         assert_eq!(artifact.metadata.version.as_deref(), Some("0.6.10"));
+    }
+
+    // -------------------------------------------------------------------
+    // direct_hash: the fully hand-curated strategy. No API resolves these,
+    // so the manifest must carry everything and an incomplete one must fail
+    // loudly rather than resolve to something plausible but wrong.
+    // -------------------------------------------------------------------
+
+    fn direct_hash_item(
+        url: &str,
+        compatible_versions: Option<&str>,
+    ) -> crate::registry::RegistryItem {
+        crate::registry::RegistryItem {
+            id: "self-hosted-mod".into(),
+            name: "Self Hosted Mod".into(),
+            content_type: "mod".into(),
+            download_strategy: "direct_hash".into(),
+            source_identifier: url.into(),
+            sha256: "d".repeat(64),
+            upvotes: 0,
+            downvotes: 0,
+            net_score: 0,
+            velocity: 0.0,
+            status: "active".into(),
+            is_immune: false,
+            immunity_reason: None,
+            allow_comments: true,
+            icon_url: None,
+            gallery_urls_json: None,
+            date_added: None,
+            compatible_versions_json: compatible_versions.map(str::to_string),
+            description: None,
+            body_markdown: None,
+            page_url: None,
+            license_id: None,
+            source_updated_at: None,
+            modrinth_id: None,
+            recommendation_reason: None,
+            recommendation_overlap: None,
+        }
+    }
+
+    #[test]
+    fn direct_hash_resolves_from_the_manifest_alone() {
+        let item = direct_hash_item(
+            "https://example.com/files/self-hosted-mod-1.2.3.jar",
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.2.3"}]"#),
+        );
+        let candidates = direct_hash_versions_for_item(&item, "1.21", "fabric").unwrap();
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.version, "1.2.3");
+        assert_eq!(candidate.filename, "self-hosted-mod-1.2.3.jar");
+        assert_eq!(
+            candidate.download_url,
+            "https://example.com/files/self-hosted-mod-1.2.3.jar"
+        );
+        assert!(candidate.is_compatible);
+        // The pinned item hash must reach the candidate, or the download would
+        // fall back to an unverified fetch.
+        assert_eq!(candidate.sha256.as_deref(), Some("d".repeat(64).as_str()));
+
+        let artifact = curated_artifact(&item, candidate).unwrap();
+        let ResolvedArtifact::Download(download) = artifact else {
+            panic!("expected a downloadable artifact");
+        };
+        assert!(download.hashes.values.iter().any(|hash| {
+            hash.algorithm == HashAlgorithm::Sha256 && hash.value == "d".repeat(64)
+        }));
+    }
+
+    #[test]
+    fn direct_hash_ranks_compatible_entries_ahead_of_mismatches() {
+        let item = direct_hash_item(
+            "https://example.com/files/multi-1.0.0.jar",
+            Some(
+                r#"[{"mc_version":"1.20.1","loader":"forge","mod_version":"1.0.0"},
+                    {"mc_version":"1.21.4","loader":"fabric","mod_version":"1.0.0"},
+                    {"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#,
+            ),
+        );
+        let candidates = direct_hash_versions_for_item(&item, "1.21", "fabric").unwrap();
+        assert_eq!(candidates.len(), 3);
+        // Exact match first, then same-major on the right loader, then the rest.
+        assert_eq!(candidates[0].version_compat, "compatible");
+        assert_eq!(candidates[0].mc_version.as_deref(), Some("1.21"));
+        assert_eq!(candidates[1].version_compat, "major_match");
+        assert_eq!(candidates[2].version_compat, "");
+        assert_eq!(
+            select_curated_candidate(&candidates, None)
+                .unwrap()
+                .mc_version
+                .as_deref(),
+            Some("1.21")
+        );
+    }
+
+    #[test]
+    fn direct_hash_rejects_incomplete_manifests() {
+        let good_versions =
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#);
+        let cases: Vec<(&str, crate::registry::RegistryItem)> = vec![
+            (
+                "plain http is not acceptable for a pinned artifact",
+                direct_hash_item("http://example.com/files/mod-1.0.0.jar", good_versions),
+            ),
+            (
+                "a URL with no filename cannot name the download",
+                direct_hash_item("https://example.com/download?id=12", good_versions),
+            ),
+            (
+                "a bare traversal segment must never reach a path join",
+                direct_hash_item("https://example.com/files/..", good_versions),
+            ),
+            (
+                "an encoded traversal segment is not decoded into a path",
+                direct_hash_item(
+                    "https://example.com/files/..%2F..%2Fevil.jar",
+                    good_versions,
+                ),
+            ),
+            (
+                "no declared compatibility means nothing can be selected",
+                direct_hash_item("https://example.com/files/mod-1.0.0.jar", None),
+            ),
+            (
+                "an empty compatibility list is equally unusable",
+                direct_hash_item("https://example.com/files/mod-1.0.0.jar", Some("[]")),
+            ),
+            (
+                "the compiler's 'latest' placeholder is not a real version",
+                direct_hash_item(
+                    "https://example.com/files/mod-1.0.0.jar",
+                    Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"latest"}]"#),
+                ),
+            ),
+            (
+                "a missing mod_version leaves selection ambiguous",
+                direct_hash_item(
+                    "https://example.com/files/mod-1.0.0.jar",
+                    Some(r#"[{"mc_version":"1.21","loader":"fabric"}]"#),
+                ),
+            ),
+        ];
+        for (why, item) in cases {
+            let result = direct_hash_versions_for_item(&item, "1.21", "fabric");
+            assert!(result.is_err(), "{why}");
+        }
+    }
+
+    #[test]
+    fn direct_hash_missing_pinned_hash_is_rejected() {
+        let mut item = direct_hash_item(
+            "https://example.com/files/mod-1.0.0.jar",
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#),
+        );
+        item.sha256 = "not-a-hash".into();
+        assert!(direct_hash_versions_for_item(&item, "1.21", "fabric").is_err());
     }
 
     #[test]
