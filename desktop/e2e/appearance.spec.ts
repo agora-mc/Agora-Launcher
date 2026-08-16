@@ -70,7 +70,7 @@ test('text scale slider extends to 200%', async ({ page }) => {
   await expect(page.getByText('200%')).toBeVisible();
 });
 
-test('background, text, density, scale, corners, effects, and fonts apply broadly', async ({ page }) => {
+test('background, text, density, scale, corners, and fonts apply broadly', async ({ page }) => {
   const appearance = page.getByTestId('appearance-settings');
   const sampleText = appearance.getByText('Color, readability, spacing, and motion preferences apply immediately.');
   const initialPadding = await appearance.evaluate((element) => getComputedStyle(element).paddingTop);
@@ -93,11 +93,6 @@ test('background, text, density, scale, corners, effects, and fonts apply broadl
   await page.getByLabel('Block text color').fill('#f0e0d0');
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--background').trim())).toBe('210 50% 13%');
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--foreground').trim())).toBe('30 52% 88%');
-
-  const sidebar = page.getByTestId('sidebar');
-  await page.getByLabel('Decorative background effects').uncheck();
-  await expect(sidebar).toHaveCSS('box-shadow', 'none');
-  await expect(page.locator('body')).toHaveCSS('background-image', 'none');
 });
 
 test('block, navigation, and background text colors have independent opacity-aware tokens', async ({ page }) => {

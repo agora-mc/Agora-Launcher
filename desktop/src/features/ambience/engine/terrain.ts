@@ -32,8 +32,7 @@ export function ridge(seed: number, amp: number, base: number, step: number, W: 
  * bowl so the water (and its creatures) stay bounded to it — the ridge is too
  * wavy to trust a single rim sample, so we take the LOWER rim (max y).
  */
-export function carveBasin(arr: number[], step: number, centerFrac: number, widthCols: number, depth: number): Basin {
-  const c = Math.floor(arr.length * centerFrac);
+export function carveBasin(arr: number[], step: number, c: number, widthCols: number, depth: number): Basin {
   for (let i = c - widthCols; i <= c + widthCols; i++) {
     if (i < 0 || i >= arr.length) continue;
     const d = Math.cos((i - c) / widthCols * Math.PI / 2); // smooth bowl, 0 at rim
@@ -57,17 +56,100 @@ export function paraY(state: EngineState, layer: number | 'sky' | 'pond'): numbe
   return (state.my - 0.5) * paraMul(layer) * 0.4;
 }
 
-/** Regenerate the terrain whenever the canvas width changes (as in bgFrame). */
-export function regenerate(state: EngineState): void {
-  if (state.W === state.lastW) return;
-  state.lastW = state.W;
-  state.R1 = ridge(1.3, 90, state.H * 0.62, 16, state.W, state.OVER);
-  state.R2 = ridge(4.7, 70, state.H * 0.74, 14, state.W, state.OVER);
-  state.R3 = ridge(8.1, 44, state.H * 0.86, 12, state.W, state.OVER);
-  state.BASIN = carveBasin(state.R3, 12, 0.30, 11, 46);
-  // water fills the bowl up to its lowest rim — stays in the dip, never floods
-  const b = state.BASIN;
-  state.WATER_LEVEL = Math.max(state.R3[b.c - b.half], state.R3[b.c + b.half]);
+/**
+ * Baseline y for a ridge layer, given the session's reference height.
+ *
+ * A ridge used to sit at a fraction of the CURRENT height, so every resize
+ * re-shaped the whole landscape: the hills, the shoreline and the water level
+ * all slid vertically. Anchor them to the BOTTOM edge instead — the horizon
+ * keeps its distance from the ground you can see, and a taller window simply
+ * gains sky.
+ *
+ * The `Math.max` is the floor for windows SHORTER than the reference: below
+ * that, holding the offset would push the ridges off the top of the screen, so
+ * the original proportional placement takes over.
+ */
+export function ridgeBase(H: number, refH: number, frac: number): number {
+  return Math.max(H * frac, H - refH * (1 - frac));
+}
+
+/** Basin column for a ridge array, pinned to a world x once it is chosen. */
+export function basinColumn(arr: number[], anchorX: number | null, centerFrac: number, step: number, OVER: number): number {
+  const c = anchorX === null ? Math.floor(arr.length * centerFrac) : Math.floor((anchorX + OVER) / step);
+  return Math.max(0, Math.min(arr.length - 1, c));
+}
+
+/**
+ * The world's own width in world units — the scene's standard borders.
+ *
+ * The canvas used to BE the viewport, so the world's coordinate space grew and
+ * shrank with the window: `ridge` generates one column per `step` across `W`,
+ * so a wider window APPENDED hills, and everything placed against `W` (the
+ * sun's arc, the clouds' wrap, every spawn at a fraction of the width) spread
+ * out with it. Widening the window enlarged the map instead of enlarging the
+ * view of it.
+ *
+ * So the world is a fixed-size place, drawn in world units against this
+ * constant and scaled to whatever window it lands in (`worldViewport`). A
+ * resize changes only how big the world looks — never how much of it there is.
+ * 1280 is the app's own default window width (`tauri.conf.json`), so the
+ * ordinary case is a 1:1 scale.
+ */
+export const WORLD_W = 1280;
+
+/** How the fixed-width world maps onto one window. See `worldViewport`. */
+export interface WorldViewport {
+  /** Size of the canvas ELEMENT, in client px (what the browser lays out). */
+  cssW: number;
+  cssH: number;
+  /** The element's untransformed top-left, in client px. Negative when zoomed out. */
+  left: number;
+  top: number;
+  /** Client px per world unit. */
+  scale: number;
+  /** The world's own drawing space, in world units. */
+  W: number;
+  H: number;
+}
+
+/**
+ * Fit the fixed-width world to a window.
+ *
+ * `W` follows only the zoom, never the window: that is the whole point — the
+ * scene keeps its borders and `scale` grows instead, so a wider window shows
+ * the same world, larger.
+ *
+ * The vertical axis is deliberately NOT fitted the same way. Forcing a fixed
+ * height too would mean either letterboxing the background or cropping the
+ * ground out of a wide window, so `H` keeps the window's aspect in world units
+ * and the surplus becomes sky (`ridgeBase`) — the rule the landscape already
+ * followed when the window grew taller.
+ *
+ * Zooming OUT scales the element below the viewport and would letterbox the
+ * world, so the element is grown by 1/zoom and re-centred first; that is why
+ * `left`/`top` can be negative. It does not touch `scale`, so zoom stays a pure
+ * zoom rather than a second, hidden resize.
+ */
+export function worldViewport(vw: number, vh: number, zoom: number, worldW = WORLD_W): WorldViewport {
+  const cover = zoom < 1 ? 1 / zoom : 1;
+  const cssW = Math.round(Math.max(1, vw) * cover);
+  const cssH = Math.round(Math.max(1, vh) * cover);
+  // `W` first, from the world's own constant, and `scale` from that — deriving
+  // `W` from the rounded element size instead let it wobble by a pixel between
+  // window widths, which is a small lie about a fixed-size world.
+  const W = Math.round(worldW * cover);
+  const scale = cssW / W;
+  return {
+    cssW,
+    cssH,
+    left: Math.round((vw - cssW) / 2),
+    top: Math.round((vh - cssH) / 2),
+    scale,
+    W,
+    // Ceil: the drawn height must never fall a fraction short of the element,
+    // or the bottom row of pixels goes unpainted.
+    H: Math.ceil(cssH / scale),
+  };
 }
 
 /**
@@ -106,14 +188,24 @@ export function waterSpan(state: EngineState): { x0: number; x1: number } {
 }
 
 /**
- * Undo the view transform: screen point → canvas point.
+ * Undo the view transform: screen point → world point.
  *
  * The zoom/pan is a CSS transform on the canvas element, so the pixels move but
  * the canvas's own coordinate space does not. Hit tests must therefore be run on
  * the inverse, or everything becomes clickable somewhere other than where it is
  * drawn — which is exactly what happened as soon as you zoomed.
  *
- * Mirrors `transform: translate(tx, ty) scale(zoom)` with a 50%/50% origin.
+ * Mirrors `transform: translate(tx, ty) scale(zoom)` with a 50%/50% origin,
+ * about an element whose untransformed top-left sits at (`left`, `top`) in
+ * client coordinates. That offset is NOT always zero: zooming out grows the
+ * canvas past the viewport and centres it with a negative left/top, so leaving
+ * it out put every hit test tens of pixels away from the cursor at the default
+ * zoom.
+ *
+ * `w`/`h` are the ELEMENT's untransformed size and `scale` the client px per
+ * world unit (`worldViewport`) — the fixed-width world is drawn scaled, so the
+ * two stopped being the same number the moment the window was not exactly
+ * `WORLD_W` wide.
  */
 export function viewToCanvas(
   clientX: number,
@@ -121,9 +213,12 @@ export function viewToCanvas(
   view: { zoom: number; tx: number; ty: number },
   w: number,
   h: number,
+  left = 0,
+  top = 0,
+  scale = 1,
 ): { x: number; y: number } {
   return {
-    x: (clientX - view.tx - w / 2) / view.zoom + w / 2,
-    y: (clientY - view.ty - h / 2) / view.zoom + h / 2,
+    x: ((clientX - left - view.tx - w / 2) / view.zoom + w / 2) / scale,
+    y: ((clientY - top - view.ty - h / 2) / view.zoom + h / 2) / scale,
   };
 }

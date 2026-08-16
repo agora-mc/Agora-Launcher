@@ -111,7 +111,7 @@ export function About() {
       </section>
 
       {/* Get involved */}
-      <section className="rounded-xl border border-primary/25 bg-primary/5 p-6">
+      <section className="agora-panel-accent rounded-xl border border-primary/25 p-6">
         <div className="flex items-center gap-2 mb-3">
           <HeartHandshake className="h-5 w-5 text-primary" aria-hidden="true" />
           <h3 className="text-lg font-semibold">Get involved</h3>

@@ -74,41 +74,21 @@ export function Sidebar({
   };
 
   return (
-    <aside
-      className="decorative-shell relative flex shrink-0 flex-col border-r border-border bg-card/95 shadow-[4px_0_24px_hsl(var(--midnight)/0.04)] backdrop-blur"
-      style={{ width: collapsed ? 64 : width }}
-      data-testid="sidebar"
-    >
+    // The two controls that overhang the sidebar's right edge — the collapse
+    // arrow and the resize grip — are SIBLINGS of the <aside>, not children.
+    // The aside is backdrop-blurred, and a child that spills past a
+    // backdrop-filtered element is rasterised through that filter: the arrow
+    // came out visibly soft while everything inside the sidebar stayed sharp.
+    // Out here they render crisp, and the wrapper carries the same box, so the
+    // positioning is unchanged.
+    <div className="relative flex shrink-0" style={{ width: collapsed ? 64 : width }}>
+      <aside
+        className="decorative-shell flex h-full w-full min-w-0 flex-col border-r border-border bg-card/95 shadow-[4px_0_24px_hsl(var(--midnight)/0.04)] backdrop-blur"
+        data-testid="sidebar"
+      >
       <div className={`border-b border-border ${collapsed ? 'p-3' : 'p-4'}`}>
         <BrandMark compact={collapsed} className={collapsed ? 'justify-center' : ''} />
       </div>
-
-      <button
-        onClick={() => onCollapsedChange(!collapsed)}
-        className="absolute -right-3 top-20 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:bg-accent"
-        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-      >
-        {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
-      </button>
-
-      {!collapsed && (
-        <div
-          role="separator"
-          aria-label="Resize sidebar"
-          aria-orientation="vertical"
-          aria-valuemin={MIN_WIDTH}
-          aria-valuemax={MAX_WIDTH}
-          aria-valuenow={Math.round(width)}
-          tabIndex={0}
-          onPointerDown={startResize}
-          onKeyDown={resizeWithKeyboard}
-          onDoubleClick={() => {
-            onWidthChange(DEFAULT_WIDTH);
-            onWidthCommit(DEFAULT_WIDTH);
-          }}
-          className="absolute inset-y-0 -right-1 z-[5] w-2 cursor-col-resize touch-none focus:outline-none focus:ring-2 focus:ring-inset focus:ring-ring"
-        />
-      )}
 
       <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3" aria-label="Main navigation">
         {tabs.map((tab) => {
@@ -165,6 +145,34 @@ export function Sidebar({
           </div>
         </div>
       )}
-    </aside>
+      </aside>
+
+      <button
+        onClick={() => onCollapsedChange(!collapsed)}
+        className="absolute -right-3 top-20 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:bg-accent"
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
+      </button>
+
+      {!collapsed && (
+        <div
+          role="separator"
+          aria-label="Resize sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_WIDTH}
+          aria-valuemax={MAX_WIDTH}
+          aria-valuenow={Math.round(width)}
+          tabIndex={0}
+          onPointerDown={startResize}
+          onKeyDown={resizeWithKeyboard}
+          onDoubleClick={() => {
+            onWidthChange(DEFAULT_WIDTH);
+            onWidthCommit(DEFAULT_WIDTH);
+          }}
+          className="absolute inset-y-0 -right-1 z-[5] w-2 cursor-col-resize touch-none focus:outline-none focus:ring-2 focus:ring-inset focus:ring-ring"
+        />
+      )}
+    </div>
   );
 }

@@ -23,7 +23,6 @@ export interface AmbienceContextValue {
   /** True when ambience is on at all (profile !== 'off'). */
   enabled: boolean;
   setEnabled: (on: boolean) => void;
-  setProfile: (p: AmbienceProfile) => void;
   soundOn: boolean;
   setSoundOn: (on: boolean) => void;
   musicVolume: number;
@@ -40,6 +39,11 @@ export interface AmbienceContextValue {
   /** Living-background page controls (proxied to the engine). */
   setTod: (t: number) => void;
   setWeather: (w: 'clear' | 'rain' | 'snow') => void;
+  /** Pin the time of day / weather so the world stops changing them itself. */
+  setTodLocked: (on: boolean) => void;
+  setWeatherLocked: (on: boolean) => void;
+  /** Read the world's clock so controls can follow it. Null before the engine exists. */
+  readClock: () => AmbienceClock | null;
   setZoom: (z: number) => void;
   setBuddy: (on: boolean) => void;
   /** Rainbow: put one up now, or take it down. */
@@ -50,6 +54,14 @@ export interface AmbienceContextValue {
   musicAuto: boolean;
   setMusicAuto: (on: boolean) => void;
   ready: boolean;
+}
+
+/** A snapshot of the world's clock, for controls that mirror it. */
+export interface AmbienceClock {
+  tod: number;
+  weather: 'clear' | 'rain' | 'snow';
+  todLocked: boolean;
+  weatherLocked: boolean;
 }
 
 const AmbienceContext = createContext<AmbienceContextValue | null>(null);
@@ -89,7 +101,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   // expose the ambience state to CSS (translucent shell over the world)
   useEffect(() => {
     const root = document.documentElement;
-    const active = settings && settings.enabled ? (overrideRef.current ?? settings.profile) : 'off';
+    const active = settings && settings.enabled ? (overrideRef.current ?? 'full') : 'off';
     root.setAttribute('data-ambience', active);
     root.setAttribute('data-ambience-clear', settings?.clearBackground ? 'on' : 'off');
     return () => {
@@ -98,9 +110,14 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     };
   }, [settings, override]);
 
+  // The world runs at `full` whenever it is on. There used to be a calm/full
+  // "background intensity" setting, but it never took: the coordinator forces a
+  // profile per surface, so the stored value was overwritten before it could be
+  // seen. A surface that wants the quiet version still asks for it through
+  // `overrideProfile` (the Lab bench does).
   const effectiveProfile: AmbienceProfile = !settings || !settings.enabled
     ? 'off'
-    : (overrideRef.current ?? settings.profile);
+    : (overrideRef.current ?? 'full');
 
   const persist = useCallback((patch: Partial<AmbienceSettings>) => {
     setSettings((cur) => {
@@ -122,7 +139,6 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     profile: effectiveProfile,
     enabled: effectiveProfile !== 'off',
     setEnabled: (on) => persist({ enabled: on }),
-    setProfile: (p) => persist({ profile: p }),
     soundOn: settings?.sound ?? false,
     setSoundOn: (on) => persist({ sound: on }),
     musicVolume: settings?.musicVolume ?? 0.35,
@@ -134,6 +150,9 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     overrideProfile: (p) => setOverride(p),
     setTod: (t) => engine?.setTod(t),
     setWeather: (w) => engine?.setWeather(w),
+    setTodLocked: (on) => engine?.setTodLocked(on),
+    setWeatherLocked: (on) => engine?.setWeatherLocked(on),
+    readClock: () => (engine ? (engine.clockState() as AmbienceClock) : null),
     setZoom: (z) => engine?.setZoom(z),
     setBuddy: (on) => engine?.setBuddy(on),
     setRainbow: (on) => engine?.setRainbow(on),

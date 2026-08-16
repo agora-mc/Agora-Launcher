@@ -46,7 +46,9 @@ function weatherForSlot(slot: number): number {
  * calling with dt = 0, or drive the weather by setting `clock.weatherTimer`.
  */
 export function advanceClock(state: EngineState, clock: ClockState, dt: number, todSpeed = 1 / 900): void {
-  if (todSpeed > 0) state.tod = (state.tod + todSpeed * dt) % 1;
+  // `todLocked` pins the sky where the player left it — the day stops moving,
+  // but everything downstream (egg tracking, weather) still ticks.
+  if (todSpeed > 0 && !state.todLocked) state.tod = (state.tod + todSpeed * dt) % 1;
 
   // full-day egg tracking (prototype's time-slider logic)
   let fullMin = clock.fullDayMin, fullMax = clock.fullDayMax;

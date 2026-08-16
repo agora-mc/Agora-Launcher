@@ -868,3 +868,141 @@ Why work is stopping: per the coordination plan, each completed batch hands to L
   SOL-3 → TERRA final + LUNA final → DEEPSEEK final fixes → SOL-4. Install/update additionally await a
   fresh curated candidate/target-version source.
 ```
+
+## Entry-point change (Lab moved out of the sidebar)
+
+```text
+Phase: navigation — Agora Lab is no longer a top-level tab
+Files changed:
+  desktop/src/App.tsx                                  (BASE_TABS drops the 'lab' entry and the tabs array
+                                                          drops tabLab; the `effectiveTab === 'lab'` render
+                                                          and `'lab'` in `Tab` are UNCHANGED, so the Lab is
+                                                          still a first-class destination — just not a
+                                                          permanent sidebar slot. New `onExit` wire.)
+  desktop/src/pages/Guide.tsx                          (fourth JourneyCard in the experience-tier row:
+                                                          "New to modding / Interactive guide" →
+                                                          onNavigateTab('lab'); row is now
+                                                          md:grid-cols-2 xl:grid-cols-4; JourneyCard takes
+                                                          an optional icon marking a card that leaves the
+                                                          guide)
+  desktop/src/features/interactive/lab/LabShell.tsx    (optional `onExit`; renders a "Back to Help & Guide"
+                                                          button — the Lab has no sidebar tab to return
+                                                          from. Arrow is an INLINE svg: `lab/` may not
+                                                          import lucide-react per the boundary allowlist.)
+Rationale: the Lab is the high-interaction form of the beginner guide, so it belongs in the guide's
+  "New to modding" tier rather than competing with real launcher destinations in the sidebar.
+Unchanged on purpose:
+  - `ambience-coordinator.tsx`'s `activeTab !== 'lab'` exception still applies (V5-PORT-PLAN §12.1) —
+    it keys off the destination, not sidebar membership.
+  - The Field Guide handoff (`onOpenGuide`) and Standard navigation (`onNavigateStandard`) are untouched.
+Note: the "open the Agora Lab sidebar tab" launch instructions in the phase logs above are now stale —
+  reach the Lab via Help & Guide -> "Interactive guide".
+Tests run:
+  npm run build — boundary check OK (56 files), tsc clean, vite build succeeds
+  npm run test:unit — 214/214 pass (27 files)
+  python scripts/check_architecture.py && python scripts/check_docs.py — pass
+  Manual (Vite dev server): sidebar lists 9 tabs with no "Agora Lab"; the guide tier row renders 4 tiles;
+    tile 1 mounts lab-shell + workshop; "Back to Help & Guide" returns to the guide with Help & Guide
+    marked aria-current.
+Known failures: none.
+```
+
+## Fix (High Interaction Play button stuck after a game session)
+
+```text
+Phase: defect — the Play button never re-enabled once Minecraft closed
+Symptom: launch from High Interaction, play, quit the game. The instance stayed locked and Play stayed
+  disabled until the host was remounted. The Standard editor's Play button recovered normally.
+Root cause: `useProcessController` sets `phase: 'exited'` when the backend's `game-exited` event lands.
+  `projectCanonical` derived busy as "anything that is not `idle` or `failed`", so `exited` projected as
+  `lockState: 'busy'` -> `locked` -> `playDisabled` in WorldEditor.tsx, permanently. The Standard editor
+  enumerates its blocking phases explicitly (`launching | stopping | delegated`, InstanceEditor.tsx), which
+  is why only High Interaction was affected.
+NOT a cause (verified): the launch path itself. InstanceEditor takes ONE `onLaunch` prop
+  (App.tsx -> handleInstanceEditorLaunch -> startLaunch -> executeLaunch -> launchInstanceDirect /
+  launchInstance -> agora-core). The High Interaction Play button (InstanceEditor.tsx ~1254) and the
+  Standard Play button (~1476) call that same prop through identical closure bodies. The High Interaction
+  click handler also already gated on Standard's `playDisabled`, which was correct — only the visual
+  `disabled` was stuck.
+Files changed:
+  desktop/src/features/interactive/live/LiveInteractiveHost.tsx  (named TERMINAL_PHASES set
+                                                                   {idle, exited, failed}; kept as a
+                                                                   terminal ALLOWLIST so an unrecognized
+                                                                   future phase still projects busy)
+  desktop/src/features/interactive/live/LiveInteractiveHost.test.tsx (canonical-phase table gains
+                                                                   `exited`; new full launch -> running ->
+                                                                   exited lifecycle test asserting the
+                                                                   real Play button)
+Why the tests missed it: the canonical-phase table enumerated launching/running/stopping/delegated/failed/
+  idle — every phase EXCEPT `exited`. Both tests were confirmed to fail with the fix reverted.
+```
+
+## Perf (High Interaction first paint)
+
+```text
+Phase: performance — High Interaction took seconds to appear where Standard was ~instant
+Diagnosis: Standard blocks first paint on ONE read (`getInstanceDetail`) and streams memory, snapshots,
+  loadouts, content and icons in from independent effects; it never runs a health scan on page load. The
+  live host awaited `Promise.all` of EIGHT reads and rendered only "Loading live data…" until the slowest
+  resolved. Three of the eight are the most expensive reads in the app and none are in Standard's load
+  path: `listJavaRuntimes`, `checkInstanceHealth`, `getDependencyGraph`.
+Files changed:
+  desktop/src-tauri/src/commands.rs                             (list_java_runtimes now goes through
+                                                                   agora_core RuntimeService::list_candidates
+                                                                   — the cache-first path. It was calling
+                                                                   java::detect_java_candidates directly,
+                                                                   which spawns a
+                                                                   `java -XshowSettings:properties -version`
+                                                                   subprocess PER Java install (Mojang
+                                                                   bundles up to 16, plus system JREs)
+                                                                   on EVERY call. core already had the
+                                                                   persisted inventory for exactly this —
+                                                                   its own comment calls the probes "the
+                                                                   dominant cold-start cost" — and the
+                                                                   launch path already used it.)
+  desktop/src/features/interactive/live/liveScene.ts            (read split into readEssentialData
+                                                                   {detail, running} and readEnrichmentData
+                                                                   {health, snapshots, investigation,
+                                                                   memory, javas, dependencies};
+                                                                   pendingEnrichment() placeholder;
+                                                                   readLiveData composes both and still
+                                                                   dispatches them together, so a COMPLETE
+                                                                   scene is no slower than before)
+  desktop/src/features/interactive/live/LiveInteractiveHost.tsx  (LiveHostLoad gains an optional
+                                                                   `onPartial` early-paint channel — a
+                                                                   loader that ignores it behaves exactly
+                                                                   as a single-phase loader always did, so
+                                                                   no injected test loader changed;
+                                                                   LiveHostState.scene gains `pending`)
+  desktop/src/features/interactive/live/LiveSceneView.tsx        (pending passthrough)
+  desktop/src/features/interactive/live/WorldEditor.tsx          (pending -> "Checking things over…"
+                                                                   instead of "Health could not be
+                                                                   verified")
+Invariants preserved (SOL-2 BLOCKER 1 / §17.3 / §19.4):
+  - The partial scene is stamped `refreshing`, so `freshness.isExecutable` is false and `routeLiveIntent`
+    refuses it. A half-read scene can never drive a review. Only the COMPLETE read runs `derivedFreshness`,
+    so `fresh` still means every fragment read ok.
+  - The early paint passes the SAME monotonic-generation and instance-identity guards as the accepted
+    result — an early frame is not a hole in the latest-wins/instance-safe rules.
+  - An open Standard review's in-flight proposal marker is preserved across the partial paint too.
+  - A pending scene does not restart its own read when an intent routes `refresh-required` — the
+    enrichment read already in flight IS that re-read.
+Why `pending` is not a third Fragment status: enrichment resolves as one Promise.all, so pending == "all
+  six are placeholders" and never mixes with a genuine per-read failure. Widening Fragment would have
+  touched every consumer for no added information.
+Tests run:
+  npm run build — boundary check OK (56 files), tsc clean, vite build succeeds
+  node scripts/check-interactive-boundaries.mjs --root scripts/boundary-fixtures/interactive --fixtures
+    — OK, every fixture produced a violation (24 total)
+  npm run test:unit — 221/221 pass (27 files; +7 new)
+  cargo fmt --all --check; cargo clippy -p agora-core -p agora-cli --all-targets --all-features -D warnings
+  cargo test -p agora-core (1539 + 65 pass); cargo test -p agora-cli (82 + 85 pass); cargo check -p agora-desktop
+  python scripts/check_architecture.py && python scripts/check_docs.py — pass
+Known failures: two PRE-EXISTING e2e failures in desktop/e2e/high-interaction.spec.ts (lines 205 and 221)
+  — both fail identically with all live/ changes stashed, so they are drift in the spec, not a regression
+  from this batch. Not fixed here; tracked separately.
+Not measured: real wall-clock numbers on a Tauri build. The Java-probe removal is structural (subprocess
+  spawns per call -> none on a warm inventory) but the remaining split between health and the dependency
+  graph — which BOTH call refresh_installed_jar_metadata on the same instance concurrently, racing the
+  same jar-meta cache on a cold cache — was left alone.
+```

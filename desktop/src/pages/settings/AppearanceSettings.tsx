@@ -12,7 +12,6 @@ import {
   type InteractionPreference,
 } from '../../features/interactive/live/presentationPreference';
 import { useAmbience } from '../../features/ambience/AmbienceProvider';
-import type { AmbienceProfile } from '../../features/ambience/engine/engine';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
@@ -57,7 +56,7 @@ const PRESETS: Record<string, { label: string; preferences: UiPreferences }> = {
       backgroundMode: 'custom', customBackground: '#050a07',
       textMode: 'custom', customText: '#d9fbe7',
       backgroundTextMode: 'custom', customBackgroundText: '#a8daba',
-      fontFamily: 'mono', density: 'compact', cornerStyle: 'square', backgroundEffects: false,
+      fontFamily: 'mono', density: 'compact', cornerStyle: 'square',
     },
   },
   readable: {
@@ -65,7 +64,7 @@ const PRESETS: Record<string, { label: string; preferences: UiPreferences }> = {
     preferences: {
       ...DEFAULT_UI_PREFERENCES,
       fontFamily: 'readable', fontScale: 1.1, highContrast: true,
-      motion: 'reduced', backgroundEffects: false, density: 'spacious',
+      motion: 'reduced', density: 'spacious',
     },
   },
 };
@@ -277,13 +276,9 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
       </label>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex items-center justify-between gap-3 text-sm">
+        <label className="flex items-center justify-between gap-3 text-sm sm:col-span-2">
           <span>High contrast</span>
           <input type="checkbox" aria-label="High contrast" checked={preferences.highContrast} onChange={(event) => setPreferences({ highContrast: event.target.checked })} className="h-5 w-5 accent-primary" />
-        </label>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span>Decorative background effects</span>
-          <input type="checkbox" aria-label="Decorative background effects" checked={preferences.backgroundEffects} onChange={(event) => setPreferences({ backgroundEffects: event.target.checked })} className="h-5 w-5 accent-primary" />
         </label>
         <label className="space-y-1 text-sm sm:col-span-2">
           <span className="font-medium">Motion</span>
@@ -334,12 +329,12 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
 
 /**
  * Living background (ambience) settings. The ambience layer is the only thing
- * allowed to touch these keys (V5-PORT-PLAN §2/§4). One toggle, one profile
- * select, one music volume, one sound toggle, and a reduce-motion note that
- * points at the OS/app motion setting.
+ * allowed to touch these keys (V5-PORT-PLAN §2/§4). One toggle, one music
+ * volume, one sound toggle, and a reduce-motion note that points at the OS/app
+ * motion setting.
  */
 function LivingBackgroundSettings() {
-  const { enabled, setEnabled, profile, setProfile, soundOn, setSoundOn, musicVolume, setMusicVolume, clearBackground, setClearBackground } = useAmbience();
+  const { enabled, setEnabled, soundOn, setSoundOn, musicVolume, setMusicVolume, clearBackground, setClearBackground } = useAmbience();
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
@@ -365,23 +360,6 @@ function LivingBackgroundSettings() {
 
       {enabled && (
         <>
-          <label className="block space-y-1 text-sm">
-            <span className="font-medium">Background intensity</span>
-            <select
-              aria-label="Living background intensity"
-              value={profile}
-              onChange={(event) => setProfile(event.target.value as AmbienceProfile)}
-              className={`${selectClass} block w-full sm:w-72`}
-            >
-              <option value="calm">Calm</option>
-              <option value="full">Full</option>
-            </select>
-            <span className="block text-xs text-muted-foreground">
-              Calm keeps the landscape and weather. Full adds animals, hidden discoveries, a cursor
-              companion and click sparkles. High Interaction mode uses Full automatically.
-            </span>
-          </label>
-
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="flex items-center justify-between gap-3 text-sm">
               <span>Ambient sounds</span>

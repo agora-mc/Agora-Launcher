@@ -32,7 +32,6 @@ export interface UiPreferences {
   cornerStyle: CornerStyle;
   motion: MotionPreference;
   highContrast: boolean;
-  backgroundEffects: boolean;
 }
 
 interface UiPreferencesValues {
@@ -68,7 +67,6 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   cornerStyle: 'soft',
   motion: 'system',
   highContrast: false,
-  backgroundEffects: true,
 };
 
 const UiPreferencesContext = createContext<UiPreferencesValues | null>(null);
@@ -149,7 +147,6 @@ function validatePreferences(value: unknown): UiPreferences | null {
       ? candidate.motion
       : DEFAULT_UI_PREFERENCES.motion,
     highContrast: candidate.highContrast === true,
-    backgroundEffects: candidate.backgroundEffects !== false,
   };
 }
 
@@ -354,7 +351,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.dataset.density = preferences.density;
     root.dataset.motion = preferences.motion;
     root.dataset.contrast = preferences.highContrast ? 'high' : 'normal';
-    root.dataset.effects = preferences.backgroundEffects ? 'on' : 'off';
     root.style.setProperty('--font-scale', String(preferences.fontScale));
     root.style.setProperty('--surface-opacity', String(preferences.surfaceOpacity));
     root.style.setProperty('--nav-opacity', String(preferences.navOpacity));

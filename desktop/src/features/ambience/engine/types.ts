@@ -181,6 +181,8 @@ export interface WorldState {
   splash(x: number, y: number): void;
   spawnRainbow(): void;
   checkRainbow(): void;
+  /** Take the arc down and reset its lifetime (fade-out, or the egg claiming it). */
+  clearRainbow(): void;
   spawnSwarm(): void;
   campfireClick(e: Entity, key: string): void;
   startCampfireTales(fire: Prop): void;

@@ -9,15 +9,37 @@
  * It only appears in the sidebar while the living background is enabled.
  */
 
-import { useEffect, useState } from 'react';
-import { Mountain, Music, Volume2, CloudRain, CloudSnow, Sun, ZoomIn, ZoomOut, Sparkles, Rainbow, ChevronDown, ChevronRight } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Mountain, Music, Volume2, CloudRain, CloudSnow, Sun, ZoomIn, ZoomOut, Sparkles, Rainbow, ChevronDown, ChevronRight, Lock, LockOpen } from 'lucide-react';
 import { MUSIC_TRACK_CHOICES, INSTRUMENT_CHOICES } from '../features/ambience/engine/audio/trackChoices';
 import { useAmbience } from '../features/ambience/AmbienceProvider';
 
+/**
+ * "Leave this alone" for one of the world's own clocks. Pressed, the day stops
+ * turning / the weather stops cycling and stays exactly where it is.
+ */
+function LockButton({ locked, label, onClick }: { locked: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={locked}
+      aria-label={label}
+      title={locked ? 'Locked — the world will not change this on its own' : 'Lock this where it is now'}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+        locked
+          ? 'border-primary bg-primary text-primary-foreground'
+          : 'border-border bg-muted text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {locked ? <Lock className="h-3 w-3" aria-hidden="true" /> : <LockOpen className="h-3 w-3" aria-hidden="true" />}
+      {locked ? 'Locked' : 'Lock'}
+    </button>
+  );
+}
+
 export function LivingBackground() {
   const {
-    profile,
-    setProfile,
     soundOn,
     setSoundOn,
     musicVolume,
@@ -26,6 +48,9 @@ export function LivingBackground() {
     setClearBackground,
     setTod,
     setWeather,
+    setTodLocked,
+    setWeatherLocked,
+    readClock,
     setZoom,
     setRainbow,
     setTrack,
@@ -45,6 +70,8 @@ export function LivingBackground() {
   const [zoom, setZoomValue] = useState(DEFAULT_ZOOM);
   const [buddy, setBuddyValue] = useState(true);
   const [weather, setWeatherValue] = useState<'clear' | 'rain' | 'snow'>('clear');
+  const [todLocked, setTodLockedValue] = useState(false);
+  const [weatherLocked, setWeatherLockedValue] = useState(false);
   const [rainbow, setRainbowValue] = useState(false);
   const [track, setTrackValue] = useState('');
   const [instrument, setInstrumentValue] = useState('');
@@ -52,20 +79,57 @@ export function LivingBackground() {
   // away — but the reopen control stays put, never hunted for.
   const [panelOpen, setPanelOpen] = useState(true);
 
-  // Announce the page to the engine (full profile + companion on).
+  // Announce the page to the engine (companion on).
   useEffect(() => {
-    setProfile('full');
     setBuddy(buddy);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Mirror the world's own clock.
+   *
+   * The day keeps turning and the weather keeps cycling while this panel is
+   * open, so a slider that only ever moved when dragged was wrong within
+   * seconds of being set — it showed the last thing you asked for, not the time
+   * it actually is out there. Read the engine back instead. `lastTouch` yields
+   * to a drag in progress so the poll cannot fight your thumb.
+   */
+  const lastTouch = useRef(0);
+  const readClockRef = useRef(readClock);
+  readClockRef.current = readClock;
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const c = readClockRef.current();
+      if (!c) return;
+      setWeatherValue(c.weather);
+      setWeatherLockedValue(c.weatherLocked);
+      setTodLockedValue(c.todLocked);
+      if (Date.now() - lastTouch.current > 1000) setTime(Math.round(c.tod * 100) / 100);
+    }, 500);
+    return () => window.clearInterval(id);
+  }, []);
+
   const changeTime = (t: number) => {
+    lastTouch.current = Date.now();
     setTime(t);
     setTod(t);
   };
   const changeWeather = (w: 'clear' | 'rain' | 'snow') => {
     setWeatherValue(w);
     setWeather(w);
+    // Asking for a weather by hand pins it — otherwise the cycle would undo the
+    // choice within a frame. Reflect that here so the lock reads true.
+    setWeatherLockedValue(true);
+  };
+  const toggleTodLock = () => {
+    const next = !todLocked;
+    setTodLockedValue(next);
+    setTodLocked(next);
+  };
+  const toggleWeatherLock = () => {
+    const next = !weatherLocked;
+    setWeatherLockedValue(next);
+    setWeatherLocked(next);
   };
   // Push the default down to the engine as soon as it exists.
   useEffect(() => {
@@ -134,19 +198,6 @@ export function LivingBackground() {
           <span className="ml-auto font-normal normal-case tracking-normal text-muted-foreground">Hide</span>
         </button>
         <div id="living-bg-panel-body" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <label className="space-y-1 text-sm">
-            <span className="font-medium">Background intensity</span>
-            <select
-              aria-label="Background intensity"
-              value={profile}
-              onChange={(e) => setProfile(e.target.value as 'calm' | 'full')}
-              className="block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
-            >
-              <option value="calm">Calm</option>
-              <option value="full">Full</option>
-            </select>
-          </label>
-
           <label className="flex items-center justify-between gap-3 text-sm">
             <span className="inline-flex items-center gap-2">
               <Volume2 className="h-4 w-4" aria-hidden="true" />
@@ -181,10 +232,13 @@ export function LivingBackground() {
             </div>
           </label>
 
-          <label className="space-y-1 text-sm">
-            <span className="inline-flex items-center gap-2 font-medium">
+          {/* Not a <label>: the lock is a button, and interactive content
+              inside a label makes the label click through to the slider. */}
+          <div className="space-y-1 text-sm">
+            <span className="flex items-center gap-2 font-medium">
               <Sun className="h-4 w-4" aria-hidden="true" />
               Time of day
+              <LockButton locked={todLocked} label="Lock time of day" onClick={toggleTodLock} />
             </span>
             <input
               type="range"
@@ -198,13 +252,15 @@ export function LivingBackground() {
             />
             <span className="block text-xs text-muted-foreground">
               {time < 0.25 ? 'Deep night' : time < 0.45 ? 'Dawn' : time < 0.7 ? 'Day' : 'Dusk'}
+              {todLocked ? ' · held' : ''}
             </span>
-          </label>
+          </div>
 
           <div className="space-y-1 text-sm">
-            <span className="inline-flex items-center gap-2 font-medium">
+            <span className="flex items-center gap-2 font-medium">
               <CloudRain className="h-4 w-4" aria-hidden="true" />
               Weather
+              <LockButton locked={weatherLocked} label="Lock weather" onClick={toggleWeatherLock} />
             </span>
             <div className="flex flex-wrap gap-1.5">
               {(['clear', 'rain', 'snow'] as const).map((w) => (
@@ -272,9 +328,12 @@ export function LivingBackground() {
           </label>
 
           <label className="flex items-center justify-between gap-3 text-sm">
-            <span className="inline-flex items-center gap-2">
-              <Rainbow className="h-4 w-4" aria-hidden="true" />
-              Rainbow
+            <span>
+              <span className="inline-flex items-center gap-2 font-medium">
+                <Rainbow className="h-4 w-4" aria-hidden="true" />
+                Rainbow
+              </span>
+              <span className="block text-xs text-muted-foreground">Keeps one up. A rainstorm's own fades after a few seconds.</span>
             </span>
             <input
               type="checkbox"

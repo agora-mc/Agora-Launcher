@@ -32,7 +32,7 @@ import type { StandardDestination } from './features/interactive/domain/intents'
 import { AmbienceProvider, useAmbience } from './features/ambience/AmbienceProvider';
 import { AmbienceToasts } from './features/ambience/AmbienceToasts';
 import { AmbienceCoordinator } from './components/ambience-coordinator';
-import { BookOpen, Bot, Boxes, Compass, FlaskConical, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
+import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
   { id: 'home' as Tab, label: 'Home', icon: HomeIcon },
@@ -41,7 +41,6 @@ const BASE_TABS = [
   { id: 'governance' as Tab, label: 'Community Governance', icon: Landmark },
   { id: 'guide' as Tab, label: 'Help & Guide', icon: BookOpen },
   { id: 'field-guide' as Tab, label: 'Field Guide', icon: NotebookPen },
-  { id: 'lab' as Tab, label: 'Agora Lab', icon: FlaskConical },
   { id: 'about' as Tab, label: 'The Agora Difference', icon: Info },
   { id: 'settings' as Tab, label: 'Settings', icon: SettingsIcon },
 ];
@@ -382,7 +381,10 @@ export default function App() {
   // the Living Background tab only appears while the living background is on.
   // Built by explicit reference (never by index — index-based construction
   // silently drops any tab appended to BASE_TABS, e.g. Settings).
-  const [tabHome, tabBrowse, tabInstances, tabGovernance, tabGuide, tabFieldGuide, tabLab, tabAbout, tabSettings] = BASE_TABS;
+  // Agora Lab is intentionally absent: it is the high-interaction entry point
+  // for the guide's "New to modding" tier, reached from Help & Guide rather
+  // than owning a permanent sidebar slot. `'lab'` remains a valid destination.
+  const [tabHome, tabBrowse, tabInstances, tabGovernance, tabGuide, tabFieldGuide, tabAbout, tabSettings] = BASE_TABS;
   const tabs = [
     tabHome,
     tabBrowse,
@@ -392,7 +394,6 @@ export default function App() {
     tabGuide,
     tabFieldGuide,
     ...(ambienceEnabled ? [{ id: 'living-background' as Tab, label: 'Living Background', icon: Mountain }] : []),
-    tabLab,
     tabAbout,
     tabSettings,
   ];
@@ -669,6 +670,7 @@ export default function App() {
                   <LabShellWithAmbience
                     onOpenGuide={handleOpenGuide}
                     onNavigateStandard={handleNavigateStandard}
+                    onExit={() => navigateToTab('guide')}
                     guideTopicLabels={GUIDE_TOPIC_LABELS}
                   />
                 )}
