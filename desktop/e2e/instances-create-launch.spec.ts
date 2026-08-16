@@ -105,9 +105,11 @@ async function installCreateLaunchMock(page: Page, options: CreateLaunchMockOpti
           const loader = args.loader as string;
           const mcVersion = args.mcVersion as string;
           if (loader === 'fabric' && mcVersion === '1.21') {
+            // Deliberately oldest-first: the create dialog must sort newest-first
+            // and default to 0.16.9 rather than the first (oldest) entry.
             return Promise.resolve([
-              { loader: 'fabric', mc_version: '1.21', loader_version: '0.16.9', file_type: 'stable' },
               { loader: 'fabric', mc_version: '1.21', loader_version: '0.15.11', file_type: 'stable' },
+              { loader: 'fabric', mc_version: '1.21', loader_version: '0.16.9', file_type: 'stable' },
             ]);
           }
           if (loader === 'forge' && mcVersion === '1.20.1') {
@@ -212,7 +214,10 @@ test.describe('Instances — create, launch, and exit flow', () => {
 
     // MC version defaults to "1.21" (first from mock)
     // Loader defaults to "fabric" (first from mock)
-    // Loader version defaults to "0.16.9 (stable)" (first from fabric/1.21 mock)
+    // Loader version defaults to "0.16.9 (stable)" — the latest, not the first
+    // (oldest) entry the mock returns.
+    const loaderVersionSelect = page.locator('label', { hasText: 'Loader version' }).locator('select');
+    await expect(loaderVersionSelect).toHaveValue('0.16.9');
 
     // ---- Submit creation ----
     await page.getByRole('button', { name: 'Create' }).click();

@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, type ComponentProps } from 'react';
+﻿import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
 import { Home } from './pages/Home';
@@ -32,6 +32,7 @@ import type { StandardDestination } from './features/interactive/domain/intents'
 import { AmbienceProvider, useAmbience } from './features/ambience/AmbienceProvider';
 import { AmbienceToasts } from './features/ambience/AmbienceToasts';
 import { AmbienceCoordinator } from './components/ambience-coordinator';
+import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -64,6 +65,23 @@ function LabShellWithAmbience(props: ComponentProps<typeof LabShell>) {
 function AmbienceEnabledBridge({ onChange }: { onChange: (enabled: boolean) => void }) {
   const { enabled } = useAmbience();
   useEffect(() => { onChange(enabled); }, [enabled, onChange]);
+  return null;
+}
+
+/**
+ * Starts the guided walkthrough the onboarding wizard asked for. Onboarding
+ * finishes by unmounting itself, so it leaves a note instead of starting one
+ * directly; the note is consumed exactly once per app start.
+ */
+function QueuedTourStarter() {
+  const tour = useTour();
+  const start = tour?.start;
+  const consumedRef = useRef(false);
+  useEffect(() => {
+    if (consumedRef.current || !start) return;
+    consumedRef.current = true;
+    if (consumeQueuedTourStart()) start();
+  }, [start]);
   return null;
 }
 
@@ -348,6 +366,11 @@ export default function App() {
     return () => window.removeEventListener('agora-navigate', handler);
   }, [navigateToTab]);
 
+  // The walkthrough opens on Home, whatever page the user started it from.
+  // Every step after that is driven by the user, never by the tour. Declared
+  // with the other hooks, above the onboarding early-returns.
+  const handleTourStart = useCallback(() => navigateToTab('home'), [navigateToTab]);
+
   // Ctrl+K / Cmd+K opens the command palette.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -538,8 +561,10 @@ export default function App() {
 
   return (
     <PackInstallProvider>
+      <TourProvider onStart={handleTourStart}>
       <AmbienceProvider>
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
+      <QueuedTourStarter />
       <div className="app-shell flex h-screen w-screen overflow-hidden">
         <OfflineBanner />
         <SandboxBanner />
@@ -745,7 +770,9 @@ export default function App() {
       </div>
       <AmbienceToasts />
       <AmbienceCoordinator activeTab={effectiveTab} />
+      <TourOverlay />
       </AmbienceProvider>
+      </TourProvider>
     </PackInstallProvider>
   );
 }
