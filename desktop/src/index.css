@@ -268,9 +268,9 @@
 }
 
 /* ── Ambience layer (living background) ───────────────────────────────
-   The canvas stack from v4-world.html, mounted globally behind the shell.
-   The fx canvas sits above the shell (pointer-events: none) so particles
-   and the buddy can float over the UI exactly as the prototype drew them. */
+   The canvas stack is mounted globally behind the shell. The fx canvas sits
+   above the shell (pointer-events: none) so particles and the buddy can
+   float over the UI. */
 
 .ambience-canvas {
   position: fixed;

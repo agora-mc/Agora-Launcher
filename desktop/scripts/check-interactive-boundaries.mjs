@@ -2,9 +2,7 @@
 /**
  * Automated import-boundary check for the interactive experiences feature.
  *
- * Sol-1 contract: `docs/interactive/ARCHITECTURE_REVIEW_SOL.md` BLOCKER 1 and
- * `docs/interactive/SAFETY_BOUNDARIES.md` §2-3. This is an ALLOWLIST (fail
- * closed), not a denylist:
+ * This is an ALLOWLIST (fail closed), not a denylist:
  *
  *   - each production area (`domain/`, `visual/`, `lab/`) may import only its
  *     documented internal layers plus a narrow set of framework packages;
@@ -250,8 +248,8 @@ function liveSubarea(file) {
       '/live/liveCapabilities.ts',
       '/live/presentationPreference.ts',
       '/live/intentController.ts',
-      // The v4-world foreground port (V5-PORT-PLAN §5 phase 4): presentation
-      // only, emits VisualIntent via the host, no tauri.
+      // The High Interaction instance view: presentation only, emits
+      // VisualIntent via the host, no tauri.
       '/live/WorldEditor.tsx',
       '/live/worldEditorData.ts',
       // Persisted interaction achievements (pure localStorage, no tauri).

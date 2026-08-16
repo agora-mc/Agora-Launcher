@@ -1,5 +1,5 @@
 /**
- * The Workshop — Agora Lab, ported 1:1 from v5-lab.html (V5-PORT-PLAN §12).
+ * The Workshop — Agora Lab.
  *
  * Six benches as physical workstations, each four steps deep that escalate:
  *   do       — handle it. Learn what the pieces are and how they behave.
@@ -44,14 +44,14 @@ export interface WorkshopProps {
   /** Real Agora destinations (kept for app-boundary wiring; the workshop is a
    * simulation and only the Guide is opened from the benches). */
   onNavigateStandard?: (dest: import('../../domain/intents').StandardDestination) => void;
-  /** V5-PORT-PLAN §12.1: a bench drops ambience to `calm`; restore on close. */
+  /** A bench drops ambience to `calm`; restore on close. */
   onAmbienceChange?: (profile: 'calm' | null) => void;
   reducedMotion?: boolean;
   /** Respects the global ambience sound setting (read by the page). */
   soundOn?: boolean;
 }
 
-/* ── DOM helpers (ported verbatim from v5-lab.html) ── */
+/* ── DOM helpers ── */
 
 function sayEl(host: HTMLElement): HTMLElement {
   const d = document.createElement('div');
@@ -1297,7 +1297,7 @@ export function Workshop({ onOpenGuide, onNavigateStandard, onAmbienceChange, re
     // Completing a step never moves you on by itself. The reveal, the snap, the
     // explanation of why the other answers were wrong — those are the teaching,
     // and yanking the page out from under someone mid-read destroys them. The
-    // learner presses Next when they are done reading (V5-PORT-PLAN §12.2).
+    // learner presses Next when they are done reading.
     // The exception is the final step, whose own button is the exit.
     if (stepIndex >= b.steps.length - 1) {
       setTimeout(() => closeBench(), reduce ? 0 : 900);

@@ -1,10 +1,10 @@
 /**
  * Interactive presentation domain models.
  *
- * Sol-0 contract: `docs/interactive/DOMAIN_MODELS.md`. These are presentation
- * models, not persistence schemas, command payloads, or copies of Rust/Tauri
- * DTOs. Backend authority data (hashes, plan fingerprints, scan tokens,
- * receipts, paths, raw manifests) never appears here.
+ * These are presentation models, not persistence schemas, command payloads,
+ * or copies of Rust/Tauri DTOs. Backend authority data (hashes, plan
+ * fingerprints, scan tokens, receipts, paths, raw manifests) never appears
+ * here.
  *
  * This module is pure: it imports nothing from React, Tauri, or the app layer.
  */

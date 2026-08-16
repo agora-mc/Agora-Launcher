@@ -51,8 +51,8 @@ const GUIDE_TOPIC_LABELS: Record<string, string> = Object.fromEntries(
 
 /**
  * Lab benches teach cause-and-effect, so they drop ambience to `calm` while
- * open (V5-PORT-PLAN §12.1). The Lab itself never imports ambience — this
- * bridge at the app boundary wires the callback.
+ * open. The Lab itself never imports ambience — this bridge at the app
+ * boundary wires the callback.
  */
 function LabShellWithAmbience(props: ComponentProps<typeof LabShell>) {
   const { overrideProfile } = useAmbience();

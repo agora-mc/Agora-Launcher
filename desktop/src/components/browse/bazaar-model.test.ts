@@ -1,7 +1,7 @@
 /**
  * Bazaar model tests — the taste model must stay legible and deterministic,
  * the recommender must reorder visibly, and "Surprise me" must never return
- * something owned (V5-PORT-PLAN §11 rules).
+ * something owned.
  */
 
 import { describe, expect, it, vi } from 'vitest';

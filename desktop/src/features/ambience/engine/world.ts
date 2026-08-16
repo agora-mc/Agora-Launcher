@@ -1,5 +1,5 @@
 /**
- * The living world engine core — ported 1:1 from v4-world.html.
+ * The living world engine core.
  *
  * WORLD owns entities, props, items, carrying, the spawner, the update/draw
  * state machine, and the interaction dispatch. Everything stores WORLD x

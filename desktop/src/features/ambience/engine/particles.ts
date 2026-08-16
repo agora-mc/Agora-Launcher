@@ -1,5 +1,5 @@
 /**
- * Click-burst particles + cursor trail — ported from v4-world.html.
+ * Click-burst particles + cursor trail.
  * The engine owns the frame loop; `frame` renders exactly one frame.
  */
 

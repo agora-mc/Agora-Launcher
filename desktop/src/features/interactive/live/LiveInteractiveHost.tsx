@@ -159,7 +159,7 @@ export interface LiveInteractiveHostProps {
   capabilities?: CapabilityFlags;
   reducedMotion?: boolean;
   /** The active presentation — `simple` renders the same useful structure
-   * without the decorative flourish (V5-PORT-PLAN §10). */
+   * without the decorative flourish. */
   presentation?: InteractionPreference;
   /** Canonical app-level process state (useProcessController) when available. */
   processState?: CanonicalProcessState | null;

@@ -3,11 +3,11 @@
  * profile. The engine is plain TypeScript with no React and no Tauri; React's
  * entire job is `new AmbienceEngine(canvas, fx, opts)` + `start()`/`stop()`.
  *
- * Lifecycle/leak contract (V5-PORT-PLAN trap 9): every listener, timer and
- * animation frame created here is released in `stop()`. React strict-mode
- * double-mounting and the 50x mount/unmount test exercise this.
+ * Lifecycle/leak contract: every listener, timer and animation frame created
+ * here is released in `stop()`. React strict-mode double-mounting and the
+ * 50x mount/unmount test exercise this.
  *
- * Profile split (plan §2 / §10):
+ * Profile split:
  *  - `calm`: terrain, sky, weather, few animals. No eggs, no buddy, no
  *    click particles. Music optional.
  *  - `full`: everything — eggs, buddy, particles, music.
@@ -262,7 +262,7 @@ export class AmbienceEngine {
 
   /**
    * Start or stop music. tracks.ts is lazy-imported so it never lands in the
-   * initial chunk (plan §6).
+   * initial chunk.
    *
    * Autoplay picks a RANDOM track of the current mood and moves to another when
    * the piece ends. It used to take `[0]` of the mood and then loop that one
@@ -586,8 +586,8 @@ export class AmbienceEngine {
   private frame = (ts: number): void => {
     if (!this.running) return;
     const state = this.state;
-    // time of day + weather advance with the real clock (plan §2: no debug
-    // slider, no weather toggle)
+    // time of day + weather advance with the real clock: no debug slider,
+    // no weather toggle
     const todSpeed = this.options.todSpeed ?? 1 / 900;
     advanceClock(state, this.clock, 0.016, todSpeed);
 

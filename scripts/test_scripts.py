@@ -1796,8 +1796,8 @@ class TestBuildDocsWebClassify(unittest.TestCase):
             bdw.classify(Path("docs/architecture/layer-ownership.md")), ("developer", "Architecture")
         )
         self.assertEqual(
-            bdw.classify(Path("docs/interactive/prototypes/V4-FIX-PLAN.md")),
-            ("internal", "Working notes"),
+            bdw.classify(Path("docs/archive/direct-launch-cli-parity-plan.md")),
+            ("internal", "Archive"),
         )
 
     def test_unclassified_defaults_to_internal(self):

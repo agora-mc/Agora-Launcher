@@ -1,10 +1,10 @@
 /**
  * Source, capability, and freshness guards for interactive scenes.
  *
- * Sol-0 contract: `docs/interactive/SAFETY_BOUNDARIES.md` §4 (the live intent
- * gate). The first three gates are pure and live here: source, capability,
- * freshness. The remaining gates (availability, review, backend, outcome,
- * refresh) are owned by the live intent controller in `live/`.
+ * These are the first three gates of the live intent gate. They are pure and
+ * live here: source, capability, freshness. The remaining gates (availability,
+ * review, backend, outcome, refresh) are owned by the live intent controller
+ * in `live/`.
  *
  * This module is pure: it imports nothing from React, Tauri, or the app layer.
  */

@@ -1,5 +1,5 @@
 /**
- * Workshop tests — the v5-lab port (V5-PORT-PLAN §12).
+ * Workshop tests.
  *
  * These drive the real interactive DOM the benches build, exactly as a player
  * would: open a station, run the Try-it step, and verify the lesson's outcome

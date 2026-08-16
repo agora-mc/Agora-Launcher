@@ -80,7 +80,6 @@ DOC_CATEGORIES: dict[str, tuple[str, str]] = {
     "docs/architecture/": ("developer", "Architecture"),
     "docs/RELEASING.md": ("developer", "Ship and operate"),
     "docs/GOVERNANCE_OPERATIONS.md": ("developer", "Ship and operate"),
-    "docs/interactive/": ("internal", "Working notes"),
     "docs/archive/": ("internal", "Archive"),
 }
 

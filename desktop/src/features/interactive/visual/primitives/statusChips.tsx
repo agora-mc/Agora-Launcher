@@ -4,8 +4,7 @@ import type { RelationshipKind } from '../../domain/models';
 /**
  * Status chips for the interactive status vocabulary.
  *
- * Sol-0 contract: `docs/interactive/VISUAL_LANGUAGE.md` §1.2 and §2. Every
- * status is expressed as persistent text, not color alone.
+ * Every status is expressed as persistent text, not color alone.
  */
 
 export function StatusChip({ label }: { label: string }) {

@@ -1,16 +1,16 @@
 /**
  * The Bazaar model — the five-axis taste model, the shelf scoring, and the
- * "Surprise me" machine, ported from `v5-browse.html` (§11) and kept pure so
- * the recommender stays legible and testable.
+ * "Surprise me" machine, kept pure so the recommender stays legible and
+ * testable.
  *
- * Rules the port must keep (V5-PORT-PLAN §11):
+ * Rules this model must keep:
  *  - The taste model stays legible: the bars exist so the user can see why
  *    the order changed. Never replace it with an opaque score.
  *  - Owned items sort to the back (`scoreOf` returns −99 for anything in the
  *    bag/staged set) so the shelf keeps offering new things.
  *  - "Surprise me" is weighted by taste and never returns something already
  *    owned; an unweighted random gets annoying by the third crank.
- *  - Taste is linear and additive, exactly as the prototype.
+ *  - Taste is linear and additive.
  */
 
 /**
@@ -295,10 +295,10 @@ export function matchesStall(item: BazaarItem, stallId: string): boolean {
 }
 
 /**
- * Deterministic monogram creature art (prototype `hashOf`/`critter`): the same
- * name always yields the same creature, so the shelf feels like a place with
- * fixed inhabitants rather than random noise. Used only when the real
- * `icon_url` is missing (plan §11: creature art is a fallback, not the design).
+ * Deterministic monogram creature art: the same name always yields the same
+ * creature, so the shelf feels like a place with fixed inhabitants rather
+ * than random noise. Used only when the real `icon_url` is missing —
+ * creature art is a fallback, not the design.
  */
 export function hashOf(s: string): number {
   let h = 0;

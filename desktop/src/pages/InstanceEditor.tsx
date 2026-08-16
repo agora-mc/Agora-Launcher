@@ -1121,7 +1121,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     if (content.resolved_path) void revealPath(content.resolved_path).catch((cause) => setError(formatError(cause)));
   };
 
-  // Presentation preference for this instance (SOL-0 §5.3, V5-PORT-PLAN §10).
+  // Presentation preference for this instance.
   // `simple` and `high-interaction` both render the interactive surface; the
   // difference is ambience/flourish (the AmbienceCoordinator maps the
   // preference onto the background profile; the visuals here are the parts

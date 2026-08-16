@@ -1,9 +1,8 @@
 /**
- * Prototype SFX — `blip` / `chord`, verbatim from v4-world.html.
+ * Ambience SFX — `blip` / `chord`.
  *
  * `soundOn` lives in the engine state so the ambience canvas and the High
- * Interaction UI share the same mute flag, exactly as the prototype's one
- * IIFE scope shared it.
+ * Interaction UI share the same mute flag.
  */
 
 import type { EngineState } from '../state';

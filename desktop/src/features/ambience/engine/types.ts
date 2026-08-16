@@ -1,5 +1,5 @@
 /**
- * Shared types for the ambience engine, ported from v4-world.html.
+ * Shared types for the ambience engine.
  *
  * Everything here is type-only (no runtime code) so that `world.ts`,
  * `species.ts`, `props.ts`, `eggs.ts` and `api.ts` can import each other's

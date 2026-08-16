@@ -1,8 +1,8 @@
 /**
- * Workshop pieces — the blocky 4px-tile icon painter and the drag helper,
- * ported from v5-lab.html. Every icon is fillRect only (no images, no
- * network); drag has a keyboard equivalent (Enter/Space drops into the first
- * slot) so drag is never the only route in.
+ * Workshop pieces — the blocky 4px-tile icon painter and the drag helper.
+ * Every icon is fillRect only (no images, no network); drag has a keyboard
+ * equivalent (Enter/Space drops into the first slot) so drag is never the
+ * only route in.
  */
 
 import { useEffect, useRef } from 'react';
