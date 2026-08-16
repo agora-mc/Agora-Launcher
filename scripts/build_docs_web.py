@@ -44,8 +44,8 @@ ROOT_DOCS = [
 ]
 
 # Root-level repo files that are not part of the public documentation.
-# Only these exact repo-root paths are skipped — nested docs/README.md and
-# docs/archive/README.md are retained as documentation.
+# Only these exact repo-root paths are skipped; a nested README.md such as
+# docs/README.md is retained as documentation.
 SKIP_PATHS = {
     Path("AGENTS.md"),
     Path("README.md"),
@@ -219,7 +219,9 @@ def rewrite_links(content: str, doc_rel: Path, slug_by_rel: dict[str, str]) -> s
 
     Absolute URLs, anchors, and non-markdown targets are left untouched.
     Unknown markdown targets are also left untouched. A link to a directory
-    that has a README.md doc (e.g. ./archive/) is routed to that doc.
+    that has a README.md doc is routed to that doc; note the directory test
+    runs against the process working directory, so this only resolves when the
+    script is invoked from the repository root.
     """
 
     def resolve_target(target: str) -> Path | None:
