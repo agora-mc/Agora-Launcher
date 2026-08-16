@@ -139,7 +139,7 @@ test('invalid mod ID shows "Mod not found" with Back button that returns to Brow
   await expect(page.getByText('Mod not found.')).toBeVisible();
 
   // A Back button is present for recovery.
-  const backButton = page.getByRole('button', { name: /Back/ });
+  const backButton = page.getByRole('button', { name: '← Back' });
   await expect(backButton).toBeVisible();
 
   // Clicking Back returns to Browse.
@@ -162,7 +162,7 @@ test('invalid instance ID shows "Instance not found" with Back button that retur
   await expect(page.getByText('Instance not found.')).toBeVisible();
 
   // A Back button is present for recovery.
-  const backButton = page.getByRole('button', { name: /Back/ });
+  const backButton = page.getByRole('button', { name: '← Back' });
   await expect(backButton).toBeVisible();
 
   // Clicking Back returns to My Instances.

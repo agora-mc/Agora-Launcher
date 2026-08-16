@@ -610,7 +610,7 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await expect(page.getByRole('heading', { name: 'Test Mod', exact: true })).toBeVisible();
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(0);
-    await page.getByRole('button', { name: /Back/ }).first().click();
+    await page.getByRole('button', { name: '← Back' }).click();
     await expect(page.getByRole('heading', { name: /Installed Mods/ })).toBeVisible();
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(editorScrollTop);
   });
@@ -695,7 +695,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expect(page.getByRole('heading', { name: 'Test Mod', exact: true })).toBeVisible();
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(0);
 
-    await page.getByRole('button', { name: /Back/ }).first().click();
+    await page.getByRole('button', { name: '← Back' }).click();
     await expect(page.getByRole('heading', { name: 'Browse', level: 2 })).toBeVisible();
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(browseScrollTop);
   });
