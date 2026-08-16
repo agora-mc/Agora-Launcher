@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Circle,
   Compass,
+  FlaskConical,
   Gamepad2,
   GraduationCap,
   Info,
@@ -238,7 +239,7 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/20">
                 <BookOpen className="h-4 w-4" aria-hidden="true" />
               </div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/65">Agora field guide</p>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/65">Agora Guide</p>
             </div>
             <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Learn the launcher. Understand your modded game.</h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75 sm:text-base">
@@ -274,8 +275,15 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
         </div>
       </header>
 
-      <section aria-labelledby="guide-start-heading" className="grid gap-3 md:grid-cols-3">
+      <section aria-labelledby="guide-start-heading" className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <h2 id="guide-start-heading" className="sr-only">Choose a starting point</h2>
+        <JourneyCard
+          eyebrow="New to modding"
+          title="Interactive guide"
+          description="Learn by doing in the Workshop: six hands-on benches on a pretend copy you can break on purpose."
+          icon={FlaskConical}
+          onClick={() => onNavigateTab('lab')}
+        />
         <JourneyCard
           eyebrow="New to modding"
           title="Start with the essentials"
@@ -534,11 +542,14 @@ function JourneyCard({
   eyebrow,
   title,
   description,
+  icon: Icon,
   onClick,
 }: {
   eyebrow: string;
   title: string;
   description: string;
+  /** Marks a card that leaves the guide for another experience. */
+  icon?: ComponentType<{ className?: string }>;
   onClick: () => void;
 }) {
   return (
@@ -546,7 +557,10 @@ function JourneyCard({
       onClick={onClick}
       className="group rounded-xl border border-border bg-card p-4 text-left shadow-sm transition-colors hover:border-primary/40 hover:bg-accent"
     >
-      <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-primary">{eyebrow}</span>
+      <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-primary">
+        {Icon && <Icon className="h-3.5 w-3.5 shrink-0" />}
+        {eyebrow}
+      </span>
       <span className="mt-1 flex items-center justify-between gap-3 text-sm font-semibold">
         {title}
         <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" aria-hidden="true" />

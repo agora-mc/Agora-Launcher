@@ -226,3 +226,58 @@ describe('live default loader failure semantics (SOL-2 BLOCKER 4/D)', () => {
     expect(data.runtime.status).toBe('error');
   });
 });
+
+describe('live default loader two-phase paint', () => {
+  /** Hold a read open so the enrichment phase cannot resolve early. */
+  function deferred<T>() {
+    let resolve: (value: T) => void = () => undefined;
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  it('emits a partial scene from the essential reads before the enrichment lands', async () => {
+    const slowHealth = deferred<HealthReport>();
+    mocks.checkInstanceHealth.mockReturnValue(slowHealth.promise);
+
+    const partials: Array<{ name?: string; freshness?: string }> = [];
+    const complete = defaultLiveLoad('inst-1', 'rev-1', (partial) => {
+      partials.push({
+        name: partial.scene.instance?.name,
+        freshness: partial.scene.source.kind === 'live' ? partial.scene.source.freshness : undefined,
+      });
+    });
+
+    // Let the essential reads settle while health is still outstanding.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(partials).toHaveLength(1);
+    expect(partials[0].name).toBe('My World');
+    // Non-executable until the complete read installs a fresh revision — a
+    // half-read scene must never drive a review.
+    expect(partials[0].freshness).toBe('refreshing');
+
+    slowHealth.resolve(health);
+    const data = await complete;
+    expect(data.health.status).toBe('ok');
+    if (data.scene.source.kind === 'live') expect(data.scene.source.freshness).toBe('fresh');
+  });
+
+  it('starts the enrichment reads immediately, not after the essential phase', async () => {
+    const complete = defaultLiveLoad('inst-1', 'rev-1', () => undefined);
+    // Both phases are dispatched in the same tick, so a complete scene is
+    // never slower than the old single Promise.all.
+    expect(mocks.getInstanceDetail).toHaveBeenCalledTimes(1);
+    expect(mocks.checkInstanceHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.getDependencyGraph).toHaveBeenCalledTimes(1);
+    await complete;
+  });
+
+  it('skips the partial paint when the instance is unreadable', async () => {
+    mocks.getInstanceDetail.mockResolvedValue(null);
+    const onPartial = vi.fn();
+    await defaultLiveLoad('inst-1', 'rev-1', onPartial);
+    // Nothing paintable — the host reports its error state from the complete
+    // read rather than flashing an empty world first.
+    expect(onPartial).not.toHaveBeenCalled();
+  });
+});

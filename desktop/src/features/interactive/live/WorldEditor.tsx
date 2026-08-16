@@ -35,6 +35,8 @@ export interface WorldEditorProps {
   presentation?: 'standard' | 'simple' | 'high-interaction';
   /** Description / categories / page link for the selected item. */
   selectedDetail?: ContentDetail;
+  /** The enrichment read (health, evidence, runtime) is still in flight. */
+  pending?: boolean;
 }
 
 type Filter = 'all' | 'mod' | 'look' | 'world';
@@ -91,6 +93,7 @@ export function WorldEditor({
   reducedMotion = false,
   presentation = 'high-interaction',
   selectedDetail = EMPTY_CONTENT_DETAIL,
+  pending = false,
 }: WorldEditorProps) {
   const simple = presentation === 'simple';
   const reduce = reducedMotion;
@@ -170,17 +173,23 @@ export function WorldEditor({
   const runningState = launchState === 'starting' || launchState === 'running' || launchState === 'stopping' || launchState === 'delegated';
   const playDisabled = runningState || locked || !onLaunch;
 
-  const healthUnverified = data.health.status !== 'ok';
-  const statusText = editor.hasCrash
-    ? 'Your game stopped last time — find out why'
-    : healthUnverified
-      ? 'Health could not be verified'
-      : blocker
-        ? 'One mod is missing its file'
-        : findings.length > 0
-          ? `${findings.length} thing${findings.length === 1 ? '' : 's'} need a look`
-          : 'Everything looks ready';
-  const statusOk = !editor.hasCrash && !healthUnverified && !blocker && findings.length === 0;
+  // While the enrichment read is in flight the health fragment has no value
+  // YET — which is not the same as a health scan that ran and failed. Saying
+  // "could not be verified" for the first second of every visit would be a
+  // false alarm, so the pending case gets its own honest wording.
+  const healthUnverified = !pending && data.health.status !== 'ok';
+  const statusText = pending
+    ? 'Checking things over…'
+    : editor.hasCrash
+      ? 'Your game stopped last time — find out why'
+      : healthUnverified
+        ? 'Health could not be verified'
+        : blocker
+          ? 'One mod is missing its file'
+          : findings.length > 0
+            ? `${findings.length} thing${findings.length === 1 ? '' : 's'} need a look`
+            : 'Everything looks ready';
+  const statusOk = !pending && !editor.hasCrash && !healthUnverified && !blocker && findings.length === 0;
 
 
   const achieve = useCallback((icon: string, title: string, detail: string, key: string) => {

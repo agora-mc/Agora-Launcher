@@ -49,6 +49,8 @@ export interface EngineState {
   H: number;
   /** Time of day, 0..1 (0 = deep night, .5 = noon). */
   tod: number;
+  /** When true the day stops advancing and `tod` stays where it was pinned. */
+  todLocked: boolean;
   /** Index into WEATHER. */
   weather: number;
   /** When true the automatic cycle leaves the weather alone (manual pick). */
@@ -77,6 +79,21 @@ export interface EngineState {
   R2: number[] | null;
   R3: number[] | null;
   lastW: number;
+  lastH: number;
+  /**
+   * The height the landscape was first laid out at.
+   *
+   * Ridge heights are held a fixed distance above the BOTTOM edge relative to
+   * this, so growing the window adds sky instead of re-shaping the hills.
+   */
+  refH: number;
+  /**
+   * World x the water basin is carved around, chosen once.
+   *
+   * It used to be a fraction of the ridge array, whose length follows the
+   * window width — so every horizontal resize slid the pond sideways.
+   */
+  basinAnchorX: number | null;
   WATER_LEVEL: number;
   BASIN: Basin | null;
   /** Terrain is overscanned past both edges by OVER px (see ridge). */
@@ -119,6 +136,7 @@ export function createEngineState(
     W: 0,
     H: 0,
     tod: 0.3,
+    todLocked: false,
     weather: 0,
     weatherLocked: false,
     WEATHER: ['clear', 'rain', 'snow'],
@@ -136,6 +154,9 @@ export function createEngineState(
     R2: null,
     R3: null,
     lastW: 0,
+    lastH: 0,
+    refH: 0,
+    basinAnchorX: null,
     WATER_LEVEL: 0,
     BASIN: null,
     OVER: 90,

@@ -16,7 +16,7 @@
 
 import { buddyStep, createBuddy, drawBuddy, buddySnap, buddyTarget, buddyVisible, type BuddyState } from './buddy';
 import { advanceClock, createClock, setWeather as clockSetWeather, type ClockState } from './clock';
-import { viewToCanvas } from './terrain';
+import { viewToCanvas, worldViewport } from './terrain';
 import { checkAchievements, journalData, loadJournalState, saveJournalState, JOURNAL_KEY } from './eggs';
 import { music } from './audio/music';
 import type { MusicTrack } from './audio/tracks';
@@ -65,6 +65,23 @@ export class AmbienceEngine {
   private buddy: BuddyState;
   /** Zoom + pan applied to the background canvas as one CSS transform. */
   private view = { zoom: 1, tx: 0, ty: 0 };
+  /**
+   * The background canvas's untransformed top-left, in client coordinates.
+   *
+   * Zero only while the canvas is exactly the viewport. Zooming OUT grows it
+   * past the viewport and `size()` centres it with a negative offset — which
+   * every screen→canvas conversion has to subtract back off.
+   */
+  private origin = { left: 0, top: 0 };
+  /**
+   * The background canvas element's untransformed size, in client px.
+   *
+   * Not the same as its buffer size in world units: the world has fixed
+   * borders and is scaled to the window, so `css.w / scale === state.W`.
+   */
+  private css = { w: 0, h: 0 };
+  /** Client px per world unit — the fixed-width world's fit to this window. */
+  private scale = 1;
   /** When the last pointermove arrived; a long gap means the cursor left. */
   private lastPointerMs = 0;
   private profile: AmbienceProfile;
@@ -129,9 +146,31 @@ export class AmbienceEngine {
     this.state.weatherLocked = true;
   }
 
-  /** Hand the weather back to the automatic cycle. */
-  resumeWeatherCycle(): void {
-    this.state.weatherLocked = false;
+  /** Pin the weather where it is, or hand it back to the automatic cycle. */
+  setWeatherLocked(on: boolean): void {
+    this.state.weatherLocked = on;
+  }
+
+  /** Pin the time of day where it is, or let the day run again. */
+  setTodLocked(on: boolean): void {
+    this.state.todLocked = on;
+  }
+
+  /**
+   * What the world's clock actually reads right now.
+   *
+   * Controls that mirror the clock (a time-of-day slider, the weather pills)
+   * have to be told, or they drift: the day keeps turning and the cycle keeps
+   * changing the weather while the panel still shows whatever was last set by
+   * hand.
+   */
+  clockState(): { tod: number; weather: string; todLocked: boolean; weatherLocked: boolean } {
+    return {
+      tod: this.state.tod,
+      weather: this.state.WEATHER[this.state.weather] ?? 'clear',
+      todLocked: this.state.todLocked,
+      weatherLocked: this.state.weatherLocked,
+    };
   }
 
   /** Set the background zoom (0.5–2). */
@@ -169,11 +208,16 @@ export class AmbienceEngine {
    * canvas's own coordinate system does not. Hit tests were run against raw
    * client coordinates, which meant that as soon as you zoomed, everything was
    * clickable somewhere other than where it was drawn.
+   *
+   * The canvas's own offset matters just as much: at the default zoom of 0.9
+   * the canvas is ~11% wider than the window and centred over it, so ignoring
+   * `origin` put every hit test roughly 6% of the window's width away from the
+   * cursor — the further from the middle you clicked, the further off it was.
    */
   private toCanvas(clientX: number, clientY: number): { x: number; y: number } {
-    const w = this.bg.width || window.innerWidth || 1;
-    const h = this.bg.height || window.innerHeight || 1;
-    return viewToCanvas(clientX, clientY, this.view, w, h);
+    const w = this.css.w || window.innerWidth || 1;
+    const h = this.css.h || window.innerHeight || 1;
+    return viewToCanvas(clientX, clientY, this.view, w, h, this.origin.left, this.origin.top, this.scale);
   }
 
   /**
@@ -181,17 +225,15 @@ export class AmbienceEngine {
    *
    * The world only ever spawned one as a reward for rain→sun. It is the single
    * prettiest thing in the scene, so it also deserves to be something you can
-   * simply ask for.
+   * simply ask for — and one you asked for is PINNED: it does not fade with the
+   * shower's, it stays until you take it down.
    */
   setRainbow(on: boolean): void {
     const world = this.state.world as WorldState | null;
     if (!world) return;
-    if (on) {
-      world.spawnRainbow();
-      return;
-    }
-    world.flags.rainbowUp = false;
-    world.props = world.props.filter((p) => p.key !== 'rainbow-end');
+    world.flags.rainbowPinned = on;
+    if (on) world.spawnRainbow();
+    else world.clearRainbow();
   }
 
   /** Play a specific piece. Implies the player is choosing, so autoplay stops. */
@@ -334,19 +376,33 @@ export class AmbienceEngine {
     // back and re-measure so the backdrop never stays a 0x0 buffer.
     const vw = window.innerWidth || document.documentElement.clientWidth || 1280;
     const vh = window.innerHeight || document.documentElement.clientHeight || 720;
-    // Zooming OUT scales the element below the viewport and would letterbox the
-    // world with empty gaps. Grow the canvas by 1/zoom first, so after the
-    // transform it still covers the screen — and generate that much more world
-    // to fill it, rather than stretching what we had.
-    const cover = this.view.zoom < 1 ? 1 / this.view.zoom : 1;
-    const w = Math.round(vw * cover);
-    const h = Math.round(vh * cover);
-    this.bg.style.width = `${w}px`;
-    this.bg.style.height = `${h}px`;
-    this.bg.style.left = `${Math.round((vw - w) / 2)}px`;
-    this.bg.style.top = `${Math.round((vh - h) / 2)}px`;
-    this.state.W = this.bg.width = w;
-    this.state.H = this.bg.height = h;
+    // The world is a fixed-size place fitted to the window, NOT a window-sized
+    // one: `v.W` follows the zoom alone, and a wider window raises `v.scale`
+    // instead. Widening used to widen the world itself — more hills generated
+    // past the old edge, the sun's arc and every W-relative spawn stretched
+    // apart — so the map grew with the window instead of being drawn larger.
+    const v = worldViewport(vw, vh, this.view.zoom);
+    // Remember where the canvas actually sits: `toCanvas` has to undo this
+    // offset, and reading it back off the style string every pointermove would
+    // be both slower and a chance to drift out of sync.
+    this.origin.left = v.left;
+    this.origin.top = v.top;
+    this.css.w = v.cssW;
+    this.css.h = v.cssH;
+    this.scale = v.scale;
+    this.bg.style.width = `${v.cssW}px`;
+    this.bg.style.height = `${v.cssH}px`;
+    this.bg.style.left = `${this.origin.left}px`;
+    this.bg.style.top = `${this.origin.top}px`;
+    // The buffer keeps the element's own pixel size — full resolution — and the
+    // fit rides on a context transform instead. Shrinking the buffer to
+    // WORLD_W and letting the browser stretch it would have been fewer lines
+    // and a soft, resampled world on every screen wider than 1280.
+    this.bg.width = v.cssW;
+    this.bg.height = v.cssH;
+    this.state.W = v.W;
+    this.state.H = v.H;
+    this.applyWorldScale();
     // The FX canvas must NOT get the cover treatment. Particles and the buddy
     // are positioned from raw client coordinates, so its canvas space has to
     // stay 1:1 with the viewport — grown or offset like the background, every
@@ -357,6 +413,21 @@ export class AmbienceEngine {
     this.fx.style.height = `${vh}px`;
     this.fx.style.left = '0px';
     this.fx.style.top = '0px';
+  }
+
+  /**
+   * Point the background context at world units.
+   *
+   * Assigning `canvas.width`/`height` resets the context — transform included —
+   * so this has to run after every resize. It also runs at the top of every
+   * frame: it costs one call, and a drawing routine that ever left the save
+   * stack unbalanced would otherwise silently shift the entire world.
+   *
+   * The FX canvas is left alone on purpose. Particles and the buddy are placed
+   * from raw client coordinates, so their context stays 1:1 with the viewport.
+   */
+  private applyWorldScale(): void {
+    this.bgCtx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
   }
 
   private buildWorld(): void {
@@ -469,9 +540,11 @@ export class AmbienceEngine {
       if (!dragging) return;
       const dx = e.clientX - dragging.x;
       const dy = e.clientY - dragging.y;
-      // Bound the pan so the world can never be dragged fully off-screen.
-      const w = this.bg.width || window.innerWidth || 1;
-      const h = this.bg.height || window.innerHeight || 1;
+      // Bound the pan so the world can never be dragged fully off-screen. The
+      // pan is client px, so it bounds against the ELEMENT, not the world units
+      // drawn inside it.
+      const w = this.css.w || window.innerWidth || 1;
+      const h = this.css.h || window.innerHeight || 1;
       const maxX = (w * (this.view.zoom - 1)) / 2;
       const maxY = (h * (this.view.zoom - 1)) / 2;
       this.setPan(
@@ -518,6 +591,7 @@ export class AmbienceEngine {
     const todSpeed = this.options.todSpeed ?? 1 / 900;
     advanceClock(state, this.clock, 0.016, todSpeed);
 
+    this.applyWorldScale();
     skyFrame(state, this.bgCtx, ts);
     this.particles.frame(this.fxCtx);
 

@@ -4464,6 +4464,10 @@ pub async fn repair_lockfile(
         let post_snapshot_id = snapshot_id.clone();
         let post_dir = instance_dir.clone();
         let post_lockfile = lockfile.clone();
+        // Resolved out here: the health scan runs on a blocking worker that
+        // cannot borrow the AppHandle, and it must use the SAME registry path
+        // every other cached_health caller uses (see lockfile_health_report).
+        let post_registry_db = paths::registry_db_path(&app).ok();
         let post_result = tokio::task::spawn_blocking(move || {
             if let Err(error) = apply_lockfile_metadata(&post_dir, &post_lockfile) {
                 let restored = agora_core::snapshot::restore_snapshot(&post_dir, &post_snapshot_id);
@@ -4474,7 +4478,7 @@ pub async fn repair_lockfile(
                     ),
                 ));
             }
-            let report = lockfile_health_report(&post_dir)?;
+            let report = lockfile_health_report(&post_dir, post_registry_db.as_deref())?;
             if !report.blockers.is_empty() {
                 let restored = agora_core::snapshot::restore_snapshot(&post_dir, &post_snapshot_id);
                 return match restored {
@@ -4873,9 +4877,14 @@ pub async fn import_lockfile(
     }
 
     let health_dir = instance_dir.clone();
-    let health = tokio::task::spawn_blocking(move || lockfile_health_report(&health_dir))
-        .await
-        .map_err(|e| lockfile_error("ERR_LOCKFILE_HEALTH_TASK", e.to_string()))??;
+    // Same registry path as every other cached_health caller — see
+    // lockfile_health_report for why a None here poisoned the durable cache.
+    let health_registry_db = paths::registry_db_path(&app).ok();
+    let health = tokio::task::spawn_blocking(move || {
+        lockfile_health_report(&health_dir, health_registry_db.as_deref())
+    })
+    .await
+    .map_err(|e| lockfile_error("ERR_LOCKFILE_HEALTH_TASK", e.to_string()))??;
     if !health.blockers.is_empty() {
         let restore_dir = instance_dir.clone();
         let restore_snap = snapshot_id.clone();
@@ -4990,8 +4999,28 @@ fn apply_lockfile_metadata(
         .map_err(|error| format!("Could not commit imported manifest: {error}"))
 }
 
+/// Health for a lockfile finalize/rollback decision.
+///
+/// `registry_db_path` MUST be the same value the other `cached_health` callers
+/// pass (`paths::registry_db_path(&app).ok()`). Two reasons, one of which is a
+/// bug this signature exists to prevent:
+///
+///  - Correctness: the registry supplies the curated `known_conflicts` a scan
+///    reasons about. Passing `None` silently graded a lockfile install against
+///    a smaller rule set than a normal health check.
+///  - Cache identity: `cached_health` derives its fingerprint from the registry
+///    DB's metadata when present and from the literal `<no-registry>` when not,
+///    so a `None` caller computes a DIFFERENT token for the same instance. The
+///    in-memory cache is keyed by `(instance_dir, registry_db_path)` and hides
+///    that, but the durable cache is one file per instance with no key — so the
+///    odd caller out overwrote `.agora/health-report.json` with a token nobody
+///    else could match, and the next app start paid a full re-scan of every
+///    installed jar. Measured on a 136-mod pack: a fresh process went from
+///    "durable report cache hit" to "cache miss, running full scan" purely
+///    because a lockfile operation had run beforehand.
 fn lockfile_health_report(
     instance_dir: &std::path::Path,
+    registry_db_path: Option<&std::path::Path>,
 ) -> LauncherResult<agora_core::health::HealthReport> {
     let manifest_path = instance_dir.join("instance_manifest.json");
     let text = std::fs::read_to_string(&manifest_path)
@@ -5001,7 +5030,7 @@ fn lockfile_health_report(
     Ok(agora_core::health::cached_health(
         instance_dir,
         &manifest,
-        None,
+        registry_db_path,
         None,
     ))
 }
@@ -5470,26 +5499,28 @@ impl From<agora_core::java::JavaInstallation> for JavaRuntimeSummary {
 }
 
 /// List all discovered Java runtimes (managed + Mojang + system).
+///
+/// Discovery goes through the core `RuntimeService`, which is cache-first:
+/// a valid persisted inventory is reused, so a warm call spawns NO
+/// `java -XshowSettings:properties -version` probes. Calling
+/// `java::detect_java_candidates` directly from here re-probed every JRE on
+/// the machine on every call — one subprocess per Mojang-bundled and system
+/// runtime — which is why this read dominated the High Interaction load.
 #[tauri::command]
 pub async fn list_java_runtimes(app: tauri::AppHandle) -> LauncherResult<Vec<JavaRuntimeSummary>> {
-    let app_data = paths::app_data_dir(&app).map_err(|_| LauncherError::LocalStateFailed)?;
-    let runtimes_root = app_data.join("runtimes");
-    let minecraft_dir = paths::minecraft_dir();
+    let ctx = crate::core_context(&app)?;
 
     // Read global java_path setting to prepend as Override source.
-    let global_java = crate::core_context(&app)
+    let global_java = agora_core::settings::SettingsService::new(ctx.clone())
+        .get_string("java_path")
         .ok()
-        .and_then(|ctx| {
-            let svc = agora_core::settings::SettingsService::new(ctx);
-            svc.get_string("java_path").ok().flatten()
-        })
+        .flatten()
         .filter(|s| !s.trim().is_empty());
 
     let summaries = tokio::task::spawn_blocking(move || {
-        let candidates = agora_core::java::detect_java_candidates(
-            Some(&runtimes_root),
-            minecraft_dir.as_deref(),
-        );
+        let candidates = agora_core::runtime_service::RuntimeService::new(ctx)
+            .list_candidates()
+            .unwrap_or_default();
         let mut results: Vec<JavaRuntimeSummary> = candidates
             .into_iter()
             .map(JavaRuntimeSummary::from)

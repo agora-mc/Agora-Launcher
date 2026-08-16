@@ -188,7 +188,7 @@ export function Governance() {
       </section>
 
       {/* Community links */}
-      <section className="rounded-xl border border-primary/25 bg-primary/5 p-6">
+      <section className="agora-panel-accent rounded-xl border border-primary/25 p-6">
         <div className="flex items-center gap-2 mb-3">
           <MessagesSquare className="h-5 w-5 text-primary" aria-hidden="true" />
           <h3 className="text-xl font-semibold">Join the community</h3>

@@ -10,7 +10,7 @@
 
 import type { EngineState } from './state';
 import { mixc, rgba } from './state';
-import { carveBasin, groundYWorld, paraX, ridge, waterSpan } from './terrain';
+import { basinColumn, carveBasin, groundYWorld, paraX, ridge, ridgeBase, waterSpan } from './terrain';
 import type { WorldState } from './types';
 
 /**
@@ -56,14 +56,29 @@ function drawRainbow(state: EngineState, ctx: CanvasRenderingContext2D): void {
   }
 }
 
+/**
+ * Rebuild the ridges, the basin and the water for the current canvas size.
+ *
+ * Resizing must move the world as little as possible. `ridge` is deterministic
+ * per column, so a wider canvas only APPENDS hills — the existing ones keep
+ * their shape as long as their baseline does, which is what `ridgeBase` (fixed
+ * distance above the bottom edge) buys. And the basin is carved around a world
+ * x pinned on the first pass, not around a fraction of the ridge array, whose
+ * length tracks the width: that fraction is why the pond used to slide sideways
+ * every time the window changed shape.
+ */
 export function regenerateTerrain(state: EngineState): void {
-  if (state.W === state.lastW) return;
+  if (state.W === state.lastW && state.H === state.lastH) return;
   state.lastW = state.W;
+  state.lastH = state.H;
+  if (state.refH === 0) state.refH = state.H;
   const [s1, s2, s3] = state.ridgeSeeds;
-  state.R1 = ridge(s1, 90, state.H * 0.62, 16, state.W, state.OVER);
-  state.R2 = ridge(s2, 70, state.H * 0.74, 14, state.W, state.OVER);
-  state.R3 = ridge(s3, 44, state.H * 0.86, 12, state.W, state.OVER);
-  state.BASIN = carveBasin(state.R3, 12, 0.30, 11, 46);
+  state.R1 = ridge(s1, 90, ridgeBase(state.H, state.refH, 0.62), 16, state.W, state.OVER);
+  state.R2 = ridge(s2, 70, ridgeBase(state.H, state.refH, 0.74), 14, state.W, state.OVER);
+  state.R3 = ridge(s3, 44, ridgeBase(state.H, state.refH, 0.86), 12, state.W, state.OVER);
+  const col = basinColumn(state.R3, state.basinAnchorX, 0.30, 12, state.OVER);
+  if (state.basinAnchorX === null) state.basinAnchorX = col * 12 - state.OVER;
+  state.BASIN = carveBasin(state.R3, 12, col, 11, 46);
   // water fills the bowl up to its lowest rim — stays in the dip, never floods
   const b = state.BASIN;
   state.WATER_LEVEL = Math.max(state.R3[b.c - b.half], state.R3[b.c + b.half]);
@@ -104,10 +119,11 @@ export function reanchorRainbow(state: EngineState): void {
 
 /** Render exactly one background frame at time `ts`. */
 export function skyFrame(state: EngineState, ctx: CanvasRenderingContext2D, ts: number): void {
-  // regenerateTerrain guards on `W !== lastW` itself (and sets lastW after
-  // generating); do NOT pre-set lastW here or the guard always early-returns
-  // and the terrain (ridges, basin, water) never renders (F-terrain).
-  if (state.W !== state.lastW) {
+  // regenerateTerrain guards on the size itself (and records it after
+  // generating); do NOT pre-set lastW/lastH here or the guard always
+  // early-returns and the terrain (ridges, basin, water) never renders
+  // (F-terrain).
+  if (state.W !== state.lastW || state.H !== state.lastH) {
     regenerateTerrain(state);
   }
   const day = state.tod; // 0..1  (0 = deep night, .5 = noon)

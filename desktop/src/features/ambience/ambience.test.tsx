@@ -213,6 +213,61 @@ describe('terrain (port fidelity)', () => {
     expect(groundYWorld(t.state, 559, 16)).toBeCloseTo(660.48, 1);
   });
 
+  /**
+   * A resize used to re-lay the whole landscape: the basin was carved at a
+   * FRACTION of the ridge array (whose length follows the width), so the pond
+   * slid sideways, and every ridge sat at a fraction of the height, so the
+   * shoreline and the water level moved vertically too. Both are now anchored.
+   */
+  it('keeps the water where it is when the window is resized', () => {
+    const span = waterSpan(t.state);
+    // The shoreline's depth BELOW the bottom edge is the invariant — the world
+    // is anchored there, so a taller window moves the absolute level down with
+    // it rather than re-cutting the valley somewhere else.
+    const depth = t.state.H - t.state.WATER_LEVEL;
+
+    // wider and taller
+    t.state.W = 1600; t.state.H = 900;
+    regenerateTerrain(t.state);
+    expect(waterSpan(t.state)).toEqual(span);
+    expect(t.state.BASIN?.c).toBe(30);
+    expect(t.state.H - t.state.WATER_LEVEL).toBeCloseTo(depth, 6);
+
+    // narrower, still taller than the reference height
+    t.state.W = 1200; t.state.H = 1000;
+    regenerateTerrain(t.state);
+    expect(waterSpan(t.state)).toEqual(span);
+    expect(t.state.H - t.state.WATER_LEVEL).toBeCloseTo(depth, 6);
+
+    // and back to where it started — the golden layout, unchanged
+    t.state.W = 1024; t.state.H = 768;
+    regenerateTerrain(t.state);
+    expect(waterSpan(t.state)).toEqual(span);
+    expect(t.state.WATER_LEVEL).toBeCloseTo(684.48, 1);
+  });
+
+  it('adds sky, not hills, when the window grows taller', () => {
+    const groundAtLeftEdge = groundYWorld(t.state, 0, 2);
+    const bottomGap = t.state.H - groundAtLeftEdge;
+
+    t.state.H = 1100;
+    regenerateTerrain(t.state);
+    // the ground keeps its distance from the BOTTOM edge...
+    expect(t.state.H - groundYWorld(t.state, 0, 2)).toBeCloseTo(bottomGap, 6);
+    // ...so the extra height all went above the horizon.
+    expect(groundYWorld(t.state, 0, 2)).toBeGreaterThan(groundAtLeftEdge);
+  });
+
+  it('falls back to proportional ridges below the reference height', () => {
+    // Holding the offset on a much SHORTER window would push the hills off the
+    // top of the screen; there the original H-fraction placement takes over.
+    t.state.H = 400;
+    regenerateTerrain(t.state);
+    const ground = groundYWorld(t.state, 0, 2);
+    expect(ground).toBeGreaterThan(0);
+    expect(ground).toBeLessThan(400);
+  });
+
   it('water sits inside the carved basin, not on a fixed ellipse (F9)', () => {
     const ws = waterSpan(t.state);
     expect(ws.x0).toBe(246);
@@ -273,6 +328,63 @@ describe('terrain (port fidelity)', () => {
     // And a second frame (no resize) does not wipe them.
     skyFrame(state, ctx, 16);
     expect(state.R3?.length).toBeGreaterThan(0);
+  });
+});
+
+/* ── world clock: rainbow lifetime, time-of-day lock ────────────────── */
+
+describe('world clock', () => {
+  let t: TestWorld;
+  let h: ReturnType<typeof makeHarness>;
+  beforeEach(() => {
+    t = buildTestWorld();
+    h = makeHarness(t);
+    h.snapshotProps();
+    h.reset();
+    t.world.dl = 0.8; // daytime, so rain -> clear puts a rainbow up
+  });
+
+  it('takes the weather rainbow down after a few seconds', () => {
+    h.rainThenClear();
+    expect(h.props('rainbow-end').length).toBe(2);
+    h.tick(5);
+    expect(h.props('rainbow-end').length).toBe(2);
+    h.tick(6);
+    expect(h.props('rainbow-end').length).toBe(0);
+    expect(t.world.flags.rainbowUp).toBe(false);
+  });
+
+  it('leaves a pinned rainbow up indefinitely', () => {
+    t.world.flags.rainbowPinned = true;
+    t.world.spawnRainbow();
+    h.tick(120);
+    expect(h.props('rainbow-end').length).toBe(2);
+  });
+
+  it('re-raises a pinned rainbow after the egg claims the arc', () => {
+    t.world.flags.rainbowPinned = true;
+    t.world.spawnRainbow();
+    h.props('rainbow-end').forEach((p) => p.reaction!(p));
+    expect(h.has('rainbow')).toBe(true);
+    h.tick(0.1);
+    expect(h.props('rainbow-end').length).toBe(2);
+  });
+
+  it('holds the time of day while todLocked', () => {
+    t.state.tod = 0.42;
+    t.state.todLocked = true;
+    advanceClock(t.state, t.clock, 60);
+    expect(t.state.tod).toBe(0.42);
+    t.state.todLocked = false;
+    advanceClock(t.state, t.clock, 60);
+    expect(t.state.tod).toBeGreaterThan(0.42);
+  });
+
+  it('holds the weather while weatherLocked', () => {
+    t.state.weather = 2;
+    t.state.weatherLocked = true;
+    advanceClock(t.state, t.clock, 300);
+    expect(t.state.weather).toBe(2);
   });
 });
 

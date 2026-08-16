@@ -127,8 +127,6 @@
   :root[data-density="comfortable"] body { line-height: 1.5; }
   :root[data-density="spacious"] body { line-height: 1.65; }
 
-  :root[data-effects="off"] body { background-image: none; }
-
   :root[data-contrast="high"] {
     --border: 210 25% 42%;
     --muted-foreground: 213 45% 25%;
@@ -229,15 +227,6 @@
 :root[data-density="spacious"] .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: 1.4rem; }
 :root[data-density="spacious"] .space-y-6 > :not([hidden]) ~ :not([hidden]) { margin-top: 2rem; }
 
-:root[data-effects="off"] [class*="backdrop-blur"] {
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-:root[data-effects="off"] .decorative-shell {
-  background-color: hsl(var(--nav-surface));
-  box-shadow: none;
-}
-
 :root .bg-card,
 :root [class~="bg-card/50"],
 :root [class~="bg-card/95"] {
@@ -260,6 +249,18 @@
 :root .decorative-shell {
   color: hsl(var(--card-foreground));
   background-color: hsl(var(--nav-surface) / var(--nav-opacity));
+}
+
+/* Accent-tinted content blocks — About's "Get involved", Governance's "Join the
+   community". These were `bg-primary/5`: five percent of the accent over
+   whatever happens to be behind them, which above the living background is
+   effectively nothing, so the block read as loose text floating on the world.
+   Put the tint ON the card surface instead, so they carry the same opacity as
+   every other block and follow the user's block-opacity setting. */
+.agora-panel-accent {
+  color: hsl(var(--card-foreground));
+  background-color: hsl(var(--card) / var(--surface-opacity));
+  background-image: linear-gradient(hsl(var(--primary) / 0.08), hsl(var(--primary) / 0.08));
 }
 
 :root main section:not(.bg-card) > .text-muted-foreground {

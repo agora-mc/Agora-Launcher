@@ -35,6 +35,12 @@ export interface LiveSceneViewProps {
   reducedMotion?: boolean;
   /** Presentation: `simple` hides the decorative flourish. */
   presentation?: 'standard' | 'simple' | 'high-interaction';
+  /**
+   * The scene was painted from the essential reads and the enrichment read is
+   * still in flight. Distinguishes "not read yet" from "read and failed" —
+   * without it a first paint announces "Health could not be verified".
+   */
+  pending?: boolean;
 }
 
 export function LiveSceneView(props: LiveSceneViewProps) {

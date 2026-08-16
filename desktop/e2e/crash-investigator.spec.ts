@@ -152,7 +152,7 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
           if (command === 'read_crash_log') return Promise.resolve('Mock crash log:\njava.lang.NullPointerException\n\tat net.minecraft.class_123');
 
           if (command === 'get_disable_plan') {
-            if (cfg.withDependents) return Promise.resolve({ dependents: [{ mod_id: 'dependent-mod', filename: 'dependent-mod.jar', requirement: 'Required', source: 'Jar' }] });
+            if (cfg.withDependents) return Promise.resolve({ dependents: [{ mod_id: 'dependent-mod', filename: 'dependent-mod.jar', requirement: 'required', source: 'jar' }] });
             return Promise.resolve({ dependents: [] });
           }
           if (command === 'disable_mod_for_test') return Promise.resolve(null);

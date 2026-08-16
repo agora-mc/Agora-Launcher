@@ -172,7 +172,8 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       return Promise.resolve(makeData({ instance: { ...baseScene().instance!, id: 'inst-B', name: 'World B' } }));
     });
     const { rerender } = render(<LiveInteractiveHost instanceId="inst-A" onUseStandardView={() => undefined} load={load} />);
-    await waitFor(() => expect(load).toHaveBeenCalledWith('inst-A', expect.any(String)));
+    // Third argument is the optional early-paint channel (`onPartial`).
+    await waitFor(() => expect(load).toHaveBeenCalledWith('inst-A', expect.any(String), expect.any(Function)));
     // Switch to inst-B while inst-A's read is still unresolved.
     rerender(<LiveInteractiveHost instanceId="inst-B" onUseStandardView={() => undefined} load={load} />);
     await waitFor(() => expect(screen.getAllByText('World B').length).toBeGreaterThanOrEqual(1));
@@ -232,6 +233,11 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       { phase: 'delegated', launch: 'delegated', busy: true },
       { phase: 'failed', launch: 'failed', busy: false },
       { phase: 'idle', launch: 'idle', busy: false },
+      // `exited` is the phase the controller sets when `game-exited` lands. It
+      // is terminal: the session is over and the instance must be playable
+      // again. Omitting it here is what let the Play button stay disabled
+      // after a normal game session.
+      { phase: 'exited', launch: 'idle', busy: false },
     ];
     for (const c of cases) {
       const load = vi.fn(async (): Promise<LiveHostData> => makeData());
@@ -377,6 +383,140 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     bench = screen.getByTestId('world-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
+  });
+
+  it('Play is re-enabled after the game exits (full launch -> running -> exited lifecycle)', async () => {
+    const load = vi.fn(async (): Promise<LiveHostData> => makeData());
+    // Present so `playDisabled` is not forced by a missing handler.
+    const onLaunch = vi.fn();
+    const host = (phase: string) => (
+      <LiveInteractiveHost
+        instanceId="inst-1"
+        onUseStandardView={() => undefined}
+        load={load}
+        onLaunch={onLaunch}
+        processState={{ phase, instanceId: 'inst-1' }}
+      />
+    );
+    const play = () => screen.getByRole('button', { name: 'Play this world' });
+
+    const { rerender } = render(host('idle'));
+    await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
+    expect(play()).toBeEnabled();
+
+    rerender(host('launching'));
+    expect(play()).toBeDisabled();
+
+    rerender(host('running'));
+    expect(play()).toBeDisabled();
+
+    // The backend's `game-exited` event puts the controller in `exited`. The
+    // session is over, so Play must come back — this is the state the button
+    // used to stay stuck in. (The click itself opens the preflight dialog,
+    // which is what actually calls `onLaunch`; the defect was purely that the
+    // button never left `disabled`.)
+    rerender(host('exited'));
+    expect(play()).toBeEnabled();
+    expect(play()).toHaveTextContent('Play');
+  });
+
+  it('paints the world from the partial read before the enrichment lands', async () => {
+    let finish: (d: LiveHostData) => void = () => undefined;
+    const partial: LiveHostData = {
+      // Painted from the essential reads: the instance is real, the
+      // enrichment fragments have no value yet, and the scene is `refreshing`
+      // (non-executable) until the complete read installs a new revision.
+      scene: { ...baseScene(), source: liveSource('r-partial', 'refreshing') },
+      health: err<boolean>(),
+      snapshots: err(),
+      crashEvidence: err(),
+      runtime: err(),
+    };
+    const load = vi.fn((_id: string, _rev: string, onPartial?: (d: LiveHostData) => void) => {
+      onPartial?.(partial);
+      return new Promise<LiveHostData>((resolve) => { finish = resolve; });
+    });
+
+    render(<LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} />);
+
+    // The world is on screen while the expensive reads are still running...
+    await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByTestId('world-editor')).toHaveAttribute('data-source', 'live');
+    // ...and it says so, rather than claiming the health scan failed.
+    expect(screen.getByText('Checking things over…')).toBeInTheDocument();
+    expect(screen.queryByText('Health could not be verified')).not.toBeInTheDocument();
+
+    finish(makeData());
+    await waitFor(() => expect(screen.getByText('Everything looks ready')).toBeInTheDocument());
+  });
+
+  it('a stale partial paint is discarded after an instance switch', async () => {
+    let emitStalePartial: () => void = () => undefined;
+    const load = vi.fn((id: string, _rev: string, onPartial?: (d: LiveHostData) => void) => {
+      if (id === 'inst-A') {
+        emitStalePartial = () => onPartial?.(
+          makeData({ instance: { ...baseScene().instance!, id: 'inst-A', name: 'OLD PARTIAL' } }),
+        );
+        return new Promise<LiveHostData>(() => undefined); // never resolves
+      }
+      return Promise.resolve(makeData({ instance: { ...baseScene().instance!, id: 'inst-B', name: 'World B' } }));
+    });
+
+    const { rerender } = render(<LiveInteractiveHost instanceId="inst-A" onUseStandardView={() => undefined} load={load} />);
+    rerender(<LiveInteractiveHost instanceId="inst-B" onUseStandardView={() => undefined} load={load} />);
+    await waitFor(() => expect(screen.getAllByText('World B').length).toBeGreaterThanOrEqual(1));
+
+    // inst-A's early paint arrives late: the generation/identity guards must
+    // apply to it exactly as they do to an accepted result.
+    emitStalePartial();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText('OLD PARTIAL')).not.toBeInTheDocument();
+    expect(screen.getAllByText('World B').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a pending partial scene does not restart its own read when an intent needs a refresh', async () => {
+    const scene = baseScene();
+    scene.findings = [
+      {
+        id: 'live:finding:health',
+        severity: 'warning',
+        title: 'Check health',
+        summary: 'Worth a look.',
+        affectedIds: [],
+        reviewIntent: { kind: 'review-health' },
+      },
+    ];
+    const load = vi.fn((_id: string, _rev: string, onPartial?: (d: LiveHostData) => void) => {
+      onPartial?.({
+        scene: { ...scene, source: liveSource('r-partial', 'refreshing') },
+        health: err<boolean>(),
+        snapshots: err(),
+        crashEvidence: err(),
+        runtime: err(),
+      });
+      return new Promise<LiveHostData>(() => undefined); // enrichment still in flight
+    });
+    const onOpenStandardOperation = vi.fn();
+
+    render(
+      <LiveInteractiveHost
+        instanceId="inst-1"
+        onUseStandardView={() => undefined}
+        load={load}
+        capabilities={reviewCaps()}
+        onOpenStandardOperation={onOpenStandardOperation}
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // Clicking the status pill routes an intent. The scene is not executable,
+    // so nothing is reviewed — and because the enrichment read IS the pending
+    // re-read, no second load is kicked off.
+    fireEvent.click(screen.getByText('Checking things over…'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onOpenStandardOperation).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it('install active -> inactive clears busy (only running installs are active)', async () => {

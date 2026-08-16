@@ -50,9 +50,26 @@ export function err<T>(): Fragment<T> {
   return { status: 'error' };
 }
 
-export interface LiveReads {
+/**
+ * The reads that PAINT the world: instance identity and process state.
+ *
+ * Both are cheap (a local-state row plus the manifest, and the in-memory
+ * launch record), which is what makes a first paint possible before the
+ * expensive reads land.
+ */
+export interface EssentialReads {
   detail: Fragment<InstanceDetail | null>;
   running: Fragment<RunningProcess | null>;
+}
+
+/**
+ * The reads that ENRICH an already-painted world.
+ *
+ * These are the expensive ones — a full health scan, crash-evidence triage,
+ * jar dependency parsing, Java discovery — and none of them are needed to
+ * show the instance, its shelf, or the Play button.
+ */
+export interface EnrichmentReads {
   health: Fragment<HealthReport | null>;
   snapshots: Fragment<Snapshot[]>;
   investigation: Fragment<CrashInvestigation | null>;
@@ -62,18 +79,29 @@ export interface LiveReads {
   dependencies: Fragment<DependencyEdge[]>;
 }
 
-/** Loads every read needed for a live scene; each read failure is retained as an `error` fragment. */
-export async function readLiveData(instanceId: string): Promise<LiveReads> {
-  const safe = async <T>(run: () => Promise<T>): Promise<Fragment<T>> => {
-    try {
-      return ok(await run());
-    } catch {
-      return err<T>();
-    }
-  };
-  const [detail, running, health, snapshots, investigation, memory, javas, dependencies] = await Promise.all([
+export type LiveReads = EssentialReads & EnrichmentReads;
+
+/** Run a read, keeping a failure as an `error` fragment rather than throwing. */
+async function safe<T>(run: () => Promise<T>): Promise<Fragment<T>> {
+  try {
+    return ok(await run());
+  } catch {
+    return err<T>();
+  }
+}
+
+/** Instance identity and process state — enough to paint the world. */
+export async function readEssentialData(instanceId: string): Promise<EssentialReads> {
+  const [detail, running] = await Promise.all([
     safe(() => getInstanceDetail(instanceId)),
     safe(() => queryLaunchState()),
+  ]);
+  return { detail, running };
+}
+
+/** The expensive reads that enrich an already-painted world. */
+export async function readEnrichmentData(instanceId: string): Promise<EnrichmentReads> {
+  const [health, snapshots, investigation, memory, javas, dependencies] = await Promise.all([
     safe(() => checkInstanceHealth(instanceId)),
     safe(() => listSnapshots(instanceId)),
     safe(() => investigateInstanceEvidence(instanceId)),
@@ -81,7 +109,43 @@ export async function readLiveData(instanceId: string): Promise<LiveReads> {
     safe(() => listJavaRuntimes()),
     safe(() => getDependencyGraph(instanceId)),
   ]);
-  return { detail, running, health, snapshots, investigation, memory, javas, dependencies };
+  return { health, snapshots, investigation, memory, javas, dependencies };
+}
+
+/**
+ * Enrichment fragments for a scene whose enrichment read is still IN FLIGHT.
+ *
+ * They are `error` because that is what the fragment model means by "no
+ * value": every consumer already renders them as unavailable/unknown, and a
+ * partial scene is never `fresh`, so nothing becomes executable on their
+ * account. The host carries a separate `pending` flag for the one place the
+ * difference is user-visible — "still checking" must not read as "failed".
+ */
+export function pendingEnrichment(): EnrichmentReads {
+  return {
+    health: err<HealthReport | null>(),
+    snapshots: err<Snapshot[]>(),
+    investigation: err<CrashInvestigation | null>(),
+    memory: err<MemoryRecommendation | null>(),
+    javas: err<JavaRuntimeSummary[]>(),
+    dependencies: err<DependencyEdge[]>(),
+  };
+}
+
+/**
+ * Loads every read needed for a complete live scene; each read failure is
+ * retained as an `error` fragment.
+ *
+ * Both phases start together, so the total time to a COMPLETE scene is
+ * unchanged — the split exists so a caller can paint after the essential
+ * half instead of waiting for the slowest of all eight.
+ */
+export async function readLiveData(instanceId: string): Promise<LiveReads> {
+  const [essential, enrichment] = await Promise.all([
+    readEssentialData(instanceId),
+    readEnrichmentData(instanceId),
+  ]);
+  return { ...essential, ...enrichment };
 }
 
 /** True when every relevant fragment read succeeded. */

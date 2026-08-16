@@ -22,6 +22,16 @@ import { paraX, paraY, groundYWorld, screenOf, waterSurfaceY, waterSpan } from '
 import { SPECIES, SPECIES_BY_KEY, buildSpecies, drawBird, drawFlutter, drawQuad, P } from './species';
 import type { Entity, Prop, Species, WorldState, WorldItem } from './types';
 
+/**
+ * How long a rainbow the WEATHER put up stays before it fades, in seconds.
+ *
+ * A rainbow used to be permanent: rain→sun spawned one and nothing ever took it
+ * down again, so a single shower left an arc across the sky for the rest of the
+ * session. A real one outlives the shower by a little and then it is gone. The
+ * one exception is a rainbow the player asked for by hand — see `rainbowPinned`.
+ */
+const RAINBOW_SECONDS = 10;
+
 /** World helpers the species/props handlers close over (prototype globals). */
 export function reactState(e: Entity, fx: string, dur?: number): void {
   e.state = 'react'; e.fx = fx; e.t = 0; e.reactDur = dur || 1.2;
@@ -206,7 +216,7 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
       burst(x, y, '#8FD3FF', 12, 6);
     },
     spawnRainbow: function () {
-      if (this.flags.rainbowUp) return; this.flags.rainbowUp = true; this.flags.rainbowEnds = {};
+      if (this.flags.rainbowUp) return; this.flags.rainbowUp = true; this.flags.rainbowEnds = {}; this.flags.rainbowT = 0;
       const lx = state.W * 0.22, rx = state.W * 0.78;
       // F-rainbow: anchor the arc's ends to the terrain so the rainbow reads
       // as rising from BEHIND the hills, not floating high in the sky. The
@@ -237,9 +247,13 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
       if (ends && ends.l && ends.r && !this.found['rainbow']) {
         this._findEgg?.('rainbow');
         dropGroundItem(state, 'coin', state.W * 0.5);
-        this.props = this.props.filter(function (p) { return p.key !== 'rainbow-end'; });
-        this.flags.rainbowUp = false;
+        this.clearRainbow();
       }
+    },
+    clearRainbow: function () {
+      this.flags.rainbowUp = false;
+      this.flags.rainbowT = 0;
+      this.props = this.props.filter(function (p) { return p.key !== 'rainbow-end'; });
     },
     spawnSwarm: function () {
       const s: Entity = {
@@ -274,6 +288,17 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
     },
     update: function (dt) {
       this.t += dt;
+      // The rainbow is a shower's parting gift, not scenery: one the weather put
+      // up fades after RAINBOW_SECONDS. `rainbowPinned` is the player asking for
+      // one by hand, and that one stays — including after the egg consumes the
+      // arc, which is why this re-spawns rather than only counting down.
+      if (this.flags.rainbowPinned) {
+        if (!this.flags.rainbowUp) this.spawnRainbow();
+      } else if (this.flags.rainbowUp) {
+        const age = ((this.flags.rainbowT as number) || 0) + dt;
+        this.flags.rainbowT = age;
+        if (age >= RAINBOW_SECONDS) this.clearRainbow();
+      }
       if (state.reduce) { return; } // props stay static, no wanderers, no ambient motion
       const TIMERFIELDS = ['shakeT', 'ripple', 'blink', 'spin', 'rainT'];
       this.props.forEach(function (p) {

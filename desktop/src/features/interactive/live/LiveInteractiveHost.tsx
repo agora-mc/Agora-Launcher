@@ -37,7 +37,15 @@ import type { VisualIntent } from '../domain/intents';
 import type { InteractionPreference } from './presentationPreference';
 import { liveHighInteractionCapabilities } from './liveCapabilities';
 import { nextRevision, liveSource } from './freshness';
-import { assembleLiveScene, readLiveData, ok, err, type LiveReads } from './liveScene';
+import {
+  assembleLiveScene,
+  pendingEnrichment,
+  readEnrichmentData,
+  readEssentialData,
+  ok,
+  err,
+  type LiveReads,
+} from './liveScene';
 import { readContentDetail, EMPTY_CONTENT_DETAIL, type ContentDetail } from './readAdapters';
 import { crashToVisual, runtimeToVisual, snapshotsToVisual } from './readAdapters';
 import { routeLiveIntent } from './intentController';
@@ -47,10 +55,54 @@ import type { LiveHostData } from './LiveSceneView';
 import { LiveSceneView } from './LiveSceneView';
 import { StatusChip } from '../visual/primitives/statusChips';
 
-export type LiveHostLoad = (instanceId: string, revision: string) => Promise<LiveHostData>;
+/**
+ * Load a scene, optionally painting a PARTIAL scene first.
+ *
+ * `onPartial` is an optional early-paint channel, not a second result: the
+ * promise still resolves with the complete scene, and a loader that ignores
+ * the callback behaves exactly as a single-phase loader always did.
+ */
+export type LiveHostLoad = (
+  instanceId: string,
+  revision: string,
+  onPartial?: (data: LiveHostData) => void,
+) => Promise<LiveHostData>;
 
-export function defaultLiveLoad(instanceId: string): Promise<LiveHostData> {
-  return readLiveData(instanceId).then((reads) => buildHostData(reads));
+/**
+ * Two-phase default load.
+ *
+ * The instance read is cheap and the enrichment reads are not (a full health
+ * scan, crash triage, jar dependency parsing, Java discovery). Awaiting all
+ * eight before the first paint is what made High Interaction take seconds to
+ * appear while the Standard editor — which blocks on `getInstanceDetail`
+ * alone and streams the rest in — was effectively instant.
+ *
+ * Both phases start together, so the complete scene arrives no later than
+ * before; the world is simply painted as soon as it CAN be. The partial scene
+ * is stamped `refreshing`, which is literally true and already means
+ * non-executable everywhere (`freshness.isExecutable`), so nothing can be
+ * driven from half-read data.
+ */
+export function defaultLiveLoad(
+  instanceId: string,
+  revision: string = nextRevision(),
+  onPartial?: (data: LiveHostData) => void,
+): Promise<LiveHostData> {
+  const enrichment = readEnrichmentData(instanceId);
+  const essential = readEssentialData(instanceId);
+  if (onPartial) {
+    void essential.then((reads) => {
+      const partial = buildHostData({ ...reads, ...pendingEnrichment() });
+      if (!partial.scene.instance) return; // nothing paintable; wait for the full read
+      onPartial({
+        ...partial,
+        scene: { ...partial.scene, source: liveSource(revision, 'refreshing') },
+      });
+    });
+  }
+  return Promise.all([essential, enrichment]).then(([reads, extra]) =>
+    buildHostData({ ...reads, ...extra }),
+  );
 }
 
 /** Assemble `LiveHostData` from the fragment reads, preserving availability. */
@@ -76,7 +128,13 @@ export function buildHostData(reads: LiveReads): LiveHostData {
 
 export type LiveHostState =
   | { kind: 'loading' }
-  | { kind: 'scene'; instanceId: string; data: LiveHostData; refreshing: boolean }
+  /**
+   * `pending` marks a scene painted from the essential reads alone, with the
+   * enrichment read still in flight. It is never a failure state — it exists
+   * so the view can say "still checking" where an unresolved enrichment
+   * fragment would otherwise read as "could not be verified".
+   */
+  | { kind: 'scene'; instanceId: string; data: LiveHostData; refreshing: boolean; pending: boolean }
   | { kind: 'error'; message: string };
 
 /** Canonical app-level process state consumed by the host. */
@@ -97,7 +155,7 @@ export interface LiveInteractiveHostProps {
    */
   leading?: React.ReactNode;
   onOpenStandardOperation?: (route: LiveReviewRoute) => void;
-  load?: (instanceId: string, revision: string) => Promise<LiveHostData>;
+  load?: LiveHostLoad;
   capabilities?: CapabilityFlags;
   reducedMotion?: boolean;
   /** The active presentation — `simple` renders the same useful structure
@@ -130,6 +188,23 @@ function projectLaunchState(phase: string): VisualInstance['launchState'] {
   }
 }
 
+/**
+ * Canonical phases that have RELEASED the instance.
+ *
+ * `exited` is the phase `useProcessController` sets when the backend's
+ * `game-exited` event lands, and it is exactly as terminal as `idle` and
+ * `failed` — the process is gone and the instance is playable again. Deriving
+ * busy as "anything that is not idle or failed" left the instance locked
+ * forever after a normal session, so the Play button never came back.
+ *
+ * Kept as a terminal ALLOWLIST rather than a busy list so the conservative
+ * default survives: any phase this file has not seen still projects as busy
+ * (matching `projectLaunchState`'s conservative mapping). The Standard editor
+ * makes the same distinction with its blocking-phase list in
+ * `pages/InstanceEditor.tsx` — that is why Standard's Play button recovers.
+ */
+const TERMINAL_PHASES = new Set(['idle', 'exited', 'failed']);
+
 /** Canonical inputs needed to project a scene. */
 export interface CanonicalInput {
   processState: CanonicalProcessState | null;
@@ -150,7 +225,7 @@ export function projectCanonical(scene: VisualScene, canonical: CanonicalInput):
     ? projectLaunchState(canonical.processState?.phase ?? 'idle')
     : 'idle';
   const busy =
-    (isThisInstance && canonical.processState?.phase !== 'idle' && canonical.processState?.phase !== 'failed')
+    (isThisInstance && !TERMINAL_PHASES.has(canonical.processState?.phase ?? 'idle'))
     || canonical.installActive;
   const nextInstance: VisualInstance = {
     ...scene.instance,
@@ -201,8 +276,28 @@ export function LiveInteractiveHost({
       const requestId = ++requestRef.current;
       const revision = revisionRef.current;
       if (!refreshing) setState({ kind: 'loading' });
+      // Preserve an open Standard review's in-flight marker across a fresh
+      // read — a refresh is not a review terminal event.
+      const withReview = (data: LiveHostData): LiveHostData =>
+        reviewInFlightRef.current
+          ? { ...data, scene: { ...data.scene, proposals: [...data.scene.proposals, reviewInFlightRef.current] } }
+          : data;
       try {
-        const data = await load(targetInstanceId, revision);
+        const data = await load(targetInstanceId, revision, (partial) => {
+          // The early paint passes the SAME generation and instance-identity
+          // guards as the accepted result — an early frame must never be the
+          // one place a stale or switched-away read gets through.
+          if (requestId !== requestRef.current) return;
+          if (instanceIdRef.current !== targetInstanceId) return;
+          if (!partial.scene.instance) return;
+          setState({
+            kind: 'scene',
+            instanceId: targetInstanceId,
+            data: withReview(partial),
+            refreshing: true,
+            pending: true,
+          });
+        });
         if (requestId !== requestRef.current) return; // out-of-order result discarded
         if (instanceIdRef.current !== targetInstanceId) return; // instance switched
         if (!data.scene.instance) {
@@ -211,15 +306,11 @@ export function LiveInteractiveHost({
         }
         // Store the BASE (unprojected) read scene. Canonical state is projected
         // at render with the latest values — never captured in this closure.
-        // If a Standard review is still open, preserve its in-flight marker
-        // across this fresh read — a manual refresh is not a terminal event.
-        const accepted = reviewInFlightRef.current
-          ? { ...data, scene: { ...data.scene, proposals: [...data.scene.proposals, reviewInFlightRef.current] } }
-          : data;
+        const accepted = withReview(data);
         // Bind the accepted scene to the instance it was loaded for (SOL-2
         // §19.4): a stale scene is withheld at render whenever the current
         // instanceId differs — never routed as the new target.
-        setState({ kind: 'scene', instanceId: targetInstanceId, data: accepted, refreshing: false });
+        setState({ kind: 'scene', instanceId: targetInstanceId, data: accepted, refreshing: false, pending: false });
         setSelection((current) => {
           if (current === null) return null;
           const stillExists = data.scene.content.some((node) => node.id === current) || data.scene.instance?.id === current;
@@ -288,7 +379,13 @@ export function LiveInteractiveHost({
         ...current.data.scene,
         source: liveSource(revisionRef.current, 'refreshing'),
       };
-      return { kind: 'scene', instanceId: current.instanceId, data: { ...current.data, scene }, refreshing: true };
+      return {
+        kind: 'scene',
+        instanceId: current.instanceId,
+        data: { ...current.data, scene },
+        refreshing: true,
+        pending: current.pending,
+      };
     });
     void loadScene(instanceId, true);
   }, [loadScene, instanceId]);
@@ -316,7 +413,10 @@ export function LiveInteractiveHost({
         return;
       }
       if (route.status === 'refresh-required') {
-        refresh();
+        // A partial scene is already waiting on its enrichment read — that IS
+        // the pending re-read. Restarting it here would discard the in-flight
+        // request and repaint from scratch for no new information.
+        if (state.kind !== 'scene' || !state.pending) refresh();
         return;
       }
       if (route.status === 'blocked') {
@@ -442,6 +542,7 @@ export function LiveInteractiveHost({
           onLaunch={onLaunch}
           reducedMotion={reducedMotion}
           presentation={presentation}
+          pending={state.kind === 'scene' && state.pending}
         />
       ) : null}
     </section>

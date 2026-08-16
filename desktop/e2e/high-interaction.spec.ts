@@ -74,6 +74,7 @@ async function installHighInteractionMock(page: Page) {
           return new Promise((resolve, reject) => installCalls.push({ command, args, resolve, reject } as any));
         }
         if (command === 'cancel_install') return Promise.resolve(null);
+        if (command === 'get_dependency_graph') return Promise.resolve([]);
         if (command.startsWith('plugin:event|')) return Promise.resolve(1);
         if (command === 'get_setting') {
           if (args.key === 'onboarding_complete') return Promise.resolve(true);
@@ -206,14 +207,13 @@ test('High Interaction renders a real instance and approved health review opens 
   await installHighInteractionMock(page);
   await openHighInteraction(page);
 
-  // Live scene renders with real instance data.
+  // Live scene renders with real instance data and the health warning finding.
   await expect(page.getByText('HI Test').first()).toBeVisible();
-  await expect(page.getByText('High Interaction').first()).toBeVisible();
-  await expect(page.getByText('Example warning').first()).toBeVisible();
+  await expect(page.getByText('Unknown mod — example.jar').first()).toBeVisible();
 
-  // Approved health inspection: Review health opens the Standard reviewOnly
-  // HealthDialog and leaves High Interaction (option (a) terminal lifecycle).
-  await page.getByRole('button', { name: 'Review health' }).click();
+  // Approved health inspection: the warning finding's Review action opens the
+  // Standard reviewOnly HealthDialog and leaves High Interaction.
+  await page.getByRole('button', { name: 'Review' }).click();
   await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
   await expect(page.getByText('Example warning').first()).toBeVisible();
 });
@@ -222,9 +222,11 @@ test('approved remove through InstallFlow: Stage remove re-resolves and opens th
   await installHighInteractionMock(page);
   await openHighInteraction(page);
 
-  // The installed mod renders with the approved Stage removal action.
-  await expect(page.getByRole('button', { name: 'Stage removal' })).toBeVisible();
-  await page.getByRole('button', { name: 'Stage removal' }).click();
+  // The installed mod renders on the shelf; selecting it opens the detail
+  // drawer with the approved remove action.
+  await page.getByRole('button', { name: /example\.jar/ }).click();
+  await expect(page.getByRole('button', { name: 'Remove from this world' })).toBeVisible();
+  await page.getByRole('button', { name: 'Remove from this world' }).click();
 
   // The bridge re-resolves per route and opens the canonical InstallFlow,
   // which resolves a remove plan.
