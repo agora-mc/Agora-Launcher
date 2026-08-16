@@ -1,3 +1,7 @@
+# Code of Engagement
+
+The rules below govern reviews, comments, and community participation across the Agora registry. They apply everywhere Agora accepts community text, including review forms and registry proposals. The quoted text is the canonical wording reproduced in the review form.
+
 > **📜 Platform Code of Engagement**
 >
 > This platform is a curated asset repository, not a general discussion forum or social media feed. We built this ecosystem to keep modding open, high-quality, and hyper-focused.

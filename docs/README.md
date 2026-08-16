@@ -1,13 +1,13 @@
-# Agora documentation
+# How Agora's documentation is organized
 
-Agora's documentation is organized by audience and by depth. The goal is to help a player complete a task quickly without forcing maintainers, CLI users, and governance operators into the same page.
+Agora's documentation is organized by audience and by depth. The goal is to help a player complete a task quickly without forcing maintainers, CLI users, and governance operators through the same page. This file describes the system; it is not itself a starting point for readers.
 
 ## Choose the right guide
 
 | Audience | Start here | What belongs there |
 | --- | --- | --- |
 | Players using the desktop app | **Help & Guide** inside Agora | Task-based guidance tied to the current UI |
-| Players before installation or sharing a link | [Website documentation](https://agoramc.com/docs/) | Download, first run, launch modes, recovery, privacy, and troubleshooting |
+| Players before installation or sharing a link | [Website documentation](https://agoramc.com/docs) | Audience router, install and first run, visual tour, and the published task guides |
 | CLI users and automation authors | [CLI reference](./CLI.md) | Commands, flags, output formats, safety, examples, and exit codes |
 | Contributors | [Development guide](./DEVELOPMENT.md) | Local builds, tests, environment boundaries, and repository layout |
 | Release maintainers | [Release guide](./RELEASING.md) | Registry and desktop release checklists |
@@ -50,11 +50,22 @@ Historical implementation plans are retained under [`docs/archive/`](./archive/)
 
 Release, signing, compiler, governance-monitor, and incident-recovery procedures belong in narrowly scoped maintainer documents. They should not dominate the project landing page or the player-facing website.
 
+## How the website is assembled
+
+The website does not keep its own copy of any documentation. Two build steps feed it:
+
+- `scripts/build_docs_web.py` reads every markdown file under `docs/` plus the configured root documents, and writes `docs-web.json`. For each page it derives the slug, title, description, and an **audience** (`user`, `developer`, `internal`) and **group** used to build the site's grouped navigation. It also emits a `body` with the leading H1 removed, because the website renders the title in its own page header.
+- The website imports `desktop/src/data/guideContent.ts` directly and publishes those topics at `/docs/guides/`. There is no second copy of the guide text, so the app and the website cannot describe the product differently.
+
+New markdown is published automatically, but it defaults to the `internal` audience — visible only under the collapsed "Working notes and archive" section. Add a rule to `DOC_CATEGORIES` in `scripts/build_docs_web.py` to place a page in front of players or contributors.
+
+Pages classified `internal` are still published so cross-references never break, and they render with a banner marking them as non-authoritative working notes.
+
 ## Source-of-truth rules
 
 - The current interface is the source of truth for button names and navigation.
 - `crates/agora/src/main.rs` is the source of truth for CLI syntax. `docs/CLI.md` explains how to use that interface.
-- `desktop/src/data/guideContent.ts` is the source of truth for in-app guide copy.
+- `desktop/src/data/guideContent.ts` is the source of truth for in-app guide copy **and** for the website's published task guides.
 - `REGISTRY_CURATION_REFERENCE.md` is the source of truth for registry manifests.
 - `CODE_OF_ENGAGEMENT.md` is the source of truth for review conduct.
 - Workflow files are the source of truth for automated release triggers.
@@ -64,13 +75,14 @@ Release, signing, compiler, governance-monitor, and incident-recovery procedures
 
 A feature change is not complete until its documentation impact is reviewed.
 
-1. Update the in-app guide when a user-visible workflow, label, warning, or recovery action changes.
+1. Update the in-app guide when a user-visible workflow, label, warning, or recovery action changes. This updates the website's task guides at the same time.
 2. Update `docs/CLI.md` and CLI help when a command, flag, output shape, or exit code changes.
-3. Update website documentation when pre-install requirements or first-run behavior changes.
-4. Update operator documents when workflows, variables, signing, or governance state changes.
-5. Test commands against a temporary data directory.
-6. Check internal and website links.
-7. Avoid copying the same detailed procedure into multiple files. Link to the canonical page instead.
+3. Update the website's hand-written pages (`web/src/app/docs/`) when pre-install requirements, first-run behavior, or the screenshot tour changes.
+4. Classify any new markdown document in `DOC_CATEGORIES` so it does not land in the internal bucket by default.
+5. Update operator documents when workflows, variables, signing, or governance state changes.
+6. Test commands against a temporary data directory.
+7. Check internal and website links.
+8. Avoid copying the same detailed procedure into multiple files. Link to the canonical page instead.
 
 ## README contract
 

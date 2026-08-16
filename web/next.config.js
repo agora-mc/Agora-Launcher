@@ -5,6 +5,13 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // The website mirrors the desktop app's Help & Guide from
+  // desktop/src/data/guideContent.ts, which docs/README.md designates as the
+  // source of truth for that copy. Importing it directly (rather than copying
+  // it into web/) is what keeps the two from drifting apart.
+  experimental: {
+    externalDir: true,
+  },
   async headers() {
     return [
       {

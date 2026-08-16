@@ -1,317 +1,229 @@
-import Image from 'next/image';
 import Link from 'next/link';
-import { GITHUB_REPO_URL, GITHUB_RELEASES_URL } from '@/lib/site';
-import { getAllDocs } from '@/lib/docs';
+import { GITHUB_RELEASES_URL } from '@/lib/site';
+import { getDocNav } from '@/lib/docs';
+import { getGuideTopics } from '@/lib/guide';
 
 export const metadata = {
   title: 'Documentation - Agora',
-  description: 'Install, launch, recover, use offline, and automate Agora safely.',
+  description:
+    'Find the right Agora documentation: install and first run, task guides, troubleshooting, CLI reference, and contributor references.',
 };
 
-const cards = [
+const ROUTES = [
   {
-    title: 'Install and first run',
-    body: 'Download a packaged release, complete onboarding, synchronize the signed registry, and create or import a disposable first instance.',
+    href: '/docs/install',
+    heading: 'I am new to Agora',
+    body: 'Download a package, work through first-run setup, and reach a launch you can recover from.',
+    cta: 'Install and first run',
   },
   {
-    title: 'Install content safely',
-    body: 'Browse for the selected instance, choose an exact-compatible artifact, and review dependencies, conflicts, snapshots, and file changes before applying.',
+    href: '/docs/troubleshooting',
+    heading: 'Something is not working',
+    body: 'Start from the symptom: launch blocked, loader mismatch, missing Java, crash after launch, offline failures.',
+    cta: 'Troubleshooting',
   },
   {
-    title: 'Launch and recover',
-    body: 'Use delegated launch by default or opt into direct launch. Health checks, loader repair, Crash Doctor, snapshots, and Last Known Good provide different recovery layers.',
-  },
-  {
-    title: 'Privacy and offline play',
-    body: 'Agora has no automated analytics, but catalog, downloads, authentication, governance, updates, and optional AI make functional requests when enabled.',
+    href: '/docs/development',
+    heading: 'I want to build or contribute',
+    body: 'Local builds, validation gates, architecture boundaries, registry curation, and release procedure.',
+    cta: 'Development guide',
   },
 ];
 
-const screenshots = [
+const WAYS_TO_READ = [
   {
-    src: '/screenshots/onboarding-welcome.png',
-    alt: 'Agora welcome screen with the Get Started button and onboarding summary.',
-    caption: 'Onboarding welcome in Agora 0.1.0, captured 2026-08-05 with a sanitized fixture.',
+    href: '/docs/tour',
+    title: 'Show me',
+    body: 'An annotated screenshot tour of the six screens that cover most of what Agora does.',
   },
   {
-    src: '/screenshots/create-instance.png',
-    alt: 'Create Custom Instance dialog showing Minecraft, loader, loader version, and memory controls.',
-    caption: 'Creating an isolated instance in Agora 0.1.0, captured 2026-08-05 with synthetic data.',
+    href: '/docs/guides',
+    title: 'Walk me through it',
+    body: 'Numbered steps for a specific task, assuming no prior modding knowledge. Every guide has this version.',
   },
   {
-    src: '/screenshots/install-plan-review.png',
-    alt: 'Review Instance Changes dialog showing dependencies, a warning, added files, and snapshot details.',
-    caption: 'Install-plan review in Agora 0.1.0, captured 2026-08-05 with synthetic dependencies.',
+    href: '/docs/guides/modding-foundations#advanced',
+    title: 'Explain how it works',
+    body: 'The same guides written a second time as models rather than recipes — for readers who would rather understand than follow.',
   },
   {
-    src: '/screenshots/loader-compatibility-repair.png',
-    alt: 'Health Check dialog showing the current loader, recommended version, and Switch and launch action.',
-    caption: 'Loader compatibility repair in Agora 0.1.0, captured 2026-08-05 with a synthetic instance.',
+    href: '/docs/cli',
+    title: 'Just give me the syntax',
+    body: 'Exhaustive reference: commands, flags, output shapes, exit codes, file locations, and evidence collection.',
   },
-  {
-    src: '/screenshots/crash-doctor.png',
-    alt: 'Crash Doctor showing a matched signature, ranked suspects, and bounded crash evidence.',
-    caption: 'Crash Doctor in Agora 0.1.0, captured 2026-08-05 with a synthetic crash log.',
-  },
-  {
-    src: '/screenshots/privacy-lockdown.png',
-    alt: 'Privacy settings showing endpoint controls and the Lockdown Mode toggle.',
-    caption: 'Privacy and Lockdown controls in Agora 0.1.0, captured 2026-08-05 with no account data.',
-  },
+];
+
+const COMMON_QUESTIONS = [
+  { href: '/docs/guides/getting-started', label: 'How do I set up my first instance?' },
+  { href: '/docs/guides/modding-foundations', label: 'What are versions, loaders, and dependencies?' },
+  { href: '/docs/guides/launching', label: 'Why is my launch blocked, and what is a health check?' },
+  { href: '/docs/guides/crash-recovery', label: 'Minecraft crashed — how do I find the cause?' },
+  { href: '/docs/guides/snapshots-loadouts', label: 'What does a snapshot actually protect?' },
+  { href: '/docs/guides/privacy-offline', label: 'What does Agora send, and how do I play offline?' },
+  { href: '/docs/guides/packs-sharing', label: 'How do I move a setup to another machine?' },
+  { href: '/docs/guides/java-performance', label: 'How much memory should I give Minecraft?' },
 ];
 
 export default async function DocsPage() {
-  const docs = await getAllDocs();
+  const sections = await getDocNav();
+  const library = sections.filter((section) => section.audience !== 'internal');
+  const guideCount = getGuideTopics().length;
+
   return (
-    <div className="mx-auto max-w-5xl space-y-12">
+    <div className="min-w-0 space-y-14">
       <header>
         <p className="text-sm font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
           Agora documentation
         </p>
-        <h1 className="mt-2 text-4xl font-bold tracking-tight">From download to a recoverable first launch</h1>
-        <p className="mt-4 max-w-3xl text-lg text-gray-600 dark:text-gray-300">
-          This page covers what you may need before the desktop app is installed. Agora also
-          includes a searchable Help &amp; Guide with basic and advanced pages tied to the current
-          interface. The reference documentation below is rendered directly from the repository —
-          no need to open GitHub.
-        </p>
-        <div className="mt-6 flex flex-wrap gap-3">
-          <a
-            href={GITHUB_RELEASES_URL}
-            className="rounded-lg bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Desktop downloads
-          </a>
-          <Link
-            href="/docs/troubleshooting"
-            className="rounded-lg border px-5 py-3 font-semibold hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
-          >
-            Troubleshooting reference
-          </Link>
-        </div>
-        <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
-          Desktop packages use <code>v*</code> releases. <code>registry-*</code> releases contain data assets, not installers.
+        <h1 className="mt-2 text-4xl font-bold tracking-tight">What are you trying to do?</h1>
+        <p className="mt-4 max-w-3xl text-lg leading-8 text-gray-600 dark:text-gray-300">
+          Agora is documented in a few different ways on purpose, because
+          &ldquo;show me a picture&rdquo;, &ldquo;give me the steps&rdquo;, &ldquo;explain the
+          model&rdquo;, and &ldquo;just the flags&rdquo; are different questions. Pick the
+          lane that fits, or jump straight to a topic below.
         </p>
       </header>
 
       <section>
-        <h2 className="text-2xl font-bold">What Agora helps you do</h2>
-        <div className="mt-5 grid gap-4 md:grid-cols-2">
-          {cards.map((card) => (
-            <article key={card.title} className="rounded-xl border bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-              <h3 className="text-lg font-semibold">{card.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">{card.body}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">First run</h2>
-        <ol className="list-decimal space-y-3 pl-6 text-gray-700 dark:text-gray-300">
-          <li>Download the installer or portable package for your operating system from a published <code>v*</code> release.</li>
-          <li>Review the optional service and privacy choices during onboarding.</li>
-          <li>Synchronize the signed Agora registry so Browse and governance data are available.</li>
-          <li>Let Agora discover or provision a compatible Java runtime.</li>
-          <li>Create a small instance or import a supported pack into a disposable test instance.</li>
-          <li>Review health findings, then play for at least 60 seconds before treating the setup as known good.</li>
-        </ol>
-      </section>
-
-      <section className="space-y-5">
-        <div>
-          <h2 className="text-2xl font-bold">Current interface</h2>
-          <p className="mt-2 text-gray-600 dark:text-gray-300">
-            These captures use the current Agora 0.1.0 React interface with fixed synthetic data.
-            They contain no usernames, tokens, local paths, server addresses, or private packs.
-          </p>
-        </div>
-        <div className="grid gap-6 lg:grid-cols-2">
-          {screenshots.map((screenshot) => (
-            <figure key={screenshot.src} className="overflow-hidden rounded-xl border bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
-              <Image
-                src={screenshot.src}
-                alt={screenshot.alt}
-                width={1280}
-                height={800}
-                sizes="(min-width: 1024px) 50vw, 100vw"
-                className="h-auto w-full border-b dark:border-gray-700"
-              />
-              <figcaption className="p-3 text-sm leading-5 text-gray-600 dark:text-gray-300">
-                {screenshot.caption}
-              </figcaption>
-            </figure>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Launch modes</h2>
-        <div className="grid gap-4 md:grid-cols-2">
-          <article className="rounded-xl border p-5 dark:border-gray-700">
-            <h3 className="font-semibold">Delegated launch</h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-              The global default. Agora prepares the instance and hands it to the official
-              Minecraft Launcher, which owns account authentication and game process startup.
-              Instances stored with Auto follow this choice; the current UI does not expose a
-              per-instance override selector.
-            </p>
-          </article>
-          <article className="rounded-xl border p-5 dark:border-gray-700">
-            <h3 className="font-semibold">Direct launch</h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
-              Optional. Agora uses the Microsoft account connected inside Agora, selects Java,
-              starts Minecraft, and shows process status and live console output.
-            </p>
-          </article>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Health and loader repair</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Loader repair shows the current loader, a <strong>Recommended version</strong> when one signed
-          candidate satisfies every understood hard requirement, and <strong>Choose compatible version</strong>
-          for alternatives. Launch flows use <strong>Switch and launch</strong>; review-only flows use <strong>Switch
-          version</strong>. If no signed version satisfies every enabled mod, automatic switching is
-          unavailable. Manual candidates are signed but indeterminate and require confirmation in
-          the instance editor.
-        </p>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Forge and NeoForge provide language capabilities such as <code>javafml</code> and <code>lowcodefml</code> when
-          the active loader exposes the required version. They are not ordinary missing mod JARs.
-        </p>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Recovery is layered</h2>
-        <ul className="list-disc space-y-2 pl-6 text-gray-700 dark:text-gray-300">
-          <li>Install, update, and remove transactions create full recovery snapshots, including saves.</li>
-          <li>Automatic pre-launch recovery protects mod and configuration state, not <code>saves/</code>.</li>
-          <li>Last Known Good promotes the exact pre-launch snapshot after a successful session of at least 60 seconds.</li>
-          <li>Loadouts remember enabled state; they do not restore versions or configuration.</li>
-          <li>Lockfiles describe reproducible artifacts; they are not world backups.</li>
-        </ul>
-        <p className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          Back up valuable worlds separately. No launcher-local recovery feature should be the only
-          copy of irreplaceable save data.
-        </p>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Privacy and offline behavior</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Offline readiness is instance-specific. Cache the registry, Java runtime, game, loader,
-          and mod artifacts, then test the exact launch mode before disconnecting. Individual
-          Privacy endpoint switches are enforced by the backend, and Lockdown Mode disables them
-          all at once.
-        </p>
-        <p className="rounded-lg border border-green-300 bg-green-50 p-4 text-sm text-green-900 dark:border-green-800 dark:bg-green-950 dark:text-green-200">
-          Lockdown Mode in the desktop Privacy settings is a global backend network block: while it
-          is on, every endpoint permission is disabled and Agora sends no feature requests. Use it
-          to force offline behavior; turn individual endpoints back on for finer control.
-        </p>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Integrated AI and MCP</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          The optional integrated assistant uses gpt-4o throughGitHub Copilot. Assistant messages leave the
-          machine. A Crash Doctor handoff can also send the instance ID, selected crash log, matched
-          signatures, and ranked suspects in the first message; a mod-list request can send installed
-          mod context. Review logs before submitting them.
-        </p>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          The optional desktop MCP server binds only to <code>127.0.0.1:39741</code>. It exposes SSE at <code>/sse</code>
-          and streamable HTTP at <code>/mcp</code>; every request requires <code>Authorization: Bearer &lt;token&gt;</code>.
-          Query-string tokens are not accepted. Its ten tools inspect instances and mods, read bounded
-          crash evidence, search local signatures and knowledge, suggest incompatibilities, and request
-          approved mod enable/disable actions. The standalone CLI separately offers <code>mcp serve --stdio</code>.
-        </p>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Import and export</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          <strong>Import Pack</strong> accepts <code>.mrpack</code>, <code>.agora-pack.json</code>, and supported JSON pack files. The
-          editor exports <strong>Modrinth Pack (.mrpack)</strong> for launcher interoperability and <strong>Agora Pack
-          (.json)</strong>, written with an <code>.agora-pack.json</code> filename, for Agora-native metadata. A
-          reproduction lockfile is a separate advanced format and never includes world saves.
-        </p>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">Data, logs, versions, and support</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Use <code>agora paths</code>, an instance's <strong>Open in Folder</strong> action, or
-          <strong> Settings &gt; Software Updates &gt; Open application data folder</strong> instead of hardcoding
-          platform paths. The same Settings section displays the exact packaged version. Game logs,
-          crash reports, CLI diagnostics, and compiler workflow logs serve different purposes and can
-          contain different personal data. Agora does not currently provide a one-click support bundle.
-        </p>
-        <Link
-          href="/docs/support"
-          className="inline-flex font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
-        >
-          Read the data and support-evidence reference
-        </Link>
-      </section>
-
-      <section className="space-y-4">
-        <h2 className="text-2xl font-bold">CLI and automation</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Agora includes a standalone CLI for instance management, health checks, registry sync,
-          direct launch, snapshots, lockfiles, crash investigation, and stdio MCP. Start by checking
-          resolved paths and use an isolated data directory for experiments. Authentication uses the
-          operating-system credential store and is not isolated by <code>--data-dir</code>.
-        </p>
-        <Link
-          href="/docs/cli"
-          className="inline-flex font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
-        >
-          Read the CLI reference
-        </Link>
-      </section>
-
-      <section className="space-y-5">
-        <h2 className="text-2xl font-bold">Documentation library</h2>
-        <p className="text-gray-600 dark:text-gray-300">
-          Every reference below is rendered from the repository’s markdown. Use the sidebar on any
-          page to jump between documents.
-        </p>
-        <div className="grid gap-4 sm:grid-cols-2">
-          {docs.map((doc) => (
+        <div className="grid gap-4 md:grid-cols-3">
+          {ROUTES.map((route) => (
             <Link
-              key={doc.slug}
-              href={`/docs/${doc.slug}`}
-              className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+              key={route.href}
+              href={route.href}
+              className="flex flex-col rounded-xl border bg-white p-6 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
             >
-              <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{doc.title}</h3>
-              {doc.description && (
-                <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                  {doc.description}
-                </p>
-              )}
+              <h2 className="text-lg font-bold">{route.heading}</h2>
+              <p className="mt-2 flex-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
+                {route.body}
+              </p>
+              <span className="mt-4 font-semibold text-indigo-600 dark:text-indigo-400">
+                {route.cta} →
+              </span>
             </Link>
           ))}
         </div>
       </section>
 
+      <section>
+        <h2 className="text-2xl font-bold">Four ways to read the same thing</h2>
+        <p className="mt-2 max-w-3xl text-gray-600 dark:text-gray-300">
+          These are not four different sets of facts. They are the same product
+          described at four levels of detail, so you can choose the one that
+          makes sense to you and switch when it stops helping.
+        </p>
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          {WAYS_TO_READ.map((way) => (
+            <Link
+              key={way.href}
+              href={way.href}
+              className="rounded-xl border p-5 transition hover:border-indigo-400 dark:border-gray-700"
+            >
+              <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{way.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">{way.body}</p>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-2xl font-bold">Common questions</h2>
+        <p className="mt-2 text-gray-600 dark:text-gray-300">
+          Straight to the guide that answers it.
+        </p>
+        <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+          {COMMON_QUESTIONS.map((question) => (
+            <li key={question.href}>
+              <Link
+                href={question.href}
+                className="block rounded-lg border px-4 py-3 text-sm transition hover:border-indigo-400 hover:text-indigo-700 dark:border-gray-700 dark:hover:text-indigo-400"
+              >
+                {question.label}
+              </Link>
+            </li>
+          ))}
+        </ul>
+        <Link
+          href="/docs/guides"
+          className="mt-4 inline-flex font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+        >
+          All {guideCount} task guides
+        </Link>
+      </section>
+
+      <section className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-6 dark:border-indigo-900 dark:bg-indigo-950/30">
+        <h2 className="text-xl font-bold">Already have Agora installed?</h2>
+        <p className="mt-2 max-w-3xl leading-7 text-gray-700 dark:text-gray-300">
+          The app has the same guides built in under <strong>Help &amp; Guide</strong>,
+          where they are searchable and link directly to the screens they
+          describe. This website publishes them so you can read them before
+          installing, or send someone a link to a specific answer.
+        </p>
+      </section>
+
+      <section className="space-y-8">
+        <div>
+          <h2 className="text-2xl font-bold">Reference library</h2>
+          <p className="mt-2 max-w-3xl text-gray-600 dark:text-gray-300">
+            Rendered directly from the repository&rsquo;s markdown, so the site and
+            the source cannot disagree. Grouped by who needs them.
+          </p>
+        </div>
+        {library.map((section) => (
+          <div key={section.audience}>
+            <h3 className="text-lg font-semibold">{section.label}</h3>
+            <div className="mt-4 space-y-5">
+              {section.groups.map((group) => (
+                <div key={group.group}>
+                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                    {group.group}
+                  </p>
+                  <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                    {group.docs.map((doc) => (
+                      <Link
+                        key={doc.slug}
+                        href={`/docs/${doc.slug}`}
+                        className="rounded-xl border bg-white p-4 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+                      >
+                        <h4 className="font-semibold text-indigo-700 dark:text-indigo-400">
+                          {doc.title}
+                        </h4>
+                        {doc.description && (
+                          <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
+                            {doc.description}
+                          </p>
+                        )}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+
       <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="text-xl font-bold">More</h2>
+        <h2 className="text-xl font-bold">Elsewhere</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <a href={GITHUB_RELEASES_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
+          <a
+            href={GITHUB_RELEASES_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+          >
             Desktop downloads and release notes
           </a>
-          <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
-            Source code on GitHub
-          </a>
-          <Link href="/about" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
-            How Agora works
+          <Link
+            href="/about"
+            className="font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+          >
+            Why Agora exists and how it is funded
           </Link>
         </div>
+        <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+          Desktop packages ship in <code>v*</code> releases. <code>registry-*</code> releases
+          contain catalog data assets, not installers.
+        </p>
       </section>
     </div>
   );
