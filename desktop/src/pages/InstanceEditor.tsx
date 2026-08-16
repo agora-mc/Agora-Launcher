@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
@@ -49,6 +49,7 @@ import {
   revertInstance,
   planLoaderChange,
   changeLoaderVersion,
+  getDependencyGraph,
   listSnapshots,
   createSnapshot,
   restoreSnapshot,
@@ -71,6 +72,7 @@ import {
   type InstalledContentRow,
   type DisablePlan,
   type DependentInfo,
+  type DependencyEdge,
   type UpdateInfo,
   type Snapshot,
   type SnapshotDiff,
@@ -224,6 +226,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [exportBusy, setExportBusy] = useState(false);
   const [instanceCustomIcon, setInstanceCustomIcon] = useState<string | null>(null);
   const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
+
+  // Optional dependencies ("recommends" edges between installed mods — the
+  // standard-editor mirror of the high-interaction world's optional overlay).
+  const [optionalEdges, setOptionalEdges] = useState<DependencyEdge[] | null>(null);
+  const [optionalDepsOpen, setOptionalDepsOpen] = useState(false);
 
   const { advancedMode } = useAdvancedMode();
   const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
@@ -478,6 +485,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   }, [activeTab, detail?.row, instanceGcMode, instanceJvmMemory, instanceMemoryMode, memoryRecommendation, instanceJavaArgs, instanceAlwaysPreTouch, instanceJavaInspected?.version]);
 
   const modMetadataKey = installedModMetadataKey(detail?.manifest?.mods);
+
+  // Optional "recommends" edges refresh whenever the installed mod set changes.
+  useEffect(() => {
+    let cancelled = false;
+    getDependencyGraph(instanceId)
+      .then((edges) => {
+        if (!cancelled) setOptionalEdges(edges.filter((edge) => edge.requirement === 'optional'));
+      })
+      .catch(() => {
+        if (!cancelled) setOptionalEdges([]);
+      });
+    return () => { cancelled = true; };
+  }, [instanceId, modMetadataKey]);
 
   const customModIconsKey = JSON.stringify(customModIconMap(detail?.manifest ?? null));
   useEffect(() => {
@@ -1079,6 +1099,43 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const manifest = detail?.manifest;
   const mods = manifest?.mods ?? [];
   const displayedContentRows = contentRowsLoaded ? contentRows : fallbackContentRows(manifest ?? null);
+
+  const filenameToDisplayName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const content of displayedContentRows) {
+      if (!map.has(content.filename)) map.set(content.filename, content.display_name);
+    }
+    return map;
+  }, [displayedContentRows]);
+
+  // Owners (installed mods with optional "recommends" edges) and their targets,
+  // grouped for the optional-dependencies overlay. Targets are installed by
+  // construction — the dependency graph only reports edges whose both ends are
+  // installed, so every row is informational and marked ✓.
+  const optionalDepsGroups = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const edge of optionalEdges ?? []) {
+      const existing = groups.get(edge.from_filename) ?? [];
+      existing.push(edge.to_filename);
+      groups.set(edge.from_filename, existing);
+    }
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([owner, options]) => ({
+        owner,
+        ownerLabel: filenameToDisplayName.get(owner) ?? owner.replace(/\.[^.]+$/, ''),
+        options: Array.from(new Set(options)).sort().map((filename) => ({
+          filename,
+          label: filenameToDisplayName.get(filename) ?? filename.replace(/\.[^.]+$/, ''),
+        })),
+      }));
+  }, [optionalEdges, filenameToDisplayName]);
+
+  const optionalDepsCount = useMemo(() => {
+    const targets = new Set<string>();
+    for (const edge of optionalEdges ?? []) targets.add(edge.to_filename);
+    return targets.size;
+  }, [optionalEdges]);
   const packInstall = getTaskForInstance(instanceId);
   const recoveryBlocked = (
     detail?.snapshot_readiness !== undefined && detail.snapshot_readiness !== 'ready'
@@ -1150,7 +1207,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   if (showInteractive) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-6" data-tour="page-instance-editor">
         {/* Back sits on the host's own control row (passed as `leading`) so the
             view is not pushed down by two separate strips of chrome. */}
         <LiveInteractiveHost
@@ -1291,7 +1348,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="page-instance-editor">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <BackButton onBack={onBack} />
         <button
@@ -1590,7 +1647,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }}
           onError={setError}
           onDrop={handleDrop}
-          extraActions={<button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked || recoveryBlocked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>}
+          extraActions={<>
+            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button">Optional dependencies{optionalDepsCount > 0 ? ` (${optionalDepsCount})` : ''}</button>
+            <button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked || recoveryBlocked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>
+          </>}
           iconForRow={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
             return mod ? modCustomIcons[installedModKey(mod)] ?? null : null;
@@ -2637,6 +2697,56 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                .catch((cause) => setError(formatError(cause)));
            }}
         />
+      )}
+
+      {/* Optional dependencies overlay — the standard-editor mirror of the
+          high-interaction world's optional panel. Every listed target is
+          installed (the dependency graph only reports resolved pairs), so rows
+          are informational. */}
+      {optionalDepsOpen && (
+        <Dialog
+          open={optionalDepsOpen}
+          onOpenChange={(open) => { if (!open) setOptionalDepsOpen(false); }}
+        >
+          <DialogContent className="max-h-[85vh] max-w-xl overflow-hidden flex flex-col gap-3">
+            <DialogTitle className="shrink-0">Optional dependencies</DialogTitle>
+            <DialogDescription className="shrink-0">
+              A few installed mods can use extra add-ons. They're never required — this lists the ones that are already here.
+            </DialogDescription>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
+              {optionalDepsGroups.length === 0 ? (
+                <p className="py-10 text-center text-sm text-muted-foreground">Nothing optional right now.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {optionalDepsGroups.map((group) => (
+                    <li key={group.owner} className="rounded-lg border border-border bg-muted/30 p-3">
+                      <p className="text-sm font-medium">
+                        {group.ownerLabel} <span className="font-normal text-muted-foreground">recommends</span>
+                      </p>
+                      <ul className="mt-2 space-y-1">
+                        {group.options.map((option) => (
+                          <li key={option.filename} className="flex items-center justify-between gap-4 text-sm">
+                            <span className="truncate">{option.label}</span>
+                            <span className="shrink-0 text-xs text-muted-foreground">✓ installed</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="flex shrink-0 justify-end">
+              <button
+                type="button"
+                onClick={() => setOptionalDepsOpen(false)}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                Done
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
 
       {loaderChooserOpen && (

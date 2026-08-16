@@ -490,7 +490,7 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
           <VibeBars state={state} />
         </div>
 
-        <div className="bazaar-shelf">
+        <div className="bazaar-shelf" data-tour="browse-results">
           {shelf.map((item) => (
             <ItemTile
               key={item.id}

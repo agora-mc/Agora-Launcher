@@ -44,7 +44,7 @@ import {
 } from '../lib/tauri';
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
-import { formatDate } from '../lib/utils';
+import { formatDate, sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent, SourceType } from '../lib/installFlow';
 
@@ -267,7 +267,8 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     let cancelled = false;
     (async () => {
       try {
-        const versions = await listLoaderVersions(createLoader, createMcVersion);
+        // Newest-first so the default is the latest pinned loader version.
+        const versions = sortLoaderVersionsLatestFirst(await listLoaderVersions(createLoader, createMcVersion));
         if (cancelled) return;
         setCreateLoaderVersions(versions);
         setCreateLoaderVersion(versions[0]?.loader_version ?? '');
@@ -888,7 +889,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   const canShowGithubVersions = !hasModrinthId || (hasModrinthId && modrinthEnabled === false && item.download_strategy === 'github_release');
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="page-mod-detail">
       <BackButton onBack={onBack} />
 
       {item.is_immune && (
@@ -1057,6 +1058,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           ) : (
             <button
               onClick={handleInstall}
+              data-tour="mod-detail-install"
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
               Install to Instance
@@ -1064,7 +1066,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           )}
         </div>
         {showInstallFlow && (
-          <section className="mt-4 rounded-xl border border-border bg-card p-4 space-y-4">
+          <section className="mt-4 rounded-xl border border-border bg-card p-4 space-y-4" data-tour="install-panel">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold text-sm">Install to Instance</h3>
               <button
@@ -1091,6 +1093,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   <select
                     value={selectedInstanceId ?? ''}
                     onChange={(e) => setSelectedInstanceId(e.target.value || null)}
+                    data-tour="install-instance-select"
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                   >
                     <option value="">Choose an instance…</option>
@@ -1103,6 +1106,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   <button
                     onClick={handlePickVersion}
                     disabled={!selectedInstanceId}
+                    data-tour="install-next-version"
                     className="mt-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
                     Next: Choose Version
@@ -1214,10 +1218,11 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                     <p className="text-xs text-muted-foreground mt-2">Loading versions…</p>
                   </div>
                 ) : isModrinthInstall ? (
-                  <ul className="space-y-2 max-h-80 overflow-y-auto">
-                    {modrinthCandidates.map((cand) => (
+                  <ul className="space-y-2 max-h-80 overflow-y-auto" data-tour="install-version-list">
+                    {modrinthCandidates.map((cand, idx) => (
                       <li
                         key={cand.version_id}
+                        data-tour={idx === 0 ? 'install-version-first' : undefined}
                         className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
                           selectedModrinthCandidate?.version_id === cand.version_id
                             ? 'border-primary bg-card/50 dark:bg-card/20'
@@ -1256,10 +1261,11 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                     ))}
                   </ul>
                 ) : (
-                  <ul className="space-y-2 max-h-80 overflow-y-auto">
+                  <ul className="space-y-2 max-h-80 overflow-y-auto" data-tour="install-version-list">
                     {candidates.map((cand, idx) => (
                       <li
                         key={idx}
+                        data-tour={idx === 0 ? 'install-version-first' : undefined}
                         className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
                           selectedCandidate?.filename === cand.filename
                             ? 'border-primary bg-card/50 dark:bg-card/20'
@@ -1300,6 +1306,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   <button
                     onClick={handleConfirmInstall}
                     disabled={!!(isModrinthInstall && selectedModrinthCandidate && !selectedModrinthCandidate.sha1)}
+                    data-tour="install-confirm"
                     className="mt-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
                     {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
@@ -1364,7 +1371,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
       </section>
 
       {/* Tab bar */}
-      <div className="flex gap-1 border-b border-border">
+      <div className="flex gap-1 border-b border-border" data-tour="mod-detail-tabs">
         {([
           { key: 'description' as const, label: 'About' },
           { key: 'gallery' as const, label: 'Gallery' },
@@ -2064,7 +2071,8 @@ function PackCreateDialog({
     let cancelled = false;
     (async () => {
       try {
-        const versions = await listLoaderVersions(loader, mcVersion);
+        // Newest-first so the default is the latest pinned loader version.
+        const versions = sortLoaderVersionsLatestFirst(await listLoaderVersions(loader, mcVersion));
         if (cancelled) return;
         setLoaderVersions(versions);
         setLoaderVersion(versions[0]?.loader_version ?? '');

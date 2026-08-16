@@ -14,6 +14,7 @@ import {
   planNeedsUserReview,
 } from '../lib/installFlow';
 import { formatError, getSetting, parseLauncherError, restoreSnapshot } from '../lib/tauri';
+import { emitTourSignal } from '../features/tour/tourSignals';
 import {
   Dialog,
   DialogContent,
@@ -350,7 +351,12 @@ export function InstallFlow({
           dispatch({ type: 'progress', event });
         });
         const outcome = await applyInstallPlan(state.plan);
-        if (!cancelled) dispatch({ type: 'outcome', outcome });
+        if (!cancelled) {
+          dispatch({ type: 'outcome', outcome });
+          // The guided walkthrough waits on the install actually landing, which
+          // the dialog closing cannot distinguish from a cancel.
+          if (outcome.type === 'success') emitTourSignal('install-completed');
+        }
       } catch (e) {
         if (!cancelled) dispatch({ type: 'fail', message: formatError(e), retryable: false });
       }
@@ -545,7 +551,7 @@ export function InstallFlow({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleCancel(); }}>
-      <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden flex flex-col gap-3">
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden flex flex-col gap-3" data-tour="install-review-dialog">
         <DialogTitle className="shrink-0">Review Instance Changes</DialogTitle>
         <DialogDescription className="shrink-0">
           {instanceName}
@@ -769,6 +775,7 @@ function ReviewView({
         <button
           onClick={onConfirm}
           disabled={!canInstall || hasUnresolvedBlockingConflict || needsLoaderDecision}
+          data-tour="install-review-confirm"
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           {needsLoaderDecision
@@ -1014,7 +1021,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
           </button>
         )}
         {(outcome.type === 'success' || outcome.type === 'health-rollback' || rollbackState === 'restored') && (
-          <button onClick={onOpenInstance} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+          <button onClick={onOpenInstance} data-tour="install-open-instance" className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
             Open Instance
           </button>
         )}

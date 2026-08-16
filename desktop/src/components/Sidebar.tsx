@@ -22,6 +22,22 @@ const MIN_WIDTH = 180;
 const MAX_WIDTH = 420;
 const DEFAULT_WIDTH = 256;
 
+/**
+ * Guided-tour anchors for the nav items the walkthrough points at
+ * (`features/tour`). Spelled out rather than derived from the tab id so the
+ * anchor audit in `tourAnchors.test.ts` can see every one of them.
+ */
+const TOUR_ANCHORS: Partial<Record<Tab, string>> = {
+  home: 'nav-home',
+  browse: 'nav-browse',
+  instances: 'nav-instances',
+  governance: 'nav-governance',
+  guide: 'nav-guide',
+  'field-guide': 'nav-field-guide',
+  about: 'nav-about',
+  settings: 'nav-settings',
+};
+
 function clampWidth(width: number) {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width));
 }
@@ -100,6 +116,7 @@ export function Sidebar({
               onClick={() => onSelectTab(tab.id)}
               aria-current={isActive ? 'page' : undefined}
               title={collapsed ? tab.label : undefined}
+              data-tour={TOUR_ANCHORS[tab.id]}
               className={[
                 'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors',
                 collapsed ? 'px-0' : '',

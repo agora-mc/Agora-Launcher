@@ -161,16 +161,19 @@ interface MockOptions {
   registryItems?: Record<string, unknown>;
   /** Override for fetch_modrinth_project responses. Key = itemId, value = project or null. */
   modrinthProject?: Record<string, unknown>;
+  /** Override for get_dependency_graph responses (filename edges). */
+  dependencyGraph?: Array<{ from_filename: string; to_filename: string; requirement: 'required' | 'optional' }>;
 }
 
 async function installFlowMock(page: Page, opts: MockOptions = {}) {
   const { modrinthEnabled = true, registryItems } = opts;
   const effectiveRegistryItems = registryItems ?? { 'test-mod': CURATED_MOD, 'bridged-mod': MODRINTH_BRIDGE_MOD };
   const modrinthProject = opts.modrinthProject ?? { 'modrinth-abc': MODRINTH_PROJECT };
+  const dependencyGraph = opts.dependencyGraph ?? [];
 
   await page.addInitScript(
-    (params: { mrEnabled: boolean; items: Record<string, unknown>; mrProject: Record<string, unknown> }) => {
-      const { mrEnabled, items, mrProject } = params;
+    (params: { mrEnabled: boolean; items: Record<string, unknown>; mrProject: Record<string, unknown>; dependencyGraph: Array<{ from_filename: string; to_filename: string; requirement: 'required' | 'optional' }> }) => {
+      const { mrEnabled, items, mrProject, dependencyGraph } = params;
 
       const installCalls: InstallCall[] = [];
 
@@ -239,6 +242,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
               manifest: { instance_id: instanceId, name: 'Test Instance', created_from_pack: null, minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', mods: [{ filename: 'installed-test-mod.jar', registry_id: null, modrinth_id: null, mod_jar_id: 'test-mod', source: 'manual_drag_drop', version: '1.0.0', sha256: 'a'.repeat(64), installed_at: '2026-07-01T00:00:00Z', enabled: true, content_type: 'mod' }], resourcepacks: [], shaders: [], datapacks: [], worlds: [], user_preferences: {} },
              });
           }
+          if (command === 'get_dependency_graph') return Promise.resolve(dependencyGraph);
           if (command === 'list_instance_content') {
             return Promise.resolve([{
               key: 'mod:installed-test-mod.jar:' + 'a'.repeat(64),
@@ -330,7 +334,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
         __installCalls: installCalls,
       });
     },
-    { mrEnabled: modrinthEnabled, items: effectiveRegistryItems, mrProject: modrinthProject } as any,
+    { mrEnabled: modrinthEnabled, items: effectiveRegistryItems, mrProject: modrinthProject, dependencyGraph } as any,
   );
 }
 
@@ -586,6 +590,36 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await expect(page.getByRole('heading', { name: 'Browse' })).toBeVisible();
     await expect(page.locator('#browse-instance-context')).toHaveValue('test-instance');
+  });
+
+  test('InstanceEditor optional dependencies button opens the recommends overlay', async ({ page }) => {
+    await installFlowMock(page, {
+      dependencyGraph: [
+        { from_filename: 'installed-test-mod.jar', to_filename: 'companion-mod.jar', requirement: 'optional' },
+      ],
+    });
+
+    // Navigate directly to the instance editor via history state
+    await page.addInitScript(() => {
+      window.history.replaceState({ __agora: { type: 'instance-detail', instanceId: 'test-instance' } }, '');
+    });
+    await page.goto('/');
+
+    await page.getByText('Test Instance').first().waitFor();
+
+    // The button sits next to Import Mod in the Mods panel and counts distinct
+    // recommended targets.
+    await page.getByRole('button', { name: 'Optional dependencies (1)' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('heading', { name: 'Optional dependencies' })).toBeVisible();
+    await expect(dialog.getByText('Test Mod')).toBeVisible();
+    await expect(dialog.getByText('recommends')).toBeVisible();
+    await expect(dialog.getByText('companion-mod')).toBeVisible();
+    await expect(dialog.getByText('✓ installed')).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
   });
 
   test('clicking an installed mod opens its details page', async ({ page }) => {

@@ -16,6 +16,7 @@ import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { queueTourStart } from '../features/tour/tourHandoff';
 
 type Step = 'welcome' | 'services' | 'java' | 'github' | 'registry' | 'import';
 
@@ -173,6 +174,24 @@ function ImportStep({ onFinish, onBack }: { onFinish: () => void; onBack: () => 
           className="mt-4 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
           Find My Instances
+        </button>
+      </div>
+      <div className="mt-4 rounded-xl border border-primary/30 bg-card p-4">
+        <p className="text-sm font-medium">New to Agora? Take the guided tour</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          A step-by-step walkthrough that highlights one part of the screen at a time while you make
+          your first instance and install your first mod. You can also start it later from Settings.
+        </p>
+        <button
+          onClick={() => {
+            // Onboarding unmounts on finish, so the tour is requested here and
+            // started by the app shell once it mounts.
+            queueTourStart();
+            onFinish();
+          }}
+          className="mt-4 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Finish and start the tour
         </button>
       </div>
       <div className="mt-8 flex justify-between">

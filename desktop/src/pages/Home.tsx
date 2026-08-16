@@ -16,6 +16,7 @@ import {
 } from '../lib/tauri';
 import type { Tab } from '../lib/useDestination';
 import type { ProcessState } from '../lib/useProcessController';
+import { TourStartButton } from '../features/tour';
 import { ArrowRight, BookOpen, GraduationCap } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -258,7 +259,7 @@ export function Home({
   }, [loadData]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="page-home">
       {/* Header */}
       <section className="agora-hero compact">
         <h2 className="text-2xl font-bold mb-2">Home</h2>
@@ -457,13 +458,16 @@ function GuideCard({ onOpenGuide }: { onOpenGuide: () => void }) {
             Follow beginner walkthroughs or open the advanced companion for every topic, from your first mod to JVM tuning and recovery.
           </p>
         </div>
-        <button
-          onClick={onOpenGuide}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
-        >
-          Open Help & Guide
-          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-        </button>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={onOpenGuide}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+          >
+            Open Help & Guide
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <TourStartButton label="Take the guided tour" />
+        </div>
       </div>
     </div>
   );
