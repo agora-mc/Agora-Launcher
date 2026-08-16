@@ -1,9 +1,8 @@
 /**
  * Terrain: parallax ridges, the carved basin, and the ground-column math.
  *
- * Ported 1:1 from `v4-world.html` (sections "living background" and "engine
- * core"). The comments are not decoration — they record why the code is
- * shaped that way, and most of them exist because something was wrong first.
+ * The comments here are not decoration — they record why the code is shaped
+ * that way, and most of them exist because something was wrong first.
  *
  * F1: `Math.floor`, never `Math.round`, for the ground column index.
  * F7: `wx` is a WORLD x; screen x is derived only at draw/hit time via

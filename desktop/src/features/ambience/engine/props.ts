@@ -1,9 +1,9 @@
 /**
  * The 43 fixed props — deterministic layout, same seed every load.
  *
- * Ported verbatim from v4-world.html. The props are built once with the
- * initial canvas width (as in the prototype); the pond and lily pads are
- * re-anchored to the live water span whenever the terrain regenerates.
+ * The props are built once with the initial canvas width; the pond and lily
+ * pads are re-anchored to the live water span whenever the terrain
+ * regenerates.
  */
 
 import type { GameApi } from './api';

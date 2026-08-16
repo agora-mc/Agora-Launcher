@@ -1,11 +1,8 @@
 /**
  * The 30-species wildlife catalogue + the procedural blocky critter renderers.
  *
- * Ported 1:1 from `v4-world.html` ("living world: species" + "procedural
- * blocky critter rendering"). The species' onClick handlers keep their
- * original bodies; `WORLD` in the prototype is `api.world()` here, and the
- * state helpers (reactState, fleeState, boltState, exitToward, dropGroundItem,
- * playVoice, findEgg, shakeProp) come from the bound GameApi.
+ * The state helpers (reactState, fleeState, boltState, exitToward,
+ * dropGroundItem, playVoice, findEgg, shakeProp) come from the bound GameApi.
  */
 
 import type { GameApi } from './api';

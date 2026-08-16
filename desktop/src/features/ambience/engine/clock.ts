@@ -2,12 +2,11 @@
  * Clock + weather — time-of-day advancement and the weather cycle, extracted
  * from the engine frame so tests can drive them deterministically.
  *
- * In the prototype, time-of-day and weather were debug controls. In the app
- * they are driven by the real clock (V5-PORT-PLAN §2): the prototype control
- * bar does not exist, so weather and time are not user toggles. The egg logic
- * that hung off the time slider (full-day, acorn-hunt) and the weather button
- * (rainbow) now hangs off this clock, and the verify-eggs port drives it the
- * same way the slider/button used to.
+ * Time-of-day and weather are driven by the real clock: there is no debug
+ * control bar, so weather and time are not user toggles. The egg logic that
+ * hung off the time slider (full-day, acorn-hunt) and the weather button
+ * (rainbow) now hangs off this clock, and the verify-eggs harness drives it
+ * the same way.
  */
 
 import type { EngineState } from './state';

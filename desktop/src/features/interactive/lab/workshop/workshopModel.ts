@@ -1,6 +1,5 @@
 /**
- * Workshop model — stations, per-step progress, and the bench step contract,
- * ported from v5-lab.html (V5-PORT-PLAN §12).
+ * Workshop model — stations, per-step progress, and the bench step contract.
  *
  * Progress is per STEP (not per bench), versioned under `agora-lab-v5b`, so a
  * later bench reopening resumes exactly where the player stopped. This is pure

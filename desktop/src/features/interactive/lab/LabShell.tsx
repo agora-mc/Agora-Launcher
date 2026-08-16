@@ -1,5 +1,5 @@
 /**
- * Agora Lab shell — renders the Workshop (the v5-lab port, V5-PORT-PLAN §12).
+ * Agora Lab shell — renders the Workshop.
  *
  * The Workshop is the whole Lab experience: a station map, six benches with
  * the four-step pedagogy, and per-step progress. This shell only wires the
@@ -9,8 +9,8 @@
  *  - the way out: the Lab is entered from the guide's "New to modding" tier
  *    rather than a sidebar tab, so the shell owns the return link
  *  - ambience: a bench drops the living background to `calm` while open, and
- *    restores it on close (V5-PORT-PLAN §12.1 — in the Lab, motion is a
- *    teaching signal, so nothing should drift for decoration).
+ *    restores it on close — in the Lab, motion is a teaching signal, so
+ *    nothing should drift for decoration.
  */
 
 import { useCallback } from 'react';
@@ -28,9 +28,9 @@ export interface LabShellProps {
    */
   onExit?: () => void;
   /**
-   * V5-PORT-PLAN §12.1: a bench drops ambience to `calm` while open and
-   * restores the previous profile (null) on close. The Lab itself never
-   * imports ambience; this callback is the app-boundary wire.
+   * A bench drops ambience to `calm` while open and restores the previous
+   * profile (null) on close. The Lab itself never imports ambience; this
+   * callback is the app-boundary wire.
    */
   onAmbienceChange?: (profile: 'calm' | null) => void;
 }

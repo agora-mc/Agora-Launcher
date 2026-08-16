@@ -7,7 +7,7 @@
  * the High Interaction UI so it can force a profile while it is open.
  *
  * The only outside-in dependency of the ambience layer is this provider
- * reading its own settings (V5-PORT-PLAN §3).
+ * reading its own settings.
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';

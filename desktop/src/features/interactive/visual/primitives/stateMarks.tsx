@@ -5,8 +5,8 @@ import type { ScenePhase } from '../../domain/state';
 /**
  * Phase marks for the interactive state vocabulary.
  *
- * Sol-0 contract: `docs/interactive/VISUAL_LANGUAGE.md` §1.1. Meaning is
- * carried by border treatment, icon, and text label — never color alone.
+ * Meaning is carried by border treatment, icon, and text label — never color
+ * alone.
  */
 
 const PHASE_META: Record<

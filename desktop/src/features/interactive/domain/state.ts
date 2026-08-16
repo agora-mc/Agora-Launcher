@@ -1,9 +1,8 @@
 /**
  * Scene and proposal state helpers.
  *
- * Sol-0 contract: `docs/interactive/DOMAIN_MODELS.md` §3 and
- * `docs/interactive/MASTER_ARCHITECTURE.md` §12 (current / proposed /
- * in-review / committed). These are pure functions over presentation models.
+ * Proposal phase follows current / proposed / in-review / committed. These
+ * are pure functions over presentation models.
  *
  * This module is pure: it imports nothing from React, Tauri, or the app layer.
  */

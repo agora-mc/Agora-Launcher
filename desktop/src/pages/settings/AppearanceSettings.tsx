@@ -329,9 +329,8 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
 
 /**
  * Living background (ambience) settings. The ambience layer is the only thing
- * allowed to touch these keys (V5-PORT-PLAN §2/§4). One toggle, one music
- * volume, one sound toggle, and a reduce-motion note that points at the OS/app
- * motion setting.
+ * allowed to touch these keys. One toggle, one music volume, one sound
+ * toggle, and a reduce-motion note that points at the OS/app motion setting.
  */
 function LivingBackgroundSettings() {
   const { enabled, setEnabled, soundOn, setSoundOn, musicVolume, setMusicVolume, clearBackground, setClearBackground } = useAmbience();

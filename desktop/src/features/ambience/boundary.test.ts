@@ -3,10 +3,10 @@ import { dirname, join, normalize } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Ambience boundary contract (V5-PORT-PLAN §3): the ambience layer must never
- * import the interactive layer, any page, or the Tauri side (beyond its own
- * settings module). The automated `check-ambience-boundaries.mjs` enforces
- * this in CI; this test statically asserts the same for fast feedback.
+ * Ambience boundary contract: the ambience layer must never import the
+ * interactive layer, any page, or the Tauri side (beyond its own settings
+ * module). The automated `check-ambience-boundaries.mjs` enforces this in CI;
+ * this test statically asserts the same for fast feedback.
  */
 
 const AMBIENCE = join(process.cwd(), 'src', 'features', 'ambience');

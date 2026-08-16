@@ -1,9 +1,9 @@
 /**
- * The 54-egg discovery registry + achievement logic, ported from v4-world.html.
+ * The 54-egg discovery registry + achievement logic.
  *
- * Eggs live in ambience (V5-PORT-PLAN §2): the world stays discoverable on
- * every page. The engine keeps the registry + find/achievement logic; the
- * React side renders toasts and the Field Journal from `journalData()`.
+ * Eggs live in ambience: the world stays discoverable on every page. The
+ * engine keeps the registry + find/achievement logic; the React side renders
+ * toasts and the Field Journal from `journalData()`.
  */
 
 import type { EngineState } from './state';

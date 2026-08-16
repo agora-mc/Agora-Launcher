@@ -1,10 +1,10 @@
 /**
  * Closed `VisualIntent` union and navigation destination aliases.
  *
- * Sol-0 contract: `docs/interactive/DOMAIN_MODELS.md` §14. An intent expresses
- * what the player wants to review; it is never authorization to bypass the
- * existing confirmation flow. Lab consumes the same union in its reducer and
- * can only change simulated state or navigate out after explicit exit.
+ * An intent expresses what the player wants to review; it is never
+ * authorization to bypass the existing confirmation flow. Lab consumes the
+ * same union in its reducer and can only change simulated state or navigate
+ * out after explicit exit.
  *
  * This module is pure: it imports nothing from React, Tauri, or the app layer.
  */
