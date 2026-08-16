@@ -8,12 +8,13 @@ Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery 
 
 - [Desktop and CLI releases](https://github.com/agora-mc/Agora-Launcher/releases) - choose the newest published `v*` release, not a `registry-*` data release.
 - [Website](https://agoramc.com/)
-- [Player documentation](https://agoramc.com/docs/)
+- [Documentation home](https://agoramc.com/docs) - start here; it routes you by what you are trying to do.
+- [Task guides](https://agoramc.com/docs/guides) - every workflow, written both as steps and as an explanation.
 - [Troubleshooting and support](./docs/TROUBLESHOOTING.md)
 - [CLI reference](./docs/CLI.md)
-- [Documentation index](./docs/README.md)
+- [How the documentation is organized](./docs/README.md)
 
-Agora also includes a searchable **Help & Guide** tied to the current desktop interface.
+Agora also includes a searchable **Help & Guide** tied to the current desktop interface. The website publishes the same guides, so nothing there can contradict the app.
 
 ## First run
 

@@ -26,6 +26,7 @@ Checks:
   routes          website hrefs match routes under web/src/app
   guide-ids       duplicate `id` values in guideContent.ts
   guide-topics    TOPIC_DESTINATIONS keys == GUIDE_TOPICS ids, both ways
+  guide-links     website /docs/guides/<id> links name a real GUIDE_TOPICS id
   blob-main       stale `blob/main` GitHub links (default branch is master)
   launch-mode     claims that Agora always delegates / never launches
                   directly, or that direct launch is the global default
@@ -87,6 +88,7 @@ TEMPLATE_HREF_RE = re.compile(r"href\s*=\s*\{\s*`([^`]*)`")
 
 GUIDE_ID_RE = re.compile(r"^\s*id:\s*'([^']+)'")
 KEYWORD_LINE_RE = re.compile(r"^\s*keywords:")
+GUIDE_LINK_RE = re.compile(r"/docs/guides/([A-Za-z0-9_-]+)")
 
 LAUNCH_MODE_PATTERNS = [
     r"never\s+launch\w*\s+(?:minecraft|the\s+game|directly)",
@@ -361,6 +363,35 @@ def check_guide_topics() -> list[Finding]:
     return findings
 
 
+def check_guide_links() -> list[Finding]:
+    """Website /docs/guides/<id> links must name a real GUIDE_TOPICS id.
+
+    The `routes` check only proves the URL matches the /docs/guides/[topic]
+    route pattern; it cannot tell a real topic id from a typo or a renamed one.
+    The website publishes guideContent.ts directly, so a stale id is a 404.
+    """
+    ids = guide_topic_ids()
+    findings = []
+    count = 0
+    for path in ROUTE_TSX:
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in GUIDE_LINK_RE.finditer(line):
+                topic = m.group(1)
+                count += 1
+                if topic not in ids:
+                    findings.append(
+                        Finding(
+                            "guide-links",
+                            path,
+                            i,
+                            f'website links to guide topic "{topic}", which has '
+                            "no matching GUIDE_TOPICS id in guideContent.ts",
+                        )
+                    )
+    print(f"  checked {count} website guide-topic link(s)")
+    return findings
+
+
 def iter_prose_lines(path: Path):
     """Yield (line_number, text) for prose checks, respecting the file type."""
     if path.suffix == ".md":
@@ -517,6 +548,7 @@ CHECKS = [
     ("routes", check_routes),
     ("guide-ids", check_guide_ids),
     ("guide-topics", check_guide_topics),
+    ("guide-links", check_guide_links),
     ("blob-main", check_blob_main),
     ("launch-mode", check_launch_mode),
     ("spelling", check_spelling),
