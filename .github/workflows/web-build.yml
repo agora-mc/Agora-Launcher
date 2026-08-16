@@ -2,6 +2,10 @@
 #
 # Builds the static Next.js web site and uploads the exported output as an
 # artifact. Depends on a registry-* release existing (created by compile.yml).
+#
+# Runs only on the nightly schedule (after the Nightly Compiler completes)
+# or via manual workflow_dispatch. It intentionally does NOT run on
+# commits/pushes so it can never block pull requests.
 
 name: "Web Build"
 
@@ -9,13 +13,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 5 * * *"
-  push:
-    paths:
-      - "web/**"
-      - "docs/**"
-      - "scripts/fetch_registry_db.py"
-      - "scripts/build_docs_web.py"
-      - ".github/workflows/web-build.yml"
 
 permissions:
   contents: read
