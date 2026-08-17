@@ -32,7 +32,13 @@ interface OnboardingProps {
 
 export function Onboarding({ onComplete }: OnboardingProps) {
   const [step, setStep] = useState<Step>('welcome');
-  const [services, setServices] = useState({ modrinth: false, aiMcp: false, aiChat: false });
+  const [services, setServices] = useState({
+    modrinth: false,
+    technic: false,
+    allowUnverifiedPacks: false,
+    aiMcp: false,
+    aiChat: false,
+  });
   const [servicesLoading, setServicesLoading] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   // Persisted across Back/Forward so a registry auto-download triggered on
@@ -43,13 +49,19 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     let cancelled = false;
     Promise.allSettled([
       getSetting('modrinth_enabled'),
+      getSetting('technic_enabled'),
+      getSetting('allow_unverified_packs'),
       getSetting('ai_mcp_enabled'),
       getSetting('ai_chat_enabled'),
       getSetting('onboarding_step'),
-    ]).then(([modrinth, aiMcp, aiChat, savedStep]) => {
+    ]).then(([modrinth, technic, allowUnverifiedPacks, aiMcp, aiChat, savedStep]) => {
       if (cancelled) return;
       setServices({
         modrinth: modrinth.status === 'fulfilled' ? parseBooleanSetting(modrinth.value) : false,
+        technic: technic.status === 'fulfilled' ? parseBooleanSetting(technic.value) : false,
+        allowUnverifiedPacks: allowUnverifiedPacks.status === 'fulfilled'
+          ? parseBooleanSetting(allowUnverifiedPacks.value)
+          : false,
         aiMcp: aiMcp.status === 'fulfilled' ? parseBooleanSetting(aiMcp.value) : false,
         aiChat: aiChat.status === 'fulfilled' ? parseBooleanSetting(aiChat.value) : false,
       });
@@ -251,9 +263,21 @@ function ServicesStep({
   onContinue,
   onBack,
 }: {
-  values: { modrinth: boolean; aiMcp: boolean; aiChat: boolean };
+  values: {
+    modrinth: boolean;
+    technic: boolean;
+    allowUnverifiedPacks: boolean;
+    aiMcp: boolean;
+    aiChat: boolean;
+  };
   loading: boolean;
-  onChange: (value: { modrinth: boolean; aiMcp: boolean; aiChat: boolean }) => void;
+  onChange: (value: {
+    modrinth: boolean;
+    technic: boolean;
+    allowUnverifiedPacks: boolean;
+    aiMcp: boolean;
+    aiChat: boolean;
+  }) => void;
   onContinue: () => void;
   onBack: () => void;
 }) {
@@ -265,6 +289,8 @@ function ServicesStep({
     setError(null);
     try {
       await setSetting('modrinth_enabled', values.modrinth);
+      await setSetting('technic_enabled', values.technic);
+      await setSetting('allow_unverified_packs', values.allowUnverifiedPacks);
       await setSetting('ai_mcp_enabled', values.aiMcp);
       await setSetting('ai_chat_enabled', values.aiChat);
       onContinue();
@@ -279,7 +305,12 @@ function ServicesStep({
   // lose choices the user already made. Best-effort; the Continue handler is
   // still the authoritative save.
   const handleToggle = (
-    key: 'modrinth_enabled' | 'ai_mcp_enabled' | 'ai_chat_enabled',
+    key:
+      | 'modrinth_enabled'
+      | 'technic_enabled'
+      | 'allow_unverified_packs'
+      | 'ai_mcp_enabled'
+      | 'ai_chat_enabled',
     value: boolean,
   ) => {
     void setSetting(key, value).catch(() => {});
@@ -295,12 +326,30 @@ function ServicesStep({
 
       <div className="space-y-4">
         <ServiceToggle
-          title="Modrinth Integration"
-          description="Include Modrinth-hosted catalog entries and enable live Modrinth features when permitted by Privacy settings."
+          title="Modrinth live browsing"
+          description="Enable live Modrinth search and category browsing when permitted by Privacy settings. Curated Modrinth-sourced catalog entries are always visible — this only controls live third-party browsing."
           checked={values.modrinth}
           onChange={(modrinth) => {
             onChange({ ...values, modrinth });
             handleToggle('modrinth_enabled', modrinth);
+          }}
+        />
+        <ServiceToggle
+          title="Technic modpacks"
+          description="Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides."
+          checked={values.technic}
+          onChange={(technic) => {
+            onChange({ ...values, technic });
+            handleToggle('technic_enabled', technic);
+          }}
+        />
+        <ServiceToggle
+          title="Unverified zip packs"
+          description="More packs become available, but Agora cannot verify these files: no hash, no curator review, no per-file audit. You are accepting files on the pack author's word."
+          checked={values.allowUnverifiedPacks}
+          onChange={(allowUnverifiedPacks) => {
+            onChange({ ...values, allowUnverifiedPacks });
+            handleToggle('allow_unverified_packs', allowUnverifiedPacks);
           }}
         />
         <ServiceToggle

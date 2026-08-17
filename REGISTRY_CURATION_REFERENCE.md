@@ -145,6 +145,13 @@ Rules the compiler enforces for `direct_hash`:
 | `compatible_versions` is present and non-empty | Nothing can infer which MC versions and loaders the file supports. |
 | Every entry has `mc_version`, `loader`, and a real `mod_version` | `"latest"` is the unhydrated placeholder and cannot identify a pinned file. |
 
+The host does **not** need to be on the launcher's GitHub/Modrinth allowlist: a `direct_hash` URL is
+fetched through the signed-manifest host policy, where the pinned URL's own host (plus its
+subdomains) authorizes the request. Every other guard still applies — HTTPS only, port 443, no
+userinfo, no IP-literal hosts, no private/loopback destinations, per-hop redirect re-validation
+within the pinned host, and the response-size cap. The SHA-256 hash is curator-pinned
+out-of-band, so it stays authoritative regardless of where the file happens to be hosted.
+
 One entry describes one file. All declared `compatible_versions` point at the same pinned URL and
 hash, so a mod needing genuinely different files per Minecraft version needs one registry entry
 per file. Adding an optional `modrinth_id` is still worthwhile when the project also exists on

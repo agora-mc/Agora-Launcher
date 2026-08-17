@@ -63,10 +63,30 @@ impl From<&agora_core::msa::MsaCredentials> for MsaAccountStatus {
 /// Global version list cache for paginated mod version resolution.
 static VERSION_CACHE: LazyLock<SharedVersionCache> = LazyLock::new(version_cache::new_cache);
 
+/// Curated download strategies the user has enabled (Axis A: curated content,
+/// opt-out per source). A missing setting defaults to ON so curated content
+/// never silently vanishes. Separate from live third-party browsing settings.
+fn curated_strategies_from_settings(app: &tauri::AppHandle) -> Vec<String> {
+    agora_core::registry::CURATED_DOWNLOAD_STRATEGIES
+        .iter()
+        .map(|strategy| strategy.to_string())
+        .filter(|strategy| {
+            crate::core_context(app)
+                .map(|ctx| {
+                    agora_core::settings::SettingsService::new(ctx)
+                        .get_bool(&format!("curated_source_{strategy}_enabled"))
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
 /// Browse registry items with typed filters (replaces raw-SQL queryRegistry).
 ///
-/// When `modrinth_enabled` is false, items with `download_strategy = 'modrinth_id'`
-/// are excluded from results.
+/// Curated-source visibility is driven by the per-source settings
+/// (`curated_source_<strategy>_enabled`, default on); live third-party
+/// browsing is gated separately.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn browse_items(
@@ -75,11 +95,11 @@ pub async fn browse_items(
     content_type: Option<String>,
     category: Option<String>,
     sort: Option<SortOption>,
-    modrinth_enabled: Option<bool>,
     mc_version: Option<String>,
     loader: Option<String>,
     limit: Option<i64>,
 ) -> LauncherResult<Vec<RegistryItem>> {
+    let curated_strategies = curated_strategies_from_settings(&app);
     tokio::task::spawn_blocking(move || {
         let ctx = crate::core_context(&app)?;
         let svc = agora_core::registry::RegistryService::new(ctx);
@@ -87,7 +107,7 @@ pub async fn browse_items(
             content_type.as_deref(),
             category.as_deref(),
             &sort.unwrap_or_default(),
-            modrinth_enabled.unwrap_or(false),
+            &curated_strategies,
             mc_version.as_deref(),
             loader.as_deref(),
             None,
@@ -109,20 +129,19 @@ pub async fn browse_items(
 pub async fn for_you_items(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
-    modrinth_enabled: Option<bool>,
     mc_version: Option<String>,
     loader: Option<String>,
     limit: Option<i64>,
     modrinth_categories: Option<Vec<String>>,
     query: Option<String>,
 ) -> LauncherResult<Vec<RegistryItem>> {
-    let modrinth_enabled = modrinth_enabled.unwrap_or(false);
     let limit = limit.unwrap_or(50).clamp(1, 500);
+    let curated_strategies = curated_strategies_from_settings(&app);
     tokio::task::spawn_blocking(move || {
         let ctx = crate::core_context(&app)?;
         let svc = agora_core::registry::RegistryService::new(ctx);
         svc.for_you_items(
-            modrinth_enabled,
+            &curated_strategies,
             mc_version.as_deref(),
             loader.as_deref(),
             limit,
@@ -3763,6 +3782,7 @@ pub async fn browse_search(
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         let api_ok = me && net_mr && !curated_only;
+        let curated_strategies = curated_strategies_from_settings(&app);
         let svc = agora_core::registry::RegistryService::new(ctx);
         let sort_enum = to_sort_option(sort.as_deref().unwrap_or("net_score"));
         let items = svc
@@ -3770,7 +3790,7 @@ pub async fn browse_search(
                 content_type.as_deref(),
                 category.as_deref(),
                 &sort_enum,
-                me,
+                &curated_strategies,
                 mc_version.as_deref(),
                 loader.as_deref(),
                 query.as_deref(),
@@ -4791,6 +4811,7 @@ pub async fn import_lockfile(
                 modrinth_id: artifact.modrinth_id.clone(),
                 content_type: artifact.content_type.clone(),
                 version: artifact.version.clone(),
+                download_strategy: None,
             },
         });
         operations.push(ResolvedOperation::Install { artifact: resolved });
@@ -5082,6 +5103,7 @@ fn resolved_lockfile_artifact(
             modrinth_id: artifact.modrinth_id.clone(),
             content_type: artifact.content_type.clone(),
             version: artifact.version.clone(),
+            download_strategy: None,
         },
     }))
 }

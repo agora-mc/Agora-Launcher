@@ -11,6 +11,40 @@ use serde_json;
 use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
+// Curated content axes
+// ---------------------------------------------------------------------------
+
+/// Curated download strategies that appear in Browse / For You.
+///
+/// A curated item is derived from the Ed25519-signed registry no matter which
+/// host or CDN its file ships from, so *which curated sources are visible* is
+/// a content axis: on by default, opt-out per source via
+/// `curated_source_<strategy>_enabled` settings. This is deliberately separate
+/// from live third-party browsing (`modrinth_enabled`, `technic_enabled`),
+/// which is off by default.
+///
+/// Filtering is a **whitelist** of enabled strategies: any strategy an
+/// entry might carry that is not listed here (or not enabled by the user)
+/// is hidden — fail closed, never fail open.
+pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 4] =
+    ["modrinth_id", "github_release", "direct_hash", "curated_pack"];
+
+/// Build the SQL whitelist fragment + params for the enabled curated
+/// strategies. Entries whose strategy is not in the enabled list are hidden.
+fn curated_strategy_whitelist(enabled: &[String]) -> (Option<String>, Vec<String>) {
+    let allowed: Vec<String> = CURATED_DOWNLOAD_STRATEGIES
+        .iter()
+        .map(|s| s.to_string())
+        .filter(|s| enabled.iter().any(|e| e == s))
+        .collect();
+    if allowed.is_empty() {
+        return (Some("1 = 0".into()), Vec::new());
+    }
+    let placeholders = allowed.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    (Some(format!("ri.download_strategy IN ({placeholders})")), allowed)
+}
+
+// ---------------------------------------------------------------------------
 // RegistryService — core-owned typed service
 // ---------------------------------------------------------------------------
 
@@ -282,7 +316,7 @@ impl RegistryService {
         content_type: Option<&str>,
         category: Option<&str>,
         sort: &SortOption,
-        modrinth_enabled: bool,
+        curated_strategies: &[String],
         mc_version: Option<&str>,
         loader: Option<&str>,
         query: Option<&str>,
@@ -294,7 +328,7 @@ impl RegistryService {
             content_type,
             category,
             sort,
-            modrinth_enabled,
+            curated_strategies,
             mc_version,
             loader,
             query,
@@ -380,7 +414,7 @@ impl RegistryService {
     #[allow(clippy::too_many_arguments)]
     pub fn for_you_items(
         &self,
-        modrinth_enabled: bool,
+        curated_strategies: &[String],
         mc_version: Option<&str>,
         loader: Option<&str>,
         limit: i64,
@@ -392,7 +426,7 @@ impl RegistryService {
         for_you_items_query(
             &conn,
             &installed,
-            modrinth_enabled,
+            curated_strategies,
             mc_version,
             loader,
             limit,
@@ -587,16 +621,19 @@ impl SortOption {
 
 /// Browse registry items with optional filters (§6.2).
 ///
-/// When `modrinth_enabled` is false, modrinth-sourced items are excluded.
-/// `mc_version` and `loader` filter against `compatible_versions_json` using
-/// SQLite's JSON1 functions (same approach as the web `browseItems`).
+/// `curated_strategies` is the whitelist of curated download strategies to
+/// show (see [`CURATED_DOWNLOAD_STRATEGIES`]): items whose strategy is not
+/// listed are excluded. This is the per-source content axis — it is separate
+/// from live third-party browsing gating. `mc_version` and `loader` filter
+/// against `compatible_versions_json` using SQLite's JSON1 functions (same
+/// approach as the web `browseItems`).
 #[allow(clippy::too_many_arguments)]
 pub fn browse_items(
     conn: &Connection,
     content_type: Option<&str>,
     category: Option<&str>,
     sort: &SortOption,
-    modrinth_enabled: bool,
+    curated_strategies: &[String],
     mc_version: Option<&str>,
     loader: Option<&str>,
     query: Option<&str>,
@@ -620,8 +657,11 @@ pub fn browse_items(
         where_parts.push("ic.category_id = ?".to_string());
         params.push(Box::new(cat.to_string()));
     }
-    if !modrinth_enabled {
-        where_parts.push("ri.download_strategy != 'modrinth_id'".to_string());
+    if let (Some(clause), values) = curated_strategy_whitelist(curated_strategies) {
+        where_parts.push(clause);
+        for value in values {
+            params.push(Box::new(value));
+        }
     }
     if let Some(mv) = mc_version {
         // Only items declaring a compatible_version for this MC version match.
@@ -1666,7 +1706,7 @@ fn collect_installed_registry_ids(
 fn for_you_items_query(
     conn: &Connection,
     installed: &HashSet<String>,
-    modrinth_enabled: bool,
+    curated_strategies: &[String],
     mc_version: Option<&str>,
     loader: Option<&str>,
     limit: i64,
@@ -1724,7 +1764,7 @@ fn for_you_items_query(
             None,
             None,
             &sort,
-            modrinth_enabled,
+            curated_strategies,
             mc_version,
             loader,
             query,
@@ -1745,8 +1785,9 @@ fn for_you_items_query(
 
     let interest_ph = interest.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let mut where_parts: Vec<String> = Vec::new();
-    if !modrinth_enabled {
-        where_parts.push("ri.download_strategy != 'modrinth_id'".to_string());
+    let (strategy_clause, strategy_values) = curated_strategy_whitelist(curated_strategies);
+    if let Some(clause) = strategy_clause {
+        where_parts.push(clause);
     }
     if query.is_some_and(|q| !q.trim().is_empty()) {
         where_parts.push("ri.name LIKE ?".to_string());
@@ -1790,6 +1831,9 @@ fn for_you_items_query(
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     for cat in &interest {
         params.push(Box::new(cat.clone()));
+    }
+    for value in strategy_values {
+        params.push(Box::new(value));
     }
     if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
         params.push(Box::new(format!("%{}%", q.trim())));
@@ -1842,6 +1886,13 @@ mod tests {
     use super::*;
     use crate::db::registry_connection;
     use tempfile::TempDir;
+
+    fn all_curated_strategies() -> Vec<String> {
+        CURATED_DOWNLOAD_STRATEGIES
+            .iter()
+            .map(|strategy| strategy.to_string())
+            .collect()
+    }
 
     fn temp_registry_db() -> TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -2103,7 +2154,9 @@ mod tests {
         let dir = temp_registry_db();
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let sort = SortOption::NetScore;
-        let items = browse_items(&conn, None, None, &sort, true, None, None, None, 100).unwrap();
+        let items =
+            browse_items(&conn, None, None, &sort, &all_curated_strategies(), None, None, None, 100)
+                .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Test Mod 1");
     }
@@ -2113,8 +2166,18 @@ mod tests {
         let dir = temp_registry_db();
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let sort = SortOption::NetScore;
-        let items =
-            browse_items(&conn, Some("mod"), None, &sort, true, None, None, None, 100).unwrap();
+        let items = browse_items(
+            &conn,
+            Some("mod"),
+            None,
+            &sort,
+            &all_curated_strategies(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(items.len(), 1);
     }
 
@@ -2128,7 +2191,7 @@ mod tests {
             None,
             Some("fabric"),
             &sort,
-            true,
+            &all_curated_strategies(),
             None,
             None,
             None,
@@ -2148,7 +2211,7 @@ mod tests {
             None,
             None,
             &sort,
-            true,
+            &all_curated_strategies(),
             None,
             None,
             Some("test mod"),
@@ -2160,7 +2223,7 @@ mod tests {
             None,
             None,
             &sort,
-            true,
+            &all_curated_strategies(),
             None,
             None,
             Some("does not exist"),
@@ -2169,6 +2232,70 @@ mod tests {
         .unwrap();
         assert_eq!(matching.len(), 1);
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn test_browse_items_filters_by_curated_strategy_whitelist() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT
+            );
+            CREATE TABLE item_categories (item_id TEXT, category_id TEXT);
+            INSERT INTO registry_items VALUES (
+                'git-mod', 'Git Mod', 'mod', 'github_release', 'owner/repo',
+                'abc', 10, 2, 8, 1.5, 'approved', 0, NULL, 1, NULL, NULL,
+                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, NULL
+            );
+            INSERT INTO registry_items VALUES (
+                'mr-mod', 'Modrinth Mod', 'mod', 'modrinth_id', 'mr-id',
+                'def', 10, 2, 8, 1.5, 'approved', 0, NULL, 1, NULL, NULL,
+                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, 'mr-id'
+            );
+            INSERT INTO registry_items VALUES (
+                'dh-mod', 'Direct Hash Mod', 'mod', 'direct_hash',
+                'https://example.com/files/dh.jar', 'deadbeef', 10, 2, 8, 1.5,
+                'approved', 0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z',
+                NULL, '', NULL, NULL, NULL, NULL, NULL
+            );
+            ",
+        )
+        .unwrap();
+        let sort = SortOption::NetScore;
+
+        let all = browse_items(&conn, None, None, &sort, &all_curated_strategies(), None, None, None, 100)
+            .unwrap();
+        assert_eq!(all.len(), 3, "all curated sources enabled shows every strategy");
+
+        let no_modrinth: Vec<String> = vec!["github_release".into(), "direct_hash".into()];
+        let filtered =
+            browse_items(&conn, None, None, &sort, &no_modrinth, None, None, None, 100).unwrap();
+        assert_eq!(filtered.len(), 2);
+        assert!(!filtered.iter().any(|item| item.id == "mr-mod"));
+
+        let only_direct: Vec<String> = vec!["direct_hash".into()];
+        let direct =
+            browse_items(&conn, None, None, &sort, &only_direct, None, None, None, 100).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].id, "dh-mod");
+
+        let empty: Vec<String> = vec![];
+        let none = browse_items(&conn, None, None, &sort, &empty, None, None, None, 100).unwrap();
+        assert!(
+            none.is_empty(),
+            "a whitelist with nothing enabled must hide everything"
+        );
     }
 
     #[test]
@@ -2505,7 +2632,17 @@ mod tests {
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let installed = HashSet::new();
         let items =
-            for_you_items_query(&conn, &installed, true, None, None, 100, None, None).unwrap();
+            for_you_items_query(
+                &conn,
+                &installed,
+                &all_curated_strategies(),
+                None,
+                None,
+                100,
+                None,
+                None
+            )
+            .unwrap();
         // test-mod-1 is the only item and net_score 8
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Test Mod 1");
@@ -2524,7 +2661,17 @@ mod tests {
         let mut installed = HashSet::new();
         installed.insert("test-mod-1".to_string());
         let items =
-            for_you_items_query(&conn, &installed, true, None, None, 100, None, None).unwrap();
+            for_you_items_query(
+                &conn,
+                &installed,
+                &all_curated_strategies(),
+                None,
+                None,
+                100,
+                None,
+                None
+            )
+            .unwrap();
         // test-mod-1 should be filtered out, leaving none
         assert!(items.is_empty());
     }
@@ -2569,7 +2716,7 @@ mod tests {
         let items = for_you_items_query(
             &conn,
             &installed,
-            true,
+            &all_curated_strategies(),
             None,
             None,
             100,
@@ -2691,7 +2838,17 @@ mod tests {
         installed.insert("installed-mod".to_string());
 
         let items =
-            for_you_items_query(&conn, &installed, true, None, None, 100, None, None).unwrap();
+            for_you_items_query(
+                &conn,
+                &installed,
+                &all_curated_strategies(),
+                None,
+                None,
+                100,
+                None,
+                None
+            )
+            .unwrap();
 
         // rec-2 has overlap 2 (fabric + adventure), rec-1 has overlap 1 (fabric)
         assert_eq!(items.len(), 2, "should return both uninstalled items");

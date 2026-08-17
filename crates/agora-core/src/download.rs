@@ -64,6 +64,81 @@ pub async fn download_mod_bytes(clients: &HttpClients, url: &str) -> LauncherRes
     http_client::checked_get_bytes(clients, category, url).await
 }
 
+/// Download a registry-pinned artifact (SHA-256 pinned by the curator in the
+/// signed manifest) from an arbitrary HTTPS host.
+///
+/// Host authorization comes from the pinned URL itself via
+/// [`http_client::HostPolicy::SignedManifest`], so the host does not need a
+/// compile-time allowlist entry. Every other gate — HTTPS scheme, port 443,
+/// no userinfo, no IP literals, non-private DNS resolution — still applies,
+/// as does same-host-only redirect re-validation.
+pub async fn download_pinned_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {
+    let host = reqwest::Url::parse(url)
+        .map_err(|_| LauncherError::UntrustedSource)?
+        .host_str()
+        .ok_or(LauncherError::UntrustedSource)?
+        .to_string();
+    http_client::checked_get_bytes_with_policy(
+        clients,
+        ClientCategory::PinnedArtifact,
+        url,
+        http_client::HostPolicy::SignedManifest(&host),
+    )
+    .await
+}
+
+/// Convenience: download registry-pinned bytes without an explicit
+/// [`HttpClients`] instance. Prefer [`download_pinned_bytes`] when a shared
+/// clients instance is available.
+pub async fn download_pinned_bytes_standalone(url: &str) -> LauncherResult<Vec<u8>> {
+    let clients = HttpClients::new().map_err(|e| LauncherError::Generic {
+        code: "ERR_HTTP_CLIENT_INIT".into(),
+        message: format!("Failed to initialize HTTP clients: {e}"),
+    })?;
+    download_pinned_bytes(&clients, url).await
+}
+
+/// Download content the user explicitly opted into (Technic tiers S/Z).
+///
+/// This is the ONLY path that may use
+/// [`ClientCategory::ConsentedContent`](http_client::ClientCategory::ConsentedContent)
+/// with [`HostPolicy::UserConsented`](http_client::HostPolicy::UserConsented).
+/// Callers must have already checked the user's consent settings for the
+/// content's tier in core (a frontend bug cannot widen this because the check
+/// lives in core). Every fetch is logged with its resolved host so a network
+/// audit can prove the category is never used without consent. The floor still
+/// applies: private/loopback/link-local destinations are refused, redirects
+/// are re-validated per hop, and per-category size caps are enforced.
+pub async fn download_consented_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {
+    let host = reqwest::Url::parse(url)
+        .map_err(|_| LauncherError::UntrustedSource)?
+        .host_str()
+        .unwrap_or("")
+        .to_string();
+    eprintln!(
+        "[consented-content] fetch host={host} url={}",
+        crate::network::sanitized_url_for_log(url)
+    );
+    http_client::checked_get_bytes_with_policy(
+        clients,
+        ClientCategory::ConsentedContent,
+        url,
+        http_client::HostPolicy::UserConsented,
+    )
+    .await
+}
+
+/// Convenience: download consented content without an explicit
+/// [`HttpClients`] instance. Prefer [`download_consented_bytes`] when a shared
+/// clients instance is available.
+pub async fn download_consented_bytes_standalone(url: &str) -> LauncherResult<Vec<u8>> {
+    let clients = HttpClients::new().map_err(|e| LauncherError::Generic {
+        code: "ERR_HTTP_CLIENT_INIT".into(),
+        message: format!("Failed to initialize HTTP clients: {e}"),
+    })?;
+    download_consented_bytes(&clients, url).await
+}
+
 /// Download a complete modpack archive through the stricter pack host
 /// allowlist and the 500 MiB archive limit used by the importer.
 pub async fn download_modpack_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {

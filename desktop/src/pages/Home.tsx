@@ -191,9 +191,7 @@ export function Home({
     setRecommendationsLoading(true);
     (async () => {
       try {
-        const modrinthEnabled = (await getSetting('modrinth_enabled')) === true;
         const result = await forYouItems(
-          modrinthEnabled,
           lastLaunched.minecraft_version,
           lastLaunched.loader,
           3,

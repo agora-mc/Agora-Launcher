@@ -4,6 +4,11 @@
 
 Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Community-curated manifests are compiled into a signed registry, and each Minecraft setup lives in an isolated instance.
 
+## AI disclaimer
+
+I used AI extensively to build Agora, this text block is part of the very little that was actually written by flesh and blood. I made decisions, overviewed progress, and came up with ideas, but the work was done my a machine. Agora was still months of work. So while I tried my best to use my programming knowlege to steer it, this project was beyond my experience and skill level so there may be major achitectural flaws and security risks. I would appreciate any suggestions from expereinced professionals that would like to help. 
+For now Agora's small amount of art is also made by AI, but there's very little beyond I suppose the living background and I would be extremely grateful if someone wants to contribue their actual, human made work to Agora.
+
 ## Download and documentation
 
 - [Desktop and CLI releases](https://github.com/agora-mc/Agora-Launcher/releases) - choose the newest published `v*` release, not a `registry-*` data release.

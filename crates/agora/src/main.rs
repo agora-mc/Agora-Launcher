@@ -1554,11 +1554,15 @@ async fn run_command(
                     anyhow::bail!("Registry database not found. Run 'agora registry sync' first.");
                 }
                 let sort = agora_core::registry::SortOption::NetScore;
+                let curated_strategies: Vec<String> = agora_core::registry::CURATED_DOWNLOAD_STRATEGIES
+                    .iter()
+                    .map(|strategy| strategy.to_string())
+                    .collect();
                 let items = svc.browse_items(
                     content_type.as_deref(),
                     None,
                     &sort,
-                    true,
+                    &curated_strategies,
                     mc_version.as_deref(),
                     None,
                     Some(&query),

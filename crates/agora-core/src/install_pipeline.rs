@@ -201,6 +201,12 @@ pub struct ArtifactMetadata {
     /// from `ResolvedDownload.version_id`, which may be a Modrinth UUID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Curated-resolver download strategy (`direct_hash`, `github_release`,
+    /// `modrinth_id`, ...). Present only for curated items; tells the staging
+    /// path how the artifact may be fetched (e.g. `direct_hash` artifacts are
+    /// fetched via the signed-manifest host policy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_strategy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2454,9 +2460,28 @@ async fn stage_plan_artifacts(
         let contents = match &file.artifact {
             ResolvedArtifact::Download(download) => match &download.source {
                 ArtifactSource::Download { url } => {
-                    crate::download::download_mod_bytes_standalone(url)
-                        .await
-                        .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
+                    let strategy = download
+                        .metadata
+                        .download_strategy
+                        .as_deref()
+                        .unwrap_or_default();
+                    if strategy == "direct_hash" {
+                        // Provenance is known here: `direct_hash` artifacts are
+                        // SHA-256-pinned in the signed registry, so the pinned
+                        // URL's own host authorizes the request (the host is
+                        // never trusted from any other layer).
+                        crate::download::download_pinned_bytes_standalone(url)
+                            .await
+                            .map_err(|e| {
+                                format!("failed to download {}: {e}", download.item_id)
+                            })?
+                    } else {
+                        crate::download::download_mod_bytes_standalone(url)
+                            .await
+                            .map_err(|e| {
+                                format!("failed to download {}: {e}", download.item_id)
+                            })?
+                    }
                 }
                 ArtifactSource::LocalFile { path } => std::fs::read(path).map_err(|e| {
                     format!("failed to read local artifact {}: {e}", download.item_id)
@@ -3055,6 +3080,7 @@ mod tests {
                 modrinth_id: Some("P7dR8mSH".into()),
                 content_type: "mod".into(),
                 version: None,
+                download_strategy: None,
             },
         });
         assert_eq!(
@@ -4338,6 +4364,7 @@ mod tests {
                 modrinth_id: None,
                 content_type: "mod".into(),
                 version: None,
+                download_strategy: None,
             },
         })
     }
@@ -4364,6 +4391,7 @@ mod tests {
                 modrinth_id: Some("1bokaNcj".into()),
                 content_type: "mod".into(),
                 version: Some("fabric-26.2-26.4.2".into()),
+                download_strategy: None,
             },
         });
 
@@ -4895,6 +4923,7 @@ mod tests {
                         modrinth_id: None,
                         content_type: "mod".into(),
                         version: None,
+                        download_strategy: None,
                     },
                 }),
             },

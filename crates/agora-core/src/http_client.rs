@@ -97,7 +97,39 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
             "api.individual.githubcopilot.com",
             "api.githubcopilot.com",
         ],
+        // Deliberately empty: hosts for this category come from the signed
+        // manifest via `HostPolicy::SignedManifest`, never from a compile-time
+        // list. The empty-list-rejects-everything property means the category
+        // fails closed if reached without such a policy.
+        ClientCategory::PinnedArtifact => &[],
+        // Deliberately empty: hosts are authorized case-by-case by `UserConsented`
+        // after the core consent check. The empty list fails closed if the
+        // category is ever reached through the generic Allowlist path.
+        ClientCategory::ConsentedContent => &[],
     }
+}
+
+/// How a request's hostname is authorized.
+///
+/// The default is the category's compile-time allowlist. A `SignedManifest`
+/// host is taken from the Ed25519-signed registry: the curator reviewed the
+/// URL and pinned its SHA-256, so the manifest itself satisfies the host
+/// allowlist gate. Every other gate (scheme, port, userinfo, IP literals,
+/// non-private DNS resolution) still applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostPolicy<'a> {
+    /// The category's compile-time allowlist (existing behaviour).
+    Allowlist,
+    /// A host taken from the Ed25519-signed registry. Redirects are only
+    /// permitted to the same host (or an `.<pinned>` subdomain) — a curator
+    /// whose URL redirects off-domain should pin the final URL.
+    SignedManifest(&'a str),
+    /// The request belongs to a content category the user explicitly opted
+    /// into (`technic_enabled` / `allow_unverified_packs`). Only the
+    /// consent-checked entry points may use this; the consent check lives in
+    /// core, so a frontend bug cannot widen it. Every other gate still
+    /// applies, and the private/loopback/link-local DNS rejection is retained.
+    UserConsented,
 }
 
 /// Friendly name for each HTTP client category, used in logging and errors.
@@ -123,6 +155,12 @@ pub enum ClientCategory {
     AiAssistant,
     /// Managed Java runtime metadata and archives.
     JavaRuntime,
+    /// Artifacts pinned by SHA-256 in the signed registry; host authorization
+    /// comes from the manifest itself (`HostPolicy::SignedManifest`).
+    PinnedArtifact,
+    /// Content the user explicitly opted into (Technic tiers S/Z). Reached
+    /// only through the core consent-gated helpers via `HostPolicy::UserConsented`.
+    ConsentedContent,
 }
 
 impl ClientCategory {
@@ -138,6 +176,8 @@ impl ClientCategory {
             ClientCategory::Registry => Duration::from_secs(60),
             ClientCategory::AiAssistant => Duration::from_secs(60),
             ClientCategory::JavaRuntime => Duration::from_secs(120),
+            ClientCategory::PinnedArtifact => Duration::from_secs(120),
+            ClientCategory::ConsentedContent => Duration::from_secs(5 * 60),
         }
     }
 
@@ -153,6 +193,8 @@ impl ClientCategory {
             ClientCategory::Loader => Some(100 * 1024 * 1024),
             ClientCategory::Registry => Some(100 * 1024 * 1024),
             ClientCategory::JavaRuntime => Some(512 * 1024 * 1024),
+            ClientCategory::PinnedArtifact => Some(100 * 1024 * 1024),
+            ClientCategory::ConsentedContent => Some(500 * 1024 * 1024),
             _ => Some(10 * 1024 * 1024),
         }
     }
@@ -226,12 +268,14 @@ impl HttpClients {
             ClientCategory::MojangContent => &self.mojang_content,
             ClientCategory::Loader => &self.loader,
             ClientCategory::Modrinth => &self.modrinth,
-            ClientCategory::Modpack => &self.modrinth,
+ClientCategory::Modpack => &self.modrinth,
             ClientCategory::GitHub => &self.github,
             ClientCategory::Microsoft => &self.microsoft,
             ClientCategory::Registry => &self.registry,
             ClientCategory::AiAssistant => &self.ai_assistant,
             ClientCategory::JavaRuntime => &self.java_runtime,
+            ClientCategory::PinnedArtifact => &self.modrinth,
+            ClientCategory::ConsentedContent => &self.modrinth,
         }
     }
 
@@ -290,13 +334,32 @@ impl HttpClients {
 /// to a private IP after our check. This is an unavoidable platform
 /// limitation without DNS-level pinning (HSTS, CAA, DANE).
 pub fn check_request_url(category: ClientCategory, url: &str) -> LauncherResult<reqwest::Url> {
+    check_request_url_with_policy(category, url, HostPolicy::Allowlist)
+}
+
+/// Validate a URL against all policies using an explicit host-authorization
+/// policy.
+///
+/// Identical to [`check_request_url`] except that gate 5 (host authorization)
+/// is satisfied either by the category allowlist or, under
+/// [`HostPolicy::SignedManifest`], by the pinned manifest host itself (or one
+/// of its subdomains). All other gates are unchanged.
+pub fn check_request_url_with_policy(
+    category: ClientCategory,
+    url: &str,
+    policy: HostPolicy<'_>,
+) -> LauncherResult<reqwest::Url> {
     let parsed = reqwest::Url::parse(url).map_err(|_| LauncherError::Generic {
         code: "ERR_INVALID_URL".into(),
         message: format!("Cannot parse URL: {url}"),
     })?;
 
-    // 1. Scheme must be HTTPS.
-    if parsed.scheme() != "https" {
+    // 1. Scheme. Consented-content categories may use plain HTTP (the consent
+    //    covers the transport the author actually offers); everything else
+    //    requires HTTPS.
+    let consented = category == ClientCategory::ConsentedContent;
+    let scheme_ok = parsed.scheme() == "https" || (consented && parsed.scheme() == "http");
+    if !scheme_ok {
         return Err(LauncherError::Generic {
             code: "ERR_HTTP_SCHEME".into(),
             message: format!(
@@ -306,9 +369,15 @@ pub fn check_request_url(category: ClientCategory, url: &str) -> LauncherResult<
         });
     }
 
-    // 2. Port must be default HTTPS (443).
+    // 2. Port. Consented-content categories may use any non-zero port; all
+    //    other categories must use the default HTTPS port (443).
     if let Some(port) = parsed.port() {
-        if port != 443 {
+        let port_ok = if consented {
+            (1..=65535).contains(&port)
+        } else {
+            port == 443
+        };
+        if !port_ok {
             return Err(LauncherError::Generic {
                 code: "ERR_HTTP_PORT".into(),
                 message: format!(
@@ -340,16 +409,15 @@ pub fn check_request_url(category: ClientCategory, url: &str) -> LauncherResult<
         });
     }
 
-    // 5. Category host allowlist.
+    // 5. Host authorization.
     //
     // An empty allowlist rejects ALL hosts (the category has no approved
     // endpoints). Non-empty allowlists support exact and subdomain matching
     // (e.g. "objects.githubusercontent.com" matches when "github.com" is in
-    // the list via ends_with(".github.com")).
-    let allowlist = category_allowlist(category);
-    let host_ok = allowlist
-        .iter()
-        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")));
+    // the list via ends_with(".github.com")). Under a SignedManifest policy
+    // the pinned host (or a subdomain of it) replaces the allowlist — the
+    // curator case-by-case approval *is* the authorization.
+    let host_ok = host_authorized(category, host, policy);
     if !host_ok {
         return Err(LauncherError::Generic {
             code: "ERR_HTTP_HOST_NOT_ALLOWED".into(),
@@ -386,6 +454,27 @@ pub fn check_request_url(category: ClientCategory, url: &str) -> LauncherResult<
     Ok(parsed)
 }
 
+/// Decide whether `host` is authorized under `policy`.
+fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>) -> bool {
+    match policy {
+        HostPolicy::Allowlist => {
+            let allowlist = category_allowlist(category);
+            allowlist
+                .iter()
+                .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+        }
+        HostPolicy::SignedManifest(pinned) => {
+            host == pinned || host.ends_with(&format!(".{pinned}"))
+        }
+        HostPolicy::UserConsented => {
+            // Host authorization is delegated to the core consent check that
+            // precedes this request. The empty ConsentedContent allowlist
+            // keeps the generic Allowlist path failed-closed.
+            category == ClientCategory::ConsentedContent
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Checked request helpers (with per-hop redirect re-validation)
 // ---------------------------------------------------------------------------
@@ -399,8 +488,23 @@ pub async fn checked_request(
     category: ClientCategory,
     url: &str,
 ) -> LauncherResult<reqwest::Response> {
+    checked_request_with_policy(clients, category, url, HostPolicy::Allowlist).await
+}
+
+/// Perform a GET with full URL validation and per-hop redirect re-validation
+/// under an explicit host-authorization [`HostPolicy`].
+///
+/// The same policy is applied to the initial URL and every redirect hop, so a
+/// `SignedManifest` pinned artifact cannot escape to an off-domain host via a
+/// redirect.
+pub async fn checked_request_with_policy(
+    clients: &HttpClients,
+    category: ClientCategory,
+    url: &str,
+    policy: HostPolicy<'_>,
+) -> LauncherResult<reqwest::Response> {
     // Validate initial URL against category policies.
-    let _validated = check_request_url(category, url)?;
+    let _validated = check_request_url_with_policy(category, url, policy)?;
 
     let client = clients.get(category);
 
@@ -458,8 +562,8 @@ pub async fn checked_request(
                     message: format!("Cannot resolve redirect Location: {location}"),
                 })?;
 
-            // Re-validate the redirect target against category policies.
-            let _ = check_request_url(category, next_url.as_str())?;
+            // Re-validate the redirect target against the same policies.
+            let _ = check_request_url_with_policy(category, next_url.as_str(), policy)?;
 
             remaining_redirects -= 1;
             current_url = next_url.to_string();
@@ -637,7 +741,21 @@ pub async fn checked_get_bytes(
     category: ClientCategory,
     url: &str,
 ) -> LauncherResult<Vec<u8>> {
-    checked_get_bytes_with_progress(clients, category, url, |_downloaded, _total| {}).await
+    checked_get_bytes_inner(clients, category, url, HostPolicy::Allowlist, |_downloaded, _total| {})
+        .await
+}
+
+/// Download bytes under an explicit host-authorization [`HostPolicy`].
+///
+/// Identical to [`checked_get_bytes`] except that host authorization uses the
+/// given policy instead of the category allowlist.
+pub async fn checked_get_bytes_with_policy(
+    clients: &HttpClients,
+    category: ClientCategory,
+    url: &str,
+    policy: HostPolicy<'_>,
+) -> LauncherResult<Vec<u8>> {
+    checked_get_bytes_inner(clients, category, url, policy, |_downloaded, _total| {}).await
 }
 
 /// Download bytes while reporting cumulative body progress after each chunk.
@@ -648,12 +766,25 @@ pub async fn checked_get_bytes_with_progress<F>(
     clients: &HttpClients,
     category: ClientCategory,
     url: &str,
+    on_progress: F,
+) -> LauncherResult<Vec<u8>>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    checked_get_bytes_inner(clients, category, url, HostPolicy::Allowlist, on_progress).await
+}
+
+async fn checked_get_bytes_inner<F>(
+    clients: &HttpClients,
+    category: ClientCategory,
+    url: &str,
+    policy: HostPolicy<'_>,
     mut on_progress: F,
 ) -> LauncherResult<Vec<u8>>
 where
     F: FnMut(u64, Option<u64>),
 {
-    let mut response = checked_request(clients, category, url).await?;
+    let mut response = checked_request_with_policy(clients, category, url, policy).await?;
 
     if !response.status().is_success() {
         log_response_error(&response, &format!("{category:?} GET"));
@@ -994,6 +1125,8 @@ mod tests {
             ClientCategory::Microsoft,
             ClientCategory::Registry,
             ClientCategory::AiAssistant,
+            ClientCategory::PinnedArtifact,
+            ClientCategory::ConsentedContent,
         ] {
             assert!(
                 cat.timeout() >= Duration::from_secs(1),
@@ -1140,6 +1273,211 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
+    }
+
+    // ------------------------------------------------------------------
+    // SignedManifest host policy (Phase 0: direct_hash fetching)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_pinned_artifact_allowlist_is_empty() {
+        assert!(
+            category_allowlist(ClientCategory::PinnedArtifact).is_empty(),
+            "PinnedArtifact hosts come from the signed manifest, never a compile-time list"
+        );
+    }
+
+    #[test]
+    fn test_pinned_artifact_with_allowlist_policy_rejects_everything() {
+        // The empty-list-rejects-everything property: reaching PinnedArtifact
+        // without a SignedManifest policy fails closed on every host.
+        let err = check_request_url(ClientCategory::PinnedArtifact, "https://github.com/x.jar")
+            .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://cdn.modrinth.com/x.jar",
+            HostPolicy::Allowlist,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_allows_pinned_host() {
+        assert!(
+            check_request_url_with_policy(
+                ClientCategory::PinnedArtifact,
+                "https://developer.com/releases/mod-v1.0.0.jar",
+                HostPolicy::SignedManifest("developer.com"),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_allows_pinned_host_subdomain() {
+        assert!(
+            check_request_url_with_policy(
+                ClientCategory::PinnedArtifact,
+                "https://files.developer.com/releases/mod-v1.0.0.jar",
+                HostPolicy::SignedManifest("developer.com"),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_rejects_other_host() {
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://evil.example.com/malware.jar",
+            HostPolicy::SignedManifest("developer.com"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_still_rejects_plain_http() {
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "http://developer.com/releases/mod-v1.0.0.jar",
+            HostPolicy::SignedManifest("developer.com"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_SCHEME");
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_still_rejects_non_443_port() {
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://developer.com:8080/releases/mod-v1.0.0.jar",
+            HostPolicy::SignedManifest("developer.com"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_PORT");
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_still_rejects_raw_ip() {
+        // An IP literal is rejected before the policy is consulted, so a
+        // pinned "host" cannot be an IP literal either.
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://192.99.59.1/mod.jar",
+            HostPolicy::SignedManifest("192.99.59.1"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_IP_LITERAL");
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_still_rejects_loopback_resolution() {
+        // SSRF floor: even a curatively pinned hostname must not resolve to a
+        // private/loopback address.
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://localhost/mod.jar",
+            HostPolicy::SignedManifest("localhost"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_SSRF_BLOCKED");
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_applies_to_redirect_hops() {
+        // The redirect re-validation uses the same policy as the initial URL.
+        // An off-domain Location header must be rejected exactly like the
+        // non-pinned allowlist path rejects unknown hosts.
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://cdn.evil.example.com/redirect.jar",
+            HostPolicy::SignedManifest("developer.com"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
+    }
+
+    // ------------------------------------------------------------------
+    // ConsentedContent policy (Phase 3: technic tiers S/Z)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_consented_content_allowlist_is_empty() {
+        assert!(
+            category_allowlist(ClientCategory::ConsentedContent).is_empty(),
+            "ConsentedContent hosts come from explicit user consent, never a compile-time list"
+        );
+    }
+
+    #[test]
+    fn test_consented_content_fails_closed_without_consent_policy() {
+        // Reaching the category through the generic Allowlist path must reject
+        // every host, even with HTTP/non-443 relaxation in place.
+        let err = check_request_url(
+            ClientCategory::ConsentedContent,
+            "http://dropbox.com/anything",
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
+    }
+
+    #[test]
+    fn test_consented_content_allows_http_and_non_443_under_consent() {
+        assert!(check_request_url_with_policy(
+            ClientCategory::ConsentedContent,
+            "http://example.com/pack.zip",
+            HostPolicy::UserConsented,
+        )
+        .is_ok());
+        assert!(check_request_url_with_policy(
+            ClientCategory::ConsentedContent,
+            "http://example.com:8080/pack.zip",
+            HostPolicy::UserConsented,
+        )
+        .is_ok());
+        assert!(check_request_url_with_policy(
+            ClientCategory::ConsentedContent,
+            "https://example.com/pack.zip",
+            HostPolicy::UserConsented,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_consented_content_still_rejects_raw_ip() {
+        let err = check_request_url_with_policy(
+            ClientCategory::ConsentedContent,
+            "http://192.99.59.1/pack.zip",
+            HostPolicy::UserConsented,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_IP_LITERAL");
+    }
+
+    #[test]
+    fn test_consented_content_still_rejects_private_resolution() {
+        // SSRF floor retained even for consented plain-HTTP content.
+        let err = check_request_url_with_policy(
+            ClientCategory::ConsentedContent,
+            "http://localhost:8080/pack.zip",
+            HostPolicy::UserConsented,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_SSRF_BLOCKED");
+    }
+
+    #[test]
+    fn test_consented_content_still_rejects_userinfo() {
+        let err = check_request_url_with_policy(
+            ClientCategory::ConsentedContent,
+            "http://user:pass@example.com/pack.zip",
+            HostPolicy::UserConsented,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_USERINFO");
     }
 
     // ------------------------------------------------------------------

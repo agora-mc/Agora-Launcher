@@ -923,13 +923,7 @@ function BrowseContent({
     (async () => {
       try {
         if (sort === 'for_you') {
-          let modrinthEnabled = false;
-          try {
-            modrinthEnabled = await modrinthEffectivelyEnabled();
-          } catch { /* default false */ }
-
           const registryItems = await forYouItems(
-            modrinthEnabled,
             mcVersion ?? undefined,
             loader ?? undefined,
             undefined,
@@ -1425,12 +1419,7 @@ function BrowseContent({
                   try {
                     if (sort === 'for_you') {
                       // simplified for_you retry
-                      let modrinthEnabled = false;
-                      try {
-                        modrinthEnabled = await modrinthEffectivelyEnabled();
-                      } catch {}
                       const registryItems = await forYouItems(
-                        modrinthEnabled,
                         mcVersion ?? undefined,
                         loader ?? undefined,
                         undefined,

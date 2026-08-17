@@ -93,6 +93,12 @@ export interface SettingEntry {
 export const SETTINGS = {
   modrinthEnabled: boolDef('modrinth_enabled'),
   browseCuratedOnly: boolDef('browse_curated_only'),
+  curatedSourceModrinthId: boolDef('curated_source_modrinth_id_enabled'),
+  curatedSourceGithubRelease: boolDef('curated_source_github_release_enabled'),
+  curatedSourceDirectHash: boolDef('curated_source_direct_hash_enabled'),
+  curatedSourceCuratedPack: boolDef('curated_source_curated_pack_enabled'),
+  technicEnabled: boolDef('technic_enabled'),
+  allowUnverifiedPacks: boolDef('allow_unverified_packs'),
   aiMcpEnabled: boolDef('ai_mcp_enabled'),
   aiChatEnabled: boolDef('ai_chat_enabled'),
   launcherPath: stringDef('mojang_launcher_path'),

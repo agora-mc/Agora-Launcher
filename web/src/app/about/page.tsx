@@ -33,7 +33,7 @@ const PILLARS = [
 ];
 
 export const metadata = {
-  title: 'About — Agora',
+  title: 'The Agora Difference',
 };
 
 export default function AboutPage() {

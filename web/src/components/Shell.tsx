@@ -12,7 +12,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
       match: 'prefix' as const,
     })),
     { href: '/docs', label: 'Docs', match: 'prefix' },
-    { href: '/about', label: 'About', match: 'prefix' },
+    { href: '/about', label: 'The Agora Difference', match: 'prefix' },
+    { href: '/credits', label: "Agora's Credits", match: 'exact' },
   ];
 
   return (

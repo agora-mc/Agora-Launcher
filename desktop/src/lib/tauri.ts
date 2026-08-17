@@ -854,7 +854,6 @@ export const listManifestLoaders = () =>
 export const listManifestMcVersions = (loader?: string) =>
   invoke<string[]>('list_manifest_mc_versions', { loader });
 export const forYouItems = (
-  modrinthEnabled?: boolean,
   mcVersion?: string,
   loader?: string,
   limit?: number,
@@ -862,7 +861,6 @@ export const forYouItems = (
   query?: string,
 ) =>
   invoke<RegistryItem[]>('for_you_items', {
-    modrinthEnabled,
     mcVersion,
     loader,
     limit,
@@ -874,7 +872,6 @@ export const browseItems = (
   contentType?: string,
   category?: string,
   sort?: SortOption,
-  modrinthEnabled?: boolean,
   mcVersion?: string,
   loader?: string,
   limit?: number,
@@ -883,7 +880,6 @@ export const browseItems = (
     contentType,
     category,
     sort,
-    modrinthEnabled,
     mcVersion,
     loader,
     limit,

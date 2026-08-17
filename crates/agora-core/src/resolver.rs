@@ -2825,6 +2825,7 @@ fn curated_artifact(
             modrinth_id: item.modrinth_id.clone(),
             content_type: item.content_type.clone(),
             version: Some(candidate.version.clone()),
+            download_strategy: Some(item.download_strategy.clone()),
         },
     }))
 }
@@ -2914,6 +2915,7 @@ fn raw_modrinth_artifact(
             modrinth_id: Some(project_id.to_string()),
             content_type: "mod".into(),
             version: Some(candidate.version.clone()),
+            download_strategy: None,
         },
     }))
 }
@@ -2969,6 +2971,7 @@ fn resolve_manual_install(
                     modrinth_id: None,
                     content_type: "mod".into(),
                     version: None,
+                    download_strategy: None,
                 },
             }),
         },
@@ -4080,6 +4083,7 @@ mod tests {
                 modrinth_id: Some("terrablender".into()),
                 content_type: "mod".into(),
                 version: Some("3.3.0.10".into()),
+                download_strategy: None,
             },
         });
 
@@ -4113,6 +4117,7 @@ mod tests {
                 modrinth_id: Some("TerraBlender-Project".into()),
                 content_type: "mod".into(),
                 version: Some("1.0.0".into()),
+                download_strategy: None,
             },
         });
         let native_metadata = crate::dependency_ops::JarDeps {
@@ -4208,6 +4213,7 @@ mod tests {
                                 modrinth_id: Some("s3dmwKy5".into()),
                                 content_type: "mod".into(),
                                 version: Some("1.0.0".into()),
+                                download_strategy: None,
                             },
                         }),
                     },

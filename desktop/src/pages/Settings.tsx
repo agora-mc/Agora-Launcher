@@ -29,6 +29,7 @@ import {
   pickOpenFile,
   removeUnusedJavaRuntimes,
   setMcpApproval,
+  setSetting,
   startMcpServer,
   stopMcpServer,
   getMCPToken,
@@ -89,6 +90,14 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
 
   const [modrinth, setModrinth] = useState(false);
   const [browseCuratedOnly, setBrowseCuratedOnly] = useState(false);
+  const [curatedSources, setCuratedSources] = useState<Record<string, boolean>>({
+    modrinth_id: true,
+    github_release: true,
+    direct_hash: true,
+    curated_pack: true,
+  });
+  const [technic, setTechnic] = useState(false);
+  const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
   const [aiMcp, setAiMcp] = useState(false);
   const [aiChatEnabled, setAiChatEnabled] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
@@ -192,6 +201,41 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
     setGlobalJavaPath((ts.values.javaPath as string) ?? '');
     setLoading(false);
   }, [ts.loading, ts.values]);
+
+  // Load the curated per-source toggles. Missing settings default to ON
+  // (curated content is curated content regardless of live browsing).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack'];
+        const results = await Promise.all(keys.map((k) => getSetting(`curated_source_${k}_enabled`)));
+        if (cancelled) return;
+        const next: Record<string, boolean> = {};
+        keys.forEach((key, index) => {
+          const raw = results[index];
+          next[key] = typeof raw === 'boolean'
+            ? raw
+            : typeof raw === 'string'
+              ? raw === 'true'
+              : true;
+        });
+        setCuratedSources(next);
+        const [technicRaw, allowRaw] = await Promise.all([
+          getSetting('technic_enabled'),
+          getSetting('allow_unverified_packs'),
+        ]);
+        if (!cancelled) {
+          const asBool = (raw: unknown) => raw === true || raw === 'true' || raw === 1 || raw === '1';
+          setTechnic(asBool(technicRaw));
+          setAllowUnverifiedPacks(asBool(allowRaw));
+        }
+      } catch {
+        // keep defaults; the backend stays authoritative on read when present
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Load MSA status on mount
   useEffect(() => {
@@ -415,6 +459,36 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
       await ts.update(SETTINGS.browseCuratedOnly, value);
     } catch (e) {
       setBrowseCuratedOnly(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleCuratedSource = async (strategy: string, value: boolean) => {
+    setCuratedSources((prev) => ({ ...prev, [strategy]: value }));
+    try {
+      await setSetting(`curated_source_${strategy}_enabled`, value);
+    } catch (e) {
+      setCuratedSources((prev) => ({ ...prev, [strategy]: !value }));
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleTechnic = async (value: boolean) => {
+    setTechnic(value);
+    try {
+      await setSetting('technic_enabled', value);
+    } catch (e) {
+      setTechnic(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleAllowUnverifiedPacks = async (value: boolean) => {
+    setAllowUnverifiedPacks(value);
+    try {
+      await setSetting('allow_unverified_packs', value);
+    } catch (e) {
+      setAllowUnverifiedPacks(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -994,6 +1068,85 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
             {ts.statuses['browse_curated_only']?.status === 'error' && (
               <p className="text-xs text-destructive">{ts.statuses['browse_curated_only']?.error}</p>
             )}
+
+            <div className="pt-2 border-t border-border space-y-3">
+              <h4 className="text-sm font-medium">Curated catalog sources</h4>
+              <p className="text-xs text-muted-foreground">
+                Curated entries are hand-reviewed and ship with curator-pinned SHA-256 hashes in the signed catalog. These toggles control which curated sources appear — they are independent of live third-party browsing and default to on.
+              </p>
+              <label className="flex items-center justify-between">
+                <span className="text-sm">Modrinth-sourced catalog entries</span>
+                <input
+                  type="checkbox"
+                  aria-label="Modrinth-sourced catalog entries"
+                  checked={curatedSources['modrinth_id'] ?? true}
+                  onChange={(e) => toggleCuratedSource('modrinth_id', e.target.checked)}
+                  className="h-5 w-5 accent-primary"
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span className="text-sm">GitHub-sourced catalog entries</span>
+                <input
+                  type="checkbox"
+                  aria-label="GitHub-sourced catalog entries"
+                  checked={curatedSources['github_release'] ?? true}
+                  onChange={(e) => toggleCuratedSource('github_release', e.target.checked)}
+                  className="h-5 w-5 accent-primary"
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span className="text-sm">Direct-hash catalog entries</span>
+                <input
+                  type="checkbox"
+                  aria-label="Direct-hash catalog entries"
+                  checked={curatedSources['direct_hash'] ?? true}
+                  onChange={(e) => toggleCuratedSource('direct_hash', e.target.checked)}
+                  className="h-5 w-5 accent-primary"
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span className="text-sm">Curated pack entries</span>
+                <input
+                  type="checkbox"
+                  aria-label="Curated pack entries"
+                  checked={curatedSources['curated_pack'] ?? true}
+                  onChange={(e) => toggleCuratedSource('curated_pack', e.target.checked)}
+                  className="h-5 w-5 accent-primary"
+                />
+              </label>
+            </div>
+
+            <label className="flex items-center justify-between pt-3 border-t border-border">
+              <div>
+                <span className="text-sm">Technic browsing</span>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides — see the install confirmation before files are written.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="Technic browsing"
+                checked={technic}
+                onChange={(e) => toggleTechnic(e.target.checked)}
+                className="h-5 w-5 accent-primary"
+              />
+            </label>
+
+            <label className="flex items-center justify-between pt-3 border-t border-border">
+              <div>
+                <span className="text-sm">Allow unverified zip packs</span>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="Allow unverified zip packs"
+                checked={allowUnverifiedPacks}
+                onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
+                className="h-5 w-5 accent-primary"
+              />
+            </label>
 
 
             <label className="flex items-center justify-between pt-2 border-t border-border">
