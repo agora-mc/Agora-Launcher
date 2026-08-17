@@ -196,3 +196,37 @@
     }
   }
 }
+
+/* ── Living hero diorama ────────────────────────────────────────────────
+   The homepage hero boxes the desktop's living background into itself. The
+   engine sizes and positions the canvases inline (engine `size()`), so these
+   rules only pin them inside the hero box and carry the vignette over from
+   desktop's `.ambience-vig`, scoped to the hero. The `:root[data-ambience]`
+   translucency rules are deliberately NOT ported: they depend on CSS
+   variables (`--background`, `--card`, `--nav-surface`) this site does not
+   define, and a boxed diorama does not need them. */
+
+.living-hero {
+  position: absolute;
+  inset: 0;
+}
+
+.living-hero-bg {
+  position: absolute;
+  display: block;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.living-hero-vig {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 20%, transparent 30%, rgba(4, 12, 18, 0.55) 100%);
+}
+
+.living-hero-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}

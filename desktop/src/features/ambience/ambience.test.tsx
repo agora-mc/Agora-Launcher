@@ -31,6 +31,7 @@ import { SPECIES_BY_KEY } from './engine/species';
 import { noteFreq } from './engine/audio/music';
 import type { Species, WorldState } from './engine/types';
 import { AmbienceCanvas } from './AmbienceCanvas';
+import { AmbienceEngine } from './engine/engine';
 
 /** The layout these tests were written against. */
 const PINNED_WORLD_SEED = 20260811;
@@ -817,6 +818,137 @@ describe('AmbienceCanvas lifecycle', () => {
     expect(winAdd.mock.calls.length - base.winAdd).toBe(winRem.mock.calls.length - base.winRem);
     expect(docAdd.mock.calls.length - base.docAdd).toBe(docRem.mock.calls.length - base.docRem);
     // rAF scheduled in mount and cancelled in unmount (net zero)
+    expect(rafCalls).toBe(cafCalls);
+  });
+});
+
+/* ── host scoping (Stage 1: boxed-world options) ───────────────────── */
+
+/**
+ * The engine's `host`/`getBounds` options fit the world to a boxed container
+ * (the web hero diorama) instead of the window. The leak contract must hold
+ * there too: a host scopes pointer listeners to itself, and the ResizeObserver
+ * it creates has to be disconnected in stop(), or every mount/unmount cycle
+ * with a host would leak an observer. jsdom has no ResizeObserver, so these
+ * tests install a recorder and drive the engine directly (AmbienceCanvas does
+ * not forward host/getBounds — the desktop component stays untouched).
+ */
+describe('AmbienceEngine host scoping', () => {
+  const originalGetContext = HTMLCanvasElement.prototype.getContext;
+  let rafCalls = 0;
+  let cafCalls = 0;
+  let observed: Element[] = [];
+  let disconnects = 0;
+
+  beforeEach(() => {
+    const makeCtx = () => {
+      const target: Record<string, unknown> = {};
+      return new Proxy(target, {
+        get(t, prop) {
+          if (prop === 'canvas') return { width: 0, height: 0 };
+          if (prop in t) return t[prop as string];
+          if (prop === 'createLinearGradient' || prop === 'createRadialGradient' || prop === 'createPattern') {
+            return () => ({ addColorStop: () => undefined });
+          }
+          if (prop === 'measureText') return () => ({ width: 0 });
+          if (prop === 'getImageData') return () => ({ data: [] });
+          return () => undefined;
+        },
+        set(t, prop, val) { t[prop as string] = val; return true; },
+      });
+    };
+    HTMLCanvasElement.prototype.getContext = function (contextId: string) {
+      if (contextId !== '2d') return null;
+      return makeCtx() as unknown as CanvasRenderingContext2D;
+    } as typeof HTMLCanvasElement.prototype.getContext;
+    rafCalls = 0;
+    cafCalls = 0;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => { rafCalls++; return 1; });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => { cafCalls++; });
+    observed = [];
+    disconnects = 0;
+    class FakeResizeObserver {
+      constructor(public cb: ResizeObserverCallback) {}
+      observe(target: Element) { observed.push(target); }
+      unobserve() { /* noop */ }
+      disconnect() { disconnects++; }
+    }
+    (globalThis as Record<string, unknown>).ResizeObserver = FakeResizeObserver;
+  });
+
+  afterEach(() => {
+    HTMLCanvasElement.prototype.getContext = originalGetContext;
+    vi.restoreAllMocks();
+    delete (globalThis as Record<string, unknown>).ResizeObserver;
+  });
+
+  function mountEngine(host?: HTMLElement): AmbienceEngine {
+    const bg = document.createElement('canvas');
+    const fx = document.createElement('canvas');
+    const engine = new AmbienceEngine(bg, fx, {
+      profile: 'calm',
+      musicOn: false,
+      reducedMotion: false,
+      host,
+      getBounds: host
+        ? () => {
+            const r = host.getBoundingClientRect();
+            return { left: r.left, top: r.top, w: r.width, h: r.height };
+          }
+        : undefined,
+    });
+    engine.start();
+    return engine;
+  }
+
+  it('creates no ResizeObserver without a host (desktop default untouched)', () => {
+    const engine = mountEngine();
+    expect(observed).toHaveLength(0);
+    engine.stop();
+    expect(disconnects).toBe(0);
+  });
+
+  it('observes the host on start and disconnects it on stop', () => {
+    const host = document.createElement('div');
+    const engine = mountEngine(host);
+    expect(observed).toEqual([host]);
+    engine.stop();
+    expect(disconnects).toBe(1);
+  });
+
+  it('stays leak-free across 50 start/stop cycles with a host', () => {
+    const host = document.createElement('div');
+    const winAdd = vi.spyOn(window, 'addEventListener');
+    const winRem = vi.spyOn(window, 'removeEventListener');
+    const docAdd = vi.spyOn(document, 'addEventListener');
+    const docRem = vi.spyOn(document, 'removeEventListener');
+    const hostAdd = vi.spyOn(host, 'addEventListener');
+    const hostRem = vi.spyOn(host, 'removeEventListener');
+
+    // One warmup cycle settles environment listeners; from there the net on
+    // every target (window, document, and the host itself) must be zero.
+    const warmup = mountEngine(host);
+    warmup.stop();
+    const base = {
+      winAdd: winAdd.mock.calls.length,
+      winRem: winRem.mock.calls.length,
+      docAdd: docAdd.mock.calls.length,
+      docRem: docRem.mock.calls.length,
+      hostAdd: hostAdd.mock.calls.length,
+      hostRem: hostRem.mock.calls.length,
+    };
+
+    for (let i = 0; i < 50; i++) {
+      const engine = mountEngine(host);
+      engine.stop();
+    }
+
+    expect(winAdd.mock.calls.length - base.winAdd).toBe(winRem.mock.calls.length - base.winRem);
+    expect(docAdd.mock.calls.length - base.docAdd).toBe(docRem.mock.calls.length - base.docRem);
+    expect(hostAdd.mock.calls.length - base.hostAdd).toBe(hostRem.mock.calls.length - base.hostRem);
+    // Every cycle created exactly one observer and stop() disconnected it.
+    expect(observed.length).toBe(disconnects);
+    // rAF scheduled in start and cancelled in stop (net zero).
     expect(rafCalls).toBe(cafCalls);
   });
 });

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getAllItems, CONTENT_TYPES, contentTypeLabel, contentTypePath } from '@/lib/db';
 import { GITHUB_REPO_URL, GITHUB_RELEASES_URL } from '@/lib/site';
 import { DownloadButton } from '@/components/DownloadButton';
+import HeroDiorama from '@/components/HeroDiorama';
 
 export default async function HomePage() {
   const allItems = await getAllItems();
@@ -17,37 +18,45 @@ export default async function HomePage() {
 
   return (
     <div className="space-y-12">
-      <section className="rounded-2xl bg-indigo-600 px-6 py-16 text-center text-white dark:bg-indigo-700">
-        <h1 className="text-4xl font-extrabold tracking-tight md:text-5xl">
-          Agora Minecraft Mod Launcher
-        </h1>
-        <p className="mx-auto mt-4 max-w-2xl text-lg text-indigo-100">
-          A boutique, community-curated Minecraft mod platform.
-        </p>
-        <div className="mt-8 flex flex-wrap justify-center gap-4">
-          <Link
-            href="/mods"
-            className="rounded-lg bg-white px-5 py-3 font-semibold text-indigo-700 shadow-sm hover:bg-gray-100"
-          >
-            Browse the database
-          </Link>
-          <Link
-            href="/docs"
-            className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white/10"
-          >
-            Read the docs
-          </Link>
-          <a
-            href={GITHUB_REPO_URL}
-            className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white/10"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            View on GitHub
-          </a>
-        </div>
-        <div className="mt-6">
-          <DownloadButton />
+      <section className="relative flex min-h-[440px] flex-col items-center justify-center overflow-hidden rounded-2xl bg-indigo-600 px-6 py-16 text-center text-white dark:bg-indigo-700">
+        {/* The living world fills the hero (client-only); the heading and
+            buttons float above it. The indigo fill stays as the static
+            fallback before hydration and under reduced motion. */}
+        <HeroDiorama />
+        {/* Scrim: guarantees text contrast over bright sky/weather. */}
+        <div className="pointer-events-none absolute inset-0 bg-black/25" aria-hidden="true" />
+        <div className="relative z-10">
+          <h1 className="text-4xl font-extrabold tracking-tight md:text-5xl">
+            Agora Minecraft Mod Launcher
+          </h1>
+          <p className="mx-auto mt-4 max-w-2xl text-lg text-indigo-100">
+            A bespoke, boutique, community-curated Minecraft mod platform.
+          </p>
+          <div className="mt-8 flex flex-wrap justify-center gap-4">
+            <Link
+              href="/mods"
+              className="rounded-lg bg-white px-5 py-3 font-semibold text-indigo-700 shadow-sm hover:bg-gray-100"
+            >
+              Browse the database
+            </Link>
+            <Link
+              href="/docs"
+              className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white/10"
+            >
+              Read the docs
+            </Link>
+            <a
+              href={GITHUB_REPO_URL}
+              className="rounded-lg border border-white px-5 py-3 font-semibold text-white hover:bg-white/10"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View on GitHub
+            </a>
+          </div>
+          <div className="mt-6">
+            <DownloadButton />
+          </div>
         </div>
       </section>
 
