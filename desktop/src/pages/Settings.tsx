@@ -43,6 +43,7 @@ import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
 import { useTypedSettings, SETTINGS } from '../lib/useTypedSettings';
 import { showToast } from '../components/Toast';
 import { AppearanceSettings } from './settings/AppearanceSettings';
+import { TourStartButton } from '../features/tour';
 
 // --- CopyButton helper ---
 
@@ -328,7 +329,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
       setGhDevice(flow);
       try {
         const p = openUrl(flow.verification_uri);
-        Promise.resolve(p).catch(() => {});
+        Promise.resolve(p).catch(() => { });
       } catch {
         /* best-effort */
       }
@@ -716,12 +717,13 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
         className="sticky top-0 z-20 flex flex-wrap gap-1.5 rounded-xl border border-border bg-card/95 p-2 shadow-sm backdrop-blur"
       >
         {[
+          ['settings-walkthrough', 'Walkthrough'],
           ['settings-appearance', 'Appearance'],
+          ['settings-launching', 'Launching'],
+          ['settings-accounts', 'Accounts'],
           ['settings-general', 'General'],
           ['settings-installation', 'Installation'],
           ['settings-services', 'Services'],
-          ['settings-accounts', 'Accounts'],
-          ['settings-launching', 'Launching'],
           ['settings-java', 'Java'],
           ['settings-launcher', 'Launcher'],
           ['settings-updates', 'Updates'],
@@ -740,7 +742,153 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
 
       {/* Language Selector — commented out: i18n deferred post-v1 */}
 
+      <div id="settings-walkthrough" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
+        <h3 className="font-semibold">Guided walkthrough</h3>
+        <p className="text-sm text-muted-foreground">
+          A step-by-step tour of the launcher. It highlights one part of the screen at a time and
+          walks you through making an instance, installing a mod, and opening the instance editor.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          You do the clicking — the tour follows along, never takes over, and can be ended at any point.
+        </p>
+        <TourStartButton />
+      </div>
+      
       <AppearanceSettings onResetLayout={onResetLayout} />
+
+      {/* Launch Mode */}
+      <div id="settings-launching" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
+        <h3 className="font-semibold">Launch Mode</h3>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Use in-app launcher (direct Java launch)</span>
+          <input
+            type="checkbox"
+            checked={directLaunch}
+            onChange={(e) => toggleLaunchMode(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles auth and JVM execution.
+          The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
+        </p>
+        {ts.statuses['launch_mode']?.status === 'error' && (
+          <p className="text-xs text-destructive">{ts.statuses['launch_mode']?.error}</p>
+        )}
+
+      </div>
+
+      {/* Microsoft Account */}
+      <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+        <h3 className="font-semibold">Microsoft Account</h3>
+        {msaLoading ? (
+          <p className="text-xs text-muted-foreground">Checking connection…</p>
+        ) : msaCreds ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-green-600 dark:text-green-400">
+                ● Signed in as <strong>{msaCreds.username}</strong>
+              </span>
+            </div>
+            {/* <p className="text-xs text-muted-foreground">
+                  UUID: {msaCreds.uuid}<br />
+                  Expires: {msaCreds.expires}
+                </p> */}
+            <p className="text-xs text-muted-foreground">
+              Required for direct launch mode. Used to authenticate with Minecraft services.
+            </p>
+            <button
+              onClick={handleMsaSignOut}
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
+            </p>
+
+            {msaError && <p className="text-xs text-destructive">{msaError}</p>}
+            <button
+              onClick={handleMsaSignIn}
+              disabled={msaBusy}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+            </button>
+          </div>
+        )}
+      </div>
+
+
+      {/* GitHub Account */}
+      <div id="settings-accounts" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
+        <h3 className="font-semibold">GitHub Account</h3>
+        {githubLoading ? (
+          <p className="text-xs text-muted-foreground">Checking connection…</p>
+        ) : githubAuth ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              {githubProfile?.avatar_url && (
+                <img
+                  src={githubProfile.avatar_url}
+                  alt=""
+                  className="h-6 w-6 rounded-full"
+                />
+              )}
+              <span className="text-sm text-green-600 dark:text-green-400">
+                ● Signed in as <strong>{githubProfile?.login ?? 'GitHub user'}</strong>
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Used for community governance (voting, proposals).
+            </p>
+            <button
+              onClick={handleGithubSignOut}
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Sign in with GitHub to participate in community governance — voting on mod inclusions, proposals, and more. This is optional.
+            </p>
+
+            {ghDevice && (
+              <DeviceFlowPanel
+                device={ghDevice}
+                polling={ghPolling}
+                onCancel={() => {
+                  ghSessionRef.current += 1;
+                  setGhPolling(false);
+                  setGhDevice(null);
+                }}
+              />
+            )}
+
+            {ghResult && <p className="text-sm text-primary">{ghResult}</p>}
+            {ghError && <p className="text-xs text-destructive">{ghError}</p>}
+
+            <button
+              onClick={handleGithubSignIn}
+              disabled={ghPolling}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {ghPolling ? 'Waiting…' : 'Sign in with GitHub'}
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Advanced Mode Toggle */}
       <div id="settings-general" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
@@ -847,7 +995,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
               <p className="text-xs text-destructive">{ts.statuses['browse_curated_only']?.error}</p>
             )}
 
-            
+
             <label className="flex items-center justify-between pt-2 border-t border-border">
               <div>
                 <span className="text-sm">Integrated AI Assistant</span>
@@ -865,7 +1013,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
             {ts.statuses['ai_chat_enabled']?.status === 'error' && (
               <p className="text-xs text-destructive">{ts.statuses['ai_chat_enabled']?.error}</p>
             )}
-             {(aiMcp || aiChatEnabled) && (
+            {(aiMcp || aiChatEnabled) && (
               <div className="rounded-lg bg-muted p-3 space-y-2">
                 <h4 className="text-xs font-semibold">Two ways to use AI with Agora</h4>
                 <p className="text-xs text-muted-foreground">
@@ -904,7 +1052,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                 </p>
               </div>
             )}
-            
+
             <label className="flex items-center justify-between pt-2 border-t border-border">
               <span className="text-sm">AI / MCP Server</span>
               <input
@@ -974,7 +1122,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                   <p className="text-xs text-muted-foreground">
                     Tool: disable_mod — controls whether external AI tools can disable mods without prompting.
                   </p>
-              
+
                   {mcpInstances.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No instances found.</p>
                   ) : (
@@ -1152,7 +1300,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                           setTimeout(() => setSkillCopied(false), 2000);
                         }}
                         disabled={!skillContent || skillLoading}
-      className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                       >
                         {skillCopied ? 'Copied!' : 'Copy Skill to Clipboard'}
                       </button>
@@ -1184,66 +1332,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
             )}
           </div>
 
-          {/* GitHub Account */}
-          <div id="settings-accounts" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">GitHub Account</h3>
-            {githubLoading ? (
-              <p className="text-xs text-muted-foreground">Checking connection…</p>
-            ) : githubAuth ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  {githubProfile?.avatar_url && (
-                    <img
-                      src={githubProfile.avatar_url}
-                      alt=""
-                      className="h-6 w-6 rounded-full"
-                    />
-                  )}
-                  <span className="text-sm text-green-600 dark:text-green-400">
-                    ● Signed in as <strong>{githubProfile?.login ?? 'GitHub user'}</strong>
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Used for community governance (voting, proposals).
-                </p>
-                <button
-                  onClick={handleGithubSignOut}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  Sign in with GitHub to participate in community governance — voting on mod inclusions, proposals, and more. This is optional.
-                </p>
 
-                {ghDevice && (
-                  <DeviceFlowPanel
-                    device={ghDevice}
-                    polling={ghPolling}
-                    onCancel={() => {
-                      ghSessionRef.current += 1;
-                      setGhPolling(false);
-                      setGhDevice(null);
-                    }}
-                  />
-                )}
-
-                {ghResult && <p className="text-sm text-primary">{ghResult}</p>}
-                {ghError && <p className="text-xs text-destructive">{ghError}</p>}
-
-                <button
-                  onClick={handleGithubSignIn}
-                  disabled={ghPolling}
-                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {ghPolling ? 'Waiting…' : 'Sign in with GitHub'}
-                </button>
-              </div>
-            )}
-          </div>
 
           {/* AI Model Selector
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
@@ -1279,78 +1368,6 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
             )}
           </div> */}
 
-          {/* Microsoft Account */}
-          <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">Microsoft Account</h3>
-            {msaLoading ? (
-              <p className="text-xs text-muted-foreground">Checking connection…</p>
-            ) : msaCreds ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-green-600 dark:text-green-400">
-                    ● Signed in as <strong>{msaCreds.username}</strong>
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  UUID: {msaCreds.uuid}<br />
-                  Expires: {msaCreds.expires}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Required for direct launch mode. Used to authenticate with Minecraft services.
-                </p>
-                <button
-                  onClick={handleMsaSignOut}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-xs text-muted-foreground">
-                  Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
-                </p>
-
-                {msaError && <p className="text-xs text-destructive">{msaError}</p>}
-                <button
-                  onClick={handleMsaSignIn}
-                  disabled={msaBusy}
-                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Launch Mode */}
-          <div id="settings-launching" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">Launch Mode</h3>
-            <label className="flex items-center justify-between">
-              <span className="text-sm">Use in-app launcher (direct Java launch)</span>
-              <input
-                type="checkbox"
-                checked={directLaunch}
-                onChange={(e) => toggleLaunchMode(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles auth and JVM execution.
-              The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
-            </p>
-            <p className="text-xs text-muted-foreground">
-              <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
-            </p>
-            {ts.statuses['launch_mode']?.status === 'error' && (
-              <p className="text-xs text-destructive">{ts.statuses['launch_mode']?.error}</p>
-            )}
-
-          </div>
-
           {/* Java Runtime Management */}
           <div id="settings-java" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-4">
             <h3 className="font-semibold">Java Runtime Management</h3>
@@ -1377,7 +1394,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                   >
                     {mode === 'automatic' ? 'Automatic (recommended)'
                       : mode === 'prompt' ? 'Prompt'
-                      : 'Manual'}
+                        : 'Manual'}
                   </button>
                 ))}
               </div>
@@ -1544,8 +1561,8 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
                               'inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium',
                               rt.source === 'Managed' ? 'bg-primary/10 text-primary'
                                 : rt.source === 'Mojang' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                                : rt.source === 'System' ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                : 'bg-muted text-muted-foreground',
+                                  : rt.source === 'System' ? 'bg-green-500/10 text-green-600 dark:text-green-400'
+                                    : 'bg-muted text-muted-foreground',
                             ].join(' ')}>
                               {rt.source}
                             </span>

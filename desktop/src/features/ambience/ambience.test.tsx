@@ -1,7 +1,7 @@
 /**
  * Ambience engine tests.
  *
- * The highest-value tests in the whole port (V5-PORT-PLAN §3, §5, §7):
+ * The highest-value tests in the whole engine:
  *
  *  - terrain golden values for a fixed viewport — catches the F1
  *    `Math.floor`/`Math.round` regression permanently;

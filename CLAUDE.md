@@ -12,7 +12,6 @@ work* here (gates, boundaries, gotchas) without repeating it.
 | Engineering blueprint (§0–§18 design; §19 supersedes on conflict) | `.kilo/plans/MASTER_SPEC.md` (read-only for agents) |
 | Which layer owns a behavior | `docs/architecture/layer-ownership.md` |
 | Build/validate/release procedure | `docs/DEVELOPMENT.md` |
-| Interactive-experiences feature state | `docs/interactive/IMPLEMENTATION_STATUS.md` |
 
 Prefer the smallest change that satisfies the request. No drive-by refactoring.
 
@@ -125,11 +124,3 @@ Rust 1.96, Node 25 (CI uses 24), Python 3.12, `gh` authenticated.
   keep them, don't discard.
 - Do not modify `.lock` files or history under `registry/archived/`.
 - The `loader-manifests/` directory is owned solely by the loader-refresh workflow.
-
-## Multi-agent convention
-
-`docs/interactive/` documents a review workflow with named roles — Sol (architecture/safety
-gates), DeepSeek (implementation), Terra (UX), Luna (smoke/regression). Findings are numbered
-and tracked to closure in `ARCHITECTURE_REVIEW_SOL.md` / `UX_FINDINGS_TERRA.md` /
-`IMPLEMENTATION_STATUS.md`. When working in that feature, append to the phase/fix logs rather
-than rewriting them, and don't mark a gate passed that the corresponding reviewer hasn't run.

@@ -1,10 +1,9 @@
 /**
- * BrowseBazaar — the High Interaction presentation for Browse (v5-browse.html
- * port, V5-PORT-PLAN §11), now its OWN page: the standard browse chrome is
- * hidden while the Bazaar owns the view, with a switch back at the top of the
- * normal Browse page.
+ * BrowseBazaar — the High Interaction presentation for Browse, its own page:
+ * the standard browse chrome is hidden while the Bazaar owns the view, with a
+ * switch back at the top of the normal Browse page.
  *
- * Ported back in, faithfully:
+ * Kept faithfully:
  *  - the drifting market background (gradient, receding stall rooftops with
  *    parallax, floating lanterns) and click particle bursts;
  *  - blocky stall icons and the gacha machine with its spin animation;
@@ -490,7 +489,7 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
           <VibeBars state={state} />
         </div>
 
-        <div className="bazaar-shelf">
+        <div className="bazaar-shelf" data-tour="browse-results">
           {shelf.map((item) => (
             <ItemTile
               key={item.id}

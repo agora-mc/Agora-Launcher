@@ -44,7 +44,7 @@ Reference pages describe stable interfaces that are awkward to teach inside the 
 
 Reference documentation should be searchable and linkable.
 
-Historical implementation plans are retained under [`docs/archive/`](./archive/) for audit. Their archive banners identify them as non-authoritative; current behavior comes from the built product, CLI help, tests, and the references above.
+Superseded implementation plans and completed review logs are not kept as files. They live in Git history, where `git log --diff-filter=D` finds them by path. Current behavior comes from the built product, CLI help, tests, and the references above — a checked-in plan that no longer matches the product is worse than no plan at all.
 
 ### 3. Maintainer and operator documentation
 
@@ -59,7 +59,7 @@ The website does not keep its own copy of any documentation. Two build steps fee
 
 New markdown is published automatically, but it defaults to the `internal` audience — visible only under the collapsed "Working notes and archive" section. Add a rule to `DOC_CATEGORIES` in `scripts/build_docs_web.py` to place a page in front of players or contributors.
 
-Pages classified `internal` are still published so cross-references never break, and they render with a banner marking them as non-authoritative working notes.
+Pages classified `internal` are still published so cross-references never break, and they render with a banner marking them as non-authoritative working notes. No document currently carries that classification, so the section does not appear in the navigation; the bucket exists to catch new files that nobody has classified yet.
 
 ## Source-of-truth rules
 

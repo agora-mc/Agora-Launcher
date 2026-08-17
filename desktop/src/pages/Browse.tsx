@@ -1142,7 +1142,7 @@ function BrowseContent({
   // chrome stays off-screen so the playful presentation owns the whole view.
   if (bazaarMode) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-6" data-tour="page-browse">
         <BrowseBazaar
           items={bazaarItems}
           instanceVersion={bazaarInstanceVersion}
@@ -1163,7 +1163,7 @@ function BrowseContent({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="page-browse">
       <section className="agora-hero compact">
         <div className="flex items-center gap-3 mb-2">
           <h2 className="text-2xl font-bold">Browse</h2>
@@ -1503,21 +1503,25 @@ function BrowseContent({
           )}
         </div>
       ) : layout === 'grid' ? (
-        <BrowseTileResults
-          items={items}
-          contextFor={contextFor}
-          onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
-          selectedItems={selectedItems}
-          onToggleSelect={handleToggleSelect}
-        />
+        <div data-tour="browse-results">
+          <BrowseTileResults
+            items={items}
+            contextFor={contextFor}
+            onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+            selectedItems={selectedItems}
+            onToggleSelect={handleToggleSelect}
+          />
+        </div>
       ) : (
-        <BrowseListResults
-          items={items}
-          contextFor={contextFor}
-          onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
-          selectedItems={selectedItems}
-          onToggleSelect={handleToggleSelect}
-        />
+        <div data-tour="browse-results">
+          <BrowseListResults
+            items={items}
+            contextFor={contextFor}
+            onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+            selectedItems={selectedItems}
+            onToggleSelect={handleToggleSelect}
+          />
+        </div>
       )}
 
       {/* Infinite scroll sentinel */}

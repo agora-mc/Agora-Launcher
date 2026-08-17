@@ -27,6 +27,8 @@ import {
   type UpdateInfo,
 } from '../lib/tauri';
 import type { InstallIntent } from '../lib/installFlow';
+import { sortLoaderVersionsLatestFirst } from '../lib/utils';
+import { emitTourSignal } from '../features/tour/tourSignals';
 import { type ProcessState } from '../lib/useProcessController';
 import { InstallFlow } from '../components/InstallFlow';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
@@ -165,7 +167,7 @@ export function Instances({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="page-instances">
       <section className="agora-hero compact flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-bold mb-2">My Instances</h2>
@@ -182,6 +184,7 @@ export function Instances({
           </button>
           <button
             onClick={() => setShowCreate(true)}
+            data-tour="create-instance"
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             + Create Instance
@@ -1073,7 +1076,9 @@ function CreateInstanceDialog({
     let cancelled = false;
     (async () => {
       try {
-        const versions = await listLoaderVersions(loader, mcVersion);
+        // Newest-first: the dropdown and default selection should lead with the
+        // latest pinned loader version, not whatever order the manifest ships.
+        const versions = sortLoaderVersionsLatestFirst(await listLoaderVersions(loader, mcVersion));
         if (cancelled) return;
         setLoaderVersions(versions);
         setLoaderVersion(versions[0]?.loader_version ?? '');
@@ -1169,6 +1174,9 @@ function CreateInstanceDialog({
         jvm_memory_mode: memoryMode,
       };
       await createInstance(request);
+      // A closing dialog alone cannot tell the walkthrough whether the user
+      // created the instance or cancelled; this can.
+      emitTourSignal('instance-created');
       onCreated();
     } catch (e) {
       setError(formatError(e));
@@ -1178,7 +1186,7 @@ function CreateInstanceDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg" data-tour="create-instance-dialog">
         <DialogTitle>Create Custom Instance</DialogTitle>
         <DialogDescription>
           {loader === 'vanilla'
@@ -1186,7 +1194,7 @@ function CreateInstanceDialog({
             : 'Set up a new isolated modpack profile with a verified modloader.'}
         </DialogDescription>
 
-        <div className="space-y-4">
+        <div className="space-y-4" data-tour="create-instance-form">
           <label className="block">
             <span className="text-sm font-medium">Instance name</span>
             <input
@@ -1296,6 +1304,7 @@ function CreateInstanceDialog({
           <button
             onClick={submit}
             disabled={busy}
+            data-tour="create-instance-submit"
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? 'Creating…' : 'Create'}

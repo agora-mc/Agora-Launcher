@@ -1,11 +1,11 @@
 /**
  * The living background frame — sky gradient, day/night, stars, sun/moon,
  * clouds, parallax ridges, grass strip, weather, and the world's own update
- * and draw. Ported verbatim from v4-world.html's `bgFrame`.
+ * and draw.
  *
  * The engine owns the requestAnimationFrame loop; `skyFrame` renders exactly
- * one frame. `document.hidden` pauses everything (the update loop, the music
- * context, and rAF all stop — prototype trap 2).
+ * one frame. `document.hidden` pauses everything: the update loop, the music
+ * context, and rAF all stop.
  */
 
 import type { EngineState } from './state';

@@ -1,12 +1,11 @@
 /**
  * Presentation capabilities — one capability object derived from the
- * interaction preference, not scattered `if (mode === …)` checks
- * (V5-PORT-PLAN §10).
+ * interaction preference, not scattered `if (mode === …)` checks.
  *
  * Lives at the app boundary (not inside `features/interactive/`) because it
  * maps the interactive preference onto the AMBIENCE profile — and the
- * interactive layer must never import ambience (V5-PORT-PLAN §3). Both the
- * AmbienceCoordinator and any page-level surface read from this table.
+ * interactive layer must never import ambience. Both the AmbienceCoordinator
+ * and any page-level surface read from this table.
  *
  * Note: eggs live in ambience, so Simple mode disabling eggs is expressed by
  * its ambience profile, not by a second switch inside the egg registry.

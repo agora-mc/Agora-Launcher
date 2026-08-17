@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Import-boundary check for the ambience feature (V5-PORT-PLAN §3).
+ * Import-boundary check for the ambience feature.
  *
  * `features/ambience/` is a NEW top-level feature that must never reach into
  * the interactive layer, any page, or the Tauri side:

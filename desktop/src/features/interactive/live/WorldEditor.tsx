@@ -1,10 +1,9 @@
 /**
- * WorldEditor — the High Interaction instance view, ported 1:1 from the
- * v4-world.html foreground (V5-PORT-PLAN §5 phase 4).
+ * WorldEditor — the High Interaction instance view.
  *
  * Hero + shelf + pre-flight health check + crash doctor + advanced drawer +
- * Field Journal. The background ambience is a separate global layer (already
- * ported); this file is the *foreground* only.
+ * Field Journal. The background ambience is a separate global layer; this
+ * file is the *foreground* only.
  *
  * The safety spine is unchanged: selection is the only local state; every
  * mutation-worthy action emits a `VisualIntent` that the host routes to the
@@ -522,7 +521,7 @@ export function WorldEditor({
   const doctorTry = useCallback(() => {
     // The reviewed experiment lives in the Standard CrashInvestigator; the
     // playful entry stays here, the change itself goes through the reviewed
-    // path (V5-PORT-PLAN §0: gestures create intent; operations stay reviewed).
+    // path — gestures create intent, operations stay reviewed.
     setDoctorOpen(false);
     onIntent({ kind: 'open-crash-doctor' });
   }, [onIntent]);

@@ -1,13 +1,12 @@
 /**
  * Presentation preference (versioned, local, safe default).
  *
- * MASTER_ARCHITECTURE §5.2/5.3: High Interaction Mode is a reversible
- * presentation preference, not a data mode. V5-PORT-PLAN §10 adds **Simple**
- * mode: High Interaction's structure (hero play, icon shelf, bounded diagram,
- * pre-flight health check) without the stimulation (no ambience, no eggs, no
- * rarity tiers, no flourish). An unknown persisted value must still fall back
- * to `standard`, so an old build reading a `simple` record degrades safely on
- * its own. Version stays 1.
+ * High Interaction Mode is a reversible presentation preference, not a data
+ * mode. **Simple** mode carries High Interaction's structure (hero play, icon
+ * shelf, bounded diagram, pre-flight health check) without the stimulation
+ * (no ambience, no eggs, no rarity tiers, no flourish). An unknown persisted
+ * value must still fall back to `standard`, so an old build reading a
+ * `simple` record degrades safely on its own. Version stays 1.
  */
 
 export type InteractionPreference = 'standard' | 'simple' | 'high-interaction';

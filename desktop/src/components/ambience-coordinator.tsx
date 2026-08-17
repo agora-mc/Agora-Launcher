@@ -2,10 +2,10 @@
  * AmbienceCoordinator — app-boundary bridge between the presentation
  * preference (interactive/live) and the ambience profile.
  *
- * The interactive layer must never import ambience (V5-PORT-PLAN §3: the
- * permitted outside-in dependency is `AmbienceProvider` reading settings).
- * This component lives at the app boundary, so it may touch both. It forces
- * the ambience profile for the current presentation:
+ * The interactive layer must never import ambience; the permitted outside-in
+ * dependency is `AmbienceProvider` reading settings. This component lives at
+ * the app boundary, so it may touch both. It forces the ambience profile for
+ * the current presentation:
  *
  *  - High Interaction forces at least `calm` and defaults to `full`, since
  *    the living world *is* that mode.
@@ -39,7 +39,7 @@ function overrideFor(activeTab: string): AmbienceProfile | null {
   // High Interaction wants the full living world (music, eggs, buddy, click
   // sparkles) on EVERY page, not just the instances tab. The Lab is the one
   // exception: it drops to `calm` itself while a bench is open so animation
-  // stays a teaching signal (V5-PORT-PLAN §12.1).
+  // stays a teaching signal.
   if (pref === 'high-interaction' && activeTab !== 'lab') {
     return caps.ambience;
   }

@@ -31,6 +31,7 @@ import {
   type GuideTopic,
 } from '../data/guideContent';
 import type { Tab } from '../lib/useDestination';
+import { TourStartButton } from '../features/tour';
 
 const GUIDE_STATE_KEY = 'agora-guide-state';
 const GUIDE_PROGRESS_KEY = 'agora-guide-progress';
@@ -274,6 +275,17 @@ export function Guide({ onNavigateTab, initialTopicId }: { onNavigateTab: (tab: 
           </div>
         </div>
       </header>
+
+      <section className="flex flex-col gap-3 rounded-xl border border-primary/30 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">New here? Take the guided tour</h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            A step-by-step walkthrough of the launcher itself. It highlights one part of the screen
+            at a time while you make an instance, install a mod, and open the instance editor.
+          </p>
+        </div>
+        <TourStartButton className="shrink-0" label="Start the guided tour" />
+      </section>
 
       <section aria-labelledby="guide-start-heading" className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <h2 id="guide-start-heading" className="sr-only">Choose a starting point</h2>

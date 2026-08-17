@@ -3,9 +3,9 @@ import { useState } from 'react';
 /**
  * Unified linear/spatial view switch for interactive visuals.
  *
- * Sol-0 contract: `docs/interactive/VISUAL_LANGUAGE.md` §11 — every canvas has
- * a nearby "List view" or unified mode switch that does not lose selection.
- * The switch is a labeled button pair; switching never resets selection.
+ * Every canvas has a nearby "List view" or unified mode switch that does not
+ * lose selection. The switch is a labeled button pair; switching never resets
+ * selection.
  */
 
 export function useLinearView(initial = false) {

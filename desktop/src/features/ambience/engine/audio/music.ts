@@ -1,15 +1,15 @@
 /**
- * Ambience music engine — ported from `docs/interactive/prototypes/music-preview.html`
- * (the A1 reference engine). The v4-world sketch used a 12th-note grid that
- * cannot represent the data: Moonlight's arpeggios are ⅓ of a beat, Clair de
- * Lune has 0.75 and 4.5. Each voice keeps its own cursor and walks its
- * `[pitch, beats]` list — a fixed grid silently drops every event between
- * slots. (V5-PORT-PLAN trap 6.)
+ * Ambience music engine.
  *
- * Also kept from the prototype, both verbatim in intent:
+ * A fixed-grid clock cannot represent the data: Moonlight's arpeggios are ⅓
+ * of a beat, Clair de Lune has 0.75 and 4.5. Each voice keeps its own cursor
+ * and walks its `[pitch, beats]` list — a fixed grid silently drops every
+ * event between slots.
+ *
+ * Two more rules that must hold:
  *  - Register rolloff + highshelf: equal gain is not equal loudness. Sugar
  *    Plum reaches B7 with 27% of its notes above C6; without the rolloff it
- *    is genuinely painful. (trap 7)
+ *    is genuinely painful.
  *  - Nothing plays before a user gesture; the AudioContext is created and
  *    resumed inside the first play() call.
  *  - `document.hidden` suspends the context (same rule as the world loop).
