@@ -105,7 +105,7 @@
   min-width: 0;
   overflow: hidden;
   color: hsl(var(--card-foreground));
-  font-size: 1rem;
+  font-size: calc(1rem * var(--font-scale));
   font-weight: 650;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -118,7 +118,7 @@
   background: hsl(var(--amber-500) / 0.15);
   color: hsl(var(--amber-700));
   padding: 0.125rem 0.45rem;
-  font-size: 0.625rem;
+  font-size: calc(0.625rem * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -133,7 +133,7 @@
 .browse-versions,
 .browse-recommendation {
   color: hsl(var(--muted-foreground));
-  font-size: 0.75rem;
+  font-size: calc(0.75rem * var(--font-scale));
   line-height: 1.25rem;
 }
 
@@ -161,7 +161,7 @@
   overflow: hidden;
   margin-top: 0.25rem;
   color: hsl(var(--card-foreground) / 0.78);
-  font-size: 0.8125rem;
+  font-size: calc(0.8125rem * var(--font-scale));
   line-height: 1.25rem;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
@@ -181,7 +181,7 @@
   border-radius: 9999px;
   padding: 0.125rem 0.45rem;
   color: hsl(var(--muted-foreground));
-  font-size: 0.625rem;
+  font-size: calc(0.625rem * var(--font-scale));
   line-height: 1rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -211,7 +211,7 @@
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
   padding: 0.4rem 0.75rem;
-  font-size: 0.8125rem;
+  font-size: calc(0.8125rem * var(--font-scale));
   font-weight: 600;
   line-height: 1.25rem;
   transition: opacity 150ms ease;
@@ -225,7 +225,7 @@
   justify-content: center;
   gap: 0.25rem;
   color: hsl(var(--muted-foreground));
-  font-size: 0.6875rem;
+  font-size: calc(0.6875rem * var(--font-scale));
 }
 
 .browse-source-link:hover { color: hsl(var(--foreground)); }
@@ -249,7 +249,7 @@
   .browse-list-card { padding: 1rem; }
   .browse-list-card__layout { grid-template-columns: 4rem minmax(0, 1fr) minmax(11.25rem, 13.75rem); gap: 1rem; }
   .browse-list-card__icon { width: 4rem; height: 4rem; }
-  .browse-card-title { font-size: clamp(1rem, 2.5cqi, 1.1875rem); }
+  .browse-card-title { font-size: calc(clamp(1rem, 2.5cqi, 1.1875rem) * var(--font-scale)); }
   .browse-list-card__side {
     grid-column: auto;
     align-items: stretch;
@@ -338,7 +338,7 @@
   display: -webkit-box;
   overflow: hidden;
   color: hsl(var(--muted-foreground));
-  font-size: 0.8125rem;
+  font-size: calc(0.8125rem * var(--font-scale));
   line-height: 1.25rem;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -359,7 +359,7 @@
   background: hsl(var(--secondary));
   padding: 0.125rem 0.45rem;
   color: hsl(var(--secondary-foreground));
-  font-size: 0.625rem;
+  font-size: calc(0.625rem * var(--font-scale));
   text-overflow: ellipsis;
   text-transform: capitalize;
   white-space: nowrap;

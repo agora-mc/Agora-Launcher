@@ -15,6 +15,7 @@ import {
 } from '../features/interactive/live/presentationPreference';
 import { openBridge } from '../features/interactive/live/operationBridges';
 import type { LiveReviewRoute } from '../features/interactive/live/operationBridges';
+import type { StandardDestination } from '../features/interactive/domain/intents';
 import type { BatchInstallItem, InstallIntent } from '../lib/installFlow';
 import {
   getInstanceDetail,
@@ -1215,6 +1216,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           presentation={presentation}
           leading={<BackButton onBack={onBack} />}
           onUseStandardView={() => setPresentationPref('standard')}
+          onNavigateStandard={(destination: StandardDestination) => {
+            // Full details are the same Standard ModDetail surface used by
+            // the ordinary editor. Leave the live host before navigation so
+            // it cannot retain stale selection or launch state underneath.
+            if (destination.type === 'mod-detail') {
+              leaveInteractiveForBridge();
+              onOpenModDetail?.(destination.itemId);
+            } else {
+              setPresentationPref('standard');
+            }
+          }}
           onOpenStandardOperation={(route: LiveReviewRoute) => {
             // Narrow, typed contextual bridges: each re-reads/re-resolves live
             // data on the STANDARD surface before the operation opens.
@@ -1308,6 +1320,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }}
           processState={processState}
           installActive={packInstall?.status === 'running'}
+          launchAvailable={!playDisabled}
           onLaunch={async () => {
             if (!onLaunch || playDisabled) return;
             setPlayBusy(true);

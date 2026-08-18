@@ -23,7 +23,8 @@ export interface EditorItem {
   optional: string[];
   missing: boolean;
   rarity: 'common' | 'rare' | 'epic' | 'legendary';
-  catalogIds?: { registryId: string | null; modrinthId: string | null };
+  iconUrl?: string;
+  catalogIds?: { registryId: string | null; modrinthId: string | null; modJarId?: string | null };
   /** Whether the content is installed in the instance. */
   presence: 'installed' | 'not-installed';
 }
@@ -79,6 +80,7 @@ export function buildEditorData(scene: VisualScene, hasCrash: boolean): EditorDa
       neededBy,
       optional,
       missing: node.health === 'needs-attention' || node.health === 'blocked',
+      ...(node.iconUrl ? { iconUrl: node.iconUrl } : {}),
       ...(node.catalogIds ? { catalogIds: node.catalogIds } : {}),
       rarity: requiredByCount >= 10 ? 'legendary' : requiredByCount >= 4 ? 'epic' : requiredByCount >= 1 ? 'rare' : 'common',
       presence: node.presence.current === 'installed' ? 'installed' : 'not-installed',

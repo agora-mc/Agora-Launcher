@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   listJavaRuntimes: vi.fn(),
   getDependencyGraph: vi.fn(),
   listInstances: vi.fn(),
+  listInstanceContent: vi.fn(),
+  enrichInstanceContent: vi.fn(),
 }));
 
 vi.mock('@/lib/tauri', () => ({
@@ -32,6 +34,8 @@ vi.mock('@/lib/tauri', () => ({
   listJavaRuntimes: mocks.listJavaRuntimes,
   getDependencyGraph: mocks.getDependencyGraph,
   listInstances: mocks.listInstances,
+  listInstanceContent: mocks.listInstanceContent,
+  enrichInstanceContent: mocks.enrichInstanceContent,
 }));
 
 import { defaultLiveLoad } from './LiveInteractiveHost';
@@ -147,6 +151,8 @@ beforeEach(() => {
   mocks.recommendInstanceMemory.mockResolvedValue(memory);
   mocks.listJavaRuntimes.mockResolvedValue(javas);
   mocks.getDependencyGraph.mockResolvedValue([]);
+  mocks.listInstanceContent.mockResolvedValue([]);
+  mocks.enrichInstanceContent.mockResolvedValue([]);
 });
 
 describe('live default loader failure semantics (SOL-2 BLOCKER 4/D)', () => {

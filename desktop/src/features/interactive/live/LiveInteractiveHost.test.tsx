@@ -344,6 +344,50 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     expect(onUseStandardView).toHaveBeenCalledTimes(1);
   });
 
+  it('opens Standard mod details with the installed catalogue identity', async () => {
+    const onNavigateStandard = vi.fn();
+    const scene = baseScene();
+    scene.content = [contentNode({
+      id: 'live:content:mod:sodium.jar',
+      name: 'Sodium',
+      catalogIds: { registryId: 'sodium', modrinthId: null, modJarId: 'sodium-jar' },
+    })];
+    const load = vi.fn(async (): Promise<LiveHostData> => makeData(scene));
+    render(
+      <LiveInteractiveHost
+        instanceId="inst-1"
+        onUseStandardView={() => undefined}
+        onNavigateStandard={onNavigateStandard}
+        load={load}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sodium/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Sodium/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open full details' }));
+    await waitFor(() => expect(onNavigateStandard).toHaveBeenCalledWith({
+      type: 'mod-detail',
+      itemId: 'sodium',
+    }));
+  });
+
+  it('does not treat a user-locked pack as a play blocker', async () => {
+    const load = vi.fn(async (): Promise<LiveHostData> => makeData({
+      instance: { ...baseScene().instance!, lockState: 'locked-by-player' },
+    }));
+    const onLaunch = vi.fn();
+    render(
+      <LiveInteractiveHost
+        instanceId="inst-1"
+        onUseStandardView={() => undefined}
+        load={load}
+        onLaunch={onLaunch}
+        launchAvailable
+      />,
+    );
+    await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByRole('button', { name: 'Play this world' })).toBeEnabled();
+  });
+
   it('canonical busy is reversible: idle -> launching -> idle clears busy (never sticky)', async () => {
     const load = vi.fn(async (): Promise<LiveHostData> => makeData());
     const { rerender } = render(

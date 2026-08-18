@@ -27,13 +27,13 @@
 }
 
 .bazaar-header h1 {
-  font-size: 22px;
+  font-size: calc(22px * var(--font-scale));
   margin: 0;
 }
 
 .bazaar-sub {
   color: hsl(var(--muted-foreground));
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--font-scale));
 }
 
 .bazaar-header-right {
@@ -46,7 +46,7 @@
 
 .bazaar-back {
   font: inherit;
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--font-scale));
   font-weight: 700;
   border: 1px solid hsl(var(--border));
   border-radius: 999px;
@@ -73,7 +73,7 @@
   transition: transform 0.12s, border-color 0.15s, background 0.15s;
 }
 
-.bazaar-pack b { font-size: 16px; }
+.bazaar-pack b { font-size: calc(16px * var(--font-scale)); }
 .bazaar-pack:hover { transform: translateY(-1px); border-color: hsl(var(--primary)); background: hsl(var(--primary) / 0.22); }
 
 /* market stalls */
@@ -89,7 +89,7 @@
   align-items: center;
   gap: 8px;
   font: inherit;
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--font-scale));
   font-weight: 600;
   color: hsl(var(--muted-foreground));
   background: hsl(var(--card) / 0.7);
@@ -131,11 +131,11 @@
   border-radius: 12px;
   background: hsl(var(--muted) / 0.4);
 }
-.bazaar-gacha b { display: block; margin-top: 6px; font-size: 14px; }
+.bazaar-gacha b { display: block; margin-top: 6px; font-size: calc(14px * var(--font-scale)); }
 .bazaar-gacha-btn {
   font: inherit;
   font-weight: 700;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   border: 0;
   border-radius: 12px;
   padding: 10px 16px;
@@ -146,7 +146,7 @@
   box-shadow: 0 3px 0 hsl(var(--primary) / 0.45);
 }
 .bazaar-gacha-btn:disabled { opacity: 0.6; cursor: default; }
-.bazaar-gacha .bazaar-gacha-hint { color: hsl(var(--muted-foreground)); font-size: 11.8px; margin-bottom: 2px; display: block; }
+.bazaar-gacha .bazaar-gacha-hint { color: hsl(var(--muted-foreground)); font-size: calc(11.8px * var(--font-scale)); margin-bottom: 2px; display: block; }
 
 .bazaar-vibes {
   flex: 1 1 320px;
@@ -158,7 +158,7 @@
 
 .bazaar-vibe-h {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   letter-spacing: 0.7px;
   text-transform: uppercase;
   color: hsl(var(--muted-foreground));
@@ -166,7 +166,7 @@
 
 .bazaar-vibe-note {
   margin: 0 0 10px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale));
   color: hsl(var(--muted-foreground));
 }
 
@@ -187,7 +187,7 @@
 }
 
 .bazaar-vibe-label {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 700;
   color: hsl(var(--muted-foreground));
   text-transform: capitalize;
@@ -197,7 +197,7 @@
 .bazaar-vibe-fill { height: 100%; border-radius: 99px; transition: width 0.5s; }
 .bazaar-vibe-fill.pos { background: linear-gradient(90deg, hsl(174 52% 48%), hsl(120 60% 48%)); }
 .bazaar-vibe-fill.neg { background: linear-gradient(90deg, hsl(var(--destructive)), hsl(20 80% 55%)); }
-.bazaar-vibe-val { font-size: 11px; color: hsl(var(--muted-foreground)); text-align: right; }
+.bazaar-vibe-val { font-size: calc(11px * var(--font-scale)); color: hsl(var(--muted-foreground)); text-align: right; }
 
 /* shelf */
 .bazaar-shelf {
@@ -211,7 +211,7 @@
   grid-column: 1 / -1;
   text-align: center;
   color: hsl(var(--muted-foreground));
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   padding: 34px 10px;
 }
 
@@ -220,7 +220,7 @@
   text-align: center;
   padding: 18px 0 6px;
   color: hsl(var(--muted-foreground));
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
 }
 
 .bazaar-tile {
@@ -266,7 +266,7 @@
 .bazaar-tile-name {
   display: block;
   margin-top: 8px;
-  font-size: 13.8px;
+  font-size: calc(13.8px * var(--font-scale));
   font-weight: 700;
   text-align: left;
   border: 0;
@@ -278,11 +278,11 @@
   line-height: 1.25;
 }
 
-.bazaar-tile-by { display: block; color: hsl(var(--muted-foreground)); font-size: 11.5px; }
+.bazaar-tile-by { display: block; color: hsl(var(--muted-foreground)); font-size: calc(11.5px * var(--font-scale)); }
 
 .bazaar-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
 .bazaar-tag {
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   padding: 1px 7px;
   border-radius: 99px;
   background: hsl(var(--muted) / 0.6);
@@ -296,7 +296,7 @@
   transform: rotate(-38deg);
   width: 110px;
   text-align: center;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 800;
   letter-spacing: 0.6px;
   padding: 2px 0;
@@ -308,7 +308,7 @@
 
 .bazaar-fit {
   display: block;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 600;
   margin-top: 6px;
   line-height: 1.3;
@@ -319,7 +319,7 @@
 .bazaar-vote { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
 .bazaar-vote-btn {
   font: inherit;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -335,13 +335,13 @@
 .bazaar-vote-btn:hover { border-color: hsl(var(--ring)); }
 .bazaar-vote-btn.yes.on { background: hsl(var(--primary) / 0.2); border-color: hsl(var(--primary)); }
 .bazaar-vote-btn.no.on { background: hsl(var(--destructive) / 0.2); border-color: hsl(var(--destructive)); }
-.bazaar-score { font-size: 10.5px; font-weight: 800; color: hsl(174 52% 40%); margin-left: auto; }
+.bazaar-score { font-size: calc(10.5px * var(--font-scale)); font-weight: 800; color: hsl(174 52% 40%); margin-left: auto; }
 /* Hearts read as a personal shelf preference, never as Agora's public vote. */
 .bazaar-vote-btn.yes.on { color: hsl(340 70% 55%); }
 
 .bazaar-add {
   font: inherit;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 700;
   border: 1px solid hsl(var(--border));
   background: hsl(var(--card));
@@ -353,7 +353,7 @@
 }
 .bazaar-add:hover:not(:disabled) { background: hsl(var(--accent) / 0.6); border-color: hsl(var(--ring)); }
 .bazaar-add:disabled { opacity: 0.55; cursor: default; }
-.bazaar-add.big { font-size: 13px; padding: 10px 16px; border-radius: 12px; width: 100%; margin-left: 0; }
+.bazaar-add.big { font-size: calc(13px * var(--font-scale)); padding: 10px 16px; border-radius: 12px; width: 100%; margin-left: 0; }
 .bazaar-add.ghost { background: transparent; color: hsl(var(--muted-foreground)); margin-left: 0; }
 
 /* detail */
@@ -391,9 +391,9 @@
 
 .bazaar-detail-art img { width: 100%; height: 100%; object-fit: cover; }
 
-.bazaar-detail-name { margin: 12px 0 2px; font-size: 21px; }
-.bazaar-detail-by { color: hsl(var(--muted-foreground)); font-size: 13px; margin: 0; }
-.bazaar-detail-desc { font-size: 14px; }
+.bazaar-detail-name { margin: 12px 0 2px; font-size: calc(21px * var(--font-scale)); }
+.bazaar-detail-by { color: hsl(var(--muted-foreground)); font-size: calc(13px * var(--font-scale)); margin: 0; }
+.bazaar-detail-desc { font-size: calc(14px * var(--font-scale)); }
 
 .bazaar-fit-line {
   display: flex;
@@ -402,7 +402,7 @@
   margin-top: 12px;
   padding: 10px 12px;
   border-radius: 12px;
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--font-scale));
   background: hsl(120 60% 48% / 0.12);
   border: 1px solid hsl(120 60% 48% / 0.35);
 }
@@ -437,7 +437,7 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s, transform 0.2s;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
 }
 .bazaar-toast.show { opacity: 1; transform: translate(-50%, 0); }
 

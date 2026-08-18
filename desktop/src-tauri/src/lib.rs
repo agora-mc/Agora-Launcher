@@ -18,6 +18,7 @@ pub mod paths;
 pub mod registry;
 pub mod registry_sync;
 pub use agora_core::state;
+pub mod technic;
 pub mod version_cache;
 
 use state::LauncherState;
@@ -160,6 +161,10 @@ pub fn run() {
             commands::list_modrinth_game_versions,
             commands::list_raw_modrinth_versions,
             commands::fetch_modrinth_project,
+            technic::technic_search,
+            technic::technic_pack_detail,
+            technic::install_technic_solder_pack,
+            technic::install_technic_zip_pack,
             commands::list_under_review_items,
             commands::list_recent_resolutions,
             commands::list_mod_reviews,

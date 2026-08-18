@@ -18,6 +18,18 @@ pub fn sha1_hex(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Lowercase MD5 hex digest of a byte slice.
+///
+/// MD5 is collision-broken; it is used only as a transport-integrity check for
+/// third-party content (Technic Solder) where the sender reports an MD5, never
+/// as an authenticity guarantee.
+pub fn md5_hex(data: &[u8]) -> String {
+    use md5::Digest as _;
+    let mut hasher = md5::Md5::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
 /// Produce a canonical serialization of a JSON value for stable hashing.
 ///
 /// Sorts object keys recursively, drops `time` and `releaseTime` fields (which
@@ -137,6 +149,30 @@ pub async fn download_consented_bytes_standalone(url: &str) -> LauncherResult<Ve
         message: format!("Failed to initialize HTTP clients: {e}"),
     })?;
     download_consented_bytes(&clients, url).await
+}
+
+/// Blocking variant of [`download_consented_bytes`] for synchronous import
+/// workers. Same consent contract and the same per-fetch audit log.
+pub fn download_consented_bytes_blocking(url: &str) -> LauncherResult<Vec<u8>> {
+    let host = reqwest::Url::parse(url)
+        .map_err(|_| LauncherError::UntrustedSource)?
+        .host_str()
+        .unwrap_or("")
+        .to_string();
+    eprintln!(
+        "[consented-content] fetch host={host} url={}",
+        crate::network::sanitized_url_for_log(url)
+    );
+    let clients = HttpClients::new().map_err(|e| LauncherError::Generic {
+        code: "ERR_HTTP_CLIENT_INIT".into(),
+        message: format!("Failed to initialize HTTP clients: {e}"),
+    })?;
+    http_client::blocking_checked_get_bytes_with_policy(
+        &clients,
+        ClientCategory::ConsentedContent,
+        url,
+        http_client::HostPolicy::UserConsented,
+    )
 }
 
 /// Download a complete modpack archive through the stricter pack host

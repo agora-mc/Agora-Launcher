@@ -17,9 +17,10 @@ import { WorldEditor } from './WorldEditor';
 import type { LiveHostData } from './LiveSceneView';
 import type { VisualScene } from '../domain/models';
 
-function node(id: string, name: string) {
+function node(id: string, name: string, iconUrl?: string) {
   return {
     id, name, kind: 'mod' as const,
+    ...(iconUrl ? { iconUrl } : {}),
     presence: { current: 'installed' as const },
     enabled: { current: true },
     health: 'healthy' as const,
@@ -137,5 +138,15 @@ describe('WorldEditor dependency curves', () => {
     const svg = document.querySelector('.we-links');
     expect(svg).not.toBeNull();
     expect(svg?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('renders a resolved mod icon inside the gradient tile frame', () => {
+    const scene = sceneWith('icon-mod.jar', ['other.jar']);
+    scene.content[0].iconUrl = 'https://cdn.example.test/icon.png';
+    renderEditor(scene);
+    const icon = document.querySelector('.we-slot[data-name="icon-mod.jar"] img');
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute('src', 'https://cdn.example.test/icon.png');
+    expect(icon?.parentElement).toHaveClass('tile-art');
   });
 });

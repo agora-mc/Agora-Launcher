@@ -9,7 +9,13 @@
  * Read-only by construction: no mutation command is called here.
  */
 
-import { fetchModrinthProject, getRegistryItem, isModrinthEnabled } from '@/lib/tauri';
+import {
+  enrichInstanceContent,
+  fetchModrinthProject,
+  getRegistryItem,
+  isModrinthEnabled,
+  listInstanceContent,
+} from '@/lib/tauri';
 import type {
   CrashInvestigation,
   DependencyEdge,
@@ -59,6 +65,15 @@ function isInstanceLevel(finding: { filename: string | null; mod_id: string | nu
 
 const CONTENT_EXTENSIONS = /\.(jar|zip)(\.disabled)?$/i;
 const LOADER_TOKENS = /^(fabric|forge|quilt|neoforge|neo|mc|minecraft|all)$/i;
+
+export interface ContentIcon {
+  filename: string;
+  iconUrl: string;
+}
+
+function safeIconUrl(value: unknown): string | null {
+  return typeof value === 'string' && value.startsWith('https://') ? value : null;
+}
 
 /**
  * Human-readable label derived from a content filename.
@@ -150,9 +165,11 @@ export function contentToVisual(
    * so every item came out `common`.
    */
   dependencyEdges: DependencyEdge[] = [],
+  contentIcons: ContentIcon[] = [],
 ): { content: import('../../domain/models').VisualContentNode[]; relationships: VisualRelationship[] } {
   const manifest = detail.manifest;
   const mods = manifest?.mods ?? [];
+  const iconByFilename = new Map(contentIcons.map((icon) => [icon.filename, icon.iconUrl]));
   const content = mods.map((mod) => {
     const id = nodeIdFor(mod.content_type, mod.filename);
     // When the health read failed we do NOT mark nodes healthy from absence
@@ -182,10 +199,15 @@ export function contentToVisual(
       // derived label so the derivation is never mistaken for a real name.
       ...(derivedName ? { fileLabel: mod.filename } : {}),
       kind: (mod.content_type as import('../../domain/models').ContentKind) ?? 'mod',
+      ...(iconByFilename.has(mod.filename) ? { iconUrl: iconByFilename.get(mod.filename) } : {}),
       ...(mod.version ? { version: { current: mod.version } } : {}),
       presence: { current: 'installed' as const },
       enabled: { current: mod.enabled },
-      catalogIds: { registryId: mod.registry_id, modrinthId: mod.modrinth_id },
+      catalogIds: {
+        registryId: mod.registry_id,
+        modrinthId: mod.modrinth_id,
+        modJarId: mod.mod_jar_id ?? null,
+      },
       health: finding as 'healthy' | 'needs-attention' | 'blocked' | 'unknown',
       relationshipSummary: { requiredBy: 0, requires: 0, conflicts: 0 },
       availability: 'available' as const,
@@ -350,6 +372,29 @@ export function healthToVisual(report: HealthReport): VisualHealthFinding[] {
   return findings;
 }
 
+/**
+ * Fetch the same batched installed-content metadata used by the Standard
+ * editor, but keep it as an optional visual enhancement. A missing inventory
+ * or Modrinth response must not make the live scene non-executable.
+ */
+export async function readContentIcons(instanceId: string): Promise<ContentIcon[]> {
+  const [inventoryResult, metadataResult] = await Promise.allSettled([
+    listInstanceContent(instanceId, 'mod'),
+    enrichInstanceContent(instanceId),
+  ]);
+  const inventory = inventoryResult.status === 'fulfilled' && Array.isArray(inventoryResult.value)
+    ? inventoryResult.value
+    : [];
+  const metadataByKey = new Map<string, string | null>();
+  if (metadataResult.status === 'fulfilled' && Array.isArray(metadataResult.value)) {
+    for (const entry of metadataResult.value) metadataByKey.set(entry.key, entry.icon_url);
+  }
+  return inventory.flatMap((row) => {
+    const iconUrl = safeIconUrl(row.icon_url) ?? safeIconUrl(metadataByKey.get(row.key));
+    return iconUrl ? [{ filename: row.filename, iconUrl }] : [];
+  });
+}
+
 // --- Snapshot timeline ---
 export function snapshotsToVisual(rows: Snapshot[], available = true): VisualSnapshot[] {
   return rows.map((row) => {
@@ -482,12 +527,18 @@ export const EMPTY_CONTENT_DETAIL: ContentDetail = {
 export async function readContentDetail(
   registryId: string | null,
   modrinthId: string | null,
+  fallbackId: string | null = null,
 ): Promise<ContentDetail> {
   let out: ContentDetail = { ...EMPTY_CONTENT_DETAIL };
-  if (registryId) {
+  const registryLookupId = registryId ?? fallbackId;
+  let registryResolved = false;
+  let resolvedModrinthId = modrinthId;
+  if (registryLookupId) {
     try {
-      const item = await getRegistryItem(registryId);
+      const item = await getRegistryItem(registryLookupId);
       if (item) {
+        registryResolved = true;
+        resolvedModrinthId = resolvedModrinthId ?? item.modrinth_id ?? null;
         out = {
           description: item.description ?? null,
           categories: [],
@@ -501,10 +552,11 @@ export async function readContentDetail(
   }
   // Categories only exist on the Modrinth side, so ask for them even when Agora
   // already supplied the prose.
-  if (modrinthId && (out.categories.length === 0 || !out.description)) {
+  const modrinthLookupId = resolvedModrinthId ?? (!registryResolved ? registryLookupId : null);
+  if (modrinthLookupId && (out.categories.length === 0 || !out.description)) {
     try {
       if (await isModrinthEnabled()) {
-        const project = await fetchModrinthProject(modrinthId);
+        const project = await fetchModrinthProject(modrinthLookupId);
         out = {
           description: out.description ?? project.description ?? null,
           categories: project.categories ?? [],

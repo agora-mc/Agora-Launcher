@@ -33,7 +33,7 @@ import type {
   VisualProposal,
   VisualScene,
 } from '../domain/models';
-import type { VisualIntent } from '../domain/intents';
+import type { StandardDestination, VisualIntent } from '../domain/intents';
 import type { InteractionPreference } from './presentationPreference';
 import { liveHighInteractionCapabilities } from './liveCapabilities';
 import { nextRevision, liveSource } from './freshness';
@@ -46,7 +46,7 @@ import {
   err,
   type LiveReads,
 } from './liveScene';
-import { readContentDetail, EMPTY_CONTENT_DETAIL, type ContentDetail } from './readAdapters';
+import { readContentDetail, readContentIcons, EMPTY_CONTENT_DETAIL, type ContentDetail } from './readAdapters';
 import { crashToVisual, runtimeToVisual, snapshotsToVisual } from './readAdapters';
 import { routeLiveIntent } from './intentController';
 import type { AvailabilityInput } from './intentController';
@@ -100,14 +100,19 @@ export function defaultLiveLoad(
       });
     });
   }
-  return Promise.all([essential, enrichment]).then(([reads, extra]) =>
-    buildHostData({ ...reads, ...extra }),
+  const icons = readContentIcons(instanceId);
+  return Promise.all([essential, enrichment, icons]).then(([reads, extra, contentIcons]) =>
+    buildHostData({ ...reads, ...extra }, contentIcons),
   );
 }
 
 /** Assemble `LiveHostData` from the fragment reads, preserving availability. */
-export function buildHostData(reads: LiveReads): LiveHostData {
-  const scene = assembleLiveScene(reads.detail.status === 'ok' ? reads.detail.value?.row.instance_id ?? '' : '', reads);
+export function buildHostData(reads: LiveReads, contentIcons: import('./readAdapters').ContentIcon[] = []): LiveHostData {
+  const scene = assembleLiveScene(
+    reads.detail.status === 'ok' ? reads.detail.value?.row.instance_id ?? '' : '',
+    reads,
+    contentIcons,
+  );
   return {
     scene,
     health: reads.health.status === 'ok' ? ok(true) : err<boolean>(),
@@ -155,6 +160,7 @@ export interface LiveInteractiveHostProps {
    */
   leading?: React.ReactNode;
   onOpenStandardOperation?: (route: LiveReviewRoute) => void;
+  onNavigateStandard?: (destination: StandardDestination) => void;
   load?: LiveHostLoad;
   capabilities?: CapabilityFlags;
   reducedMotion?: boolean;
@@ -167,6 +173,8 @@ export interface LiveInteractiveHostProps {
   installActive?: boolean;
   /** Runs the real launch (the Standard launch flow) from the Play button. */
   onLaunch?: () => Promise<void> | void;
+  /** Mirrors the Standard editor's complete launch gate, including local busy state. */
+  launchAvailable?: boolean;
 }
 
 /** Map every canonical process phase conservatively onto the visual model. */
@@ -240,6 +248,7 @@ export function LiveInteractiveHost({
   onUseStandardView,
   leading,
   onOpenStandardOperation,
+  onNavigateStandard,
   load = defaultLiveLoad,
   capabilities = liveHighInteractionCapabilities(),
   reducedMotion = false,
@@ -247,6 +256,7 @@ export function LiveInteractiveHost({
   processState = null,
   installActive = false,
   onLaunch,
+  launchAvailable = true,
 }: LiveInteractiveHostProps) {
   const [state, setState] = useState<LiveHostState>({ kind: 'loading' });
   const [selection, setSelection] = useState<VisualId | null>(null);
@@ -357,13 +367,13 @@ export function LiveInteractiveHost({
     if (!selection) { setSelectedDetail(EMPTY_CONTENT_DETAIL); return; }
     const node = displayData?.scene.content.find((n) => n.id === selection);
     const ids = node?.catalogIds;
-    if (!ids || (!ids.registryId && !ids.modrinthId)) {
+    if (!ids || (!ids.registryId && !ids.modrinthId && !ids.modJarId)) {
       setSelectedDetail(EMPTY_CONTENT_DETAIL);
       return;
     }
     let cancelled = false;
     setSelectedDetail(EMPTY_CONTENT_DETAIL);
-    void readContentDetail(ids.registryId, ids.modrinthId).then((detail) => {
+    void readContentDetail(ids.registryId, ids.modrinthId, ids.modJarId ?? null).then((detail) => {
       if (!cancelled) setSelectedDetail(detail);
     });
     return () => { cancelled = true; };
@@ -423,7 +433,8 @@ export function LiveInteractiveHost({
         return; // the visual should not have offered it; nothing executes
       }
       if (route.status === 'navigate') {
-        return; // navigation to standard destinations is out of scope here
+        if (intent.kind === 'open-standard') onNavigateStandard?.(intent.destination);
+        return; // Standard navigation is owned by the page host.
       }
 
       // review: record an in-review proposal so the controller's duplicate
@@ -473,7 +484,7 @@ export function LiveInteractiveHost({
       }
       onOpenStandardOperation?.(reviewRoute);
     },
-    [state, displayData, capabilities, instanceId, installActive, onOpenStandardOperation, refresh],
+    [state, displayData, capabilities, instanceId, installActive, onOpenStandardOperation, onNavigateStandard, refresh],
   );
 
   return (
@@ -539,7 +550,9 @@ export function LiveInteractiveHost({
           onSelect={setSelection}
           onIntent={handleIntent}
           onUseStandardView={onUseStandardView}
+          onNavigateStandard={onNavigateStandard}
           onLaunch={onLaunch}
+          launchAvailable={launchAvailable}
           reducedMotion={reducedMotion}
           presentation={presentation}
           pending={state.kind === 'scene' && state.pending}

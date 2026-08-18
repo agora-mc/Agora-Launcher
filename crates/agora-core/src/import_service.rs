@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 /// Typed import source.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ImportSource {
     /// A `.mrpack` (Modrinth modpack) file.
     Mrpack(PathBuf),
@@ -29,6 +30,11 @@ pub enum ImportSource {
         /// Target instance ID to install into.
         target_instance_id: String,
     },
+    /// A resolved Technic Solder pack (Tier S). Downloads each mod with MD5
+    /// verification (when reported) through the consented-content policy.
+    TechnicSolder(crate::import::TechnicSolderPack),
+    /// A consented Technic zip archive (Tier Z, or Tier C when SHA-256-pinned).
+    TechnicZip(crate::import::TechnicZipPack),
 }
 
 /// Import configuration passed to [`ImportService::run_import`].
@@ -147,7 +153,10 @@ impl ImportService {
     ) -> LauncherResult<ImportResult> {
         let op = self.ctx.operation_manager.register("Import instance");
         let op_id = op.id().clone();
-        let is_modpack = matches!(request.source, ImportSource::Mrpack(_));
+        let is_modpack = matches!(
+            request.source,
+            ImportSource::Mrpack(_) | ImportSource::TechnicSolder(_) | ImportSource::TechnicZip(_)
+        );
 
         // Check cancellation, keeping external and operation-manager tokens
         // coherent.  If the external token has been fired we also cancel the
@@ -181,6 +190,16 @@ impl ImportService {
             ImportSource::PrismZip(p) => format!("Extracting Prism zip: {}", p.display()),
             ImportSource::Directory(d) => format!("Copying directory: {}", d.display()),
             ImportSource::PackManifest { .. } => "Preparing pack manifest…".into(),
+            ImportSource::TechnicSolder(pack) => {
+                format!(
+                    "Installing Technic pack '{}', downloading {} mods…",
+                    pack.display_name,
+                    pack.mods.len()
+                )
+            }
+            ImportSource::TechnicZip(pack) => {
+                format!("Installing Technic pack '{}'…", pack.display_name)
+            }
         };
         sink.report(ProgressEvent::new(
             op_id.clone(),
@@ -216,6 +235,12 @@ impl ImportService {
                 message: "PackManifest imports must use ImportService::install_pack (async)."
                     .into(),
             }),
+            ImportSource::TechnicSolder(pack) => {
+                crate::import::import_technic_solder_pack(&pack, &blocking_instances_root)
+            }
+            ImportSource::TechnicZip(pack) => {
+                crate::import::import_technic_zip_pack(&pack, &blocking_instances_root)
+            }
         })
         .await
         {

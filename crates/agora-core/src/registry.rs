@@ -26,8 +26,13 @@ use std::collections::{HashMap, HashSet};
 /// Filtering is a **whitelist** of enabled strategies: any strategy an
 /// entry might carry that is not listed here (or not enabled by the user)
 /// is hidden — fail closed, never fail open.
-pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 4] =
-    ["modrinth_id", "github_release", "direct_hash", "curated_pack"];
+pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 5] = [
+    "modrinth_id",
+    "github_release",
+    "direct_hash",
+    "curated_pack",
+    "technic_pack",
+];
 
 /// Build the SQL whitelist fragment + params for the enabled curated
 /// strategies. Entries whose strategy is not in the enabled list are hidden.
@@ -41,7 +46,10 @@ fn curated_strategy_whitelist(enabled: &[String]) -> (Option<String>, Vec<String
         return (Some("1 = 0".into()), Vec::new());
     }
     let placeholders = allowed.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    (Some(format!("ri.download_strategy IN ({placeholders})")), allowed)
+    (
+        Some(format!("ri.download_strategy IN ({placeholders})")),
+        allowed,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2154,9 +2162,18 @@ mod tests {
         let dir = temp_registry_db();
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let sort = SortOption::NetScore;
-        let items =
-            browse_items(&conn, None, None, &sort, &all_curated_strategies(), None, None, None, 100)
-                .unwrap();
+        let items = browse_items(
+            &conn,
+            None,
+            None,
+            &sort,
+            &all_curated_strategies(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Test Mod 1");
     }
@@ -2274,19 +2291,53 @@ mod tests {
         .unwrap();
         let sort = SortOption::NetScore;
 
-        let all = browse_items(&conn, None, None, &sort, &all_curated_strategies(), None, None, None, 100)
-            .unwrap();
-        assert_eq!(all.len(), 3, "all curated sources enabled shows every strategy");
+        let all = browse_items(
+            &conn,
+            None,
+            None,
+            &sort,
+            &all_curated_strategies(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            all.len(),
+            3,
+            "all curated sources enabled shows every strategy"
+        );
 
         let no_modrinth: Vec<String> = vec!["github_release".into(), "direct_hash".into()];
-        let filtered =
-            browse_items(&conn, None, None, &sort, &no_modrinth, None, None, None, 100).unwrap();
+        let filtered = browse_items(
+            &conn,
+            None,
+            None,
+            &sort,
+            &no_modrinth,
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(filtered.len(), 2);
         assert!(!filtered.iter().any(|item| item.id == "mr-mod"));
 
         let only_direct: Vec<String> = vec!["direct_hash".into()];
-        let direct =
-            browse_items(&conn, None, None, &sort, &only_direct, None, None, None, 100).unwrap();
+        let direct = browse_items(
+            &conn,
+            None,
+            None,
+            &sort,
+            &only_direct,
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
         assert_eq!(direct.len(), 1);
         assert_eq!(direct[0].id, "dh-mod");
 
@@ -2631,18 +2682,17 @@ mod tests {
         let dir = temp_registry_db();
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let installed = HashSet::new();
-        let items =
-            for_you_items_query(
-                &conn,
-                &installed,
-                &all_curated_strategies(),
-                None,
-                None,
-                100,
-                None,
-                None
-            )
-            .unwrap();
+        let items = for_you_items_query(
+            &conn,
+            &installed,
+            &all_curated_strategies(),
+            None,
+            None,
+            100,
+            None,
+            None,
+        )
+        .unwrap();
         // test-mod-1 is the only item and net_score 8
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Test Mod 1");
@@ -2660,18 +2710,17 @@ mod tests {
         let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
         let mut installed = HashSet::new();
         installed.insert("test-mod-1".to_string());
-        let items =
-            for_you_items_query(
-                &conn,
-                &installed,
-                &all_curated_strategies(),
-                None,
-                None,
-                100,
-                None,
-                None
-            )
-            .unwrap();
+        let items = for_you_items_query(
+            &conn,
+            &installed,
+            &all_curated_strategies(),
+            None,
+            None,
+            100,
+            None,
+            None,
+        )
+        .unwrap();
         // test-mod-1 should be filtered out, leaving none
         assert!(items.is_empty());
     }
@@ -2837,18 +2886,17 @@ mod tests {
         let mut installed = HashSet::new();
         installed.insert("installed-mod".to_string());
 
-        let items =
-            for_you_items_query(
-                &conn,
-                &installed,
-                &all_curated_strategies(),
-                None,
-                None,
-                100,
-                None,
-                None
-            )
-            .unwrap();
+        let items = for_you_items_query(
+            &conn,
+            &installed,
+            &all_curated_strategies(),
+            None,
+            None,
+            100,
+            None,
+            None,
+        )
+        .unwrap();
 
         // rec-2 has overlap 2 (fabric + adventure), rec-1 has overlap 1 (fabric)
         assert_eq!(items.len(), 2, "should return both uninstalled items");

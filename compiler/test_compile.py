@@ -146,6 +146,8 @@ class TestValidateDownloadStrategy(unittest.TestCase):
         return item
 
     def test_known_strategies_pass_through(self):
+        # hand-pinned strategies (direct_hash, technic_pack) are validated
+        # separately below with their full contract
         for strategy in ("github_release", "modrinth_id", "curated_pack"):
             item = {"id": "x", "download_strategy": strategy}
             self.assertEqual(_compile.validate_download_strategy(item), strategy)
@@ -206,6 +208,68 @@ class TestValidateDownloadStrategy(unittest.TestCase):
                 _compile.validate_download_strategy(
                     self._direct_hash(compatible_versions=[entry])
                 )
+
+    @staticmethod
+    def _technic_pack(**overrides):
+        item = {
+            "id": "technic-promoted-pack",
+            "download_strategy": "technic_pack",
+            "source_identifier": "http://192.99.59.1/files/pack.zip",
+            "compatible_versions": [
+                {"mc_version": "1.21.1", "loader": "forge", "mod_version": "1.0.0"}
+            ],
+        }
+        item.update(overrides)
+        return item
+
+    def test_complete_technic_pack_accepted(self):
+        self.assertEqual(
+            _compile.validate_download_strategy(self._technic_pack()), "technic_pack"
+        )
+
+    def test_technic_pack_permits_plain_http(self):
+        # The curator-pinned SHA-256 is out-of-band, so a plain-HTTP host is
+        # acceptable for technic_pack (unlike direct_hash).
+        for url in (
+            "http://example.com/files/pack.zip",
+            "https://example.com/files/pack.zip",
+        ):
+            self.assertEqual(
+                _compile.validate_download_strategy(self._technic_pack(source_identifier=url)),
+                "technic_pack",
+            )
+
+    def test_technic_pack_rejects_other_schemes(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._technic_pack(source_identifier="ftp://example.com/files/pack.zip")
+            )
+
+    def test_technic_pack_requires_a_filename_in_the_url(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._technic_pack(source_identifier="http://example.com/download?id=12")
+            )
+
+    def test_technic_pack_requires_explicit_compatible_versions(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(self._technic_pack(compatible_versions=[]))
+
+    def test_technic_pack_rejects_the_latest_placeholder(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._technic_pack(
+                    compatible_versions=[
+                        {"mc_version": "1.21", "loader": "forge", "mod_version": "latest"}
+                    ]
+                )
+            )
+
+    def test_technic_pack_rejects_incomplete_version_entries(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(
+                self._technic_pack(compatible_versions=[{"mc_version": "1.21", "loader": "forge"}])
+            )
 
 
 # ---------------------------------------------------------------------------

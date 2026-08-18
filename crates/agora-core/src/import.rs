@@ -5,7 +5,7 @@ use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 use zip::ZipArchive;
@@ -1168,6 +1168,348 @@ pub fn import_directory(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Technic imports (consent tiers S and Z)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of files extracted from a consented Technic zip.
+const MAX_TECHNIC_ZIP_FILES: usize = 5000;
+/// Maximum total uncompressed bytes for a consented Technic zip.
+const MAX_TECHNIC_ZIP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Maximum bytes per entry inside a consented Technic zip.
+const MAX_TECHNIC_ENTRY_BYTES: u64 = 500 * 1024 * 1024;
+
+/// One mod entry from a Technic Solder build. `md5` is the transport-integrity
+/// hash reported by the Solder API (often present; verified but never treated
+/// as an authenticity guarantee).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TechnicSolderMod {
+    pub name: String,
+    pub url: String,
+    pub md5: Option<String>,
+}
+
+/// A resolved Technic Solder pack ready to install (Tier S).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TechnicSolderPack {
+    pub display_name: String,
+    pub minecraft_version: String,
+    pub loader: String,
+    pub loader_version: String,
+    pub mods: Vec<TechnicSolderMod>,
+}
+
+/// A consented Technic zip archive ready to install (Tier Z, or Tier C when a
+/// curator pinned `sha256`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TechnicZipPack {
+    pub display_name: String,
+    pub download_url: String,
+    /// Curator-pinned SHA-256 (out-of-band) when promoted to Tier C; `None`
+    /// for a plain unverified Tier Z zip.
+    pub sha256: Option<String>,
+    pub minecraft_version: String,
+    pub loader: String,
+    pub loader_version: String,
+}
+
+/// Build a safe filename for a downloaded artifact from the URL's last path
+/// segment. Rejects separators, dotfiles, and extensionless names the same way
+/// the `direct_hash` resolver does, so the result is a plain single segment.
+fn safe_download_filename(url: &str) -> Option<String> {
+    let segment = url
+        .split('#')
+        .next()?
+        .split('?')
+        .next()?
+        .rsplit('/')
+        .next()?;
+    let segment = segment.replace('\\', "/");
+    let segment = segment.rsplit('/').next()?;
+    if segment.is_empty()
+        || segment.starts_with('.')
+        || segment.contains("..")
+        || !segment.contains('.')
+    {
+        return None;
+    }
+    Some(segment.to_string())
+}
+
+/// Install a Technic Solder pack (Tier S). Each mod is individually addressed
+/// by its own URL; every download rides the consented-content HTTP policy (the
+/// private/loopback/link-local floor still applies), is size-capped, and is
+/// MD5-verified when the Solder API reports an MD5.
+pub fn import_technic_solder_pack(
+    pack: &TechnicSolderPack,
+    instances_root: &Path,
+) -> LauncherResult<ImportResult> {
+    let target = prepare_import_target(instances_root, &pack.display_name)?;
+    let mods_dir = target.staging_dir.join("mods");
+    fs::create_dir_all(&mods_dir).map_err(|e| {
+        cleanup_staging(&target);
+        import_error(
+            "ERR_IMPORT_MKDIR",
+            format!("Cannot create mods folder: {e}"),
+        )
+    })?;
+
+    let result = (|| -> LauncherResult<usize> {
+        let mut imported_mods = 0usize;
+        for entry in &pack.mods {
+            let filename = safe_download_filename(&entry.url).ok_or_else(|| {
+                import_error(
+                    "ERR_TECHNIC_FILENAME",
+                    format!(
+                        "Technic mod '{}' has no safe downloadable filename in {}",
+                        entry.name, entry.url
+                    ),
+                )
+            })?;
+            let bytes = crate::download::download_consented_bytes_blocking(&entry.url)?;
+            if let Some(md5) = entry.md5.as_deref().filter(|md5| !md5.trim().is_empty()) {
+                let actual = crate::download::md5_hex(&bytes);
+                if !actual.eq_ignore_ascii_case(md5.trim()) {
+                    return Err(import_error(
+                        "ERR_HASH_MISMATCH",
+                        format!(
+                            "Technic mod '{name}' failed its reported MD5 check: expected {expected} got {actual}.",
+                            name = entry.name,
+                            expected = md5.trim(),
+                            actual = actual,
+                        ),
+                    ));
+                }
+            }
+            let dest = mods_dir.join(&filename);
+            fs::write(&dest, &bytes).map_err(|e| {
+                import_error(
+                    "ERR_IMPORT_WRITE",
+                    format!("Cannot write mod {filename:?}: {e}"),
+                )
+            })?;
+            imported_mods += 1;
+        }
+        write_import_manifest(
+            &target,
+            &pack.display_name,
+            pack.minecraft_version.clone(),
+            pack.loader.clone(),
+            pack.loader_version.clone(),
+        )?;
+        finalize_import(&target)?;
+        Ok(imported_mods)
+    })();
+    match result {
+        Ok(imported_mods) => Ok(ImportResult {
+            instance_id: target.instance_id,
+            name: pack.display_name.clone(),
+            minecraft_version: pack.minecraft_version.clone(),
+            loader: pack.loader.clone(),
+            loader_version: pack.loader_version.clone(),
+            imported_mods,
+            linked_saves: false,
+        }),
+        Err(error) => {
+            cleanup_staging(&target);
+            Err(error)
+        }
+    }
+}
+
+/// Install a consented Technic zip (Tier Z, or Tier C when SHA-256-pinned).
+///
+/// This extractor is deliberately *separate* from `override_sanitizer`: it
+/// permits `mods/<name>.jar` / `.zip` — exactly what the user opted into —
+/// while keeping the same traversal rejection, zip-bomb caps, and strict
+/// containment (nothing outside the instance directory).
+pub fn import_technic_zip_pack(
+    pack: &TechnicZipPack,
+    instances_root: &Path,
+) -> LauncherResult<ImportResult> {
+    let bytes = crate::download::download_consented_bytes_blocking(&pack.download_url)?;
+    if let Some(pinned) = pack.sha256.as_deref().filter(|sha| !sha.trim().is_empty()) {
+        if pinned.len() != 64 || !pinned.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(import_error(
+                "ERR_TECHNIC_SHA256",
+                "The curated Technic pack has an invalid pinned SHA-256.",
+            ));
+        }
+        let actual = crate::download::sha256_hex(&bytes);
+        if !actual.eq_ignore_ascii_case(pinned) {
+            return Err(import_error(
+                "ERR_HASH_MISMATCH",
+                format!(
+                    "The curated Technic pack failed its pinned SHA-256 check: expected {pinned} got {actual}.",
+                ),
+            ));
+        }
+    }
+
+    let target = prepare_import_target(instances_root, &pack.display_name)?;
+
+    let reader = io::Cursor::new(bytes);
+    let mut archive = match ZipArchive::new(reader) {
+        Ok(archive) => archive,
+        Err(e) => {
+            cleanup_staging(&target);
+            return Err(import_error(
+                "ERR_IMPORT_ZIP",
+                format!("Cannot open Technic zip: {e}"),
+            ));
+        }
+    };
+    let mods_dir = target.staging_dir.join("mods");
+    fs::create_dir_all(&mods_dir).map_err(|e| {
+        cleanup_staging(&target);
+        import_error(
+            "ERR_IMPORT_MKDIR",
+            format!("Cannot create mods folder: {e}"),
+        )
+    })?;
+
+    let result = (|| -> LauncherResult<usize> {
+        let imported_mods = extract_technic_zip_entries(&mut archive, &mods_dir)?;
+        write_import_manifest(
+            &target,
+            &pack.display_name,
+            pack.minecraft_version.clone(),
+            pack.loader.clone(),
+            pack.loader_version.clone(),
+        )?;
+        finalize_import(&target)?;
+        Ok(imported_mods)
+    })();
+    match result {
+        Ok(imported_mods) => Ok(ImportResult {
+            instance_id: target.instance_id,
+            name: pack.display_name.clone(),
+            minecraft_version: pack.minecraft_version.clone(),
+            loader: pack.loader.clone(),
+            loader_version: pack.loader_version.clone(),
+            imported_mods,
+            linked_saves: false,
+        }),
+        Err(error) => {
+            cleanup_staging(&target);
+            Err(error)
+        }
+    }
+}
+
+/// Extract the top-level `mods/<file>.jar|.zip` entries from a consented
+/// Technic zip. Returns the number of files written. Kept generic over the
+/// underlying reader so tests can feed in-memory archives.
+fn extract_technic_zip_entries<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    mods_dir: &Path,
+) -> LauncherResult<usize> {
+    let mut imported_mods = 0usize;
+    let mut total_bytes = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| import_error("ERR_IMPORT_READ_ZIP", format!("Read error: {e}")))?;
+        let entry_name = entry.name().replace('\\', "/");
+        if entry.is_dir() {
+            continue;
+        }
+        // Only top-level `mods/<file>` entries are permitted — nothing
+        // nested (no config, no overrides, no traversal, no symlink games).
+        let Some(relative) = entry_name.strip_prefix("mods/") else {
+            continue;
+        };
+        if relative.contains('/') || relative.contains('\\') || relative.is_empty() {
+            return Err(import_error(
+                "ERR_TECHNIC_ZIP_LAYOUT",
+                format!("Technic zip entry '{entry_name}' is not a top-level mods/ file."),
+            ));
+        }
+        if relative.starts_with('.') || relative.contains("..") {
+            return Err(import_error(
+                "ERR_TECHNIC_ZIP_FILENAME",
+                format!("Technic zip entry '{entry_name}' has an unsafe filename."),
+            ));
+        }
+        let lower = relative.to_ascii_lowercase();
+        if !(lower.ends_with(".jar") || lower.ends_with(".zip")) {
+            return Err(import_error(
+                "ERR_TECHNIC_ZIP_FILENAME",
+                format!("Technic zip entry '{entry_name}' is not a .jar/.zip mod."),
+            ));
+        }
+        let entry_size = entry.size();
+        if entry_size > MAX_TECHNIC_ENTRY_BYTES {
+            return Err(import_error(
+                "ERR_ZIP_BOMB",
+                format!("Technic zip entry '{entry_name}' exceeds 500 MB."),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(entry_size);
+        if total_bytes > MAX_TECHNIC_ZIP_BYTES || (index + 1) > MAX_TECHNIC_ZIP_FILES {
+            return Err(import_error(
+                "ERR_ZIP_BOMB",
+                "Technic zip exceeds the extraction safety limits.",
+            ));
+        }
+        let dest = mods_dir.join(relative);
+        assert_safe_path(mods_dir, Path::new(relative))?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| {
+            import_error(
+                "ERR_IMPORT_READ",
+                format!("Cannot read '{entry_name}': {e}"),
+            )
+        })?;
+        fs::write(&dest, &buf).map_err(|e| {
+            import_error(
+                "ERR_IMPORT_WRITE",
+                format!("Cannot write {relative:?}: {e}"),
+            )
+        })?;
+        imported_mods += 1;
+    }
+    Ok(imported_mods)
+}
+
+/// Write a fresh `instance_manifest.json` into a staged import target.
+fn write_import_manifest(
+    target: &ImportTarget,
+    name: &str,
+    minecraft_version: String,
+    loader: String,
+    loader_version: String,
+) -> LauncherResult<()> {
+    let manifest = InstanceManifest {
+        instance_id: target.instance_id.clone(),
+        name: name.to_string(),
+        minecraft_version,
+        loader,
+        loader_version,
+        is_locked: false,
+        created_from_pack: None,
+        mods: vec![],
+        resourcepacks: vec![],
+        shaders: vec![],
+        datapacks: vec![],
+        worlds: vec![],
+        user_preferences: serde_json::json!({}),
+    };
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
+            code: "ERR_IMPORT_SERIALIZE".into(),
+            message: format!("Cannot serialize manifest: {e}"),
+        })?;
+    fs::write(
+        target.staging_dir.join("instance_manifest.json"),
+        manifest_json,
+    )
+    .map_err(|e| LauncherError::Generic {
+        code: "ERR_IMPORT_WRITE".into(),
+        message: format!("Cannot write manifest: {e}"),
+    })
+}
+
 /// Auto-detect installed launchers and their instance directories.
 pub fn auto_detect_launchers() -> Vec<DetectedLauncher> {
     let mut result = Vec::new();
@@ -1756,5 +2098,89 @@ mod tests {
         assert_eq!(deserialized.shaders.len(), manifest.shaders.len());
         assert_eq!(deserialized.datapacks.len(), manifest.datapacks.len());
         assert_eq!(deserialized.worlds.len(), manifest.worlds.len());
+    }
+
+    // ── Technic imports (Tier S / Tier Z) ────────────────────────────────
+
+    fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            for (name, contents) in entries {
+                writer
+                    .start_file(*name, zip::write::FileOptions::default())
+                    .unwrap();
+                writer.write_all(contents).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn test_technic_zip_extracts_only_top_level_mods_jar() {
+        let bytes = zip_bytes(&[
+            ("mods/good.jar", b"meow"),
+            ("config/ignored.txt", b"ignored"),
+            ("README.txt", b"ignored too"),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let mods_dir = tmp.path().join("mods");
+        fs::create_dir_all(&mods_dir).unwrap();
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(bytes)).unwrap();
+        let imported = extract_technic_zip_entries(&mut archive, &mods_dir).unwrap();
+        assert_eq!(imported, 1);
+        assert!(mods_dir.join("good.jar").exists());
+        assert!(!mods_dir.join("ignored.txt").exists());
+    }
+
+    #[test]
+    fn test_technic_zip_rejects_traversal_and_non_mod_entries() {
+        // Traversal in the entry path must hard-fail, never write outside.
+        let evil = zip_bytes(&[("mods/../evil.jar", b"boom")]);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(evil)).unwrap();
+        assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+        assert!(!tmp.path().parent().unwrap().join("evil.jar").exists());
+
+        // A top-level mods/ file that is not .jar/.zip must be rejected.
+        let exe = zip_bytes(&[("mods/hack.exe", b"MZ")]);
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(exe)).unwrap();
+        assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+
+        // A nested mods/config/... entry is not a top-level mod.
+        let nested = zip_bytes(&[("mods/sub/evil.jar", b"x")]);
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(nested)).unwrap();
+        assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn test_technic_safe_download_filename() {
+        assert_eq!(
+            safe_download_filename("https://example.com/files/mod-1.0.0.jar").as_deref(),
+            Some("mod-1.0.0.jar")
+        );
+        assert_eq!(
+            safe_download_filename("http://ip:25589/pack.zip?build=abc").as_deref(),
+            Some("pack.zip")
+        );
+        assert_eq!(
+            safe_download_filename("https://example.com/download?id=12"),
+            None
+        );
+        assert_eq!(safe_download_filename("https://example.com/files/.."), None);
+        assert_eq!(
+            safe_download_filename("https://example.com/files/.hidden"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_md5_hex_matches_known_vector() {
+        // MD5("abc") is a well-known vector; used only as a transport check.
+        assert_eq!(
+            crate::download::md5_hex(b"abc"),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
     }
 }

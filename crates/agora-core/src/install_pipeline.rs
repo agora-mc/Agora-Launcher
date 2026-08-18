@@ -157,6 +157,10 @@ pub enum HashAlgorithm {
     Sha256,
     Sha512,
     Sha1,
+    /// Transport-integrity only, never authenticity: MD5 is collision-broken
+    /// and is accepted solely for third-party content (Technic Solder) whose
+    /// author reports an MD5. Curated artifacts must still pin SHA-256.
+    Md5,
 }
 
 // ---------------------------------------------------------------------------
@@ -2472,15 +2476,11 @@ async fn stage_plan_artifacts(
                         // never trusted from any other layer).
                         crate::download::download_pinned_bytes_standalone(url)
                             .await
-                            .map_err(|e| {
-                                format!("failed to download {}: {e}", download.item_id)
-                            })?
+                            .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
                     } else {
                         crate::download::download_mod_bytes_standalone(url)
                             .await
-                            .map_err(|e| {
-                                format!("failed to download {}: {e}", download.item_id)
-                            })?
+                            .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
                     }
                 }
                 ArtifactSource::LocalFile { path } => std::fs::read(path).map_err(|e| {
@@ -2534,7 +2534,7 @@ async fn stage_plan_artifacts(
 }
 
 fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
-    use sha1::Digest as _;
+    use md5::Digest as _;
 
     if hashes.values.is_empty() {
         return Err("no expected hashes were supplied".into());
@@ -2553,6 +2553,11 @@ fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
             }
             HashAlgorithm::Sha1 => {
                 let mut hasher = sha1::Sha1::new();
+                hasher.update(contents);
+                format!("{:x}", hasher.finalize())
+            }
+            HashAlgorithm::Md5 => {
+                let mut hasher = md5::Md5::new();
                 hasher.update(contents);
                 format!("{:x}", hasher.finalize())
             }

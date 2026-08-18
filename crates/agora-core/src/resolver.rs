@@ -872,6 +872,26 @@ impl Resolver {
                 }
                 other => other,
             },
+            // A Technic pack promoted to Tier C: the curator pinned the archive
+            // URL and its SHA-256 in the signed manifest. Unlike direct_hash,
+            // the pinned URL may be plain HTTP — the hash is out-of-band, so
+            // transport is not the trust anchor.
+            "technic_pack" => {
+                match pinned_artifact_versions_for_item(item, mc_version, loader, true) {
+                    Ok(candidates) if !candidates.is_empty() => Ok(candidates),
+                    Ok(_) | Err(_) if has_modrinth => {
+                        fetch_modrinth_versions_for_item(
+                            &self.ctx.http_clients,
+                            &item.source_identifier,
+                            item.modrinth_id.as_deref(),
+                            mc_version,
+                            loader,
+                        )
+                        .await
+                    }
+                    other => other,
+                }
+            }
             _ => Err(LauncherError::Generic {
                 code: "ERR_UNSUPPORTED_STRATEGY".into(),
                 message: format!(
@@ -2603,28 +2623,60 @@ fn direct_hash_versions_for_item(
     mc_version: &str,
     loader: &str,
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
+    pinned_artifact_versions_for_item(item, mc_version, loader, false)
+}
+
+/// Candidate list for a hand-pinned manifest entry (`direct_hash`, or a
+/// Technic pack promoted to Tier C via `technic_pack`).
+///
+/// With `allow_http` set the pinned URL may be plain HTTP — the curator-pinned
+/// SHA-256 is out-of-band, so transport is not the trust anchor. Regardless of
+/// scheme, the URL must still end in a filename (the download is named from
+/// the last path segment), the hash and `compatible_versions` must be present,
+/// and each declared version must name a real `mod_version`.
+fn pinned_artifact_versions_for_item(
+    item: &crate::registry::RegistryItem,
+    mc_version: &str,
+    loader: &str,
+    allow_http: bool,
+) -> LauncherResult<Vec<ModVersionCandidate>> {
+    let strategy = item.download_strategy.trim();
+    let label = if strategy.is_empty() {
+        "pinned artifact"
+    } else {
+        strategy
+    };
     let invalid = |message: String| LauncherError::Generic {
-        code: "ERR_DIRECT_HASH_MANIFEST".into(),
+        code: if strategy == "direct_hash" {
+            "ERR_DIRECT_HASH_MANIFEST".into()
+        } else {
+            "ERR_PINNED_MANIFEST".into()
+        },
         message,
     };
 
     let url = item.source_identifier.trim();
-    if !url.starts_with("https://") {
+    let scheme_ok = if allow_http {
+        url.starts_with("https://") || url.starts_with("http://")
+    } else {
+        url.starts_with("https://")
+    };
+    if !scheme_ok {
         return Err(invalid(format!(
-            "'{}' uses direct_hash but its source_identifier is not an https:// URL.",
+            "'{}' uses {label} but its source_identifier is not an http(s):// URL.",
             item.id
         )));
     }
     let filename = direct_hash_filename(url).ok_or_else(|| {
         invalid(format!(
-            "'{}' uses direct_hash but its URL does not end in a filename, so the \
+            "'{}' uses {label} but its URL does not end in a filename, so the \
              downloaded file cannot be named.",
             item.id
         ))
     })?;
     let sha256 = valid_hash(Some(&item.sha256), 64).ok_or_else(|| {
         invalid(format!(
-            "'{}' uses direct_hash but has no valid pinned sha256.",
+            "'{}' uses {label} but has no valid pinned sha256.",
             item.id
         ))
     })?;
@@ -2643,7 +2695,7 @@ fn direct_hash_versions_for_item(
         .unwrap_or_default();
     if declared.is_empty() {
         return Err(invalid(format!(
-            "'{}' uses direct_hash but declares no compatible_versions; a hand-curated \
+            "'{}' uses {label} but declares no compatible_versions; a hand-curated \
              entry must state which Minecraft versions and loaders its file supports.",
             item.id
         )));
@@ -2661,7 +2713,7 @@ fn direct_hash_versions_for_item(
             .filter(|version| !version.is_empty() && *version != "latest")
             .ok_or_else(|| {
                 invalid(format!(
-                    "'{}' uses direct_hash but a compatible_versions entry has no explicit \
+                    "'{}' uses {label} but a compatible_versions entry has no explicit \
                      mod_version.",
                     item.id
                 ))
@@ -3554,6 +3606,66 @@ mod tests {
         );
         item.sha256 = "not-a-hash".into();
         assert!(direct_hash_versions_for_item(&item, "1.21", "fabric").is_err());
+    }
+
+    #[test]
+    fn technic_pack_accepts_plain_http_and_pins_the_manifest_hash() {
+        // A Technic pack promoted to Tier C may ship over plain HTTP; the
+        // curator-pinned SHA-256 stays authoritative regardless of transport.
+        let mut item = direct_hash_item(
+            "http://192.99.59.1/files/pack.zip",
+            Some(r#"[{"mc_version":"1.21.1","loader":"forge","mod_version":"1.0.0"}]"#),
+        );
+        item.download_strategy = "technic_pack".into();
+        item.content_type = "pack".into();
+
+        let candidates = pinned_artifact_versions_for_item(&item, "1.21.1", "forge", true).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].filename, "pack.zip");
+        assert_eq!(
+            candidates[0].download_url,
+            "http://192.99.59.1/files/pack.zip"
+        );
+        assert_eq!(
+            candidates[0].sha256.as_deref(),
+            Some("d".repeat(64).as_str())
+        );
+
+        // The same manifest must be rejected when the scheme is not permitted.
+        assert!(pinned_artifact_versions_for_item(&item, "1.21.1", "forge", false).is_err());
+    }
+
+    #[test]
+    fn technic_pack_direct_hash_shared_contract_is_strict() {
+        let good = Some(r#"[{"mc_version":"1.21.1","loader":"forge","mod_version":"1.0.0"}]"#);
+        for (why, url) in [
+            ("no scheme at all", "files/pack.zip"),
+            (
+                "a URL with no filename",
+                "http://example.com/download?id=12",
+            ),
+            (
+                "traversal in the pinned filename segment",
+                "http://example.com/files/..%2F..%2Fevil.zip",
+            ),
+            (
+                "a dotfile segment cannot name the download",
+                "http://example.com/files/.hidden.zip",
+            ),
+        ] {
+            let mut item = direct_hash_item(url, good);
+            item.download_strategy = "technic_pack".into();
+            item.content_type = "pack".into();
+            assert!(
+                pinned_artifact_versions_for_item(&item, "1.21.1", "forge", true).is_err(),
+                "{why}"
+            );
+        }
+
+        let mut no_version = direct_hash_item("http://example.com/files/pack.zip", None);
+        no_version.download_strategy = "technic_pack".into();
+        no_version.content_type = "pack".into();
+        assert!(pinned_artifact_versions_for_item(&no_version, "1.21.1", "forge", true).is_err());
     }
 
     #[test]

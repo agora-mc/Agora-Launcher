@@ -1953,12 +1953,12 @@ def validate_sha256(raw: Any) -> str:
 
 
 VALID_DOWNLOAD_STRATEGIES = frozenset(
-    {"github_release", "modrinth_id", "direct_hash", "curated_pack"}
+    {"github_release", "modrinth_id", "direct_hash", "curated_pack", "technic_pack"}
 )
 
 
 def validate_download_strategy(item: dict[str, Any]) -> str:
-    """Validate ``download_strategy`` and enforce the ``direct_hash`` contract.
+    """Validate ``download_strategy`` and enforce the hand-pinned contracts.
 
     ``direct_hash`` is the fully hand-curated escape hatch, used for content
     that no upstream API can resolve: self-hosted files, a project's own site,
@@ -1966,6 +1966,11 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
     it at install time, everything the launcher needs must already be in the
     manifest -- the pinned URL, the pinned hash, and an explicit statement of
     which Minecraft versions and loaders the file supports.
+
+    ``technic_pack`` follows the same hand-pinned contract for a pack archive
+    promoted from Technic (Tier C). Unlike ``direct_hash`` it may use plain
+    HTTP: the curator-pinned SHA-256 is out-of-band, so transport is not the
+    trust anchor.
 
     The launcher rejects an under-specified entry at resolve time with
     ``ERR_DIRECT_HASH_MANIFEST``. Checking the same contract here turns that
@@ -1982,13 +1987,22 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
             strategy,
         )
         raise SystemExit(1)
-    if strategy != "direct_hash":
+    if strategy not in ("direct_hash", "technic_pack"):
         return strategy
 
     source = str(item.get("source_identifier", "")).strip()
-    if not source.startswith("https://"):
+    if strategy == "direct_hash" and not source.startswith("https://"):
         logger.error(
             "%s: direct_hash source_identifier must be an https:// URL, got %r",
+            item_id,
+            source,
+        )
+        raise SystemExit(1)
+    if strategy == "technic_pack" and (
+        not source.startswith("https://") and not source.startswith("http://")
+    ):
+        logger.error(
+            "%s: technic_pack source_identifier must be an http(s):// URL, got %r",
             item_id,
             source,
         )
@@ -1999,9 +2013,10 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
     filename = source.split("#")[0].split("?")[0].rsplit("/", 1)[-1]
     if not filename or filename.startswith(".") or ".." in filename or "." not in filename:
         logger.error(
-            "%s: direct_hash source_identifier must end in a filename "
+            "%s: %s source_identifier must end in a filename "
             "(e.g. https://example.com/files/my-mod-1.2.3.jar), got %r",
             item_id,
+            strategy,
             source,
         )
         raise SystemExit(1)
@@ -2009,9 +2024,10 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
     declared = item.get("compatible_versions")
     if not declared:
         logger.error(
-            "%s: direct_hash requires an explicit compatible_versions list; "
+            "%s: %s requires an explicit compatible_versions list; "
             "there is no API to infer one from",
             item_id,
+            strategy,
         )
         raise SystemExit(1)
     for entry in declared:
@@ -2029,17 +2045,19 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
         ]
         if missing:
             logger.error(
-                "%s: direct_hash compatible_versions entry %r is missing %s",
+                "%s: %s compatible_versions entry %r is missing %s",
                 item_id,
+                strategy,
                 entry,
                 ", ".join(missing),
             )
             raise SystemExit(1)
         if str(entry["mod_version"]).strip() == "latest":
             logger.error(
-                "%s: direct_hash compatible_versions needs a real mod_version, "
+                "%s: %s compatible_versions needs a real mod_version, "
                 "not the 'latest' placeholder",
                 item_id,
+                strategy,
             )
             raise SystemExit(1)
     return strategy

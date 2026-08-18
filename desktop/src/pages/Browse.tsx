@@ -27,6 +27,7 @@ import { RegistryStatusView } from '../components/registry-status-view';
 import { BrowseListResults } from '../components/browse/BrowseListResults';
 import { BrowseTileResults } from '../components/browse/BrowseTileResults';
 import { BrowseBazaar } from '../components/browse/BrowseBazaar';
+import { TechnicBrowsePanel } from '../components/technic/TechnicBrowsePanel';
 import type { BazaarItem } from '../components/browse/bazaar-model';
 import { InstallFlow } from '../components/InstallFlow';
 import { usePackInstall } from '../components/PackInstallProgress';
@@ -511,17 +512,23 @@ function BrowseContent({
   const [contextError, setContextError] = useState<string | null>(null);
   const [autoConfirmCleanInstalls, setAutoConfirmCleanInstalls] = useState(false);
   const [alwaysAutoConfirmInstalls, setAlwaysAutoConfirmInstalls] = useState(false);
+  const [technicEnabled, setTechnicEnabled] = useState(false);
+  const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
       getSetting('install_auto_confirm_clean'),
       getSetting('install_always_auto_confirm'),
+      getSetting('technic_enabled'),
+      getSetting('allow_unverified_packs'),
     ])
-      .then(([autoConfirm, alwaysConfirm]) => {
+      .then(([autoConfirm, alwaysConfirm, technicEnabled, allowUnverifiedPacks]) => {
         if (!cancelled) {
           setAutoConfirmCleanInstalls(parseBool(autoConfirm));
           setAlwaysAutoConfirmInstalls(parseBool(alwaysConfirm));
+          setTechnicEnabled(parseBool(technicEnabled));
+          setAllowUnverifiedPacks(parseBool(allowUnverifiedPacks));
         }
       })
       .catch(() => {
@@ -1186,6 +1193,10 @@ function BrowseContent({
         error={regError}
         actions={regActions}
       />
+
+      {!bazaarMode && (
+        <TechnicBrowsePanel enabled={technicEnabled} allowUnverifiedPacks={allowUnverifiedPacks} />
+      )}
 
       <section className="rounded-xl border border-border bg-card p-4">
         <label className="block text-sm font-semibold" htmlFor="browse-instance-context">

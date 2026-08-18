@@ -12,15 +12,19 @@ const mocks = vi.hoisted(() => ({
   getRegistryItem: vi.fn(),
   fetchModrinthProject: vi.fn(),
   isModrinthEnabled: vi.fn(),
+  listInstanceContent: vi.fn(),
+  enrichInstanceContent: vi.fn(),
 }));
 
 vi.mock('@/lib/tauri', () => ({
   getRegistryItem: mocks.getRegistryItem,
   fetchModrinthProject: mocks.fetchModrinthProject,
   isModrinthEnabled: mocks.isModrinthEnabled,
+  listInstanceContent: mocks.listInstanceContent,
+  enrichInstanceContent: mocks.enrichInstanceContent,
 }));
 
-const { readContentDetail } = await import('./readAdapters');
+const { readContentDetail, readContentIcons } = await import('./readAdapters');
 
 const registryItem = (over: Record<string, unknown> = {}) => ({
   id: 'r1', name: 'Thing', description: 'Agora words', page_url: 'https://agora/x', ...over,
@@ -34,6 +38,8 @@ beforeEach(() => {
   mocks.getRegistryItem.mockReset();
   mocks.fetchModrinthProject.mockReset();
   mocks.isModrinthEnabled.mockReset().mockResolvedValue(true);
+  mocks.listInstanceContent.mockReset();
+  mocks.enrichInstanceContent.mockReset();
 });
 
 describe('readContentDetail', () => {
@@ -80,5 +86,29 @@ describe('readContentDetail', () => {
     expect(mocks.getRegistryItem).not.toHaveBeenCalled();
     expect(mocks.fetchModrinthProject).not.toHaveBeenCalled();
     expect(out.source).toBeNull();
+  });
+
+  it('uses the installed-content metadata batch for tile icons', async () => {
+    mocks.listInstanceContent.mockResolvedValue([{
+      key: 'mod:example.jar:hash',
+      filename: 'example.jar',
+      icon_url: null,
+    }]);
+    mocks.enrichInstanceContent.mockResolvedValue([{
+      key: 'mod:example.jar:hash',
+      icon_url: 'https://cdn.example.test/example.png',
+    }]);
+    await expect(readContentIcons('inst-1')).resolves.toEqual([{
+      filename: 'example.jar',
+      iconUrl: 'https://cdn.example.test/example.png',
+    }]);
+  });
+
+  it('uses the jar identity as the same Standard details fallback', async () => {
+    mocks.getRegistryItem.mockResolvedValue(null);
+    mocks.fetchModrinthProject.mockResolvedValue(modrinthProject());
+    await readContentDetail(null, null, 'm1');
+    expect(mocks.getRegistryItem).toHaveBeenCalledWith('m1');
+    expect(mocks.fetchModrinthProject).toHaveBeenCalledWith('m1');
   });
 });

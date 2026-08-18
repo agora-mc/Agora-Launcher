@@ -121,6 +121,8 @@ export interface VisualContentNode {
    */
   fileLabel?: string;
   kind: ContentKind;
+  /** Public HTTPS icon URL when installed-content metadata resolved one. */
+  iconUrl?: string;
   version?: VisualValue<string | null>;
   presence: VisualValue<'installed' | 'not-installed'>;
   enabled: VisualValue<boolean>;
@@ -131,7 +133,7 @@ export interface VisualContentNode {
    * lets the detail panel look up a description without a per-mod fetch for the
    * whole pack.
    */
-  catalogIds?: { registryId: string | null; modrinthId: string | null };
+  catalogIds?: { registryId: string | null; modrinthId: string | null; modJarId?: string | null };
   relationshipSummary: {
     requiredBy: number;
     requires: number;

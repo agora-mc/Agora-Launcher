@@ -36,6 +36,7 @@ import {
   contentToVisual,
   healthToVisual,
   instanceToVisual,
+  type ContentIcon,
 } from './readAdapters';
 import type { VisualScene } from '../domain/models';
 
@@ -177,7 +178,11 @@ export function derivedFreshness(reads: LiveReads): LiveFreshness {
  * have been read successfully; otherwise the scene is left empty and the HOST
  * reports an error state (this function's caller checks `reads.detail`).
  */
-export function assembleLiveScene(_instanceId: string, reads: LiveReads): VisualScene {
+export function assembleLiveScene(
+  _instanceId: string,
+  reads: LiveReads,
+  contentIcons: ContentIcon[] = [],
+): VisualScene {
   const revision = nextRevision();
   const source = liveSource(revision, derivedFreshness(reads));
   if (reads.detail.status !== 'ok' || !reads.detail.value) {
@@ -189,7 +194,7 @@ export function assembleLiveScene(_instanceId: string, reads: LiveReads): Visual
   const healthKnown = reads.health.status === 'ok';
   const instance = instanceToVisual(detail, running, reads.running.status !== 'ok');
   const dependencies = reads.dependencies.status === 'ok' ? reads.dependencies.value : [];
-  const { content, relationships } = contentToVisual(detail, health, healthKnown, dependencies);
+  const { content, relationships } = contentToVisual(detail, health, healthKnown, dependencies, contentIcons);
   return {
     source,
     instance,

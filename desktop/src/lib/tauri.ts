@@ -1282,6 +1282,71 @@ export interface ModrinthProjectFull {
 export const fetchModrinthProject = (projectId: string) =>
   invoke<ModrinthProjectFull>('fetch_modrinth_project', { projectId });
 
+// --- Technic source (consent tiers S/Z) ---
+
+export type TechnicTier = 'solder' | 'zip';
+
+export interface TechnicSearchResult {
+  slug: string;
+  title: string;
+  description: string;
+  installs: number;
+  likes: number;
+  author: string | null;
+  page_url: string;
+  tier: TechnicTier;
+}
+
+export interface TechnicPackDetail {
+  slug: string;
+  title: string;
+  description: string;
+  installs: number;
+  likes: number;
+  author: string | null;
+  solder: string | null;
+  recommended_build: string | null;
+  minecraft: string | null;
+  website: string | null;
+  page_url: string;
+  download_url: string | null;
+  tier: TechnicTier;
+  permitted: boolean;
+}
+
+export interface ImportResult {
+  instance_id: string;
+  name: string;
+  minecraft_version: string;
+  loader: string;
+  loader_version: string;
+  imported_mods: number;
+  linked_saves: boolean;
+}
+
+export const technicSearch = (query: string, limit?: number) =>
+  invoke<TechnicSearchResult[]>('technic_search', { query, limit });
+export const technicPackDetail = (slug: string) =>
+  invoke<TechnicPackDetail>('technic_pack_detail', { slug });
+export const installTechnicSolderPack = (slug: string, solder: string, build: string) =>
+  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build });
+export const installTechnicZipPack = (
+  name: string,
+  downloadUrl: string,
+  sha256: string | null,
+  minecraftVersion: string,
+  loader: string,
+  loaderVersion: string,
+) =>
+  invoke<ImportResult>('install_technic_zip_pack', {
+    name,
+    downloadUrl,
+    sha256,
+    minecraftVersion,
+    loader,
+    loaderVersion,
+  });
+
 // --- Phase 7: Curated annotation overlay for registry-backed items ---
 
 export interface CuratedAnnotation {

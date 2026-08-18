@@ -30,6 +30,7 @@ export interface WorldEditorProps {
   onIntent: (intent: VisualIntent) => void;
   onUseStandardView: () => void;
   onLaunch?: () => Promise<void> | void;
+  launchAvailable?: boolean;
   reducedMotion?: boolean;
   presentation?: 'standard' | 'simple' | 'high-interaction';
   /** Description / categories / page link for the selected item. */
@@ -48,6 +49,23 @@ interface Toast {
 }
 
 let toastSeq = 0;
+
+function TileArtwork({ name, iconUrl }: { name: string; iconUrl?: string }) {
+  return (
+    <span className="tile-art" aria-hidden="true">
+      <span className="tile-mono">{monoOf(name)}</span>
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={(event) => event.currentTarget.remove()}
+        />
+      ) : null}
+    </span>
+  );
+}
 
 const STEPS = ['Looking at your files', 'Checking your mods', 'Checking Minecraft version'];
 
@@ -89,6 +107,7 @@ export function WorldEditor({
   onSelect,
   onIntent,
   onLaunch,
+  launchAvailable = true,
   reducedMotion = false,
   presentation = 'high-interaction',
   selectedDetail = EMPTY_CONTENT_DETAIL,
@@ -168,9 +187,13 @@ export function WorldEditor({
   // ---- status pill ----
   const instance = scene.instance;
   const launchState = instance?.launchState ?? 'idle';
-  const locked = instance?.lockState === 'busy' || instance?.lockState === 'locked-by-player';
+  const operationBusy = instance?.lockState === 'busy';
+  const playerLocked = instance?.lockState === 'locked-by-player';
   const runningState = launchState === 'starting' || launchState === 'running' || launchState === 'stopping' || launchState === 'delegated';
-  const playDisabled = runningState || locked || !onLaunch;
+  // Locking protects the files from edits but deliberately does not block play.
+  // The Standard editor follows the same policy; only an active process or
+  // operation, an unavailable Standard launch gate, or a missing handler blocks.
+  const playDisabled = runningState || operationBusy || !launchAvailable || !onLaunch;
 
   // While the enrichment read is in flight the health fragment has no value
   // YET — which is not the same as a health scan that ran and failed. Saying
@@ -206,6 +229,10 @@ export function WorldEditor({
 
   // ---- selection + detail ----
   const selectedItem = selectedName ? editor.byId.get(selectedName) ?? null : null;
+  const selectedDetailId = selectedItem?.catalogIds?.registryId
+    || selectedItem?.catalogIds?.modrinthId
+    || selectedItem?.catalogIds?.modJarId
+    || null;
   const relatedIds = useMemo(() => {
     if (!selectedItem) return new Set<string>();
     const rel = new Set<string>([selectedItem.id]);
@@ -579,7 +606,7 @@ export function WorldEditor({
             <span className="we-chip">
               {instance?.loader.current.family && instance.loader.current.family !== '—' ? instance.loader.current.family : 'No loader'}
             </span>
-            {locked ? <span className="we-chip">Busy</span> : null}
+            {operationBusy ? <span className="we-chip">Busy</span> : playerLocked ? <span className="we-chip">Locked</span> : null}
           </div>
           <div className="we-xp">
             <div className="we-xp-top">
@@ -600,7 +627,7 @@ export function WorldEditor({
           {findings.length > 0 ? (
             <ul className="we-findings" data-testid="we-findings" style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'grid', gap: 6, maxWidth: 420 }}>
               {findings.map((f) => (
-                <li key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'hsl(var(--muted-foreground))' }}>
+                <li key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'calc(12.5px * var(--font-scale))', color: 'hsl(var(--muted-foreground))' }}>
                   <span className={`we-finding-dot`} style={{ width: 8, height: 8, borderRadius: '50%', background: f.severity === 'blocker' ? 'var(--we-danger)' : f.severity === 'warning' ? 'var(--we-attention)' : 'hsl(174 52% 48%)', flex: 'none' }} aria-hidden="true" />
                   <span>{f.title}</span>
                   {f.reviewIntent ? (
@@ -697,7 +724,7 @@ export function WorldEditor({
                   onMouseLeave={(e) => onTileLeave(e.currentTarget.querySelector('.tile') as HTMLElement)}
                 >
                   <span className="tile" style={{ background: tileBackground(it.name) }}>
-                    {monoOf(it.name)}
+                    <TileArtwork name={it.name} iconUrl={it.kind === 'mod' ? it.iconUrl : undefined} />
                   </span>
                   {it.missing ? <span className="flag" aria-hidden="true">!</span> : null}
                   <span className="cap">{it.name}</span>
@@ -714,7 +741,7 @@ export function WorldEditor({
               );
             })}
             {visible.length === 0 && (
-              <p style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'hsl(var(--muted-foreground))', fontSize: 13, padding: '24px 0' }}>
+              <p style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'hsl(var(--muted-foreground))', fontSize: 'calc(13px * var(--font-scale))', padding: '24px 0' }}>
                 {query ? 'Nothing matches that search.' : 'Nothing here yet.'}
               </p>
             )}
@@ -746,7 +773,9 @@ export function WorldEditor({
       {selectedItem && createPortal(
         <aside className={`we-detail ${selectedItem ? 'open' : ''}`} aria-live="polite" data-testid="we-detail">
           <button className="we-closeX" aria-label="Close" onClick={() => selectItem(null)}>×</button>
-          <div className="we-bigtile" style={{ background: tileBackground(selectedItem.name) }}>{monoOf(selectedItem.name)}</div>
+          <div className="we-bigtile" style={{ background: tileBackground(selectedItem.name) }}>
+            <TileArtwork name={selectedItem.name} iconUrl={selectedItem.kind === 'mod' ? selectedItem.iconUrl : undefined} />
+          </div>
           <h3>{selectedItem.name}</h3>
           {/* Categories first: what KIND of thing this is answers the question a
               player actually opened the panel with. */}
@@ -791,7 +820,10 @@ export function WorldEditor({
           <button
             type="button"
             className="we-btn"
-            onClick={() => onIntent({ kind: 'open-standard', destination: { type: 'mod-detail', itemId: selectedItem.id } })}
+            onClick={() => {
+              if (selectedDetailId) onIntent({ kind: 'open-standard', destination: { type: 'mod-detail', itemId: selectedDetailId } });
+            }}
+            disabled={!selectedDetailId}
           >
             Open full details
           </button>

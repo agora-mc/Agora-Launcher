@@ -8,7 +8,7 @@
  */
 
 import type { CapabilityFlags, VisualId } from '../domain/models';
-import type { VisualIntent } from '../domain/intents';
+import type { StandardDestination, VisualIntent } from '../domain/intents';
 import type { Fragment } from './liveScene';
 import type { VisualCrashEvidence, VisualRuntimeState, VisualScene, VisualSnapshot } from '../domain/models';
 import { WorldEditor } from './WorldEditor';
@@ -31,7 +31,9 @@ export interface LiveSceneViewProps {
   onSelect: (id: VisualId | null) => void;
   onIntent: (intent: VisualIntent) => void;
   onUseStandardView: () => void;
+  onNavigateStandard?: (destination: StandardDestination) => void;
   onLaunch?: () => Promise<void> | void;
+  launchAvailable?: boolean;
   reducedMotion?: boolean;
   /** Presentation: `simple` hides the decorative flourish. */
   presentation?: 'standard' | 'simple' | 'high-interaction';

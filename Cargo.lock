@@ -73,6 +73,7 @@ dependencies = [
  "flate2",
  "hex",
  "keyring",
+ "md-5",
  "p256",
  "pbkdf2 0.12.2",
  "rand 0.8.6",

@@ -268,7 +268,7 @@ impl HttpClients {
             ClientCategory::MojangContent => &self.mojang_content,
             ClientCategory::Loader => &self.loader,
             ClientCategory::Modrinth => &self.modrinth,
-ClientCategory::Modpack => &self.modrinth,
+            ClientCategory::Modpack => &self.modrinth,
             ClientCategory::GitHub => &self.github,
             ClientCategory::Microsoft => &self.microsoft,
             ClientCategory::Registry => &self.registry,
@@ -741,8 +741,14 @@ pub async fn checked_get_bytes(
     category: ClientCategory,
     url: &str,
 ) -> LauncherResult<Vec<u8>> {
-    checked_get_bytes_inner(clients, category, url, HostPolicy::Allowlist, |_downloaded, _total| {})
-        .await
+    checked_get_bytes_inner(
+        clients,
+        category,
+        url,
+        HostPolicy::Allowlist,
+        |_downloaded, _total| {},
+    )
+    .await
 }
 
 /// Download bytes under an explicit host-authorization [`HostPolicy`].
@@ -968,7 +974,21 @@ pub fn blocking_checked_request(
     category: ClientCategory,
     url: &str,
 ) -> LauncherResult<reqwest::blocking::Response> {
-    let _validated = check_request_url(category, url)?;
+    blocking_checked_request_with_policy(_clients, category, url, HostPolicy::Allowlist)
+}
+
+/// Blocking GET with full URL validation under an explicit host policy.
+///
+/// Same as [`blocking_checked_request`] but host authorization uses `policy`
+/// instead of the category allowlist (used by consented-content imports that
+/// run inside blocking workers).
+pub fn blocking_checked_request_with_policy(
+    _clients: &HttpClients,
+    category: ClientCategory,
+    url: &str,
+    policy: HostPolicy<'_>,
+) -> LauncherResult<reqwest::blocking::Response> {
+    let _validated = check_request_url_with_policy(category, url, policy)?;
 
     // Build a blocking client with the same security posture.
     let client = reqwest::blocking::Client::builder()
@@ -1029,7 +1049,7 @@ pub fn blocking_checked_request(
                     message: format!("Cannot resolve redirect Location: {location}"),
                 })?;
 
-            let _ = check_request_url(category, next_url.as_str())?;
+            let _ = check_request_url_with_policy(category, next_url.as_str(), policy)?;
             remaining_redirects -= 1;
             current_url = next_url.to_string();
             continue;
@@ -1045,7 +1065,18 @@ pub fn blocking_checked_get_bytes(
     category: ClientCategory,
     url: &str,
 ) -> LauncherResult<Vec<u8>> {
-    let response = blocking_checked_request(clients, category, url)?;
+    blocking_checked_get_bytes_with_policy(clients, category, url, HostPolicy::Allowlist)
+}
+
+/// Blocking GET returning validated bytes with size enforcement under an
+/// explicit host policy.
+pub fn blocking_checked_get_bytes_with_policy(
+    clients: &HttpClients,
+    category: ClientCategory,
+    url: &str,
+    policy: HostPolicy<'_>,
+) -> LauncherResult<Vec<u8>> {
+    let response = blocking_checked_request_with_policy(clients, category, url, policy)?;
 
     if !response.status().is_success() {
         return Err(LauncherError::Generic {
@@ -1305,26 +1336,22 @@ mod tests {
 
     #[test]
     fn test_signed_manifest_policy_allows_pinned_host() {
-        assert!(
-            check_request_url_with_policy(
-                ClientCategory::PinnedArtifact,
-                "https://developer.com/releases/mod-v1.0.0.jar",
-                HostPolicy::SignedManifest("developer.com"),
-            )
-            .is_ok()
-        );
+        assert!(check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://developer.com/releases/mod-v1.0.0.jar",
+            HostPolicy::SignedManifest("developer.com"),
+        )
+        .is_ok());
     }
 
     #[test]
     fn test_signed_manifest_policy_allows_pinned_host_subdomain() {
-        assert!(
-            check_request_url_with_policy(
-                ClientCategory::PinnedArtifact,
-                "https://files.developer.com/releases/mod-v1.0.0.jar",
-                HostPolicy::SignedManifest("developer.com"),
-            )
-            .is_ok()
-        );
+        assert!(check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://files.developer.com/releases/mod-v1.0.0.jar",
+            HostPolicy::SignedManifest("developer.com"),
+        )
+        .is_ok());
     }
 
     #[test]
