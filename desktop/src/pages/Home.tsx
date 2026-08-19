@@ -17,7 +17,8 @@ import {
 import type { Tab } from '../lib/useDestination';
 import type { ProcessState } from '../lib/useProcessController';
 import { TourStartButton } from '../features/tour';
-import { ArrowRight, BookOpen, GraduationCap } from 'lucide-react';
+import { ArrowRight, BookOpen, GraduationCap, HeartHandshake } from 'lucide-react';
+import { agoraSponsorsUrl } from '../lib/brandConfig';
 
 // ---------------------------------------------------------------------------
 // D1: Action-oriented Home
@@ -304,6 +305,27 @@ export function Home({
       />
 
       <GuideCard onOpenGuide={() => onNavigateTab('guide')} />
+
+      <section className="rounded-xl border border-pink-500/20 bg-pink-500/10 p-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 font-semibold">
+            <HeartHandshake className="h-4 w-4 text-pink-600 dark:text-pink-400" aria-hidden="true" />
+            Keep Agora thriving
+          </h3>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">
+            Agora is free and ad-free, funded by community donations. If you enjoy using Agora, please consider sponsoring — your support keeps it improving and helps fund awesome new projects in the future.
+          </p>
+        </div>
+        <a
+          href={agoraSponsorsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
+        >
+          <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+          Sponsor on GitHub
+        </a>
+      </section>
 
       {knownGood.length > 0 && (
         <KnownGoodCard

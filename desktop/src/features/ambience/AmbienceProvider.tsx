@@ -57,11 +57,9 @@ export interface AmbienceContextValue {
   /** Music: pick a piece, an instrument, or hand it back to autoplay. */
   setTrack: (id: string) => void;
   setInstrument: (id: string) => void;
+  musicAuto: boolean;
   /**
-   * Hand the choice of piece back to autoplay ("Let it choose"). Engine-only,
-   * deliberately not persisted: it is implied by the piece selector, which
-   * itself resets to "Let it choose" every time the panel mounts, so a stored
-   * `false` would silently outlive the pick that caused it.
+   * Hand the choice of piece back to autoplay ("Let it choose").
    */
   setMusicAuto: (on: boolean) => void;
   ready: boolean;
@@ -173,7 +171,11 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setRainbow: (on) => engine?.setRainbow(on),
     setTrack: (id) => engine?.setTrack(id),
     setInstrument: (id) => engine?.setInstrument(id),
-    setMusicAuto: (on) => engine?.setMusicAuto(on),
+    musicAuto: settings?.musicAuto ?? true,
+    setMusicAuto: (on) => {
+      persist({ musicAuto: on });
+      engine?.setMusicAuto(on);
+    },
     ready: settings !== null,
   }), [effectiveProfile, settings, journal, lastEvent, persist, engine]);
 

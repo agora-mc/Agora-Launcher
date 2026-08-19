@@ -11,7 +11,7 @@ import {
   GitBranch,
   MessagesSquare,
 } from 'lucide-react';
-import { agoraRepositoryUrl, agoraDiscordUrl } from '../lib/brandConfig';
+import { agoraRepositoryUrl, agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 
 const PILLARS = [
   {
@@ -42,7 +42,7 @@ const PILLARS = [
   {
     icon: HeartHandshake,
     title: 'Donations, not for-profit',
-    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data.',
+    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data. If you enjoy Agora, please consider sponsoring to keep it free and to help fund awesome new projects in the future.',
   },
   {
     icon: ShieldCheck,
@@ -95,6 +95,16 @@ export function About() {
             </div>
             <h4 className="font-semibold mb-1">{pillar.title}</h4>
             <p className="text-sm leading-5 text-muted-foreground">{pillar.body}</p>
+            {pillar.title === 'Donations, not for-profit' && (
+              <a
+                href={agoraSponsorsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 inline-flex text-sm font-medium text-pink-600 hover:underline dark:text-pink-400"
+              >
+                ♥ Sponsor on GitHub — support Agora’s future
+              </a>
+            )}
           </div>
         ))}
       </div>
@@ -108,6 +118,26 @@ export function About() {
           out of your way — all of it is designed so the launcher works the way you need it to,
           not the way a marketing team wants you to use it.
         </p>
+      </section>
+
+      {/* Support Agora */}
+      <section className="rounded-xl border border-pink-500/20 bg-pink-500/10 p-6">
+        <div className="flex items-center gap-2 mb-3">
+          <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
+          <h3 className="text-lg font-semibold">Support Agora’s future</h3>
+        </div>
+        <p className="text-sm leading-6 text-muted-foreground mb-4">
+          Agora is free, open source, and ad-free — built by a solo developer who loves the Minecraft community. If Agora has made modding easier or more enjoyable for you, please consider sponsoring its development. Your donation keeps Agora improving and helps fund awesome new projects for the community. Every contribution means a lot — thank you!
+        </p>
+        <a
+          href={agoraSponsorsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-pink-700"
+        >
+          <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+          Sponsor on GitHub
+        </a>
       </section>
 
       {/* Get involved */}
@@ -144,6 +174,15 @@ export function About() {
               Join the Discord
             </a>
           )}
+          <a
+            href={agoraSponsorsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
+          >
+            <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+            Donate
+          </a>
         </div>
       </section>
     </div>

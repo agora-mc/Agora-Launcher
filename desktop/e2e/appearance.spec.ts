@@ -36,8 +36,9 @@ test('custom accent updates semantic tokens, persists, and resets', async ({ pag
   await expect(page.getByLabel('Custom accent color')).toHaveValue('#663399');
 
   await page.getByRole('button', { name: 'Reset appearance' }).click();
-  await expect(page.getByLabel('Accent source')).toHaveValue('agora');
-  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--primary'))).toBe('');
+  await expect(page.getByLabel('Accent source')).toHaveValue('custom');
+  await expect(page.getByLabel('Custom accent color')).toHaveValue('#c28b28');
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--primary'))).not.toBe('');
 });
 
 test('system accent remains a mode and is not persisted as a custom color', async ({ page }) => {

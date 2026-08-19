@@ -9,3 +9,5 @@ export const agoraRepositoryUrl = repositorySlug && /^[^/\s]+\/[^/\s]+$/.test(re
   : `https://github.com/${DEFAULT_REPOSITORY_SLUG}`;
 
 export const agoraDiscordUrl = 'https://discord.gg/56tpsa2sTZ';
+
+export const agoraSponsorsUrl = 'https://github.com/sponsors/jarjarpfeil';

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { getAllItems, CONTENT_TYPES, contentTypeLabel, contentTypePath } from '@/lib/db';
-import { GITHUB_REPO_URL, GITHUB_RELEASES_URL } from '@/lib/site';
+import { GITHUB_REPO_URL, GITHUB_RELEASES_URL, SPONSORS_URL } from '@/lib/site';
 import { DownloadButton } from '@/components/DownloadButton';
 import HeroDiorama from '@/components/HeroDiorama';
 
@@ -85,6 +85,35 @@ export default async function HomePage() {
             >
               Releases
             </a>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-pink-200 bg-gradient-to-br from-pink-50 to-indigo-50 p-6 dark:border-pink-900 dark:from-pink-950/30 dark:to-indigo-950/20">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="max-w-2xl">
+            <h2 className="flex items-center gap-2 text-xl font-bold">
+              <span aria-hidden="true" className="text-pink-600 dark:text-pink-400">♥</span> Keep Agora free & thriving
+            </h2>
+            <p className="mt-2 leading-7 text-gray-700 dark:text-gray-300">
+              Agora is free, open source, and ad-free — funded only by community donations. If you enjoy using Agora, please consider sponsoring its development. Your support keeps Agora improving and helps fund awesome new projects for the community. Thank you!
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-3">
+            <a
+              href={SPONSORS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg bg-pink-600 px-5 py-3 font-semibold text-white shadow-sm hover:bg-pink-700"
+            >
+              Sponsor on GitHub ♥
+            </a>
+            <Link
+              href="/about"
+              className="rounded-lg border bg-white px-5 py-3 font-semibold hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+            >
+              Learn more
+            </Link>
           </div>
         </div>
       </section>

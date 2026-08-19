@@ -2,6 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root {
+    --font-scale: 1;
+  }
+  body {
+    font-size: calc(1rem * var(--font-scale));
+  }
+  /* Scale Tailwind's fixed text utilities with user preference — mirrors desktop/index.css */
+  :root .text-xs {
+    font-size: calc(0.75rem * var(--font-scale));
+    line-height: calc(1rem * var(--font-scale));
+  }
+  :root .text-sm {
+    font-size: calc(0.875rem * var(--font-scale));
+    line-height: calc(1.25rem * var(--font-scale));
+  }
+  :root .text-base {
+    font-size: calc(1rem * var(--font-scale));
+    line-height: calc(1.5rem * var(--font-scale));
+  }
+  :root .text-lg {
+    font-size: calc(1.125rem * var(--font-scale));
+    line-height: calc(1.75rem * var(--font-scale));
+  }
+  :root .text-xl {
+    font-size: calc(1.25rem * var(--font-scale));
+  }
+  :root .text-2xl {
+    font-size: calc(1.5rem * var(--font-scale));
+  }
+  :root .text-3xl {
+    font-size: calc(1.875rem * var(--font-scale));
+  }
+  :root .text-4xl {
+    font-size: calc(2.25rem * var(--font-scale));
+  }
+}
+
 /* Typographic styles for rendered markdown documentation (docs-prose). */
 @layer components {
   .docs-prose {

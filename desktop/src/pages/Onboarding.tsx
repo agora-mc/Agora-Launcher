@@ -26,6 +26,13 @@ import {
   useUiPreferences,
   type UiPreferences,
 } from '../components/theme/theme-provider';
+import {
+  loadPreference,
+  resumeHighInteractionView,
+  savePreference,
+  suspendHighInteraction,
+  type InteractionPreference,
+} from '../features/interactive/live/presentationPreference';
 
 type Step = 'welcome' | 'appearance' | 'services' | 'java' | 'launch' | 'github' | 'registry' | 'import';
 
@@ -293,6 +300,16 @@ function AppearanceStep({
   const { preferences, setPreferences } = useUiPreferences();
   const activePreset = (preset: UiPreferences) =>
     JSON.stringify(preset) === JSON.stringify(preferences);
+  // High Interaction is a presentation preference with its own versioned key
+  // (mirrors Settings → Appearance → Instance view), so it is read/written
+  // directly rather than folded into the theme blob.
+  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
+  const applyInteraction = (value: InteractionPreference) => {
+    setInteraction(value);
+    savePreference(value);
+    if (value === 'high-interaction') resumeHighInteractionView();
+    else suspendHighInteraction();
+  };
 
   return (
     <div>
@@ -351,6 +368,29 @@ function AppearanceStep({
           comfortable to read.
         </span>
       </label>
+
+      <div className="mt-6 rounded-xl border border-border bg-card p-4">
+        <label className="block space-y-1 text-sm">
+          <span className="font-medium">Instance view</span>
+          <select
+            aria-label="Instance view mode"
+            value={interaction}
+            onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
+            className="mt-1 block w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="standard">Standard</option>
+            <option value="simple">Simple</option>
+            <option value="high-interaction">High Interaction</option>
+          </select>
+          <span className="block text-xs text-muted-foreground">
+            High Interaction shows an instance as a visual workbench — content relationships, health,
+            and runtime at a glance. Simple keeps that friendly structure with the stimulation turned
+            off. Reviews and content changes always open the Standard screens, which remain the only
+            place a change is applied. You can switch back at any time from the instance itself or in
+            Settings → Appearance.
+          </span>
+        </label>
+      </div>
 
       <div className="mt-8 flex justify-between">
         <button

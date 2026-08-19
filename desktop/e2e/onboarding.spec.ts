@@ -324,8 +324,8 @@ test('appearance step applies presets and text scale before entering the app', a
   await page.getByRole('button', { name: 'Get Started' }).click();
   await expect(page.getByRole('heading', { name: 'Make it yours' })).toBeVisible();
 
-  // Active preset defaults to Agora default, then Agora night applies dark mode immediately.
-  await expect(page.getByRole('button', { name: 'Agora default' })).toHaveAttribute('aria-pressed', 'true');
+  // Active preset defaults to Civic gold (new default), then Agora night applies dark mode immediately.
+  await expect(page.getByRole('button', { name: 'Civic gold' })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Agora night' }).click();
   await expect(page.locator('html')).toHaveClass(/dark/);
 

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { GITHUB_REPO_URL, DISCORD_URL } from '@/lib/site';
+import { GITHUB_REPO_URL, DISCORD_URL, SPONSORS_URL } from '@/lib/site';
 
 const PILLARS = [
   {
@@ -24,7 +24,7 @@ const PILLARS = [
   },
   {
     title: 'Donations, not for-profit',
-    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data.',
+    body: 'Agora is funded by the people who use it — through donations that keep the lights on — not by selling your attention or your data. If Agora has made your modding easier or more enjoyable, please consider sponsoring to keep it free and to support awesome new projects in the future.',
   },
   {
     title: 'Autonomous and decentralized',
@@ -70,6 +70,16 @@ export default function AboutPage() {
             <li key={pillar.title} className="rounded-xl border border-gray-200 p-5 dark:border-gray-700">
               <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{pillar.title}</h3>
               <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-400">{pillar.body}</p>
+              {pillar.title === 'Donations, not for-profit' && (
+                <a
+                  href={SPONSORS_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex text-sm font-medium text-pink-600 hover:underline dark:text-pink-400"
+                >
+                  ♥ Sponsor on GitHub — support Agora’s future
+                </a>
+              )}
             </li>
           ))}
         </ul>
@@ -96,6 +106,20 @@ export default function AboutPage() {
           </Link>{' '}
           to learn how it all fits together.
         </p>
+        <div className="rounded-xl border border-pink-200 bg-pink-50 p-4 dark:border-pink-900 dark:bg-pink-950/30">
+          <h3 className="font-semibold text-pink-800 dark:text-pink-200">Support Agora’s future</h3>
+          <p className="mt-1 text-sm leading-6 text-pink-700 dark:text-pink-300">
+            Agora is built and maintained by a solo developer who cares deeply about the Minecraft community. If Agora saves you time, helps you discover great mods, or just makes modding more fun — please consider sponsoring. Your donation keeps Agora free, ad-free, and improving, and it helps fund awesome new projects down the road. Every contribution, big or small, means a lot — thank you!
+          </p>
+          <a
+            href={SPONSORS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
+          >
+            <span aria-hidden="true">♥</span> Sponsor on GitHub
+          </a>
+        </div>
         <div className="flex flex-wrap gap-3 pt-1">
           <a
             href={GITHUB_REPO_URL}
@@ -112,6 +136,14 @@ export default function AboutPage() {
             className="rounded-lg bg-[#5865F2] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4752c4]"
           >
             Join the Discord
+          </a>
+          <a
+            href={SPONSORS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
+          >
+            <span aria-hidden="true">♥</span> Donate
           </a>
         </div>
       </section>
