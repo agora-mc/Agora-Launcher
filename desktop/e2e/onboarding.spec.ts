@@ -80,13 +80,18 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
   await installOnboardingMock(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance step → Continue
+  await expect(page.getByRole('heading', { name: 'Make it yours' })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
 
-  // On Services step: 3 switches (modrinth, aiMcp, aiChat)
+  // On Services step: 5 switches (modrinth, technic, unverified, aiMcp, aiChat)
   const switches = page.getByRole('switch');
   await expect(switches.nth(0)).toHaveAttribute('aria-checked', 'true');
   await expect(switches.nth(1)).toHaveAttribute('aria-checked', 'false');
-  await expect(switches.nth(2)).toHaveAttribute('aria-checked', 'true');
+  await expect(switches.nth(2)).toHaveAttribute('aria-checked', 'false');
+  await expect(switches.nth(3)).toHaveAttribute('aria-checked', 'false');
+  await expect(switches.nth(4)).toHaveAttribute('aria-checked', 'true');
 
   await switches.nth(1).click();
   // Go to Java step
@@ -95,9 +100,14 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
   // Back to Services
   await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
+  // Back to Appearance
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Make it yours' })).toBeVisible();
   // Back to Welcome
   await page.getByRole('button', { name: 'Back' }).click();
   await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
   // aiMcp toggle should still be checked
   await expect(page.getByRole('switch').nth(1)).toHaveAttribute('aria-checked', 'true');
 });
@@ -142,6 +152,8 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
   // Java step — should be checked by default
@@ -198,6 +210,8 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
   // Java step — uncheck
@@ -265,6 +279,8 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
   // Java step
@@ -284,6 +300,8 @@ test('cancelling GitHub device flow invalidates the active poll', async ({ page 
   await page.goto('/');
   // Welcome → Get Started
   await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue (navigates to Java step)
   await page.getByRole('button', { name: 'Continue' }).click();
   // Java step — uncheck Java download to skip to GitHub quickly
@@ -298,4 +316,26 @@ test('cancelling GitHub device flow invalidates the active poll', async ({ page 
   await page.evaluate(() => (window as any).__resolveGithubPoll(true));
   await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Download Registry' })).toHaveCount(0, { timeout: 1500 });
+});
+
+test('appearance step applies presets and text scale before entering the app', async ({ page }) => {
+  await installOnboardingMock(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Get Started' }).click();
+  await expect(page.getByRole('heading', { name: 'Make it yours' })).toBeVisible();
+
+  // Active preset defaults to Agora default, then Agora night applies dark mode immediately.
+  await expect(page.getByRole('button', { name: 'Agora default' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Agora night' }).click();
+  await expect(page.locator('html')).toHaveClass(/dark/);
+
+  // Text scale slider updates the applied font scale live.
+  await page.getByLabel('Text scale').fill('1.3');
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--font-scale'))).toBe('1.3');
+  await expect(page.getByText('130%')).toBeVisible();
+
+  // Choices persist to the same preferences store the Settings page uses.
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('agora-ui-preferences') ?? '{}'));
+  expect(stored.colorMode).toBe('dark');
+  expect(stored.fontScale).toBe(1.3);
 });

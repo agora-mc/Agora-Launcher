@@ -28,7 +28,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 LIB_RS = REPO_ROOT / "desktop" / "src-tauri" / "src" / "lib.rs"
-COMMANDS_RS = REPO_ROOT / "desktop" / "src-tauri" / "src" / "commands.rs"
+SRC_DIR = REPO_ROOT / "desktop" / "src-tauri" / "src"
 TS_ROOT = REPO_ROOT / "desktop" / "src"
 MANIFEST = REPO_ROOT / "desktop" / "src-tauri" / "gen" / "tauri-commands.json"
 
@@ -52,7 +52,9 @@ def parse_rust_commands(text: str) -> set[str]:
         return commands
     for line in body.splitlines():
         line = line.strip().rstrip(",")
-        m2 = re.match(r"commands::(\w+)", line)
+        # Handlers may be qualified by any adapter module (`commands::foo`,
+        # `technic::foo`, ...) or unqualified; take the final path segment.
+        m2 = re.match(r"(?:\w+::)*(\w+)$", line)
         if m2:
             commands.add(m2.group(1))
     return commands
@@ -116,7 +118,11 @@ def parse_ts_invoke_calls(text: str) -> set[str]:
 
 def build_manifest() -> dict:
     lib_text = LIB_RS.read_text(encoding="utf-8")
-    cmds_text = COMMANDS_RS.read_text(encoding="utf-8")
+    # Every adapter module can define #[tauri::command] fns, so scan the whole
+    # src tree rather than commands.rs alone.
+    cmds_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(SRC_DIR.rglob("*.rs"))
+    )
     ts_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(TS_ROOT.rglob("*.ts"))

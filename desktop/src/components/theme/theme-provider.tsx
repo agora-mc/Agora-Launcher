@@ -69,6 +69,64 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   highContrast: false,
 };
 
+/** Curated appearance presets shared by the Settings page and onboarding. */
+export const APPEARANCE_PRESETS: Record<string, { label: string; preferences: UiPreferences }> = {
+  agora: {
+    label: 'Agora default',
+    preferences: DEFAULT_UI_PREFERENCES,
+  },
+  night: {
+    label: 'Agora night',
+    preferences: { ...DEFAULT_UI_PREFERENCES, colorMode: 'dark' },
+  },
+  civic: {
+    label: 'Civic gold',
+    preferences: {
+      ...DEFAULT_UI_PREFERENCES,
+      colorMode: 'dark', accentMode: 'custom', customAccent: '#c28b28',
+      surfaceMode: 'custom', customSurface: '#17263b', surfaceOpacity: 0.92,
+      navMode: 'custom', customNav: '#0d1929', navOpacity: 0.96,
+      backgroundMode: 'custom', customBackground: '#091321',
+      textMode: 'custom', customText: '#f4ead4',
+      backgroundTextMode: 'custom', customBackgroundText: '#e8d9bb',
+      fontFamily: 'serif',
+    },
+  },
+  ender: {
+    label: 'Ender night',
+    preferences: {
+      ...DEFAULT_UI_PREFERENCES,
+      colorMode: 'dark', accentMode: 'custom', customAccent: '#a855f7',
+      surfaceMode: 'custom', customSurface: '#21162d', surfaceOpacity: 0.9,
+      navMode: 'custom', customNav: '#160d20', navOpacity: 0.94,
+      backgroundMode: 'custom', customBackground: '#0d0812',
+      textMode: 'custom', customText: '#f0e7f7',
+      backgroundTextMode: 'custom', customBackgroundText: '#dac8e8',
+    },
+  },
+  terminal: {
+    label: 'Compact terminal',
+    preferences: {
+      ...DEFAULT_UI_PREFERENCES,
+      colorMode: 'dark', accentMode: 'custom', customAccent: '#45d483',
+      surfaceMode: 'custom', customSurface: '#102018', surfaceOpacity: 0.94,
+      navMode: 'custom', customNav: '#07110c', navOpacity: 0.98,
+      backgroundMode: 'custom', customBackground: '#050a07',
+      textMode: 'custom', customText: '#d9fbe7',
+      backgroundTextMode: 'custom', customBackgroundText: '#a8daba',
+      fontFamily: 'mono', density: 'compact', cornerStyle: 'square',
+    },
+  },
+  readable: {
+    label: 'High readability',
+    preferences: {
+      ...DEFAULT_UI_PREFERENCES,
+      fontFamily: 'readable', fontScale: 1.1, highContrast: true,
+      motion: 'reduced', density: 'spacious',
+    },
+  },
+};
+
 const UiPreferencesContext = createContext<UiPreferencesValues | null>(null);
 
 function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {

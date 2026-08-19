@@ -376,6 +376,7 @@
 
 .browse-card-action-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.625rem;
 }
@@ -389,4 +390,8 @@
 
 .browse-card-action-row .browse-primary-action { flex: none; }
 
-.browse-card-action-row .browse-source-link { flex: 1; }
+.browse-card-action-row .browse-source-link {
+  flex: 1 1 auto;
+  min-width: max-content;
+  white-space: nowrap;
+}

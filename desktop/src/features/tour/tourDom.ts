@@ -47,6 +47,18 @@ export function isAnchorPresent(anchor: TourAnchor): boolean {
 }
 
 /**
+ * Whether the visible element declaring `anchor` is not actionable: either
+ * `disabled` or `aria-disabled`. Presence alone does not mean the user can
+ * click it (an unauthenticated vote button still renders), so tours can use
+ * this to steer the user instead of pointing them at a dead control.
+ */
+export function isAnchorDisabled(anchor: TourAnchor): boolean {
+  const element = findAnchor(anchor);
+  if (!element) return false;
+  return element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true';
+}
+
+/**
  * The app's motion rule, matching `index.css` and `tour.css`: the appearance
  * setting wins outright, and the OS preference applies unless the user has
  * explicitly asked for full motion.

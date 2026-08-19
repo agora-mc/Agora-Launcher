@@ -231,6 +231,7 @@ pub fn run() {
             commands::open_instance_folder,
             commands::open_data_folder,
             commands::reveal_path,
+            commands::open_external_url,
         ])
         .setup(|app| {
             if let Err(error) = crate::paths::migrate_legacy_data_dir(app.handle()) {

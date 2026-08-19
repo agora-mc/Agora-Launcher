@@ -428,8 +428,21 @@ def main() -> int:
         "existing_entries_mutated": [],
         "unexpected_deletions": [],
         "new_entries": 0,
+        "retired_candidates": [],
     }
     try:
+        # Load the persisted three-strike tally so retired candidates are
+        # skipped without a request; it is rewritten at the end of the run.
+        fetch.load_failed_candidates()
+        retired_at_start = fetch.get_retired_candidates()
+        if retired_at_start:
+            logger.info(
+                "Skipping %d retired loader candidate(s): %s",
+                len(retired_at_start),
+                ", ".join(retired_at_start[:5])
+                + (" …" if len(retired_at_start) > 5 else ""),
+            )
+
         before = fetch._load_existing_manifest()
 
         if args.auto_versions:
@@ -500,6 +513,16 @@ def main() -> int:
                 json.dumps(mc_versions, indent=2) + "\n", encoding="utf-8"
             )
             logger.info("Wrote %d Minecraft versions to %s", len(mc_versions), mc_versions_path)
+
+        failed_path = fetch.save_failed_candidates()
+        retired_now = fetch.get_retired_candidates()
+        logger.info(
+            "Wrote %d failing candidate(s) (%d retired) to %s",
+            len(fetch.get_failed_candidates()),
+            len(retired_now),
+            failed_path,
+        )
+        report["retired_candidates"] = retired_now
 
         _write_report(args.report, report)
         return 0

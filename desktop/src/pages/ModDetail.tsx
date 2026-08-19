@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { installTechnicPack } from '../components/technic/installTechnicPack';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { defaultSchema, type Schema } from 'hast-util-sanitize';
@@ -13,6 +14,10 @@ import {
   getInstanceDetail,
   getItemVote,
   getRegistryItem,
+  openExternalUrl,
+  technicPackDetail,
+  getSetting,
+  type TechnicPackDetail,
   isModrinthEnabled,
   listInstances,
   listLoaderVersions,
@@ -44,6 +49,23 @@ import {
 } from '../lib/tauri';
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
+
+/**
+ * Name the destination of an external content link from its host, rather than
+ * assuming Modrinth. Curated entries can point at GitHub, and Technic packs at
+ * technicpack.net.
+ */
+function externalLinkLabel(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    if (host.endsWith('modrinth.com')) return 'View on Modrinth';
+    if (host.endsWith('technicpack.net')) return 'View on Technic';
+    if (host.endsWith('github.com')) return 'View on GitHub';
+    return `View on ${host}`;
+  } catch {
+    return 'View source';
+  }
+}
 import { formatDate, sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent, SourceType } from '../lib/installFlow';
@@ -168,6 +190,13 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   // Phase 7: curated annotation overlay for Modrinth-linked projects
   const [curatedAnnotation, setCuratedAnnotation] = useState<CuratedAnnotation | null>(null);
 
+  // Technic pack detail, when this page was opened for a `technic:<slug>` id.
+  // Kept alongside the synthetic RegistryItem because installing a Technic pack
+  // needs its tier, Solder endpoint and build — none of which fit RegistryItem.
+  const [technicDetail, setTechnicDetail] = useState<TechnicPackDetail | null>(null);
+  const [technicInstalling, setTechnicInstalling] = useState(false);
+  const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
+
   // Full Modrinth project data (primary source when modrinth_id exists)
   const [modrinthProject, setModrinthProject] = useState<ModrinthProjectFull | null>(null);
   const [_modrinthProjectLoading, setModrinthProjectLoading] = useState(false);
@@ -204,6 +233,50 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           setVoteLoadError(null);
           setAuthed(null);
         }
+        if (!cancelled) setTechnicDetail(null);
+
+        // Technic packs carry a namespaced id and live on neither the registry
+        // nor Modrinth, so they resolve through their own endpoint.
+        if (itemId.startsWith('technic:')) {
+          const slug = itemId.slice('technic:'.length);
+          const detail = await technicPackDetail(slug);
+          if (!cancelled) {
+            setTechnicDetail(detail);
+            setItem({
+              id: itemId,
+              name: detail.title,
+              content_type: 'pack',
+              download_strategy: 'technic_pack',
+              source_identifier: detail.download_url ?? detail.page_url,
+              sha256: '',
+              upvotes: 0,
+              downvotes: 0,
+              net_score: 0,
+              velocity: 0,
+              status: 'active',
+              is_immune: false,
+              immunity_reason: null,
+              allow_comments: false,
+              icon_url: detail.icon_url,
+              gallery_urls_json: null,
+              date_added: null,
+              compatible_versions_json: detail.minecraft
+                ? JSON.stringify([{ mc_version: detail.minecraft, loader: 'forge', mod_version: detail.recommended_build ?? '' }])
+                : null,
+              description: detail.description,
+              // Technic exposes exactly one description field — there is no
+              // long-form body — so it doubles as the body text.
+              body_markdown: detail.description || null,
+              page_url: detail.page_url,
+              license_id: null,
+              source_updated_at: null,
+              modrinth_id: null,
+            } as any);
+            setLoading(false);
+          }
+          return;
+        }
+
         // Try registry first
         const result = await getRegistryItem(itemId);
         if (!cancelled) {
@@ -260,6 +333,24 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
       cancelled = true;
     };
   }, [itemId]);
+
+  // Must sit ABOVE the `loading` / `error` early returns below: a hook placed
+  // after them is skipped on the loading render and called once loaded, which
+  // changes the hook order between renders and crashes with "Rendered more
+  // hooks than during the previous render".
+  useEffect(() => {
+    let cancelled = false;
+    void getSetting('allow_unverified_packs')
+      .then((raw) => {
+        if (!cancelled) {
+          setAllowUnverifiedPacks(raw === true || raw === 'true' || raw === '1');
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Inline create: reload loader versions when loader or mcVersion changes
   useEffect(() => {
@@ -686,6 +777,22 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   const velocityLabel =
     item.velocity > 0 ? `▲ ${item.velocity.toFixed(1)}` : item.velocity < 0 ? `▼ ${item.velocity.toFixed(1)}` : '0.0';
 
+  const handleTechnicInstall = async () => {
+    if (!technicDetail) return;
+    setTechnicInstalling(true);
+    try {
+      const outcome = await installTechnicPack(technicDetail.slug, allowUnverifiedPacks);
+      showToast(
+        `Imported "${outcome.name}" — ${outcome.imported_mods} mods; review before launch.`,
+        'success',
+      );
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    } finally {
+      setTechnicInstalling(false);
+    }
+  };
+
   const handleInstall = async () => {
     setShowInstallFlow(true);
     setPhase('idle');
@@ -925,6 +1032,47 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         </div>
       )}
 
+      {technicDetail && (
+        <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide">
+              Technic
+            </span>
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+              {technicDetail.tier === 'solder' ? 'Solder (per-mod, MD5)' : 'Zip (unverified)'}
+            </span>
+            {technicDetail.minecraft && (
+              <span className="text-xs text-muted-foreground">MC {technicDetail.minecraft}</span>
+            )}
+            {technicDetail.recommended_build && (
+              <span className="text-xs text-muted-foreground">
+                Build {technicDetail.recommended_build}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {technicDetail.tier === 'solder'
+              ? 'Each mod is downloaded individually and checked against the MD5 the pack reports. That detects corruption in transit; it is not proof the file is genuine.'
+              : 'This pack ships as a single archive with no integrity information at all. Agora cannot verify it was not modified or swapped — you are trusting the uploader and their host.'}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleTechnicInstall}
+              disabled={technicInstalling || (technicDetail.tier === 'zip' && !allowUnverifiedPacks)}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {technicInstalling ? 'Installing…' : 'Install as new instance'}
+            </button>
+            {technicDetail.tier === 'zip' && !allowUnverifiedPacks && (
+              <span className="text-xs text-muted-foreground">
+                Enable “Allow unverified zip packs” in Settings to install this.
+              </span>
+            )}
+          </div>
+        </section>
+      )}
+
       <section className="rounded-xl border border-border bg-card p-6">
         <div className="flex items-start gap-4">
           {(modrinthProject?.icon_url || showIcon) && (
@@ -978,6 +1126,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                     aria-pressed={!itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'}
                     disabled={authed !== true || !itemVoteState || votePending}
                     onClick={() => handleVote('upvote')}
+                    data-tour="mod-detail-upvote"
                     className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       !itemVoteState?.conflicted && itemVoteState?.vote === 'upvote'
                         ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
@@ -1020,10 +1169,37 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             : 'Votes are public GitHub reactions. Published scores update after the next registry build.'}
                 </p>
               </div>
+            ) : isRegistryBacked ? (
+              // Curated but no vote thread yet (governance_summary has no row
+              // for it). Show the counts and say why voting is unavailable
+              // rather than silently rendering a dead score line.
+              <div className="mt-3 space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
+                </p>
+                {!item.is_immune && (
+                  <p className="text-xs text-muted-foreground">
+                    Voting opens once this entry has a registry vote thread.
+                  </p>
+                )}
+              </div>
             ) : (
-              <p className="text-xs text-muted-foreground mt-3">
-                ↑ {item.upvotes} · ↓ {item.downvotes} · net {item.net_score} · velocity {velocityLabel}
-              </p>
+              // Non-curated items have no Agora score, so the same slot shows
+              // the source's own popularity signals instead of nothing.
+              (() => {
+                const stats: string[] = [];
+                if (technicDetail) {
+                  stats.push(`${technicDetail.installs.toLocaleString()} installs`);
+                  // Technic's counter is likes (`ratings`), not followers.
+                  stats.push(`${technicDetail.likes.toLocaleString()} likes`);
+                } else if (modrinthProject) {
+                  stats.push(`${modrinthProject.downloads.toLocaleString()} downloads`);
+                  stats.push(`${modrinthProject.followers.toLocaleString()} followers`);
+                }
+                return stats.length > 0 ? (
+                  <p className="text-xs text-muted-foreground mt-3">{stats.join(' · ')}</p>
+                ) : null;
+              })()
             )}
             {item.date_added && (
               <p className="text-xs text-muted-foreground mt-1">
@@ -1034,14 +1210,16 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
               {modrinthProject?.license_id ? <span>License: {modrinthProject.license_id}</span> : item.license_id ? <span>License: {item.license_id}</span> : null}
               {modrinthProject?.source_updated_at ? <span>Updated {modrinthProject.source_updated_at.slice(0, 10)}</span> : item.source_updated_at ? <span>Source updated {item.source_updated_at.slice(0, 10)}</span> : null}
               {(modrinthProject?.page_url || item.page_url) && (
-                <a
-                  href={modrinthProject?.page_url ?? item.page_url!}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => {
+                    // target="_blank" is inert in the Tauri webview.
+                    void openExternalUrl(modrinthProject?.page_url ?? item.page_url!);
+                  }}
                   className="text-primary hover:underline dark:text-primary"
                 >
-                  View on Modrinth ↗
-                </a>
+                  {externalLinkLabel(modrinthProject?.page_url ?? item.page_url!)} ↗
+                </button>
               )}
             </p>
           </div>

@@ -25,8 +25,11 @@ export function blip(state: EngineState, f: number, d?: number, t?: OscillatorTy
     if (!ac) return;
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = t || 'triangle'; o.frequency.value = f;
+    // `state.soundVolume` is a loudness multiplier on the note's own gain, so
+    // the volume slider can push SFX above the prototype's fixed level.
+    const peak = Math.min(0.9, Math.max(0.0001, (v || 0.08) * (state.soundVolume ?? 1)));
     g.gain.setValueAtTime(0.0001, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(v || 0.08, ac.currentTime + 0.012);
+    g.gain.exponentialRampToValueAtTime(peak, ac.currentTime + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + (d || 0.12));
     o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + (d || 0.12) + 0.03);
   } catch {

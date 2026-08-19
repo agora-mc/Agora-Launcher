@@ -318,6 +318,14 @@ impl RegistryService {
     }
 
     /// Browse registry items with typed filters.
+    /// Registry-wide average approval rate, the anchor for the vote nudge.
+    pub fn mean_approval(&self) -> f64 {
+        match self.connection() {
+            Ok(conn) => registry_mean_approval(&conn),
+            Err(_) => crate::ranking::DEFAULT_REGISTRY_MEAN_APPROVAL,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn browse_items(
         &self,
@@ -1324,6 +1332,28 @@ pub fn get_all_manifest_dependencies(
         out.insert(item_id, deps);
     }
     Ok(out)
+}
+
+/// Average approval rate (`upvotes / (upvotes + downvotes)`) across every
+/// registry item that has at least one vote.
+///
+/// This is the anchor the vote nudge pulls low-vote items toward, so a brand-new
+/// item sits near the registry norm rather than at an extreme. Returns
+/// [`ranking::DEFAULT_REGISTRY_MEAN_APPROVAL`] when nothing has been voted on —
+/// which is the case for the entire shipped registry today.
+pub fn registry_mean_approval(conn: &Connection) -> f64 {
+    let mean: Option<f64> = conn
+        .query_row(
+            "SELECT AVG(CAST(upvotes AS REAL) / (upvotes + downvotes))              FROM registry_items              WHERE status = 'active' AND (upvotes + downvotes) > 0",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    match mean {
+        Some(value) if value.is_finite() => value.clamp(0.0, 1.0),
+        _ => crate::ranking::DEFAULT_REGISTRY_MEAN_APPROVAL,
+    }
 }
 
 /// List `(item_id, display_name)` for every active catalog mod.

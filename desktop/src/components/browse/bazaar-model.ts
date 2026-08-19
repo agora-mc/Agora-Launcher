@@ -115,15 +115,15 @@ export function categoryTags(item: Pick<BazaarItem, 'categories'>): string[] {
 /**
  * Prototype `scoreOf`, verbatim in intent:
  *   score = sum of the item's vibes' current taste values
- *         + 0.6 if popular
  *         − 99 if already owned/staged (sorts to the back)
  */
 export function scoreOf(state: BazaarState, item: BazaarItem): number {
   let score = 0;
   for (const v of vibesFor(item)) score += state.taste[v] || 0;
-  // Curated picks earn a small, visible nudge on the shelf (not the -99
-  // owned treatment, just a taste-independent tiebreak).
-  return score + (item.curated ? 0.6 : 0) + (isOwned(state, item.id) ? -99 : 0);
+  // No curated nudge here any more: the backend now ranks curated content into
+  // its own band, and `sortedShelf` tiebreaks on backend order, so adding a
+  // second bonus would double-count the same preference.
+  return score + (isOwned(state, item.id) ? -99 : 0);
 }
 
 /**
@@ -202,12 +202,27 @@ export function crank(state: BazaarState, pool: BazaarItem[]): BazaarItem | null
  * under whatever starts with "A". This also keeps whichever sort the user picked
  * meaningful, rather than hardcoding one.
  */
-export function sortedShelf(state: BazaarState, items: BazaarItem[]): BazaarItem[] {
+export function sortedShelf(
+  state: BazaarState,
+  items: BazaarItem[],
+  settledOrder: string[] = [],
+): BazaarItem[] {
   const rank = new Map(items.map((it, i) => [it.id, i]));
-  return items.slice().sort((a, b) => {
+  const byScore = (a: BazaarItem, b: BazaarItem) => {
     const d = scoreOf(state, b) - scoreOf(state, a);
     return d !== 0 ? d : (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0);
-  });
+  };
+
+  // Items the shelf has already shown keep the order they were shown in.
+  // Re-sorting them as taste accumulates made cards jump positions while the
+  // user was scrolling, so an item could be scrolled past before it moved into
+  // view — the reason a mod could be missed entirely.
+  const settled = new Set(settledOrder);
+  const kept = settledOrder
+    .map((id) => items.find((it) => it.id === id))
+    .filter((it): it is BazaarItem => Boolean(it));
+  const incoming = items.filter((it) => !settled.has(it.id)).sort(byScore);
+  return [...kept, ...incoming];
 }
 
 /** Stall categories (the prototype's CATS), driven by the real content types. */

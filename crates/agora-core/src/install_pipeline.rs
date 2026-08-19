@@ -157,10 +157,6 @@ pub enum HashAlgorithm {
     Sha256,
     Sha512,
     Sha1,
-    /// Transport-integrity only, never authenticity: MD5 is collision-broken
-    /// and is accepted solely for third-party content (Technic Solder) whose
-    /// author reports an MD5. Curated artifacts must still pin SHA-256.
-    Md5,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +207,12 @@ pub struct ArtifactMetadata {
     /// fetched via the signed-manifest host policy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download_strategy: Option<String>,
+    /// Host of the curator-pinned `source_identifier` for hand-pinned
+    /// strategies. Sourced from the signed registry row, never re-derived from
+    /// the URL being fetched, so it is a real constraint on the request rather
+    /// than a tautology.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,7 +240,7 @@ pub enum DepDisposition {
         installed_filename: String,
     },
     /// Will be downloaded and installed.
-    InstallCandidate { artifact: ResolvedArtifact },
+    InstallCandidate { artifact: Box<ResolvedArtifact> },
     /// Another item in the same batch installs this dependency — no action
     /// needed here and no duplicate artifact is added.
     IncludedInBatch { target_filename: String },
@@ -2469,12 +2471,20 @@ async fn stage_plan_artifacts(
                         .download_strategy
                         .as_deref()
                         .unwrap_or_default();
-                    if strategy == "direct_hash" {
-                        // Provenance is known here: `direct_hash` artifacts are
-                        // SHA-256-pinned in the signed registry, so the pinned
-                        // URL's own host authorizes the request (the host is
-                        // never trusted from any other layer).
-                        crate::download::download_pinned_bytes_standalone(url)
+                    // Hand-pinned strategies are SHA-256-pinned in the signed
+                    // registry, so the curator-reviewed host from that manifest
+                    // row authorizes the request. `technic_pack` additionally
+                    // permits plain HTTP: the hash is out-of-band, so transport
+                    // is not the trust anchor.
+                    if matches!(strategy, "direct_hash" | "technic_pack") {
+                        let pinned_host =
+                            download.metadata.pinned_host.as_deref().ok_or_else(|| {
+                                format!(
+                                    "{} uses {strategy} but carries no pinned host",
+                                    download.item_id
+                                )
+                            })?;
+                        crate::download::download_pinned_bytes_standalone(url, pinned_host)
                             .await
                             .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
                     } else {
@@ -2534,7 +2544,7 @@ async fn stage_plan_artifacts(
 }
 
 fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
-    use md5::Digest as _;
+    use sha1::Digest as _;
 
     if hashes.values.is_empty() {
         return Err("no expected hashes were supplied".into());
@@ -2553,11 +2563,6 @@ fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
             }
             HashAlgorithm::Sha1 => {
                 let mut hasher = sha1::Sha1::new();
-                hasher.update(contents);
-                format!("{:x}", hasher.finalize())
-            }
-            HashAlgorithm::Md5 => {
-                let mut hasher = md5::Md5::new();
                 hasher.update(contents);
                 format!("{:x}", hasher.finalize())
             }
@@ -3086,11 +3091,12 @@ mod tests {
                 content_type: "mod".into(),
                 version: None,
                 download_strategy: None,
+                pinned_host: None,
             },
         });
         assert_eq!(
             serde_json::to_value(DepDisposition::InstallCandidate {
-                artifact: artifact.clone(),
+                artifact: Box::new(artifact.clone()),
             })
             .unwrap(),
             serde_json::json!({
@@ -3272,7 +3278,7 @@ mod tests {
                     display_name: None,
                     page_url: None,
                     disposition: DepDisposition::InstallCandidate {
-                        artifact: test_artifact(
+                        artifact: Box::new(test_artifact(
                             "required-dep",
                             "required.jar",
                             crate::download::sha256_hex(b"required"),
@@ -3280,7 +3286,7 @@ mod tests {
                                 path: required_path.to_string_lossy().into_owned(),
                             },
                             SourceType::Curated,
-                        ),
+                        )),
                     },
                 },
                 ResolvedDep {
@@ -3290,7 +3296,7 @@ mod tests {
                     display_name: None,
                     page_url: None,
                     disposition: DepDisposition::InstallCandidate {
-                        artifact: test_artifact(
+                        artifact: Box::new(test_artifact(
                             "optional-dep",
                             "optional.jar",
                             crate::download::sha256_hex(b"optional"),
@@ -3298,7 +3304,7 @@ mod tests {
                                 path: optional_path.to_string_lossy().into_owned(),
                             },
                             SourceType::Curated,
-                        ),
+                        )),
                     },
                 },
             ],
@@ -3779,7 +3785,7 @@ mod tests {
                 display_name: None,
                 page_url: None,
                 disposition: DepDisposition::InstallCandidate {
-                    artifact: test_artifact(
+                    artifact: Box::new(test_artifact(
                         "missing-dep",
                         "z-missing.jar",
                         missing_hash,
@@ -3791,7 +3797,7 @@ mod tests {
                                 .into_owned(),
                         },
                         SourceType::Manual,
-                    ),
+                    )),
                 },
             }],
             conflicts: vec![],
@@ -4370,6 +4376,7 @@ mod tests {
                 content_type: "mod".into(),
                 version: None,
                 download_strategy: None,
+                pinned_host: None,
             },
         })
     }
@@ -4397,6 +4404,7 @@ mod tests {
                 content_type: "mod".into(),
                 version: Some("fabric-26.2-26.4.2".into()),
                 download_strategy: None,
+                pinned_host: None,
             },
         });
 
@@ -4929,6 +4937,7 @@ mod tests {
                         content_type: "mod".into(),
                         version: None,
                         download_strategy: None,
+                        pinned_host: None,
                     },
                 }),
             },

@@ -27,11 +27,18 @@ import { RegistryStatusView } from '../components/registry-status-view';
 import { BrowseListResults } from '../components/browse/BrowseListResults';
 import { BrowseTileResults } from '../components/browse/BrowseTileResults';
 import { BrowseBazaar } from '../components/browse/BrowseBazaar';
-import { TechnicBrowsePanel } from '../components/technic/TechnicBrowsePanel';
 import type { BazaarItem } from '../components/browse/bazaar-model';
 import { InstallFlow } from '../components/InstallFlow';
 import { usePackInstall } from '../components/PackInstallProgress';
 import { showToast } from '../components/Toast';
+import {
+  saveBrowseSnapshot,
+  peekBrowseSnapshot,
+  parkBrowseSnapshot,
+  takeBrowseSnapshot,
+  clearBrowseSnapshot,
+  type BrowseSnapshot,
+} from './browseSession';
 import {
   resolveInstallPlan,
   type BatchInstallItem,
@@ -78,13 +85,16 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced;
 }
 
+// `net_score` now means the blended 0-100 cross-source score, not the raw
+// upvotes-minus-downvotes tally it originally referred to. The values are kept
+// so saved preferences and query keys stay valid.
 const SORTS: { label: string; value: SortOption }[] = [
   { label: 'For You', value: 'for_you' },
-  { label: 'Net Score', value: 'net_score' },
+  { label: 'Best', value: 'net_score' },
   { label: 'Trending', value: 'velocity' },
   { label: 'Newest', value: 'newest' },
-  { label: 'Most Upvoted', value: 'most_upvoted' },
-  { label: 'Most Downvoted', value: 'most_downvoted' },
+  { label: 'Most Endorsed', value: 'most_upvoted' },
+  { label: 'Lowest Rated', value: 'most_downvoted' },
 ];
 
 const CONTENT_TYPES = ['mod', 'pack', 'shader', 'resourcepack', 'server', 'datapack', 'world'];
@@ -275,69 +285,25 @@ function failedBatchRootItemId(plan: ResolvedInstallPlan, error: string): string
   return find(plan.operation);
 }
 
-// NOTE: the modrinthResults branch is currently unused (For You sort passes []).
-// Kept for future Modrinth_raw integration.
-function mergeItems(
-  registryItems: RegistryItem[],
-  modrinthResults: ModrinthSearchResult[],
-): BrowseItem[] {
-  const registryByModrinthId = new Map<string, RegistryItem>();
-  for (const ri of registryItems) {
-    if (ri.modrinth_id) {
-      registryByModrinthId.set(ri.modrinth_id, ri);
-    }
-  }
-
-  const matchedRegistryIds = new Set<string>();
-  const merged: BrowseItem[] = [];
-
-  for (const mr of modrinthResults) {
-    const matched = registryByModrinthId.get(mr.project_id);
-    if (matched) {
-      matchedRegistryIds.add(matched.id);
-      merged.push({
-        id: matched.id,
-        source: 'curated',
-        registryItem: matched,
-        modrinthResult: mr,
-        name: matched.name,
-        iconUrl: matched.icon_url ?? mr.icon_url,
-        description: matched.description ?? mr.description,
-        contentType: matched.content_type,
-        ...presentationFields(matched, mr),
-      });
-    } else {
-      merged.push({
-        id: mr.project_id,
-        source: 'modrinth',
-        registryItem: null,
-        modrinthResult: mr,
-        name: mr.title,
-        iconUrl: mr.icon_url,
-        description: mr.description,
-        contentType: mr.project_type,
-        ...presentationFields(null, mr),
-      });
-    }
-  }
-
-  for (const ri of registryItems) {
-    if (!matchedRegistryIds.has(ri.id)) {
-      merged.push({
-        id: ri.id,
-        source: 'curated',
-        registryItem: ri,
-        modrinthResult: null,
-        name: ri.name,
-        iconUrl: ri.icon_url,
-        description: ri.description,
-        contentType: ri.content_type,
-        ...presentationFields(ri, null),
-      });
-    }
-  }
-
-  return merged;
+/**
+ * Shape registry rows into browse items for the For You path.
+ *
+ * The full curated/Modrinth/Technic merge and ranking lives in core
+ * (`browse_cache::merge_items`); this only covers For You, which is
+ * registry-only and ranked by category overlap rather than by score.
+ */
+function curatedOnlyItems(registryItems: RegistryItem[]): BrowseItem[] {
+  return registryItems.map((ri) => ({
+    id: ri.id,
+    source: 'curated',
+    registryItem: ri,
+    modrinthResult: null,
+    name: ri.name,
+    iconUrl: ri.icon_url,
+    description: ri.description,
+    contentType: ri.content_type,
+    ...presentationFields(ri, null),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +440,11 @@ function BrowseContent({
   // High Interaction Browse (the Bazaar, v5-browse port): default on when the
   // presentation preference is High Interaction, switchable at any time.
   const [bazaarMode, setBazaarMode] = useState<boolean>(() => loadPreference() === 'high-interaction');
+  // Scroll offset to reapply after a restored list paints. `null` means this
+  // mount did not restore anything, so scrolling must be left alone.
+  const restoredScrollRef = useRef<number | null>(null);
+  // Bazaar shelf order, mirrored here so it can be snapshotted with the list.
+  const bazaarSettledOrderRef = useRef<string[]>([]);
   /**
    * The open Bazaar stall, mapped onto the same `contentType` the Browse list
    * queries with. A stall is a different QUERY, not a filter over the loaded
@@ -512,23 +483,17 @@ function BrowseContent({
   const [contextError, setContextError] = useState<string | null>(null);
   const [autoConfirmCleanInstalls, setAutoConfirmCleanInstalls] = useState(false);
   const [alwaysAutoConfirmInstalls, setAlwaysAutoConfirmInstalls] = useState(false);
-  const [technicEnabled, setTechnicEnabled] = useState(false);
-  const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
       getSetting('install_auto_confirm_clean'),
       getSetting('install_always_auto_confirm'),
-      getSetting('technic_enabled'),
-      getSetting('allow_unverified_packs'),
     ])
-      .then(([autoConfirm, alwaysConfirm, technicEnabled, allowUnverifiedPacks]) => {
+      .then(([autoConfirm, alwaysConfirm]) => {
         if (!cancelled) {
           setAutoConfirmCleanInstalls(parseBool(autoConfirm));
           setAlwaysAutoConfirmInstalls(parseBool(alwaysConfirm));
-          setTechnicEnabled(parseBool(technicEnabled));
-          setAllowUnverifiedPacks(parseBool(allowUnverifiedPacks));
         }
       })
       .catch(() => {
@@ -657,6 +622,20 @@ function BrowseContent({
         // and close instead of hiding the error in a toast.
         setInstallTarget({ intent, instanceName });
       });
+  };
+
+  // Technic packs have no registry id and no detail page, so selecting one
+  // installs it directly instead of routing through `onSelectMod`. The
+  // `technic:` prefix is applied in core when the item is built.
+  // Technic packs now have a detail page of their own (ModDetail resolves a
+  // `technic:<slug>` id through technicPackDetail), so selecting a card opens
+  // details like every other source instead of installing immediately.
+  const handleSelectItem = (id: string) => {
+    // Capture where the user was before the detail page replaces this view.
+    // App also saves `main`'s scrollTop for the standard list, but the Bazaar
+    // reaches the detail page through the same handler and was never covered.
+    parkBrowseSnapshot(document.querySelector('main')?.scrollTop ?? 0);
+    onSelectMod?.(id, activeInstanceId || undefined);
   };
 
   const handleInstallSelected = () => {
@@ -910,8 +889,56 @@ function BrowseContent({
     };
   }, []);
 
+  // Mirror the live list into the session snapshot. Kept as an effect rather
+  // than written at each mutation site so no future code path can update the
+  // list and forget to persist it.
+  useEffect(() => {
+    if (searchLoading) return;
+    const snapshot: BrowseSnapshot = {
+      queryKey,
+      items,
+      hasMore,
+      currentPage,
+      // Scroll is captured separately on the way out; preserve any prior value.
+      scrollTop: peekBrowseSnapshot()?.scrollTop ?? 0,
+      bazaarMode,
+      bazaarSettledOrder: bazaarSettledOrderRef.current,
+    };
+    saveBrowseSnapshot(snapshot);
+  }, [queryKey, items, hasMore, currentPage, bazaarMode, searchLoading]);
+
+  // Reapply the saved scroll offset once the restored list has painted.
+  useEffect(() => {
+    const target = restoredScrollRef.current;
+    if (target == null || items.length === 0) return;
+    restoredScrollRef.current = null;
+    const raf = requestAnimationFrame(() => {
+      const scroller = document.querySelector('main');
+      scroller?.scrollTo({ top: target, behavior: 'auto' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [items]);
+
   // ---- Main search effect — uses generation counter for stale-response protection ----
   useEffect(() => {
+    // Returning from a mod detail page with the same filters restores the
+    // already-loaded pages instead of refetching page 0, so the user lands
+    // back where they were rather than at the top of a one-page list.
+    const restored = takeBrowseSnapshot(queryKey);
+    if (restored) {
+      restoredScrollRef.current = restored.scrollTop;
+      bazaarSettledOrderRef.current = restored.bazaarSettledOrder;
+      setItems(restored.items);
+      setHasMore(restored.hasMore);
+      setCurrentPage(restored.currentPage);
+      setBazaarMode(restored.bazaarMode);
+      setSearchLoading(false);
+      setSearchError(null);
+      return;
+    }
+
+    // Different filters — the cached list no longer matches the controls.
+    clearBrowseSnapshot();
     const generation = ++generationRef.current;
     inFlightSearchRef.current = generation;
     setSearchError(null);
@@ -939,7 +966,7 @@ function BrowseContent({
           );
 
           if (!cancelled && inFlightSearchRef.current === generation) {
-            setItems(mergeItems(registryItems, []));
+            setItems(curatedOnlyItems(registryItems));
             setHasMore(false);
           }
         } else {
@@ -1016,23 +1043,43 @@ function BrowseContent({
       });
   }, [currentPage, hasMore, loadMoreLoading, queryKey, searchLoading]);
 
-  // ---- Infinite scroll — captures generation at trigger time ----
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  // ---- Infinite scroll ----
+  //
+  // Attached via a CALLBACK REF rather than an effect keyed on a dependency
+  // list. The sentinel is only rendered in list/tile mode, so returning from
+  // the Bazaar mounts it without changing any of hasMore/searchLoading/
+  // loadMoreLoading/loadMoreError — an effect keyed on those never re-ran, its
+  // `sentinelRef.current` was still null from Bazaar mode, and no observer was
+  // ever attached. Infinite scroll was then dead for the rest of the session.
+  // A callback ref fires exactly when the node mounts or unmounts, so no
+  // dependency list can drift out of sync with the DOM again.
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  // Read through refs so the observer never needs rebuilding when these change.
+  const loadNextPageRef = useRef(loadNextPage);
+  const loadMoreErrorRef = useRef(loadMoreError);
   useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel || !hasMore || searchLoading || loadMoreError) return;
+    loadNextPageRef.current = loadNextPage;
+    loadMoreErrorRef.current = loadMoreError;
+  }, [loadNextPage, loadMoreError]);
 
+  const attachSentinel = useCallback((node: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!node) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && hasMore && !loadMoreLoading && !loadMoreError) {
-          loadNextPage();
+        // `loadNextPage` already guards hasMore/searchLoading/loadMoreLoading.
+        if (entries[0]?.isIntersecting && !loadMoreErrorRef.current) {
+          loadNextPageRef.current();
         }
       },
       { rootMargin: '600px' },
     );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasMore, searchLoading, loadMoreLoading, loadMoreError, loadNextPage]);
+    observer.observe(node);
+    observerRef.current = observer;
+  }, []);
+
+  useEffect(() => () => observerRef.current?.disconnect(), []);
 
 
   // ---- Render ----
@@ -1148,8 +1195,8 @@ function BrowseContent({
           items={bazaarItems}
           instanceVersion={bazaarInstanceVersion}
           ownedIds={bazaarOwnedIds}
-          onAdd={(item) => onSelectMod?.(item.id, activeInstanceId || undefined)}
-          onOpenMod={(item) => onSelectMod?.(item.id, activeInstanceId || undefined)}
+          onAdd={(item) => handleSelectItem(item.id)}
+          onOpenMod={(item) => handleSelectItem(item.id)}
           onExit={() => setBazaarMode(false)}
           hasMore={hasMore && !searchLoading}
           loadMoreLoading={loadMoreLoading}
@@ -1157,6 +1204,8 @@ function BrowseContent({
           onInstallBag={handleBazaarInstall}
           stall={bazaarStall}
           onStallChange={setBazaarStall}
+          initialSettledOrder={bazaarSettledOrderRef.current}
+          onSettledOrderChange={(order) => { bazaarSettledOrderRef.current = order; }}
         />
         {bulkInstallDialogs}
       </div>
@@ -1193,10 +1242,6 @@ function BrowseContent({
         error={regError}
         actions={regActions}
       />
-
-      {!bazaarMode && (
-        <TechnicBrowsePanel enabled={technicEnabled} allowUnverifiedPacks={allowUnverifiedPacks} />
-      )}
 
       <section className="rounded-xl border border-border bg-card p-4">
         <label className="block text-sm font-semibold" htmlFor="browse-instance-context">
@@ -1250,7 +1295,7 @@ function BrowseContent({
         </div>
       </section>
 
-      <div className="flex flex-col lg:flex-row gap-4">
+      <div className="flex flex-col lg:flex-row lg:flex-wrap gap-4">
         <input
           type="text"
           value={query}
@@ -1438,7 +1483,7 @@ function BrowseContent({
                         debouncedQuery.trim() || undefined,
                       );
                       if (inFlightSearchRef.current === newGen) {
-                        setItems(mergeItems(registryItems, []));
+                        setItems(curatedOnlyItems(registryItems));
                         setHasMore(false);
                       }
                     } else {
@@ -1507,7 +1552,7 @@ function BrowseContent({
           <BrowseTileResults
             items={items}
             contextFor={contextFor}
-            onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+            onSelectMod={handleSelectItem}
             selectedItems={selectedItems}
             onToggleSelect={handleToggleSelect}
           />
@@ -1517,7 +1562,7 @@ function BrowseContent({
           <BrowseListResults
             items={items}
             contextFor={contextFor}
-            onSelectMod={(id) => onSelectMod?.(id, activeInstanceId || undefined)}
+            onSelectMod={handleSelectItem}
             selectedItems={selectedItems}
             onToggleSelect={handleToggleSelect}
           />
@@ -1538,7 +1583,7 @@ function BrowseContent({
       )}
       {hasMore && !searchLoading && (
         <div
-          ref={sentinelRef}
+          ref={attachSentinel}
           data-testid="browse-load-sentinel"
           className="py-6 text-center text-sm text-muted-foreground"
         >

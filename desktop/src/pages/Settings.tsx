@@ -473,10 +473,40 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
     }
   };
 
+  // Turning either of these ON widens what Agora will fetch and execute, so
+  // each needs an explicit acknowledgement of what is being accepted. Turning
+  // them OFF is always safe and never prompts.
+  const TECHNIC_ENABLE_WARNING = [
+    'Enable Technic browsing?',
+    '',
+    'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
+    '',
+    'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
+    '',
+    'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
+  ].join('\n');
+
+  const UNVERIFIED_PACKS_ENABLE_WARNING = [
+    'Allow unverified zip packs?',
+    '',
+    'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+    '',
+    'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
+    '',
+    'Only enable this if you already trust the specific pack you are installing.',
+  ].join('\n');
+
   const toggleTechnic = async (value: boolean) => {
+    if (value && !window.confirm(TECHNIC_ENABLE_WARNING)) return;
     setTechnic(value);
     try {
       await setSetting('technic_enabled', value);
+      // Turning Technic off must not leave the more permissive tier armed for
+      // the next time it is re-enabled.
+      if (!value && allowUnverifiedPacks) {
+        await setSetting('allow_unverified_packs', false);
+        setAllowUnverifiedPacks(false);
+      }
     } catch (e) {
       setTechnic(!value);
       showToast(formatError(e), 'error');
@@ -484,6 +514,7 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
   };
 
   const toggleAllowUnverifiedPacks = async (value: boolean) => {
+    if (value && !window.confirm(UNVERIFIED_PACKS_ENABLE_WARNING)) return;
     setAllowUnverifiedPacks(value);
     try {
       await setSetting('allow_unverified_packs', value);

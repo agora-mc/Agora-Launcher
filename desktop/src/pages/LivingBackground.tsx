@@ -42,8 +42,12 @@ export function LivingBackground() {
   const {
     soundOn,
     setSoundOn,
+    soundVolume,
+    setSoundVolume,
     musicVolume,
     setMusicVolume,
+    musicOn,
+    setMusicOn,
     clearBackground,
     setClearBackground,
     setTod,
@@ -198,39 +202,69 @@ export function LivingBackground() {
           <span className="ml-auto font-normal normal-case tracking-normal text-muted-foreground">Hide</span>
         </button>
         <div id="living-bg-panel-body" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span className="inline-flex items-center gap-2">
-              <Volume2 className="h-4 w-4" aria-hidden="true" />
-              Ambient sounds
-            </span>
-            <input
-              type="checkbox"
-              aria-label="Ambient sounds"
-              checked={soundOn}
-              onChange={(e) => setSoundOn(e.target.checked)}
-              className="h-5 w-5 accent-primary"
-            />
-          </label>
+          <div className="space-y-1 text-sm">
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                aria-label="Ambient sounds"
+                checked={soundOn}
+                onChange={(e) => setSoundOn(e.target.checked)}
+                className="h-5 w-5 accent-primary"
+              />
+              <span className="inline-flex items-center gap-2">
+                <Volume2 className="h-4 w-4" aria-hidden="true" />
+                Ambient sounds
+              </span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="range"
+                aria-label="Ambient sound volume"
+                min="0"
+                max="100"
+                step="5"
+                disabled={!soundOn}
+                value={Math.round(soundVolume * 100)}
+                onChange={(e) => setSoundVolume(Number(e.target.value) / 100)}
+                className="w-full accent-primary disabled:opacity-40"
+              />
+              <span className="w-10 text-right text-xs text-muted-foreground">{Math.round(soundVolume * 100)}%</span>
+            </div>
+          </div>
 
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span className="inline-flex items-center gap-2">
+          <div className="space-y-1 text-sm">
+            <span className="flex items-center gap-2 font-medium">
               <Music className="h-4 w-4" aria-hidden="true" />
-              Music volume
+              Music
+              <button
+                type="button"
+                onClick={() => setMusicOn(!musicOn)}
+                aria-pressed={musicOn}
+                aria-label="Toggle music"
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                  musicOn
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-muted text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {musicOn ? 'Playing' : 'Muted'}
+              </button>
             </span>
-            <div className="flex flex-1 items-center gap-2">
+            <div className="flex items-center gap-2">
               <input
                 type="range"
                 aria-label="Music volume"
                 min="0"
                 max="100"
                 step="5"
+                disabled={!musicOn}
                 value={Math.round(musicVolume * 100)}
                 onChange={(e) => setMusicVolume(Number(e.target.value) / 100)}
-                className="w-full accent-primary"
+                className="w-full accent-primary disabled:opacity-40"
               />
               <span className="w-10 text-right text-xs text-muted-foreground">{Math.round(musicVolume * 100)}%</span>
             </div>
-          </label>
+          </div>
 
           {/* Not a <label>: the lock is a button, and interactive content
               inside a label makes the label click through to the slider. */}
@@ -313,11 +347,7 @@ export function LivingBackground() {
             </div>
           </div>
 
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span className="inline-flex items-center gap-2">
-              <Sparkles className="h-4 w-4" aria-hidden="true" />
-              Cursor companion
-            </span>
+          <label className="flex items-center gap-3 text-sm">
             <input
               type="checkbox"
               aria-label="Cursor companion"
@@ -325,9 +355,20 @@ export function LivingBackground() {
               onChange={toggleBuddy}
               className="h-5 w-5 accent-primary"
             />
+            <span className="inline-flex items-center gap-2">
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+              Cursor companion
+            </span>
           </label>
 
-          <label className="flex items-center justify-between gap-3 text-sm">
+          <label className="flex items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              aria-label="Rainbow"
+              checked={rainbow}
+              onChange={(e) => { setRainbowValue(e.target.checked); setRainbow(e.target.checked); }}
+              className="mt-0.5 h-5 w-5 accent-primary"
+            />
             <span>
               <span className="inline-flex items-center gap-2 font-medium">
                 <Rainbow className="h-4 w-4" aria-hidden="true" />
@@ -335,13 +376,6 @@ export function LivingBackground() {
               </span>
               <span className="block text-xs text-muted-foreground">Keeps one up. A rainstorm's own fades after a few seconds.</span>
             </span>
-            <input
-              type="checkbox"
-              aria-label="Rainbow"
-              checked={rainbow}
-              onChange={(e) => { setRainbowValue(e.target.checked); setRainbow(e.target.checked); }}
-              className="h-5 w-5 accent-primary"
-            />
           </label>
 
           <label className="space-y-1 text-sm">
@@ -374,32 +408,32 @@ export function LivingBackground() {
             </select>
           </label>
 
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span>
-              <span className="block font-medium">Autoplay</span>
-              <span className="block text-xs text-muted-foreground">Move to another piece when one ends.</span>
-            </span>
+          <label className="flex items-start gap-3 text-sm">
             <input
               type="checkbox"
               aria-label="Autoplay"
               checked={musicAuto}
               onChange={(e) => { setMusicAuto(e.target.checked); if (e.target.checked) setTrackValue(''); }}
-              className="h-5 w-5 accent-primary"
+              className="mt-0.5 h-5 w-5 accent-primary"
             />
+            <span>
+              <span className="block font-medium">Autoplay</span>
+              <span className="block text-xs text-muted-foreground">Move to another piece when one ends.</span>
+            </span>
           </label>
 
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span>
-              <span className="block font-medium">Hide the standard background</span>
-              <span className="block text-xs text-muted-foreground">Page background to 0% opacity behind the world.</span>
-            </span>
+          <label className="flex items-start gap-3 text-sm">
             <input
               type="checkbox"
               aria-label="Hide the standard background"
               checked={clearBackground}
               onChange={(e) => setClearBackground(e.target.checked)}
-              className="h-5 w-5 accent-primary"
+              className="mt-0.5 h-5 w-5 accent-primary"
             />
+            <span>
+              <span className="block font-medium">Hide the standard background</span>
+              <span className="block text-xs text-muted-foreground">Page background to 0% opacity behind the world.</span>
+            </span>
           </label>
         </div>
       </section>

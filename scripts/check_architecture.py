@@ -48,6 +48,7 @@ THIN_ADAPTER_MODULES: set[str] = {
     "paths",
     "registry",
     "registry_sync",
+    "technic",
     "version_cache",
 }
 

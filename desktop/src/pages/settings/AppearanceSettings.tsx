@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  DEFAULT_UI_PREFERENCES,
+  APPEARANCE_PRESETS,
   useUiPreferences,
-  type UiPreferences,
 } from '../../components/theme/theme-provider';
 import {
   loadPreference,
@@ -14,60 +13,6 @@ import {
 import { useAmbience } from '../../features/ambience/AmbienceProvider';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
-
-const PRESETS: Record<string, { label: string; preferences: UiPreferences }> = {
-  agora: { label: 'Agora default', preferences: DEFAULT_UI_PREFERENCES },
-  night: {
-    label: 'Agora night',
-    preferences: { ...DEFAULT_UI_PREFERENCES, colorMode: 'dark' },
-  },
-  civic: {
-    label: 'Civic gold',
-    preferences: {
-      ...DEFAULT_UI_PREFERENCES,
-      colorMode: 'dark', accentMode: 'custom', customAccent: '#c28b28',
-      surfaceMode: 'custom', customSurface: '#17263b', surfaceOpacity: 0.92,
-      navMode: 'custom', customNav: '#0d1929', navOpacity: 0.96,
-      backgroundMode: 'custom', customBackground: '#091321',
-      textMode: 'custom', customText: '#f4ead4',
-      backgroundTextMode: 'custom', customBackgroundText: '#e8d9bb',
-      fontFamily: 'serif',
-    },
-  },
-  ender: {
-    label: 'Ender night',
-    preferences: {
-      ...DEFAULT_UI_PREFERENCES,
-      colorMode: 'dark', accentMode: 'custom', customAccent: '#a855f7',
-      surfaceMode: 'custom', customSurface: '#21162d', surfaceOpacity: 0.9,
-      navMode: 'custom', customNav: '#160d20', navOpacity: 0.94,
-      backgroundMode: 'custom', customBackground: '#0d0812',
-      textMode: 'custom', customText: '#f0e7f7',
-      backgroundTextMode: 'custom', customBackgroundText: '#dac8e8',
-    },
-  },
-  terminal: {
-    label: 'Compact terminal',
-    preferences: {
-      ...DEFAULT_UI_PREFERENCES,
-      colorMode: 'dark', accentMode: 'custom', customAccent: '#45d483',
-      surfaceMode: 'custom', customSurface: '#102018', surfaceOpacity: 0.94,
-      navMode: 'custom', customNav: '#07110c', navOpacity: 0.98,
-      backgroundMode: 'custom', customBackground: '#050a07',
-      textMode: 'custom', customText: '#d9fbe7',
-      backgroundTextMode: 'custom', customBackgroundText: '#a8daba',
-      fontFamily: 'mono', density: 'compact', cornerStyle: 'square',
-    },
-  },
-  readable: {
-    label: 'High readability',
-    preferences: {
-      ...DEFAULT_UI_PREFERENCES,
-      fontFamily: 'readable', fontScale: 1.1, highContrast: true,
-      motion: 'reduced', density: 'spacious',
-    },
-  },
-};
 
 export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => void }) {
   const { preferences, setPreferences, resetPreferences } = useUiPreferences();
@@ -96,14 +41,14 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
           aria-label="Appearance preset"
           defaultValue=""
           onChange={(event) => {
-            const preset = PRESETS[event.target.value];
+            const preset = APPEARANCE_PRESETS[event.target.value];
             if (preset) setPreferences(preset.preferences);
             event.currentTarget.value = '';
           }}
           className={`${selectClass} block w-full sm:w-72`}
         >
           <option value="" disabled>Choose a preset…</option>
-          {Object.entries(PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
+          {Object.entries(APPEARANCE_PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
         </select>
       </label>
 
@@ -333,14 +278,21 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
  * toggle, and a reduce-motion note that points at the OS/app motion setting.
  */
 function LivingBackgroundSettings() {
-  const { enabled, setEnabled, soundOn, setSoundOn, musicVolume, setMusicVolume, clearBackground, setClearBackground } = useAmbience();
+  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground } = useAmbience();
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-muted p-3">
-      <label className="flex items-center justify-between gap-3 text-sm">
+      <label className="flex items-start gap-3 text-sm">
+        <input
+          type="checkbox"
+          aria-label="Living background"
+          checked={enabled}
+          onChange={(event) => setEnabled(event.target.checked)}
+          className="mt-0.5 h-5 w-5 accent-primary"
+        />
         <span>
           <span className="block font-medium">Living background</span>
           <span className="block text-xs text-muted-foreground">
@@ -348,32 +300,54 @@ function LivingBackgroundSettings() {
             Purely decorative; reduced motion turns off its animation.
           </span>
         </span>
-        <input
-          type="checkbox"
-          aria-label="Living background"
-          checked={enabled}
-          onChange={(event) => setEnabled(event.target.checked)}
-          className="h-5 w-5 accent-primary"
-        />
       </label>
 
       {enabled && (
         <>
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="flex items-center justify-between gap-3 text-sm">
-              <span>Ambient sounds</span>
-              <input
-                type="checkbox"
-                aria-label="Ambient sounds"
-                checked={soundOn}
-                onChange={(event) => setSoundOn(event.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <label className="block space-y-1 text-sm">
-              <span className="flex justify-between">
-                <span>Music volume</span>
-                <span>{Math.round(musicVolume * 100)}%</span>
+            <div className="space-y-1 text-sm">
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  aria-label="Ambient sounds"
+                  checked={soundOn}
+                  onChange={(event) => setSoundOn(event.target.checked)}
+                  className="h-5 w-5 accent-primary"
+                />
+                <span>Ambient sounds</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  aria-label="Ambient sound volume"
+                  min="0"
+                  max="100"
+                  step="5"
+                  disabled={!soundOn}
+                  value={Math.round(soundVolume * 100)}
+                  onChange={(event) => setSoundVolume(Number(event.target.value) / 100)}
+                  className="w-full accent-primary disabled:opacity-40"
+                />
+                <span className="w-10 text-right text-xs text-muted-foreground">{Math.round(soundVolume * 100)}%</span>
+              </div>
+            </div>
+            <div className="space-y-1 text-sm">
+              <span className="flex items-center gap-2">
+                <span>Music</span>
+                <button
+                  type="button"
+                  onClick={() => setMusicOn(!musicOn)}
+                  aria-pressed={musicOn}
+                  aria-label="Toggle music"
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                    musicOn
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border bg-muted text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {musicOn ? 'Playing' : 'Muted'}
+                </button>
+                <span className="ml-auto text-xs text-muted-foreground">{Math.round(musicVolume * 100)}%</span>
               </span>
               <input
                 type="range"
@@ -381,14 +355,22 @@ function LivingBackgroundSettings() {
                 min="0"
                 max="100"
                 step="5"
+                disabled={!musicOn}
                 value={Math.round(musicVolume * 100)}
                 onChange={(event) => setMusicVolume(Number(event.target.value) / 100)}
-                className="w-full accent-primary"
+                className="w-full accent-primary disabled:opacity-40"
               />
-            </label>
+            </div>
           </div>
 
-          <label className="flex items-center justify-between gap-3 text-sm">
+          <label className="flex items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              aria-label="Hide the standard background"
+              checked={clearBackground}
+              onChange={(event) => setClearBackground(event.target.checked)}
+              className="mt-0.5 h-5 w-5 accent-primary"
+            />
             <span>
               <span className="block font-medium">Hide the standard background</span>
               <span className="block text-xs text-muted-foreground">
@@ -396,13 +378,6 @@ function LivingBackgroundSettings() {
                 unobstructed (cards and panels stay readable).
               </span>
             </span>
-            <input
-              type="checkbox"
-              aria-label="Hide the standard background"
-              checked={clearBackground}
-              onChange={(event) => setClearBackground(event.target.checked)}
-              className="h-5 w-5 accent-primary"
-            />
           </label>
 
           <p className="text-xs text-muted-foreground">

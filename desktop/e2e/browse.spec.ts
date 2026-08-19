@@ -128,6 +128,13 @@ async function findCall(page: Page, command: string, query?: string, excluded: n
   return index;
 }
 
+async function callArg(page: Page, index: number, key: string) {
+  return page.evaluate(
+    ([i, k]) => (window as any).__browseCalls[i as number].args[k as string],
+    [index, key] as const,
+  );
+}
+
 async function resolveCall(page: Page, index: number, result: BrowseResult) {
   await page.evaluate(({ index, result }) => (window as any).__resolveBrowse(index, result), { index, result });
 }
@@ -1233,4 +1240,73 @@ test.describe('E3 — Bulk select and install', () => {
     await expect(bulkCard(page, 'Bulk Mod B')).not.toHaveClass(/browse-card--selected/);
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Multi-page accumulation.
+//
+// The other pagination tests hand-resolve a single load-more call or return
+// `hasMore: false`, so none of them actually prove the list GROWS across
+// several pages. This walks three real pages and asserts accumulation.
+// ---------------------------------------------------------------------------
+
+const page0 = () => Array.from({ length: 20 }, (_, i) => item(`p0-${i}`, `Page0 Item ${i}`));
+const pageN = (n: number) =>
+  Array.from({ length: 20 }, (_, i) => item(`p${n}-${i}`, `Page${n} Item ${i}`));
+
+test('infinite scroll accumulates across multiple pages', async ({ page }) => {
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: page0(), total: 60, page: 0, hasMore: true });
+
+  await expect(page.getByText('Page0 Item 0')).toBeVisible();
+
+  // Page 1
+  await page.getByTestId('browse-load-sentinel').scrollIntoViewIfNeeded();
+  const load1 = await findCall(page, 'browse_load_more');
+  expect(await callArg(page, load1, 'pageIndex')).toBe(1);
+  await resolveCall(page, load1, { items: pageN(1), total: 60, page: 1, hasMore: true });
+  await expect(page.getByText('Page1 Item 0')).toBeVisible();
+  await expect(page.getByText('Page0 Item 0')).toBeVisible();
+
+  // Page 2 — the step that matters: does it ask for the NEXT page, or stall?
+  await page.getByTestId('browse-load-sentinel').scrollIntoViewIfNeeded();
+  const load2 = await findCall(page, 'browse_load_more', undefined, [load1]);
+  expect(await callArg(page, load2, 'pageIndex')).toBe(2);
+  await resolveCall(page, load2, { items: pageN(2), total: 60, page: 2, hasMore: false });
+  await expect(page.getByText('Page2 Item 0')).toBeVisible();
+
+  await expect(page.getByText('All results loaded')).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Returning from a mod detail page must restore the loaded pages, not refetch
+// page 0. Without this the user lands back at the top of a one-page list after
+// having scrolled through several.
+// ---------------------------------------------------------------------------
+
+test('returning from mod details keeps the loaded pages', async ({ page }) => {
+  await installBrowseMock(page);
+  const initial = await openBrowse(page);
+  await resolveCall(page, initial, { items: page0(), total: 40, page: 0, hasMore: true });
+
+  // Load a second page so there is state worth preserving.
+  await page.getByTestId('browse-load-sentinel').scrollIntoViewIfNeeded();
+  const load1 = await findCall(page, 'browse_load_more');
+  await resolveCall(page, load1, { items: pageN(1), total: 40, page: 1, hasMore: false });
+  await expect(page.getByText('Page1 Item 0')).toBeVisible();
+
+  const callsBefore = await page.evaluate(() => (window as any).__browseCalls.length);
+
+  // Into a detail page and back out, using the app's own controls.
+  await page.getByRole('button', { name: 'View Details', exact: true }).first().click();
+  await expect(page.getByRole('button', { name: '← Back' })).toBeVisible();
+  await page.getByRole('button', { name: '← Back' }).click();
+
+  // Both pages are still present...
+  await expect(page.getByText('Page0 Item 0')).toBeVisible();
+  await expect(page.getByText('Page1 Item 0')).toBeVisible();
+  // ...and no fresh browse_search was issued to rebuild them.
+  const callsAfter = await page.evaluate(() => (window as any).__browseCalls.length);
+  expect(callsAfter).toBe(callsBefore);
 });

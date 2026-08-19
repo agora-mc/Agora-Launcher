@@ -533,6 +533,10 @@ export const openInstanceFolder = (instanceId: string) =>
 export const openDataFolder = () => invoke<void>('open_data_folder');
 export const revealPath = (path: string) =>
   invoke<void>('reveal_path', { path });
+
+/** Open an external https link in the user's real browser. */
+export const openExternalUrl = (url: string) =>
+  invoke<void>('open_external_url', { url });
 export const launchInstance = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
   invoke<void>('launch_instance', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
 
@@ -1277,6 +1281,8 @@ export interface ModrinthProjectFull {
     gallery_urls: string[];
     /** Modrinth category slugs, lowercase as published. */
     categories: string[];
+    downloads: number;
+    followers: number;
 }
 
 export const fetchModrinthProject = (projectId: string) =>
@@ -1294,6 +1300,8 @@ export interface TechnicSearchResult {
   likes: number;
   author: string | null;
   page_url: string;
+  icon_url: string | null;
+  tags: string[];
   tier: TechnicTier;
 }
 
@@ -1309,6 +1317,8 @@ export interface TechnicPackDetail {
   minecraft: string | null;
   website: string | null;
   page_url: string;
+  icon_url: string | null;
+  tags: string[];
   download_url: string | null;
   tier: TechnicTier;
   permitted: boolean;
@@ -1890,11 +1900,25 @@ export const installPack = (manifestJson: string, instanceId: string) =>
 
 // --- Browse cache (Rust-backed, paginated) ---
 
+export interface ScoreBreakdown {
+  score: number;
+  popularity: number;
+  downloadsNorm: number;
+  endorsementsNorm: number;
+  libraryPenalized: boolean;
+  voteNudge: number;
+  curated: boolean;
+}
+
 export interface BrowseItemCached {
   id: string;
   source: string;
   registryItem: RegistryItem | null;
   modrinthResult: ModrinthSearchResult | null;
+  technicResult?: TechnicSearchResult | null;
+  /** Unified 0-100 cross-source score used to rank the merged list. */
+  score?: number;
+  scoreBreakdown?: ScoreBreakdown | null;
   name: string;
   iconUrl: string | null;
   description: string | null;

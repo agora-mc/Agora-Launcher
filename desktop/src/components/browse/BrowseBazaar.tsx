@@ -55,6 +55,10 @@ import {
 import './bazaar.css';
 
 export interface BrowseBazaarProps {
+  /** Shelf order already shown before navigating away, so returning does not
+   *  reshuffle cards the user has already scrolled past. */
+  initialSettledOrder?: string[];
+  onSettledOrderChange?: (order: string[]) => void;
   items: BazaarItem[];
   /** The target instance's Minecraft version (for the fit line). */
   instanceVersion: string | null;
@@ -335,7 +339,7 @@ function GachaMachine({ state, pool, onPick }: { state: BazaarState; pool: Bazaa
   );
 }
 
-export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMod, onExit, hasMore = false, loadMoreLoading = false, onLoadMore, onInstallBag, stall: stallProp, onStallChange }: BrowseBazaarProps) {
+export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMod, onExit, hasMore = false, loadMoreLoading = false, onLoadMore, onInstallBag, stall: stallProp, onStallChange, initialSettledOrder, onSettledOrderChange }: BrowseBazaarProps) {
   const [state, setState] = useState<BazaarState>(() => {
     const loaded = loadBazaarState();
     return { ...loaded, owned: Object.fromEntries(Array.from(ownedIds).map((id) => [id, true])) };
@@ -357,7 +361,17 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
   }, [toast]);
 
   const filtered = useMemo(() => items.filter((it) => matchesStall(it, stall)), [items, stall]);
-  const shelf = useMemo(() => sortedShelf(state, filtered), [state, filtered]);
+  // Order already shown to the user, frozen so taste changes and newly loaded
+  // pages append below instead of reshuffling what has been scrolled past.
+  const settledOrderRef = useRef<string[]>(initialSettledOrder ?? []);
+  const shelf = useMemo(
+    () => sortedShelf(state, filtered, settledOrderRef.current),
+    [state, filtered],
+  );
+  useEffect(() => {
+    settledOrderRef.current = shelf.map((item) => item.id);
+    onSettledOrderChange?.(settledOrderRef.current);
+  }, [shelf, onSettledOrderChange]);
   const bagCount = useMemo(() => Object.keys(state.owned).length + Object.keys(state.staged).length, [state]);
   const stagedItems = useMemo(
     () => items.filter((it) => state.staged[it.id]),

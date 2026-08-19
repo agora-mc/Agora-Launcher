@@ -68,11 +68,14 @@ describe('bazaar taste model', () => {
     expect(sorted[1].id).toBe('a');
   });
 
-  it('curated items get the small curated nudge in score', () => {
+  it('does not re-apply a curated bonus the backend already applied', () => {
+    // The backend ranks curated content into its own score band and
+    // `sortedShelf` tiebreaks on backend order, so a second client-side bonus
+    // would double-count the same preference.
     const a = item({ id: 'a', name: 'Alpha', categories: ['adventure'], curated: true });
     const b = item({ id: 'b', name: 'Beta', categories: ['adventure'] });
     const st = initialBazaarState();
-    expect(scoreOf(st, a)).toBeCloseTo(0.6);
+    expect(scoreOf(st, a)).toBe(0);
     expect(scoreOf(st, b)).toBe(0);
   });
 
@@ -150,6 +153,43 @@ describe('bazaar fit line', () => {
     const un = { ...st };
     delete un.staged.a;
     expect(isOwned(un, 'a')).toBe(false);
+  });
+});
+
+describe('sortedShelf does not reorder what the user already saw', () => {
+  const mk = (id: string, cats: string[]) =>
+    item({ id, name: id, categories: cats });
+
+  it('keeps settled items in their shown order as taste changes', () => {
+    const a = mk('a', ['adventure']);
+    const b = mk('b', ['technology']);
+    const c = mk('c', ['magic']);
+    const items = [a, b, c];
+    const settled = sortedShelf(initialBazaarState(), items).map((i) => i.id);
+
+    // Voting hard for technology would previously float 'b' to the top,
+    // shifting cards under a scrolling user so one could be skipped entirely.
+    let st = initialBazaarState();
+    st = vote(st, b, 1);
+    st = vote(st, b, 1);
+    const after = sortedShelf(st, items, settled).map((i) => i.id);
+    expect(after).toEqual(settled);
+  });
+
+  it('sorts only newly arrived items and appends them below', () => {
+    const a = mk('a', ['adventure']);
+    const b = mk('b', ['technology']);
+    const settled = ['a', 'b'];
+    let st = initialBazaarState();
+    st = vote(st, mk('x', ['magic']), 1);
+
+    const fresh1 = mk('fresh-low', ['utility']);
+    const fresh2 = mk('fresh-high', ['magic']);
+    const out = sortedShelf(st, [a, b, fresh1, fresh2], settled).map((i) => i.id);
+
+    expect(out.slice(0, 2)).toEqual(['a', 'b']);
+    // The liked-category newcomer leads the appended chunk, not the whole list.
+    expect(out.slice(2)).toEqual(['fresh-high', 'fresh-low']);
   });
 });
 

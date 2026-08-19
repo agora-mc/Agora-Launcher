@@ -127,6 +127,30 @@ describe('the guided tour', () => {
     expect(screen.queryByText('Go back to Browse to continue.')).toBeNull();
   });
 
+  it('pins a step reached by Back instead of auto-advancing, and Skip continues', async () => {
+    const user = userEvent.setup();
+    renderTour();
+    await user.click(screen.getByRole('button', { name: 'Start the walkthrough' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    // Complete the "open Browse" step so the next step's page is on screen.
+    await user.click(screen.getByRole('button', { name: 'Browse' }));
+    expect(await screen.findByText('About this page')).toBeInTheDocument();
+
+    // Going Back lands on the already-satisfied Browse step and it stays put —
+    // the condition being technically met does not bounce the tour forward.
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(await screen.findByText('Open Browse')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Press Skip step to continue.')).toBeInTheDocument();
+
+    // Skip step finishes it and lets the tour move on.
+    await user.click(screen.getByRole('button', { name: 'Skip step' }));
+    expect(await screen.findByText('About this page')).toBeInTheDocument();
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+  });
+
   it('can be ended at any point and remembers that it is no longer running', async () => {
     const user = userEvent.setup();
     renderTour();

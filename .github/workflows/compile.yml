@@ -120,7 +120,7 @@ jobs:
       - name: Check for unexpected generated files
         shell: bash
         run: |
-          allowed='^(registry/governance/governance-state\.json|loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json)$'
+          allowed='^(registry/governance/governance-state\.json|loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json|loader-manifests/failed_candidates\.json)$'
 
           unexpected="$(
             {
@@ -156,16 +156,38 @@ jobs:
             changed=true
           fi
 
+          if [[ "$changed" != true ]]; then
+            # Nothing to push, so a moved master cannot make anything stale.
+            # This used to fail the job outright whenever the loader-catalog
+            # workflow landed a commit while this one was compiling, even
+            # though no governance output was being written.
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           git fetch origin master
+          remote_head="$(git rev-parse origin/master)"
 
-          if [[ "$base_commit" != "$(git rev-parse origin/master)" ]]; then
-            echo "::error::master changed during governance compilation; refusing stale output."
-            exit 1
+          if [[ "$base_commit" != "$remote_head" ]]; then
+            # Governance state is derived from registry content. Commits that
+            # touch only loader manifests (the refresh-loader-catalog workflow,
+            # which also pushes to master) cannot invalidate it, so rebase onto
+            # them rather than discarding a correct result.
+            touched="$(git diff --name-only "$base_commit" "$remote_head")"
+            if echo "$touched" | grep -qvE '^(loader-manifests/|registry/governance/governance-state\.json$)'; then
+              echo "::error::master changed during governance compilation in a way that affects governance input; refusing stale output."
+              echo "Files changed upstream:"
+              echo "$touched"
+              exit 1
+            fi
+            echo "Upstream moved, but only in loader manifests — rebasing."
+            git rebase origin/master || {
+              echo "::error::rebase onto origin/master failed; refusing to force a governance push."
+              exit 1
+            }
           fi
 
-          if [[ "$changed" == true ]]; then
-            git push origin HEAD:master
-          fi
+          git push origin HEAD:master
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Upload registry artifacts

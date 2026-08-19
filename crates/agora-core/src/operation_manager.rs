@@ -819,6 +819,7 @@ mod tests {
                         content_type: "mod".into(),
                         version: None,
                         download_strategy: None,
+                        pinned_host: None,
                     },
                 }),
             },

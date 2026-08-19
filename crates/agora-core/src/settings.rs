@@ -62,6 +62,17 @@ impl SettingsService {
         Ok(self.get(key)?.map(parse_bool_value).unwrap_or(false))
     }
 
+    /// Get a setting as a boolean, falling back to `default` when the key is
+    /// absent.
+    ///
+    /// [`get_bool`](Self::get_bool) reports a missing key as `Ok(false)`, so
+    /// `get_bool(..).unwrap_or(true)` does NOT default an unset setting to on
+    /// — the `unwrap_or` only covers the error case. Opt-out settings must use
+    /// this instead.
+    pub fn get_bool_or(&self, key: &str, default: bool) -> LauncherResult<bool> {
+        Ok(self.get(key)?.map(parse_bool_value).unwrap_or(default))
+    }
+
     /// Get a setting as an optional string. Returns `Ok(None)` when the key
     /// is absent or the value is not a JSON string.
     pub fn get_string(&self, key: &str) -> LauncherResult<Option<String>> {
@@ -184,6 +195,35 @@ mod tests {
         let conn = mem_conn();
         let rows = list_parsed(&conn).unwrap();
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn get_bool_or_defaults_when_key_absent() {
+        // Regression: `get_bool` reports a missing key as Ok(false), so
+        // `get_bool(..).unwrap_or(true)` silently yields false for an unset
+        // opt-out setting. That emptied the curated browse whitelist and made
+        // Browse show nothing at all on a fresh profile.
+        let conn = mem_conn();
+        assert_eq!(
+            get(&conn, "curated_source_modrinth_id_enabled").unwrap(),
+            None
+        );
+
+        let absent = get(&conn, "curated_source_modrinth_id_enabled")
+            .unwrap()
+            .map(parse_bool_value);
+        assert!(absent.unwrap_or(true), "absent key must honor the default");
+        assert!(!absent.unwrap_or(false));
+
+        // An explicit false still wins over the default.
+        set(&conn, "curated_source_modrinth_id_enabled", "false").unwrap();
+        let explicit = get(&conn, "curated_source_modrinth_id_enabled")
+            .unwrap()
+            .map(parse_bool_value);
+        assert!(
+            !explicit.unwrap_or(true),
+            "explicit false must not be defaulted to true"
+        );
     }
 
     #[test]

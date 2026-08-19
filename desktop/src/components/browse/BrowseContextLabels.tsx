@@ -36,8 +36,17 @@ export function BrowseStats({ item }: { item: BrowseItem }) {
   }
 
   const values: string[] = [];
-  if (item.downloads !== null) values.push(`${item.downloads.toLocaleString()} downloads`);
-  if (item.follows !== null) values.push(`${item.follows.toLocaleString()} followers`);
+  if (item.downloads !== null) {
+    // Technic reports installs, not downloads.
+    const noun = item.source === 'technic' ? 'installs' : 'downloads';
+    values.push(`${item.downloads.toLocaleString()} ${noun}`);
+  }
+  if (item.follows !== null) {
+    // For Technic this field carries the platform's like counter (`ratings`),
+    // not a follower count, so it must not be labelled "followers".
+    const noun = item.source === 'technic' ? 'likes' : 'followers';
+    values.push(`${item.follows.toLocaleString()} ${noun}`);
+  }
   return values.length > 0 ? <p className="browse-stats">{values.join(' · ')}</p> : null;
 }
 

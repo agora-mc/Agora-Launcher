@@ -84,17 +84,23 @@ pub async fn download_mod_bytes(clients: &HttpClients, url: &str) -> LauncherRes
 /// compile-time allowlist entry. Every other gate — HTTPS scheme, port 443,
 /// no userinfo, no IP literals, non-private DNS resolution — still applies,
 /// as does same-host-only redirect re-validation.
-pub async fn download_pinned_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {
-    let host = reqwest::Url::parse(url)
-        .map_err(|_| LauncherError::UntrustedSource)?
-        .host_str()
-        .ok_or(LauncherError::UntrustedSource)?
-        .to_string();
+pub async fn download_pinned_bytes(
+    clients: &HttpClients,
+    url: &str,
+    pinned_host: &str,
+) -> LauncherResult<Vec<u8>> {
+    // `pinned_host` MUST come from the signed registry row (the host of the
+    // curator-reviewed `source_identifier`), never from `url` itself —
+    // re-deriving it here would make the host gate a tautology instead of a
+    // constraint, and would turn this into an arbitrary-host fetch primitive.
+    if pinned_host.trim().is_empty() {
+        return Err(LauncherError::UntrustedSource);
+    }
     http_client::checked_get_bytes_with_policy(
         clients,
         ClientCategory::PinnedArtifact,
         url,
-        http_client::HostPolicy::SignedManifest(&host),
+        http_client::HostPolicy::SignedManifest(pinned_host),
     )
     .await
 }
@@ -102,12 +108,15 @@ pub async fn download_pinned_bytes(clients: &HttpClients, url: &str) -> Launcher
 /// Convenience: download registry-pinned bytes without an explicit
 /// [`HttpClients`] instance. Prefer [`download_pinned_bytes`] when a shared
 /// clients instance is available.
-pub async fn download_pinned_bytes_standalone(url: &str) -> LauncherResult<Vec<u8>> {
+pub async fn download_pinned_bytes_standalone(
+    url: &str,
+    pinned_host: &str,
+) -> LauncherResult<Vec<u8>> {
     let clients = HttpClients::new().map_err(|e| LauncherError::Generic {
         code: "ERR_HTTP_CLIENT_INIT".into(),
         message: format!("Failed to initialize HTTP clients: {e}"),
     })?;
-    download_pinned_bytes(&clients, url).await
+    download_pinned_bytes(&clients, url, pinned_host).await
 }
 
 /// Download content the user explicitly opted into (Technic tiers S/Z).

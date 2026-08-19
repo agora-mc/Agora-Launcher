@@ -34,6 +34,8 @@ export interface AmbienceEngineOptions {
   /** Music volume 0..1 (default 0.35, the prototype's default). */
   musicVolume?: number;
   musicOn?: boolean;
+  /** SFX loudness multiplier (default 1 = the prototype's fixed level). */
+  soundVolume?: number;
   /** Override prefers-reduced-motion (the shell's motion setting wins). */
   reducedMotion?: boolean;
   /** Initial time of day 0..1 (default 0.3). */
@@ -123,6 +125,7 @@ export class AmbienceEngine {
     this.state = createEngineState(options.reducedMotion);
     this.state.tod = options.tod ?? 0.3;
     this.state.soundOn = false;
+    this.state.soundVolume = options.soundVolume ?? 1;
     this.profile = options.profile ?? 'full';
     this.particles.reduced = this.state.reduce;
     this.buddy = createBuddy(this.state.reduce, 0, 0);
@@ -148,6 +151,11 @@ export class AmbienceEngine {
 
   setSoundOn(on: boolean): void {
     this.state.soundOn = on;
+  }
+
+  /** SFX loudness: 1 is the prototype's fixed level, above that plays louder. */
+  setSoundVolume(v: number): void {
+    this.state.soundVolume = v;
   }
 
   /**

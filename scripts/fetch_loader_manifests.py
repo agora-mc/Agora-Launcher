@@ -18,6 +18,7 @@ import re
 import urllib.error
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -258,14 +259,81 @@ def _stable_json_sha256(data: bytes, drop: set[str] | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-run download diagnostics
+# Candidate download failures: a persisted three-strike tally
 #
-# Failed candidates are intentionally not persisted. A transient upstream
-# outage must not permanently blacklist a published loader version, and an
-# ephemeral GitHub Actions runner cannot provide meaningful persistence.
+# A transient upstream outage must not permanently blacklist a published loader
+# version, so a single failure is never enough to skip anything. But retrying a
+# version that has never once resolved wastes a request on every run forever,
+# so failures accumulate strikes in a file committed alongside the other loader
+# manifests (the runner is ephemeral; the repository is not).
+#
+#   strike 1-2  -> still retried next run, recorded as "failing"
+#   strike 3+   -> "retired": skipped without a request until it succeeds again
+#
+# Any successful download clears the entry outright, so a version that starts
+# resolving again is immediately back in rotation. That is what makes retiring
+# safe: it is reversible the moment upstream recovers.
 # ---------------------------------------------------------------------------
 
+FAILED_CANDIDATES_PATH = LOADER_MANIFESTS_DIR / "failed_candidates.json"
+
+#: Strikes at which a candidate stops being requested.
+RETIREMENT_STRIKES = 3
+
 _DOWNLOAD_FAILURES: list[dict[str, str]] = []
+#: key -> {"strikes": int, "first_failed": iso, "last_failed": iso, "status": str}
+_FAILED_STATE: dict[str, dict[str, Any]] = {}
+#: Keys that resolved this run, so their entries are dropped when saving.
+_RECOVERED_KEYS: set[str] = set()
+
+
+def load_failed_candidates(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Load the persisted strike tally. A missing or malformed file is empty."""
+    global _FAILED_STATE, _RECOVERED_KEYS
+    target = path or FAILED_CANDIDATES_PATH
+    _RECOVERED_KEYS = set()
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        candidates = raw.get("candidates")
+        _FAILED_STATE = candidates if isinstance(candidates, dict) else {}
+    except (OSError, ValueError):
+        _FAILED_STATE = {}
+    return _FAILED_STATE
+
+
+def save_failed_candidates(path: Path | None = None) -> Path:
+    """Write the updated tally, dropping anything that recovered this run."""
+    target = path or FAILED_CANDIDATES_PATH
+    surviving = {
+        key: value
+        for key, value in _FAILED_STATE.items()
+        if key not in _RECOVERED_KEYS
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "retirement_strikes": RETIREMENT_STRIKES,
+        "candidates": dict(sorted(surviving.items())),
+    }
+    target.write_text(
+        json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
+    return target
+
+
+def get_failed_candidates() -> dict[str, dict[str, Any]]:
+    """Current tally, including entries that recovered this run."""
+    return dict(_FAILED_STATE)
+
+
+def get_retired_candidates() -> list[str]:
+    """Keys currently skipped without a request."""
+    return sorted(
+        key
+        for key, value in _FAILED_STATE.items()
+        if key not in _RECOVERED_KEYS
+        and int(value.get("strikes", 0)) >= RETIREMENT_STRIKES
+    )
 
 
 def get_download_failures() -> list[dict[str, str]]:
@@ -278,17 +346,34 @@ def _failed_key(loader: str, mc_version: str, loader_version: str) -> str:
 
 
 def _failed_should_skip(key: str) -> bool:
-    # Never skip a candidate based on failures from a previous run.
-    return False
+    entry = _FAILED_STATE.get(key)
+    if not entry:
+        return False
+    return int(entry.get("strikes", 0)) >= RETIREMENT_STRIKES
 
 
 def _failed_record_success(key: str) -> None:
-    del key
+    # Recovery clears the tally, so a version that comes back is retried
+    # normally from the next run onward.
+    if key in _FAILED_STATE:
+        _RECOVERED_KEYS.add(key)
 
 
 def _failed_record_failure(key: str) -> None:
     if not any(failure["key"] == key for failure in _DOWNLOAD_FAILURES):
         _DOWNLOAD_FAILURES.append({"key": key})
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry = _FAILED_STATE.get(key)
+    # A failure after a success in the same run means it is not recovered.
+    _RECOVERED_KEYS.discard(key)
+    if entry is None:
+        entry = {"strikes": 0, "first_failed": now}
+    entry["strikes"] = int(entry.get("strikes", 0)) + 1
+    entry["last_failed"] = now
+    entry["status"] = (
+        "retired" if entry["strikes"] >= RETIREMENT_STRIKES else "failing"
+    )
+    _FAILED_STATE[key] = entry
     logger.warning("Could not download candidate %s; it will be retried next run", key)
 
 

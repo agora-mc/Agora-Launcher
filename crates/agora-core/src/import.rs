@@ -609,13 +609,11 @@ pub fn import_mrpack_with_progress(
                         ),
                     ));
                 }
-                let mut bytes = Vec::new();
-                entry.read_to_end(&mut bytes).map_err(|e| {
-                    import_error(
-                        "ERR_IMPORT_READ",
-                        format!("Cannot read embedded pack entry '{}': {e}", file_entry.path),
-                    )
-                })?;
+                let bytes = read_zip_entry_bounded(
+                    &mut entry,
+                    MAX_MRPACK_FILE_BYTES as u64,
+                    &file_entry.path,
+                )?;
                 Ok(bytes)
             };
 
@@ -684,13 +682,8 @@ pub fn import_mrpack_with_progress(
                     message: format!("Cannot create dir {parent:?}: {e}"),
                 })?;
             }
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| LauncherError::Generic {
-                    code: "ERR_IMPORT_READ".into(),
-                    message: format!("Cannot read {entry_name}: {e}"),
-                })?;
+            let buf =
+                read_zip_entry_bounded(&mut entry, MAX_MRPACK_FILE_BYTES as u64, &entry_name)?;
             fs::write(&dest, &buf).map_err(|e| LauncherError::Generic {
                 code: "ERR_IMPORT_WRITE".into(),
                 message: format!("Cannot write {:?}: {e}", dest),
@@ -1172,6 +1165,37 @@ pub fn import_directory(
 // Technic imports (consent tiers S and Z)
 // ---------------------------------------------------------------------------
 
+/// Read a zip entry, refusing to allocate more than `limit` bytes.
+///
+/// `ZipFile::size()` is the *declared* uncompressed size from the archive's
+/// central directory — attacker-controlled metadata. A bomb can declare 1 KB
+/// and inflate to gigabytes, so the size precheck alone is not a bound: the
+/// read itself must stop. Reads one byte past the limit so an over-long stream
+/// is detected rather than silently truncated.
+fn read_zip_entry_bounded<R: Read>(
+    entry: &mut R,
+    limit: u64,
+    entry_name: &str,
+) -> LauncherResult<Vec<u8>> {
+    let mut buf = Vec::new();
+    entry
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(|e| {
+            import_error(
+                "ERR_IMPORT_READ",
+                format!("Cannot read '{entry_name}': {e}"),
+            )
+        })?;
+    if buf.len() as u64 > limit {
+        return Err(import_error(
+            "ERR_ZIP_BOMB",
+            format!("Zip entry '{entry_name}' expands beyond its declared size."),
+        ));
+    }
+    Ok(buf)
+}
+
 /// Maximum number of files extracted from a consented Technic zip.
 const MAX_TECHNIC_ZIP_FILES: usize = 5000;
 /// Maximum total uncompressed bytes for a consented Technic zip.
@@ -1404,6 +1428,15 @@ fn extract_technic_zip_entries<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     mods_dir: &Path,
 ) -> LauncherResult<usize> {
+    // Checked up-front: the per-file cap below is only reached by `mods/`
+    // entries, so an archive made entirely of other paths would otherwise walk
+    // every declared entry without ever tripping a limit.
+    if archive.len() > MAX_TECHNIC_ZIP_FILES {
+        return Err(import_error(
+            "ERR_ZIP_BOMB",
+            "Technic zip declares more entries than the extraction limit allows.",
+        ));
+    }
     let mut imported_mods = 0usize;
     let mut total_bytes = 0u64;
     for index in 0..archive.len() {
@@ -1454,13 +1487,7 @@ fn extract_technic_zip_entries<R: Read + Seek>(
         }
         let dest = mods_dir.join(relative);
         assert_safe_path(mods_dir, Path::new(relative))?;
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf).map_err(|e| {
-            import_error(
-                "ERR_IMPORT_READ",
-                format!("Cannot read '{entry_name}': {e}"),
-            )
-        })?;
+        let buf = read_zip_entry_bounded(&mut entry, MAX_TECHNIC_ENTRY_BYTES, &entry_name)?;
         fs::write(&dest, &buf).map_err(|e| {
             import_error(
                 "ERR_IMPORT_WRITE",
@@ -2152,6 +2179,21 @@ mod tests {
         let nested = zip_bytes(&[("mods/sub/evil.jar", b"x")]);
         let mut archive = zip::ZipArchive::new(io::Cursor::new(nested)).unwrap();
         assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn test_read_zip_entry_bounded_rejects_oversized_stream() {
+        // `ZipFile::size()` is attacker-controlled header metadata, so the
+        // read itself must stop rather than trusting the declared size.
+        let payload = vec![b'x'; 4096];
+        let err = read_zip_entry_bounded(&mut payload.as_slice(), 1024, "mods/bomb.jar")
+            .expect_err("a stream longer than the limit must be refused");
+        assert_eq!(err.code(), "ERR_ZIP_BOMB");
+
+        // Exactly at the limit still succeeds.
+        let exact = vec![b'x'; 1024];
+        let ok = read_zip_entry_bounded(&mut exact.as_slice(), 1024, "mods/ok.jar").unwrap();
+        assert_eq!(ok.len(), 1024);
     }
 
     #[test]

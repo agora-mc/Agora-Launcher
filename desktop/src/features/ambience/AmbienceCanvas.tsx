@@ -14,6 +14,9 @@ import type { AmbienceEvent } from './engine/state';
 export interface AmbienceCanvasProps {
   profile: AmbienceProfile;
   soundOn: boolean;
+  /** SFX loudness multiplier (default 1 = prototype fixed level, 2 = twice as
+   * loud). Optional to keep bare test mounts working. */
+  soundVolume?: number;
   musicVolume: number;
   musicOn: boolean;
   reducedMotion: boolean;
@@ -21,7 +24,7 @@ export interface AmbienceCanvasProps {
   onEngineReady?: (engine: AmbienceEngine | null) => void;
 }
 
-export function AmbienceCanvas({ profile, soundOn, musicVolume, musicOn, reducedMotion, onEvent, onEngineReady }: AmbienceCanvasProps) {
+export function AmbienceCanvas({ profile, soundOn, soundVolume = 1, musicVolume, musicOn, reducedMotion, onEvent, onEngineReady }: AmbienceCanvasProps) {
   const bgRef = useRef<HTMLCanvasElement>(null);
   const fxRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<AmbienceEngine | null>(null);
@@ -35,6 +38,7 @@ export function AmbienceCanvas({ profile, soundOn, musicVolume, musicOn, reduced
       profile,
       musicVolume,
       musicOn,
+      soundVolume,
       reducedMotion,
       onEvent: (ev) => onEventRef.current(ev),
     });
@@ -65,6 +69,7 @@ export function AmbienceCanvas({ profile, soundOn, musicVolume, musicOn, reduced
 
   useEffect(() => { engineRef.current?.setProfile(profile); }, [profile]);
   useEffect(() => { engineRef.current?.setSoundOn(soundOn); }, [soundOn]);
+  useEffect(() => { engineRef.current?.setSoundVolume(soundVolume); }, [soundVolume]);
   useEffect(() => { engineRef.current?.setMusicVolume(musicVolume); }, [musicVolume]);
   // Music never starts before a user gesture: the engine's own pointerdown
   // kick starts it on first run; later changes are user-driven anyway.

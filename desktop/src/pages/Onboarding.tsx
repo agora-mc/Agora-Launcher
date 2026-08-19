@@ -8,19 +8,28 @@ import {
   getSetting,
   githubLogin,
   githubLoginPoll,
+  msaGetStatus,
+  msaLogin,
+  msaLogout,
   setSetting,
   type DeviceFlowResponse,
   type JavaRuntimeProgressEvent,
+  type MsaAccountStatus,
 } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { queueTourStart } from '../features/tour/tourHandoff';
+import {
+  APPEARANCE_PRESETS,
+  useUiPreferences,
+  type UiPreferences,
+} from '../components/theme/theme-provider';
 
-type Step = 'welcome' | 'services' | 'java' | 'github' | 'registry' | 'import';
+type Step = 'welcome' | 'appearance' | 'services' | 'java' | 'launch' | 'github' | 'registry' | 'import';
 
-const STEP_ORDER: Step[] = ['welcome', 'services', 'java', 'github', 'registry', 'import'];
+const STEP_ORDER: Step[] = ['welcome', 'appearance', 'services', 'java', 'launch', 'github', 'registry', 'import'];
 
 function isStep(value: unknown): value is Step {
   return typeof value === 'string' && (STEP_ORDER as string[]).includes(value);
@@ -40,6 +49,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     aiChat: false,
   });
   const [servicesLoading, setServicesLoading] = useState(true);
+  const [directLaunch, setDirectLaunch] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   // Persisted across Back/Forward so a registry auto-download triggered on
   // the first entry is not re-triggered when the user revisits the step.
@@ -53,8 +63,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
       getSetting('allow_unverified_packs'),
       getSetting('ai_mcp_enabled'),
       getSetting('ai_chat_enabled'),
+      getSetting('launch_mode'),
       getSetting('onboarding_step'),
-    ]).then(([modrinth, technic, allowUnverifiedPacks, aiMcp, aiChat, savedStep]) => {
+    ]).then(([modrinth, technic, allowUnverifiedPacks, aiMcp, aiChat, launchMode, savedStep]) => {
       if (cancelled) return;
       setServices({
         modrinth: modrinth.status === 'fulfilled' ? parseBooleanSetting(modrinth.value) : false,
@@ -65,6 +76,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
         aiMcp: aiMcp.status === 'fulfilled' ? parseBooleanSetting(aiMcp.value) : false,
         aiChat: aiChat.status === 'fulfilled' ? parseBooleanSetting(aiChat.value) : false,
       });
+      setDirectLaunch(
+        launchMode.status === 'fulfilled' && launchMode.value === 'direct',
+      );
       // Resume an interrupted wizard at the step it was on, so closing or
       // restarting during onboarding does not silently discard progress.
       if (savedStep.status === 'fulfilled' && isStep(savedStep.value)) {
@@ -96,23 +110,34 @@ export function Onboarding({ onComplete }: OnboardingProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-        <div className="w-full max-w-xl rounded-2xl border border-border bg-card shadow-xl">
+        <div className="w-full max-w-xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
         <div className="p-6 sm:p-8">
-          {step === 'welcome' && <WelcomeStep onContinue={() => setStep('services')} />}
+          {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
+          {step === 'appearance' && (
+            <AppearanceStep onContinue={() => setStep('services')} onBack={() => setStep('welcome')} />
+          )}
           {step === 'services' && (
             <ServicesStep
               values={services}
               loading={servicesLoading}
               onChange={setServices}
               onContinue={() => setStep('java')}
-              onBack={() => setStep('welcome')}
+              onBack={() => setStep('appearance')}
             />
           )}
           {step === 'java' && (
-            <JavaStep onContinue={() => setStep('github')} onBack={() => setStep('services')} />
+            <JavaStep onContinue={() => setStep('launch')} onBack={() => setStep('services')} />
+          )}
+          {step === 'launch' && (
+            <LaunchStep
+              directLaunch={directLaunch}
+              onChange={setDirectLaunch}
+              onContinue={() => setStep('github')}
+              onBack={() => setStep('java')}
+            />
           )}
           {step === 'github' && (
-            <GithubStep onContinue={() => setStep('registry')} onBack={() => setStep('java')} />
+            <GithubStep onContinue={() => setStep('registry')} onBack={() => setStep('launch')} />
           )}
           {step === 'registry' && (
             <RegistryStep onFinish={() => setStep('import')} onBack={() => setStep('github')} hasAutoDownloaded={registryAutoDownloaded} />
@@ -133,8 +158,10 @@ function parseBooleanSetting(value: unknown): boolean {
 function Stepper({ current }: { current: Step }) {
   const steps: { id: Step; label: string }[] = [
     { id: 'welcome', label: 'Welcome' },
+    { id: 'appearance', label: 'Appearance' },
     { id: 'services', label: 'Services' },
     { id: 'java', label: 'Java' },
+    { id: 'launch', label: 'Launch' },
     { id: 'github', label: 'GitHub' },
     { id: 'registry', label: 'Registry' },
     { id: 'import', label: 'Import' },
@@ -256,6 +283,113 @@ function WelcomeStep({ onContinue }: { onContinue: () => void }) {
   );
 }
 
+function AppearanceStep({
+  onContinue,
+  onBack,
+}: {
+  onContinue: () => void;
+  onBack: () => void;
+}) {
+  const { preferences, setPreferences } = useUiPreferences();
+  const activePreset = (preset: UiPreferences) =>
+    JSON.stringify(preset) === JSON.stringify(preferences);
+
+  return (
+    <div>
+      <Stepper current="appearance" />
+      <h2 className="text-2xl font-bold mb-2">Make it yours</h2>
+      <p className="text-muted-foreground mb-5">
+        Choose a look you can read and enjoy before you dig in. Everything here can be changed at any
+        time in Settings → Appearance.
+      </p>
+
+      <p className="text-sm font-medium mb-2">Appearance preset</p>
+      <div className="grid grid-cols-2 gap-2">
+        {Object.entries(APPEARANCE_PRESETS).map(([id, preset]) => {
+          const active = activePreset(preset.preferences);
+          const swatches = presetSwatches(preset.preferences);
+          return (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => setPreferences(preset.preferences)}
+              className={`rounded-lg border p-3 text-left transition-colors ${
+                active
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-card hover:border-primary/40 hover:bg-accent'
+              }`}
+            >
+              <span className="flex gap-1">
+                <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.bg }} />
+                <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.surface }} />
+                <span className="h-3 w-3 rounded-full ring-1 ring-black/10" style={{ backgroundColor: swatches.accent }} />
+              </span>
+              <span className="mt-2 block text-sm font-medium">{preset.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <label className="mt-6 block space-y-1 text-sm">
+        <span className="flex justify-between font-medium">
+          <span>Text scale</span>
+          <span>{Math.round(preferences.fontScale * 100)}%</span>
+        </span>
+        <input
+          type="range"
+          aria-label="Text scale"
+          min="0.85"
+          max="2"
+          step="0.05"
+          value={preferences.fontScale}
+          onChange={(event) => setPreferences({ fontScale: Number(event.target.value) })}
+          className="w-full accent-primary"
+        />
+        <span className="block text-xs text-muted-foreground">
+          The whole app resizes instantly — including this onboarding screen. Pick whatever is
+          comfortable to read.
+        </span>
+      </label>
+
+      <div className="mt-8 flex justify-between">
+        <button
+          onClick={onBack}
+          className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
+        >
+          Back
+        </button>
+        <button
+          onClick={onContinue}
+          className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Continue
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Effective representative colors for an appearance-preset preview swatch. */
+function presetSwatches(preferences: UiPreferences): { bg: string; surface: string; accent: string } {
+  const dark =
+    preferences.colorMode === 'dark' ||
+    (preferences.colorMode === 'system' &&
+      (typeof window === 'undefined' ||
+        window.matchMedia('(prefers-color-scheme: dark)').matches));
+  return {
+    bg: preferences.backgroundMode === 'custom'
+      ? preferences.customBackground
+      : dark ? '#091321' : '#f8f7f3',
+    surface: preferences.surfaceMode === 'custom'
+      ? preferences.customSurface
+      : dark ? '#121a2b' : '#ffffff',
+    accent: preferences.accentMode === 'custom'
+      ? preferences.customAccent
+      : '#247786',
+  };
+}
+
 function ServicesStep({
   values,
   loading,
@@ -362,8 +496,8 @@ function ServicesStep({
           }}
         />
         <ServiceToggle
-          title="Integrated AI Assistant"
-          description="Built-in AI chat using free GitHub Models. Get instant crash analysis and mod help without any external setup."
+          title="Integrated AI Assistant (ALPHA)"
+          description="Built-in AI chat using free GitHub Copilot. Get instant crash analysis and mod help without any external setup."
           checked={values.aiChat}
           onChange={(aiChat) => {
             onChange({ ...values, aiChat });
@@ -603,6 +737,165 @@ function JavaStep({
           className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           {busy ? 'Downloading…' : done ? 'Continuing…' : 'Continue'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LaunchStep({
+  directLaunch,
+  onChange,
+  onContinue,
+  onBack,
+}: {
+  directLaunch: boolean;
+  onChange: (value: boolean) => void;
+  onContinue: () => void;
+  onBack: () => void;
+}) {
+  const [msa, setMsa] = useState<MsaAccountStatus | null>(null);
+  const [msaLoading, setMsaLoading] = useState(true);
+  const [msaBusy, setMsaBusy] = useState(false);
+  const [msaError, setMsaError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    msaGetStatus()
+      .then((creds) => {
+        if (!cancelled) setMsa(creds);
+      })
+      .catch(() => {
+        // Not signed in; the sign-in card below is the default view.
+      })
+      .finally(() => {
+        if (!cancelled) setMsaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persist as it changes so an interrupted onboarding does not lose the
+  // choice. Best-effort; the Continue handler is the authoritative save.
+  const handleToggle = (value: boolean) => {
+    onChange(value);
+    void setSetting('launch_mode', value ? 'direct' : 'delegation').catch(() => {});
+  };
+
+  const handleMsaSignIn = async () => {
+    setMsaError(null);
+    setMsaBusy(true);
+    try {
+      setMsa(await msaLogin());
+    } catch (e) {
+      setMsaError(formatError(e));
+    } finally {
+      setMsaBusy(false);
+    }
+  };
+
+  const handleMsaSignOut = async () => {
+    setMsaError(null);
+    try {
+      await msaLogout();
+      setMsa(null);
+    } catch (e) {
+      setMsaError(formatError(e));
+    }
+  };
+
+  const handleContinue = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await setSetting('launch_mode', directLaunch ? 'direct' : 'delegation');
+      onContinue();
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <Stepper current="launch" />
+      <h2 className="text-2xl font-bold mb-2">Choose How to Launch</h2>
+      <p className="text-muted-foreground mb-6">
+        Decide whether Agora or the official Mojang launcher runs Minecraft. This can be changed at
+        any time in Settings.
+      </p>
+
+      <div className="space-y-4">
+        <ServiceToggle
+          title="Direct launch (in-app launcher)"
+          description="On: Agora launches Minecraft directly — the game runs inside Agora with in-app console output and process control. Requires the Microsoft sign-in below for full online play. Off (default): Agora prepares your instance and hands off to the official Mojang launcher, which handles Microsoft authentication and starts the game itself."
+          checked={directLaunch}
+          onChange={handleToggle}
+        />
+
+        <div className="rounded-xl border border-border bg-card p-4">
+          <p className="font-medium text-sm">Microsoft Account</p>
+          {msaLoading ? (
+            <p className="mt-2 text-xs text-muted-foreground">Checking connection…</p>
+          ) : msa ? (
+            <div className="mt-2 space-y-1">
+              <p className="text-sm text-green-600 dark:text-green-400">
+                ● Signed in as <strong>{msa.username}</strong>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Used to authenticate with Minecraft services during direct launch.
+              </p>
+              <button
+                onClick={handleMsaSignOut}
+                className="text-xs text-muted-foreground hover:text-foreground underline"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="mt-2 space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Sign in with your Microsoft account to use direct launch with full online play.
+                Optional — delegated launch keeps authentication in the official Mojang launcher.
+              </p>
+              {msaError && <p className="text-xs text-destructive">{msaError}</p>}
+              <button
+                onClick={handleMsaSignIn}
+                disabled={msaBusy}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+              </button>
+            </div>
+          )}
+          {directLaunch && !msaLoading && !msa && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Direct launch is enabled without a Microsoft account — you can still launch, but
+              online play and skins will not work until you sign in.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {error && <p className="mt-4 text-xs text-destructive">{error}</p>}
+
+      <div className="mt-8 flex justify-between">
+        <button
+          onClick={onBack}
+          className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
+        >
+          Back
+        </button>
+        <button
+          onClick={handleContinue}
+          disabled={saving || msaBusy}
+          className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Continue'}
         </button>
       </div>
     </div>

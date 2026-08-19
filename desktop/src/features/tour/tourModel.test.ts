@@ -33,7 +33,8 @@ const steps: TourStep[] = [
   },
 ];
 
-const running = (index: number) => ({ status: 'running' as const, index });
+const running = (index: number) => ({ status: 'running' as const, index, manual: false });
+const manual = (index: number) => ({ status: 'running' as const, index, manual: true });
 
 describe('tourReducer', () => {
   it('does nothing until the tour is started', () => {
@@ -78,18 +79,45 @@ describe('tourReducer', () => {
     expect(tourReducer(running(3), { type: 'signal', signal: 'instance-created' }, steps))
       .toEqual(running(3));
     expect(tourReducer(running(3), { type: 'signal', signal: 'install-completed' }, steps))
-      .toEqual({ status: 'finished', index: 3 });
+      .toEqual({ status: 'finished', index: 3, manual: false });
   });
 
   it('skips forward and steps back without leaving the range', () => {
     expect(tourReducer(running(1), { type: 'skip' }, steps)).toEqual(running(2));
-    expect(tourReducer(running(1), { type: 'back' }, steps)).toEqual(running(0));
-    expect(tourReducer(running(0), { type: 'back' }, steps)).toEqual(running(0));
+    expect(tourReducer(running(1), { type: 'back' }, steps)).toEqual({ status: 'running', index: 0, manual: true });
+    expect(tourReducer(running(0), { type: 'back' }, steps)).toEqual({ status: 'running', index: 0, manual: true });
   });
 
   it('finishes after the last step and ends on demand', () => {
-    expect(tourReducer(running(3), { type: 'skip' }, steps)).toEqual({ status: 'finished', index: 3 });
-    expect(tourReducer(running(2), { type: 'end' }, steps)).toEqual({ status: 'idle', index: 0 });
+    expect(tourReducer(running(3), { type: 'skip' }, steps)).toEqual({ status: 'finished', index: 3, manual: false });
+    expect(tourReducer(running(2), { type: 'end' }, steps)).toEqual({ status: 'idle', index: 0, manual: false });
+  });
+
+  it('pins a step reached by Back so satisfied conditions do not auto-advance it', () => {
+    // Back from the click step lands on the appear step, whose anchor is still
+    // on screen — yet the tour stays put instead of bouncing forward.
+    expect(tourReducer(running(2), { type: 'back' }, steps)).toEqual(manual(1));
+    expect(tourReducer(manual(1), { type: 'anchor-present', anchor: 'page-browse' }, steps))
+      .toEqual(manual(1));
+    // Back to a click step: even a genuine click on one of its anchors is
+    // held until the user chooses to continue.
+    expect(tourReducer(running(3), { type: 'back' }, steps)).toEqual(manual(2));
+    expect(tourReducer(manual(2), { type: 'dom-click', anchors: ['nav-about'] }, steps))
+      .toEqual(manual(2));
+    // Skip continues forward and clears the pin.
+    expect(tourReducer(manual(1), { type: 'skip' }, steps)).toEqual(running(2));
+  });
+
+  it('still lets Continue finish a step reached by Back', () => {
+    // Step 1 is explain-only; Back lands on it and Continue must still work.
+    expect(tourReducer(running(1), { type: 'back' }, steps)).toEqual(manual(0));
+    expect(tourReducer(manual(0), { type: 'next' }, steps)).toEqual(running(1));
+  });
+
+  it('pins again on a second Back and clears the pin on start', () => {
+    expect(tourReducer(manual(1), { type: 'back' }, steps)).toEqual(manual(0));
+    expect(tourReducer(manual(1), { type: 'start' }, steps)).toEqual(running(0));
+    expect(tourReducer(manual(1), { type: 'end' }, steps)).toEqual({ status: 'idle', index: 0, manual: false });
   });
 
   it('treats a composite condition as satisfied by any of its parts', () => {
@@ -107,9 +135,9 @@ describe('tourReducer', () => {
     expect(tourReducer(running(0), { type: 'next' }, only)).toEqual(running(0));
     expect(
       tourReducer(running(0), { type: 'dom-change', anchors: ['install-instance-select'] }, only),
-    ).toEqual({ status: 'finished', index: 0 });
+    ).toEqual({ status: 'finished', index: 0, manual: false });
     expect(tourReducer(running(0), { type: 'anchor-present', anchor: 'install-version-list' }, only))
-      .toEqual({ status: 'finished', index: 0 });
+      .toEqual({ status: 'finished', index: 0, manual: false });
   });
 });
 

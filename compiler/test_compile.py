@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
+from pathlib import Path
 import shutil
 import sys
 import tempfile
@@ -929,18 +930,19 @@ class TestAppendAuditEntry(unittest.TestCase):
     """Tests for _append_audit_entry."""
 
     def setUp(self):
+        # Redirect REGISTRY_DIR at a tempdir: _append_audit_entry writes both
+        # audit_log.json AND (on rotation) audit_log_archive.<date>.json under
+        # it. Backing up only the former left rotation archives behind in the
+        # real, git-tracked registry/governance/, which the governance pipeline
+        # reads and which AGENTS.md says must carry only governance-state.json.
+        self._tmp = tempfile.TemporaryDirectory()
+        self._prev_registry_dir = _compile.REGISTRY_DIR
+        _compile.REGISTRY_DIR = Path(self._tmp.name)
         self._audit_path = _compile.REGISTRY_DIR / "governance" / "audit_log.json"
-        self._backup_path = None
-        if self._audit_path.exists():
-            self._backup_path = self._audit_path.with_suffix(self._audit_path.suffix + ".bak")
-            shutil.copy2(str(self._audit_path), str(self._backup_path))
 
     def tearDown(self):
-        if self._backup_path and self._backup_path.exists():
-            shutil.copy2(str(self._backup_path), str(self._audit_path))
-            self._backup_path.unlink(missing_ok=True)
-        elif self._audit_path.exists() and self._backup_path is None:
-            self._audit_path.unlink(missing_ok=True)
+        _compile.REGISTRY_DIR = self._prev_registry_dir
+        self._tmp.cleanup()
 
     def test_append_audit_entry_creates_file_when_absent(self):
         """_append_audit_entry creates the file if it doesn't exist."""

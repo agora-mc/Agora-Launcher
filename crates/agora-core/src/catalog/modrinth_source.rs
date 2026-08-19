@@ -265,6 +265,8 @@ impl CatalogSource for ModrinthSource {
                         .filter_map(|g| g.url.filter(|u| u.starts_with("https://")))
                         .collect(),
                     categories: full.categories.clone().unwrap_or_default(),
+                    downloads: full.downloads.unwrap_or(0),
+                    followers: full.followers.unwrap_or(0),
                 };
 
                 Ok(project_full_to_item(&id.as_modrinth_id(), &mapped))

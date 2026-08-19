@@ -63,6 +63,12 @@ impl From<&agora_core::msa::MsaCredentials> for MsaAccountStatus {
 /// Global version list cache for paginated mod version resolution.
 static VERSION_CACHE: LazyLock<SharedVersionCache> = LazyLock::new(version_cache::new_cache);
 
+/// How many Technic packs to pull per browse query.
+///
+/// Kept small on purpose: Technic's search returns only names, so each hit costs
+/// an extra detail round-trip to get its install/rating counts and tier.
+const TECHNIC_BROWSE_LIMIT: u32 = 30;
+
 /// Curated download strategies the user has enabled (Axis A: curated content,
 /// opt-out per source). A missing setting defaults to ON so curated content
 /// never silently vanishes. Separate from live third-party browsing settings.
@@ -74,7 +80,7 @@ fn curated_strategies_from_settings(app: &tauri::AppHandle) -> Vec<String> {
             crate::core_context(app)
                 .map(|ctx| {
                     agora_core::settings::SettingsService::new(ctx)
-                        .get_bool(&format!("curated_source_{strategy}_enabled"))
+                        .get_bool_or(&format!("curated_source_{strategy}_enabled"), true)
                         .unwrap_or(true)
                 })
                 .unwrap_or(true)
@@ -3770,7 +3776,13 @@ pub async fn browse_search(
     loader: Option<String>,
 ) -> LauncherResult<BrowsePage> {
     let s = state.lock().await;
-    let (modrinth_api_allowed, registry_items) = {
+    let (
+        modrinth_api_allowed,
+        technic_allowed,
+        allow_unverified_packs,
+        mean_approval,
+        registry_items,
+    ) = {
         let ctx = crate::core_context(&app)?;
         let svc = agora_core::settings::SettingsService::new(ctx.clone());
         let me = svc.get_bool("modrinth_enabled").unwrap_or(false);
@@ -3782,8 +3794,13 @@ pub async fn browse_search(
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         let api_ok = me && net_mr && !curated_only;
+        // Technic rides the same curated-only switch, plus its own consent gate.
+        // Tier Z packs stay hidden until unverified packs are allowed too.
+        let technic_ok = svc.get_bool("technic_enabled").unwrap_or(false) && !curated_only;
+        let allow_unverified = svc.get_bool("allow_unverified_packs").unwrap_or(false);
         let curated_strategies = curated_strategies_from_settings(&app);
         let svc = agora_core::registry::RegistryService::new(ctx);
+        let mean_approval = svc.mean_approval();
         let sort_enum = to_sort_option(sort.as_deref().unwrap_or("net_score"));
         let items = svc
             .browse_items(
@@ -3800,7 +3817,7 @@ pub async fn browse_search(
                 code: "ERR_REGISTRY".into(),
                 message: e.to_string(),
             })?;
-        (api_ok, items)
+        (api_ok, technic_ok, allow_unverified, mean_approval, items)
     };
 
     let (modrinth_results, total_hits) = if modrinth_api_allowed {
@@ -3813,7 +3830,7 @@ pub async fn browse_search(
             categories: category.clone().map(|c| vec![c]),
             loaders: loader.clone().map(|l| vec![l]),
             game_versions: mc_version.clone().map(|v| vec![v]),
-            sort: Some(to_modrinth_sort(sort.as_deref().unwrap_or("relevance"))),
+            sort: Some(to_modrinth_sort(sort.as_deref().unwrap_or("net_score"))),
             limit: Some(browse_cache::PAGE_SIZE as u32),
             offset: Some(0),
             project_type: modrinth_pt,
@@ -3827,6 +3844,37 @@ pub async fn browse_search(
         (vec![], 0usize)
     };
 
+    // Technic only distributes modpacks, so it is skipped unless the user is
+    // looking at packs. Its search API ignores `offset`, so this is the only
+    // fetch for the whole query — the results drain through the buffer.
+    let wants_packs = content_type
+        .as_deref()
+        .map(|ct| ct == "pack")
+        .unwrap_or(true);
+    let technic_results = if technic_allowed && wants_packs {
+        let ctx = crate::core_context(&app)?;
+        match agora_core::technic::search_technic_http(
+            &ctx.http_clients,
+            query.as_deref().unwrap_or(""),
+            TECHNIC_BROWSE_LIMIT,
+        )
+        .await
+        {
+            Ok(results) => results
+                .into_iter()
+                // Tier Z has no integrity information at all; it stays hidden
+                // until the user explicitly accepts unverified packs.
+                .filter(|r| {
+                    allow_unverified_packs || r.tier == agora_core::technic::TechnicTier::Solder
+                })
+                .collect(),
+            // Technic being down must not break the whole browse list.
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
     let offset = browse_cache::PAGE_SIZE;
     let has_more_modrinth = total_hits > offset;
 
@@ -3835,17 +3883,19 @@ pub async fn browse_search(
         query_key,
         registry_items,
         modrinth_results,
+        technic_results,
         BrowseFilters {
             query: query.unwrap_or_default(),
             content_type,
             category,
-            sort: sort.unwrap_or_else(|| "relevance".to_string()),
+            sort: sort.unwrap_or_else(|| "net_score".to_string()),
             mc_version,
             loader,
             modrinth_enabled: modrinth_api_allowed,
         },
         offset,
         has_more_modrinth, // stored separately for load-more use
+        mean_approval,
     )
     .await;
 
@@ -3863,6 +3913,7 @@ pub async fn browse_search(
 /// data when the requested page is not yet cached.
 #[tauri::command]
 pub async fn browse_load_more(
+    app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
     query_key: String,
     // The 0-indexed page the frontend wants to display next.
@@ -3870,6 +3921,10 @@ pub async fn browse_load_more(
 ) -> LauncherResult<BrowsePage> {
     let s = state.lock().await;
     let required_end = (page_index + 1) * browse_cache::PAGE_SIZE;
+    let mean_approval = {
+        let ctx = crate::core_context(&app)?;
+        agora_core::registry::RegistryService::new(ctx).mean_approval()
+    };
 
     // Fill the requested page. A fetched Modrinth page can contain duplicates,
     // so continue until the cache contains a full requested page or the remote
@@ -3883,7 +3938,10 @@ pub async fn browse_load_more(
                     message: "Browse query changed before pagination completed.".into(),
                 });
             }
-            let should_fetch = cache.items.len() < required_end
+            // The carry-forward buffer may already cover the requested page —
+            // curated is fetched in full up front, and Technic arrives in one
+            // shot, so both can fill several pages with no further network use.
+            let should_fetch = cache.items.len() + cache.buffer.len() < required_end
                 && cache.has_more_modrinth
                 && cache.filters.modrinth_enabled;
             (cache.filters.clone(), cache.modrinth_offset, should_fetch)
@@ -3929,6 +3987,7 @@ pub async fn browse_load_more(
             new_items,
             new_offset,
             has_more_modrinth,
+            mean_approval,
         )
         .await
         {
@@ -3939,6 +3998,14 @@ pub async fn browse_load_more(
         }
     }
 
+    // Promote buffered items into the displayed list before slicing the page.
+    if !browse_cache::drain_buffer(&s.browse_cache, &query_key, required_end).await {
+        return Err(LauncherError::Generic {
+            code: "ERR_BROWSE_STALE".into(),
+            message: "Browse query changed before pagination completed.".into(),
+        });
+    }
+
     let mut page = browse_cache::get_page(&s.browse_cache, page_index).await;
     let cache = s.browse_cache.read().await;
     if cache.query_key != query_key {
@@ -3947,8 +4014,12 @@ pub async fn browse_load_more(
             message: "Browse query changed before pagination completed.".into(),
         });
     }
-    page.has_more = (page_index + 1) * browse_cache::PAGE_SIZE < cache.items.len()
-        || (cache.has_more_modrinth && cache.filters.modrinth_enabled);
+    // `get_page` already accounts for the carry-forward buffer; ORing the
+    // upstream flag on top only adds the "more to fetch" case. Recomputing the
+    // cached half from `items.len()` alone would ignore buffered items and
+    // strand them — curated and Technic are one-shot fetches, so once Modrinth
+    // is exhausted (or disabled) the buffer is the only thing left to serve.
+    page.has_more = page.has_more || (cache.has_more_modrinth && cache.filters.modrinth_enabled);
     Ok(page)
 }
 
@@ -4812,6 +4883,7 @@ pub async fn import_lockfile(
                 content_type: artifact.content_type.clone(),
                 version: artifact.version.clone(),
                 download_strategy: None,
+                pinned_host: None,
             },
         });
         operations.push(ResolvedOperation::Install { artifact: resolved });
@@ -5104,6 +5176,7 @@ fn resolved_lockfile_artifact(
             content_type: artifact.content_type.clone(),
             version: artifact.version.clone(),
             download_strategy: None,
+            pinned_host: None,
         },
     }))
 }
@@ -5774,12 +5847,20 @@ pub async fn recommend_instance_memory(
     agora_core::instance_service::InstanceService::new(ctx).memory_recommendation(&instance_id)
 }
 
+/// Pick the upstream Modrinth ordering that best matches our blended score.
+///
+/// Chunks are sorted only within themselves, so the closer Modrinth's order is
+/// to ours, the smaller the inversions across a chunk boundary. Measured,
+/// `index=follows` returns sodium -> fabric-api -> iris -> modmenu, which
+/// tracks our formula far better than `downloads` (which leads with fabric-api,
+/// a library we deliberately demote).
 fn to_modrinth_sort(sort: &str) -> ModrinthSort {
     match sort {
         "downloads" => ModrinthSort::Downloads,
-        "follows" => ModrinthSort::Follows,
         "newest" => ModrinthSort::Newest,
-        "updated" => ModrinthSort::Updated,
+        "updated" | "velocity" => ModrinthSort::Updated,
+        // Every blended sort wants engagement-led ordering.
+        "net_score" | "most_upvoted" | "most_downvoted" | "follows" => ModrinthSort::Follows,
         _ => ModrinthSort::Relevance,
     }
 }
@@ -5819,6 +5900,55 @@ pub async fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn reveal_path(path: String) -> Result<(), String> {
     reveal_in_explorer(std::path::Path::new(&path))
+}
+
+/// Open an external content URL in the user's real browser.
+///
+/// A plain `<a target="_blank">` does nothing inside the Tauri webview, which is
+/// why "View source" never worked on any card. The URL comes from community
+/// content (a Modrinth project, a Technic page, a curated `page_url`), so it is
+/// validated before being handed to the OS: https only, no embedded
+/// credentials, and a host must be present. Without those checks this command
+/// would hand arbitrary strings — `file://`, `javascript:`, UNC paths — to the
+/// shell.
+#[tauri::command]
+pub async fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "Not a valid URL.".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("Only https links can be opened.".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Links with embedded credentials are refused.".into());
+    }
+    if parsed.host_str().is_none() {
+        return Err("Link has no host.".into());
+    }
+    open_url_in_browser(parsed.as_str())
+}
+
+fn open_url_in_browser(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("Failed to open link: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("Failed to open link: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("Failed to open link: {e}"))?;
+    }
+    Ok(())
 }
 
 fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {

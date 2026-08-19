@@ -707,7 +707,9 @@ impl Resolver {
 
         match select_curated_candidate(&candidates, None) {
             Ok(candidate) => match curated_artifact(&item, candidate) {
-                Ok(artifact) => DepDisposition::InstallCandidate { artifact },
+                Ok(artifact) => DepDisposition::InstallCandidate {
+                    artifact: Box::new(artifact),
+                },
                 Err(e) => DepDisposition::Unresolved {
                     reason: e.to_string(),
                 },
@@ -1647,9 +1649,12 @@ impl Resolver {
                                 &child_mappings,
                             );
                             match raw_modrinth_artifact(&pid, candidate) {
-                                Ok(artifact) => {
-                                    (DepDisposition::InstallCandidate { artifact }, children)
-                                }
+                                Ok(artifact) => (
+                                    DepDisposition::InstallCandidate {
+                                        artifact: Box::new(artifact),
+                                    },
+                                    children,
+                                ),
                                 Err(e) => (
                                     DepDisposition::Unresolved {
                                         reason: e.to_string(),
@@ -2878,8 +2883,29 @@ fn curated_artifact(
             content_type: item.content_type.clone(),
             version: Some(candidate.version.clone()),
             download_strategy: Some(item.download_strategy.clone()),
+            // Taken from the signed registry row, not from the candidate's
+            // download URL, so the staging fetch is constrained by what the
+            // curator actually reviewed.
+            pinned_host: pinned_host_for_item(item),
         },
     }))
+}
+
+/// Host of a hand-pinned item's curator-reviewed `source_identifier`.
+///
+/// `None` for API-resolved strategies, whose hosts are covered by the normal
+/// category allowlist.
+fn pinned_host_for_item(item: &crate::registry::RegistryItem) -> Option<String> {
+    if !matches!(
+        item.download_strategy.as_str(),
+        "direct_hash" | "technic_pack"
+    ) {
+        return None;
+    }
+    reqwest::Url::parse(item.source_identifier.trim())
+        .ok()?
+        .host_str()
+        .map(str::to_string)
 }
 
 fn curated_hashes(
@@ -2968,6 +2994,7 @@ fn raw_modrinth_artifact(
             content_type: "mod".into(),
             version: Some(candidate.version.clone()),
             download_strategy: None,
+            pinned_host: None,
         },
     }))
 }
@@ -3024,6 +3051,7 @@ fn resolve_manual_install(
                     content_type: "mod".into(),
                     version: None,
                     download_strategy: None,
+                    pinned_host: None,
                 },
             }),
         },
@@ -4196,6 +4224,7 @@ mod tests {
                 content_type: "mod".into(),
                 version: Some("3.3.0.10".into()),
                 download_strategy: None,
+                pinned_host: None,
             },
         });
 
@@ -4230,6 +4259,7 @@ mod tests {
                 content_type: "mod".into(),
                 version: Some("1.0.0".into()),
                 download_strategy: None,
+                pinned_host: None,
             },
         });
         let native_metadata = crate::dependency_ops::JarDeps {
@@ -4310,7 +4340,7 @@ mod tests {
                     display_name: Some("GlitchCore".into()),
                     page_url: Some("https://modrinth.com/mod/glitchcore".into()),
                     disposition: DepDisposition::InstallCandidate {
-                        artifact: ResolvedArtifact::Download(ResolvedDownload {
+                        artifact: Box::new(ResolvedArtifact::Download(ResolvedDownload {
                             item_id: "s3dmwKy5".into(),
                             version_id: "v1".into(),
                             source: ArtifactSource::Download {
@@ -4326,8 +4356,9 @@ mod tests {
                                 content_type: "mod".into(),
                                 version: Some("1.0.0".into()),
                                 download_strategy: None,
+                                pinned_host: None,
                             },
-                        }),
+                        })),
                     },
                 },
             ),

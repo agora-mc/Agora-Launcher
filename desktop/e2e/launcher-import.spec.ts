@@ -922,6 +922,10 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(page.getByRole('heading', { name: 'Welcome to Agora' })).toBeVisible();
     await page.getByRole('button', { name: 'Get Started' }).click();
 
+    // Appearance step
+    await expect(page.getByRole('heading', { name: 'Make it yours' })).toBeVisible();
+    await page.getByRole('button', { name: 'Continue' }).click();
+
     // Services step
     await expect(page.getByRole('heading', { name: 'Connect External Services' })).toBeVisible();
     await page.getByRole('button', { name: 'Continue' }).click();

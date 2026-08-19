@@ -27,6 +27,12 @@ export interface AmbienceContextValue {
   setSoundOn: (on: boolean) => void;
   musicVolume: number;
   setMusicVolume: (v: number) => void;
+  /** SFX loudness setting (0..1; 0.5 = the default level, 1 = louder). */
+  soundVolume: number;
+  setSoundVolume: (v: number) => void;
+  /** Effective music on/off: the user's preference AND a loud profile. */
+  musicOn: boolean;
+  setMusicOn: (on: boolean) => void;
   /** Latest Field Journal snapshot (refreshed on discovery). */
   journal: JournalData | null;
   /** The most recent discovery/achievement event (for toasts). */
@@ -143,6 +149,10 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setSoundOn: (on) => persist({ sound: on }),
     musicVolume: settings?.musicVolume ?? 0.35,
     setMusicVolume: (v) => persist({ musicVolume: v }),
+    soundVolume: settings?.soundVolume ?? 0.5,
+    setSoundVolume: (v) => persist({ soundVolume: v }),
+    musicOn: (settings?.musicOn !== false) && effectiveProfile === 'full',
+    setMusicOn: (on) => persist({ musicOn: on }),
     clearBackground: settings?.clearBackground ?? false,
     setClearBackground: (on) => persist({ clearBackground: on }),
     journal,
@@ -164,7 +174,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
   }), [effectiveProfile, settings, journal, lastEvent, persist, engine]);
 
   // Music rides along with the full profile (optional in calm).
-  const musicOn = effectiveProfile === 'full';
+  const musicOn = (settings?.musicOn !== false) && effectiveProfile === 'full';
 
   return (
     <AmbienceContext.Provider value={value}>
@@ -172,6 +182,10 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
         <AmbienceCanvas
           profile={effectiveProfile}
           soundOn={settings.sound}
+          // The stored 0..1 loudness becomes the engine's 0..2 multiplier, so
+          // the default (0.5) keeps today's level and the top of the slider
+          // plays above it.
+          soundVolume={(settings.soundVolume ?? 0.5) * 2}
           musicVolume={settings.musicVolume}
           musicOn={musicOn}
           reducedMotion={reducedMotion}

@@ -372,11 +372,7 @@ pub fn check_request_url_with_policy(
     // 2. Port. Consented-content categories may use any non-zero port; all
     //    other categories must use the default HTTPS port (443).
     if let Some(port) = parsed.port() {
-        let port_ok = if consented {
-            (1..=65535).contains(&port)
-        } else {
-            port == 443
-        };
+        let port_ok = if consented { port != 0 } else { port == 443 };
         if !port_ok {
             return Err(LauncherError::Generic {
                 code: "ERR_HTTP_PORT".into(),

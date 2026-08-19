@@ -103,6 +103,8 @@ export interface EngineState {
   lastTs: number;
   /** Prototype SFX mute (independent of music). */
   soundOn: boolean;
+  /** SFX loudness multiplier (1 = the prototype's fixed level). */
+  soundVolume: number;
   /** Earned achievements (name-keyed, for the toast/journal). */
   unlocked: Record<string, boolean>;
   /** First-load timestamp, used by the "Quick Study" achievement. */
@@ -163,6 +165,7 @@ export function createEngineState(
     world: null,
     lastTs: 0,
     soundOn: false,
+    soundVolume: 1,
     unlocked: {},
     wrand: mulberry32(seed),
     worldSeed: seed,

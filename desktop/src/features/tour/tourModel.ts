@@ -63,10 +63,18 @@ export interface TourStep {
   advance: TourAdvance;
   /** Shown while the tour waits for the user's action. */
   waitingHint?: string;
+  /** Shown when the step's primary anchor exists but is disabled. */
+  unavailableHint?: string;
   /** Shown instead when `gate` is off screen. */
   offTrackHint?: string;
   /** Overrides the Continue button label on `next` steps. */
   continueLabel?: string;
+  /**
+   * Dock the instruction card against the top or bottom of the viewport instead
+   * of vertically centering it on the spotlight. Used on pages where the
+   * centered card would cover the very content the step is explaining.
+   */
+  cardEdge?: 'top' | 'bottom';
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +176,21 @@ export const TOUR_STEPS: readonly TourStep[] = [
     gate: 'page-mod-detail',
     advance: { kind: 'next' },
     offTrackHint: 'Open an item from Browse to continue.',
+    cardEdge: 'bottom',
+  },
+  {
+    id: 'mod-detail-upvote',
+    title: 'Upvote what you love',
+    body:
+      'Your votes are the heart of what makes Agora community-driven: each upvote helps Agora '
+      + 'bring you and every other user only the best content. Give this one an upvote.',
+    anchors: ['mod-detail-upvote'],
+    gate: 'mod-detail-upvote',
+    advance: { kind: 'click' },
+    waitingHint: 'Click the upvote arrow on this page.',
+    unavailableHint: 'Voting needs a GitHub sign-in — sign in from Settings, or skip this step.',
+    offTrackHint: 'Pick a curated item from Browse to vote, or skip this step.',
+    cardEdge: 'bottom',
   },
   {
     id: 'mod-detail-install',
@@ -180,6 +203,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     advance: { kind: 'appear', anchor: 'install-panel' },
     waitingHint: 'Click “Install to Instance”.',
     offTrackHint: 'Open an item from Browse to continue.',
+    cardEdge: 'bottom',
   },
   {
     id: 'install-pick-instance',
@@ -193,6 +217,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     },
     waitingHint: 'Select your instance from the list.',
     offTrackHint: 'Reopen “Install to Instance” to continue.',
+    cardEdge: 'bottom',
   },
   {
     id: 'install-next-version',
@@ -203,6 +228,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     advance: { kind: 'appear', anchor: 'install-version-list' },
     waitingHint: 'Click “Next: Choose Version”.',
     offTrackHint: 'Reopen “Install to Instance” to continue.',
+    cardEdge: 'bottom',
   },
   {
     id: 'install-choose-version',
@@ -213,6 +239,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     advance: { kind: 'appear', anchor: 'install-confirm' },
     waitingHint: 'Select a version to continue.',
     offTrackHint: 'Reopen “Install to Instance” to continue.',
+    cardEdge: 'top',
   },
   {
     id: 'install-confirm',
@@ -314,9 +341,16 @@ export interface TourState {
   status: TourStatus;
   /** Index into the step list. Meaningful only while `status === 'running'`. */
   index: number;
+  /**
+   * True while the current step was reached by pressing Back. Environment
+   * events otherwise auto-advance the tour as soon as the step's condition is
+   * met — which a back-navigated step almost always is — so this pins the step
+   * and waits for an explicit Continue or Skip step instead.
+   */
+  manual: boolean;
 }
 
-export const INITIAL_TOUR_STATE: TourState = { status: 'idle', index: 0 };
+export const INITIAL_TOUR_STATE: TourState = { status: 'idle', index: 0, manual: false };
 
 export type TourEvent =
   | { type: 'start'; index?: number }
@@ -385,8 +419,14 @@ function step(steps: readonly TourStep[], index: number): TourStep | null {
 
 /** Move to `index`, finishing the tour when it runs past the last step. */
 function goTo(steps: readonly TourStep[], index: number): TourState {
-  if (index >= steps.length) return { status: 'finished', index: steps.length - 1 };
-  return { status: 'running', index: Math.max(0, index) };
+  if (index >= steps.length) return { status: 'finished', index: steps.length - 1, manual: false };
+  return { status: 'running', index: Math.max(0, index), manual: false };
+}
+
+/** Pin the current step so environment events cannot auto-advance past it. */
+function requireManual(state: TourState): TourState {
+  if (state.status !== 'running') return state;
+  return { ...state, manual: true };
 }
 
 /**
@@ -402,19 +442,28 @@ export function tourReducer(
     const index = event.index ?? 0;
     return goTo(steps, index >= steps.length ? 0 : index);
   }
-  if (event.type === 'end') return { status: 'idle', index: 0 };
+  if (event.type === 'end') return { status: 'idle', index: 0, manual: false };
   if (state.status !== 'running') return state;
 
   const current = step(steps, state.index);
-  if (!current) return { status: 'finished', index: Math.max(0, steps.length - 1) };
+  if (!current) return { status: 'finished', index: Math.max(0, steps.length - 1), manual: false };
 
   switch (event.type) {
     case 'back':
-      return goTo(steps, state.index - 1);
+      return requireManual(goTo(steps, state.index - 1));
     case 'skip':
       return goTo(steps, state.index + 1);
+    case 'next':
+      // Continue is always the user's own choice, so it works even on a step
+      // reached via Back that would otherwise auto-advance.
+      return acceptsContinue(current) ? goTo(steps, state.index + 1) : state;
     default:
-      return advanceSatisfiedBy(current.advance, event, current)
+      // Environment events (an anchor appearing, a click, a signal) normally
+      // advance the tour on their own. A step reached by Back is pinned
+      // instead: the DOM still satisfies it, so the tour would otherwise bounce
+      // straight forward and make Back feel broken. The user finishes it with
+      // Continue or Skip step.
+      return advanceSatisfiedBy(current.advance, event, current) && !state.manual
         ? goTo(steps, state.index + 1)
         : state;
   }

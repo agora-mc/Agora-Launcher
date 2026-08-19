@@ -60,9 +60,13 @@ function initialState(): TourState {
   // A tour interrupted by an app restart resumes where it stopped; anything
   // else (never run, ended, finished) starts idle.
   if (record.status === 'running') {
-    return { status: 'running', index: Math.min(record.index, TOUR_STEPS.length - 1) };
+    // Resume deliberately re-arms auto-advance (`manual` is not persisted): a
+    // back-reached step survives the restart unpinned, because nothing about
+    // the user's session state reliably survives either. The transient pin is
+    // for the live session only.
+    return { status: 'running', index: Math.min(record.index, TOUR_STEPS.length - 1), manual: false };
   }
-  return { status: 'idle', index: 0 };
+  return { status: 'idle', index: 0, manual: false };
 }
 
 interface TourProviderProps {

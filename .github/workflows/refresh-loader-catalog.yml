@@ -69,7 +69,7 @@ jobs:
       - name: Check for unexpected files
         shell: bash
         run: |
-          allowed='^(loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json)$'
+          allowed='^(loader-manifests/loader_manifests\.json|loader-manifests/known_good_hashes\.json|loader-manifests/minecraft_versions\.json|loader-manifests/failed_candidates\.json)$'
 
           unexpected="$(
             {

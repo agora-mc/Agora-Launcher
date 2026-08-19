@@ -11,7 +11,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { acceptsContinue, watchedAnchors, type TourStep } from './tourModel';
-import { findAnchor, isAnchorPresent, prefersReducedMotion } from './tourDom';
+import { findAnchor, isAnchorDisabled, isAnchorPresent, prefersReducedMotion } from './tourDom';
 import { useTour, type TourContextValue } from './TourProvider';
 import './tour.css';
 
@@ -29,6 +29,8 @@ interface Layout {
   side: 'left' | 'right';
   cardTop: number;
   gateMet: boolean;
+  /** Whether the spotlighted control exists but cannot be used right now. */
+  anchorDisabled: boolean;
 }
 
 const CARD_MARGIN = 20;
@@ -80,6 +82,7 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
     side: 'right',
     cardTop: CARD_MARGIN,
     gateMet: true,
+    anchorDisabled: false,
   });
 
   // One measurement drives everything on screen: where the spotlight goes,
@@ -115,26 +118,33 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
       const side: Layout['side'] = primary && primary.left + primary.width / 2 > viewportWidth / 2
         ? 'left'
         : 'right';
-      const cardTop = primary
-        ? clamp(
-          primary.top + primary.height / 2 - cardHeight / 2,
-          CARD_MARGIN,
-          Math.max(CARD_MARGIN, viewportHeight - cardHeight - CARD_MARGIN),
-        )
-        : clamp(
-          viewportHeight - cardHeight - CARD_MARGIN * 2,
-          CARD_MARGIN,
-          Math.max(CARD_MARGIN, viewportHeight - cardHeight - CARD_MARGIN),
-        );
+      const edgeTop = Math.max(CARD_MARGIN, viewportHeight - cardHeight - CARD_MARGIN);
+      const cardTop = step.cardEdge === 'top'
+        ? CARD_MARGIN
+        : step.cardEdge === 'bottom'
+          ? edgeTop
+          : primary
+            ? clamp(
+              primary.top + primary.height / 2 - cardHeight / 2,
+              CARD_MARGIN,
+              edgeTop,
+            )
+            : clamp(
+              viewportHeight - cardHeight - CARD_MARGIN * 2,
+              CARD_MARGIN,
+              edgeTop,
+            );
       const gateMet = !step.gate || isAnchorPresent(step.gate);
+      const anchorDisabled = primary != null && isAnchorDisabled(primary.anchor);
 
       setLayout((previous) => (
         previous.gateMet === gateMet
           && previous.side === side
+          && previous.anchorDisabled === anchorDisabled
           && Math.abs(previous.cardTop - cardTop) < 1
           && sameSpots(previous.spots, spots)
           ? previous
-          : { spots, side, cardTop: Math.round(cardTop), gateMet }
+          : { spots, side, cardTop: Math.round(cardTop), gateMet, anchorDisabled }
       ));
     };
 
@@ -187,7 +197,13 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
 
   const offTrack = !layout.gateMet;
   const canContinue = acceptsContinue(step) && !offTrack;
-  const hint = offTrack ? step.offTrackHint ?? 'Head back to that page to continue.' : step.waitingHint;
+  const hint = offTrack
+    ? step.offTrackHint ?? 'Head back to that page to continue.'
+    : layout.anchorDisabled && step.unavailableHint
+      ? step.unavailableHint
+      : !canContinue && tour.state.manual
+        ? 'Press Skip step to continue.'
+        : step.waitingHint;
   const progress = Math.round((tour.stepNumber / tour.totalSteps) * 100);
 
   return (

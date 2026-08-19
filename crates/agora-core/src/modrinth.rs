@@ -47,6 +47,13 @@ pub(crate) struct ModrinthProjectFullRaw {
     /// has always returned these; we simply were not reading them.
     #[serde(default)]
     pub(crate) categories: Option<Vec<String>>,
+    /// Popularity counters. The detail endpoint returns both; the launcher
+    /// previously read neither, so a Modrinth mod's detail page had no stats
+    /// to show where a curated one shows its score.
+    #[serde(default)]
+    pub(crate) downloads: Option<i64>,
+    #[serde(default)]
+    pub(crate) followers: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +210,10 @@ pub struct ModrinthProjectFull {
     /// Modrinth category slugs, lowercase as published.
     #[serde(default)]
     pub categories: Vec<String>,
+    #[serde(default)]
+    pub downloads: i64,
+    #[serde(default)]
+    pub followers: i64,
 }
 
 /// Enforce the Modrinth-enabled gate; returns `Err(ModrinthDisabled)` when off.
@@ -750,6 +761,8 @@ pub async fn fetch_project_full(
             .filter_map(|g| g.url.filter(|u| u.starts_with("https://")))
             .collect(),
         categories: resp.categories.unwrap_or_default(),
+        downloads: resp.downloads.unwrap_or(0),
+        followers: resp.followers.unwrap_or(0),
     })
 }
 
@@ -1212,6 +1225,8 @@ impl ModrinthService {
                 .filter_map(|g| g.url.filter(|u| u.starts_with("https://")))
                 .collect(),
             categories: resp.categories.unwrap_or_default(),
+            downloads: resp.downloads.unwrap_or(0),
+            followers: resp.followers.unwrap_or(0),
         })
     }
 

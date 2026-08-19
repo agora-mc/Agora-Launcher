@@ -2,9 +2,11 @@ import { Check, ExternalLink } from 'lucide-react';
 import { BrowseIcon } from './BrowseIcon';
 import { BrowseContextLabels, BrowseStats, BrowseVersions, CuratedBadge } from './BrowseContextLabels';
 import type { BrowseCardProps } from './types';
+import { sourceLabel } from './sourceLabel';
+import { openExternalUrl } from '../../lib/tauri';
 
 function sourceSummary(item: BrowseCardProps['item']): string {
-  const source = item.source === 'curated' ? 'Agora Registry' : 'Modrinth';
+  const source = sourceLabel(item.source);
   if (item.author) return `by ${item.author} · ${source}`;
   if (item.registryItem?.download_strategy) {
     return `${source} · ${item.registryItem.download_strategy.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())}`;
@@ -61,15 +63,18 @@ export function BrowseListCard({ item, context, onSelectMod, selected = false, o
                 View Details
               </button>
               {item.sourcePageUrl && (
-                <a
-                  href={item.sourcePageUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(event) => event.stopPropagation()}
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    // `target="_blank"` is inert inside the Tauri webview, so
+                    // the link has to go through the OS opener instead.
+                    event.stopPropagation();
+                    void openExternalUrl(item.sourcePageUrl!);
+                  }}
                   className="browse-source-link"
                 >
                   View source <ExternalLink aria-hidden size={12} />
-                </a>
+                </button>
               )}
             </div>
           </div>

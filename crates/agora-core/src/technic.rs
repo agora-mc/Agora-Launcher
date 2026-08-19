@@ -49,7 +49,7 @@ impl TechnicTier {
 }
 
 /// A single Technic search result, classified into a consent tier.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TechnicSearchResult {
     pub slug: String,
     pub title: String,
@@ -58,6 +58,9 @@ pub struct TechnicSearchResult {
     pub likes: u64,
     pub author: Option<String>,
     pub page_url: String,
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub tier: TechnicTier,
 }
 
@@ -76,6 +79,11 @@ pub struct TechnicPackDetail {
     pub minecraft: Option<String>,
     pub website: Option<String>,
     pub page_url: String,
+    /// Pack icon, when the author uploaded one (the API nests it and the url
+    /// is frequently null).
+    pub icon_url: Option<String>,
+    /// Author-supplied tags, split from the API's comma-separated string.
+    pub tags: Vec<String>,
     /// Direct pack download URL, present only for no-Solder (zip) packs.
     pub download_url: Option<String>,
     pub tier: TechnicTier,
@@ -145,6 +153,32 @@ pub fn tier_permitted(conn: &rusqlite::Connection, tier: TechnicTier) -> bool {
 // HTTP — always through ConsentedContent + UserConsented
 // ---------------------------------------------------------------------------
 
+/// Host of [`TECHNIC_API`], used to pin platform-API requests.
+const TECHNIC_API_HOST: &str = "api.technicpack.net";
+
+/// Fetch from the Technic *platform API*.
+///
+/// The API host is known at compile time, so it is pinned rather than fetched
+/// under the wide-open consented policy: without this, a hijacked API response
+/// could 302 to any host on any port and the per-hop re-validation would accept
+/// it. The wide-open policy is reserved for pack/mod URLs, which genuinely can
+/// live anywhere.
+async fn technic_api_get_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {
+    eprintln!(
+        "[technic] api fetch url={}",
+        crate::network::sanitized_url_for_log(url)
+    );
+    http_client::checked_get_bytes_with_policy(
+        clients,
+        ClientCategory::ConsentedContent,
+        url,
+        HostPolicy::SignedManifest(TECHNIC_API_HOST),
+    )
+    .await
+}
+
+/// Fetch arbitrary user-consented third-party content (Solder endpoints, mod
+/// and pack archives), which may live on any host.
 async fn technic_get_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {
     // The request itself is user-consented third-party content, so it is
     // logged here like any other consented-content fetch. The consent gate is
@@ -164,6 +198,17 @@ async fn technic_get_bytes(clients: &HttpClients, url: &str) -> LauncherResult<V
         HostPolicy::UserConsented,
     )
     .await
+}
+
+async fn technic_api_get_json<T: serde::de::DeserializeOwned>(
+    clients: &HttpClients,
+    url: &str,
+) -> LauncherResult<T> {
+    let bytes = technic_api_get_bytes(clients, url).await?;
+    serde_json::from_slice(&bytes).map_err(|error| LauncherError::Generic {
+        code: "ERR_TECHNIC_DECODE".into(),
+        message: format!("Failed to decode Technic response: {error}"),
+    })
 }
 
 async fn technic_get_json<T: serde::de::DeserializeOwned>(
@@ -202,6 +247,13 @@ struct TechnicSearchResponse {
     results: Vec<TechnicSearchHit>,
 }
 
+/// Technic nests media as `{"url": ...}` with a frequently-null inner value.
+#[derive(Deserialize)]
+struct TechnicAsset {
+    #[serde(default)]
+    url: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct TechnicModpackResponse {
     #[serde(default)]
@@ -235,8 +287,24 @@ struct TechnicModpackResponse {
     /// Install/run popularity counters (present on the detail endpoint).
     #[serde(default)]
     installs: Option<u64>,
+    /// Launch counter. Deliberately unused: it was once mapped to `likes`,
+    /// which made an activity metric masquerade as an endorsement.
+    #[expect(dead_code, reason = "documents a field we must not rank on")]
     #[serde(default)]
     runs: Option<u64>,
+    /// The platform's like counter. Absent on very old official packs (which
+    /// predate the feature), populated on modern ones — sampling 28 recent
+    /// packs in 2026-08 found 21 with a non-zero value.
+    #[serde(default)]
+    ratings: Option<u64>,
+    /// Nested media objects; the inner `url` is null on most packs.
+    #[serde(default)]
+    icon: Option<TechnicAsset>,
+    #[serde(default)]
+    logo: Option<TechnicAsset>,
+    /// Comma-separated author tags, e.g. "rpg,adventure,mobs".
+    #[serde(default)]
+    tags: Option<String>,
     /// The API reports `{"error": "..."}` for missing/refused packs.
     #[serde(default)]
     error: Option<String>,
@@ -266,39 +334,81 @@ pub async fn search_technic(
     })?;
     consent_for_tier(&conn, TechnicTier::Solder)?;
     drop(conn);
-    search_technic_http(query, limit).await
+    search_technic_http(&ctx.http_clients, query, limit).await
 }
+
+/// Maximum Technic detail fetches in flight at once during a search.
+const TECHNIC_DETAIL_CONCURRENCY: usize = 8;
 
 /// HTTP-only search; callers must have already validated consent.
 pub async fn search_technic_http(
+    clients: &HttpClients,
     query: &str,
     limit: u32,
 ) -> LauncherResult<Vec<TechnicSearchResult>> {
-    let clients = HttpClients::new()?;
     let limit = limit.clamp(1, 50);
     let q = query.trim();
-    let url = format!(
-        "{TECHNIC_API}/search?build=stable4&q={}&limit={limit}",
-        urlencoding::encode(q)
-    );
-    let response: TechnicSearchResponse = technic_get_json(&clients, &url).await?;
+    // Technic's /search returns ZERO results for an empty query, so an
+    // unfiltered browse would silently show no packs at all. /trending is the
+    // platform's own "what to show with no query" answer.
+    let url = if q.is_empty() {
+        format!("{TECHNIC_API}/trending?build=stable4&limit={limit}")
+    } else {
+        format!(
+            "{TECHNIC_API}/search?build=stable4&q={}&limit={limit}",
+            urlencoding::encode(q)
+        )
+    };
+    let response: TechnicSearchResponse = technic_api_get_json(clients, &url).await?;
 
     let mut hits: Vec<TechnicSearchHit> = response.modpacks;
     hits.extend(response.results);
     hits.truncate(limit as usize);
 
-    let mut results = Vec::with_capacity(hits.len());
+    // The search index does not report the Solder flag, so every hit needs its
+    // own detail round-trip to classify. Those calls are independent: running
+    // them sequentially cost one RTT per result (up to 50) before anything
+    // could render, so they run with bounded concurrency instead.
+    let mut pending = tokio::task::JoinSet::new();
+    let mut ordered: Vec<(String, TechnicSearchHit)> = Vec::with_capacity(hits.len());
     for hit in hits {
         let slug = hit
             .slug
+            .clone()
             .or(derive_slug_from_url(&hit.url))
             .unwrap_or_default();
         if slug.is_empty() {
             continue;
         }
-        let detail = pack_detail_http(&clients, &slug).await.ok();
+        ordered.push((slug, hit));
+    }
+
+    let mut details: std::collections::HashMap<String, TechnicPackDetail> = Default::default();
+    let mut queue = ordered.iter().map(|(slug, _)| slug.clone());
+    let mut spawn_next = |set: &mut tokio::task::JoinSet<_>| {
+        if let Some(slug) = queue.next() {
+            let clients = clients.clone();
+            set.spawn(async move {
+                let detail = pack_detail_http(&clients, &slug).await.ok();
+                (slug, detail)
+            });
+        }
+    };
+    for _ in 0..TECHNIC_DETAIL_CONCURRENCY {
+        spawn_next(&mut pending);
+    }
+    while let Some(joined) = pending.join_next().await {
+        if let Ok((slug, Some(detail))) = joined {
+            details.insert(slug, detail);
+        }
+        spawn_next(&mut pending);
+    }
+
+    let mut results = Vec::with_capacity(ordered.len());
+    for (slug, hit) in ordered {
+        let detail = details.get(&slug);
         let tier = match detail {
-            Some(ref detail)
+            Some(detail)
                 if detail
                     .solder
                     .as_deref()
@@ -310,26 +420,23 @@ pub async fn search_technic_http(
             _ => TechnicTier::Zip,
         };
         let title = detail
-            .as_ref()
             .map(|d| d.title.clone())
             .or_else(|| hit.name.clone())
             .unwrap_or_else(|| slug.clone());
         let page_url = detail
-            .as_ref()
             .map(|d| d.page_url.clone())
             .or_else(|| hit.url.clone())
             .unwrap_or_else(|| format!("https://www.technicpack.net/modpack/{slug}"));
         results.push(TechnicSearchResult {
             title,
             slug: slug.clone(),
-            description: detail
-                .as_ref()
-                .map(|d| d.description.clone())
-                .unwrap_or_default(),
-            installs: detail.as_ref().map(|d| d.installs).unwrap_or(0),
-            likes: detail.as_ref().map(|d| d.likes).unwrap_or(0),
-            author: detail.as_ref().and_then(|d| d.author.clone()),
+            description: detail.map(|d| d.description.clone()).unwrap_or_default(),
+            installs: detail.map(|d| d.installs).unwrap_or(0),
+            likes: detail.map(|d| d.likes).unwrap_or(0),
+            author: detail.and_then(|d| d.author.clone()),
             page_url,
+            icon_url: detail.and_then(|d| d.icon_url.clone()),
+            tags: detail.map(|d| d.tags.clone()).unwrap_or_default(),
             tier,
         });
     }
@@ -363,16 +470,8 @@ pub async fn pack_detail(ctx: &Ctx, slug: &str) -> LauncherResult<TechnicPackDet
         }
     })?;
     consent_for_tier(&conn, TechnicTier::Solder)?;
-    let clients = HttpClients::new()?;
-    let mut detail = pack_detail_http(&clients, slug).await?;
-    let permitted_conn =
-        db::local_state_connection(&ctx.paths.local_state_db()).map_err(|error| {
-            LauncherError::Generic {
-                code: "ERR_LOCAL_STATE_FAILED".into(),
-                message: error.to_string(),
-            }
-        })?;
-    detail.permitted = tier_permitted(&permitted_conn, detail.tier);
+    let mut detail = pack_detail_http(&ctx.http_clients, slug).await?;
+    detail.permitted = tier_permitted(&conn, detail.tier);
     Ok(detail)
 }
 
@@ -385,7 +484,7 @@ async fn pack_detail_http(clients: &HttpClients, slug: &str) -> LauncherResult<T
         });
     }
     let url = format!("{TECHNIC_API}/modpack/{slug}?build=stable4");
-    let response: TechnicModpackResponse = technic_get_json(clients, &url).await?;
+    let response: TechnicModpackResponse = technic_api_get_json(clients, &url).await?;
     if let Some(error) = response.error.filter(|error| !error.trim().is_empty()) {
         return Err(LauncherError::Generic {
             code: "ERR_TECHNIC_NOT_FOUND".into(),
@@ -411,7 +510,9 @@ async fn pack_detail_http(clients: &HttpClients, slug: &str) -> LauncherResult<T
         title,
         description: response.description.unwrap_or_default(),
         installs: response.installs.unwrap_or(0),
-        likes: response.runs.unwrap_or(0),
+        // `runs` is a launch counter, not an endorsement — using it here made
+        // every pack's "likes" a measure of how often it was started.
+        likes: response.ratings.unwrap_or(0),
         author: response.user,
         solder: response.solder,
         recommended_build: response
@@ -424,6 +525,18 @@ async fn pack_detail_http(clients: &HttpClients, slug: &str) -> LauncherResult<T
             .platform_url
             .or(response.link)
             .unwrap_or_else(|| format!("https://www.technicpack.net/modpack/{slug}")),
+        icon_url: response
+            .icon
+            .and_then(|asset| asset.url)
+            .or_else(|| response.logo.and_then(|asset| asset.url))
+            .filter(|url| url.starts_with("https://")),
+        tags: response
+            .tags
+            .unwrap_or_default()
+            .split(',')
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect(),
         download_url: response.url,
         tier,
         permitted: true,
@@ -495,8 +608,7 @@ pub async fn resolve_solder_build(
     })?;
     consent_for_tier(&conn, TechnicTier::Solder)?;
     drop(conn);
-    let clients = HttpClients::new()?;
-    resolve_solder_build_http(&clients, solder, slug, build).await
+    resolve_solder_build_http(&ctx.http_clients, solder, slug, build).await
 }
 
 async fn resolve_solder_build_http(
