@@ -55,7 +55,6 @@ export function LivingBackground() {
     setRainbow,
     setTrack,
     setInstrument,
-    musicAuto,
     setMusicAuto,
     setBuddy,
     ready,
@@ -346,10 +345,18 @@ export function LivingBackground() {
 
           <label className="space-y-1 text-sm">
             <span className="font-medium">Music piece</span>
+            <span className="block text-xs text-muted-foreground">
+              Let it choose shuffles the whole library and moves on when a piece ends. Naming a piece keeps that one playing.
+            </span>
             <select
               aria-label="Music piece"
               value={track}
-              onChange={(e) => { setTrackValue(e.target.value); if (e.target.value) setTrack(e.target.value); }}
+              onChange={(e) => {
+                setTrackValue(e.target.value);
+                // "Let it choose" IS autoplay -- there is no separate switch.
+                if (e.target.value) setTrack(e.target.value);
+                else setMusicAuto(true);
+              }}
               className="block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
             >
               <option value="">Let it choose</option>
@@ -372,20 +379,6 @@ export function LivingBackground() {
                 <option key={i.id} value={i.id}>{i.name}</option>
               ))}
             </select>
-          </label>
-
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span>
-              <span className="block font-medium">Autoplay</span>
-              <span className="block text-xs text-muted-foreground">Move to another piece when one ends.</span>
-            </span>
-            <input
-              type="checkbox"
-              aria-label="Autoplay"
-              checked={musicAuto}
-              onChange={(e) => { setMusicAuto(e.target.checked); if (e.target.checked) setTrackValue(''); }}
-              className="h-5 w-5 accent-primary"
-            />
           </label>
 
           <label className="flex items-center justify-between gap-3 text-sm">

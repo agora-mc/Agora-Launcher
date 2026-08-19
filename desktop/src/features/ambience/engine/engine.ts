@@ -292,12 +292,13 @@ export class AmbienceEngine {
    * Start or stop music. tracks.ts is lazy-imported so it never lands in the
    * initial chunk.
    *
-   * Autoplay picks a RANDOM track of the current mood and moves to another when
-   * the piece ends. It used to take `[0]` of the mood and then loop that one
-   * track forever, so the whole 37-minute library came out as two songs: the
-   * first calm piece by day and the first moody one at night. (It also asked for
-   * a mood named 'bright', which no track has, so that branch silently fell
-   * through to track 0.)
+   * "Let it choose" draws from the WHOLE library through a shuffle bag (see
+   * `nextTrack`). Two earlier versions both collapsed the 37-minute library
+   * into a handful of pieces: the first took `[0]` of a mood and looped that
+   * one track forever, and the replacement filtered to the mood of the hour,
+   * which is five pieces by day (three of them Gymnopedies, which a listener
+   * hears as one piece) and three at night. Neither ever reached Bumblebee,
+   * Sugar Plum, Mountain King or Fate at all.
    */
   setMusicOn(on: boolean): void {
     if (!on) {
@@ -310,34 +311,56 @@ export class AmbienceEngine {
     // explicit pick) changes the track.
     if (music.isPlaying()) return;
     void import('./audio/tracks').then((m) => {
-      const pick = (): MusicTrack | null => {
-        const mood = this.musicMood();
-        const inMood = m.MUSIC_TRACKS.filter((t) => t.mood === mood);
-        const pool = inMood.length > 0 ? inMood : m.MUSIC_TRACKS;
-        if (pool.length === 0) return null;
-        // Avoid repeating the piece that just finished when there is a choice.
-        const current = music.currentTrackId();
-        const fresh = pool.length > 1 ? pool.filter((t) => t.id !== current) : pool;
-        return fresh[Math.floor(Math.random() * fresh.length)] ?? null;
-      };
       music.onPieceEnd = () => {
         if (!this.musicAuto) return;
-        const next = pick();
+        const next = this.nextTrack(m.MUSIC_TRACKS);
         if (next && next.id !== music.currentTrackId()) music.start(next);
       };
-      const track = pick();
+      const track = this.nextTrack(m.MUSIC_TRACKS);
       if (track && track.id !== music.currentTrackId()) music.start(track);
     });
   }
 
-  /** Mood for autoplay. Only moods that tracks actually carry. */
-  private musicMood(): string {
-    const world = this.state.world as WorldState | null;
-    if (world && world.isNight && world.isNight()) return 'moody';
-    return 'calm';
+  /** Autoplay's running order: a shuffled bag, refilled once it empties. */
+  private musicBag: string[] = [];
+
+  /**
+   * The next piece for autoplay.
+   *
+   * A bag, not a fresh `Math.random()` per piece: independent draws are happy
+   * to serve the same three pieces all evening, and "avoid the one that just
+   * played" only rules out an immediate repeat. Dealing from a shuffled bag
+   * plays every piece in the library once before any piece plays twice, which
+   * is what "let it choose" is expected to mean.
+   */
+  private nextTrack(all: MusicTrack[]): MusicTrack | null {
+    if (all.length === 0) return null;
+    if (this.musicBag.length === 0) {
+      const ids = all.map((t) => t.id);
+      for (let i = ids.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+      }
+      // A fresh bag must not open with the piece the last one closed on —
+      // the only way a bag can produce a back-to-back repeat.
+      const current = music.currentTrackId();
+      if (ids.length > 1 && ids[0] === current) {
+        const k = 1 + Math.floor(Math.random() * (ids.length - 1));
+        [ids[0], ids[k]] = [ids[k], ids[0]];
+      }
+      this.musicBag = ids;
+    }
+    const id = this.musicBag.shift();
+    return all.find((t) => t.id === id) ?? null;
   }
 
-  /** Whether autoplay may rotate tracks when a piece ends. */
+  /**
+   * Whether autoplay may rotate pieces when one ends.
+   *
+   * There is no separate switch for this: picking a named piece in the Living
+   * Background panel turns it off, and picking "Let it choose" turns it back
+   * on.
+   */
   musicAuto = true;
   setMusicAuto(on: boolean): void { this.musicAuto = on; }
 
