@@ -929,6 +929,19 @@
   }
   .we-slot { opacity: 1 !important; }
 }
+/* The app's OWN Reduce motion setting is published as `data-motion` on <html>.
+   The global rule in index.css zeroes durations but not DELAYS, and the shelf
+   staggers its entry with `animation-delay: calc(var(--i) * 10ms)` and
+   `fill-mode: both` — so a 70-tile shelf spent most of a second fading in one
+   tile at a time even with motion reduced. Simple mode pins that setting, so
+   this is the difference between an instant shelf and a slow reveal. */
+:root[data-motion="reduced"] .world-editor,
+:root[data-motion="reduced"] .world-editor *,
+:root[data-motion="reduced"] .world-editor *::before,
+:root[data-motion="reduced"] .world-editor *::after {
+  animation-delay: 0s !important;
+  transition-delay: 0s !important;
+}
 @media (max-width: 800px) {
   .we-hero { grid-template-columns: auto 1fr; }
   .we-play { grid-column: 1 / -1; justify-content: center; }
