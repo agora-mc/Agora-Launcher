@@ -10,7 +10,7 @@ const CREDITS = [
   },
   {
     role: 'Support and Advice',
-    name: "My Mom!",
+    name: "Heather Pfeil",
     body: [
       "Whether it's graphical decisions, user experience, or just simply being there for me, Agora wouldn't be possible without her help. Thanks mom!",
     ],

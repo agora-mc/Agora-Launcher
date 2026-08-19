@@ -64,6 +64,11 @@ export interface AmbienceContextValue {
    * `false` would silently outlive the pick that caused it.
    */
   setMusicAuto: (on: boolean) => void;
+  /**
+   * "Let it choose", picked just now: autoplay again, starting on a fresh
+   * piece rather than waiting out the one that is pinned.
+   */
+  shuffleMusic: () => void;
   ready: boolean;
 }
 
@@ -174,6 +179,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setTrack: (id) => engine?.setTrack(id),
     setInstrument: (id) => engine?.setInstrument(id),
     setMusicAuto: (on) => engine?.setMusicAuto(on),
+    shuffleMusic: () => engine?.shuffleNow(),
     ready: settings !== null,
   }), [effectiveProfile, settings, journal, lastEvent, persist, engine]);
 

@@ -267,8 +267,8 @@ export class AmbienceEngine {
   /** Play a specific piece. Implies the player is choosing, so autoplay stops. */
   setTrack(id: string): void {
     this.musicAuto = false;
-    void import('./audio/tracks').then((m) => {
-      const track = m.MUSIC_TRACKS.find((t) => t.id === id);
+    this.withTracks((all) => {
+      const track = all.find((t) => t.id === id);
       if (track) music.start(track);
     });
   }
@@ -310,15 +310,46 @@ export class AmbienceEngine {
     // the current piece and start another. Only the end of a piece (or an
     // explicit pick) changes the track.
     if (music.isPlaying()) return;
-    void import('./audio/tracks').then((m) => {
+    this.withTracks((all) => this.playNextAuto(all));
+  }
+
+  /** The track library, cached after the first lazy load. */
+  private tracks: typeof import('./audio/tracks') | null = null;
+
+  /**
+   * Run `fn` with the track library, autoplay's end-of-piece hook attached.
+   *
+   * The hook used to be installed by `setMusicOn` alone, so only the path that
+   * turned music on ever wired it. Pinning a piece starts playback without
+   * going through there and left `onPieceEnd` null, so handing the choice back
+   * to "Let it choose" afterwards had nothing listening at the loop boundary
+   * and the pinned piece repeated for the rest of the session.
+   */
+  private withTracks(fn: (all: MusicTrack[]) => void): void {
+    const run = (m: typeof import('./audio/tracks')): void => {
+      this.tracks = m;
       music.onPieceEnd = () => {
         if (!this.musicAuto) return;
-        const next = this.nextTrack(m.MUSIC_TRACKS);
-        if (next && next.id !== music.currentTrackId()) music.start(next);
+        this.playNextAuto(m.MUSIC_TRACKS);
       };
-      const track = this.nextTrack(m.MUSIC_TRACKS);
-      if (track && track.id !== music.currentTrackId()) music.start(track);
-    });
+      fn(m.MUSIC_TRACKS);
+    };
+    if (this.tracks) { run(this.tracks); return; }
+    void import('./audio/tracks').then(run);
+  }
+
+  /**
+   * Start autoplay's next piece, unless it is the one already playing.
+   *
+   * The second draw covers a piece the player pinned by hand: `setTrack` does
+   * not deal from the bag, so this cycle's bag can still hold the id that is
+   * playing right now, and restarting it would look like the control did
+   * nothing. A bag never holds an id twice, so one more draw always clears it.
+   */
+  private playNextAuto(all: MusicTrack[]): void {
+    let next = this.nextTrack(all);
+    if (next && next.id === music.currentTrackId()) next = this.nextTrack(all) ?? next;
+    if (next && next.id !== music.currentTrackId()) music.start(next);
   }
 
   /** Autoplay's running order: a shuffled bag, refilled once it empties. */
@@ -362,7 +393,28 @@ export class AmbienceEngine {
    * on.
    */
   musicAuto = true;
+  /**
+   * Flag only, deliberately: the panel calls this on open, when its selector
+   * is showing "Let it choose", to bring the engine back in line with what the
+   * player is being told. Cutting a piece off mid-phrase every time somebody
+   * opened the panel would be worse than letting the current one finish.
+   */
   setMusicAuto(on: boolean): void { this.musicAuto = on; }
+
+  /**
+   * The player chose "Let it choose" just now: hand the running order back to
+   * autoplay and move to a fresh piece immediately.
+   *
+   * Setting the flag alone makes the control look dead — a pinned piece loops
+   * on until its next boundary, minutes away for most of this library, with
+   * nothing to show the pick took. Music that is off stays off; this is a
+   * choice about running order, not a play button.
+   */
+  shuffleNow(): void {
+    this.musicAuto = true;
+    if (!music.isPlaying()) return;
+    this.withTracks((all) => this.playNextAuto(all));
+  }
 
   setMusicVolume(v: number): void {
     music.setVolume(v);

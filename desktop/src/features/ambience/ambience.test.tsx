@@ -483,6 +483,85 @@ describe('music autoplay ("let it choose")', () => {
       }
     }
   });
+
+  /**
+   * Stand in for the audio player. `start` is the only thing that can be
+   * observed from outside the engine, so a spy on it is the whole record of
+   * what autoplay decided to do.
+   */
+  function playerSpy(): { started: string[] } {
+    // `music` is a module singleton, so a hook left behind by an earlier test
+    // would let a "the hook is attached" assertion pass on its own.
+    music.onPieceEnd = null;
+    let playing: string | null = null;
+    const started: string[] = [];
+    vi.spyOn(music, 'start').mockImplementation((t) => {
+      started.push(t.id);
+      playing = t.id;
+      return true;
+    });
+    vi.spyOn(music, 'currentTrackId').mockImplementation(() => playing);
+    vi.spyOn(music, 'isPlaying').mockImplementation(() => playing !== null);
+    return { started };
+  }
+
+  /** Let the engine's lazy `import('./audio/tracks')` settle. */
+  const flush = () => new Promise((r) => { setTimeout(r, 0); });
+
+  it('starts on a piece of its own choosing when music comes on', async () => {
+    const engine = bareEngine();
+    const player = playerSpy();
+    engine.setMusicOn(true);
+    await flush();
+    expect(player.started).toHaveLength(1);
+    expect(MUSIC_TRACKS.some((t) => t.id === player.started[0])).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it('still rotates at the end of a piece that was pinned by hand', async () => {
+    // Pinning starts playback without going through setMusicOn, which is where
+    // the end-of-piece hook used to be installed -- so autoplay went deaf for
+    // the rest of the session the first time anybody picked a piece.
+    const engine = bareEngine();
+    const player = playerSpy();
+    engine.setTrack(MUSIC_TRACKS[0].id);
+    await flush();
+    expect(player.started).toEqual([MUSIC_TRACKS[0].id]);
+    expect(music.onPieceEnd).not.toBeNull();
+
+    engine.setMusicAuto(true);
+    music.onPieceEnd?.();
+    expect(player.started).toHaveLength(2);
+    expect(player.started[1]).not.toBe(player.started[0]);
+    vi.restoreAllMocks();
+  });
+
+  it('moves off the pinned piece the moment "let it choose" is picked', async () => {
+    // Repeated because the fresh bag still holds the pinned id: roughly one run
+    // in MUSIC_TRACKS.length draws it first and has to draw again.
+    for (let run = 0; run < 40; run++) {
+      const engine = bareEngine();
+      const player = playerSpy();
+      engine.setTrack(MUSIC_TRACKS[0].id);
+      await flush();
+      engine.shuffleNow();
+      await flush();
+      expect(engine.musicAuto).toBe(true);
+      expect(player.started).toHaveLength(2);
+      expect(player.started[1]).not.toBe(MUSIC_TRACKS[0].id);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('leaves silence alone: "let it choose" is a running order, not a play button', async () => {
+    const engine = bareEngine();
+    const player = playerSpy();
+    engine.shuffleNow();
+    await flush();
+    expect(player.started).toEqual([]);
+    expect(engine.musicAuto).toBe(true);
+    vi.restoreAllMocks();
+  });
 });
 
 /* ── the 54-egg harness (verify-eggs port) ──────────────────────────── */
