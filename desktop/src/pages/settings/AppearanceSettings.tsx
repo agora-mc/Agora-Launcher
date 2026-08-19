@@ -11,20 +11,31 @@ import {
   suspendHighInteraction,
   type InteractionPreference,
 } from '../../features/interactive/live/presentationPreference';
+import { pinnedMotion } from '../../components/presentation-capabilities';
 import { useAmbience } from '../../features/ambience/AmbienceProvider';
 import { SettingsSection } from './SettingsSection';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
-/**
- * Theme sub-page — color mode, accent, and the custom surface colors.
- *
- * Split out of the old single Appearance card when the settings page moved to
- * tabs + sub-pages: colour, typography, and the living background are three
- * separate decisions and each is long enough to own a page.
- */
-export function AppearanceThemeSettings() {
-  const { preferences, setPreferences } = useUiPreferences();
+export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => void }) {
+  const { preferences, setPreferences, resetPreferences } = useUiPreferences();
+  // The interaction mode is a presentation preference with its own versioned
+  // key (MASTER_ARCHITECTURE §5.3), so it is read/written directly rather than
+  // folded into the theme blob. §5.2 requires it to be selectable from a
+  // clearly named interaction control — this is that control.
+  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
+  const applyInteraction = (value: InteractionPreference) => {
+    setInteraction(value);
+    savePreference(value);
+    // Simple and High Interaction both render the live instance view, so both
+    // resume it; only Standard suspends.
+    if (value === 'standard') suspendHighInteraction();
+    else resumeHighInteractionView();
+  };
+  // Simple pins motion to `reduced` (PresentationMotionCoordinator applies it).
+  // Showing the control as disabled beats letting the user pick a value that is
+  // silently written back a moment later.
+  const motionPin = pinnedMotion(interaction);
 
   return (
     <SettingsSection
@@ -263,18 +274,27 @@ export function AppearanceInterfaceSettings() {
         </label>
         <label className="space-y-1 text-sm">
           <span className="font-medium">Motion</span>
-          <select aria-label="Motion preference" value={preferences.motion} onChange={(event) => setPreferences({ motion: event.target.value as typeof preferences.motion })} className={`${selectClass} block w-full sm:w-64`}>
+          <select
+            aria-label="Motion preference"
+            value={motionPin ?? preferences.motion}
+            disabled={motionPin !== null}
+            onChange={(event) => setPreferences({ motion: event.target.value as typeof preferences.motion })}
+            className={`${selectClass} block w-full sm:w-64 disabled:opacity-50`}
+          >
             <option value="system">Follow system</option>
             <option value="reduced">Reduce motion</option>
             <option value="full">Full motion</option>
           </select>
-          <span className="block text-xs text-muted-foreground">Controls nonessential animations, transitions, and smooth scrolling throughout the app.</span>
+          <span className="block text-xs text-muted-foreground">
+            Controls nonessential animations, transitions, and smooth scrolling throughout the app.
+            {motionPin === 'reduced' ? ' Simple interaction mode keeps this on Reduce motion.' : ''}
+          </span>
         </label>
 
         <label className="block space-y-1 border-t border-border pt-3 text-sm">
-          <span className="font-medium">Instance view</span>
+          <span className="font-medium">Interaction mode</span>
           <select
-            aria-label="Instance view mode"
+            aria-label="Interaction mode"
             value={interaction}
             onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
             className={`${selectClass} block w-full sm:w-72`}
@@ -284,10 +304,12 @@ export function AppearanceInterfaceSettings() {
             <option value="high-interaction">High Interaction</option>
           </select>
           <span className="block text-xs text-muted-foreground">
-            High Interaction shows an instance as a visual workbench — content relationships, health, and
-            runtime at a glance. Simple keeps that friendly structure with the stimulation turned off.
-            Reviews and content changes always open the Standard screens, which remain the only place a
-            change is applied. You can switch back at any time from the instance itself.
+            Standard is the full launcher. High Interaction turns an instance into a visual workbench and
+            Browse into the Bazaar. Simple is the quiet version of that workbench — the same big Play
+            button, shelf and pre-flight check with the decoration, scores and surprises removed, plain
+            Browse sorted by Best, and reduced motion (so the living background stays off). Reviews and
+            content changes always open the Standard screens, which remain the only place a change is
+            applied.
           </span>
         </label>
       </SettingsSection>
@@ -363,15 +385,23 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
           type="checkbox"
           aria-label="Living background"
           checked={enabled}
+          disabled={motionSuppressed}
           onChange={(event) => setEnabled(event.target.checked)}
-          className="mt-0.5 h-5 w-5 accent-primary"
+          className="mt-0.5 h-5 w-5 accent-primary disabled:opacity-50"
         />
         <span>
           <span className="block font-medium">Living background</span>
           <span className="block text-xs text-muted-foreground">
             A gentle living world — hills, weather, animals and small discoveries — behind every page.
-            Purely decorative; reduced motion turns off its animation.
+            Purely decorative.
           </span>
+          {motionSuppressed ? (
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Off because motion is reduced — the world is movement, so there is nothing honest to show
+              while it is held still. Set Motion to Full (or leave Simple interaction mode) to bring it
+              back; your other ambience settings are kept.
+            </span>
+          ) : null}
         </span>
       </label>
 
@@ -448,14 +478,14 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
               <span className="block font-medium">Hide the standard background</span>
               <span className="block text-xs text-muted-foreground">
                 Sets the page background to 0% opacity so the living world shows through
-                unobstructed (cards and panels stay readable).
+                unobstructed (cards and panels stay readable). Turning the living background off turns this off
+                with it.
               </span>
             </span>
           </label>
 
           <p className="text-xs text-muted-foreground">
-            Animation follows your motion setting — reduce motion and the background still shows the
-            landscape, but nothing wanders.
+            Reducing motion switches the living background off entirely.
           </p>
         </>
       )}

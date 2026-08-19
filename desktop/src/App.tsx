@@ -32,6 +32,7 @@ import type { StandardDestination } from './features/interactive/domain/intents'
 import { AmbienceProvider, useAmbience } from './features/ambience/AmbienceProvider';
 import { AmbienceToasts } from './features/ambience/AmbienceToasts';
 import { AmbienceCoordinator } from './components/ambience-coordinator';
+import { PresentationMotionCoordinator } from './components/presentation-motion-coordinator';
 import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
@@ -771,6 +772,7 @@ export default function App() {
       </div>
       <AmbienceToasts />
       <AmbienceCoordinator activeTab={effectiveTab} />
+      <PresentationMotionCoordinator />
       <TourOverlay />
       </AmbienceProvider>
       </TourProvider>

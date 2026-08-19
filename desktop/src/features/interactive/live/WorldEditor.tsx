@@ -1,13 +1,18 @@
 /**
- * WorldEditor — the High Interaction instance view.
+ * WorldEditor — the High Interaction instance view, and the Simple one.
  *
  * Hero + shelf + pre-flight health check + crash doctor + advanced drawer +
  * Field Journal. The background ambience is a separate global layer; this
  * file is the *foreground* only.
  *
- * The safety spine is unchanged: selection is the only local state; every
- * mutation-worthy action emits a `VisualIntent` that the host routes to the
- * reviewed Standard surface (remove → InstallFlow, health → review, crash →
+ * `presentation === 'simple'` renders the SAME structure with every
+ * decorative and gamified system removed — see `decor` below for the single
+ * list of what that means. Simple is a strict subset: nothing it turns off can
+ * change how High Interaction behaves, and no branch adds anything Simple-only.
+ *
+ * The safety spine is unchanged in both: selection is the only local state;
+ * every mutation-worthy action emits a `VisualIntent` that the host routes to
+ * the reviewed Standard surface (remove → InstallFlow, health → review, crash →
  * CrashInvestigator, advanced rows → Standard editor). Nothing here executes
  * an operation directly.
  */
@@ -113,8 +118,33 @@ export function WorldEditor({
   selectedDetail = EMPTY_CONTENT_DETAIL,
   pending = false,
 }: WorldEditorProps) {
+  /**
+   * What Simple mode drops, in one place.
+   *
+   * Every one of these is decoration or a score — none of it is information
+   * you cannot get from the panel, the findings list or the pre-flight check.
+   *
+   *  - `achievements`: the earn-a-badge toast layer (Field Guide entries too);
+   *  - `meter`: the collection / XP progress bar;
+   *  - `diagram`: the dependency curves drawn over the shelf, plus the
+   *    dim-everything-else focus effect (the panel still lists Needs and
+   *    Needed by, in full, as text);
+   *  - `peek`: the tooltip that follows the cursor across the shelf;
+   *  - `drag`: drag-to-rearrange the shelf.
+   *
+   * Simple also implies reduced motion — the mode pins the app-wide setting,
+   * and `reduce` follows it here so the JS-driven animations (the pre-flight
+   * scan wave, the shake, smooth scrolling) go with the CSS ones.
+   */
   const simple = presentation === 'simple';
-  const reduce = reducedMotion;
+  const decor = {
+    achievements: !simple,
+    meter: !simple,
+    diagram: !simple,
+    peek: !simple,
+    drag: !simple,
+  };
+  const reduce = reducedMotion || simple;
   const { scene } = data;
   const crash = data.crashEvidence.status === 'ok' ? data.crashEvidence.value : null;
   const editor = useMemo(
@@ -214,12 +244,16 @@ export function WorldEditor({
   const statusOk = !pending && !editor.hasCrash && !healthUnverified && !blocker && findings.length === 0;
 
 
+  const achievementsOn = decor.achievements;
   const achieve = useCallback((icon: string, title: string, detail: string, key: string) => {
+    // Simple mode does not keep score: nothing is earned and nothing toasts,
+    // so ordinary use never leaves a trail in the Field Guide either.
+    if (!achievementsOn) return;
     // Persisted interaction achievement: only the FIRST earn toasts, so the
     // same action can never re-announce itself (Field Guide shows the rest).
     if (!tryEarnInteraction(key)) return;
     setToasts((cur) => [...cur.slice(-3), { id: ++toastSeq, icon, title, detail }]);
-  }, []);
+  }, [achievementsOn]);
   useEffect(() => {
     if (!toasts.length) return;
     const last = toasts[toasts.length - 1];
@@ -255,11 +289,15 @@ export function WorldEditor({
    * the dependent TO the thing it depends on, so the curve answers "which way
    * does this need point" at a glance.
    */
+  const diagramOn = decor.diagram;
   const drawLinks = useCallback(() => {
     const svg = linksRef.current;
     const wrap = gridRef.current;
     if (!svg || !wrap) return;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
+    // Simple mode has no curves to draw. The clear still runs above, so a mode
+    // switch never leaves a stale strand painted over the shelf.
+    if (!diagramOn) return;
     if (!selectedItem) return;
 
     const box = wrap.getBoundingClientRect();
@@ -315,7 +353,7 @@ export function WorldEditor({
         svg.appendChild(dot);
       }
     });
-  }, [selectedItem, editor, reduce]);
+  }, [selectedItem, editor, reduce, diagramOn]);
 
   useEffect(() => {
     // after paint, so the tiles have their final positions
@@ -325,23 +363,26 @@ export function WorldEditor({
 
   useEffect(() => {
     const wrap = gridRef.current;
-    if (!wrap) return;
+    // No curves in Simple mode, so no scroll/resize remeasuring either.
+    if (!wrap || !diagramOn) return;
     const on = () => drawLinks();
     wrap.addEventListener('scroll', on, { passive: true });
     window.addEventListener('resize', on);
     return () => { wrap.removeEventListener('scroll', on); window.removeEventListener('resize', on); };
-  }, [drawLinks]);
+  }, [drawLinks, diagramOn]);
 
   const selectItem = useCallback((name: string | null) => {
     setSelectedName(name);
-    setFocused(name !== null);
+    // The dim-everything-else focus effect belongs to the diagram: without the
+    // curves it just greys out the shelf for no stated reason.
+    setFocused(diagramOn && name !== null);
     if (name) {
       const item = editor.byId.get(name);
       if (item) onSelect(item.id);
     } else {
       onSelect(null);
     }
-  }, [editor, onSelect]);
+  }, [editor, onSelect, diagramOn]);
 
   const removeItem = useCallback(() => {
     if (!selectedItem) return;
@@ -357,7 +398,9 @@ export function WorldEditor({
   }, [achieve]);
 
   // ---- hover peek ----
+  const peekOn = decor.peek;
   const onTileMove = useCallback((e: React.MouseEvent, item: EditorItem, tileEl: HTMLElement) => {
+    if (!peekOn) return;
     if (reduce) return;
     const r = tileEl.getBoundingClientRect();
     const px2 = (e.clientX - r.left) / r.width;
@@ -366,7 +409,7 @@ export function WorldEditor({
     tileEl.style.setProperty('--mx', `${px2 * 100}%`);
     tileEl.style.setProperty('--my', `${py2 * 100}%`);
     setPeek({ item, x: Math.min(e.clientX + 18, window.innerWidth - 266), y: Math.min(e.clientY + 18, window.innerHeight - 100) });
-  }, [reduce]);
+  }, [reduce, peekOn]);
 
   const onTileLeave = useCallback((tileEl: HTMLElement) => {
     tileEl.style.transform = '';
@@ -423,7 +466,7 @@ export function WorldEditor({
   }, [onDragMove]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.button !== 0 || reduce || simple) return;
+    if (e.button !== 0 || reduce || !decor.drag) return;
     const slot = (e.target as HTMLElement).closest?.('.we-slot') as HTMLElement | null;
     if (!slot) return;
     const name = slot.dataset.name ?? '';
@@ -562,7 +605,7 @@ export function WorldEditor({
 
   const playClick = useCallback(() => {
     if (playDisabled) return;
-    const btn = document.querySelector('.we-play') as HTMLElement | null;
+    const btn = reduce ? null : (document.querySelector('.we-play') as HTMLElement | null);
     if (btn) {
       btn.classList.remove('squash');
       void btn.offsetWidth;
@@ -570,7 +613,7 @@ export function WorldEditor({
     }
     achieve('🎮', 'Let\'s go', 'Pressed the big button', 'lets-go');
     runPreflight();
-  }, [playDisabled, runPreflight, achieve]);
+  }, [playDisabled, runPreflight, achieve, reduce]);
 
   // ---- optional dependencies overlay ----
   const optionalRows = useMemo(() => {
@@ -589,7 +632,7 @@ export function WorldEditor({
       {/* ── hero ── */}
       <section className="we-panel we-hero">
         <div className="we-logo-hold">
-          <div className="we-ring" aria-hidden="true" />
+          {decor.meter ? <div className="we-ring" aria-hidden="true" /> : null}
           <div
             className="we-logo"
             style={{ background: instance?.name ? tileBackground(instance.name) : 'linear-gradient(160deg,hsl(174 52% 48%),hsl(190 71% 28%))' }}
@@ -608,18 +651,22 @@ export function WorldEditor({
             </span>
             {operationBusy ? <span className="we-chip">Busy</span> : playerLocked ? <span className="we-chip">Locked</span> : null}
           </div>
-          <div className="we-xp">
-            <div className="we-xp-top">
-              <span>Collection · {editor.total} {editor.total === 1 ? 'item' : 'items'}</span>
-              <span className="tab-num">{editor.total} / {COLLECTION_SCALE}</span>
+          {/* The collection meter is a score, not a fact — the chip above already
+              says how many things are inside — so Simple mode drops it. */}
+          {decor.meter ? (
+            <div className="we-xp">
+              <div className="we-xp-top">
+                <span>Collection · {editor.total} {editor.total === 1 ? 'item' : 'items'}</span>
+                <span className="tab-num">{editor.total} / {COLLECTION_SCALE}</span>
+              </div>
+              <div className="we-xp-bar">
+                <div
+                  className="we-xp-fill"
+                  style={{ width: `${Math.min(100, (editor.total / COLLECTION_SCALE) * 100).toFixed(1)}%` }}
+                />
+              </div>
             </div>
-            <div className="we-xp-bar">
-              <div
-                className="we-xp-fill"
-                style={{ width: `${Math.min(100, (editor.total / COLLECTION_SCALE) * 100).toFixed(1)}%` }}
-              />
-            </div>
-          </div>
+          ) : null}
           <button type="button" className={`we-status ${statusOk ? 'ok' : ''}`} onClick={statusClick}>
             <span className="orb" />
             <span>{statusText}</span>
@@ -646,7 +693,7 @@ export function WorldEditor({
           ) : null}
         </div>
         <button type="button" className="we-play" onClick={playClick} disabled={playDisabled} aria-label="Play this world">
-          <span className="shine" aria-hidden="true" />
+          {decor.meter ? <span className="shine" aria-hidden="true" /> : null}
           <span className="tri" aria-hidden="true" />
           {runningState ? (launchState === 'delegated' ? 'Delegated' : launchState === 'running' ? 'Running' : 'Starting…') : 'Play'}
         </button>
@@ -701,8 +748,9 @@ export function WorldEditor({
         <div className={`we-gridwrap ${focused ? 'focusing' : ''}`} ref={gridRef} onPointerLeave={() => setPeek(null)}>
           {/* Dependency curves are drawn here, above the tiles but click-through.
               Populated imperatively by the effect below because the endpoints are
-              measured from laid-out DOM, which React cannot express declaratively. */}
-          <svg className="we-links" ref={linksRef} aria-hidden="true" />
+              measured from laid-out DOM, which React cannot express declaratively.
+              Simple mode has no curves, so it has no canvas for them either. */}
+          {decor.diagram ? <svg className="we-links" ref={linksRef} aria-hidden="true" /> : null}
           <div className="we-grid" onPointerDown={onPointerDown} data-testid="we-grid">
             {visible.map((it, idx) => {
               const lit = focused && relatedIds.has(it.id);
@@ -950,7 +998,9 @@ export function WorldEditor({
         </div>
       </div>
 
-      {/* ── toasts + undo ── */}
+      {/* ── toasts + undo ──
+          The achievement stack is empty in Simple mode (nothing is ever
+          earned); the remove/undo toast below is not decoration and stays. */}
       <div className="we-toasts" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className="we-ach" role="status">

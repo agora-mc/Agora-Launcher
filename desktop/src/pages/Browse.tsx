@@ -27,6 +27,7 @@ import { RegistryStatusView } from '../components/registry-status-view';
 import { BrowseListResults } from '../components/browse/BrowseListResults';
 import { BrowseTileResults } from '../components/browse/BrowseTileResults';
 import { BrowseBazaar } from '../components/browse/BrowseBazaar';
+import { presentationCapabilities } from '../components/presentation-capabilities';
 import type { BazaarItem } from '../components/browse/bazaar-model';
 import { InstallFlow } from '../components/InstallFlow';
 import { usePackInstall } from '../components/PackInstallProgress';
@@ -96,6 +97,18 @@ const SORTS: { label: string; value: SortOption }[] = [
   { label: 'Most Endorsed', value: 'most_upvoted' },
   { label: 'Lowest Rated', value: 'most_downvoted' },
 ];
+
+/**
+ * Simple mode's sort list: the same orders, minus "For You".
+ *
+ * "For You" is the taste model — it watches what you install and reorders the
+ * catalogue around it. Simple mode does not profile the user, so it drops the
+ * option entirely and lands on `net_score` ("Best"), the plain cross-source
+ * score. The preference is NOT rewritten when it is dropped: a saved `for_you`
+ * survives untouched and comes back the moment the mode does.
+ */
+const SIMPLE_SORTS = SORTS.filter((s) => s.value !== 'for_you');
+const SIMPLE_DEFAULT_SORT: SortOption = 'net_score';
 
 const CONTENT_TYPES = ['mod', 'pack', 'shader', 'resourcepack', 'server', 'datapack', 'world'];
 
@@ -416,12 +429,28 @@ function BrowseContent({
   const [hasMore, setHasMore] = useState(false);
   const [categories, setCategories] = useState<CategoryInfo[]>([]);
   const [modrinthCategories, setModrinthCategories] = useState<ModrinthCategoryInfo[]>([]);
+  /**
+   * Which Browse surface this interaction mode uses. Read once per mount, like
+   * every other presentation read on this page: `bazaar` is the High
+   * Interaction shelf, `simple` is this page with the discovery extras removed,
+   * `standard` is this page in full.
+   */
+  const browseSurface = useMemo(() => {
+    try {
+      return presentationCapabilities(loadPreference()).browse;
+    } catch {
+      return 'standard' as const;
+    }
+  }, []);
+  const simpleBrowse = browseSurface === 'simple';
+  const sortOptions = simpleBrowse ? SIMPLE_SORTS : SORTS;
+
   const [sort, setSort] = useState<SortOption>(() => {
     try {
       const saved = localStorage.getItem('browse_sort');
-      if (saved && SORTS.some((s) => s.value === saved)) return saved as SortOption;
+      if (saved && sortOptions.some((s) => s.value === saved)) return saved as SortOption;
     } catch { /* ignore */ }
-    return 'net_score';
+    return simpleBrowse ? SIMPLE_DEFAULT_SORT : 'net_score';
   });
   const [category, setCategory] = useState<string | null>(null);
   const [contentType, setContentType] = useState<string | null>(initialContentType ?? 'mod');
@@ -439,7 +468,7 @@ function BrowseContent({
 
   // High Interaction Browse (the Bazaar, v5-browse port): default on when the
   // presentation preference is High Interaction, switchable at any time.
-  const [bazaarMode, setBazaarMode] = useState<boolean>(() => loadPreference() === 'high-interaction');
+  const [bazaarMode, setBazaarMode] = useState<boolean>(() => browseSurface === 'bazaar');
   // Scroll offset to reapply after a restored list paints. `null` means this
   // mount did not restore anything, so scrolling must be left alone.
   const restoredScrollRef = useRef<number | null>(null);
@@ -931,7 +960,9 @@ function BrowseContent({
       setItems(restored.items);
       setHasMore(restored.hasMore);
       setCurrentPage(restored.currentPage);
-      setBazaarMode(restored.bazaarMode);
+      // A snapshot taken in High Interaction must not drag the Bazaar back into
+      // Simple mode after the preference changed underneath it.
+      setBazaarMode(restored.bazaarMode && !simpleBrowse);
       setSearchLoading(false);
       setSearchError(null);
       return;
@@ -1217,20 +1248,26 @@ function BrowseContent({
       <section className="agora-hero compact">
         <div className="flex items-center gap-3 mb-2">
           <h2 className="text-2xl font-bold">Browse</h2>
-          <button
-            type="button"
-            onClick={() => setBazaarMode(true)}
-            className="ml-auto rounded-lg border border-primary bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-sm hover:bg-primary/90"
-            data-testid="open-bazaar"
-          >
-            The Bazaar 🎡
-          </button>
+          {/* Simple mode has exactly one Browse. Offering a door to the Bazaar
+              from it would put the thing the mode exists to avoid one click
+              away — the interaction mode is changed in Settings, not here. */}
+          {simpleBrowse ? null : (
+            <button
+              type="button"
+              onClick={() => setBazaarMode(true)}
+              className="ml-auto rounded-lg border border-primary bg-primary px-4 py-2 text-sm font-bold text-primary-foreground shadow-sm hover:bg-primary/90"
+              data-testid="open-bazaar"
+            >
+              The Bazaar 🎡
+            </button>
+          )}
           {/* <span className="rounded-full bg-muted text-muted-foreground px-2 py-0.5 text-xs font-medium uppercase tracking-wide">
             Preview
           </span> */}
         </div>
         <p className="text-muted-foreground">
-          Curated mods, packs, shaders, resource packs, and more. High Interaction fans can wander The Bazaar instead.
+          Curated mods, packs, shaders, resource packs, and more.
+          {simpleBrowse ? '' : ' High Interaction fans can wander The Bazaar instead.'}
         </p>
       </section>
 
@@ -1268,6 +1305,10 @@ function BrowseContent({
         {contextError && <p className="mt-2 text-xs text-destructive">{contextError}</p>}
       </section>
 
+      {/* Community-registry pitch: worth reading once, but it is an appeal, not
+          a control, and Simple mode keeps the page to the things that find a
+          mod. It stays reachable from the About and Governance pages. */}
+      {simpleBrowse ? null : (
       <section className="rounded-xl border border-border bg-card p-4">
         <div className="flex items-start gap-3">
           <Leaf aria-hidden className="mt-0.5 h-5 w-5 text-sea-blue" />
@@ -1294,6 +1335,7 @@ function BrowseContent({
           </div>
         </div>
       </section>
+      )}
 
       <div className="flex flex-col lg:flex-row lg:flex-wrap gap-4">
         <input
@@ -1364,7 +1406,7 @@ function BrowseContent({
           onChange={(e) => handleSortChange(e.target.value as SortOption)}
           className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
         >
-          {SORTS.map((s) => (
+          {sortOptions.map((s) => (
             <option key={s.value} value={s.value}>{s.label}</option>
           ))}
         </select>
@@ -1410,6 +1452,10 @@ function BrowseContent({
               disabled={metaLoading || visibleCuratedCategories.length === 0}
             />
           </div>
+          {/* Simple mode keeps category filtering but not the wall of it: the
+              dropdown above picks the same categories from one control instead
+              of dozens of chips competing with the results underneath. */}
+          {simpleBrowse ? null : (
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -1444,6 +1490,7 @@ function BrowseContent({
               </span>
             )}
           </div>
+          )}
         </div>
       )}
 

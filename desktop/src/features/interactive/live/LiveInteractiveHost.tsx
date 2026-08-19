@@ -488,7 +488,12 @@ export function LiveInteractiveHost({
   );
 
   return (
-    <section aria-label="High Interaction view" className="space-y-3" data-testid="live-host">
+    <section
+      aria-label={presentation === 'simple' ? 'Simple view' : 'High Interaction view'}
+      className="space-y-3"
+      data-testid="live-host"
+      data-presentation={presentation}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         {/* No "High Interaction" heading: the surface announces itself, and the
             label was a row of chrome that said nothing the view did not. */}
