@@ -116,7 +116,7 @@ export default async function DocsPage() {
             <Link
               key={way.href}
               href={way.href}
-              className="rounded-xl border p-5 transition hover:border-indigo-400 dark:border-gray-700"
+              className="panel-inset card-lift p-5"
             >
               <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{way.title}</h3>
               <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">{way.body}</p>
@@ -182,7 +182,7 @@ export default async function DocsPage() {
                       <Link
                         key={doc.slug}
                         href={`/docs/${doc.slug}`}
-                        className="rounded-xl border bg-white p-4 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+                        className="panel-inset card-lift p-4"
                       >
                         <h4 className="font-semibold text-indigo-700 dark:text-indigo-400">
                           {doc.title}
@@ -202,7 +202,7 @@ export default async function DocsPage() {
         ))}
       </section>
 
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
+      <section className="panel-inset p-6">
         <h2 className="text-xl font-bold">Elsewhere</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <a

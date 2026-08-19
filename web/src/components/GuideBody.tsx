@@ -63,7 +63,7 @@ function Section({ section }: { section: GuideSection }) {
 export function GuideBody({ page, level }: { page: GuidePage; level: GuideLevel }) {
   return (
     <div id={level} className="scroll-mt-8">
-      <div className="rounded-xl border bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+      <div className="panel-inset p-5">
         <h2 className="text-2xl font-bold">{GUIDE_LEVEL_LABELS[level]}</h2>
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{GUIDE_LEVEL_BLURBS[level]}</p>
         <p className="mt-4 leading-7 text-gray-700 dark:text-gray-300">{page.summary}</p>

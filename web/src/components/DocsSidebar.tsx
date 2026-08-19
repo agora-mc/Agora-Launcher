@@ -77,14 +77,14 @@ export function DocsSidebar({ sections }: DocsSidebarProps) {
   return (
     <nav
       aria-label="Documentation"
-      className="shrink-0 lg:sticky lg:top-8 lg:max-h-[calc(100vh-4rem)] lg:w-64 lg:overflow-y-auto"
+      className="panel shrink-0 p-4 lg:sticky lg:top-24 lg:max-h-[calc(100vh-8rem)] lg:w-64 lg:overflow-y-auto"
     >
       <button
         type="button"
         onClick={() => setMobileOpen((open) => !open)}
         aria-expanded={mobileOpen}
         aria-controls="docs-nav-panel"
-        className="flex w-full items-center justify-between rounded-lg border px-4 py-3 text-sm font-semibold dark:border-gray-700 lg:hidden"
+        className="ui-text flex w-full items-center justify-between rounded-lg border border-gold/25 px-4 py-3 text-sm font-semibold text-ink lg:hidden"
       >
         Browse documentation
         <span aria-hidden="true">{mobileOpen ? '▲' : '▼'}</span>

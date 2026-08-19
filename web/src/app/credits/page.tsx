@@ -23,28 +23,31 @@ export const metadata = {
 
 export default function CreditsPage() {
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Agora&apos;s Credits</h1>
-        <p className="mt-2 text-gray-600 dark:text-gray-400">
+    <div className="page-read space-y-8">
+      <header className="panel text-center">
+        <p className="eyebrow">Thank you</p>
+        <h1 className="mt-2.5 bg-gold-sheen bg-clip-text text-4xl font-extrabold tracking-tight text-transparent">
+          Agora&apos;s Credits
+        </h1>
+        <p className="mx-auto mt-3 max-w-xl text-lg text-ink-muted">
           The people behind Agora.
         </p>
-      </div>
+      </header>
 
-      <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-6 dark:border-indigo-900 dark:bg-indigo-950/30">
+      <section className="panel border-gold/35 bg-[linear-gradient(135deg,rgba(194,139,40,0.15),rgba(23,38,59,0.93)_55%)]">
         <p className="text-lg font-medium leading-7">
           Agora is a labor of love, built with the help of AI by a solo developer who cares deeply about the Minecraft
           community. These are the people who made it possible.
         </p>
       </section>
 
-      <section className="space-y-6">
-        <h2 className="text-xl font-semibold">Meet the team</h2>
+      <section className="panel space-y-6">
+        <h2 className="rule-gold text-xl font-semibold text-ink">Meet the team</h2>
         <ul className="space-y-6">
           {CREDITS.map((credit) => (
             <li
               key={credit.name}
-              className="rounded-xl border border-gray-200 p-6 dark:border-gray-700"
+              className="panel-inset p-6"
             >
               <p className="text-sm font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-400">
                 {credit.role}
@@ -73,8 +76,8 @@ export default function CreditsPage() {
         </ul>
       </section>
 
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">Built with the community</h2>
+      <section className="panel space-y-4">
+        <h2 className="rule-gold text-xl font-semibold text-ink">Built with the community</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
           Agora is open source and community-curated. Everyone who reviews an entry, casts a vote,
           files a bug, or spreads the word helps keep Agora free, ad-free, and honest. Thank you.

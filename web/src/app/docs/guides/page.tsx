@@ -44,7 +44,7 @@ export default function GuidesIndexPage() {
               <Link
                 key={topic.id}
                 href={`/docs/guides/${topic.id}`}
-                className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+                className="panel-inset card-lift p-5"
               >
                 <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">
                   {topic.title}
@@ -58,7 +58,7 @@ export default function GuidesIndexPage() {
         </section>
       ))}
 
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
+      <section className="panel-inset p-6">
         <h2 className="text-xl font-bold">Looking for exact syntax instead?</h2>
         <p className="mt-2 leading-7 text-gray-600 dark:text-gray-300">
           Guides explain workflows. For command flags, exit codes, file

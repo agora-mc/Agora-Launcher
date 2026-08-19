@@ -94,7 +94,7 @@ export default function TourPage() {
               {shot.title}
             </h2>
             <p className="mt-2 max-w-3xl leading-7 text-gray-600 dark:text-gray-300">{shot.body}</p>
-            <figure className="mt-4 overflow-hidden rounded-xl border bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+            <figure className="mt-4 overflow-hidden panel-inset">
               <Image
                 src={shot.src}
                 alt={shot.alt}
@@ -117,7 +117,7 @@ export default function TourPage() {
         ))}
       </div>
 
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
+      <section className="panel-inset p-6">
         <h2 className="text-xl font-bold">Ready to try it?</h2>
         <p className="mt-2 leading-7 text-gray-600 dark:text-gray-300">
           Installing takes a few minutes, and the first-run steps are written
@@ -125,7 +125,7 @@ export default function TourPage() {
         </p>
         <Link
           href="/docs/install"
-          className="mt-4 inline-flex rounded-lg bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700"
+          className="btn-gold mt-4 inline-flex px-5 py-3"
         >
           Install Agora
         </Link>

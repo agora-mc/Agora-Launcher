@@ -2,50 +2,289 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Agora web — Civic Gold
+   Palette and type ported from the desktop app's default appearance preset.
+   Colour VALUES live in tailwind.config.js (which also remaps the gray /
+   indigo / pink / amber scales onto this palette); this file owns type,
+   layout rhythm, the readability panels, and the living-world layer.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 @layer base {
   :root {
     --font-scale: 1;
+    /* Civic = serif. Display faces the classical side of the brand (the
+       amphitheatre in the logo); body prose stays serif too, matching the
+       desktop preset's `fontFamily: 'serif'`. Small UI chrome opts into
+       --font-body-ui via .ui-text. */
+    --font-display: Georgia, Cambria, 'Times New Roman', Times, serif;
+    --font-body: Georgia, Cambria, 'Times New Roman', Times, serif;
+    --font-body-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+    /* One page-width system. Every page uses one of these two — nothing
+       else. `--page-wide` bounds the shell (header/main/footer); the
+       reading column uses `--page-read`. */
+    --page-wide: 72rem;
+    --page-read: 52rem;
+
+    /* The readability panel behind text, over the living world. */
+    --panel-bg: 23 38 59;      /* #17263b */
+    --panel-alpha: 0.93;
   }
+
+  html {
+    background-color: #091321;
+  }
+
   body {
-    font-size: calc(1rem * var(--font-scale));
+    /* The living world paints over this; it is the pre-hydration and
+       reduced-motion fallback, and the backstop wherever the world is off. */
+    background-color: #091321;
+    background-image:
+      radial-gradient(115% 80% at 50% -10%, rgba(194, 139, 40, 0.1), transparent 60%),
+      radial-gradient(90% 60% at 85% 100%, rgba(45, 96, 137, 0.14), transparent 60%);
+    color: #f4ead4;
+    font-family: var(--font-body);
+    /* "A bit bigger across the site": 17px base, up from 16. */
+    font-size: calc(1.0625rem * var(--font-scale));
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
-  /* Scale Tailwind's fixed text utilities with user preference — mirrors desktop/index.css */
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    letter-spacing: -0.005em;
+  }
+
+  ::selection {
+    background: rgba(194, 139, 40, 0.32);
+    color: #f9f2e2;
+  }
+
+  /* Keyboard focus is gold, and always visible over the world. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid #e0b354;
+    outline-offset: 2px;
+    border-radius: 0.35rem;
+  }
+
+  /* Scale Tailwind's fixed text utilities with user preference — mirrors
+     desktop/index.css. Every step is one notch larger than Tailwind's
+     default, which is the site-wide type bump. */
   :root .text-xs {
-    font-size: calc(0.75rem * var(--font-scale));
-    line-height: calc(1rem * var(--font-scale));
+    font-size: calc(0.8125rem * var(--font-scale));
+    line-height: calc(1.125rem * var(--font-scale));
   }
   :root .text-sm {
-    font-size: calc(0.875rem * var(--font-scale));
-    line-height: calc(1.25rem * var(--font-scale));
+    font-size: calc(0.9375rem * var(--font-scale));
+    line-height: calc(1.4rem * var(--font-scale));
   }
   :root .text-base {
-    font-size: calc(1rem * var(--font-scale));
-    line-height: calc(1.5rem * var(--font-scale));
+    font-size: calc(1.0625rem * var(--font-scale));
+    line-height: calc(1.65rem * var(--font-scale));
   }
   :root .text-lg {
-    font-size: calc(1.125rem * var(--font-scale));
-    line-height: calc(1.75rem * var(--font-scale));
+    font-size: calc(1.1875rem * var(--font-scale));
+    line-height: calc(1.8rem * var(--font-scale));
   }
   :root .text-xl {
-    font-size: calc(1.25rem * var(--font-scale));
+    font-size: calc(1.375rem * var(--font-scale));
+    line-height: calc(1.9rem * var(--font-scale));
   }
   :root .text-2xl {
-    font-size: calc(1.5rem * var(--font-scale));
+    font-size: calc(1.625rem * var(--font-scale));
+    line-height: calc(2.1rem * var(--font-scale));
   }
   :root .text-3xl {
-    font-size: calc(1.875rem * var(--font-scale));
+    font-size: calc(2rem * var(--font-scale));
+    line-height: calc(2.45rem * var(--font-scale));
   }
   :root .text-4xl {
-    font-size: calc(2.25rem * var(--font-scale));
+    font-size: calc(2.5rem * var(--font-scale));
+    line-height: calc(2.9rem * var(--font-scale));
+  }
+  :root .text-5xl {
+    font-size: calc(3.25rem * var(--font-scale));
+    line-height: calc(3.5rem * var(--font-scale));
   }
 }
 
-/* Typographic styles for rendered markdown documentation (docs-prose). */
+/* ── Layout system ─────────────────────────────────────────────────────
+   Three container classes, and pages use nothing else. This is what fixes
+   the margin drift: `about` and `credits` were max-w-3xl, `governance` was
+   max-w-4xl, and the docs layout had its own max-w-6xl, so every page had
+   a different gutter. */
+@layer components {
+  .shell-wrap {
+    margin-inline: auto;
+    width: 100%;
+    max-width: var(--page-wide);
+    padding-inline: 1.5rem;
+  }
+
+  /* The reading column: one width for every text-led page. */
+  .page-read {
+    margin-inline: auto;
+    width: 100%;
+    max-width: var(--page-read);
+  }
+
+  /* ── The readability panel ───────────────────────────────────────────
+     A decently opaque box behind the TEXT (not the whole viewport), so the
+     living world stays visible around it while prose stays legible. */
+  .panel {
+    background-color: rgb(var(--panel-bg) / var(--panel-alpha));
+    border: 1px solid rgba(194, 139, 40, 0.16);
+    border-radius: 1.15rem;
+    box-shadow: 0 18px 44px -22px rgba(0, 0, 0, 0.9);
+    backdrop-filter: blur(7px);
+    -webkit-backdrop-filter: blur(7px);
+    padding: clamp(1.5rem, 1rem + 2vw, 2.75rem);
+  }
+
+  /* Tighter variant for cards that already sit inside a panel. */
+  .panel-inset {
+    background-color: rgba(29, 47, 71, 0.82);
+    border: 1px solid rgba(194, 139, 40, 0.14);
+    border-radius: 0.9rem;
+  }
+
+  /* Small-caps gold label above a heading. */
+  .eyebrow {
+    font-family: var(--font-body-ui);
+    font-size: calc(0.75rem * var(--font-scale));
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: #c28b28;
+  }
+
+  /* Gold rule under a section heading — the site's main structural accent. */
+  .rule-gold::after {
+    content: '';
+    display: block;
+    height: 2px;
+    width: 3.5rem;
+    margin-top: 0.6rem;
+    border-radius: 2px;
+    background: linear-gradient(90deg, #e0b354, rgba(194, 139, 40, 0));
+  }
+
+  /* UI chrome (nav, buttons, badges, meta) drops to the sans face. */
+  .ui-text {
+    font-family: var(--font-body-ui);
+  }
+
+  /* Card lift, gold on hover. */
+  .card-lift {
+    transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  }
+  .card-lift:hover {
+    transform: translateY(-2px);
+    border-color: rgba(194, 139, 40, 0.45);
+    box-shadow: 0 0 0 1px rgba(194, 139, 40, 0.28), 0 16px 34px -16px rgba(0, 0, 0, 0.85);
+  }
+
+  /* Primary action: the gold sheen. */
+  .btn-gold {
+    background: linear-gradient(135deg, #e0b354 0%, #c28b28 45%, #a2731f 100%);
+    color: #14100a;
+    font-family: var(--font-body-ui);
+    font-weight: 700;
+    border-radius: 0.75rem;
+    box-shadow: 0 8px 22px -10px rgba(194, 139, 40, 0.8);
+    transition: filter 150ms ease, transform 150ms ease;
+  }
+  .btn-gold:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+  }
+
+  /* Secondary action: gold hairline over the world. */
+  .btn-ghost {
+    background-color: rgba(23, 38, 59, 0.72);
+    border: 1px solid rgba(194, 139, 40, 0.4);
+    color: #f4ead4;
+    font-family: var(--font-body-ui);
+    font-weight: 600;
+    border-radius: 0.75rem;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+  .btn-ghost:hover {
+    background-color: rgba(29, 47, 71, 0.9);
+    border-color: rgba(224, 179, 84, 0.75);
+  }
+}
+
+/* ── The living world, site-wide ───────────────────────────────────────
+   Ported from desktop/src/index.css. The engine sizes and positions the
+   canvases inline (its `size()`), so these rules only place the layers and
+   carry over the vignette. Unlike the desktop we do NOT make the shell
+   translucent: legibility here comes from `.panel` around the text, so the
+   world reads at full strength in the gutters instead of as a wash behind
+   every paragraph. */
+
+.ambience-canvas {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  display: block;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.ambience-vig {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(125% 95% at 50% 15%, transparent 28%, rgba(4, 12, 18, 0.62) 100%),
+    linear-gradient(180deg, rgba(9, 19, 33, 0.55) 0%, transparent 22%, transparent 74%, rgba(9, 19, 33, 0.68) 100%);
+}
+
+.ambience-fx {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 65;
+  pointer-events: none;
+}
+
+/* The whole UI stacks above the world, explicitly. Load-bearing: the canvas
+   is position:fixed at z-index 0, so it paints above any NON-positioned
+   content — which is everything in the shell by default. */
+.app-shell {
+  position: relative;
+  z-index: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The world is not mounted at all under reduced motion (see
+     LivingBackground.tsx); this only softens the panel work. */
+  .card-lift,
+  .btn-gold,
+  .btn-ghost {
+    transition: none;
+  }
+  .card-lift:hover,
+  .btn-gold:hover {
+    transform: none;
+  }
+}
+
+/* ── Rendered markdown (docs) ──────────────────────────────────────────
+   Retinted onto the civic palette and set a step larger for readability. */
 @layer components {
   .docs-prose {
-    color: rgb(55 65 81);
-    font-size: 0.95rem;
-    line-height: 1.75;
+    color: #e8d9bb;
+    font-family: var(--font-body);
+    font-size: calc(1.0625rem * var(--font-scale));
+    line-height: 1.78;
   }
 
   .docs-prose > :first-child {
@@ -58,58 +297,70 @@
   .docs-prose h4,
   .docs-prose h5,
   .docs-prose h6 {
-    color: rgb(17 24 39);
+    color: #f4ead4;
+    font-family: var(--font-display);
     font-weight: 700;
-    line-height: 1.3;
-    margin: 1.75em 0 0.6em;
+    line-height: 1.28;
+    margin: 1.85em 0 0.6em;
   }
 
   .docs-prose h1 {
-    font-size: 1.875rem;
+    font-size: 2rem;
   }
 
   .docs-prose h2 {
-    border-bottom: 1px solid rgb(229 231 235);
-    font-size: 1.5rem;
-    padding-bottom: 0.3em;
+    border-bottom: 1px solid rgba(194, 139, 40, 0.28);
+    font-size: 1.55rem;
+    padding-bottom: 0.32em;
   }
 
   .docs-prose h3 {
-    font-size: 1.25rem;
+    font-size: 1.3rem;
+    color: #ebc77a;
   }
 
   .docs-prose h4 {
-    font-size: 1.05rem;
+    font-size: 1.1rem;
   }
 
   .docs-prose p {
-    margin: 0.75em 0;
+    margin: 0.85em 0;
   }
 
   .docs-prose a {
-    color: rgb(79 70 229);
+    color: #e0b354;
     text-decoration: underline;
     text-underline-offset: 2px;
+    text-decoration-color: rgba(224, 179, 84, 0.45);
   }
 
   .docs-prose a:hover {
-    opacity: 0.8;
+    color: #f2dba6;
+    text-decoration-color: currentColor;
+  }
+
+  .docs-prose strong {
+    color: #f4ead4;
   }
 
   .docs-prose ul {
     list-style: disc;
-    margin: 0.75em 0;
+    margin: 0.85em 0;
     padding-left: 1.5em;
   }
 
   .docs-prose ol {
     list-style: decimal;
-    margin: 0.75em 0;
+    margin: 0.85em 0;
     padding-left: 1.5em;
   }
 
   .docs-prose li {
-    margin: 0.3em 0;
+    margin: 0.35em 0;
+  }
+
+  .docs-prose li::marker {
+    color: rgba(194, 139, 40, 0.85);
   }
 
   .docs-prose li > ul,
@@ -118,153 +369,76 @@
   }
 
   .docs-prose code {
-    background: rgb(243 244 246);
-    border-radius: 0.25rem;
-    color: rgb(120 53 15);
-    font-size: 0.85em;
-    padding: 0.1em 0.35em;
+    background: rgba(9, 19, 33, 0.85);
+    border: 1px solid rgba(194, 139, 40, 0.2);
+    border-radius: 0.3rem;
+    color: #ebc77a;
+    font-size: 0.88em;
+    padding: 0.1em 0.38em;
   }
 
   .docs-prose pre {
-    background: rgb(17 24 39);
-    border-radius: 0.5rem;
-    color: rgb(229 231 235);
-    margin: 1em 0;
+    background: #060d18;
+    border: 1px solid rgba(194, 139, 40, 0.18);
+    border-radius: 0.6rem;
+    color: #e8d9bb;
+    margin: 1.1em 0;
     overflow-x: auto;
-    padding: 1em;
+    padding: 1em 1.15em;
   }
 
   .docs-prose pre code {
     background: transparent;
+    border: 0;
     color: inherit;
     padding: 0;
   }
 
   .docs-prose blockquote {
-    border-left: 4px solid rgb(209 213 219);
-    color: rgb(107 114 128);
+    border-left: 3px solid #c28b28;
+    background: rgba(194, 139, 40, 0.07);
+    border-radius: 0 0.5rem 0.5rem 0;
+    color: #d9c9a6;
     font-style: italic;
-    margin: 1em 0;
-    padding-left: 1em;
+    margin: 1.1em 0;
+    padding: 0.6em 1em;
   }
 
   .docs-prose table {
     border-collapse: collapse;
     display: block;
-    font-size: 0.9em;
-    margin: 1em 0;
+    font-size: 0.94em;
+    margin: 1.1em 0;
     overflow-x: auto;
     width: 100%;
   }
 
   .docs-prose th,
   .docs-prose td {
-    border: 1px solid rgb(229 231 235);
-    padding: 0.5em 0.75em;
+    border: 1px solid rgba(194, 139, 40, 0.22);
+    padding: 0.55em 0.8em;
     text-align: left;
   }
 
   .docs-prose th {
-    background: rgb(249 250 251);
+    background: rgba(194, 139, 40, 0.13);
+    color: #f4ead4;
     font-weight: 600;
   }
 
   .docs-prose hr {
     border: 0;
-    border-top: 1px solid rgb(229 231 235);
-    margin: 2em 0;
+    border-top: 1px solid rgba(194, 139, 40, 0.25);
+    margin: 2.2em 0;
   }
 
   .docs-prose img {
-    border-radius: 0.5rem;
+    border: 1px solid rgba(194, 139, 40, 0.2);
+    border-radius: 0.6rem;
     max-width: 100%;
   }
 
   .docs-prose details {
     margin: 1em 0;
   }
-
-  @media (prefers-color-scheme: dark) {
-    .docs-prose {
-      color: rgb(209 213 219);
-    }
-
-    .docs-prose h1,
-    .docs-prose h2,
-    .docs-prose h3,
-    .docs-prose h4,
-    .docs-prose h5,
-    .docs-prose h6 {
-      color: rgb(243 244 246);
-    }
-
-    .docs-prose h2 {
-      border-bottom-color: rgb(55 65 81);
-    }
-
-    .docs-prose a {
-      color: rgb(129 140 248);
-    }
-
-    .docs-prose code {
-      background: rgb(31 41 55);
-      color: rgb(253 230 138);
-    }
-
-    .docs-prose pre {
-      background: rgb(3 7 18);
-    }
-
-    .docs-prose blockquote {
-      border-left-color: rgb(75 85 99);
-      color: rgb(156 163 175);
-    }
-
-    .docs-prose th,
-    .docs-prose td {
-      border-color: rgb(55 65 81);
-    }
-
-    .docs-prose th {
-      background: rgb(31 41 55);
-    }
-
-    .docs-prose hr {
-      border-top-color: rgb(55 65 81);
-    }
-  }
-}
-
-/* ── Living hero diorama ────────────────────────────────────────────────
-   The homepage hero boxes the desktop's living background into itself. The
-   engine sizes and positions the canvases inline (engine `size()`), so these
-   rules only pin them inside the hero box and carry the vignette over from
-   desktop's `.ambience-vig`, scoped to the hero. The `:root[data-ambience]`
-   translucency rules are deliberately NOT ported: they depend on CSS
-   variables (`--background`, `--card`, `--nav-surface`) this site does not
-   define, and a boxed diorama does not need them. */
-
-.living-hero {
-  position: absolute;
-  inset: 0;
-}
-
-.living-hero-bg {
-  position: absolute;
-  display: block;
-  pointer-events: auto;
-  cursor: default;
-}
-
-.living-hero-vig {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(120% 90% at 50% 20%, transparent 30%, rgba(4, 12, 18, 0.55) 100%);
-}
-
-.living-hero-fx {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
 }

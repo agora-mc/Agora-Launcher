@@ -58,7 +58,7 @@ export default function InstallPage() {
         <div className="mt-6 flex flex-wrap gap-3">
           <a
             href={GITHUB_RELEASES_URL}
-            className="rounded-lg bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700"
+            className="btn-gold px-5 py-3"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -66,7 +66,7 @@ export default function InstallPage() {
           </a>
           <Link
             href="/docs/tour"
-            className="rounded-lg border px-5 py-3 font-semibold hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
+            className="btn-ghost px-5 py-3"
           >
             See what it looks like first
           </Link>
@@ -89,7 +89,7 @@ export default function InstallPage() {
             <li key={step.title} className="flex gap-4">
               <span
                 aria-hidden="true"
-                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-sm font-bold text-white"
+                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gold text-sm font-bold text-canvas"
               >
                 {index + 1}
               </span>
@@ -105,7 +105,7 @@ export default function InstallPage() {
       <section className="space-y-4">
         <h2 className="text-2xl font-bold">Before you start, two things worth knowing</h2>
         <div className="grid gap-4 md:grid-cols-2">
-          <article className="rounded-xl border p-5 dark:border-gray-700">
+          <article className="panel-inset p-5">
             <h3 className="font-semibold">Your existing Minecraft is untouched</h3>
             <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
               Creating an Agora instance does not replace or modify your normal
@@ -113,7 +113,7 @@ export default function InstallPage() {
               selected.
             </p>
           </article>
-          <article className="rounded-xl border p-5 dark:border-gray-700">
+          <article className="panel-inset p-5">
             <h3 className="font-semibold">Agora does not have to launch the game</h3>
             <p className="mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">
               By default Agora prepares the instance and hands it to the official
@@ -130,7 +130,7 @@ export default function InstallPage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <Link
             href="/docs/guides/getting-started"
-            className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+            className="panel-inset card-lift p-5"
           >
             <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">
               Getting started with Agora
@@ -142,7 +142,7 @@ export default function InstallPage() {
           </Link>
           <Link
             href="/docs/guides/modding-foundations"
-            className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+            className="panel-inset card-lift p-5"
           >
             <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">
               Modding foundations
@@ -154,7 +154,7 @@ export default function InstallPage() {
           </Link>
           <Link
             href="/docs/guides/privacy-offline"
-            className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+            className="panel-inset card-lift p-5"
           >
             <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">
               Privacy, networking, and offline use
@@ -166,7 +166,7 @@ export default function InstallPage() {
           </Link>
           <Link
             href="/docs/troubleshooting"
-            className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+            className="panel-inset card-lift p-5"
           >
             <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">
               Troubleshooting

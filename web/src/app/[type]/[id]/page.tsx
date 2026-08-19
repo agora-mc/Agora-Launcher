@@ -67,8 +67,8 @@ function SourceLinks({ item }: { item: RegistryItem }) {
   if (links.length === 0) return null;
 
   return (
-    <div>
-      <h2 className="mb-2 text-lg font-semibold">Source Links</h2>
+    <div className="panel">
+      <h2 className="rule-gold mb-4 text-lg font-semibold text-ink">Source Links</h2>
       <div className="flex flex-wrap gap-2">
         {links.map((link) => (
           <a
@@ -76,7 +76,7 @@ function SourceLinks({ item }: { item: RegistryItem }) {
             href={link.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="rounded-lg border bg-white px-4 py-2 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 dark:border-gray-700 dark:bg-gray-800 dark:text-indigo-400 dark:hover:bg-gray-700"
+            className="btn-ghost px-4 py-2 text-sm"
           >
             {link.label}
           </a>
@@ -114,7 +114,7 @@ export default async function DetailPage({ params }: DetailPageProps) {
           </p>
         </div>
       )}
-      <div>
+      <div className="panel">
         <Link
           href={contentTypePath(contentType)}
           className="text-sm text-indigo-600 hover:underline dark:text-indigo-400"
@@ -150,26 +150,26 @@ export default async function DetailPage({ params }: DetailPageProps) {
       })()}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-lg border bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
+        <div className="panel-inset p-4 text-center">
           <div className="text-2xl font-bold text-green-700 dark:text-green-400">{item.net_score}</div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Net Score</div>
         </div>
-        <div className="rounded-lg border bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
+        <div className="panel-inset p-4 text-center">
           <div className="text-2xl font-bold text-blue-700 dark:text-blue-400">▲ {item.upvotes}</div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Upvotes</div>
         </div>
-        <div className="rounded-lg border bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
+        <div className="panel-inset p-4 text-center">
           <div className="text-2xl font-bold text-red-700 dark:text-red-400">▼ {item.downvotes}</div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Downvotes</div>
         </div>
-        <div className="rounded-lg border bg-white p-4 text-center dark:border-gray-700 dark:bg-gray-800">
+        <div className="panel-inset p-4 text-center">
           <div className="text-2xl font-bold">{item.velocity.toFixed(1)}</div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Velocity</div>
         </div>
       </div>
 
-      <div className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="mb-2 text-xl font-semibold">Curator Note</h2>
+      <div className="panel">
+        <h2 className="rule-gold mb-4 text-xl font-semibold text-ink">Curator Note</h2>
         {item.curator_note ? (
           <MarkdownRenderer content={item.curator_note} />
         ) : (
@@ -178,8 +178,8 @@ export default async function DetailPage({ params }: DetailPageProps) {
       </div>
 
       {item.description && item.description !== item.curator_note && (
-        <div className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-          <h2 className="mb-2 text-xl font-semibold">Upstream Description</h2>
+        <div className="panel">
+          <h2 className="rule-gold mb-4 text-xl font-semibold text-ink">Upstream Description</h2>
           <MarkdownRenderer content={item.description} />
         </div>
       )}
@@ -187,13 +187,13 @@ export default async function DetailPage({ params }: DetailPageProps) {
       <SourceLinks item={item} />
 
       {item.categories.length > 0 && (
-        <div>
-          <h2 className="mb-2 text-lg font-semibold">Categories</h2>
+        <div className="panel">
+          <h2 className="rule-gold mb-4 text-lg font-semibold text-ink">Categories</h2>
           <div className="flex flex-wrap gap-2">
             {item.categories.map((cat) => (
               <span
                 key={cat}
-                className="rounded-md bg-indigo-100 px-3 py-1 text-sm font-medium text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200"
+                className="rounded-md border border-gold/35 bg-gold/12 px-3 py-1 text-sm font-semibold text-gold-bright"
               >
                 {cat}
               </span>
@@ -201,7 +201,7 @@ export default async function DetailPage({ params }: DetailPageProps) {
             {item.community_categories.map((cat) => (
               <span
                 key={cat}
-                className="rounded-md bg-gray-100 px-3 py-1 text-sm text-gray-700 dark:bg-gray-700 dark:text-gray-300"
+                className="rounded-md border border-gold/15 bg-canvas/70 px-3 py-1 text-sm text-ink-muted"
               >
                 {cat}
               </span>
@@ -211,8 +211,8 @@ export default async function DetailPage({ params }: DetailPageProps) {
       )}
 
       {item.compatible_versions.length > 0 && (
-        <div>
-          <h2 className="mb-2 text-lg font-semibold">Compatible Versions</h2>
+        <div className="panel">
+          <h2 className="rule-gold mb-4 text-lg font-semibold text-ink">Compatible Versions</h2>
           <ul className="list-disc space-y-1 pl-6">
             {item.compatible_versions.map((v, i) => (
               <li key={i} className="text-gray-700 dark:text-gray-300">
@@ -224,7 +224,7 @@ export default async function DetailPage({ params }: DetailPageProps) {
       )}
 
       {item.body_markdown && (
-        <details className="rounded-xl border bg-white dark:border-gray-700 dark:bg-gray-800">
+        <details className="panel-inset">
           <summary className="cursor-pointer px-6 py-4 text-lg font-semibold">
             Full Description
           </summary>
@@ -234,7 +234,7 @@ export default async function DetailPage({ params }: DetailPageProps) {
         </details>
       )}
 
-      <div className="rounded-lg border bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
+      <div className="panel-inset p-4">
         <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
           <div>
             <span className="font-semibold text-gray-500">Source:</span>{' '}

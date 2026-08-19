@@ -19,7 +19,7 @@ export function NavLinks({ items }: { items: NavItem[] }) {
       : pathname === item.href || pathname.startsWith(`${item.href}/`);
 
   return (
-    <nav aria-label="Primary" className="flex flex-wrap gap-4 text-sm">
+    <nav aria-label="Primary" className="ui-text flex flex-wrap items-center gap-x-1 gap-y-1 text-sm">
       {items.map((item) => {
         const active = isActive(item);
         return (
@@ -27,13 +27,20 @@ export function NavLinks({ items }: { items: NavItem[] }) {
             key={item.href}
             href={item.href}
             aria-current={active ? 'page' : undefined}
-            className={
+            className={[
+              'relative rounded-lg px-2.5 py-1.5 font-medium transition',
               active
-                ? 'font-semibold text-indigo-600 underline underline-offset-4 dark:text-indigo-400'
-                : 'hover:text-indigo-600 dark:hover:text-indigo-400'
-            }
+                ? 'bg-gold/12 font-semibold text-gold-bright'
+                : 'text-ink-muted hover:bg-gold/8 hover:text-gold-bright',
+            ].join(' ')}
           >
             {item.label}
+            {active && (
+              <span
+                aria-hidden="true"
+                className="absolute inset-x-2.5 -bottom-0.5 h-px rounded-full bg-gold-bright"
+              />
+            )}
           </Link>
         );
       })}

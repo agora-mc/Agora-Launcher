@@ -42,9 +42,9 @@ export function FontScaleControl() {
   if (!mounted) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-gray-500" aria-hidden="true">
-        <span className="h-7 w-7 rounded border bg-gray-50" />
-        <span className="h-7 w-16 rounded border bg-gray-50" />
-        <span className="h-7 w-7 rounded border bg-gray-50" />
+        <span className="h-7 w-7 rounded border border-gold/20 bg-surface" />
+        <span className="h-7 w-16 rounded border border-gold/20 bg-surface" />
+        <span className="h-7 w-7 rounded border border-gold/20 bg-surface" />
       </div>
     );
   }

@@ -19,14 +19,14 @@ export default async function Reviews({ itemId }: ReviewsProps) {
   const reviews = await getReviews(itemId);
 
   return (
-    <div>
-      <h2 className="mb-3 text-lg font-semibold">Reviews</h2>
+    <div className="panel">
+      <h2 className="rule-gold mb-4 text-lg font-semibold text-ink">Reviews</h2>
       {reviews.length === 0 ? (
-        <p className="text-sm text-gray-600 dark:text-gray-400">No reviews yet.</p>
+        <p className="text-sm text-ink-muted/75">No reviews yet.</p>
       ) : (
         <div className="space-y-4">
           {reviews.map((review, i) => (
-            <div key={i} className="rounded-lg border bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+            <div key={i} className="panel-inset p-4">
               <div className="mb-1 flex items-center gap-2 text-sm">
                 <span className="font-medium">{review.author}</span>
                 <StarRating rating={review.rating} />

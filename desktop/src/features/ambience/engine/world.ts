@@ -159,10 +159,17 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
         const p = this.props[j]; if (p.visibleIf && !p.visibleIf()) continue;
         const hw2 = (p.hb ? p.hb.w : 30) / 2 + 6;
         const sx = p.layer === 'sky' ? p.x + paraX(state, 'sky') : p.x + paraX(state, p.layer);
-        const pgy = p.key === 'pond' ? waterSurfaceY(state)
-          : p.layer === 'sky' ? (p.y !== undefined ? p.y : state.H * 0.16)
-            : p.layer === 'pond' ? waterSurfaceY(state)
-              : (p.y !== undefined ? p.y + paraY(state, p.layer) : groundYWorld(state, p.x, p.layer) + paraY(state, p.layer));
+        // The pond is a layer-2 prop and is measured like one, from the ground
+        // up. It used to be special-cased onto the water SURFACE, but a prop's
+        // box rises from its anchor while water hangs BELOW its surface, so the
+        // box sat in the air above the pond: of a 36px-deep basin only the top
+        // 6px answered a click, and 46px of empty sky did. `drawHoverGlow`
+        // never had the special case, which is why the highlight was right and
+        // the clicks were not. ('pond' LAYER props -- the lily pads -- do float
+        // on the surface, and keep it.)
+        const pgy = p.layer === 'sky' ? (p.y !== undefined ? p.y : state.H * 0.16)
+          : p.layer === 'pond' ? waterSurfaceY(state)
+            : (p.y !== undefined ? p.y + paraY(state, p.layer) : groundYWorld(state, p.x, p.layer) + paraY(state, p.layer));
         if (px > sx - hw2 && px < sx + hw2 && py > pgy - (p.hb ? p.hb.h : 30) - 6 && py < pgy + 6) return { kind: 'prop' as const, obj: p };
       }
       return null;

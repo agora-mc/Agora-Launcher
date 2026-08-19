@@ -25,11 +25,11 @@ import { createWorld } from './engine/world';
 import { regenerateTerrain, skyFrame } from './engine/sky';
 import { advanceClock, createClock, type ClockState } from './engine/clock';
 import { EGGS } from './engine/eggs';
-import { groundYWorld, waterSpan } from './engine/terrain';
+import { groundYWorld, paraX, paraY, waterSpan, waterSurfaceY } from './engine/terrain';
 import { MUSIC_TRACKS } from './engine/audio/tracks';
 import { SPECIES_BY_KEY } from './engine/species';
 import { music, noteFreq } from './engine/audio/music';
-import type { Species, WorldState } from './engine/types';
+import type { Prop, Species, WorldState } from './engine/types';
 import { AmbienceCanvas } from './AmbienceCanvas';
 import { AmbienceEngine } from './engine/engine';
 
@@ -561,6 +561,79 @@ describe('music autoplay ("let it choose")', () => {
     expect(player.started).toEqual([]);
     expect(engine.musicAuto).toBe(true);
     vi.restoreAllMocks();
+  });
+});
+
+/* ── the pond's hitbox ──────────────────────────────────────────── */
+
+describe('the pond answers clicks in the water', () => {
+  function pondOf(t: TestWorld): Prop {
+    return t.world.props.filter((p) => p.key === 'pond')[0];
+  }
+
+  /**
+   * The submerged columns of the basin: canvas x, plus the top and bottom of
+   * the water standing there. The pond is a strip of water in a carved valley,
+   * not a sprite, so "where is it" has to be read off the terrain.
+   */
+  function waterColumns(t: TestWorld): Array<{ sx: number; surface: number; floor: number }> {
+    const span = waterSpan(t.state);
+    const surface = waterSurfaceY(t.state);
+    const cols = [];
+    for (let x = span.x0; x <= span.x1; x += 6) {
+      const floor = groundYWorld(t.state, x, 2) + paraY(t.state, 2);
+      if (floor - surface >= 8) cols.push({ sx: x + paraX(t.state, 2), surface, floor });
+    }
+    return cols;
+  }
+
+  /** The hover highlight's rectangle for a prop. */
+  function glowRect(t: TestWorld, obj: Prop): { y: number; h: number } {
+    let rect: { y: number; h: number } | null = null;
+    const ctx = {
+      save() {}, restore() {},
+      strokeRect(_x: number, y: number, _w: number, h: number) { rect = { y, h }; },
+      strokeStyle: '', lineWidth: 0, shadowBlur: 0, shadowColor: '',
+    } as unknown as CanvasRenderingContext2D;
+    t.world.drawHoverGlow(ctx, { kind: 'prop', obj });
+    if (!rect) throw new Error('the highlight drew nothing');
+    return rect;
+  }
+
+  it('reaches down into the water instead of floating above it', () => {
+    const t = buildTestWorld();
+    const pond = pondOf(t);
+    const cols = waterColumns(t);
+    expect(cols.length).toBeGreaterThan(4);
+
+    // A prop's box rises from its anchor, so anchoring the pond to the water
+    // SURFACE hung it in the sky: of a 36px-deep basin only the top 6px
+    // answered a click, and 46px of empty air answered instead. Props standing
+    // IN the basin (a rock, a snowpile) still win their own few px by the usual
+    // z-order, so this asks for most of the water rather than all of it.
+    const wet = cols.filter((c) => t.world.hit(c.sx, (c.surface + c.floor) / 2)?.obj === pond);
+    expect(wet.length).toBeGreaterThan(cols.length / 2);
+    const dry = cols.filter((c) => t.world.hit(c.sx, c.surface - 30)?.obj === pond);
+    expect(dry).toEqual([]);
+  });
+
+  it('answers on every row it highlights', () => {
+    // The two used to read the same box from opposite ends -- the glow from the
+    // ground, the hit from the water surface -- so the highlight sat on the
+    // pond and the clicks did not. The highlight is the promise; this is it.
+    const t = buildTestWorld();
+    const pond = pondOf(t);
+    const g = glowRect(t, pond);
+    const cols = waterColumns(t);
+
+    // Asked of the row, not of one column: cattails at the shore and a rock in
+    // the basin win their own px by the usual z-order, so a single column can
+    // be legitimately deaf for part of its height.
+    const deaf: number[] = [];
+    for (let y = Math.ceil(g.y); y <= Math.floor(g.y + g.h); y++) {
+      if (!cols.some((c) => t.world.hit(c.sx, y)?.obj === pond)) deaf.push(y);
+    }
+    expect(deaf).toEqual([]);
   });
 });
 

@@ -87,12 +87,16 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">{typeLabel}</h1>
-        <p className="text-gray-600 dark:text-gray-400">
-          {filtered.length} curated {typeLabel.toLowerCase()}.
+      <header className="panel">
+        <p className="eyebrow">Curated catalog</p>
+        <h1 className="mt-2 bg-gold-sheen bg-clip-text text-3xl font-extrabold tracking-tight text-transparent">
+          {typeLabel}
+        </h1>
+        <p className="mt-1.5 text-ink-muted">
+          <span className="font-semibold text-gold">{filtered.length}</span> curated{' '}
+          {typeLabel.toLowerCase()}.
         </p>
-      </div>
+      </header>
 
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex flex-wrap gap-2">
@@ -126,7 +130,7 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
         <select
           value={selectedMcVersion}
           onChange={(e) => setSelectedMcVersion(e.target.value)}
-          className="rounded-lg border bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800"
+          className="panel-inset px-3 py-2 text-sm"
         >
           <option value="all">All MC Versions</option>
           {['1.21.11', '1.21.10', '1.21.9', '1.21.8', '1.21.7', '1.21.6', '1.21.5', '1.21.4', '1.21.3', '1.21.2', '1.21.1', '1.21', '1.20.6', '1.20.5', '1.20.4', '1.20.2', '1.20.1', '1.20', '1.19.4', '1.19.3', '1.19.2', '1.19', '1.18.2', '1.18.1', '1.18'].map((v) => (
@@ -136,7 +140,7 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
         <select
           value={selectedLoader}
           onChange={(e) => setSelectedLoader(e.target.value)}
-          className="rounded-lg border bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800"
+          className="panel-inset px-3 py-2 text-sm"
         >
           <option value="all">All Loaders</option>
           <option value="fabric">Fabric</option>
@@ -147,7 +151,7 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
         <select
           value={selectedSort}
           onChange={(e) => setSelectedSort(e.target.value as 'net_score' | 'velocity' | 'newest')}
-          className="rounded-lg border bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800"
+          className="panel-inset px-3 py-2 text-sm"
         >
           <option value="net_score">Default</option>
           <option value="velocity">Trending</option>
@@ -161,7 +165,7 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={`Search ${typeLabel.toLowerCase()}...`}
-          className="w-full rounded-lg border bg-white px-4 py-2 dark:border-gray-700 dark:bg-gray-800"
+          className="w-full panel-inset px-4 py-2 text-ink placeholder:text-ink-muted/50"
         />
       </div>
 
@@ -180,7 +184,7 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
                     <h2 className="font-semibold truncate">{item.name}</h2>
-                    <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200">
+                    <span className="shrink-0 rounded-full border border-gold/35 bg-gold/12 px-2.5 py-0.5 text-xs font-semibold text-gold-bright">
                       {item.net_score}
                     </span>
                   </div>
@@ -196,13 +200,13 @@ export function Catalog({ items, typeLabel, typePath }: CatalogProps) {
                 {item.categories.slice(0, 4).map((cat) => (
                   <span
                     key={cat}
-                    className="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300"
+                    className="rounded-md border border-gold/15 bg-canvas/70 px-2 py-0.5 text-xs text-ink-muted"
                   >
                     {cat}
                   </span>
                 ))}
                 {item.categories.length > 4 && (
-                  <span className="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                  <span className="rounded-md border border-gold/15 bg-canvas/70 px-2 py-0.5 text-xs text-ink-muted/75">
                     +{item.categories.length - 4}
                   </span>
                 )}

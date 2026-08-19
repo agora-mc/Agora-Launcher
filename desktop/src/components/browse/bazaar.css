@@ -289,19 +289,27 @@
   color: hsl(var(--muted-foreground));
 }
 
+/* Corner ribbon on the whole card: the band wraps past the tile's top-left
+   edges (clipped on purpose) and only kisses the icon's corner, keeping the
+   art legible. The geometry keeps the CURATED text fully inside the visible
+   area at any text scale. Sits on the front layer above the art and the rare
+   glow. */
 .bazaar-ribbon {
   position: absolute;
-  top: 9px;
-  left: -30px;
-  transform: rotate(-38deg);
-  width: 110px;
+  z-index: 3;
+  top: calc(10px * var(--font-scale));
+  left: calc(-38px * var(--font-scale));
+  transform: rotate(-45deg);
+  width: calc(116px * var(--font-scale));
   text-align: center;
-  font-size: calc(10px * var(--font-scale));
+  font-size: calc(9px * var(--font-scale));
   font-weight: 800;
   letter-spacing: 0.6px;
-  padding: 2px 0;
-  background: hsl(var(--primary));
+  padding: calc(2px * var(--font-scale)) 0;
+  background: linear-gradient(90deg, hsl(var(--primary) / 0.8), hsl(var(--primary)) 30%, hsl(var(--primary)) 70%, hsl(var(--primary) / 0.8));
   color: hsl(var(--primary-foreground));
+  box-shadow: 0 2px 8px hsl(0 0% 0% / 0.35);
+  pointer-events: none;
 }
 
 .bazaar-inbag { position: absolute; top: 8px; right: 8px; font-size: 15px; }

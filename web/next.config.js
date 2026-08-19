@@ -23,7 +23,14 @@ const nextConfig = {
               "default-src 'self';",
               "img-src 'self' data: https: blob:;",
               "style-src 'self' 'unsafe-inline';",
-              "script-src 'self';",
+              // Next's dev server compiles with an eval-based devtool, which a
+              // bare `script-src 'self'` blocks outright — the dev site could
+              // not boot at all. Production/export is unaffected: this branch
+              // is compiled out, and `output: export` ignores headers() anyway
+              // (the real CSP comes from the host).
+              process.env.NODE_ENV === 'production'
+                ? "script-src 'self';"
+                : "script-src 'self' 'unsafe-eval' 'unsafe-inline';",
               "connect-src 'self' https://api.github.com https://api.modrinth.com https://*.modrinthcdn.com https://cdn.modrinth.com;",
               "font-src 'self' data:;",
               "object-src 'none';",

@@ -111,7 +111,7 @@ export function DownloadButton() {
     <div className="flex flex-col items-center gap-2">
       <a
         href={href}
-        className="rounded-lg bg-white px-5 py-3 font-semibold text-indigo-700 shadow-sm hover:bg-gray-100"
+        className="btn-gold px-5 py-3"
         target={asset ? '_blank' : undefined}
         rel={asset ? 'noopener noreferrer' : undefined}
       >

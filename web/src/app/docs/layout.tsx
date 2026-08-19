@@ -6,9 +6,9 @@ import { getDocNavSections } from '@/lib/docs';
 export default async function DocsLayout({ children }: { children: React.ReactNode }) {
   const sections = await getDocNavSections();
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-10 lg:flex-row">
+    <div className="flex flex-col gap-10 lg:flex-row">
       <DocsSidebar sections={sections} />
-      <div className="min-w-0 flex-1">{children}</div>
+      <div className="panel min-w-0 flex-1">{children}</div>
     </div>
   );
 }

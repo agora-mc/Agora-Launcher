@@ -184,7 +184,6 @@ function ItemTile({
         ) : (
           <CritterArt name={item.name} size={88} />
         )}
-        {item.curated ? <span className="bazaar-ribbon">CURATED</span> : null}
         {owned ? <span className="bazaar-inbag" aria-label="Already in your bag">🎒</span> : null}
       </button>
       <button type="button" className="bazaar-tile-name" onClick={() => onPeek(item)}>{item.name}</button>
@@ -235,6 +234,7 @@ function ItemTile({
           View details
         </button>
       </div>
+      {item.curated ? <span className="bazaar-ribbon">CURATED</span> : null}
     </div>
   );
 }

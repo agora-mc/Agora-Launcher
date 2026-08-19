@@ -38,15 +38,18 @@ export const metadata = {
 
 export default function AboutPage() {
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">The Agora Difference</h1>
-        <p className="mt-2 text-gray-600 dark:text-gray-400">
+    <div className="page-read space-y-8">
+      <header className="panel text-center">
+        <p className="eyebrow">Why Agora</p>
+        <h1 className="mt-2.5 bg-gold-sheen bg-clip-text text-4xl font-extrabold tracking-tight text-transparent">
+          The Agora Difference
+        </h1>
+        <p className="mx-auto mt-3 max-w-xl text-lg text-ink-muted">
           A different kind of Minecraft mod platform.
         </p>
-      </div>
+      </header>
 
-      <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-6 dark:border-indigo-900 dark:bg-indigo-950/30">
+      <section className="panel border-gold/35 bg-[linear-gradient(135deg,rgba(194,139,40,0.15),rgba(23,38,59,0.93)_55%)]">
         <p className="text-lg font-medium leading-7">
           Agora is a bespoke boutique, not a warehouse. Every entry in the catalog is curated,
           tailored, and made accessible for you — a hand-picked selection of the best Minecraft
@@ -54,8 +57,8 @@ export default function AboutPage() {
         </p>
       </section>
 
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">What makes Agora unique</h2>
+      <section className="panel space-y-4">
+        <h2 className="rule-gold text-xl font-semibold text-ink">What makes Agora unique</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
           Most launchers and mod platforms are run for profit, are littered with ads, or bury
           great mods under a mountain of mediocre downloads. Agora is the opposite — it puts the
@@ -63,11 +66,11 @@ export default function AboutPage() {
         </p>
       </section>
 
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">The pillars</h2>
+      <section className="panel space-y-4">
+        <h2 className="rule-gold text-xl font-semibold text-ink">The pillars</h2>
         <ul className="grid gap-4 sm:grid-cols-2">
           {PILLARS.map((pillar) => (
-            <li key={pillar.title} className="rounded-xl border border-gray-200 p-5 dark:border-gray-700">
+            <li key={pillar.title} className="panel-inset p-5">
               <h3 className="font-semibold text-indigo-700 dark:text-indigo-400">{pillar.title}</h3>
               <p className="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-400">{pillar.body}</p>
               {pillar.title === 'Donations, not for-profit' && (
@@ -85,8 +88,8 @@ export default function AboutPage() {
         </ul>
       </section>
 
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">Tailored and accessible for you</h2>
+      <section className="panel space-y-4">
+        <h2 className="rule-gold text-xl font-semibold text-ink">Tailored and accessible for you</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
           Agora is built for the person in front of the screen. Interface scaling, high-contrast
           themes, reduced motion, screen-reader-friendly labels, and a curated catalog that gets
@@ -95,8 +98,8 @@ export default function AboutPage() {
         </p>
       </section>
 
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">Get involved</h2>
+      <section className="panel space-y-4">
+        <h2 className="rule-gold text-xl font-semibold text-ink">Get involved</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
           Agora is a community project. Browse the source, review and vote on entries, join the
           conversation, or support the project with a donation so it can stay free and ad-free for
@@ -106,7 +109,7 @@ export default function AboutPage() {
           </Link>{' '}
           to learn how it all fits together.
         </p>
-        <div className="rounded-xl border border-pink-200 bg-pink-50 p-4 dark:border-pink-900 dark:bg-pink-950/30">
+        <div className="panel-inset border-pink-700/60 bg-[linear-gradient(135deg,rgba(184,69,106,0.16),rgba(29,47,71,0.86)_55%)] p-5">
           <h3 className="font-semibold text-pink-800 dark:text-pink-200">Support Agora’s future</h3>
           <p className="mt-1 text-sm leading-6 text-pink-700 dark:text-pink-300">
             Agora is built and maintained by a solo developer who cares deeply about the Minecraft community. If Agora saves you time, helps you discover great mods, or just makes modding more fun — please consider sponsoring. Your donation keeps Agora free, ad-free, and improving, and it helps fund awesome new projects down the road. Every contribution, big or small, means a lot — thank you!

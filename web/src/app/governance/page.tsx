@@ -45,23 +45,23 @@ export const metadata = {
 
 export default function GovernancePage() {
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
+    <div className="page-read space-y-8">
       {/* Header */}
-      <section className="relative overflow-hidden rounded-2xl bg-indigo-600 px-8 py-10 text-white dark:bg-indigo-700">
-        <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full border border-white/10" aria-hidden="true" />
-        <div className="pointer-events-none absolute -bottom-28 right-20 h-64 w-64 rounded-full border border-white/10" aria-hidden="true" />
+      <section className="panel relative overflow-hidden border-gold/35 bg-[linear-gradient(135deg,rgba(194,139,40,0.18),rgba(23,38,59,0.94)_58%)]">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full border border-gold/15" aria-hidden="true" />
+        <div className="pointer-events-none absolute -bottom-28 right-20 h-64 w-64 rounded-full border border-gold/15" aria-hidden="true" />
         <div className="relative">
           <div className="mb-3 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20">
-              <span aria-hidden="true" className="text-xl">◈</span>
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gold/15 ring-1 ring-gold/35">
+              <span aria-hidden="true" className="text-xl text-gold-bright">◈</span>
             </div>
             <div>
               <h1 className="text-2xl font-bold sm:text-3xl">Community Governance</h1>
-              <p className="text-indigo-100">Your votes shape the curated list — by quality, not by download count.</p>
+              <p className="mt-1 text-ink-muted">Your votes shape the curated list — by quality, not by download count.</p>
             </div>
           </div>
-          <p className="max-w-3xl text-sm leading-6 text-indigo-50 sm:text-base">
-            Agora is a <strong className="text-white">community-curated</strong> platform. Every
+          <p className="mt-4 max-w-3xl leading-7 text-ink-muted sm:text-base">
+            Agora is a <strong className="text-gold-bright">community-curated</strong> platform. Every
             entry in the registry is reviewed and voted on by people like you, and the community’s
             scores decide what stays, what is promoted, and what is removed. Voting is how we keep
             the catalog a boutique selection of genuinely good content instead of a warehouse of
@@ -71,8 +71,8 @@ export default function GovernancePage() {
       </section>
 
       {/* Why vote */}
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="mb-2 text-xl font-semibold">Why your vote matters</h2>
+      <section className="panel">
+        <h2 className="rule-gold mb-4 text-xl font-semibold text-ink">Why your vote matters</h2>
         <p className="text-sm leading-6 text-gray-600 dark:text-gray-400 sm:text-base">
           Your vote is a small, honest signal that compounds with everyone else’s. A mod that works
           flawlessly for a niche audience deserves its place even if it has few downloads; a
@@ -100,15 +100,15 @@ export default function GovernancePage() {
       </section>
 
       {/* How to vote */}
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="mb-2 text-xl font-semibold">How to vote</h2>
+      <section className="panel">
+        <h2 className="rule-gold mb-4 text-xl font-semibold text-ink">How to vote</h2>
         <p className="mb-4 text-sm leading-6 text-gray-600 dark:text-gray-400 sm:text-base">
           You can vote two ways — in the Agora app itself, or directly on GitHub. Both feed the
           same score.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="rounded-lg border bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
+          <div className="panel-inset p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <span className="text-indigo-600 dark:text-indigo-400" aria-hidden="true">▲▼</span>
               In the Agora app
@@ -120,7 +120,7 @@ export default function GovernancePage() {
             </ol>
           </div>
 
-          <div className="rounded-lg border bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
+          <div className="panel-inset p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <span className="text-indigo-600 dark:text-indigo-400" aria-hidden="true">⎇</span>
               On GitHub
@@ -135,8 +135,8 @@ export default function GovernancePage() {
       </section>
 
       {/* How moderation & voting work */}
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="mb-2 text-xl font-semibold">How moderation &amp; voting work</h2>
+      <section className="panel">
+        <h2 className="rule-gold mb-4 text-xl font-semibold text-ink">How moderation &amp; voting work</h2>
         <div className="space-y-3 text-sm leading-6 text-gray-600 dark:text-gray-400 sm:text-base">
           <p>
             Every entry in the registry is a flat, public manifest in the Agora repository. A
@@ -161,14 +161,14 @@ export default function GovernancePage() {
       </section>
 
       {/* Rules */}
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
+      <section className="panel">
         <div className="mb-3 flex items-center gap-2">
           <span className="text-indigo-600 dark:text-indigo-400" aria-hidden="true">📖</span>
-          <h2 className="text-xl font-semibold">Agora’s rules of engagement</h2>
+          <h2 className="rule-gold text-xl font-semibold text-ink">Agora’s rules of engagement</h2>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           {RULES.map((rule) => (
-            <div key={rule.title} className="rounded-lg border bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
+            <div key={rule.title} className="panel-inset p-4">
               <h3 className="mb-1 text-base font-semibold">{rule.title}</h3>
               <p className="text-sm leading-6 text-gray-600 dark:text-gray-400">{rule.body}</p>
             </div>
@@ -181,10 +181,10 @@ export default function GovernancePage() {
       </section>
 
       {/* Community links */}
-      <section className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-6 dark:border-indigo-900 dark:bg-indigo-950/30">
+      <section className="panel border-gold/35 bg-[linear-gradient(135deg,rgba(194,139,40,0.15),rgba(23,38,59,0.93)_55%)]">
         <div className="mb-3 flex items-center gap-2">
           <span className="text-indigo-600 dark:text-indigo-400" aria-hidden="true">💬</span>
-          <h2 className="text-xl font-semibold">Join the community</h2>
+          <h2 className="rule-gold text-xl font-semibold text-ink">Join the community</h2>
         </div>
         <p className="mb-4 text-sm leading-6 text-gray-600 dark:text-gray-400 sm:text-base">
           Discuss mods, ask for help, and shape Agora’s direction with other players and curators.
@@ -218,8 +218,8 @@ export default function GovernancePage() {
         
       </section>
 
-      <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-        <h2 className="text-lg font-semibold">Learn more</h2>
+      <section className="panel">
+        <h2 className="rule-gold text-lg font-semibold text-ink">Learn more</h2>
         <div className="mt-3 flex flex-wrap gap-3">
           <Link href="/about" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">
             The Agora Difference →

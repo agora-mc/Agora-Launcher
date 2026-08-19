@@ -18,3 +18,15 @@ export const SPONSORS_URL = 'https://github.com/sponsors/jarjarpfeil';
 // desktop release instead.
 export const GITHUB_API_RELEASES_URL =
   `https://api.github.com/repos/${repositorySlug}/releases?per_page=100`;
+
+/**
+ * Homepage trailer.
+ *
+ * To enable: drop the video at `web/public/trailer.mp4` (and optionally a
+ * poster frame at `web/public/trailer-poster.jpg`), then set TRAILER_SRC to
+ * '/trailer.mp4'. While it is null the hero renders a framed placeholder
+ * instead, so the layout is already the right shape and nothing shifts when
+ * the real file arrives.
+ */
+export const TRAILER_SRC: string | null = null;
+export const TRAILER_POSTER: string | null = null;
