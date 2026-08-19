@@ -880,8 +880,8 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const sections = page.getByRole('navigation', { name: 'Settings sections' });
-  await expect(sections.getByRole('button', { name: 'Privacy' })).toBeVisible({ timeout: 10000 });
-  await sections.getByRole('button', { name: 'Privacy' }).click();
+  await expect(sections.getByRole('tab', { name: 'Privacy' })).toBeVisible({ timeout: 10000 });
+  await sections.getByRole('tab', { name: 'Privacy' }).click();
 
   await expect(page.getByText('Privacy & Transparency')).toBeVisible({ timeout: 10000 });
   await expect(page.getByRole('switch', { name: 'Lockdown Mode' })).toBeVisible();

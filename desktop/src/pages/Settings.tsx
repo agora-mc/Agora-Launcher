@@ -1,4 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import {
+  Bot,
+  Boxes,
+  Coffee,
+  Compass,
+  Cpu,
+  FolderSearch,
+  Landmark,
+  PackageCheck,
+  Paintbrush,
+  Plug,
+  RefreshCw,
+  Rocket,
+  SettingsIcon,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  UserRound,
+} from 'lucide-react';
 import { check } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -43,8 +62,61 @@ import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
 import { useTypedSettings, SETTINGS } from '../lib/useTypedSettings';
 import { showToast } from '../components/Toast';
-import { AppearanceSettings } from './settings/AppearanceSettings';
+import {
+  AppearanceInterfaceSettings,
+  AppearanceResetControls,
+  AppearanceThemeSettings,
+  LivingBackgroundSettings,
+} from './settings/AppearanceSettings';
+import { SettingsSection } from './settings/SettingsSection';
+import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
+import type { Tab } from '../lib/useDestination';
+
+/** One sub-page of a settings section. */
+interface SettingsPage {
+  id: string;
+  label: string;
+  content: ReactNode;
+}
+
+/** One top-level settings section, shown in the left rail. */
+interface SettingsTab {
+  id: string;
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  /** Second line in the rail — what the section covers, in three words. */
+  hint: string;
+  /** Sentence shown in the page header while the section is open. */
+  blurb: string;
+  pages: SettingsPage[];
+  /** Controls pinned below every sub-page of the section. */
+  footer?: ReactNode;
+}
+
+/**
+ * The open section survives leaving and re-entering Settings. Someone adjusting
+ * Java arguments against a launch usually comes back to the same place, and
+ * always landing on General made them re-navigate every time.
+ */
+const SETTINGS_TAB_KEY = 'agora-settings-tab';
+
+function readStoredSettingsTab(): string | null {
+  try {
+    return window.localStorage.getItem(SETTINGS_TAB_KEY);
+  } catch {
+    // Storage access can throw outright under some privacy settings.
+    return null;
+  }
+}
+
+function storeSettingsTab(id: string) {
+  try {
+    window.localStorage.setItem(SETTINGS_TAB_KEY, id);
+  } catch {
+    // Not being able to remember the tab is not worth failing a render over.
+  }
+}
 
 // --- CopyButton helper ---
 
@@ -85,8 +157,18 @@ function TokenDisplay({ token }: { token: string }) {
   );
 }
 
-export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
+export function Settings({
+  onResetLayout,
+  onNavigateTab,
+}: {
+  onResetLayout: () => void;
+  /** Lets a settings card hand the user off to a full page (Living Background). */
+  onNavigateTab?: (tab: Tab) => void;
+}) {
   const ts = useTypedSettings();
+
+  const [activeTabId, setActiveTabId] = useState<string>(() => readStoredSettingsTab() ?? 'general');
+  const [activePageId, setActivePageId] = useState<string | null>(null);
 
   const [modrinth, setModrinth] = useState(false);
   const [browseCuratedOnly, setBrowseCuratedOnly] = useState(false);
@@ -808,1124 +890,1264 @@ export function Settings({ onResetLayout }: { onResetLayout: () => void }) {
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <section className="agora-hero compact">
-        <h2 className="text-2xl font-bold mb-2">Settings</h2>
-        <p className="text-muted-foreground">
-          Integration toggles, launcher path, and application preferences.
-        </p>
-      </section>
+  // -- Section cards --------------------------------------------------
+  // Every card is built here and placed on a tab below. The `#settings-*`
+  // anchors stay on the cards that always carried them, so deep links keep
+  // resolving to a whole section.
 
-      <nav
-        aria-label="Settings sections"
-        className="sticky top-0 z-20 flex flex-wrap gap-1.5 rounded-xl border border-border bg-card/95 p-2 shadow-sm backdrop-blur"
-      >
-        {[
-          ['settings-walkthrough', 'Walkthrough'],
-          ['settings-appearance', 'Appearance'],
-          ['settings-launching', 'Launching'],
-          ['settings-accounts', 'Accounts'],
-          ['settings-general', 'General'],
-          ['settings-installation', 'Installation'],
-          ['settings-services', 'Services'],
-          ['settings-java', 'Java'],
-          ['settings-launcher', 'Launcher'],
-          ['settings-updates', 'Updates'],
-          ...(advancedMode ? [['settings-privacy', 'Privacy']] : []),
-        ].map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => document.getElementById(id)?.scrollIntoView({ block: 'start' })}
-            className="rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
+  const walkthroughCard = (
+    <SettingsSection
+      id="settings-walkthrough"
+      icon={Compass}
+      title="Guided walkthrough"
+    >
+      <p className="text-sm text-muted-foreground">
+        A step-by-step tour of the launcher. It highlights one part of the screen at a time and
+        walks you through making an instance, installing a mod, and opening the instance editor.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        You do the clicking — the tour follows along, never takes over, and can be ended at any point.
+      </p>
+      <TourStartButton />
+    </SettingsSection>
+  );
 
-      {/* Language Selector — commented out: i18n deferred post-v1 */}
+  const advancedCard = (
+    <SettingsSection
+      id="settings-general"
+      icon={Sparkles}
+      title="Advanced mode"
+    >
+      <label className="flex items-center justify-between">
+        <span className="text-sm">Show advanced settings</span>
+        <input
+          type="checkbox"
+          checked={advancedMode}
+          onChange={toggleAdvanced}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Reveal JVM arguments, garbage collector settings, custom commands, and other power-user options.
+      </p>
+    </SettingsSection>
+  );
 
-      <div id="settings-walkthrough" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-        <h3 className="font-semibold">Guided walkthrough</h3>
-        <p className="text-sm text-muted-foreground">
-          A step-by-step tour of the launcher. It highlights one part of the screen at a time and
-          walks you through making an instance, installing a mod, and opening the instance editor.
-        </p>
+  const installationCard = (
+    <SettingsSection
+      id="settings-installation"
+      icon={PackageCheck}
+      title="Installation"
+      description="How much of the install review Agora may skip for you."
+    >
+      <label className="flex items-center justify-between gap-4">
+        <span className="text-sm">Auto-confirm clean installs</span>
+        <input
+          type="checkbox"
+          aria-label="Auto-confirm clean installs"
+          checked={autoConfirmCleanInstalls}
+          onChange={(e) => toggleAutoConfirmCleanInstalls(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Skip the review screen only when the plan has no errors, warnings, conflicts, new dependencies, or existing files to change. Plans that need decisions always open for review.
+      </p>
+      {ts.statuses['install_auto_confirm_clean']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['install_auto_confirm_clean']?.error}</p>
+      )}
+      <label className="flex items-center justify-between gap-4 border-t border-border pt-3">
+        <span className="text-sm">Always auto-confirm installs</span>
+        <input
+          type="checkbox"
+          aria-label="Always auto-confirm installs"
+          checked={alwaysAutoConfirmInstalls}
+          disabled={!autoConfirmCleanInstalls}
+          onChange={(e) => toggleAlwaysAutoConfirmInstalls(e.target.checked)}
+          className="h-5 w-5 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Skip dependency details too and accept the default of not installing optional dependencies. Enable Auto-confirm clean installs first.
+      </p>
+      {ts.statuses['install_always_auto_confirm']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['install_always_auto_confirm']?.error}</p>
+      )}
+    </SettingsSection>
+  );
+
+  const updatesCard = (
+    <SettingsSection
+      id="settings-updates"
+      icon={RefreshCw}
+      title="Software Updates"
+    >
+      {appVersion && (
         <p className="text-xs text-muted-foreground">
-          You do the clicking — the tour follows along, never takes over, and can be ended at any point.
+          Agora Launcher <span className="font-medium">{appVersion}</span>
         </p>
-        <TourStartButton />
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={async () => {
+            try {
+              const update = await check();
+              if (update?.available) {
+                const ok = await window.confirm(
+                  `Update available: ${update.version}\n\n${update.body ?? ''}\n\nDownload and install now?`
+                );
+                if (ok) {
+                  await update.downloadAndInstall();
+                  await invoke('plugin:process|restart');
+                }
+              } else {
+                showToast('You are running the latest version of Agora.', 'success');
+              }
+            } catch (e) {
+              showToast(formatError(e), 'error');
+            }
+          }}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Check for Updates
+        </button>
+        <button
+          onClick={async () => {
+            if (dataFolderOpening) return;
+            setDataFolderOpening(true);
+            try {
+              await openDataFolder();
+            } catch (e) {
+              showToast(formatError(e), 'error');
+            } finally {
+              setDataFolderOpening(false);
+            }
+          }}
+          disabled={dataFolderOpening}
+          className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+        >
+          {dataFolderOpening ? 'Opening...' : 'Open application data folder'}
+        </button>
       </div>
-      
-      <AppearanceSettings onResetLayout={onResetLayout} />
+      <p className="text-xs text-muted-foreground">
+        Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.
+      </p>
+    </SettingsSection>
+  );
 
-      {/* Launch Mode */}
-      <div id="settings-launching" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-        <h3 className="font-semibold">Launch Mode</h3>
-        <label className="flex items-center justify-between">
-          <span className="text-sm">Use in-app launcher (direct Java launch)</span>
+  const launchModeCard = (
+    <SettingsSection
+      id="settings-launching"
+      icon={Rocket}
+      title="Launch Mode"
+    >
+      <label className="flex items-center justify-between">
+        <span className="text-sm">Use in-app launcher (direct Java launch)</span>
+        <input
+          type="checkbox"
+          checked={directLaunch}
+          onChange={(e) => toggleLaunchMode(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles auth and JVM execution.
+        The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
+      </p>
+      {ts.statuses['launch_mode']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['launch_mode']?.error}</p>
+      )}
+    </SettingsSection>
+  );
+
+  const launcherPathCard = (
+    <SettingsSection
+      id="settings-launcher"
+      icon={FolderSearch}
+      title="Launcher Path"
+    >
+      <input
+        value={launcherPath}
+        onChange={(e) => {
+          setLauncherPath(e.target.value);
+          clearLauncherPathFeedback();
+        }}
+        placeholder="Auto-discovered if empty"
+        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+      />
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={saveLauncherPath}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Save
+        </button>
+        <button
+          onClick={handleBrowseLauncher}
+          className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+        >
+          Browse…
+        </button>
+        <button
+          onClick={handleAutoDetectLauncher}
+          disabled={launcherPathDetecting}
+          className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+        >
+          {launcherPathDetecting ? 'Detecting…' : 'Auto-detect'}
+        </button>
+        <button
+          onClick={handleTestLauncherPath}
+          disabled={launcherPathTesting || !launcherPath.trim()}
+          className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+        >
+          {launcherPathTesting ? 'Testing…' : 'Test'}
+        </button>
+      </div>
+      {launcherPathError && (
+        <p className="text-xs text-destructive">{launcherPathError}</p>
+      )}
+      {launcherPathSuccess && (
+        <p className="text-xs text-green-600 dark:text-green-400">{launcherPathSuccess}</p>
+      )}
+      {/* Show persistent setting error from typed settings */}
+      {ts.statuses['mojang_launcher_path']?.status === 'error' && (
+        <p className="text-xs text-destructive">
+          Failed to save: {ts.statuses['mojang_launcher_path']?.error}
+        </p>
+      )}
+      {ts.statuses['mojang_launcher_path']?.status === 'write-pending' && (
+        <p className="text-xs text-muted-foreground">Saving…</p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Override the official Mojang launcher executable location.
+      </p>
+    </SettingsSection>
+  );
+
+  const javaCard = (
+    <SettingsSection
+      id="settings-java"
+      icon={Coffee}
+      title="Java Runtime Management"
+    >
+      <p className="text-xs text-muted-foreground">
+        Agora can automatically download and manage Java runtimes for Minecraft.
+        Managed runtimes are stored in private app-data and never modify your system PATH.
+        Each instance uses the exact major version required by the selected Minecraft version.
+      </p>
+
+      {/* Runtime mode selector */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Java runtime mode</label>
+        <div className="flex flex-wrap gap-2">
+          {(['automatic', 'prompt', 'manual'] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => handleJavaRuntimeModeChange(mode)}
+              className={[
+                'rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
+                javaRuntimeMode === mode
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-input hover:bg-accent',
+              ].join(' ')}
+            >
+              {mode === 'automatic' ? 'Automatic (recommended)'
+                : mode === 'prompt' ? 'Prompt'
+                  : 'Manual'}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {javaRuntimeMode === 'automatic'
+            ? 'Automatically provision the required Java runtime when launching.'
+            : javaRuntimeMode === 'prompt'
+              ? 'Prompt the user when a required Java runtime is missing.'
+              : 'Do not download runtimes. Only use user-specified and system Java installations.'}
+        </p>
+      </div>
+
+      {/* Global Java path override */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Global Java executable (override)</label>
+        <div className="flex gap-2">
           <input
-            type="checkbox"
-            checked={directLaunch}
-            onChange={(e) => toggleLaunchMode(e.target.checked)}
-            className="h-5 w-5 accent-primary"
+            value={globalJavaPath}
+            onChange={(e) => {
+              setGlobalJavaPath(e.target.value);
+              setGlobalJavaPathInspected(null);
+              setGlobalJavaPathError(null);
+            }}
+            placeholder="Leave empty to auto-detect"
+            className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm"
           />
-        </label>
-        <p className="text-xs text-muted-foreground">
-          <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles auth and JVM execution.
-          The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
-        </p>
-        {ts.statuses['launch_mode']?.status === 'error' && (
-          <p className="text-xs text-destructive">{ts.statuses['launch_mode']?.error}</p>
+          <button
+            onClick={handleGlobalJavaPathBrowse}
+            className="rounded-lg border border-input px-3 py-2 text-sm font-medium hover:bg-accent"
+          >
+            Browse…
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={handleGlobalJavaPathSave}
+            disabled={!globalJavaPath.trim()}
+            className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            Save
+          </button>
+          <button
+            onClick={handleGlobalJavaPathClear}
+            disabled={!globalJavaPath}
+            className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Clear
+          </button>
+        </div>
+        {globalJavaPathInspected && (
+          <p className="text-xs text-green-600 dark:text-green-400">{globalJavaPathInspected}</p>
         )}
-
-      </div>
-
-      {/* Microsoft Account */}
-      <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-        <h3 className="font-semibold">Microsoft Account</h3>
-        {msaLoading ? (
-          <p className="text-xs text-muted-foreground">Checking connection…</p>
-        ) : msaCreds ? (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-green-600 dark:text-green-400">
-                ● Signed in as <strong>{msaCreds.username}</strong>
-              </span>
-            </div>
-            {/* <p className="text-xs text-muted-foreground">
-                  UUID: {msaCreds.uuid}<br />
-                  Expires: {msaCreds.expires}
-                </p> */}
-            <p className="text-xs text-muted-foreground">
-              Required for direct launch mode. Used to authenticate with Minecraft services.
-            </p>
-            <button
-              onClick={handleMsaSignOut}
-              className="text-xs text-muted-foreground hover:text-foreground underline"
-            >
-              Sign out
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
-            </p>
-
-            {msaError && <p className="text-xs text-destructive">{msaError}</p>}
-            <button
-              onClick={handleMsaSignIn}
-              disabled={msaBusy}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
-            </button>
-          </div>
+        {globalJavaPathError && (
+          <p className="text-xs text-destructive">{globalJavaPathError}</p>
         )}
       </div>
 
-
-      {/* GitHub Account */}
-      <div id="settings-accounts" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-        <h3 className="font-semibold">GitHub Account</h3>
-        {githubLoading ? (
-          <p className="text-xs text-muted-foreground">Checking connection…</p>
-        ) : githubAuth ? (
-          <div className="space-y-2">
+      {/* Download buttons */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Download managed runtimes</label>
+        <div className="flex flex-wrap items-center gap-2">
+          {[8, 17, 21].map((major) => (
+            <button
+              key={major}
+              onClick={() => handleDownloadJava(major)}
+              disabled={javaDownloadBusy !== null}
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {javaDownloadBusy === major ? `Downloading Java ${major}…` : `Download Java ${major}`}
+            </button>
+          ))}
+          {/* Custom major input */}
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              min="8"
+              max="25"
+              value={customMajorInput}
+              onChange={(e) => setCustomMajorInput(e.target.value)}
+              placeholder="major"
+              className="w-16 rounded-lg border border-input bg-background px-2 py-1.5 text-xs"
+            />
+            <button
+              onClick={() => {
+                const m = parseInt(customMajorInput, 10);
+                if (m >= 8 && m <= 25) handleDownloadJava(m);
+              }}
+              disabled={javaDownloadBusy !== null || !customMajorInput}
+              className="rounded-lg border border-input px-2 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            >
+              Download
+            </button>
+          </div>
+        </div>
+        {javaDownloadProgress && javaDownloadBusy !== null && (
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-              {githubProfile?.avatar_url && (
-                <img
-                  src={githubProfile.avatar_url}
-                  alt=""
-                  className="h-6 w-6 rounded-full"
+              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-300"
+                  style={{ width: `${Math.min(javaDownloadPercent ?? 0, 100)}%` }}
                 />
-              )}
-              <span className="text-sm text-green-600 dark:text-green-400">
-                ● Signed in as <strong>{githubProfile?.login ?? 'GitHub user'}</strong>
-              </span>
+              </div>
+              <button
+                onClick={() => handleCancelJavaDownload(javaDownloadBusy!)}
+                disabled={javaCancelling}
+                className="rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50 shrink-0"
+              >
+                {javaCancelling ? 'Cancelling…' : 'Cancel'}
+              </button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Used for community governance (voting, proposals).
-            </p>
+            <p className="text-xs text-muted-foreground">{javaDownloadProgress}</p>
+          </div>
+        )}
+        {javaDownloadProgress && javaDownloadBusy === null && (
+          <p className="text-xs text-muted-foreground">{javaDownloadProgress}</p>
+        )}
+      </div>
+
+      {/* Runtime table */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium">Detected Java runtimes</label>
+          <div className="flex gap-2">
             <button
-              onClick={handleGithubSignOut}
-              className="text-xs text-muted-foreground hover:text-foreground underline"
+              onClick={refreshJavaRuntimes}
+              disabled={javaRuntimesLoading}
+              className="rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
             >
-              Sign out
+              {javaRuntimesLoading ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button
+              onClick={handleRemoveUnusedJava}
+              disabled={javaRemoveBusy || javaRuntimesLoading}
+              className="rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            >
+              {javaRemoveBusy ? 'Removing…' : 'Remove unused'}
             </button>
           </div>
+        </div>
+        {javaRuntimesError && (
+          <p className="text-xs text-destructive">{javaRuntimesError}</p>
+        )}
+        {javaRuntimesLoading ? (
+          <p className="text-xs text-muted-foreground">Scanning for Java runtimes…</p>
+        ) : javaRuntimes.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No Java runtimes detected.</p>
         ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-muted-foreground">
-              Sign in with GitHub to participate in community governance — voting on mod inclusions, proposals, and more. This is optional.
-            </p>
+          <div className="max-h-48 overflow-y-auto rounded-lg border border-border">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="px-3 py-1.5 text-left font-medium">Source</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Version</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Arch</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Path</th>
+                </tr>
+              </thead>
+              <tbody>
+                {javaRuntimes.map((rt, idx) => (
+                  <tr key={idx} className="border-t border-border">
+                    <td className="px-3 py-1.5">
+                      <span className={[
+                        'inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+                        rt.source === 'Managed' ? 'bg-primary/10 text-primary'
+                          : rt.source === 'Mojang' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                            : rt.source === 'System' ? 'bg-green-500/10 text-green-600 dark:text-green-400'
+                              : 'bg-muted text-muted-foreground',
+                      ].join(' ')}>
+                        {rt.source}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 font-medium">{rt.version_string || `Java ${rt.version}`}</td>
+                    <td className="px-3 py-1.5">{rt.arch ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground truncate max-w-[200px]" title={rt.path}>
+                      {rt.path}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </SettingsSection>
+  );
 
-            {ghDevice && (
-              <DeviceFlowPanel
-                device={ghDevice}
-                polling={ghPolling}
-                onCancel={() => {
-                  ghSessionRef.current += 1;
-                  setGhPolling(false);
-                  setGhDevice(null);
-                }}
+  const jvmCard = (
+    <SettingsSection
+      icon={Cpu}
+      title="JVM Defaults"
+    >
+      <label className="flex items-center justify-between">
+        <span className="text-sm">AlwaysPreTouch</span>
+        <input
+          type="checkbox"
+          checked={alwaysPreTouch}
+          onChange={(e) => toggleAlwaysPreTouch(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Recommended for G1GC, may cause issues with ZGC/Shenandoah.
+      </p>
+      {ts.statuses['always_pre_touch']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['always_pre_touch']?.error}</p>
+      )}
+    </SettingsSection>
+  );
+
+  const microsoftCard = (
+    <SettingsSection
+      icon={UserRound}
+      title="Microsoft Account"
+    >
+      {msaLoading ? (
+        <p className="text-xs text-muted-foreground">Checking connection…</p>
+      ) : msaCreds ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-green-600 dark:text-green-400">
+              ● Signed in as <strong>{msaCreds.username}</strong>
+            </span>
+          </div>
+          {/* <p className="text-xs text-muted-foreground">
+                UUID: {msaCreds.uuid}<br />
+                Expires: {msaCreds.expires}
+              </p> */}
+          <p className="text-xs text-muted-foreground">
+            Required for direct launch mode. Used to authenticate with Minecraft services.
+          </p>
+          <button
+            onClick={handleMsaSignOut}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            Sign out
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
+          </p>
+
+          {msaError && <p className="text-xs text-destructive">{msaError}</p>}
+          <button
+            onClick={handleMsaSignIn}
+            disabled={msaBusy}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+          </button>
+        </div>
+      )}
+    </SettingsSection>
+  );
+
+  const githubCard = (
+    <SettingsSection
+      id="settings-accounts"
+      icon={Landmark}
+      title="GitHub Account"
+    >
+      {githubLoading ? (
+        <p className="text-xs text-muted-foreground">Checking connection…</p>
+      ) : githubAuth ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            {githubProfile?.avatar_url && (
+              <img
+                src={githubProfile.avatar_url}
+                alt=""
+                className="h-6 w-6 rounded-full"
               />
             )}
-
-            {ghResult && <p className="text-sm text-primary">{ghResult}</p>}
-            {ghError && <p className="text-xs text-destructive">{ghError}</p>}
-
-            <button
-              onClick={handleGithubSignIn}
-              disabled={ghPolling}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {ghPolling ? 'Waiting…' : 'Sign in with GitHub'}
-            </button>
+            <span className="text-sm text-green-600 dark:text-green-400">
+              ● Signed in as <strong>{githubProfile?.login ?? 'GitHub user'}</strong>
+            </span>
           </div>
-        )}
-      </div>
-
-      {/* Advanced Mode Toggle */}
-      <div id="settings-general" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-        <h3 className="font-semibold">Advanced mode</h3>
-        <label className="flex items-center justify-between">
-          <span className="text-sm">Show advanced settings</span>
-          <input
-            type="checkbox"
-            checked={advancedMode}
-            onChange={toggleAdvanced}
-            className="h-5 w-5 accent-primary"
-          />
-        </label>
-        <p className="text-xs text-muted-foreground">
-          Reveal JVM arguments, garbage collector settings, custom commands, and other power-user options.
-        </p>
-      </div>
-
-      <div id="settings-installation" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-        <h3 className="font-semibold">Installation</h3>
-        <label className="flex items-center justify-between gap-4">
-          <span className="text-sm">Auto-confirm clean installs</span>
-          <input
-            type="checkbox"
-            aria-label="Auto-confirm clean installs"
-            checked={autoConfirmCleanInstalls}
-            onChange={(e) => toggleAutoConfirmCleanInstalls(e.target.checked)}
-            className="h-5 w-5 accent-primary"
-          />
-        </label>
-        <p className="text-xs text-muted-foreground">
-          Skip the review screen only when the plan has no errors, warnings, conflicts, new dependencies, or existing files to change. Plans that need decisions always open for review.
-        </p>
-        {ts.statuses['install_auto_confirm_clean']?.status === 'error' && (
-          <p className="text-xs text-destructive">{ts.statuses['install_auto_confirm_clean']?.error}</p>
-        )}
-        <label className="flex items-center justify-between gap-4 border-t border-border pt-3">
-          <span className="text-sm">Always auto-confirm installs</span>
-          <input
-            type="checkbox"
-            aria-label="Always auto-confirm installs"
-            checked={alwaysAutoConfirmInstalls}
-            disabled={!autoConfirmCleanInstalls}
-            onChange={(e) => toggleAlwaysAutoConfirmInstalls(e.target.checked)}
-            className="h-5 w-5 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
-          />
-        </label>
-        <p className="text-xs text-muted-foreground">
-          Skip dependency details too and accept the default of not installing optional dependencies. Enable Auto-confirm clean installs first.
-        </p>
-        {ts.statuses['install_always_auto_confirm']?.status === 'error' && (
-          <p className="text-xs text-destructive">{ts.statuses['install_always_auto_confirm']?.error}</p>
-        )}
-      </div>
-
-      {loading ? (
-        <p className="text-muted-foreground">Loading settings…</p>
+          <p className="text-xs text-muted-foreground">
+            Used for community governance (voting, proposals).
+          </p>
+          <button
+            onClick={handleGithubSignOut}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            Sign out
+          </button>
+        </div>
       ) : (
-        <>
-          {/* Inline error banner for any setting that failed to load */}
-          {Object.keys(ts.errors).length > 0 && (
-            <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 space-y-1">
-              <p className="text-xs font-semibold text-destructive">Some settings failed to load</p>
-              {Object.entries(ts.errors).map(([key, err]) => (
-                <p key={key} className="text-xs text-destructive/80">
-                  <code className="bg-destructive/10 px-1 rounded">{key}</code>: {err}
-                </p>
-              ))}
-            </div>
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Sign in with GitHub to participate in community governance — voting on mod inclusions, proposals, and more. This is optional.
+          </p>
+
+          {ghDevice && (
+            <DeviceFlowPanel
+              device={ghDevice}
+              polling={ghPolling}
+              onCancel={() => {
+                ghSessionRef.current += 1;
+                setGhPolling(false);
+                setGhDevice(null);
+              }}
+            />
           )}
 
-          <div id="settings-services" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-4">
-            <h3 className="font-semibold">External Services</h3>
+          {ghResult && <p className="text-sm text-primary">{ghResult}</p>}
+          {ghError && <p className="text-xs text-destructive">{ghError}</p>}
 
-            <label className="flex items-center justify-between">
-              <span className="text-sm">Modrinth Integration</span>
-              <input
-                type="checkbox"
-                checked={modrinth}
-                onChange={(e) => toggleModrinth(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              Include Modrinth-hosted catalog entries and enable live Modrinth features when permitted by Privacy settings.
-            </p>
-            {ts.statuses['modrinth_enabled']?.status === 'error' && (
-              <p className="text-xs text-destructive">{ts.statuses['modrinth_enabled']?.error}</p>
-            )}
+          <button
+            onClick={handleGithubSignIn}
+            disabled={ghPolling}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {ghPolling ? 'Waiting…' : 'Sign in with GitHub'}
+          </button>
+        </div>
+      )}
+    </SettingsSection>
+  );
 
-            <label className="flex items-center justify-between pt-2 border-t border-border">
-              <span className="text-sm">Browse — Curated only</span>
-              <input
-                type="checkbox"
-                checked={browseCuratedOnly}
-                onChange={(e) => toggleBrowseCuratedOnly(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              Show only Agora's curated catalog entries on the Browse page. Non-curated Modrinth results are hidden even when Modrinth Integration is enabled.
-            </p>
-            {ts.statuses['browse_curated_only']?.status === 'error' && (
-              <p className="text-xs text-destructive">{ts.statuses['browse_curated_only']?.error}</p>
-            )}
+  const contentSourcesCard = (
+    <SettingsSection
+      id="settings-services"
+      icon={Boxes}
+      title="Content sources"
+      description="Where Agora may fetch content from, beyond the curated registry."
+      contentClassName="space-y-4"
+    >
+      <label className="flex items-center justify-between">
+        <span className="text-sm">Modrinth Integration</span>
+        <input
+          type="checkbox"
+          checked={modrinth}
+          onChange={(e) => toggleModrinth(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Include Modrinth-hosted catalog entries and enable live Modrinth features when permitted by Privacy settings.
+      </p>
+      {ts.statuses['modrinth_enabled']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['modrinth_enabled']?.error}</p>
+      )}
 
-            <div className="pt-2 border-t border-border space-y-3">
-              <h4 className="text-sm font-medium">Curated catalog sources</h4>
+      <label className="flex items-center justify-between pt-2 border-t border-border">
+        <span className="text-sm">Browse — Curated only</span>
+        <input
+          type="checkbox"
+          checked={browseCuratedOnly}
+          onChange={(e) => toggleBrowseCuratedOnly(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Show only Agora's curated catalog entries on the Browse page. Non-curated Modrinth results are hidden even when Modrinth Integration is enabled.
+      </p>
+      {ts.statuses['browse_curated_only']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['browse_curated_only']?.error}</p>
+      )}
+
+      <div className="pt-2 border-t border-border space-y-3">
+        <h4 className="text-sm font-medium">Curated catalog sources</h4>
+        <p className="text-xs text-muted-foreground">
+          Curated entries are hand-reviewed and ship with curator-pinned SHA-256 hashes in the signed catalog. These toggles control which curated sources appear — they are independent of live third-party browsing and default to on.
+        </p>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Modrinth-sourced catalog entries</span>
+          <input
+            type="checkbox"
+            aria-label="Modrinth-sourced catalog entries"
+            checked={curatedSources['modrinth_id'] ?? true}
+            onChange={(e) => toggleCuratedSource('modrinth_id', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">GitHub-sourced catalog entries</span>
+          <input
+            type="checkbox"
+            aria-label="GitHub-sourced catalog entries"
+            checked={curatedSources['github_release'] ?? true}
+            onChange={(e) => toggleCuratedSource('github_release', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Direct-hash catalog entries</span>
+          <input
+            type="checkbox"
+            aria-label="Direct-hash catalog entries"
+            checked={curatedSources['direct_hash'] ?? true}
+            onChange={(e) => toggleCuratedSource('direct_hash', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Curated pack entries</span>
+          <input
+            type="checkbox"
+            aria-label="Curated pack entries"
+            checked={curatedSources['curated_pack'] ?? true}
+            onChange={(e) => toggleCuratedSource('curated_pack', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+      </div>
+
+      <label className="flex items-center justify-between pt-3 border-t border-border">
+        <div>
+          <span className="text-sm">Technic browsing</span>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides — see the install confirmation before files are written.
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          aria-label="Technic browsing"
+          checked={technic}
+          onChange={(e) => toggleTechnic(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+
+      <label className="flex items-center justify-between pt-3 border-t border-border">
+        <div>
+          <span className="text-sm">Allow unverified zip packs</span>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          aria-label="Allow unverified zip packs"
+          checked={allowUnverifiedPacks}
+          onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+    </SettingsSection>
+  );
+
+  const aiCard = (
+    <SettingsSection
+      icon={Bot}
+      title="AI & automation"
+      description="The local MCP server for external agents, and the built-in assistant."
+      contentClassName="space-y-4"
+    >
+      <label className="flex items-center justify-between">
+        <div>
+          <span className="text-sm">Integrated AI Assistant</span>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Built-in AI chat powered by GitHub Copilot. Free with your GitHub account — no separate API key needed. Use this for quick crash analysis and mod questions.
+          </p>
+        </div>
+        <input
+          type="checkbox"
+          checked={aiChatEnabled}
+          onChange={(e) => toggleAiChat(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      {ts.statuses['ai_chat_enabled']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['ai_chat_enabled']?.error}</p>
+      )}
+      {(aiMcp || aiChatEnabled) && (
+        <div className="rounded-lg bg-muted p-3 space-y-2">
+          <h4 className="text-xs font-semibold">Two ways to use AI with Agora</h4>
+          <p className="text-xs text-muted-foreground">
+            <strong>MCP Server</strong> — Lets your external AI tool (Claude Desktop, Kilo Code, Opencode, etc.) control Agora directly. The agent can list instances, disable mods, and analyze crashes on its own. Best for users who already have an AI agent set up. No cost — uses your agent's AI provider.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            <strong>Integrated AI</strong> — A built-in chat in Agora powered by GitHub Copilot. Quick questions, crash analysis, mod help. 50 free chats/month with your GitHub account.
+          </p>
+        </div>
+      )}
+
+      {aiChatEnabled && (
+        <div className="pt-2 border-t border-border space-y-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">GitHub Copilot</label>
+            {copilotLoading ? (
+              <p className="text-xs text-muted-foreground">Checking connection…</p>
+            ) : copilotToken ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-green-600 dark:text-green-400">● Connected as {copilotToken.username} ({copilotToken.plan})</span>
+                <button
+                  onClick={handleCopilotLogout}
+                  className="text-xs text-muted-foreground hover:text-foreground underline"
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : (
               <p className="text-xs text-muted-foreground">
-                Curated entries are hand-reviewed and ship with curator-pinned SHA-256 hashes in the signed catalog. These toggles control which curated sources appear — they are independent of live third-party browsing and default to on.
+                Not connected. Open the AI Assistant chat and click "Connect with GitHub" to activate. 50 free chats/month with any GitHub account.
               </p>
-              <label className="flex items-center justify-between">
-                <span className="text-sm">Modrinth-sourced catalog entries</span>
-                <input
-                  type="checkbox"
-                  aria-label="Modrinth-sourced catalog entries"
-                  checked={curatedSources['modrinth_id'] ?? true}
-                  onChange={(e) => toggleCuratedSource('modrinth_id', e.target.checked)}
-                  className="h-5 w-5 accent-primary"
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span className="text-sm">GitHub-sourced catalog entries</span>
-                <input
-                  type="checkbox"
-                  aria-label="GitHub-sourced catalog entries"
-                  checked={curatedSources['github_release'] ?? true}
-                  onChange={(e) => toggleCuratedSource('github_release', e.target.checked)}
-                  className="h-5 w-5 accent-primary"
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span className="text-sm">Direct-hash catalog entries</span>
-                <input
-                  type="checkbox"
-                  aria-label="Direct-hash catalog entries"
-                  checked={curatedSources['direct_hash'] ?? true}
-                  onChange={(e) => toggleCuratedSource('direct_hash', e.target.checked)}
-                  className="h-5 w-5 accent-primary"
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span className="text-sm">Curated pack entries</span>
-                <input
-                  type="checkbox"
-                  aria-label="Curated pack entries"
-                  checked={curatedSources['curated_pack'] ?? true}
-                  onChange={(e) => toggleCuratedSource('curated_pack', e.target.checked)}
-                  className="h-5 w-5 accent-primary"
-                />
-              </label>
-            </div>
-
-            <label className="flex items-center justify-between pt-3 border-t border-border">
-              <div>
-                <span className="text-sm">Technic browsing</span>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides — see the install confirmation before files are written.
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                aria-label="Technic browsing"
-                checked={technic}
-                onChange={(e) => toggleTechnic(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-
-            <label className="flex items-center justify-between pt-3 border-t border-border">
-              <div>
-                <span className="text-sm">Allow unverified zip packs</span>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                aria-label="Allow unverified zip packs"
-                checked={allowUnverifiedPacks}
-                onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-
-
-            <label className="flex items-center justify-between pt-2 border-t border-border">
-              <div>
-                <span className="text-sm">Integrated AI Assistant</span>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Built-in AI chat powered by GitHub Copilot. Free with your GitHub account — no separate API key needed. Use this for quick crash analysis and mod questions.
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                checked={aiChatEnabled}
-                onChange={(e) => toggleAiChat(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            {ts.statuses['ai_chat_enabled']?.status === 'error' && (
-              <p className="text-xs text-destructive">{ts.statuses['ai_chat_enabled']?.error}</p>
             )}
-            {(aiMcp || aiChatEnabled) && (
-              <div className="rounded-lg bg-muted p-3 space-y-2">
-                <h4 className="text-xs font-semibold">Two ways to use AI with Agora</h4>
-                <p className="text-xs text-muted-foreground">
-                  <strong>MCP Server</strong> — Lets your external AI tool (Claude Desktop, Kilo Code, Opencode, etc.) control Agora directly. The agent can list instances, disable mods, and analyze crashes on its own. Best for users who already have an AI agent set up. No cost — uses your agent's AI provider.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  <strong>Integrated AI</strong> — A built-in chat in Agora powered by GitHub Copilot. Quick questions, crash analysis, mod help. 50 free chats/month with your GitHub account.
-                </p>
-              </div>
-            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            GitHub Copilot provides free AI diagnostics — no API key needed. For higher limits or custom models, connect an external AI agent via the MCP server above.
+          </p>
+        </div>
+      )}
 
-            {aiChatEnabled && (
-              <div className="pt-2 border-t border-border space-y-3">
-                <div className="space-y-1">
-                  <label className="text-sm font-medium">GitHub Copilot</label>
-                  {copilotLoading ? (
-                    <p className="text-xs text-muted-foreground">Checking connection…</p>
-                  ) : copilotToken ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-green-600 dark:text-green-400">● Connected as {copilotToken.username} ({copilotToken.plan})</span>
-                      <button
-                        onClick={handleCopilotLogout}
-                        className="text-xs text-muted-foreground hover:text-foreground underline"
-                      >
-                        Sign out
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Not connected. Open the AI Assistant chat and click "Connect with GitHub" to activate. 50 free chats/month with any GitHub account.
-                    </p>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  GitHub Copilot provides free AI diagnostics — no API key needed. For higher limits or custom models, connect an external AI agent via the MCP server above.
-                </p>
-              </div>
-            )}
-
-            <label className="flex items-center justify-between pt-2 border-t border-border">
-              <span className="text-sm">AI / MCP Server</span>
-              <input
-                type="checkbox"
-                checked={aiMcp}
-                onChange={(e) => toggleAiMcp(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              Enable the local MCP server for external AI tools.
-            </p>
-            {ts.statuses['ai_mcp_enabled']?.status === 'error' && (
-              <p className="text-xs text-destructive">{ts.statuses['ai_mcp_enabled']?.error}</p>
-            )}
+      <label className="flex items-center justify-between pt-2 border-t border-border">
+        <span className="text-sm">AI / MCP Server</span>
+        <input
+          type="checkbox"
+          checked={aiMcp}
+          onChange={(e) => toggleAiMcp(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Enable the local MCP server for external AI tools.
+      </p>
+      {ts.statuses['ai_mcp_enabled']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['ai_mcp_enabled']?.error}</p>
+      )}
 
 
-            {advancedMode && aiMcp && (
-              <div className="pt-2 border-t border-border space-y-3">
-                {/* MCP Status */}
-                <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className={`inline-block h-2.5 w-2.5 rounded-full ${mcpStatus?.running ? 'bg-green-500' : 'bg-gray-400'}`} />
-                      <span className="text-sm">
-                        {mcpStatus?.running ? (
-                          <>
-                            Server running on{' '}
-                            <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                              http://127.0.0.1:39741/sse
-                            </code>
-                          </>
-                        ) : (
-                          'Server stopped'
-                        )}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => fetchMcpStatus()}
-                        className="rounded-md border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                      >
-                        Refresh
-                      </button>
-                      {mcpStatus?.running ? (
-                        <button
-                          onClick={handleStopServer}
-                          className="rounded-md bg-destructive px-2.5 py-1 text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
-                        >
-                          Stop Server
-                        </button>
-                      ) : (
-                        <button
-                          onClick={handleStartServer}
-                          className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                        >
-                          Start Server
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Approval Settings */}
-                <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
-                  <h4 className="text-sm font-semibold">Approval Settings (per instance)</h4>
-                  <p className="text-xs text-muted-foreground">
-                    Tool: disable_mod — controls whether external AI tools can disable mods without prompting.
-                  </p>
-
-                  {mcpInstances.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No instances found.</p>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {mcpInstances.map((inst) => {
-                        const current = instanceApprovals[inst.instance_id] || 'always_deny';
-                        return (
-                          <div key={inst.instance_id} className="flex items-center justify-between gap-2">
-                            <span className="text-xs truncate flex-1" title={inst.name || inst.instance_id}>
-                              {inst.name || inst.instance_id}
-                            </span>
-                            <select
-                              value={current}
-                              onChange={(e) => {
-                                setInstanceApprovals((prev) => ({ ...prev, [inst.instance_id]: e.target.value }));
-                                handleApprovalChange(inst.instance_id, 'disable_mod', e.target.value);
-                              }}
-                              className="rounded-md border border-input bg-background px-2 py-1 text-xs"
-                            >
-                              <option value="always_deny">Deny (default)</option>
-                              <option value="always_allow">Always Allow</option>
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Bearer Token */}
-                <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
-                  <h4 className="text-sm font-semibold">Bearer Token</h4>
-                  <p className="text-xs text-muted-foreground">
-                    All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
-                  </p>
-                  {mcpToken?.token ? (
+      {advancedMode && aiMcp && (
+        <div className="pt-2 border-t border-border space-y-3">
+          {/* MCP Status */}
+          <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className={`inline-block h-2.5 w-2.5 rounded-full ${mcpStatus?.running ? 'bg-green-500' : 'bg-gray-400'}`} />
+                <span className="text-sm">
+                  {mcpStatus?.running ? (
                     <>
-                      <TokenDisplay token={mcpToken.token} />
-                      <div className="flex flex-wrap gap-1.5">
-                        <CopyButton text={mcpToken.token} label="Copy token" />
-                        <CopyButton text={mcpToken.config_snippet} label="Copy MCP config" />
-                        <button
-                          onClick={async () => {
-                            if (!window.confirm('Regenerate token? This invalidates the current token. All AI clients must be updated.')) return;
-                            try {
-                              const data = await regenerateMCPToken();
-                              setMcpToken(data);
-                              showToast('Token regenerated successfully.', 'success');
-                            } catch (e) {
-                              showToast(formatError(e), 'error');
-                            }
-                          }}
-                          className="rounded-md border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                        >
-                          Regenerate token
-                        </button>
-                      </div>
-                      <p className="text-xs text-amber-600 dark:text-amber-400">
-                        Regenerating invalidates the previous token — all AI clients must be updated with the new one.
-                      </p>
+                      Server running on{' '}
+                      <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                        http://127.0.0.1:39741/sse
+                      </code>
                     </>
                   ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Start the MCP server to generate a token.
-                    </p>
+                    'Server stopped'
                   )}
-                  {advancedMode && (
-                    <p className="text-xs text-muted-foreground">
-                      Token path: <code className="bg-muted px-1 py-0.5 rounded">{'<app_data>/mcp_token'}</code>
-                    </p>
-                  )}
-                </div>
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => fetchMcpStatus()}
+                  className="rounded-md border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                >
+                  Refresh
+                </button>
+                {mcpStatus?.running ? (
+                  <button
+                    onClick={handleStopServer}
+                    className="rounded-md bg-destructive px-2.5 py-1 text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Stop Server
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartServer}
+                    className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Start Server
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
 
-                {/* Connect your AI tool */}
-                <details className="rounded-lg bg-muted px-3 py-2.5 space-y-3">
-                  <summary className="text-sm font-semibold cursor-pointer select-none">Connect your AI tool</summary>
+          {/* Approval Settings */}
+          <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
+            <h4 className="text-sm font-semibold">Approval Settings (per instance)</h4>
+            <p className="text-xs text-muted-foreground">
+              Tool: disable_mod — controls whether external AI tools can disable mods without prompting.
+            </p>
 
-                  {/* Section 1: Kilo Code */}
-                  <div className="space-y-1.5">
-                    <h5 className="text-xs font-semibold">Kilo Code (VS Code extension)</h5>
-                    <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-                      <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded">~/.config/kilo/kilo.json</code>).</li>
-                      <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
-                      <li>Restart VS Code.</li>
-                    </ol>
-                    <div className="relative">
-                      <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcp\": {\n    \"agora-mc\": {\n      \"type\": \"remote\",\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"enabled\": true\n    }\n  }\n}"}</pre>
-                      <div className="absolute top-2 right-2">
-                        <CopyButton
-                          text={`{\n  "mcp": {\n    "agora-mc": {\n      "type": "remote",\n      "url": "http://127.0.0.1:39741/sse",\n      "enabled": true\n    }\n  }\n}`}
-                          label="Copy"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Section 2: Opencode */}
-                  <div className="space-y-1.5 pt-2 border-t border-border">
-                    <h5 className="text-xs font-semibold">Opencode</h5>
-                    <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-                      <li>
-                        Add the config below to{' '}
-                        <code className="bg-muted px-1 py-0.5 rounded">
-                          .opencode/opencode.json
-                        </code>
-                        {' '}or{' '}
-                        <code className="bg-muted px-1 py-0.5 rounded">
-                          ~/.config/opencode/opencode.json (C:Users\[User]\.config\opencode)
-                        </code>
-                        .
-                      </li>
-                      <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.opencode/skills/agora-mcp/SKILL.md</code>.</li>
-                      <li>Restart Opencode.</li>
-                    </ol>
-                    <div className="relative">
-                      <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcp\": {\n    \"agora-mc\": {\n      \"type\": \"remote\",\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"enabled\": true\n    }\n  }\n}"}</pre>
-                      <div className="absolute top-2 right-2">
-                        <CopyButton
-                          text={`{\n  "mcp": {\n    "agora-mc": {\n      "type": "remote",\n      "url": "http://127.0.0.1:39741/sse",\n      "enabled": true\n    }\n  }\n}`}
-                          label="Copy"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Section 3: Claude Desktop */}
-                  <div className="space-y-1.5 pt-2 border-t border-border">
-                    <h5 className="text-xs font-semibold">Claude Desktop</h5>
-                    <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-                      <li>
-                        Add the config below to{' '}
-                        <code className="bg-muted px-1 py-0.5 rounded">
-                          {isWindows
-                            ? '%APPDATA%\\Claude\\claude_desktop_config.json'
-                            : '~/Library/Application Support/Claude/claude_desktop_config.json'}
-                        </code>
-                        .
-                      </li>
-                      <li>Restart Claude Desktop.</li>
-                    </ol>
-                    <div className="relative">
-                      <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcpServers\": {\n    \"agora\": {\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"transport\": \"sse\"\n    }\n  }\n}"}</pre>
-                      <div className="absolute top-2 right-2">
-                        <CopyButton
-                          text={`{\n  "mcpServers": {\n    "agora": {\n      "url": "http://127.0.0.1:39741/sse",\n      "transport": "sse"\n    }\n  }\n}`}
-                          label="Copy"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Section 4: Other MCP clients */}
-                  <div className="space-y-1 pt-2 border-t border-border">
-                    <h5 className="text-xs font-semibold">Other MCP clients</h5>
-                    <div className="text-xs text-muted-foreground space-y-0.5">
-                      <p>Server URL: <code className="bg-muted px-1 py-0.5 rounded">http://127.0.0.1:39741/sse</code></p>
-                      <p>Transport: <code className="bg-muted px-1 py-0.5 rounded">SSE (Server-Sent Events)</code></p>
-                      <p>Authentication: Bearer token (see above)</p>
-                      <p>If you get stuck, your AI agent might be able to help you troubleshoot/customize the MCP integration.</p>
-                    </div>
-                  </div>
-
-                  {/* Section 5: Skill content */}
-                  <div className="space-y-1.5 pt-2 border-t border-border">
-                    <h5 className="text-xs font-semibold">Skill content</h5>
-                    <p className="text-xs text-muted-foreground">
-                      The skill teaches your AI agent what the 10 Agora tools do and when to use them. Place it in your agent's skills directory.
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={async () => {
-                          if (!skillContent) return;
-                          await navigator.clipboard.writeText(skillContent);
-                          setSkillCopied(true);
-                          setTimeout(() => setSkillCopied(false), 2000);
+            {mcpInstances.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No instances found.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {mcpInstances.map((inst) => {
+                  const current = instanceApprovals[inst.instance_id] || 'always_deny';
+                  return (
+                    <div key={inst.instance_id} className="flex items-center justify-between gap-2">
+                      <span className="text-xs truncate flex-1" title={inst.name || inst.instance_id}>
+                        {inst.name || inst.instance_id}
+                      </span>
+                      <select
+                        value={current}
+                        onChange={(e) => {
+                          setInstanceApprovals((prev) => ({ ...prev, [inst.instance_id]: e.target.value }));
+                          handleApprovalChange(inst.instance_id, 'disable_mod', e.target.value);
                         }}
-                        disabled={!skillContent || skillLoading}
-                        className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        className="rounded-md border border-input bg-background px-2 py-1 text-xs"
                       >
-                        {skillCopied ? 'Copied!' : 'Copy Skill to Clipboard'}
-                      </button>
-                      <button
-                        onClick={async () => {
-                          if (!skillContent) return;
-                          setSkillLoading(true);
-                          try {
-                            const blob = new Blob([skillContent], { type: 'text/markdown' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = 'SKILL.md';
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          } finally {
-                            setSkillLoading(false);
-                          }
-                        }}
-                        disabled={!skillContent || skillLoading}
-                        className="rounded-md border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
-                      >
-                        {skillLoading ? 'Downloading…' : 'Download SKILL.md'}
-                      </button>
+                        <option value="always_deny">Deny (default)</option>
+                        <option value="always_allow">Always Allow</option>
+                      </select>
                     </div>
-                  </div>
-                </details>
+                  );
+                })}
               </div>
             )}
           </div>
 
-
-
-          {/* AI Model Selector
-          <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">AI Assistant</h3>
-            {modelLoading ? (
-              <p className="text-xs text-muted-foreground">Loading models…</p>
-            ) : (
+          {/* Bearer Token */}
+          <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
+            <h4 className="text-sm font-semibold">Bearer Token</h4>
+            <p className="text-xs text-muted-foreground">
+              All MCP connections require this token in the <code className="bg-muted px-1 py-0.5 rounded">Authorization: Bearer &lt;token&gt;</code> header. Query-string tokens are not accepted.
+            </p>
+            {mcpToken?.token ? (
               <>
-                <div className="space-y-1">
-                  <label htmlFor="ai-model-select" className="text-sm">
-                    Model
-                  </label>
-                  <select
-                    id="ai-model-select"
-                    value={selectedModel}
-                    onChange={(e) => handleModelChange(e.target.value)}
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+                <TokenDisplay token={mcpToken.token} />
+                <div className="flex flex-wrap gap-1.5">
+                  <CopyButton text={mcpToken.token} label="Copy token" />
+                  <CopyButton text={mcpToken.config_snippet} label="Copy MCP config" />
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm('Regenerate token? This invalidates the current token. All AI clients must be updated.')) return;
+                      try {
+                        const data = await regenerateMCPToken();
+                        setMcpToken(data);
+                        showToast('Token regenerated successfully.', 'success');
+                      } catch (e) {
+                        showToast(formatError(e), 'error');
+                      }
+                    }}
+                    className="rounded-md border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
                   >
-                    {aiModels.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
+                    Regenerate token
+                  </button>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  GPT-4.1 Mini is recommended — free (limited usage from GitHub), fast, and probably good enough for crash diagnosis. GPT-4.1 is also available for free and offers a bit more intelligence, but with less available usage. Both models are free with your GitHub account.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  For newer, smarter, more advanced AI with much higher usage limits and more capabilities to customize Agora, connect an AI agent like Claude Code, Codex, Opencode or countless others via the MCP server above. If you're curious, my personal recommendation is Opencode desktop, which is free, open-source, includes a few free models, and is fairly easy to use, though almost any agent will work for Agora. I personally use Kilo Code (VS Code extension) for Agora development.
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Regenerating invalidates the previous token — all AI clients must be updated with the new one.
                 </p>
               </>
-            )}
-          </div> */}
-
-          {/* Java Runtime Management */}
-          <div id="settings-java" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-4">
-            <h3 className="font-semibold">Java Runtime Management</h3>
-            <p className="text-xs text-muted-foreground">
-              Agora can automatically download and manage Java runtimes for Minecraft.
-              Managed runtimes are stored in private app-data and never modify your system PATH.
-              Each instance uses the exact major version required by the selected Minecraft version.
-            </p>
-
-            {/* Runtime mode selector */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Java runtime mode</label>
-              <div className="flex flex-wrap gap-2">
-                {(['automatic', 'prompt', 'manual'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => handleJavaRuntimeModeChange(mode)}
-                    className={[
-                      'rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
-                      javaRuntimeMode === mode
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-input hover:bg-accent',
-                    ].join(' ')}
-                  >
-                    {mode === 'automatic' ? 'Automatic (recommended)'
-                      : mode === 'prompt' ? 'Prompt'
-                        : 'Manual'}
-                  </button>
-                ))}
-              </div>
+            ) : (
               <p className="text-xs text-muted-foreground">
-                {javaRuntimeMode === 'automatic'
-                  ? 'Automatically provision the required Java runtime when launching.'
-                  : javaRuntimeMode === 'prompt'
-                    ? 'Prompt the user when a required Java runtime is missing.'
-                    : 'Do not download runtimes. Only use user-specified and system Java installations.'}
+                Start the MCP server to generate a token.
               </p>
-            </div>
+            )}
+            {advancedMode && (
+              <p className="text-xs text-muted-foreground">
+                Token path: <code className="bg-muted px-1 py-0.5 rounded">{'<app_data>/mcp_token'}</code>
+              </p>
+            )}
+          </div>
 
-            {/* Global Java path override */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Global Java executable (override)</label>
-              <div className="flex gap-2">
-                <input
-                  value={globalJavaPath}
-                  onChange={(e) => {
-                    setGlobalJavaPath(e.target.value);
-                    setGlobalJavaPathInspected(null);
-                    setGlobalJavaPathError(null);
-                  }}
-                  placeholder="Leave empty to auto-detect"
-                  className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm"
-                />
-                <button
-                  onClick={handleGlobalJavaPathBrowse}
-                  className="rounded-lg border border-input px-3 py-2 text-sm font-medium hover:bg-accent"
-                >
-                  Browse…
-                </button>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleGlobalJavaPathSave}
-                  disabled={!globalJavaPath.trim()}
-                  className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={handleGlobalJavaPathClear}
-                  disabled={!globalJavaPath}
-                  className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
-                >
-                  Clear
-                </button>
-              </div>
-              {globalJavaPathInspected && (
-                <p className="text-xs text-green-600 dark:text-green-400">{globalJavaPathInspected}</p>
-              )}
-              {globalJavaPathError && (
-                <p className="text-xs text-destructive">{globalJavaPathError}</p>
-              )}
-            </div>
+          {/* Connect your AI tool */}
+          <details className="rounded-lg bg-muted px-3 py-2.5 space-y-3">
+            <summary className="text-sm font-semibold cursor-pointer select-none">Connect your AI tool</summary>
 
-            {/* Download buttons */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Download managed runtimes</label>
-              <div className="flex flex-wrap items-center gap-2">
-                {[8, 17, 21].map((major) => (
-                  <button
-                    key={major}
-                    onClick={() => handleDownloadJava(major)}
-                    disabled={javaDownloadBusy !== null}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {javaDownloadBusy === major ? `Downloading Java ${major}…` : `Download Java ${major}`}
-                  </button>
-                ))}
-                {/* Custom major input */}
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    min="8"
-                    max="25"
-                    value={customMajorInput}
-                    onChange={(e) => setCustomMajorInput(e.target.value)}
-                    placeholder="major"
-                    className="w-16 rounded-lg border border-input bg-background px-2 py-1.5 text-xs"
+            {/* Section 1: Kilo Code */}
+            <div className="space-y-1.5">
+              <h5 className="text-xs font-semibold">Kilo Code (VS Code extension)</h5>
+              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
+                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded">~/.config/kilo/kilo.json</code>).</li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Restart VS Code.</li>
+              </ol>
+              <div className="relative">
+                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcp\": {\n    \"agora-mc\": {\n      \"type\": \"remote\",\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"enabled\": true\n    }\n  }\n}"}</pre>
+                <div className="absolute top-2 right-2">
+                  <CopyButton
+                    text={`{\n  "mcp": {\n    "agora-mc": {\n      "type": "remote",\n      "url": "http://127.0.0.1:39741/sse",\n      "enabled": true\n    }\n  }\n}`}
+                    label="Copy"
                   />
-                  <button
-                    onClick={() => {
-                      const m = parseInt(customMajorInput, 10);
-                      if (m >= 8 && m <= 25) handleDownloadJava(m);
-                    }}
-                    disabled={javaDownloadBusy !== null || !customMajorInput}
-                    className="rounded-lg border border-input px-2 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
-                  >
-                    Download
-                  </button>
                 </div>
               </div>
-              {javaDownloadProgress && javaDownloadBusy !== null && (
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-primary rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(javaDownloadPercent ?? 0, 100)}%` }}
-                      />
-                    </div>
-                    <button
-                      onClick={() => handleCancelJavaDownload(javaDownloadBusy!)}
-                      disabled={javaCancelling}
-                      className="rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50 shrink-0"
-                    >
-                      {javaCancelling ? 'Cancelling…' : 'Cancel'}
-                    </button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">{javaDownloadProgress}</p>
-                </div>
-              )}
-              {javaDownloadProgress && javaDownloadBusy === null && (
-                <p className="text-xs text-muted-foreground">{javaDownloadProgress}</p>
-              )}
             </div>
 
-            {/* Runtime table */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">Detected Java runtimes</label>
-                <div className="flex gap-2">
-                  <button
-                    onClick={refreshJavaRuntimes}
-                    disabled={javaRuntimesLoading}
-                    className="rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
-                  >
-                    {javaRuntimesLoading ? 'Refreshing…' : 'Refresh'}
-                  </button>
-                  <button
-                    onClick={handleRemoveUnusedJava}
-                    disabled={javaRemoveBusy || javaRuntimesLoading}
-                    className="rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
-                  >
-                    {javaRemoveBusy ? 'Removing…' : 'Remove unused'}
-                  </button>
+            {/* Section 2: Opencode */}
+            <div className="space-y-1.5 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">Opencode</h5>
+              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
+                <li>
+                  Add the config below to{' '}
+                  <code className="bg-muted px-1 py-0.5 rounded">
+                    .opencode/opencode.json
+                  </code>
+                  {' '}or{' '}
+                  <code className="bg-muted px-1 py-0.5 rounded">
+                    ~/.config/opencode/opencode.json (C:Users\[User]\.config\opencode)
+                  </code>
+                  .
+                </li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.opencode/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Restart Opencode.</li>
+              </ol>
+              <div className="relative">
+                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcp\": {\n    \"agora-mc\": {\n      \"type\": \"remote\",\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"enabled\": true\n    }\n  }\n}"}</pre>
+                <div className="absolute top-2 right-2">
+                  <CopyButton
+                    text={`{\n  "mcp": {\n    "agora-mc": {\n      "type": "remote",\n      "url": "http://127.0.0.1:39741/sse",\n      "enabled": true\n    }\n  }\n}`}
+                    label="Copy"
+                  />
                 </div>
               </div>
-              {javaRuntimesError && (
-                <p className="text-xs text-destructive">{javaRuntimesError}</p>
-              )}
-              {javaRuntimesLoading ? (
-                <p className="text-xs text-muted-foreground">Scanning for Java runtimes…</p>
-              ) : javaRuntimes.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No Java runtimes detected.</p>
-              ) : (
-                <div className="max-h-48 overflow-y-auto rounded-lg border border-border">
-                  <table className="w-full text-xs">
-                    <thead className="bg-muted/50">
-                      <tr>
-                        <th className="px-3 py-1.5 text-left font-medium">Source</th>
-                        <th className="px-3 py-1.5 text-left font-medium">Version</th>
-                        <th className="px-3 py-1.5 text-left font-medium">Arch</th>
-                        <th className="px-3 py-1.5 text-left font-medium">Path</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {javaRuntimes.map((rt, idx) => (
-                        <tr key={idx} className="border-t border-border">
-                          <td className="px-3 py-1.5">
-                            <span className={[
-                              'inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium',
-                              rt.source === 'Managed' ? 'bg-primary/10 text-primary'
-                                : rt.source === 'Mojang' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                                  : rt.source === 'System' ? 'bg-green-500/10 text-green-600 dark:text-green-400'
-                                    : 'bg-muted text-muted-foreground',
-                            ].join(' ')}>
-                              {rt.source}
-                            </span>
-                          </td>
-                          <td className="px-3 py-1.5 font-medium">{rt.version_string || `Java ${rt.version}`}</td>
-                          <td className="px-3 py-1.5">{rt.arch ?? '—'}</td>
-                          <td className="px-3 py-1.5 text-muted-foreground truncate max-w-[200px]" title={rt.path}>
-                            {rt.path}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            </div>
+
+            {/* Section 3: Claude Desktop */}
+            <div className="space-y-1.5 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">Claude Desktop</h5>
+              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
+                <li>
+                  Add the config below to{' '}
+                  <code className="bg-muted px-1 py-0.5 rounded">
+                    {isWindows
+                      ? '%APPDATA%\\Claude\\claude_desktop_config.json'
+                      : '~/Library/Application Support/Claude/claude_desktop_config.json'}
+                  </code>
+                  .
+                </li>
+                <li>Restart Claude Desktop.</li>
+              </ol>
+              <div className="relative">
+                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcpServers\": {\n    \"agora\": {\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"transport\": \"sse\"\n    }\n  }\n}"}</pre>
+                <div className="absolute top-2 right-2">
+                  <CopyButton
+                    text={`{\n  "mcpServers": {\n    "agora": {\n      "url": "http://127.0.0.1:39741/sse",\n      "transport": "sse"\n    }\n  }\n}`}
+                    label="Copy"
+                  />
                 </div>
-              )}
+              </div>
             </div>
-          </div>
 
-          <div id="settings-launcher" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">Launcher Path</h3>
-            <input
-              value={launcherPath}
-              onChange={(e) => {
-                setLauncherPath(e.target.value);
-                clearLauncherPathFeedback();
-              }}
-              placeholder="Auto-discovered if empty"
-              className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
-            />
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={saveLauncherPath}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                Save
-              </button>
-              <button
-                onClick={handleBrowseLauncher}
-                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
-              >
-                Browse…
-              </button>
-              <button
-                onClick={handleAutoDetectLauncher}
-                disabled={launcherPathDetecting}
-                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
-              >
-                {launcherPathDetecting ? 'Detecting…' : 'Auto-detect'}
-              </button>
-              <button
-                onClick={handleTestLauncherPath}
-                disabled={launcherPathTesting || !launcherPath.trim()}
-                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
-              >
-                {launcherPathTesting ? 'Testing…' : 'Test'}
-              </button>
+            {/* Section 4: Other MCP clients */}
+            <div className="space-y-1 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">Other MCP clients</h5>
+              <div className="text-xs text-muted-foreground space-y-0.5">
+                <p>Server URL: <code className="bg-muted px-1 py-0.5 rounded">http://127.0.0.1:39741/sse</code></p>
+                <p>Transport: <code className="bg-muted px-1 py-0.5 rounded">SSE (Server-Sent Events)</code></p>
+                <p>Authentication: Bearer token (see above)</p>
+                <p>If you get stuck, your AI agent might be able to help you troubleshoot/customize the MCP integration.</p>
+              </div>
             </div>
-            {launcherPathError && (
-              <p className="text-xs text-destructive">{launcherPathError}</p>
-            )}
-            {launcherPathSuccess && (
-              <p className="text-xs text-green-600 dark:text-green-400">{launcherPathSuccess}</p>
-            )}
-            {/* Show persistent setting error from typed settings */}
-            {ts.statuses['mojang_launcher_path']?.status === 'error' && (
-              <p className="text-xs text-destructive">
-                Failed to save: {ts.statuses['mojang_launcher_path']?.error}
-              </p>
-            )}
-            {ts.statuses['mojang_launcher_path']?.status === 'write-pending' && (
-              <p className="text-xs text-muted-foreground">Saving…</p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Override the official Mojang launcher executable location.
-            </p>
-          </div>
 
-          <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">JVM Defaults</h3>
-            <label className="flex items-center justify-between">
-              <span className="text-sm">AlwaysPreTouch</span>
-              <input
-                type="checkbox"
-                checked={alwaysPreTouch}
-                onChange={(e) => toggleAlwaysPreTouch(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              Recommended for G1GC, may cause issues with ZGC/Shenandoah.
-            </p>
-            {ts.statuses['always_pre_touch']?.status === 'error' && (
-              <p className="text-xs text-destructive">{ts.statuses['always_pre_touch']?.error}</p>
-            )}
-          </div>
-
-          {/* <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">Crash Telemetry</h3>
-            <label className="flex items-center justify-between">
-              <span className="text-sm">Allow anonymous crash telemetry</span>
-              <input
-                type="checkbox"
-                checked={crashTelemetry}
-                onChange={(e) => toggleCrashTelemetry(e.target.checked)}
-                className="h-5 w-5 accent-primary"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              Allow anonymous local crash telemetry to be collected for mod-incompatibility research. Aggregates are never uploaded unless you opt in. Saying no disables all telemetry.
-            </p>
-            <p className="text-xs text-muted-foreground mt-2">
-              Local crash learning (mod isolation & co-crash detection) runs automatically and never leaves your machine. This toggle only controls future anonymous aggregate sharing, which is not yet active.
-            </p>
-          </div> */}
-
-          <div id="settings-updates" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-3">
-            <h3 className="font-semibold">Software Updates</h3>
-            {appVersion && (
+            {/* Section 5: Skill content */}
+            <div className="space-y-1.5 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">Skill content</h5>
               <p className="text-xs text-muted-foreground">
-                Agora Launcher <span className="font-medium">{appVersion}</span>
+                The skill teaches your AI agent what the 10 Agora tools do and when to use them. Place it in your agent's skills directory.
               </p>
-            )}
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={async () => {
-                  try {
-                    const update = await check();
-                    if (update?.available) {
-                      const ok = await window.confirm(
-                        `Update available: ${update.version}\n\n${update.body ?? ''}\n\nDownload and install now?`
-                      );
-                      if (ok) {
-                        await update.downloadAndInstall();
-                        await invoke('plugin:process|restart');
-                      }
-                    } else {
-                      showToast('You are running the latest version of Agora.', 'success');
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!skillContent) return;
+                    await navigator.clipboard.writeText(skillContent);
+                    setSkillCopied(true);
+                    setTimeout(() => setSkillCopied(false), 2000);
+                  }}
+                  disabled={!skillContent || skillLoading}
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {skillCopied ? 'Copied!' : 'Copy Skill to Clipboard'}
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!skillContent) return;
+                    setSkillLoading(true);
+                    try {
+                      const blob = new Blob([skillContent], { type: 'text/markdown' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'SKILL.md';
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    } finally {
+                      setSkillLoading(false);
                     }
-                  } catch (e) {
-                    showToast(formatError(e), 'error');
-                  }
-                }}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                Check for Updates
-              </button>
-              <button
-                onClick={async () => {
-                  if (dataFolderOpening) return;
-                  setDataFolderOpening(true);
-                  try {
-                    await openDataFolder();
-                  } catch (e) {
-                    showToast(formatError(e), 'error');
-                  } finally {
-                    setDataFolderOpening(false);
-                  }
-                }}
-                disabled={dataFolderOpening}
-                className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
-              >
-                {dataFolderOpening ? 'Opening...' : 'Open application data folder'}
-              </button>
+                  }}
+                  disabled={!skillContent || skillLoading}
+                  className="rounded-md border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                >
+                  {skillLoading ? 'Downloading…' : 'Download SKILL.md'}
+                </button>
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.
+          </details>
+        </div>
+      )}
+    </SettingsSection>
+  );
+
+  /** Sections that read persisted settings show a placeholder until they load. */
+  const gate = (node: ReactNode) => (loading
+    ? <div className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">Loading settings...</div>
+    : node);
+
+  const tabs: SettingsTab[] = [
+    {
+      id: 'general',
+      label: 'General',
+      icon: SlidersHorizontal,
+      hint: 'Behaviour, tour, updates',
+      blurb: 'Everyday behaviour, the guided walkthrough, and application updates.',
+      pages: [
+        {
+          id: 'basics',
+          label: 'Basics',
+          content: (
+            <>
+              {advancedCard}
+              {installationCard}
+            </>
+          ),
+        },
+        { id: 'walkthrough', label: 'Walkthrough', content: walkthroughCard },
+        { id: 'updates', label: 'Updates', content: gate(updatesCard) },
+      ],
+    },
+    {
+      id: 'appearance',
+      label: 'Appearance',
+      icon: Paintbrush,
+      hint: 'Theme & living world',
+      blurb: 'Colour, type, and the living world behind every page.',
+      footer: <AppearanceResetControls onResetLayout={onResetLayout} />,
+      pages: [
+        { id: 'theme', label: 'Theme', content: <AppearanceThemeSettings /> },
+        { id: 'interface', label: 'Interface', content: <AppearanceInterfaceSettings /> },
+        {
+          id: 'living-background',
+          label: 'Living background',
+          content: (
+            <LivingBackgroundSettings
+              onOpenLivingBackground={onNavigateTab ? () => onNavigateTab('living-background') : undefined}
+            />
+          ),
+        },
+      ],
+    },
+    {
+      id: 'accounts',
+      label: 'Accounts',
+      icon: UserRound,
+      hint: 'Microsoft & GitHub',
+      blurb: 'Sign in for direct launching and for community governance.',
+      pages: [
+        {
+          id: 'sign-in',
+          label: 'Sign in',
+          content: (
+            <>
+              {microsoftCard}
+              {githubCard}
+            </>
+          ),
+        },
+      ],
+    },
+    {
+      id: 'launching',
+      label: 'Launching',
+      icon: Rocket,
+      hint: 'Launch mode & Java',
+      blurb: 'How Agora starts Minecraft, and which Java it runs it on.',
+      pages: [
+        {
+          id: 'mode',
+          label: 'Launch mode',
+          content: (
+            <>
+              {launchModeCard}
+              {gate(launcherPathCard)}
+            </>
+          ),
+        },
+        {
+          id: 'java',
+          label: 'Java',
+          content: (
+            <>
+              {gate(javaCard)}
+              {gate(jvmCard)}
+            </>
+          ),
+        },
+      ],
+    },
+    {
+      id: 'services',
+      label: 'Services',
+      icon: Plug,
+      hint: 'Sources & AI',
+      blurb: 'Third-party content sources and the AI integrations.',
+      pages: [
+        { id: 'sources', label: 'Content sources', content: gate(contentSourcesCard) },
+        { id: 'ai', label: 'AI & MCP', content: gate(aiCard) },
+      ],
+    },
+    ...(advancedMode
+      ? [{
+        id: 'privacy',
+        label: 'Privacy',
+        icon: ShieldCheck,
+        hint: 'Network & data',
+        blurb: 'What Agora is allowed to reach, and what it keeps on disk.',
+        pages: [{
+          id: 'privacy',
+          label: 'Privacy',
+          content: <div id="settings-privacy" className="scroll-mt-24"><Privacy /></div>,
+        }],
+      } as SettingsTab]
+      : []),
+  ];
+
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  const activePage = activeTab.pages.find((page) => page.id === activePageId) ?? activeTab.pages[0];
+  const selectTab = (id: string) => {
+    setActiveTabId(id);
+    setActivePageId(null);
+    storeSettingsTab(id);
+  };
+
+  return (
+    <div className="settings-page space-y-5" data-testid="settings-page">
+      <section className="agora-hero compact">
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="settings-hero-badge" aria-hidden="true">
+            <SettingsIcon className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-2xl font-bold">Settings</h2>
+            <p className="text-sm text-muted-foreground">{activeTab.blurb}</p>
+          </div>
+          {appVersion && <span className="settings-hero-chip">Agora {appVersion}</span>}
+        </div>
+      </section>
+
+      {/* Inline error banner for any setting that failed to load. Page-level:
+          a failed key can belong to any tab, and hiding the warning behind the
+          tab that happens to own it is how it goes unnoticed. */}
+      {Object.keys(ts.errors).length > 0 && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 space-y-1">
+          <p className="text-xs font-semibold text-destructive">Some settings failed to load</p>
+          {Object.entries(ts.errors).map(([key, err]) => (
+            <p key={key} className="text-xs text-destructive/80">
+              <code className="bg-destructive/10 px-1 rounded">{key}</code>: {err}
             </p>
+          ))}
+        </div>
+      )}
+
+      <div className="settings-layout">
+        <SettingsTabRail
+          items={tabs.map(({ id, label, icon, hint }) => ({ id, label, icon, hint }))}
+          activeId={activeTab.id}
+          onSelect={selectTab}
+        />
+
+        <div className="min-w-0 space-y-4">
+          {activeTab.pages.length > 1 && (
+            <SettingsSubNav
+              label={activeTab.label + ' pages'}
+              items={activeTab.pages.map(({ id, label }) => ({ id, label }))}
+              activeId={activePage.id}
+              onSelect={setActivePageId}
+            />
+          )}
+
+          <div
+            key={activeTab.id + ':' + activePage.id}
+            id={`settings-panel-${activeTab.id}`}
+            role="tabpanel"
+            aria-labelledby={`settings-tab-${activeTab.id}`}
+            className="settings-panel space-y-4"
+          >
+            {activeTab.pages.length > 1 ? (
+              <div
+                id={`settings-subpanel-${activePage.id}`}
+                role="tabpanel"
+                aria-labelledby={`settings-subtab-${activePage.id}`}
+                className="space-y-4"
+              >
+                {activePage.content}
+              </div>
+            ) : (
+              activePage.content
+            )}
           </div>
 
-          {advancedMode && (
-            <div id="settings-privacy" className="scroll-mt-24">
-              <Privacy />
-            </div>
-          )}
-          {!advancedMode && (
-            <p className="text-xs text-muted-foreground">Enable Advanced mode in Settings to see JVM, network, and MCP options.</p>
-          )}
-        </>
-      )}
+          {activeTab.footer}
+        </div>
+      </div>
     </div>
   );
 }

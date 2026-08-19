@@ -618,3 +618,198 @@
    (buttons with their own brand background, e.g. Discord) is left alone. */
 .agora-hero [class*="text-white/"] { color: hsl(var(--card-foreground) / 0.78); }
 .agora-hero strong[class*="text-white"] { color: hsl(var(--card-foreground)); }
+
+/* ── Settings shell ───────────────────────────────────────────────────
+   The settings page is a two-level nav: a section rail (role="tablist")
+   beside the panel, and sub-page pills inside it. Colours come from the
+   semantic tokens only, so a custom accent / block colour / opacity carries
+   through exactly as it does everywhere else. Every transition here is
+   decorative, so the global reduced-motion rules neutralise them. */
+
+.settings-layout {
+  display: grid;
+  gap: 1rem;
+  align-items: start;
+}
+@media (min-width: 1024px) {
+  .settings-layout { grid-template-columns: 15rem minmax(0, 1fr); }
+}
+
+.settings-hero-badge {
+  display: grid;
+  place-items: center;
+  height: 2.75rem;
+  width: 2.75rem;
+  flex-shrink: 0;
+  border-radius: calc(var(--radius) * 1.1);
+  background-image: linear-gradient(150deg, hsl(var(--primary)), hsl(var(--primary) / 0.55));
+  color: hsl(var(--primary-foreground));
+  box-shadow: 0 12px 26px -16px hsl(var(--primary));
+}
+
+.settings-hero-chip {
+  border-radius: 999px;
+  border: 1px solid hsl(var(--card-foreground) / 0.25);
+  background-color: hsl(var(--card-foreground) / 0.08);
+  padding: 0.2rem 0.65rem;
+  font-size: calc(0.6875rem * var(--font-scale));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* The rail follows the panel down long sections rather than scrolling away.
+   `min-width: 0` is load-bearing: as a grid item its automatic minimum size is
+   the min-content width of the tab row, which in the single-column (narrow)
+   layout is wide enough to push the whole page into horizontal overflow. */
+.settings-rail { position: relative; min-width: 0; }
+@media (min-width: 1024px) {
+  .settings-rail { position: sticky; top: 0; z-index: 10; }
+}
+
+.settings-rail-list {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  border-radius: calc(var(--radius) * 1.15);
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--card) / var(--surface-opacity));
+  padding: 0.35rem;
+  box-shadow: 0 10px 30px -26px hsl(var(--foreground) / 0.8);
+  backdrop-filter: blur(8px);
+}
+@media (min-width: 1024px) {
+  .settings-rail-list { flex-direction: column; overflow-x: visible; }
+}
+
+.settings-tab {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.6rem;
+  border-radius: calc(var(--radius) * 0.85);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  color: hsl(var(--muted-foreground));
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+@media (min-width: 1024px) {
+  .settings-tab { width: 100%; }
+}
+
+.settings-tab:hover {
+  background-color: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+.settings-tab:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.settings-tab[aria-selected="true"] {
+  color: hsl(var(--primary-foreground));
+  background-image: linear-gradient(120deg, hsl(var(--primary)), hsl(var(--primary) / 0.7));
+  box-shadow: 0 10px 22px -16px hsl(var(--primary));
+}
+
+.settings-tab-icon {
+  display: grid;
+  place-items: center;
+  height: 1.75rem;
+  width: 1.75rem;
+  flex-shrink: 0;
+  border-radius: calc(var(--radius) * 0.6);
+  background-color: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.settings-tab[aria-selected="true"] .settings-tab-icon {
+  background-color: hsl(var(--primary-foreground) / 0.2);
+  color: hsl(var(--primary-foreground));
+}
+
+.settings-tab-hint {
+  display: none;
+  font-size: calc(0.6875rem * var(--font-scale));
+  line-height: 1.25;
+  opacity: 0.75;
+}
+@media (min-width: 1024px) {
+  .settings-tab-hint { display: block; }
+}
+
+/* Sub-page pills — a segmented control, one row, scrolls if it must. */
+.settings-subnav {
+  display: flex;
+  gap: 0.2rem;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--muted));
+  padding: 0.25rem;
+}
+
+.settings-subtab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.3rem 0.85rem;
+  font-size: calc(0.8125rem * var(--font-scale));
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.settings-subtab:hover { color: hsl(var(--foreground)); }
+
+.settings-subtab:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.settings-subtab[aria-selected="true"] {
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: 0 6px 14px -10px hsl(var(--foreground) / 0.9);
+}
+
+/* Panels are keyed on the open sub-page, so this replays on every switch. */
+.settings-panel { animation: settings-panel-in 0.22s ease both; }
+
+@keyframes settings-panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.settings-card-icon {
+  display: grid;
+  place-items: center;
+  height: 2rem;
+  width: 2rem;
+  flex-shrink: 0;
+  border-radius: calc(var(--radius) * 0.7);
+  background-color: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+
+/* Signpost block — currently the Living Background hand-off. Accent-tinted on
+   the card surface (never a bare `bg-primary/5`, which reads as floating text
+   over the living background). */
+.settings-feature-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  border-radius: var(--radius);
+  border: 1px solid hsl(var(--primary) / 0.35);
+  background-color: hsl(var(--card) / var(--surface-opacity));
+  background-image: linear-gradient(120deg, hsl(var(--primary) / 0.16), hsl(var(--primary) / 0.03));
+  padding: 0.85rem 1rem;
+}

@@ -702,6 +702,7 @@ export default function App() {
                 {effectiveTab === 'about' && <About />}
                 {effectiveTab === 'settings' && (
                   <Settings
+                    onNavigateTab={navigateToTab}
                     onResetLayout={() => {
                       const reset = {
                         ...DEFAULT_SHELL_LAYOUT,

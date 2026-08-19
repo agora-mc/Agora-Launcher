@@ -8,6 +8,13 @@ import { test, expect } from '@playwright/test';
  * correctly: inline errors, success messages, and button states.
  */
 
+/** The launcher path lives on Settings > Launching > Launch mode. */
+function openLaunchingSection(page: import('@playwright/test').Page) {
+  return page.getByRole('navigation', { name: 'Settings sections' })
+    .getByRole('tab', { name: 'Launching' })
+    .click();
+}
+
 function setupTauriMocks(page: import('@playwright/test').Page, overrides: Record<string, unknown> = {}) {
   return page.addInitScript((overrides) => {
     const callbacks = new Map<number, (...args: unknown[]) => void>();
@@ -69,6 +76,7 @@ test.describe('Launcher Path (B3)', () => {
     await setupTauriMocks(page);
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     await expect(page.getByRole('heading', { name: 'Launcher Path' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save' }).first()).toBeVisible();
@@ -83,6 +91,7 @@ test.describe('Launcher Path (B3)', () => {
     });
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     await page.getByRole('button', { name: 'Auto-detect' }).click();
 
@@ -100,6 +109,7 @@ test.describe('Launcher Path (B3)', () => {
     });
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     await page.getByRole('button', { name: 'Auto-detect' }).click();
 
@@ -111,6 +121,7 @@ test.describe('Launcher Path (B3)', () => {
     await setupTauriMocks(page);
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     // Type a path in the input
     const input = page.getByPlaceholder('Auto-discovered if empty');
@@ -128,6 +139,7 @@ test.describe('Launcher Path (B3)', () => {
     });
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     const input = page.getByPlaceholder('Auto-discovered if empty');
     await input.fill('C:\\Minecraft\\MinecraftLauncher.exe');
@@ -142,6 +154,7 @@ test.describe('Launcher Path (B3)', () => {
     await setupTauriMocks(page);
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     const testButton = page.getByRole('button', { name: 'Test' });
     await expect(testButton).toBeDisabled();
@@ -192,15 +205,16 @@ test.describe('Inline setting errors (B3)', () => {
 
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     // Toggle launch mode to trigger a save that will fail
-    const launchModeCheckbox = page.getByRole('heading', { name: 'Launch Mode' }).locator('..').getByRole('checkbox');
+    const launchModeSection = page.locator('#settings-launching');
     // The checkbox reflects the current state; clicking should toggle and trigger save
-    await launchModeCheckbox.click();
+    await launchModeSection.getByRole('checkbox').click();
 
     // The inline error should appear in the Launch Mode section
     await expect(
-      page.getByRole('heading', { name: 'Launch Mode' }).locator('..').getByText('Backend write failed', { exact: true }),
+      launchModeSection.getByText('Backend write failed', { exact: true }),
     ).toBeVisible();
   });
 
@@ -246,6 +260,7 @@ test.describe('Inline setting errors (B3)', () => {
 
     await page.goto('/');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await openLaunchingSection(page);
 
     // The error banner should appear
     await expect(page.getByText('Some settings failed to load')).toBeVisible();
