@@ -111,3 +111,5 @@ Detailed compiler configuration, release mechanics, governance incident recovery
 Agora workspace packages declare [GPL-3.0-only](LICENSE).
 
 Join the [project Discord](https://discord.gg/56tpsa2sTZ) for community support. Contributions and reviews follow the project [Code of Engagement](./CODE_OF_ENGAGEMENT.md): keep discussion technical, focused, respectful, and relevant to the asset or change under review.
+
+If you're feeling generous, you can donate at https://github.com/sponsors/jarjarpfeil. If Agora has made modding easier or more enjoyable for you, please consider sponsoring its development. Your donation keeps Agora improving and helps fund awesome new projects for the community. Every contribution means a lot — thank you!

@@ -215,13 +215,7 @@ export default function GovernancePage() {
             <span aria-hidden="true">♥</span> Sponsor Agora
           </a>
         </div>
-        <p className="mt-4 text-xs leading-5 text-gray-600 dark:text-gray-400">
-          Agora is free and ad-free, funded by community donations. If you enjoy Agora,{' '}
-          <a href={SPONSORS_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-pink-600 hover:underline dark:text-pink-400">
-            please consider sponsoring
-          </a>{' '}
-          — your support keeps Agora improving and helps fund awesome new projects in the future.
-        </p>
+        
       </section>
 
       <section className="rounded-xl border bg-white p-6 dark:border-gray-700 dark:bg-gray-800">

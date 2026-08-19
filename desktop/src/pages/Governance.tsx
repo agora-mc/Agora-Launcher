@@ -4,12 +4,14 @@ import {
   ThumbsUp,
   GitBranch,
   MessagesSquare,
+    HeartHandshake,
+
   ShieldCheck,
   BookMarked,
   ArrowUp,
   ArrowDown,
 } from 'lucide-react';
-import { agoraRepositoryUrl, agoraDiscordUrl } from '../lib/brandConfig';
+import { agoraRepositoryUrl, agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 
 const RULES = [
   {
@@ -219,6 +221,15 @@ export function Governance() {
               GitHub Repository
             </a>
           )}
+          <a
+            href={agoraSponsorsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
+          >
+            <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+            Donate
+          </a>
         </div>
       </section>
     </div>

@@ -120,26 +120,6 @@ export function About() {
         </p>
       </section>
 
-      {/* Support Agora */}
-      <section className="rounded-xl border border-pink-500/20 bg-pink-500/10 p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
-          <h3 className="text-lg font-semibold">Support Agora’s future</h3>
-        </div>
-        <p className="text-sm leading-6 text-muted-foreground mb-4">
-          Agora is free, open source, and ad-free — built by a solo developer who loves the Minecraft community. If Agora has made modding easier or more enjoyable for you, please consider sponsoring its development. Your donation keeps Agora improving and helps fund awesome new projects for the community. Every contribution means a lot — thank you!
-        </p>
-        <a
-          href={agoraSponsorsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-pink-700"
-        >
-          <HeartHandshake className="h-4 w-4" aria-hidden="true" />
-          Sponsor on GitHub
-        </a>
-      </section>
-
       {/* Get involved */}
       <section className="agora-panel-accent rounded-xl border border-primary/25 p-6">
         <div className="flex items-center gap-2 mb-3">
