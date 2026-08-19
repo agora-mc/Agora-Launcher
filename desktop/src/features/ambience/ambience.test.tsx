@@ -28,7 +28,7 @@ import { EGGS } from './engine/eggs';
 import { groundYWorld, waterSpan } from './engine/terrain';
 import { MUSIC_TRACKS } from './engine/audio/tracks';
 import { SPECIES_BY_KEY } from './engine/species';
-import { noteFreq } from './engine/audio/music';
+import { music, noteFreq } from './engine/audio/music';
 import type { Species, WorldState } from './engine/types';
 import { AmbienceCanvas } from './AmbienceCanvas';
 import { AmbienceEngine } from './engine/engine';
@@ -411,6 +411,77 @@ describe('music data (tracks.ts)', () => {
     expect(noteFreq('A2')).toBeCloseTo(110, 6);
     // Mountain King opens on B3
     expect(noteFreq('B3')).toBeCloseTo(246.9416506, 3);
+  });
+});
+
+/* ── autoplay track selection ─────────────────────────────────── */
+
+describe('music autoplay ("let it choose")', () => {
+  // The constructor only stashes the 2d context; jsdom has none and prints a
+  // "not implemented" trace per canvas, which buries the real output.
+  const originalGetContext = HTMLCanvasElement.prototype.getContext;
+  beforeEach(() => {
+    HTMLCanvasElement.prototype.getContext =
+      (() => null) as typeof HTMLCanvasElement.prototype.getContext;
+  });
+  afterEach(() => { HTMLCanvasElement.prototype.getContext = originalGetContext; });
+
+  /** No start(): `nextTrack` is pure bookkeeping and never touches a canvas. */
+  function bareEngine(): AmbienceEngine {
+    return new AmbienceEngine(
+      document.createElement('canvas'),
+      document.createElement('canvas'),
+      { profile: 'calm', musicOn: false },
+    );
+  }
+
+  /**
+   * Deal n pieces the way autoplay does. Each pick becomes "now playing", which
+   * is what the engine reads back to keep a bag from reopening on the piece the
+   * last one closed with.
+   */
+  function deal(engine: AmbienceEngine, n: number): string[] {
+    let playing: string | null = null;
+    const spy = vi.spyOn(music, 'currentTrackId').mockImplementation(() => playing);
+    const next = (engine as unknown as {
+      nextTrack(all: typeof MUSIC_TRACKS): { id: string } | null;
+    }).nextTrack.bind(engine);
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const t = next(MUSIC_TRACKS);
+      if (!t) throw new Error('autoplay ran dry');
+      playing = t.id;
+      out.push(t.id);
+    }
+    spy.mockRestore();
+    return out;
+  }
+
+  it('draws from the whole library, not the mood of the hour', () => {
+    // The mood filter this replaced could only ever reach 5 pieces by day and
+    // 3 at night; Bumblebee and Fate were unreachable outright.
+    const picks = deal(bareEngine(), MUSIC_TRACKS.length);
+    expect(new Set(picks).size).toBe(MUSIC_TRACKS.length);
+  });
+
+  it('plays every piece once before any piece plays twice', () => {
+    const rounds = 3;
+    const picks = deal(bareEngine(), MUSIC_TRACKS.length * rounds);
+    for (let r = 0; r < rounds; r++) {
+      const bag = picks.slice(r * MUSIC_TRACKS.length, (r + 1) * MUSIC_TRACKS.length);
+      expect(new Set(bag).size).toBe(MUSIC_TRACKS.length);
+    }
+  });
+
+  it('never repeats back to back, bag seams included', () => {
+    // A bag's one repeat risk is the seam. Unguarded it lands with p = 1/13 per
+    // refill, so 40 runs x 2 seams would catch it ~99.8% of the time.
+    for (let run = 0; run < 40; run++) {
+      const picks = deal(bareEngine(), MUSIC_TRACKS.length * 3);
+      for (let i = 1; i < picks.length; i++) {
+        expect(picks[i]).not.toBe(picks[i - 1]);
+      }
+    }
   });
 });
 
