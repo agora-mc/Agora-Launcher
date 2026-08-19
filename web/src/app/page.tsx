@@ -68,6 +68,9 @@ export default async function HomePage() {
               checks health before launch, recommends compatible loader versions, and creates
               recovery points before risky changes.
             </p>
+            <Link href="/about" className="ui-text mt-3 inline-flex text-sm font-semibold text-gold hover:underline">
+              What makes Agora special →
+            </Link>
           </div>
           <div className="flex shrink-0 flex-wrap gap-3 md:pt-2">
             <Link href="/docs" className="btn-gold px-4 py-2.5 text-sm">

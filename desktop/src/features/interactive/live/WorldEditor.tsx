@@ -65,6 +65,7 @@ function TileArtwork({ name, iconUrl }: { name: string; iconUrl?: string }) {
           alt=""
           loading="lazy"
           decoding="async"
+          draggable={false}
           onError={(event) => event.currentTarget.remove()}
         />
       ) : null}
@@ -183,6 +184,7 @@ export function WorldEditor({
 
   // order is local and mutable (drag-to-rearrange), reset when the data changes
   const orderRef = useRef<string[]>([]);
+  const [orderVersion, setOrderVersion] = useState(0);
   useEffect(() => {
     orderRef.current = editor.items.map((it) => it.id);
     setSelectedName((cur) => (cur && editor.byId.has(cur) ? cur : null));
@@ -197,8 +199,10 @@ export function WorldEditor({
       .filter((it) => !removedMatching(it));
     const rest = editor.items.filter((it) => ordered.indexOf(it) < 0 && !removedMatching(it));
     return ordered.concat(rest);
+    // orderVersion is the cosmetic reorder signal; orderRef is mutated in place
+    // during drag, so the memo must re-run when the version ticks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, removed]);
+  }, [editor, removed, orderVersion]);
 
   function removedMatching(it: EditorItem): boolean {
     return removed?.id === it.id;
@@ -416,7 +420,13 @@ export function WorldEditor({
     setPeek(null);
   }, []);
 
-  // ---- drag to rearrange ----
+  // ---- drag to rearrange (high-interaction only, purely cosmetic) ----
+  // Root cause of the old "freeze": the tiles contain <img> mod icons, and a
+  // press-and-move over an image starts a NATIVE HTML5 drag in WebView2. The
+  // native drag cancels the pointer stream (pointercancel, no pointerup), so
+  // the drag appeared frozen until a later click unstuck it. Cancelling
+  // `dragstart` on the grid (below) plus pointercancel handling keeps the
+  // pointer stream ours: hold to lift, move to reorder, release to drop.
   const gridRef = useRef<HTMLDivElement>(null);
   const linksRef = useRef<SVGSVGElement>(null);
   const dragState = useRef<{ id: string; el: HTMLElement } | null>(null);
@@ -440,21 +450,18 @@ export function WorldEditor({
     const over = document.elementFromPoint(e.clientX, e.clientY);
     const target = over?.closest?.('.we-slot') as HTMLElement | null;
     if (!target || target === drag.el) return;
+    const targetName = target.dataset.name ?? '';
+    const targetItem = editor.byId.get(targetName);
+    const toId = targetItem?.id ?? targetName;
     const from = orderRef.current.indexOf(drag.id);
-    const to = orderRef.current.indexOf(target.dataset.name ?? '');
-    if (from < 0 || to < 0) return;
+    const to = orderRef.current.indexOf(toId);
+    if (from < 0 || to < 0 || from === to) return;
+    // purely cosmetic: splice the local order and let React re-render
     orderRef.current.splice(to, 0, orderRef.current.splice(from, 1)[0]);
-    const r = target.getBoundingClientRect();
-    const grid = gridRef.current;
-    if (grid) grid.insertBefore(drag.el, e.clientX < r.left + r.width / 2 ? target : target.nextSibling);
-    forceRender();
-  }, []);
-
-  const [, setTick] = useState(0);
-  const forceRender = useCallback(() => setTick((t) => t + 1), []);
+    setOrderVersion((v) => v + 1);
+  }, [editor]);
 
   const endDrag = useCallback(() => {
-    document.removeEventListener('pointermove', onDragMove);
     const drag = dragState.current;
     if (!drag) return;
     drag.el.classList.remove('dragging');
@@ -463,35 +470,91 @@ export function WorldEditor({
     ghost?.classList.remove('on');
     dragState.current = null;
     justDragged.current = Date.now();
-  }, [onDragMove]);
+  }, []);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0 || reduce || !decor.drag) return;
     const slot = (e.target as HTMLElement).closest?.('.we-slot') as HTMLElement | null;
     if (!slot) return;
     const name = slot.dataset.name ?? '';
-    const startX = e.clientX, startY = e.clientY;
+    const item = editor.byId.get(name);
+    if (!item) return;
+    const id = item.id;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let hasStarted = false;
     let timer: number | null = null;
-    const cancel = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener('pointerup', cancel);
-    };
-    timer = window.setTimeout(() => {
-      // build + show ghost
+
+    const ensureStarted = (clientX: number, clientY: number) => {
+      if (hasStarted) return;
+      hasStarted = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
       const ghost = document.querySelector('.we-ghost') as HTMLElement | null;
       if (ghost) {
         ghost.style.background = tileBackground(name);
         ghost.textContent = monoOf(name);
         ghost.classList.add('on');
-        ghost.style.left = `${startX - 42}px`;
-        ghost.style.top = `${startY - 42}px`;
+        ghost.style.left = `${clientX - 42}px`;
+        ghost.style.top = `${clientY - 42}px`;
       }
-      beginDrag(slot, name);
-      document.addEventListener('pointermove', onDragMove);
-      document.addEventListener('pointerup', endDrag, { once: true });
-    }, 190);
-    document.addEventListener('pointerup', cancel);
-  }, [reduce, simple, beginDrag, onDragMove, endDrag]);
+      beginDrag(slot, id);
+    };
+
+    // Hold-to-pickup: even without movement, a sustained press lifts the tile
+    timer = window.setTimeout(() => {
+      ensureStarted(startX, startY);
+    }, 140);
+
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      const moved = Math.hypot(dx, dy) > 8;
+      if (!hasStarted && moved) {
+        ensureStarted(ev.clientX, ev.clientY);
+      }
+      if (hasStarted) {
+        onDragMove(ev);
+      }
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      cleanup();
+      if (!hasStarted) return;
+      const ghost = document.querySelector('.we-ghost') as HTMLElement | null;
+      if (ghost) {
+        ghost.style.left = `${ev.clientX - 42}px`;
+        ghost.style.top = `${ev.clientY - 42}px`;
+      }
+      endDrag();
+    };
+
+    // If the pointer stream is cancelled (native gesture, alt-tab, pen/touch
+    // takeover), end the drag NOW instead of stranding it mid-shelf.
+    const onCancel = () => {
+      cleanup();
+      if (hasStarted) endDrag();
+    };
+
+    const cleanup = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+
+    // Window-level listeners: the pointer may travel off the grid entirely,
+    // and element-level capture once swallowed pointerup and stranded the
+    // drag until a second click.
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+    window.addEventListener('pointercancel', onCancel, { once: true });
+  }, [reduce, decor.drag, editor, beginDrag, onDragMove, endDrag]);
 
   const onSlotClick = useCallback((name: string) => {
     if (Date.now() - justDragged.current < 250) return;
@@ -751,7 +814,12 @@ export function WorldEditor({
               measured from laid-out DOM, which React cannot express declaratively.
               Simple mode has no curves, so it has no canvas for them either. */}
           {decor.diagram ? <svg className="we-links" ref={linksRef} aria-hidden="true" /> : null}
-          <div className="we-grid" onPointerDown={onPointerDown} data-testid="we-grid">
+          <div
+            className="we-grid"
+            onPointerDown={onPointerDown}
+            onDragStart={(e) => e.preventDefault()}
+            data-testid="we-grid"
+          >
             {visible.map((it, idx) => {
               const lit = focused && relatedIds.has(it.id);
               const pressed = selectedName === it.name;

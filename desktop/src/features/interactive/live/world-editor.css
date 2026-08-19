@@ -306,7 +306,14 @@
   gap: 14px;
   position: relative;
   z-index: 1;
+  /* Native image/text drags cancel the pointer stream in WebView2 (no
+     pointerup), which froze shelf drag-to-rearrange until a later click.
+     Selection is meaningless on tiles, so kill the native behaviours here;
+     the grid also cancels `dragstart` in JS as a second layer. */
+  user-select: none;
+  -webkit-user-select: none;
 }
+.we-grid img { -webkit-user-drag: none; }
 
 .we-slot {
   position: relative;

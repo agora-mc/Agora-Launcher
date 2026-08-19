@@ -6,31 +6,7 @@
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Presentation Layer                    │
-│  React (desktop/src/) · CLI formatting · MCP responses  │
-│      Owns: UI state, navigation, form/transient state   │
-│      User decisions returned via callback, not executed  │
-└──────────────────────┬──────────────────────────────────┘
-                       │ IPC / stdin-json / arg-parse
-┌──────────────────────▼──────────────────────────────────┐
-│                   Adapter Layer                          │
-│  Tauri commands · CLI arg disp. · MCP transport         │
-│  Owns: IPC events, channel mapping, DTO formatting,      │
-│  OS integration (system tray, window mgmt, file dialog)  │
-│  Delegates ALL business to core — zero biz logic         │
-└──────────────────────┬──────────────────────────────────┘
-                       │ direct function call
-┌──────────────────────▼──────────────────────────────────┐
-│                   Core Layer (agora-core)                │
-│  Owns: ALL business logic, data layout, DB access,       │
-│  catalogs, LaunchService, InstallService, auth, health,  │
-│  crash, dependency, snapshot, lockfile, network policy,  │
-│  Java/loader ops, MCP dispatcher, locks, operation state │
-│  NO Tauri · NO Clap · NO MCP protocol types              │
-└─────────────────────────────────────────────────────────┘
-```
+Canonical reference for which code belongs where.
 
 ## Ownership Rules
 

@@ -168,11 +168,6 @@ pub fn set_instance_icon(
     if row.is_locked {
         return Err(LauncherError::InstanceLocked);
     }
-    if !row.is_modpack {
-        return Err(icon_error(
-            "Custom pack images are only available for modpack instances.",
-        ));
-    }
     let relative = copy_icon(
         source_path,
         &instance_dir,

@@ -149,4 +149,16 @@ describe('WorldEditor dependency curves', () => {
     expect(icon).toHaveAttribute('src', 'https://cdn.example.test/icon.png');
     expect(icon?.parentElement).toHaveClass('tile-art');
   });
+
+  it('cancels native dragstart, which would freeze drag-to-rearrange', () => {
+    // A native HTML5 drag (tile images are draggable by default) cancels the
+    // pointer stream in WebView2 — no pointerup ever fires — which is what
+    // made the shelf drag stick until a second click. The grid must cancel
+    // dragstart so the pointer stream stays ours.
+    renderEditor(sceneWith('lib.jar', ['a.jar']));
+    const slot = slotNamed('lib.jar');
+    const dragStart = new Event('dragstart', { bubbles: true, cancelable: true });
+    slot.dispatchEvent(dragStart);
+    expect(dragStart.defaultPrevented).toBe(true);
+  });
 });

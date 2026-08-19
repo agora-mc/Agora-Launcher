@@ -17,25 +17,15 @@ import { SettingsSection } from './SettingsSection';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
-export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => void }) {
-  const { preferences, setPreferences, resetPreferences } = useUiPreferences();
-  // The interaction mode is a presentation preference with its own versioned
-  // key (MASTER_ARCHITECTURE §5.3), so it is read/written directly rather than
-  // folded into the theme blob. §5.2 requires it to be selectable from a
-  // clearly named interaction control — this is that control.
-  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
-  const applyInteraction = (value: InteractionPreference) => {
-    setInteraction(value);
-    savePreference(value);
-    // Simple and High Interaction both render the live instance view, so both
-    // resume it; only Standard suspends.
-    if (value === 'standard') suspendHighInteraction();
-    else resumeHighInteractionView();
-  };
-  // Simple pins motion to `reduced` (PresentationMotionCoordinator applies it).
-  // Showing the control as disabled beats letting the user pick a value that is
-  // silently written back a moment later.
-  const motionPin = pinnedMotion(interaction);
+/**
+ * Theme sub-page — color mode, accent, and the custom surface colors.
+ *
+ * Split out of the old single Appearance card when the settings page moved to
+ * tabs + sub-pages: colour, typography, and the living background are three
+ * separate decisions and each is long enough to own a page.
+ */
+export function AppearanceThemeSettings() {
+  const { preferences, setPreferences } = useUiPreferences();
 
   return (
     <SettingsSection
@@ -203,9 +193,15 @@ export function AppearanceInterfaceSettings() {
   const applyInteraction = (value: InteractionPreference) => {
     setInteraction(value);
     savePreference(value);
-    if (value === 'high-interaction') resumeHighInteractionView();
-    else suspendHighInteraction();
+    // Simple and High Interaction both render the live instance view, so both
+    // resume it; only Standard suspends.
+    if (value === 'standard') suspendHighInteraction();
+    else resumeHighInteractionView();
   };
+  // Simple pins motion to `reduced` (PresentationMotionCoordinator applies it).
+  // Showing the control as disabled beats letting the user pick a value that is
+  // silently written back a moment later.
+  const motionPin = pinnedMotion(interaction);
 
   return (
     <>
@@ -344,7 +340,7 @@ export function AppearanceResetControls({ onResetLayout }: { onResetLayout: () =
  * without it.
  */
 export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLivingBackground?: () => void }) {
-  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground } = useAmbience();
+  const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground, motionSuppressed } = useAmbience();
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;

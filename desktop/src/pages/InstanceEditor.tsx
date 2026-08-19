@@ -701,10 +701,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleSetInstanceIcon = async () => {
-    if (!row?.is_modpack || row.is_locked) return;
+    if (row?.is_locked) return;
     setError(null);
     try {
-      const sourcePath = await pickOpenFile('Choose modpack icon', ['png', 'jpg', 'jpeg', 'webp', 'gif']);
+      const sourcePath = await pickOpenFile('Choose instance icon', ['png', 'jpg', 'jpeg', 'webp', 'gif']);
       if (!sourcePath) return;
       const icon = await setCustomInstanceIcon(instanceId, sourcePath);
       setInstanceCustomIcon(icon);
@@ -1377,13 +1377,41 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       <section className="rounded-xl border border-border bg-card p-6">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="flex items-start gap-4">
-            {(instanceCustomIcon || packIconUrl(manifest)) && (
-              <img
-                src={instanceCustomIcon ?? packIconUrl(manifest) ?? undefined}
-                alt={`${row?.name ?? 'Modpack'} icon`}
-                className="h-16 w-16 shrink-0 rounded-xl border border-border object-cover"
-              />
-            )}
+            {instanceCustomIcon || packIconUrl(manifest) ? (
+              !row?.is_locked ? (
+                <button
+                  type="button"
+                  onClick={handleSetInstanceIcon}
+                  disabled={recoveryBlocked}
+                  className="h-16 w-16 shrink-0 rounded-xl border border-border overflow-hidden p-0 hover:opacity-90 disabled:opacity-50"
+                  title="Change instance image"
+                  aria-label="Change instance image"
+                >
+                  <img
+                    src={instanceCustomIcon ?? packIconUrl(manifest) ?? undefined}
+                    alt={`${row?.name ?? 'Instance'} icon`}
+                    className="h-full w-full object-cover"
+                  />
+                </button>
+              ) : (
+                <img
+                  src={instanceCustomIcon ?? packIconUrl(manifest) ?? undefined}
+                  alt={`${row?.name ?? 'Instance'} icon`}
+                  className="h-16 w-16 shrink-0 rounded-xl border border-border object-cover"
+                />
+              )
+            ) : !row?.is_locked ? (
+              <button
+                type="button"
+                onClick={handleSetInstanceIcon}
+                disabled={recoveryBlocked}
+                className="h-16 w-16 shrink-0 rounded-xl border border-dashed border-border bg-muted flex items-center justify-center hover:bg-accent disabled:opacity-50"
+                title="Set a custom instance image"
+                aria-label="Set instance image"
+              >
+                <ImagePlus className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+              </button>
+            ) : null}
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-2xl font-bold">
@@ -1478,13 +1506,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               {row?.last_launched_at && (
                 <span className="ml-2">· Last launched {formatInstalledDate(row.last_launched_at)}</span>
               )}
-              {row?.is_modpack && !row.is_locked && (
+              {!row?.is_locked && (
                 <button
                   type="button"
                   onClick={handleSetInstanceIcon}
                   disabled={recoveryBlocked}
                   className="inline-flex items-center gap-1 rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                  title="Set a custom modpack image"
+                  title="Set a custom instance image"
                 >
                   <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
                   Set image
