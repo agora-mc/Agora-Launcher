@@ -1,4 +1,14 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+/**
+ * Appearance is a section of the settings rail with three sub-pages: colour
+ * lives on Theme, type/motion on Interface, the world on Living background.
+ */
+async function openAppearance(page: Page, subPage: 'Theme' | 'Interface' | 'Living background' = 'Theme') {
+  await page.getByRole('navigation', { name: 'Settings sections' })
+    .getByRole('tab', { name: 'Appearance' }).click();
+  await page.getByRole('tab', { name: subPage, exact: true }).click();
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -20,6 +30,7 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await openAppearance(page);
 });
 
 test('custom accent updates semantic tokens, persists, and resets', async ({ page }) => {
@@ -32,6 +43,7 @@ test('custom accent updates semantic tokens, persists, and resets', async ({ pag
 
   await page.reload();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await openAppearance(page);
   await expect(page.getByLabel('Accent source')).toHaveValue('custom');
   await expect(page.getByLabel('Custom accent color')).toHaveValue('#663399');
 
@@ -51,6 +63,7 @@ test('system accent remains a mode and is not persisted as a custom color', asyn
 });
 
 test('font, scale, contrast, and reduced motion persist', async ({ page }) => {
+  await openAppearance(page, 'Interface');
   await page.getByLabel('Interface font').selectOption('readable');
   await page.getByLabel('Text scale').fill('1.15');
   await page.getByLabel('Motion preference').selectOption('reduced');
@@ -64,6 +77,7 @@ test('font, scale, contrast, and reduced motion persist', async ({ page }) => {
 });
 
 test('text scale slider extends to 200%', async ({ page }) => {
+  await openAppearance(page, 'Interface');
   const slider = page.getByLabel('Text scale');
   await expect(slider).toHaveAttribute('max', '2');
   await slider.fill('2');
@@ -72,21 +86,23 @@ test('text scale slider extends to 200%', async ({ page }) => {
 });
 
 test('background, text, density, scale, corners, and fonts apply broadly', async ({ page }) => {
-  const appearance = page.getByTestId('appearance-settings');
-  const sampleText = appearance.getByText('Color, readability, spacing, and motion preferences apply immediately.');
-  const initialPadding = await appearance.evaluate((element) => getComputedStyle(element).paddingTop);
+  await openAppearance(page, 'Interface');
+  const card = page.getByTestId('appearance-interface');
+  const sampleText = card.getByText('Font, density, corners, and text size apply across every page.');
+  const initialPadding = await card.evaluate((element) => getComputedStyle(element).paddingTop);
   const initialFontSize = await sampleText.evaluate((element) => getComputedStyle(element).fontSize);
-  const initialRadius = await appearance.evaluate((element) => getComputedStyle(element).borderRadius);
+  const initialRadius = await card.evaluate((element) => getComputedStyle(element).borderRadius);
 
   await page.getByLabel('Information density').selectOption('compact');
   await page.getByLabel('Text scale').fill('1.25');
   await page.getByLabel('Corner style').selectOption('square');
   await page.getByLabel('Interface font').selectOption('playful');
-  await expect.poll(() => appearance.evaluate((element) => getComputedStyle(element).paddingTop)).not.toBe(initialPadding);
+  await expect.poll(() => card.evaluate((element) => getComputedStyle(element).paddingTop)).not.toBe(initialPadding);
   await expect.poll(() => sampleText.evaluate((element) => getComputedStyle(element).fontSize)).not.toBe(initialFontSize);
-  await expect.poll(() => appearance.evaluate((element) => getComputedStyle(element).borderRadius)).not.toBe(initialRadius);
+  await expect.poll(() => card.evaluate((element) => getComputedStyle(element).borderRadius)).not.toBe(initialRadius);
   await expect(page.locator('body')).toHaveCSS('font-family', /Comic Sans MS/);
 
+  await openAppearance(page, 'Theme');
   await page.getByLabel('Toggle custom colors').click();
   await page.getByLabel('Use custom background', { exact: true }).check();
   await page.getByLabel('Background color').fill('#102030');
@@ -122,15 +138,21 @@ test('extra color controls stay collapsed until requested', async ({ page }) => 
 });
 
 test('appearance presets apply grouped preferences and Agora default restores defaults', async ({ page }) => {
+  // A preset reaches controls on both sub-pages, so it is checked across both.
   await page.getByLabel('Appearance preset').selectOption('terminal');
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await expect(page.getByLabel('Information density')).toHaveValue('compact');
-  await expect(page.getByLabel('Interface font')).toHaveValue('mono');
   await expect(page.getByLabel('Use custom block color')).toBeChecked();
 
+  await openAppearance(page, 'Interface');
+  await expect(page.getByLabel('Information density')).toHaveValue('compact');
+  await expect(page.getByLabel('Interface font')).toHaveValue('mono');
+
+  await openAppearance(page, 'Theme');
   await page.getByLabel('Appearance preset').selectOption('agora');
   await expect(page.getByLabel('Accent source')).toHaveValue('agora');
+  await expect(page.getByLabel('Use custom block color')).not.toBeChecked();
+
+  await openAppearance(page, 'Interface');
   await expect(page.getByLabel('Information density')).toHaveValue('comfortable');
   await expect(page.getByLabel('Interface font')).toHaveValue('system');
-  await expect(page.getByLabel('Use custom block color')).not.toBeChecked();
 });

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Contrast, Mountain, Palette, Type } from 'lucide-react';
 import {
   APPEARANCE_PRESETS,
   useUiPreferences,
@@ -11,30 +12,29 @@ import {
   type InteractionPreference,
 } from '../../features/interactive/live/presentationPreference';
 import { useAmbience } from '../../features/ambience/AmbienceProvider';
+import { SettingsSection } from './SettingsSection';
 
 const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
-export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => void }) {
-  const { preferences, setPreferences, resetPreferences } = useUiPreferences();
-  // High Interaction is a presentation preference with its own versioned key
-  // (MASTER_ARCHITECTURE §5.3), so it is read/written directly rather than
-  // folded into the theme blob. §5.2 requires it to be selectable from a
-  // clearly named interaction control — this is that control.
-  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
-  const applyInteraction = (value: InteractionPreference) => {
-    setInteraction(value);
-    savePreference(value);
-    if (value === 'high-interaction') resumeHighInteractionView();
-    else suspendHighInteraction();
-  };
+/**
+ * Theme sub-page — color mode, accent, and the custom surface colors.
+ *
+ * Split out of the old single Appearance card when the settings page moved to
+ * tabs + sub-pages: colour, typography, and the living background are three
+ * separate decisions and each is long enough to own a page.
+ */
+export function AppearanceThemeSettings() {
+  const { preferences, setPreferences } = useUiPreferences();
 
   return (
-    <div id="settings-appearance" className="scroll-mt-24 rounded-xl border border-border bg-card p-4 space-y-4" data-testid="appearance-settings">
-      <div>
-        <h3 className="font-semibold">Appearance</h3>
-        <p className="mt-1 text-xs text-muted-foreground">Color, readability, spacing, and motion preferences apply immediately.</p>
-      </div>
-
+    <SettingsSection
+      id="settings-appearance"
+      icon={Palette}
+      title="Theme"
+      description="Color mode, accent, and surface colors. Changes apply immediately."
+      contentClassName="space-y-4"
+      data-testid="appearance-settings"
+    >
       <label className="block space-y-1 text-sm">
         <span className="font-medium">Appearance preset</span>
         <select
@@ -174,58 +174,94 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
           </div>
         </div>
       </details>
+    </SettingsSection>
+  );
+}
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <label className="space-y-1 text-sm">
-          <span className="font-medium">Font</span>
-          <select aria-label="Interface font" value={preferences.fontFamily} onChange={(event) => setPreferences({ fontFamily: event.target.value as typeof preferences.fontFamily })} className={`${selectClass} block w-full`}>
-            <option value="system">System</option>
-            <option value="readable">High readability</option>
-            <option value="rounded">Rounded</option>
-            <option value="serif">Bookish serif</option>
-            <option value="mono">Terminal mono</option>
-            <option value="playful">Playful</option>
-            <option value="typewriter">Typewriter</option>
-          </select>
-        </label>
-        <label className="space-y-1 text-sm">
-          <span className="font-medium">Density</span>
-          <select aria-label="Information density" value={preferences.density} onChange={(event) => setPreferences({ density: event.target.value as typeof preferences.density })} className={`${selectClass} block w-full`}>
-            <option value="compact">Compact</option>
-            <option value="comfortable">Comfortable</option>
-            <option value="spacious">Spacious</option>
-          </select>
-        </label>
-        <label className="space-y-1 text-sm">
-          <span className="font-medium">Corners</span>
-          <select aria-label="Corner style" value={preferences.cornerStyle} onChange={(event) => setPreferences({ cornerStyle: event.target.value as typeof preferences.cornerStyle })} className={`${selectClass} block w-full`}>
-            <option value="square">Square</option>
-            <option value="soft">Soft</option>
-            <option value="round">Round</option>
-          </select>
-        </label>
-      </div>
+/**
+ * Interface sub-page — type, spacing, corners, contrast, motion, and the
+ * instance presentation preference.
+ */
+export function AppearanceInterfaceSettings() {
+  const { preferences, setPreferences } = useUiPreferences();
+  // High Interaction is a presentation preference with its own versioned key
+  // (MASTER_ARCHITECTURE §5.3), so it is read/written directly rather than
+  // folded into the theme blob. §5.2 requires it to be selectable from a
+  // clearly named interaction control — this is that control.
+  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
+  const applyInteraction = (value: InteractionPreference) => {
+    setInteraction(value);
+    savePreference(value);
+    if (value === 'high-interaction') resumeHighInteractionView();
+    else suspendHighInteraction();
+  };
 
-      <label className="block space-y-1 text-sm">
-        <span className="flex justify-between font-medium"><span>Text scale</span><span>{Math.round(preferences.fontScale * 100)}%</span></span>
-        <input
-          type="range"
-          aria-label="Text scale"
-          min="0.85"
-          max="2"
-          step="0.05"
-          value={preferences.fontScale}
-          onChange={(event) => setPreferences({ fontScale: Number(event.target.value) })}
-          className="w-full accent-primary"
-        />
-      </label>
+  return (
+    <>
+      <SettingsSection
+        icon={Type}
+        title="Type & spacing"
+        description="Font, density, corners, and text size apply across every page."
+        contentClassName="space-y-4"
+        data-testid="appearance-interface"
+      >
+        <div className="grid gap-4 sm:grid-cols-3">
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Font</span>
+            <select aria-label="Interface font" value={preferences.fontFamily} onChange={(event) => setPreferences({ fontFamily: event.target.value as typeof preferences.fontFamily })} className={`${selectClass} block w-full`}>
+              <option value="system">System</option>
+              <option value="readable">High readability</option>
+              <option value="rounded">Rounded</option>
+              <option value="serif">Bookish serif</option>
+              <option value="mono">Terminal mono</option>
+              <option value="playful">Playful</option>
+              <option value="typewriter">Typewriter</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Density</span>
+            <select aria-label="Information density" value={preferences.density} onChange={(event) => setPreferences({ density: event.target.value as typeof preferences.density })} className={`${selectClass} block w-full`}>
+              <option value="compact">Compact</option>
+              <option value="comfortable">Comfortable</option>
+              <option value="spacious">Spacious</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Corners</span>
+            <select aria-label="Corner style" value={preferences.cornerStyle} onChange={(event) => setPreferences({ cornerStyle: event.target.value as typeof preferences.cornerStyle })} className={`${selectClass} block w-full`}>
+              <option value="square">Square</option>
+              <option value="soft">Soft</option>
+              <option value="round">Round</option>
+            </select>
+          </label>
+        </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex items-center justify-between gap-3 text-sm sm:col-span-2">
+        <label className="block space-y-1 text-sm">
+          <span className="flex justify-between font-medium"><span>Text scale</span><span>{Math.round(preferences.fontScale * 100)}%</span></span>
+          <input
+            type="range"
+            aria-label="Text scale"
+            min="0.85"
+            max="2"
+            step="0.05"
+            value={preferences.fontScale}
+            onChange={(event) => setPreferences({ fontScale: Number(event.target.value) })}
+            className="w-full accent-primary"
+          />
+        </label>
+      </SettingsSection>
+
+      <SettingsSection
+        icon={Contrast}
+        title="Contrast & motion"
+        description="Readability and animation preferences, including how instances are presented."
+        contentClassName="space-y-4"
+      >
+        <label className="flex items-center justify-between gap-3 text-sm">
           <span>High contrast</span>
           <input type="checkbox" aria-label="High contrast" checked={preferences.highContrast} onChange={(event) => setPreferences({ highContrast: event.target.checked })} className="h-5 w-5 accent-primary" />
         </label>
-        <label className="space-y-1 text-sm sm:col-span-2">
+        <label className="space-y-1 text-sm">
           <span className="font-medium">Motion</span>
           <select aria-label="Motion preference" value={preferences.motion} onChange={(event) => setPreferences({ motion: event.target.value as typeof preferences.motion })} className={`${selectClass} block w-full sm:w-64`}>
             <option value="system">Follow system</option>
@@ -234,10 +270,8 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
           </select>
           <span className="block text-xs text-muted-foreground">Controls nonessential animations, transitions, and smooth scrolling throughout the app.</span>
         </label>
-      </div>
 
-      <div className="space-y-2 rounded-lg border border-border bg-muted p-3">
-        <label className="block space-y-1 text-sm">
+        <label className="block space-y-1 border-t border-border pt-3 text-sm">
           <span className="font-medium">Instance view</span>
           <select
             aria-label="Instance view mode"
@@ -256,18 +290,22 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
             change is applied. You can switch back at any time from the instance itself.
           </span>
         </label>
-      </div>
+      </SettingsSection>
+    </>
+  );
+}
 
-      <LivingBackgroundSettings />
-
-      <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={resetPreferences} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
-          Reset appearance
-        </button>
-        <button type="button" onClick={onResetLayout} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
-          Reset layout
-        </button>
-      </div>
+/** Reset row — pinned under every Appearance sub-page. */
+export function AppearanceResetControls({ onResetLayout }: { onResetLayout: () => void }) {
+  const { resetPreferences } = useUiPreferences();
+  return (
+    <div className="flex flex-wrap gap-2">
+      <button type="button" onClick={resetPreferences} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
+        Reset appearance
+      </button>
+      <button type="button" onClick={onResetLayout} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
+        Reset layout
+      </button>
     </div>
   );
 }
@@ -276,15 +314,50 @@ export function AppearanceSettings({ onResetLayout }: { onResetLayout: () => voi
  * Living background (ambience) settings. The ambience layer is the only thing
  * allowed to touch these keys. One toggle, one music volume, one sound
  * toggle, and a reduce-motion note that points at the OS/app motion setting.
+ *
+ * The card also carries the only in-app signpost to the full Living Background
+ * page: its sidebar entry exists only while the world is on, so someone who has
+ * never enabled it has no way to discover the page. `onOpenLivingBackground`
+ * turns the world on first when it is off, because the page cannot render
+ * without it.
  */
-function LivingBackgroundSettings() {
+export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLivingBackground?: () => void }) {
   const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground } = useAmbience();
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
 
   return (
-    <div className="space-y-3 rounded-lg border border-border bg-muted p-3">
+    <SettingsSection
+      id="settings-living-background"
+      icon={Mountain}
+      title="Living background"
+      description="A gentle world behind every page — hills, weather, animals, and small discoveries."
+      contentClassName="space-y-3"
+      data-testid="living-background-settings"
+    >
+      {onOpenLivingBackground && (
+        <div className="settings-feature-card">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Open the Living Background page</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              A full-screen view of the world with its own controls — time of day, weather, zoom,
+              music, instruments, and a cursor companion.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (!enabled) setEnabled(true);
+              onOpenLivingBackground();
+            }}
+            className="shrink-0 rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            {enabled ? 'Open' : 'Turn on and open'}
+          </button>
+        </div>
+      )}
+
       <label className="flex items-start gap-3 text-sm">
         <input
           type="checkbox"
@@ -386,6 +459,6 @@ function LivingBackgroundSettings() {
           </p>
         </>
       )}
-    </div>
+    </SettingsSection>
   );
 }
