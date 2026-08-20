@@ -140,14 +140,6 @@ export default function AboutPage() {
           >
             Join the Discord
           </a>
-          <a
-            href={SPONSORS_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-lg bg-pink-600 px-4 py-2 text-sm font-semibold text-white hover:bg-pink-700"
-          >
-            <span aria-hidden="true">♥</span> Donate
-          </a>
         </div>
       </section>
     </div>
