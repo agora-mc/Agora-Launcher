@@ -207,7 +207,7 @@ test('docs screenshot: create instance', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'My Instances' }).click();
   await expect(page.getByText('No instances yet.')).toBeVisible();
-  await page.getByRole('button', { name: '+ Create Instance' }).click();
+  await page.getByRole('button', { name: 'Create Instance' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByText('Create Custom Instance')).toBeVisible();
 
@@ -826,7 +826,6 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
           const key = args.key as string;
           if (key === 'onboarding_complete') return Promise.resolve(true);
           if (key === 'modrinth_enabled') return Promise.resolve(true);
-          if (key === 'browse_curated_only') return Promise.resolve(false);
           if (key === 'ai_mcp_enabled') return Promise.resolve(false);
           if (key === 'ai_chat_enabled') return Promise.resolve(true);
           if (key === 'mojang_launcher_path') return Promise.resolve('');

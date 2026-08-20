@@ -207,6 +207,21 @@ pub struct ModVersionCandidate {
     pub size: Option<u64>,
     #[serde(default)]
     pub version_compat: String,
+    /// Which of the item's download sources produced this candidate
+    /// (`github_release`, `modrinth_id`, `direct_hash`, ...).
+    ///
+    /// An item may list several sources in preference order, so the origin is
+    /// a property of the candidate, not of the item. Install-time policy —
+    /// whether the registry's pinned SHA-256 applies, which host is authorized
+    /// — keys off this rather than the item's preferred strategy, otherwise a
+    /// candidate served by a fallback would be judged against the wrong rules.
+    #[serde(default)]
+    pub source_strategy: Option<String>,
+    /// The curator-reviewed identifier of that source (repo, project id, or
+    /// pinned URL). Taken from the signed registry row, never re-derived from
+    /// the resolved download URL.
+    #[serde(default)]
+    pub source_identifier: Option<String>,
 }
 
 /// The lightweight JSON manifest that lives in each instance directory.

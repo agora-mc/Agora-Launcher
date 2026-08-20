@@ -6,6 +6,8 @@ import rehypeSanitize from 'rehype-sanitize';
 import { defaultSchema, type Schema } from 'hast-util-sanitize';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import {
+  downloadSourceLabel,
+  downloadSourcesOf,
   formatError,
   getAuthStatus,
   getCuratedAnnotation,
@@ -49,6 +51,18 @@ import {
 } from '../lib/tauri';
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
+
+/**
+ * Whether any of an item's download sources uses `strategy`.
+ *
+ * An item lists its sources in preference order, so "is this a GitHub mod?" is
+ * a question about the whole list — a mod that installs from Modrinth first
+ * still has GitHub releases worth browsing when Modrinth is turned off.
+ */
+function hasDownloadSource(item: RegistryItem | null | undefined, strategy: string): boolean {
+  if (!item) return false;
+  return downloadSourcesOf(item).some((source) => source.strategy === strategy);
+}
 
 /**
  * Name the destination of an external content link from its host, rather than
@@ -179,14 +193,14 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
 
   // Versions tab: GitHub release version list (for mods without modrinth_id)
-  const [githubTabVersions, setGithubTabVersions] = useState<ModVersionCandidate[]>([]);
-  const [githubTabLoading, setGithubTabLoading] = useState(false);
-  const [githubTabError, setGithubTabError] = useState<string | null>(null);
-  const [githubTabHasMore, setGithubTabHasMore] = useState(false);
-  const [githubTabPage, setGithubTabPage] = useState(1);
-  const [githubTabLoadingMore, setGithubTabLoadingMore] = useState(false);
-  const githubTabSentinelRef = useRef<HTMLDivElement>(null);
-  const [selectedGithubTabVersion, setSelectedGithubTabVersion] = useState<ModVersionCandidate | null>(null);
+  const [curatedTabVersions, setCuratedTabVersions] = useState<ModVersionCandidate[]>([]);
+  const [curatedTabLoading, setCuratedTabLoading] = useState(false);
+  const [curatedTabError, setCuratedTabError] = useState<string | null>(null);
+  const [curatedTabHasMore, setCuratedTabHasMore] = useState(false);
+  const [curatedTabPage, setCuratedTabPage] = useState(1);
+  const [curatedTabLoadingMore, setCuratedTabLoadingMore] = useState(false);
+  const curatedTabSentinelRef = useRef<HTMLDivElement>(null);
+  const [selectedCuratedTabVersion, setSelectedCuratedTabVersion] = useState<ModVersionCandidate | null>(null);
 
   // Phase 7: curated annotation overlay for Modrinth-linked projects
   const [curatedAnnotation, setCuratedAnnotation] = useState<CuratedAnnotation | null>(null);
@@ -536,7 +550,10 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         if (cancelled) return;
         setModrinthEnabled(enabled);
         if (!enabled) {
-          if (item?.download_strategy !== 'github_release') {
+          // Live Modrinth browsing is off. A curated entry still lists its
+          // versions through the catalog resolver below, so saying anything
+          // here would be wrong; only a Modrinth-only page is actually stuck.
+          if (!isRegistryBacked) {
             setVersionsError('Enable Modrinth integration in Settings to view live versions.');
           }
           return;
@@ -582,7 +599,16 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   // ═══════════════════════════════════════════════════════════════
 
   // item may still be null during loading renders; fall back to false.
-  const isModrinthInstall = !!(item?.modrinth_id && modrinthProject);
+  /**
+   * Whether this install goes through the raw-Modrinth pipeline.
+   *
+   * Only for a page with no catalog entry behind it. A curated entry installs
+   * through the catalog resolver even when live Modrinth data is on screen:
+   * that is what keeps its registry identity, its curated dependency graph and
+   * its ordered download sources — and it means turning live Modrinth browsing
+   * on or off never changes how a curated mod installs.
+   */
+  const isModrinthInstall = !!(item?.modrinth_id && modrinthProject && !isRegistryBacked);
 
   // Find the manifest entry (if any) that corresponds to this mod in an
   // instance detail. Matches registry id, Modrinth project id, or the
@@ -681,63 +707,66 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   // --- Versions tab: GitHub release fetching (for mods without modrinth_id) ---
   // Fetches real GitHub release versions instead of showing the static
   // compatible_versions_json "guess" from the registry.
-  const loadMoreGithubTabVersions = useCallback(async () => {
-    if (githubTabLoadingMore || !githubTabHasMore) return;
-    setGithubTabLoadingMore(true);
+  const loadMoreCuratedTabVersions = useCallback(async () => {
+    if (curatedTabLoadingMore || !curatedTabHasMore) return;
+    setCuratedTabLoadingMore(true);
     try {
-      const nextPage = await listModVersionsLoadMore(null, itemId, githubTabPage);
-      setGithubTabVersions((prev) => [...prev, ...nextPage.items]);
-      setGithubTabHasMore(nextPage.hasMore);
-      setGithubTabPage((prev) => prev + 1);
+      const nextPage = await listModVersionsLoadMore(null, itemId, curatedTabPage);
+      setCuratedTabVersions((prev) => [...prev, ...nextPage.items]);
+      setCuratedTabHasMore(nextPage.hasMore);
+      setCuratedTabPage((prev) => prev + 1);
     } catch {
       // Silently stop loading on error
     } finally {
-      setGithubTabLoadingMore(false);
+      setCuratedTabLoadingMore(false);
     }
-  }, [itemId, githubTabPage, githubTabLoadingMore, githubTabHasMore]);
+  }, [itemId, curatedTabPage, curatedTabLoadingMore, curatedTabHasMore]);
 
   useEffect(() => {
     if (activeTab !== 'versions' || !item) return;
-    // When the mod has a modrinth_id, only skip GitHub versions if Modrinth
-    // IS enabled, or if the mod doesn't use github_release as its strategy.
-    if (item.modrinth_id && (modrinthEnabled !== false || item.download_strategy !== 'github_release')) return;
+    // The catalog resolver is the fallback for every curated entry, whatever
+    // its sources are — it walks the ones the user left enabled. It is skipped
+    // only when the richer live Modrinth table is being shown instead, or when
+    // this page is a Modrinth-only result with no catalog entry behind it.
+    if (!isRegistryBacked) return;
+    if (item.modrinth_id && modrinthEnabled !== false) return;
     let cancelled = false;
     (async () => {
-      setGithubTabLoading(true);
-      setGithubTabError(null);
-      setGithubTabVersions([]);
-      setGithubTabHasMore(false);
-      setGithubTabPage(1);
-      setSelectedGithubTabVersion(null);
+      setCuratedTabLoading(true);
+      setCuratedTabError(null);
+      setCuratedTabVersions([]);
+      setCuratedTabHasMore(false);
+      setCuratedTabPage(1);
+      setSelectedCuratedTabVersion(null);
       try {
         const page = await listModVersions(null, itemId);
         if (cancelled) return;
-        setGithubTabVersions(page.items);
-        setGithubTabHasMore(page.hasMore);
+        setCuratedTabVersions(page.items);
+        setCuratedTabHasMore(page.hasMore);
       } catch (e) {
-        if (!cancelled) setGithubTabError(formatError(e));
+        if (!cancelled) setCuratedTabError(formatError(e));
       } finally {
-        if (!cancelled) setGithubTabLoading(false);
+        if (!cancelled) setCuratedTabLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, item, itemId, modrinthEnabled]);
+  }, [activeTab, item, itemId, isRegistryBacked, modrinthEnabled]);
 
   // Infinite scroll for GitHub tab versions
   useEffect(() => {
-    const sentinel = githubTabSentinelRef.current;
-    if (!sentinel || !githubTabHasMore || githubTabLoadingMore) return;
+    const sentinel = curatedTabSentinelRef.current;
+    if (!sentinel || !curatedTabHasMore || curatedTabLoadingMore) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && githubTabHasMore && !githubTabLoadingMore) {
-          loadMoreGithubTabVersions();
+        if (entries[0]?.isIntersecting && curatedTabHasMore && !curatedTabLoadingMore) {
+          loadMoreCuratedTabVersions();
         }
       },
       { rootMargin: '400px' },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [githubTabHasMore, githubTabLoadingMore, loadMoreGithubTabVersions]);
+  }, [curatedTabHasMore, curatedTabLoadingMore, loadMoreCuratedTabVersions]);
 
   if (loading) {
     return (
@@ -947,16 +976,26 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   // Versions tab uses the same canonical plan and executor as the primary action.
   const handleInstallVersionFromTab = () => {
     if (!versionsTabInstanceId) return;
-    if (selectedGithubTabVersion) {
+    if (selectedCuratedTabVersion) {
       openCanonicalInstall(
         versionsTabInstanceId,
         'curated',
         itemId,
-        selectedGithubTabVersion.version,
+        selectedCuratedTabVersion.version,
       );
       return;
     }
     if (selectedVersion && item.modrinth_id) {
+      // A catalog entry installs as a catalog entry even when the row came from
+      // the live Modrinth table, for the same reason the inline flow does: live
+      // browsing is a discovery setting and must not decide which pipeline an
+      // entry installs through. The version *number* is the shared key — the
+      // catalog resolver matches on it, and it is what Modrinth published the
+      // row under.
+      if (isRegistryBacked) {
+        openCanonicalInstall(versionsTabInstanceId, 'curated', itemId, selectedVersion.version);
+        return;
+      }
       openCanonicalInstall(
         versionsTabInstanceId,
         'modrinth',
@@ -994,7 +1033,11 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
 
   const hasModrinthId = !!item.modrinth_id;
   const canShowModrinthVersions = hasModrinthId && modrinthEnabled !== false;
-  const canShowGithubVersions = !hasModrinthId || (hasModrinthId && modrinthEnabled === false && item.download_strategy === 'github_release');
+  // A curated entry always has a version list: the catalog resolver walks
+  // whichever of its download sources the user left enabled. Live Modrinth
+  // browsing only decides whether the richer table (with changelogs) is shown
+  // in its place — it never decides whether versions are listable at all.
+  const canShowCuratedVersions = !canShowModrinthVersions && isRegistryBacked;
 
   return (
     <div className="space-y-6" data-tour="page-mod-detail">
@@ -1098,11 +1141,21 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   Agora Curated
                 </span>
               )}
-              {!modrinthProject && (
-                <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
-                  {item.download_strategy}
-                </span>
-              )}
+              {!modrinthProject &&
+                downloadSourcesOf(item).map((source, index) => (
+                  <span
+                    key={`${source.strategy}:${source.identifier}`}
+                    className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground"
+                    title={
+                      index === 0
+                        ? `Preferred source: ${source.identifier}`
+                        : `Fallback ${index}: ${source.identifier}`
+                    }
+                  >
+                    {index > 0 && <span aria-hidden="true">↳ </span>}
+                    {downloadSourceLabel(source.strategy)}
+                  </span>
+                ))}
               {item.status && item.status !== 'active' && (
                 <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
                   {item.status}
@@ -1699,7 +1752,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             key={v.version_id}
                             onClick={() => {
                               setSelectedVersion(v);
-                              setSelectedGithubTabVersion(null);
+                              setSelectedCuratedTabVersion(null);
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${
                               isSelected
@@ -1784,13 +1837,14 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                 )}
               </div>
             )
-          ) : canShowGithubVersions ? (
-            // Fallback to GitHub releases (no modrinth_id, or modrinth disabled + github_release strategy)
-            githubTabLoading ? (
+          ) : canShowCuratedVersions ? (
+            // The catalog resolver's list: whichever of the entry's download
+            // sources is enabled and answering, in the curator's order.
+            curatedTabLoading ? (
               <p className="text-sm text-muted-foreground">Loading versions…</p>
-            ) : githubTabError ? (
-              <p className="text-sm text-muted-foreground">{githubTabError}</p>
-            ) : githubTabVersions.length === 0 ? (
+            ) : curatedTabError ? (
+              <p className="text-sm text-muted-foreground">{curatedTabError}</p>
+            ) : curatedTabVersions.length === 0 ? (
               <p className="text-sm text-muted-foreground">No versions published.</p>
             ) : (
               <div className="flex flex-col lg:flex-row gap-4">
@@ -1806,14 +1860,14 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                       </tr>
                     </thead>
                     <tbody>
-                      {githubTabVersions.map((v, idx) => {
-                        const isSelected = selectedGithubTabVersion?.filename === v.filename
-                          && selectedGithubTabVersion?.version === v.version;
+                      {curatedTabVersions.map((v, idx) => {
+                        const isSelected = selectedCuratedTabVersion?.filename === v.filename
+                          && selectedCuratedTabVersion?.version === v.version;
                         return (
                           <tr
                             key={`${v.version}-${idx}`}
                             onClick={() => {
-                              setSelectedGithubTabVersion(v);
+                              setSelectedCuratedTabVersion(v);
                               setSelectedVersion(null);
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${
@@ -1836,26 +1890,26 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                       })}
                     </tbody>
                   </table>
-                  {githubTabHasMore && (
-                    <div ref={githubTabSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
-                      {githubTabLoadingMore ? 'Loading more versions…' : ''}
+                  {curatedTabHasMore && (
+                    <div ref={curatedTabSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
+                      {curatedTabLoadingMore ? 'Loading more versions…' : ''}
                     </div>
                   )}
                 </div>
 
                 {/* Selected version detail panel */}
-                {selectedGithubTabVersion && (
+                {selectedCuratedTabVersion && (
                   <div className="space-y-3 rounded-lg border border-border bg-muted p-3 lg:w-80 lg:flex-shrink-0">
                     <div>
                       <p className="text-xs text-muted-foreground">Selected version</p>
-                      <p className="font-semibold text-sm break-all">{selectedGithubTabVersion.version}</p>
+                      <p className="font-semibold text-sm break-all">{selectedCuratedTabVersion.version}</p>
                     </div>
                     <div className="text-xs text-muted-foreground space-y-1">
-                      <p className="break-all">File: {selectedGithubTabVersion.filename}</p>
-                      <p>MC: {selectedGithubTabVersion.mc_version || '—'}</p>
-                      <p>Loader: {selectedGithubTabVersion.loader || '—'}</p>
-                      {selectedGithubTabVersion.release_date && (
-                        <p>Released: {selectedGithubTabVersion.release_date.slice(0, 10)}</p>
+                      <p className="break-all">File: {selectedCuratedTabVersion.filename}</p>
+                      <p>MC: {selectedCuratedTabVersion.mc_version || '—'}</p>
+                      <p>Loader: {selectedCuratedTabVersion.loader || '—'}</p>
+                      {selectedCuratedTabVersion.release_date && (
+                        <p>Released: {selectedCuratedTabVersion.release_date.slice(0, 10)}</p>
                       )}
                     </div>
 
@@ -2180,7 +2234,7 @@ type PackInstallModProgress = {
 };
 
 const isModrinthPack = (item: RegistryItem): boolean =>
-  item.download_strategy === 'modrinth_id' || !!item.modrinth_id;
+  hasDownloadSource(item, 'modrinth_id') || !!item.modrinth_id;
 
 function PackCreateDialog({
   item,

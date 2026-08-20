@@ -1648,7 +1648,7 @@ logger = logging.getLogger("compiler")
 # Schema setup
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 CREATE_INDEXES = [
@@ -1677,6 +1677,9 @@ def create_tables(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             author TEXT,
             content_type TEXT NOT NULL,
+            -- Preferred download source, duplicated out of
+            -- download_sources_json[0] so consumers that only care about the
+            -- primary source do not have to parse JSON.
             download_strategy TEXT NOT NULL,
             source_identifier TEXT NOT NULL,
             sha256 TEXT NOT NULL,
@@ -1710,7 +1713,15 @@ def create_tables(conn: sqlite3.Connection) -> None:
             -- primary source fails (e.g. GitHub 60 req/hr rate limit). The
             -- installed file is still SHA-256-verified against the pinned hash
             -- regardless of which source delivered it.
-            modrinth_id TEXT
+            modrinth_id TEXT,
+            -- Ordered download sources, best first, as a JSON array of
+            -- {"strategy", "identifier"} objects. The launcher walks this list
+            -- at resolve time and takes the first source that is both enabled
+            -- in the user's settings and actually answering, so a rate-limited
+            -- or offline host degrades to a fallback instead of a failed
+            -- install. Always non-empty; element 0 mirrors
+            -- download_strategy/source_identifier.
+            download_sources_json TEXT NOT NULL DEFAULT '[]'
         )
     """)
     cursor.execute("PRAGMA table_info(registry_items)")
@@ -1957,6 +1968,11 @@ VALID_DOWNLOAD_STRATEGIES = frozenset(
 )
 
 
+def is_pinned_strategy(strategy: str) -> bool:
+    """True for strategies whose artifact is hand-pinned in the manifest."""
+    return strategy in ("direct_hash", "technic_pack")
+
+
 def validate_download_strategy(item: dict[str, Any]) -> str:
     """Validate ``download_strategy`` and enforce the hand-pinned contracts.
 
@@ -1987,10 +2003,32 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
             strategy,
         )
         raise SystemExit(1)
-    if strategy not in ("direct_hash", "technic_pack"):
+    if not is_pinned_strategy(strategy):
         return strategy
 
-    source = str(item.get("source_identifier", "")).strip()
+    validate_pinned_source(
+        item_id,
+        strategy,
+        str(item.get("source_identifier", "")).strip(),
+        item.get("compatible_versions"),
+    )
+    return strategy
+
+
+def validate_pinned_source(
+    item_id: str,
+    strategy: str,
+    source: str,
+    declared: Any,
+) -> None:
+    """Enforce the hand-pinned contract for one ``direct_hash``/``technic_pack``
+    source.
+
+    Applied per *source* rather than per *item* so that a manifest listing
+    several download sources gets every pinned entry checked, not just the
+    preferred one. A fallback that only fails once the preferred source is down
+    is worse than no fallback at all.
+    """
     if strategy == "direct_hash" and not source.startswith("https://"):
         logger.error(
             "%s: direct_hash source_identifier must be an https:// URL, got %r",
@@ -2021,7 +2059,6 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
         )
         raise SystemExit(1)
 
-    declared = item.get("compatible_versions")
     if not declared:
         logger.error(
             "%s: %s requires an explicit compatible_versions list; "
@@ -2060,7 +2097,143 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
                 strategy,
             )
             raise SystemExit(1)
-    return strategy
+
+
+def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
+    """Resolve *item* to its ordered list of download sources, best first.
+
+    A manifest may state its sources either way:
+
+    * ``download_sources``: an explicit ordered list of
+      ``{"strategy": ..., "identifier": ...}`` objects. Index 0 is the
+      preferred source; the rest are fallbacks, tried in order when the
+      preferred one is unavailable -- either because the user turned that
+      source off in Settings, or because it failed to answer at install time.
+    * the legacy single ``download_strategy`` + ``source_identifier`` pair,
+      optionally with ``modrinth_id``. This is normalized into the same list:
+      the declared strategy first, then Modrinth as an implicit fallback, which
+      is exactly what the launcher already did for such entries.
+
+    Both forms end up in ``registry_items.download_sources_json``.
+    ``download_strategy``/``source_identifier`` keep holding the *preferred*
+    source, so every consumer that only cares about the primary keeps working.
+
+    Validation is deliberately whole-list: every pinned source is held to the
+    same contract as a pinned primary, and a duplicate ``(strategy,
+    identifier)`` pair is dropped rather than retried twice.
+    """
+    item_id = item.get("id", "<unknown>")
+    raw = item.get("download_sources")
+
+    if raw is None:
+        strategy = validate_download_strategy(item)
+        sources = [{"strategy": strategy, "identifier": str(item.get("source_identifier", "")).strip()}]
+        # Preserve the implicit Modrinth fallback that github_release /
+        # direct_hash entries carrying a modrinth_id have always had.
+        modrinth_id = str(item.get("modrinth_id") or "").strip()
+        if modrinth_id and strategy != "modrinth_id":
+            sources.append({"strategy": "modrinth_id", "identifier": modrinth_id})
+    else:
+        if not isinstance(raw, list) or not raw:
+            logger.error(
+                "%s: download_sources must be a non-empty array of "
+                "{strategy, identifier} objects, got %r",
+                item_id,
+                raw,
+            )
+            raise SystemExit(1)
+        sources = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                logger.error(
+                    "%s: each download_sources entry must be an object, got %r",
+                    item_id,
+                    entry,
+                )
+                raise SystemExit(1)
+            strategy = entry.get("strategy")
+            if strategy not in VALID_DOWNLOAD_STRATEGIES:
+                logger.error(
+                    "%s: download_sources strategy must be one of %s, got %r",
+                    item_id,
+                    ", ".join(sorted(VALID_DOWNLOAD_STRATEGIES)),
+                    strategy,
+                )
+                raise SystemExit(1)
+            identifier = str(entry.get("identifier", "")).strip()
+            if not identifier:
+                logger.error(
+                    "%s: download_sources entry %r has no identifier",
+                    item_id,
+                    entry,
+                )
+                raise SystemExit(1)
+            sources.append({"strategy": strategy, "identifier": identifier})
+
+        # download_sources is authoritative when present. A manifest may still
+        # spell out the legacy pair, but it must then agree with the preferred
+        # source -- silently preferring one over the other would let a manifest
+        # say two different things about where its file comes from.
+        legacy_strategy = item.get("download_strategy")
+        legacy_source = str(item.get("source_identifier", "")).strip()
+        if legacy_strategy is not None and legacy_strategy != sources[0]["strategy"]:
+            logger.error(
+                "%s: download_strategy %r disagrees with download_sources[0].strategy %r; "
+                "drop download_strategy or make it match the preferred source",
+                item_id,
+                legacy_strategy,
+                sources[0]["strategy"],
+            )
+            raise SystemExit(1)
+        if legacy_source and legacy_source != sources[0]["identifier"]:
+            logger.error(
+                "%s: source_identifier %r disagrees with download_sources[0].identifier %r; "
+                "drop source_identifier or make it match the preferred source",
+                item_id,
+                legacy_source,
+                sources[0]["identifier"],
+            )
+            raise SystemExit(1)
+
+    # Drop exact repeats; two identical sources cost a second round-trip on
+    # failure and buy nothing.
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source in sources:
+        key = (source["strategy"], source["identifier"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(source)
+    sources = deduped
+
+    if not sources[0]["identifier"]:
+        logger.error("%s: preferred download source has no identifier", item_id)
+        raise SystemExit(1)
+
+    # The preferred source is what the legacy columns describe.
+    item["download_strategy"] = sources[0]["strategy"]
+    item["source_identifier"] = sources[0]["identifier"]
+
+    # A Modrinth source doubles as the project id used for metadata hydration
+    # and for the website's Modrinth link, so surface it when the manifest
+    # declared it only inside the list.
+    if not str(item.get("modrinth_id") or "").strip():
+        for source in sources:
+            if source["strategy"] == "modrinth_id":
+                item["modrinth_id"] = source["identifier"]
+                break
+
+    # Every pinned source -- preferred or fallback -- must satisfy the
+    # hand-pinned contract, since any of them may end up being the one that
+    # actually serves the file.
+    declared = item.get("compatible_versions")
+    for source in sources:
+        if is_pinned_strategy(source["strategy"]):
+            validate_pinned_source(item_id, source["strategy"], source["identifier"], declared)
+
+    item["download_sources"] = sources
+    return sources
 
 
 def default_compatible_versions(item: dict[str, Any]) -> list[dict[str, str]]:
@@ -2115,7 +2288,11 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
     allow_comments = bool(governance.get("allow_comments", True))
 
     sha256 = validate_sha256(item.get("sha256"))
-    download_strategy = validate_download_strategy(item)
+    # Idempotent: main() normalizes every item up front so hydration sees the
+    # derived fields, but a caller that inserts a hand-built dict still gets a
+    # validated source list.
+    download_sources = normalize_download_sources(item)
+    download_strategy = item["download_strategy"]
     gallery = item.get("gallery_urls", [])
     compatible_versions = (
         item.get("compatible_versions")
@@ -2171,8 +2348,8 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
             is_immune, immunity_reason, allow_comments, immunity_cooldown_until,
             icon_url, gallery_urls_json, date_added, compatible_versions_json,
             description, body_markdown, page_url, license_id, source_updated_at,
-            modrinth_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            modrinth_id, download_sources_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -2200,6 +2377,7 @@ def insert_registry_item(conn: sqlite3.Connection, item: dict[str, Any], path: P
             item.get("license_id"),
             item.get("source_updated_at"),
             item.get("modrinth_id"),
+            json.dumps(download_sources, separators=(",", ":")),
         ),
     )
 
@@ -2972,6 +3150,19 @@ def compile_registry(
                 path,
             )
 
+    # Download sources must be canonical before hydration: the hydrators pick
+    # a Modrinth project id off download_strategy/modrinth_id, and both of
+    # those may be stated only inside an item's download_sources list.
+    for path, item in all_items:
+        if item.get("content_type") == "pack":
+            item.setdefault("download_strategy", "curated_pack")
+            item.setdefault("source_identifier", item["id"])
+        try:
+            normalize_download_sources(item)
+        except SystemExit:
+            logger.error("Invalid download sources in %s", path)
+            raise
+
     # Hydrate Modrinth metadata (description, body, icon, gallery, page URL,
     # license, updated) for modrinth_id items (in-place, with override precedence).
     _hydrate_modrinth_metadata([item for _, item in all_items])
@@ -3266,19 +3457,27 @@ def compile_registry(
 # Web JSON artifact
 # ---------------------------------------------------------------------------
 
-def _make_github_urls(source_identifier: str, download_strategy: str) -> tuple[str | None, str | None, str | None]:
-    """Derive GitHub repository, releases, and issues URLs from source_identifier."""
+def _make_github_urls(sources: list[dict[str, str]]) -> tuple[str | None, str | None, str | None]:
+    """Derive GitHub repository, releases, and issues URLs from *sources*.
+
+    Scans the whole ordered source list rather than only the preferred source:
+    a mod that installs from Modrinth first and falls back to GitHub still has
+    a real GitHub repository worth linking to from the website.
+    """
     repo_url = None
     releases_url = None
     issues_url = None
 
-    if download_strategy == "github_release":
-        parts = source_identifier.split("/")
+    for source in sources:
+        if source.get("strategy") != "github_release":
+            continue
+        parts = str(source.get("identifier", "")).split("/")
         if len(parts) >= 2:
             owner, repo = parts[0], parts[1]
             repo_url = f"https://github.com/{owner}/{repo}"
             releases_url = f"{repo_url}/releases"
             issues_url = f"{repo_url}/issues"
+            break
 
     return repo_url, releases_url, issues_url
 
@@ -3329,9 +3528,16 @@ def emit_web_json(db_path: Path, web_path: Path, skip_sign: bool = False) -> Non
             if modrinth_id:
                 modrinth_url = f"https://modrinth.com/mod/{modrinth_id}"
 
-            github_repo, github_releases, github_issues = _make_github_urls(
-                row["source_identifier"], row["download_strategy"]
-            )
+            try:
+                download_sources = json.loads(row["download_sources_json"] or "[]")
+            except Exception:
+                download_sources = []
+            if not download_sources:
+                download_sources = [
+                    {"strategy": row["download_strategy"], "identifier": row["source_identifier"]}
+                ]
+
+            github_repo, github_releases, github_issues = _make_github_urls(download_sources)
 
             # Gallery URLs from JSON.
             gallery_raw = row["gallery_urls_json"]
@@ -3371,6 +3577,7 @@ def emit_web_json(db_path: Path, web_path: Path, skip_sign: bool = False) -> Non
                 "gallery_urls": gallery_urls,
                 "download_strategy": row["download_strategy"],
                 "source_identifier": row["source_identifier"],
+                "download_sources": download_sources,
                 "sha256": row["sha256"],
                 "page_url": row["page_url"],
                 "modrinth_id": row["modrinth_id"],
@@ -3389,7 +3596,10 @@ def emit_web_json(db_path: Path, web_path: Path, skip_sign: bool = False) -> Non
         conn.close()
 
     doc = {
-        "schema_version": 1,
+        # v2 adds the per-item download_sources list. download_strategy and
+        # source_identifier are still emitted (they describe the preferred
+        # source), so a v1 reader keeps working against a v2 document.
+        "schema_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "items": items,
     }

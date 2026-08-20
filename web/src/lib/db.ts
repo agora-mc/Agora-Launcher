@@ -24,8 +24,11 @@ export interface RegistryItem {
   community_categories: string[];
   icon_url: string | null;
   gallery_urls: string[];
+  /// Preferred source's strategy — mirrors `download_sources[0].strategy`.
   download_strategy: string;
   source_identifier: string;
+  /// Ordered download sources, best first. Absent on registry-web.json v1.
+  download_sources?: DownloadSource[];
   sha256: string;
   page_url: string | null;
   modrinth_id: string | null;
@@ -38,6 +41,31 @@ export interface RegistryItem {
   date_added: string | null;
   source_updated_at: string | null;
   top_reviews: { author: string; rating: number; body: string; created_at: string }[];
+}
+
+/// One place an item's file can be fetched from. The launcher walks these in
+/// order and installs from the first that is enabled and reachable.
+export interface DownloadSource {
+  strategy: string;
+  identifier: string;
+}
+
+/// Ordered download sources for an item, best first.
+///
+/// v1 documents carry only the preferred source, so it is reconstructed from
+/// the legacy fields — including the implicit Modrinth fallback a `modrinth_id`
+/// gives a GitHub-hosted entry.
+export function downloadSourcesOf(item: RegistryItem): DownloadSource[] {
+  if (item.download_sources && item.download_sources.length > 0) {
+    return item.download_sources;
+  }
+  const sources: DownloadSource[] = [
+    { strategy: item.download_strategy, identifier: item.source_identifier },
+  ];
+  if (item.modrinth_id && item.download_strategy !== 'modrinth_id') {
+    sources.push({ strategy: 'modrinth_id', identifier: item.modrinth_id });
+  }
+  return sources;
 }
 
 interface WebRegistry {

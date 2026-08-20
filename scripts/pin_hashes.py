@@ -65,18 +65,42 @@ def _validate_sha256(raw: Any) -> str:
     return raw.lower()
 
 
-def _validate_direct_hash_contract(item: dict[str, Any]) -> None:
-    """Fail *before* writing a manifest the compiler would reject.
+def direct_hash_url(item: dict[str, Any]) -> str:
+    """The pinned URL of *item*'s ``direct_hash`` source.
 
-    Mirrors the ``direct_hash`` arm of compiler.compile.validate_download_strategy.
+    An item states its sources either as a ``download_sources`` list or as the
+    legacy ``download_strategy``/``source_identifier`` pair. Exactly one
+    ``direct_hash`` source must be present: this script rewrites a single
+    ``sha256`` field, so an item with two pinned URLs has no single hash to pin.
     """
     item_id = item.get("id", "<unknown>")
+    sources = item.get("download_sources")
+    if isinstance(sources, list) and sources:
+        pinned = [
+            str(source.get("identifier", "")).strip()
+            for source in sources
+            if isinstance(source, dict) and source.get("strategy") == "direct_hash"
+        ]
+        if len(pinned) != 1:
+            raise SystemExit(
+                f"{item_id}: pin_hashes.py needs exactly one direct_hash source, found {len(pinned)}"
+            )
+        return pinned[0]
     if item.get("download_strategy") != "direct_hash":
         raise SystemExit(
             f"{item_id}: pin_hashes.py pins direct_hash entries only; "
             f"got download_strategy={item.get('download_strategy')!r}"
         )
-    source = str(item.get("source_identifier", "")).strip()
+    return str(item.get("source_identifier", "")).strip()
+
+
+def _validate_direct_hash_contract(item: dict[str, Any]) -> str:
+    """Fail *before* writing a manifest the compiler would reject.
+
+    Mirrors compiler.compile.validate_pinned_source. Returns the pinned URL.
+    """
+    item_id = item.get("id", "<unknown>")
+    source = direct_hash_url(item)
     if not source.startswith("https://"):
         raise SystemExit(f"{item_id}: direct_hash source_identifier must be an https:// URL")
     filename = source.split("#")[0].split("?")[0].rsplit("/", 1)[-1]
@@ -106,6 +130,7 @@ def _validate_direct_hash_contract(item: dict[str, Any]) -> None:
             raise SystemExit(
                 f"{item_id}: compatible_versions needs a real mod_version, not 'latest'"
             )
+    return source
 
 
 def _sha256_of(data: bytes) -> str:
@@ -115,8 +140,7 @@ def _sha256_of(data: bytes) -> str:
 def pin_manifest(path: Path) -> str:
     """Download a direct_hash entry's file and pin its SHA-256 in place."""
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    _validate_direct_hash_contract(manifest)
-    url = manifest["source_identifier"].strip()
+    url = _validate_direct_hash_contract(manifest)
     item_id = manifest.get("id", "<unknown>")
 
     logger.info("downloading %s from %s", item_id, url)

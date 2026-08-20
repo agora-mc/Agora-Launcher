@@ -171,7 +171,6 @@ export function Settings({
   const [activePageId, setActivePageId] = useState<string | null>(null);
 
   const [modrinth, setModrinth] = useState(false);
-  const [browseCuratedOnly, setBrowseCuratedOnly] = useState(false);
   const [curatedSources, setCuratedSources] = useState<Record<string, boolean>>({
     modrinth_id: true,
     github_release: true,
@@ -271,7 +270,6 @@ export function Settings({
   useEffect(() => {
     if (ts.loading) return;
     setModrinth(ts.values.modrinthEnabled as boolean ?? false);
-    setBrowseCuratedOnly(ts.values.browseCuratedOnly as boolean ?? false);
     setAiMcp(ts.values.aiMcpEnabled as boolean ?? false);
     setAiChatEnabled(ts.values.aiChatEnabled as boolean ?? false);
     setLauncherPath(ts.values.launcherPath as string ?? '');
@@ -290,7 +288,7 @@ export function Settings({
     let cancelled = false;
     (async () => {
       try {
-        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack'];
+        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack', 'technic_pack'];
         const results = await Promise.all(keys.map((k) => getSetting(`curated_source_${k}_enabled`)));
         if (cancelled) return;
         const next: Record<string, boolean> = {};
@@ -531,16 +529,6 @@ export function Settings({
       await ts.update(SETTINGS.modrinthEnabled, value);
     } catch (e) {
       setModrinth(!value);
-      showToast(formatError(e), 'error');
-    }
-  };
-
-  const toggleBrowseCuratedOnly = async (value: boolean) => {
-    setBrowseCuratedOnly(value);
-    try {
-      await ts.update(SETTINGS.browseCuratedOnly, value);
-    } catch (e) {
-      setBrowseCuratedOnly(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -1500,32 +1488,24 @@ export function Settings({
         />
       </label>
       <p className="text-xs text-muted-foreground">
-        Include Modrinth-hosted catalog entries and enable live Modrinth features when permitted by Privacy settings.
+        Search Modrinth's whole library alongside the curated catalog, and enable live Modrinth
+        features, when permitted by Privacy settings. Off by default. Curated entries that happen to
+        be Modrinth-sourced are not affected — those are controlled below and stay browsable and
+        installable either way.
       </p>
       {ts.statuses['modrinth_enabled']?.status === 'error' && (
         <p className="text-xs text-destructive">{ts.statuses['modrinth_enabled']?.error}</p>
-      )}
-
-      <label className="flex items-center justify-between pt-2 border-t border-border">
-        <span className="text-sm">Browse — Curated only</span>
-        <input
-          type="checkbox"
-          checked={browseCuratedOnly}
-          onChange={(e) => toggleBrowseCuratedOnly(e.target.checked)}
-          className="h-5 w-5 accent-primary"
-        />
-      </label>
-      <p className="text-xs text-muted-foreground">
-        Show only Agora's curated catalog entries on the Browse page. Non-curated Modrinth results are hidden even when Modrinth Integration is enabled.
-      </p>
-      {ts.statuses['browse_curated_only']?.status === 'error' && (
-        <p className="text-xs text-destructive">{ts.statuses['browse_curated_only']?.error}</p>
       )}
 
       <div className="pt-2 border-t border-border space-y-3">
         <h4 className="text-sm font-medium">Curated catalog sources</h4>
         <p className="text-xs text-muted-foreground">
           Curated entries are hand-reviewed and ship with curator-pinned SHA-256 hashes in the signed catalog. These toggles control which curated sources appear — they are independent of live third-party browsing and default to on.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Most entries list several sources in preference order and install from the first one that
+          is on and reachable, so turning one off usually just moves installs to the next source
+          rather than hiding the entry. An entry disappears only when every source it lists is off.
         </p>
         <label className="flex items-center justify-between">
           <span className="text-sm">Modrinth-sourced catalog entries</span>
@@ -1564,6 +1544,16 @@ export function Settings({
             aria-label="Curated pack entries"
             checked={curatedSources['curated_pack'] ?? true}
             onChange={(e) => toggleCuratedSource('curated_pack', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Technic-sourced pack entries</span>
+          <input
+            type="checkbox"
+            aria-label="Technic-sourced pack entries"
+            checked={curatedSources['technic_pack'] ?? true}
+            onChange={(e) => toggleCuratedSource('technic_pack', e.target.checked)}
             className="h-5 w-5 accent-primary"
           />
         </label>

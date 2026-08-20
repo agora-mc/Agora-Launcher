@@ -959,7 +959,8 @@ mod tests {
                  icon_url TEXT, gallery_urls_json TEXT, date_added TEXT,
                  compatible_versions_json TEXT, description TEXT,
                  body_markdown TEXT, page_url TEXT, license_id TEXT,
-                 source_updated_at TEXT, modrinth_id TEXT
+                 source_updated_at TEXT, modrinth_id TEXT,
+                 download_sources_json TEXT
              );
              INSERT INTO registry_items (id, name)
              VALUES ('test-mod', 'Test Mod');
@@ -1011,7 +1012,8 @@ mod tests {
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
              INSERT INTO schema_version (version) VALUES (6);
              CREATE TABLE registry_items (
-                 id TEXT PRIMARY KEY, name TEXT
+                 id TEXT PRIMARY KEY, name TEXT,
+                 download_sources_json TEXT
              );
              INSERT INTO registry_items (id, name) VALUES ('test-mod', 'Test Mod');",
         )

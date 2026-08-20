@@ -21,11 +21,19 @@ use std::collections::{HashMap, HashSet};
 /// a content axis: on by default, opt-out per source via
 /// `curated_source_<strategy>_enabled` settings. This is deliberately separate
 /// from live third-party browsing (`modrinth_enabled`, `technic_enabled`),
-/// which is off by default.
+/// which is off by default and governs discovery *outside* the catalog only.
+///
+/// A curated entry's listability and installability depend on these settings
+/// alone. Live browsing may enrich its presentation — changelogs, category
+/// tags — but must never be the reason a curated entry cannot be listed,
+/// resolved, or installed. There is no separate "curated only" mode: with live
+/// browsing off by default, curated-only is simply the default state.
 ///
 /// Filtering is a **whitelist** of enabled strategies: any strategy an
 /// entry might carry that is not listed here (or not enabled by the user)
-/// is hidden — fail closed, never fail open.
+/// is hidden — fail closed, never fail open. An entry carrying several
+/// download sources stays visible while *any* of them is enabled, because it
+/// is still installable from the ones that are.
 pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 5] = [
     "modrinth_id",
     "github_release",
@@ -34,8 +42,16 @@ pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 5] = [
     "technic_pack",
 ];
 
+/// SQL expression yielding an item's download sources as a JSON array.
+///
+/// Registries compiled before schema 8 have no `download_sources_json`, so the
+/// preferred source is synthesized from the legacy columns. The same synthesis
+/// covers a value `json_each` could not walk: one unreadable row must not make
+/// the whole browse query fail.
+const DOWNLOAD_SOURCES_SQL: &str = "CASE      WHEN ri.download_sources_json IS NULL OR ri.download_sources_json IN ('', '[]')           OR NOT json_valid(ri.download_sources_json)      THEN json_array(json_object('strategy', ri.download_strategy, 'identifier', ri.source_identifier))      ELSE ri.download_sources_json END";
+
 /// Build the SQL whitelist fragment + params for the enabled curated
-/// strategies. Entries whose strategy is not in the enabled list are hidden.
+/// strategies. Entries with no enabled source at all are hidden.
 fn curated_strategy_whitelist(enabled: &[String]) -> (Option<String>, Vec<String>) {
     let allowed: Vec<String> = CURATED_DOWNLOAD_STRATEGIES
         .iter()
@@ -47,9 +63,27 @@ fn curated_strategy_whitelist(enabled: &[String]) -> (Option<String>, Vec<String
     }
     let placeholders = allowed.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     (
-        Some(format!("ri.download_strategy IN ({placeholders})")),
+        Some(format!(
+            "EXISTS (SELECT 1 FROM json_each({DOWNLOAD_SOURCES_SQL}) src              WHERE json_extract(src.value, '$.strategy') IN ({placeholders}))"
+        )),
         allowed,
     )
+}
+
+/// One place an item's file can be fetched from.
+///
+/// Items carry an ordered list of these, best first. The resolver walks the
+/// list and uses the first source that is both enabled in the user's settings
+/// and actually answering, so a rate-limited GitHub or an offline mirror
+/// degrades to a fallback instead of a failed install.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadSource {
+    /// One of [`CURATED_DOWNLOAD_STRATEGIES`].
+    pub strategy: String,
+    /// What the strategy resolves: a `owner/repo` for `github_release`, a
+    /// project id for `modrinth_id`, a pinned URL for `direct_hash` /
+    /// `technic_pack`, the pack id for `curated_pack`.
+    pub identifier: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +598,7 @@ pub const REGISTRY_ITEM_COLUMNS: &str = "ri.id, ri.name, ri.content_type, ri.dow
         ri.immunity_reason, ri.allow_comments, ri.icon_url,
         ri.gallery_urls_json, ri.date_added, ri.compatible_versions_json,
         ri.description, ri.body_markdown, ri.page_url, ri.license_id,
-        ri.source_updated_at, ri.modrinth_id";
+        ri.source_updated_at, ri.modrinth_id, ri.download_sources_json";
 
 /// A registry item row for browsing (§6.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -602,6 +636,12 @@ pub struct RegistryItem {
     /// one when the project also exists on Modrinth). Used as the
     /// version-resolution fallback when the primary source fails.
     pub modrinth_id: Option<String>,
+    /// Ordered download sources, best first, as the JSON array the compiler
+    /// wrote. Prefer [`RegistryItem::download_sources`] over parsing this
+    /// directly — it also covers pre-schema-8 registries, which have no such
+    /// column and describe only their preferred source.
+    #[serde(default)]
+    pub download_sources_json: Option<String>,
     /// Present only for recommendation queries. Explains the concrete ranking
     /// signal instead of asking the frontend to invent generic copy.
     #[serde(default)]
@@ -609,6 +649,62 @@ pub struct RegistryItem {
     /// Number of interest categories shared with locally installed items.
     #[serde(default)]
     pub recommendation_overlap: Option<i64>,
+}
+
+impl RegistryItem {
+    /// Ordered download sources for this item, best first.
+    ///
+    /// Falls back to the legacy `download_strategy` / `source_identifier` pair
+    /// when the row carries no source list — either a pre-schema-8 registry, or
+    /// a row written before the compiler normalized the field. The implicit
+    /// Modrinth fallback that a `modrinth_id`-carrying entry has always had is
+    /// reconstructed in that path too, so behaviour is unchanged for old data.
+    ///
+    /// The result is never empty: a row with nothing usable still yields its
+    /// declared strategy, and the resolver reports the failure per source
+    /// rather than silently resolving to nothing.
+    pub fn download_sources(&self) -> Vec<DownloadSource> {
+        let parsed: Vec<DownloadSource> = self
+            .download_sources_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|json| !json.is_empty())
+            .and_then(|json| serde_json::from_str::<Vec<DownloadSource>>(json).ok())
+            .unwrap_or_default();
+
+        let mut sources: Vec<DownloadSource> = parsed
+            .into_iter()
+            .filter(|source| !source.strategy.trim().is_empty())
+            .collect();
+
+        if sources.is_empty() {
+            sources.push(DownloadSource {
+                strategy: self.download_strategy.clone(),
+                identifier: self.source_identifier.clone(),
+            });
+            if let Some(modrinth_id) = self
+                .modrinth_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                if self.download_strategy != "modrinth_id" {
+                    sources.push(DownloadSource {
+                        strategy: "modrinth_id".into(),
+                        identifier: modrinth_id.to_string(),
+                    });
+                }
+            }
+        }
+        sources
+    }
+
+    /// Whether any of this item's download sources uses `strategy`.
+    pub fn has_download_source(&self, strategy: &str) -> bool {
+        self.download_sources()
+            .iter()
+            .any(|source| source.strategy == strategy)
+    }
 }
 
 /// Valid sort options for browsing (§6.2).
@@ -798,7 +894,7 @@ pub fn get_item_by_id(conn: &Connection, item_id: &str) -> LauncherResult<Option
                     immunity_reason, allow_comments, icon_url,
                     gallery_urls_json, date_added, compatible_versions_json,
                     description, body_markdown, page_url, license_id,
-                    source_updated_at, modrinth_id
+                    source_updated_at, modrinth_id, download_sources_json
              FROM registry_items WHERE id = ?1",
         )
         .map_err(|e| LauncherError::Generic {
@@ -1010,6 +1106,7 @@ pub fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RegistryItem> {
         license_id: row.get(21)?,
         source_updated_at: row.get(22)?,
         modrinth_id: row.get(23)?,
+        download_sources_json: row.get(24)?,
         recommendation_reason: None,
         recommendation_overlap: None,
     })
@@ -1896,7 +1993,8 @@ fn for_you_items_query(
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             let mut item = row_to_item(row)?;
-            let overlap: i64 = row.get(24)?;
+            // Trails REGISTRY_ITEM_COLUMNS, so its index moves with that list.
+            let overlap: i64 = row.get(25)?;
             item.recommendation_overlap = Some(overlap);
             item.recommendation_reason = Some(if overlap == 1 {
                 "Shares 1 category with mods installed in your instances.".to_string()
@@ -1964,7 +2062,8 @@ mod tests {
                 page_url TEXT,
                 license_id TEXT,
                 source_updated_at TEXT,
-                modrinth_id TEXT
+                modrinth_id TEXT,
+                download_sources_json TEXT
             );
 
             CREATE TABLE categories (
@@ -2025,8 +2124,7 @@ mod tests {
                 0, NULL, 1, 'https://example.com/icon.png', NULL,
                 '2024-01-01T00:00:00Z', '[{\"mc_version\":\"1.20.1\",\"loader\":\"fabric\"}]',
                 'A test mod', NULL, 'https://example.com/mod1', 'MIT',
-                '2024-01-01T00:00:00Z', NULL
-            );
+                '2024-01-01T00:00:00Z', NULL, NULL);
 
             INSERT INTO categories VALUES ('fabric', 'Fabric', 0);
             INSERT INTO item_categories VALUES ('test-mod-1', 'fabric');
@@ -2297,25 +2395,23 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (item_id TEXT, category_id TEXT);
             INSERT INTO registry_items VALUES (
                 'git-mod', 'Git Mod', 'mod', 'github_release', 'owner/repo',
                 'abc', 10, 2, 8, 1.5, 'approved', 0, NULL, 1, NULL, NULL,
-                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, NULL
-            );
+                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, NULL, NULL);
             INSERT INTO registry_items VALUES (
                 'mr-mod', 'Modrinth Mod', 'mod', 'modrinth_id', 'mr-id',
                 'def', 10, 2, 8, 1.5, 'approved', 0, NULL, 1, NULL, NULL,
-                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, 'mr-id'
-            );
+                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, 'mr-id', NULL);
             INSERT INTO registry_items VALUES (
                 'dh-mod', 'Direct Hash Mod', 'mod', 'direct_hash',
                 'https://example.com/files/dh.jar', 'deadbeef', 10, 2, 8, 1.5,
                 'approved', 0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z',
-                NULL, '', NULL, NULL, NULL, NULL, NULL
-            );
+                NULL, '', NULL, NULL, NULL, NULL, NULL, NULL);
             ",
         )
         .unwrap();
@@ -2380,6 +2476,190 @@ mod tests {
     }
 
     #[test]
+    fn browse_keeps_an_item_while_any_of_its_sources_is_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
+            );
+            CREATE TABLE item_categories (item_id TEXT, category_id TEXT);
+            INSERT INTO registry_items VALUES (
+                'dual', 'Dual Source Mod', 'mod', 'modrinth_id', 'mr-id',
+                'abc', 10, 2, 8, 1.5, 'approved', 0, NULL, 1, NULL, NULL,
+                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, 'mr-id',
+                '[{\"strategy\":\"modrinth_id\",\"identifier\":\"mr-id\"},
+                  {\"strategy\":\"github_release\",\"identifier\":\"owner/repo\"}]');
+            ",
+        )
+        .unwrap();
+        let sort = SortOption::NetScore;
+
+        // Preferred source off, fallback still on: the item is installable, so
+        // it must stay browsable.
+        let github_only: Vec<String> = vec!["github_release".into()];
+        let visible = browse_items(
+            &conn,
+            None,
+            None,
+            &sort,
+            &github_only,
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
+        assert_eq!(visible.len(), 1, "fallback source keeps the item visible");
+
+        // Every source the item declares is off: nothing can serve it.
+        let unrelated: Vec<String> = vec!["direct_hash".into()];
+        let hidden =
+            browse_items(&conn, None, None, &sort, &unrelated, None, None, None, 100).unwrap();
+        assert!(hidden.is_empty(), "no enabled source must hide the item");
+    }
+
+    fn item_with_sources(
+        strategy: &str,
+        identifier: &str,
+        modrinth_id: Option<&str>,
+        sources_json: Option<&str>,
+    ) -> RegistryItem {
+        RegistryItem {
+            id: "test".into(),
+            name: "Test".into(),
+            content_type: "mod".into(),
+            download_strategy: strategy.into(),
+            source_identifier: identifier.into(),
+            sha256: "a".repeat(64),
+            upvotes: 0,
+            downvotes: 0,
+            net_score: 0,
+            velocity: 0.0,
+            status: "active".into(),
+            is_immune: false,
+            immunity_reason: None,
+            allow_comments: true,
+            icon_url: None,
+            gallery_urls_json: None,
+            date_added: None,
+            compatible_versions_json: None,
+            description: None,
+            body_markdown: None,
+            page_url: None,
+            license_id: None,
+            source_updated_at: None,
+            modrinth_id: modrinth_id.map(str::to_string),
+            download_sources_json: sources_json.map(str::to_string),
+            recommendation_reason: None,
+            recommendation_overlap: None,
+        }
+    }
+
+    #[test]
+    fn a_malformed_source_list_does_not_break_browse() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE registry_items (
+                id TEXT PRIMARY KEY, name TEXT, content_type TEXT,
+                download_strategy TEXT, source_identifier TEXT, sha256 TEXT,
+                upvotes INTEGER, downvotes INTEGER, net_score INTEGER,
+                velocity REAL, status TEXT, is_immune INTEGER,
+                immunity_reason TEXT, allow_comments INTEGER, icon_url TEXT,
+                gallery_urls_json TEXT, date_added TEXT,
+                compatible_versions_json TEXT, description TEXT,
+                body_markdown TEXT, page_url TEXT, license_id TEXT,
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
+            );
+            CREATE TABLE item_categories (item_id TEXT, category_id TEXT);
+            INSERT INTO registry_items VALUES (
+                'broken', 'Broken Sources', 'mod', 'github_release', 'owner/repo',
+                'abc', 10, 2, 8, 1.5, 'approved', 0, NULL, 1, NULL, NULL,
+                '2024-01-01T00:00:00Z', NULL, '', NULL, NULL, NULL, NULL, NULL,
+                'not json at all');
+            ",
+        )
+        .unwrap();
+
+        // The row falls back to its legacy columns rather than taking the whole
+        // query down with it.
+        let sort = SortOption::NetScore;
+        let items = browse_items(
+            &conn,
+            None,
+            None,
+            &sort,
+            &all_curated_strategies(),
+            None,
+            None,
+            None,
+            100,
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].download_sources()[0].strategy, "github_release");
+    }
+
+    #[test]
+    fn download_sources_preserve_curator_order() {
+        let item = item_with_sources(
+            "modrinth_id",
+            "mr-id",
+            Some("mr-id"),
+            Some(
+                r#"[{"strategy":"modrinth_id","identifier":"mr-id"},
+                    {"strategy":"github_release","identifier":"owner/repo"}]"#,
+            ),
+        );
+        let sources = item.download_sources();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].strategy, "modrinth_id");
+        assert_eq!(sources[1].strategy, "github_release");
+        assert_eq!(sources[1].identifier, "owner/repo");
+        assert!(item.has_download_source("github_release"));
+        assert!(!item.has_download_source("direct_hash"));
+    }
+
+    #[test]
+    fn download_sources_reconstruct_the_legacy_modrinth_fallback() {
+        // A pre-schema-8 row: no source list, but a modrinth_id the resolver
+        // has always fallen back to.
+        let item = item_with_sources("github_release", "owner/repo", Some("mr-id"), None);
+        let sources = item.download_sources();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].strategy, "github_release");
+        assert_eq!(sources[0].identifier, "owner/repo");
+        assert_eq!(sources[1].strategy, "modrinth_id");
+        assert_eq!(sources[1].identifier, "mr-id");
+    }
+
+    #[test]
+    fn download_sources_never_empty_and_never_duplicate_modrinth() {
+        let single = item_with_sources("modrinth_id", "mr-id", Some("mr-id"), None);
+        assert_eq!(single.download_sources().len(), 1);
+
+        let malformed = item_with_sources("github_release", "owner/repo", None, Some("not json"));
+        let sources = malformed.download_sources();
+        assert_eq!(sources.len(), 1, "unparseable JSON falls back to the row");
+        assert_eq!(sources[0].strategy, "github_release");
+    }
+
+    #[test]
     fn test_sort_option_default() {
         let sort = SortOption::default();
         assert!(matches!(sort, SortOption::NetScore));
@@ -2401,7 +2681,8 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
@@ -2415,8 +2696,7 @@ mod tests {
                 'curated-mod', 'Curated Mod', 'mod', 'modrinth_id',
                 'mr-id-123', 'abc', 100, 5, 85, 2.0, 'approved',
                 1, NULL, 1, NULL, NULL, '2024-06-01T00:00:00Z', NULL,
-                'A curated mod description', NULL, NULL, NULL, NULL, 'mr-id-123'
-            );
+                'A curated mod description', NULL, NULL, NULL, NULL, 'mr-id-123', NULL);
             INSERT INTO item_categories VALUES ('curated-mod', 'fabric');
             INSERT INTO item_categories VALUES ('curated-mod', 'adventure');
             INSERT INTO curator_reviews VALUES ('curated-mod', 'A real curator note.', '[]');
@@ -2467,7 +2747,8 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
@@ -2481,8 +2762,7 @@ mod tests {
                 'github-mod', 'GitHub Mod', 'mod', 'github_release',
                 'owner/repo', 'abc', 40, 3, 37, 1.0, 'approved',
                 0, NULL, 1, NULL, NULL, '2024-06-01T00:00:00Z', NULL,
-                'A github mod description', NULL, NULL, NULL, NULL, NULL
-            );
+                'A github mod description', NULL, NULL, NULL, NULL, NULL, NULL);
             INSERT INTO item_categories VALUES ('github-mod', 'performance');
             INSERT INTO curator_reviews VALUES ('github-mod', 'Note from curators.', '[]');
             ",
@@ -2523,7 +2803,8 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
@@ -2537,8 +2818,7 @@ mod tests {
                 'curated-mod', 'Curated Mod', 'mod', 'modrinth_id',
                 'mr-id-123', 'abc', 100, 5, 85, 2.0, 'approved',
                 1, NULL, 1, NULL, NULL, '2024-06-01T00:00:00Z', NULL,
-                'A curated mod description', NULL, NULL, NULL, NULL, 'mr-id-123'
-            );
+                'A curated mod description', NULL, NULL, NULL, NULL, 'mr-id-123', NULL);
             INSERT INTO curator_reviews VALUES ('curated-mod', 'Note.', '[]');
             ",
         )
@@ -2564,7 +2844,8 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
@@ -2601,15 +2882,15 @@ mod tests {
                  gallery_urls_json TEXT, date_added TEXT,
                  compatible_versions_json TEXT, description TEXT,
                  body_markdown TEXT, page_url TEXT, license_id TEXT,
-                 source_updated_at TEXT, modrinth_id TEXT
+                 source_updated_at TEXT, modrinth_id TEXT,
+                 download_sources_json TEXT
              );
              INSERT INTO registry_items VALUES (
                  'svc-test-1', 'Svc Test Mod', 'mod', 'github_release',
                  'owner/repo', 'abc', 10, 2, 8, 1.5, 'approved',
                  0, NULL, 1, NULL, NULL,
                  '2024-01-01T00:00:00Z', NULL,
-                 'A service test mod', NULL, NULL, NULL, NULL, NULL
-             );",
+                 'A service test mod', NULL, NULL, NULL, NULL, NULL, NULL);",
         )
         .unwrap();
         drop(conn);
@@ -2640,7 +2921,8 @@ mod tests {
                  gallery_urls_json TEXT, date_added TEXT,
                  compatible_versions_json TEXT, description TEXT,
                  body_markdown TEXT, page_url TEXT, license_id TEXT,
-                 source_updated_at TEXT, modrinth_id TEXT
+                 source_updated_at TEXT, modrinth_id TEXT,
+                 download_sources_json TEXT
              );",
         )
         .unwrap();
@@ -2770,7 +3052,8 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
@@ -2779,8 +3062,7 @@ mod tests {
                 'rec-mod', 'Rec Mod', 'mod', 'github_release',
                 'owner/repo', 'abc', 10, 2, 8, 1.5, 'approved',
                 0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z', NULL,
-                'A recommended mod', NULL, NULL, NULL, NULL, NULL
-            );
+                'A recommended mod', NULL, NULL, NULL, NULL, NULL, NULL);
             INSERT INTO item_categories VALUES ('rec-mod', 'adventure');
             ",
         )
@@ -2882,7 +3164,8 @@ mod tests {
                 gallery_urls_json TEXT, date_added TEXT,
                 compatible_versions_json TEXT, description TEXT,
                 body_markdown TEXT, page_url TEXT, license_id TEXT,
-                source_updated_at TEXT, modrinth_id TEXT
+                source_updated_at TEXT, modrinth_id TEXT,
+                download_sources_json TEXT
             );
             CREATE TABLE item_categories (
                 item_id TEXT, category_id TEXT
@@ -2895,15 +3178,13 @@ mod tests {
                 'rec-1', 'Rec One', 'mod', 'github_release',
                 'a/a', 'a', 10, 2, 8, 1.5, 'approved',
                 0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z', NULL,
-                'A', NULL, NULL, NULL, NULL, NULL
-            );
+                'A', NULL, NULL, NULL, NULL, NULL, NULL);
             -- Item with 'fabric' AND 'adventure' categories (higher overlap)
             INSERT INTO registry_items VALUES (
                 'rec-2', 'Rec Two', 'mod', 'github_release',
                 'b/b', 'b', 10, 2, 5, 1.0, 'approved',
                 0, NULL, 1, NULL, NULL, '2024-01-01T00:00:00Z', NULL,
-                'B', NULL, NULL, NULL, NULL, NULL
-            );
+                'B', NULL, NULL, NULL, NULL, NULL, NULL);
             INSERT INTO item_categories VALUES ('rec-1', 'fabric');
             INSERT INTO item_categories VALUES ('rec-2', 'fabric');
             INSERT INTO item_categories VALUES ('rec-2', 'adventure');
@@ -2990,14 +3271,14 @@ mod tests {
                  gallery_urls_json TEXT, date_added TEXT,
                  compatible_versions_json TEXT, description TEXT,
                  body_markdown TEXT, page_url TEXT, license_id TEXT,
-                 source_updated_at TEXT, modrinth_id TEXT
+                 source_updated_at TEXT, modrinth_id TEXT,
+                 download_sources_json TEXT
              );
              INSERT INTO registry_items VALUES (
                  'review-mod', 'Review Mod', 'mod', 'github_release',
                  'r/r', 'abc', 0, 0, 0, 0.0, 'under_review',
                  0, NULL, 1, NULL, NULL, '2024-06-01T00:00:00Z', NULL,
-                 NULL, NULL, NULL, NULL, NULL, NULL
-             );",
+                 NULL, NULL, NULL, NULL, NULL, NULL, NULL);",
         )
         .unwrap();
         drop(conn);

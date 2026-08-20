@@ -568,6 +568,7 @@ fn handle_read_mod_manifest(ctx: &Ctx, mod_id: &str) -> serde_json::Value {
         "content_type": item.content_type,
         "download_strategy": item.download_strategy,
         "source_identifier": item.source_identifier,
+        "download_sources": item.download_sources(),
         "sha256": item.sha256,
         "license_id": item.license_id,
         "description": item.description,

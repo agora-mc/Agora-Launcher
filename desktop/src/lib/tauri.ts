@@ -426,10 +426,18 @@ export interface LoaderVersionSummary {
   file_type: string;
 }
 
+/// One place a registry item's file can be fetched from.
+export interface DownloadSource {
+  strategy: string;
+  identifier: string;
+}
+
 export interface RegistryItem {
   id: string;
   name: string;
   content_type: string;
+  /// Preferred source's strategy. Mirrors `download_sources[0].strategy`;
+  /// prefer `downloadSourcesOf(item)` when the fallbacks matter.
   download_strategy: string;
   source_identifier: string;
   sha256: string;
@@ -451,8 +459,60 @@ export interface RegistryItem {
   license_id: string | null;
   source_updated_at: string | null;
   modrinth_id: string | null;
+  /// Ordered download sources, best first, as stored in the signed registry.
+  /// Absent on registries compiled before the multi-source schema.
+  download_sources_json?: string | null;
   recommendation_reason?: string | null;
   recommendation_overlap?: number | null;
+}
+
+/// Ordered download sources for an item, best first.
+///
+/// Mirrors the backend's fallback reconstruction so the UI shows the same list
+/// the resolver will actually walk: a registry row without an explicit source
+/// list still has its preferred source, plus the implicit Modrinth fallback a
+/// `modrinth_id` gives it.
+export function downloadSourcesOf(item: Pick<RegistryItem,
+  'download_strategy' | 'source_identifier' | 'modrinth_id' | 'download_sources_json'>): DownloadSource[] {
+  const raw = item.download_sources_json?.trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const sources = parsed.filter(
+          (entry): entry is DownloadSource =>
+            !!entry && typeof entry.strategy === 'string' && entry.strategy.trim() !== '',
+        );
+        if (sources.length > 0) return sources;
+      }
+    } catch {
+      // Malformed JSON falls through to the legacy reconstruction below.
+    }
+  }
+  const sources: DownloadSource[] = [
+    { strategy: item.download_strategy, identifier: item.source_identifier },
+  ];
+  const modrinthId = item.modrinth_id?.trim();
+  if (modrinthId && item.download_strategy !== 'modrinth_id') {
+    sources.push({ strategy: 'modrinth_id', identifier: modrinthId });
+  }
+  return sources;
+}
+
+/// Product names the generic word-capitalizer would get wrong.
+const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
+  github_release: 'GitHub Release',
+  modrinth_id: 'Modrinth',
+  direct_hash: 'Direct Download',
+  technic_pack: 'Technic',
+  curated_pack: 'Curated Pack',
+};
+
+/// Human-readable label for a download strategy (`github_release` → `GitHub Release`).
+export function downloadSourceLabel(strategy: string): string {
+  const known = DOWNLOAD_SOURCE_LABELS[strategy];
+  if (known) return known;
+  return strategy.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export interface CategoryInfo {
@@ -1015,6 +1075,10 @@ export interface ModVersionCandidate {
   is_compatible: boolean;
   sha1?: string | null;
   version_compat?: string;
+  /// Which of the item's download sources produced this candidate. Set by the
+  /// backend resolver; absent on candidates from an older backend.
+  source_strategy?: string | null;
+  source_identifier?: string | null;
 }
 
 export interface ModVersionPage {

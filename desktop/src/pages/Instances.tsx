@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
@@ -31,6 +32,7 @@ import { sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { type ProcessState } from '../lib/useProcessController';
 import { InstallFlow } from '../components/InstallFlow';
+import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
@@ -157,6 +159,12 @@ export function Instances({
     return () => { cancelled = true; };
   }, []);
 
+  // Surfaced in the hero so "is anything running?" is answerable without
+  // scanning the grid.
+  const runningInstance = processState.phase === 'running'
+    ? instances.find((row) => row.instance_id === processState.instanceId) ?? null
+    : null;
+
   const openCrashInvestigator = (instanceId: string) => {
     onStartCrashInvestigation({
       instanceId,
@@ -169,25 +177,42 @@ export function Instances({
   return (
     <div className="space-y-6" data-tour="page-instances">
       <section className="agora-hero compact flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold mb-2">My Instances</h2>
-          <p className="text-muted-foreground">
-            Isolated modpack profiles, custom instances, and launch history.
-          </p>
+        <div className="flex items-start gap-3">
+          <span className="settings-hero-badge" aria-hidden="true">
+            <Boxes className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-2xl font-bold mb-2">My Instances</h2>
+            <p className="text-muted-foreground">
+              Isolated modpack profiles, custom instances, and launch history.
+            </p>
+            {!loading && instances.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="settings-hero-chip">
+                  {instances.length} instance{instances.length === 1 ? '' : 's'}
+                </span>
+                {runningInstance && (
+                  <span className="settings-hero-chip">● {runningInstance.name} running</span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setShowImport(true)}
-            className="rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
           >
+            <Download className="h-4 w-4" aria-hidden="true" />
             Import Instances
           </button>
           <button
             onClick={() => setShowCreate(true)}
             data-tour="create-instance"
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            + Create Instance
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Create Instance
           </button>
         </div>
       </section>
@@ -199,15 +224,50 @@ export function Instances({
       )}
 
       {loading ? (
-        <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center text-muted-foreground">
-          Loading instances…
-        </div>
+        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2" aria-label="Loading instances…" aria-busy="true">
+          {[0, 1].map((key) => (
+            <li key={key} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start gap-3">
+                <div className="instance-skeleton__block h-14 w-14 shrink-0" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="instance-skeleton__block h-4 w-1/2" />
+                  <div className="instance-skeleton__block h-3 w-3/4" />
+                  <div className="instance-skeleton__block h-3 w-1/3" />
+                </div>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <div className="instance-skeleton__block h-8 w-20" />
+                <div className="instance-skeleton__block h-8 w-16" />
+                <div className="instance-skeleton__block h-8 w-16" />
+              </div>
+            </li>
+          ))}
+        </ul>
       ) : instances.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
-          <p className="text-muted-foreground">No instances yet.</p>
-          <p className="text-sm text-muted-foreground mt-2">
+        <div className="rounded-xl border border-dashed border-border bg-card p-8 text-center">
+          <span className="settings-hero-badge mx-auto" aria-hidden="true">
+            <Boxes className="h-5 w-5" />
+          </span>
+          <p className="mt-4 font-semibold text-foreground">No instances yet.</p>
+          <p className="text-sm text-muted-foreground mt-2 mx-auto max-w-md">
             Create a custom instance to install a verified modloader and launch via the official Mojang launcher or the in-app direct launcher.
           </p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <button
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Create your first instance
+            </button>
+            <button
+              onClick={() => setShowImport(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-accent"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Import from another launcher
+            </button>
+          </div>
         </div>
       ) : (
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -465,16 +525,15 @@ function InstanceCard({
     : null;
 
   return (
-    <li className="rounded-xl border border-border bg-card p-4">
+    <li className={`instance-card rounded-xl border border-border bg-card p-4${isRunning ? ' instance-card--running' : ''}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
-          {iconSrc && (
-            <img
-              src={iconSrc}
-              alt={`${instance.name} icon`}
-              className="h-14 w-14 shrink-0 rounded-xl border border-border object-cover"
-            />
-          )}
+          <InstanceIcon
+            name={instance.name}
+            seed={instance.instance_id}
+            loader={instance.loader}
+            iconSrc={iconSrc}
+          />
           <div className="min-w-0">
             <h3 className="break-words font-semibold">{instance.name}</h3>
             {instance.import_source && (
@@ -484,15 +543,16 @@ function InstanceCard({
                   : instance.import_source === 'prism' ? 'Prism Launcher' : 'Modrinth App'}
               </span>
             )}
-            <p className="text-xs text-muted-foreground">
-              {instance.loader === 'vanilla' || !instance.loader_version
-                ? instance.loader
-                : `${instance.loader} ${instance.loader_version}`}
-              {' '}· MC {instance.minecraft_version}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <LoaderChip loader={instance.loader} loaderVersion={instance.loader_version} />
+              <MetaChip>MC {instance.minecraft_version}</MetaChip>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">
               {isRunning ? (
-                <span className="text-green-600 dark:text-green-400">● Running (PID {runningPid})</span>
+                <span className="inline-flex items-center gap-1.5 text-green-600 dark:text-green-400">
+                  <span className="instance-status-dot" aria-hidden="true" />
+                  Running (PID {runningPid})
+                </span>
               ) : instance.last_launched_at ? (
                 `Last launched ${formatInstalledDate(instance.last_launched_at)}`
               ) : (
@@ -751,45 +811,51 @@ function InstanceCard({
         {isRunning ? (
           <button
             onClick={onKill}
-            className="rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:bg-destructive/90"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground hover:bg-destructive/90"
           >
+            <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
             Kill
           </button>
         ) : (
           <button
             onClick={onLaunch}
             disabled={effectiveBusy || recoveryBlocked}
-            className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
+            <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
             {effectiveBusy && !repairing ? 'Starting…' : 'Launch'}
           </button>
         )}
         <button
           onClick={onEdit}
           disabled={effectiveBusy || recoveryBlocked}
-          className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
+          <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
           Edit
         </button>
         <button
           onClick={onClone}
           disabled={effectiveBusy || recoveryBlocked}
-          className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
           Clone
         </button>
         <button
           onClick={() => onOpenCrashInvestigator(instance.instance_id)}
           disabled={effectiveBusy || recoveryBlocked}
-          className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
+          <LifeBuoy className="h-3.5 w-3.5" aria-hidden="true" />
           Troubleshoot
         </button>
         <button
           onClick={remove}
           disabled={effectiveBusy || recoveryBlocked}
-          className="rounded-lg border border-destructive/30 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-destructive/30 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
         >
+          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           Delete
         </button>
       </div>

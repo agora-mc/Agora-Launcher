@@ -92,6 +92,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
+import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { ImagePlus, Play } from 'lucide-react';
 
 function installedModKey(mod: InstalledMod): string {
@@ -1360,6 +1361,21 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     );
   }
 
+  // The header tile: the pack's own art when there is one, otherwise the
+  // generated placeholder. Either way it is the same element, so the header
+  // never collapses to a bare name — which is what a locked, image-less
+  // instance used to render.
+  const headerIconSrc = instanceCustomIcon ?? packIconUrl(manifest);
+  const headerIcon = (
+    <InstanceIcon
+      name={row?.name ?? 'Instance'}
+      seed={instanceId}
+      loader={manifest?.loader ?? row?.loader}
+      iconSrc={headerIconSrc}
+      size={64}
+    />
+  );
+
   return (
     <div className="space-y-6" data-tour="page-instance-editor">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1377,41 +1393,21 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       <section className="rounded-xl border border-border bg-card p-6">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="flex items-start gap-4">
-            {instanceCustomIcon || packIconUrl(manifest) ? (
-              !row?.is_locked ? (
-                <button
-                  type="button"
-                  onClick={handleSetInstanceIcon}
-                  disabled={recoveryBlocked}
-                  className="h-16 w-16 shrink-0 rounded-xl border border-border overflow-hidden p-0 hover:opacity-90 disabled:opacity-50"
-                  title="Change instance image"
-                  aria-label="Change instance image"
-                >
-                  <img
-                    src={instanceCustomIcon ?? packIconUrl(manifest) ?? undefined}
-                    alt={`${row?.name ?? 'Instance'} icon`}
-                    className="h-full w-full object-cover"
-                  />
-                </button>
-              ) : (
-                <img
-                  src={instanceCustomIcon ?? packIconUrl(manifest) ?? undefined}
-                  alt={`${row?.name ?? 'Instance'} icon`}
-                  className="h-16 w-16 shrink-0 rounded-xl border border-border object-cover"
-                />
-              )
-            ) : !row?.is_locked ? (
+            {row?.is_locked ? headerIcon : (
               <button
                 type="button"
                 onClick={handleSetInstanceIcon}
                 disabled={recoveryBlocked}
-                className="h-16 w-16 shrink-0 rounded-xl border border-dashed border-border bg-muted flex items-center justify-center hover:bg-accent disabled:opacity-50"
-                title="Set a custom instance image"
-                aria-label="Set instance image"
+                className="instance-icon-button shrink-0"
+                title={headerIconSrc ? 'Change instance image' : 'Set a custom instance image'}
+                aria-label={headerIconSrc ? 'Change instance image' : 'Set instance image'}
               >
-                <ImagePlus className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                {headerIcon}
+                <span className="instance-icon-button__overlay">
+                  <ImagePlus className="h-5 w-5" aria-hidden="true" />
+                </span>
               </button>
-            ) : null}
+            )}
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-2xl font-bold">
@@ -1427,10 +1423,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               </h2>
 
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              MC {row?.minecraft_version} · {manifest?.loader} {manifest?.loader_version}
-              {' '}
-              {manifest?.loader && manifest.loader !== 'vanilla' && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {manifest?.loader && (
+                <LoaderChip loader={manifest.loader} loaderVersion={manifest.loader_version} />
+              )}
+              <MetaChip>MC {row?.minecraft_version}</MetaChip>
+            </div>
+            {manifest?.loader && manifest.loader !== 'vanilla' && (
+              <p className="text-xs text-muted-foreground mt-1.5">
                 <button
                   type="button"
                   onClick={openLoaderChooser}
@@ -1444,8 +1444,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 >
                   Change loader version
                 </button>
-              )}
-            </p>
+              </p>
+            )}
             {healthReport && healthIssueCount > 0 && (
               <div
                 className={`mt-3 flex max-w-md items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${

@@ -813,3 +813,175 @@
   background-image: linear-gradient(120deg, hsl(var(--primary) / 0.16), hsl(var(--primary) / 0.03));
   padding: 0.85rem 1rem;
 }
+
+/* ── Instance tiles, chips, and cards ─────────────────────────────────
+   My Instances and the Standard-mode editor. The tile's *colours* are
+   generated per instance (see `lib/instanceIdentity.ts`) and arrive as inline
+   custom properties; everything around them — surface, border, shadow — stays
+   on the semantic tokens, so a custom accent, block colour, or opacity carries
+   through here exactly as it does elsewhere. Every transition below is
+   decorative, so the global reduced-motion rules neutralise them. */
+
+.instance-icon {
+  flex-shrink: 0;
+  border-radius: calc(var(--radius) * 1.15);
+  border: 1px solid hsl(var(--border));
+}
+
+.instance-icon--image {
+  object-fit: cover;
+  background-color: hsl(var(--muted));
+}
+
+.instance-icon--generated {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  user-select: none;
+  background-image:
+    radial-gradient(120% 100% at 22% 14%, hsl(0 0% 100% / 0.26), transparent 62%),
+    linear-gradient(
+      var(--instance-icon-angle, 135deg),
+      hsl(var(--instance-icon-hue-a) 58% 52%),
+      hsl(var(--instance-icon-hue-b) 55% 34%)
+    );
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.2),
+    0 6px 16px -12px hsl(var(--foreground) / 0.9);
+}
+
+/* A faint 4×4 grid over the gradient — a quiet nod to the blocks the launcher
+   is for, and enough texture that a flat generated tile does not read as a
+   loading placeholder. */
+.instance-icon--generated::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(hsl(0 0% 100% / 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(0 0% 100% / 0.07) 1px, transparent 1px);
+  background-size: 25% 25%;
+  pointer-events: none;
+}
+
+.instance-icon__initials {
+  position: relative;
+  z-index: 1;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: hsl(0 0% 100% / 0.95);
+  text-shadow: 0 1px 3px hsl(0 0% 0% / 0.4);
+}
+
+/* Tiles that double as the "change image" control. */
+.instance-icon-button {
+  position: relative;
+  display: block;
+  padding: 0;
+  border-radius: calc(var(--radius) * 1.15);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.instance-icon-button:hover:not(:disabled) { transform: translateY(-1px); }
+.instance-icon-button:disabled { opacity: 0.5; }
+
+.instance-icon-button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* The affordance stays hidden until hover/focus so the tile itself is what you
+   see; it is a button either way, and the accessible name says so. */
+.instance-icon-button__overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background-color: hsl(0 0% 0% / 0.5);
+  color: hsl(0 0% 100%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.instance-icon-button:hover:not(:disabled) .instance-icon-button__overlay,
+.instance-icon-button:focus-visible .instance-icon-button__overlay { opacity: 1; }
+
+.instance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--instance-chip-hue, 250) 45% 50% / 0.35);
+  background-color: hsl(var(--instance-chip-hue, 250) 45% 50% / 0.12);
+  padding: 0.1rem 0.55rem;
+  font-size: calc(0.6875rem * var(--font-scale));
+  font-weight: 600;
+  line-height: 1.5;
+  color: hsl(var(--card-foreground));
+  white-space: nowrap;
+}
+
+.instance-chip__dot {
+  height: 0.4rem;
+  width: 0.4rem;
+  border-radius: 999px;
+  background-color: hsl(var(--instance-chip-hue, 250) 62% 52%);
+}
+
+.instance-chip--muted {
+  border-color: hsl(var(--border));
+  background-color: hsl(var(--muted) / 0.6);
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+
+/* Cards lift slightly on hover so the grid feels handled rather than static.
+   Border and shadow are token-driven; only the lift is motion. */
+.instance-card {
+  position: relative;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.instance-card:hover {
+  transform: translateY(-2px);
+  border-color: hsl(var(--primary) / 0.45);
+  box-shadow: 0 16px 32px -26px hsl(var(--foreground) / 0.9);
+}
+
+/* A running instance is the one thing on this page worth spotting from across
+   the room, so it gets the accent ring rather than another line of text. */
+.instance-card--running {
+  border-color: hsl(var(--primary) / 0.6);
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35), 0 16px 32px -26px hsl(var(--primary));
+}
+
+.instance-status-dot {
+  display: inline-block;
+  height: 0.45rem;
+  width: 0.45rem;
+  border-radius: 999px;
+  background-color: currentColor;
+  animation: instance-pulse 2s ease-in-out infinite;
+}
+
+@keyframes instance-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+
+/* Loading skeletons for the instance grid — same footprint as a real card, so
+   the page does not jump when the rows land. */
+.instance-skeleton__block {
+  border-radius: calc(var(--radius) * 0.75);
+  background-color: hsl(var(--muted-foreground) / 0.15);
+  animation: instance-skeleton 1.4s ease-in-out infinite;
+}
+
+@keyframes instance-skeleton {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}

@@ -48,12 +48,30 @@ pub async fn list_mod_versions(
     instance_id: &str,
     item_id: &str,
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
-    let ctx = crate::core_context(app)?;
     let instance = load_instance_info(app, instance_id)?;
+    list_mod_versions_for(app, item_id, &instance.minecraft_version, &instance.loader).await
+}
+
+/// List versions for a curated registry item against an explicit
+/// `(mc_version, loader)` pair.
+///
+/// Both may be empty, which asks every source for its complete version list
+/// rather than a filtered one. That is what the Versions tab needs when it is
+/// opened from Browse with no instance chosen: a curated entry is browsable
+/// because one of its sources is enabled, so it must be listable on the same
+/// terms — requiring an instance first would make an installable entry look
+/// broken.
+pub async fn list_mod_versions_for(
+    app: &tauri::AppHandle,
+    item_id: &str,
+    mc_version: &str,
+    loader: &str,
+) -> LauncherResult<Vec<ModVersionCandidate>> {
+    let ctx = crate::core_context(app)?;
     let item = load_registry_item(app, item_id)?;
     let resolver = agora_core::resolver::Resolver::new(ctx);
     resolver
-        .list_curated_versions(&item, &instance.minecraft_version, &instance.loader)
+        .list_curated_versions(&item, mc_version, loader)
         .await
 }
 
@@ -121,17 +139,44 @@ async fn make_resolver(
 }
 
 /// Bi-directional initial fetch: page 1 + last 3 pages via core Resolver.
+///
+/// Takes the repo explicitly rather than reading it off the item: an item's
+/// preferred `source_identifier` is only a GitHub repo when its preferred
+/// source is `github_release`.
 pub async fn resolve_github_releases_initial(
     app: &tauri::AppHandle,
-    item: &registry::RegistryItem,
+    source_identifier: &str,
     mc_version: &str,
     loader: &str,
 ) -> LauncherResult<(Vec<ModVersionCandidate>, u32, Vec<u32>)> {
     let ctx = crate::core_context(app)?;
     let resolver = make_resolver(ctx, app).await;
     resolver
-        .fetch_github_releases_initial(&item.source_identifier, mc_version, loader)
+        .fetch_github_releases_initial(source_identifier, mc_version, loader)
         .await
+}
+
+/// An item's download sources in preference order, minus anything the user
+/// turned off in Settings.
+pub fn enabled_download_sources(
+    app: &tauri::AppHandle,
+    item: &registry::RegistryItem,
+) -> LauncherResult<Vec<agora_core::registry::DownloadSource>> {
+    let ctx = crate::core_context(app)?;
+    Ok(agora_core::resolver::Resolver::new(ctx).enabled_download_sources(item))
+}
+
+/// The source an item lists versions from: the curator's preferred source
+/// minus anything the user turned off in Settings.
+///
+/// Every strategy can list without an instance, so this is the same source the
+/// install will use — the Versions tab shows what the user will actually get.
+/// Returns `None` only when every source is turned off.
+pub fn version_listing_source(
+    app: &tauri::AppHandle,
+    item: &registry::RegistryItem,
+) -> LauncherResult<Option<agora_core::registry::DownloadSource>> {
+    Ok(enabled_download_sources(app, item)?.into_iter().next())
 }
 
 /// Batch-fetch specific GitHub pages via core Resolver.
@@ -163,13 +208,30 @@ pub async fn install_mod_version(
     } else {
         &item.content_type
     };
+    // Which hash to expect depends on where this candidate actually came from,
+    // not on the item's preferred strategy: an item can resolve from a fallback
+    // source, and a Modrinth-served file must not be judged against a hash
+    // pinned for the GitHub release.
+    let candidate_strategy = candidate
+        .source_strategy
+        .as_deref()
+        .map(str::trim)
+        .filter(|strategy| !strategy.is_empty())
+        .unwrap_or(item.download_strategy.as_str());
     let pinned = item.sha256.trim();
-    let exp_sha256 = if item.download_strategy == "github_release" {
-        None
-    } else if !pinned.is_empty() {
-        Some(pinned)
-    } else {
-        candidate.sha256.as_deref()
+    let exp_sha256 = match candidate_strategy {
+        // Hand-pinned: the registry hash is the whole integrity story.
+        "direct_hash" | "technic_pack" => Some(pinned).filter(|hash| !hash.is_empty()),
+        // GitHub publishes a per-asset digest on newer releases and nothing on
+        // older ones. The registry's pinned hash describes one historical file,
+        // so it must not stand in for a version it never described.
+        "github_release" => candidate.sha256.as_deref(),
+        // Otherwise prefer the hash the selected version published, falling
+        // back to the pinned one only when the source published none.
+        _ => candidate
+            .sha256
+            .as_deref()
+            .or(Some(pinned).filter(|hash| !hash.is_empty())),
     };
     let svc = agora_core::install_service::InstallService::new(ctx);
     svc.install_artifact(

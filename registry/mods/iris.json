@@ -9,8 +9,10 @@
     "optional": [],
     "incompatible": ["optifine"]
   },
-  "download_strategy": "github_release",
-  "source_identifier": "IrisShaders/Iris",
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "YL57xq9U" },
+    { "strategy": "github_release", "identifier": "IrisShaders/Iris" }
+  ],
   "modrinth_id": "YL57xq9U",
   "sha256": "47612b3175fece07f6c3e91992412c5b16ca88a9068cb72fecbcf653eb5ffcd7",
   "package_signatures": [

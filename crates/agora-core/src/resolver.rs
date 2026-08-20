@@ -812,96 +812,56 @@ impl Resolver {
         Ok(results)
     }
 
+    /// The item's download sources, best first, minus the ones the user turned
+    /// off in Settings.
+    ///
+    /// Source visibility is the same content axis Browse uses
+    /// (`curated_source_<strategy>_enabled`, default on). Applying it here as
+    /// well keeps install-time behaviour honest: a source the user opted out of
+    /// is never contacted, not even silently as a fallback.
+    pub fn enabled_download_sources(
+        &self,
+        item: &crate::registry::RegistryItem,
+    ) -> Vec<crate::registry::DownloadSource> {
+        let settings = crate::settings::SettingsService::new(self.ctx.clone());
+        item.download_sources()
+            .into_iter()
+            .filter(|source| {
+                settings
+                    .get_bool_or(&format!("curated_source_{}_enabled", source.strategy), true)
+                    .unwrap_or(true)
+            })
+            .collect()
+    }
+
+    /// The source this item would be installed from right now: the curator's
+    /// first choice that the user has not turned off.
+    ///
+    /// `None` when every source is disabled. Adapters use this to decide which
+    /// resolution path an item takes (e.g. only a `github_release` preference
+    /// gets the paginated GitHub version browser).
+    pub fn preferred_download_source(
+        &self,
+        item: &crate::registry::RegistryItem,
+    ) -> Option<crate::registry::DownloadSource> {
+        self.enabled_download_sources(item).into_iter().next()
+    }
+
     /// List curated versions for a registry item, filtered by MC version and loader.
+    ///
+    /// Walks the item's download sources in the curator's preference order and
+    /// returns the first one that yields candidates. A source that is disabled,
+    /// erroring, or simply has nothing for this `(mc_version, loader)` pair
+    /// falls through to the next, so an item stays installable while any of its
+    /// sources is reachable.
     pub async fn list_curated_versions(
         &self,
         item: &crate::registry::RegistryItem,
         mc_version: &str,
         loader: &str,
     ) -> LauncherResult<Vec<ModVersionCandidate>> {
-        let has_modrinth = item.modrinth_id.as_deref().is_some_and(|id| !id.is_empty());
-
-        match item.download_strategy.as_str() {
-            "github_release" => {
-                let primary = self
-                    .fetch_all_github_releases(&item.source_identifier, mc_version, loader)
-                    .await;
-                let candidates = match primary {
-                    Ok(c) if !c.is_empty() => return Ok(c),
-                    Ok(_) => Vec::new(),
-                    Err(_) => Vec::new(),
-                };
-                if has_modrinth {
-                    let alt = fetch_modrinth_versions_for_item(
-                        &self.ctx.http_clients,
-                        &item.source_identifier,
-                        item.modrinth_id.as_deref(),
-                        mc_version,
-                        loader,
-                    )
-                    .await?;
-                    if !alt.is_empty() {
-                        return Ok(alt);
-                    }
-                }
-                Ok(candidates)
-            }
-            "modrinth_id" => {
-                fetch_modrinth_versions_for_item(
-                    &self.ctx.http_clients,
-                    &item.source_identifier,
-                    None,
-                    mc_version,
-                    loader,
-                )
-                .await
-            }
-            // Fully hand-curated: no API call, the signed manifest is the
-            // source of truth. A Modrinth mirror, when the curator declared
-            // one, is still an acceptable fallback if the pinned host is down —
-            // the artifact is SHA-256-verified either way.
-            "direct_hash" => match direct_hash_versions_for_item(item, mc_version, loader) {
-                Ok(candidates) if !candidates.is_empty() => Ok(candidates),
-                Ok(_) | Err(_) if has_modrinth => {
-                    fetch_modrinth_versions_for_item(
-                        &self.ctx.http_clients,
-                        &item.source_identifier,
-                        item.modrinth_id.as_deref(),
-                        mc_version,
-                        loader,
-                    )
-                    .await
-                }
-                other => other,
-            },
-            // A Technic pack promoted to Tier C: the curator pinned the archive
-            // URL and its SHA-256 in the signed manifest. Unlike direct_hash,
-            // the pinned URL may be plain HTTP — the hash is out-of-band, so
-            // transport is not the trust anchor.
-            "technic_pack" => {
-                match pinned_artifact_versions_for_item(item, mc_version, loader, true) {
-                    Ok(candidates) if !candidates.is_empty() => Ok(candidates),
-                    Ok(_) | Err(_) if has_modrinth => {
-                        fetch_modrinth_versions_for_item(
-                            &self.ctx.http_clients,
-                            &item.source_identifier,
-                            item.modrinth_id.as_deref(),
-                            mc_version,
-                            loader,
-                        )
-                        .await
-                    }
-                    other => other,
-                }
-            }
-            _ => Err(LauncherError::Generic {
-                code: "ERR_UNSUPPORTED_STRATEGY".into(),
-                message: format!(
-                    "Download strategy '{}' is not supported for version resolution.",
-                    item.download_strategy
-                ),
-            }),
-        }
+        self.list_versions_across_sources(item, mc_version, loader, false)
+            .await
     }
 
     /// Resolve candidates for an automatic update check without walking the
@@ -914,32 +874,112 @@ impl Resolver {
         mc_version: &str,
         loader: &str,
     ) -> LauncherResult<Vec<ModVersionCandidate>> {
-        if item.download_strategy != "github_release" {
-            return self.list_curated_versions(item, mc_version, loader).await;
+        self.list_versions_across_sources(item, mc_version, loader, true)
+            .await
+    }
+
+    async fn list_versions_across_sources(
+        &self,
+        item: &crate::registry::RegistryItem,
+        mc_version: &str,
+        loader: &str,
+        bounded_github: bool,
+    ) -> LauncherResult<Vec<ModVersionCandidate>> {
+        let sources = self.enabled_download_sources(item);
+        if sources.is_empty() {
+            return Err(LauncherError::Generic {
+                code: "ERR_NO_ENABLED_SOURCE".into(),
+                message: format!(
+                    "Every download source for '{}' is turned off in Settings.",
+                    item.id
+                ),
+            });
         }
 
-        let has_modrinth = item.modrinth_id.as_deref().is_some_and(|id| !id.is_empty());
-        let primary = match self
-            .fetch_github_releases_initial(&item.source_identifier, mc_version, loader)
-            .await
-        {
-            Ok((candidates, _, _)) => candidates,
-            Err(_) => Vec::new(),
-        };
-        if !primary.is_empty() {
-            return Ok(primary);
+        // Surface the *first* failure rather than the last: it belongs to the
+        // preferred source, which is the one worth telling the user about.
+        let mut first_error: Option<LauncherError> = None;
+        for source in &sources {
+            match self
+                .list_versions_from_source(source, item, mc_version, loader, bounded_github)
+                .await
+            {
+                Ok(candidates) if !candidates.is_empty() => return Ok(candidates),
+                Ok(_) => {}
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
         }
-        if has_modrinth {
-            return fetch_modrinth_versions_for_item(
-                &self.ctx.http_clients,
-                &item.source_identifier,
-                item.modrinth_id.as_deref(),
-                mc_version,
-                loader,
-            )
-            .await;
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(Vec::new()),
         }
-        Ok(primary)
+    }
+
+    /// Resolve candidates from exactly one download source.
+    ///
+    /// Each candidate is stamped with the source that produced it, so
+    /// install-time policy — whether the registry's pinned SHA-256 applies,
+    /// which host is authorized — is decided by what actually served the file
+    /// rather than by the item's preferred strategy.
+    async fn list_versions_from_source(
+        &self,
+        source: &crate::registry::DownloadSource,
+        item: &crate::registry::RegistryItem,
+        mc_version: &str,
+        loader: &str,
+        bounded_github: bool,
+    ) -> LauncherResult<Vec<ModVersionCandidate>> {
+        let mut candidates = match source.strategy.as_str() {
+            "github_release" => {
+                if bounded_github {
+                    self.fetch_github_releases_initial(&source.identifier, mc_version, loader)
+                        .await
+                        .map(|(candidates, _, _)| candidates)
+                } else {
+                    self.fetch_all_github_releases(&source.identifier, mc_version, loader)
+                        .await
+                }
+            }
+            "modrinth_id" => {
+                fetch_modrinth_versions_for_item(
+                    &self.ctx.http_clients,
+                    &source.identifier,
+                    None,
+                    mc_version,
+                    loader,
+                )
+                .await
+            }
+            // Fully hand-curated: no API call, the signed manifest is the
+            // source of truth.
+            "direct_hash" => {
+                pinned_artifact_versions_for_source(item, source, mc_version, loader, false)
+            }
+            // A Technic pack promoted to Tier C: the curator pinned the archive
+            // URL and its SHA-256 in the signed manifest. Unlike direct_hash,
+            // the pinned URL may be plain HTTP — the hash is out-of-band, so
+            // transport is not the trust anchor.
+            "technic_pack" => {
+                pinned_artifact_versions_for_source(item, source, mc_version, loader, true)
+            }
+            _ => Err(LauncherError::Generic {
+                code: "ERR_UNSUPPORTED_STRATEGY".into(),
+                message: format!(
+                    "Download strategy '{}' is not supported for version resolution.",
+                    source.strategy
+                ),
+            }),
+        }?;
+
+        for candidate in &mut candidates {
+            candidate.source_strategy = Some(source.strategy.clone());
+            candidate.source_identifier = Some(source.identifier.clone());
+        }
+        Ok(candidates)
     }
 
     /// Fetch all GitHub release pages for a source, returning candidates filtered
@@ -1090,6 +1130,8 @@ impl Resolver {
                         .map(str::to_string),
                     sha512: None,
                     size: asset.size,
+                    source_strategy: None,
+                    source_identifier: None,
                 });
             }
         }
@@ -2486,6 +2528,37 @@ pub fn extract_loader(text: &str) -> Option<String> {
 // Standalone functions: Modrinth version listing for curated items
 // ---------------------------------------------------------------------------
 
+/// Modrinth version-listing URL for a project, filtered only by what is known.
+///
+/// Modrinth filters server-side, so an empty filter value would ask for versions
+/// matching the empty string and come back with nothing. Callers pass empty
+/// strings when there is no instance to filter against — the Versions tab opened
+/// from Browse — and there the honest request is "every version", the same
+/// unfiltered listing the GitHub path already returns. A curated entry is
+/// browsable because one of its sources is on, so it has to be listable on the
+/// same terms.
+fn modrinth_versions_url(project_id: &str, mc_version: &str, loader: &str) -> String {
+    let mut filters = Vec::new();
+    if !mc_version.trim().is_empty() {
+        filters.push(format!(
+            "game_versions=[\"{}\"]",
+            urlencoding::encode(mc_version)
+        ));
+    }
+    if !loader.trim().is_empty() {
+        filters.push(format!("loaders=[\"{}\"]", urlencoding::encode(loader)));
+    }
+    let query = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", filters.join("&"))
+    };
+    format!(
+        "https://api.modrinth.com/v2/project/{pid}/version{query}",
+        pid = urlencoding::encode(project_id),
+    )
+}
+
 async fn fetch_modrinth_versions_for_item(
     clients: &HttpClients,
     source_identifier: &str,
@@ -2495,12 +2568,7 @@ async fn fetch_modrinth_versions_for_item(
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
     let project_id = modrinth_id.unwrap_or(source_identifier);
 
-    let url = format!(
-        "https://api.modrinth.com/v2/project/{pid}/version?game_versions=[\"{gv}\"]&loaders=[\"{ld}\"]",
-        pid = urlencoding::encode(project_id),
-        gv = urlencoding::encode(mc_version),
-        ld = urlencoding::encode(loader),
-    );
+    let url = modrinth_versions_url(project_id, mc_version, loader);
 
     #[derive(Deserialize)]
     struct MRFileHashes {
@@ -2556,6 +2624,8 @@ async fn fetch_modrinth_versions_for_item(
             sha256: file.hashes.as_ref().and_then(|h| h.sha256.clone()),
             sha512: file.hashes.as_ref().and_then(|h| h.sha512.clone()),
             size: file.size,
+            source_strategy: None,
+            source_identifier: None,
         });
     }
     Ok(candidates)
@@ -2623,6 +2693,7 @@ fn declared_version_compat(
 /// This is deliberately strict. A `direct_hash` manifest has no API to correct
 /// a curator's omission, so an under-specified one must fail loudly at resolve
 /// time instead of resolving to something plausible but wrong.
+#[cfg(test)]
 fn direct_hash_versions_for_item(
     item: &crate::registry::RegistryItem,
     mc_version: &str,
@@ -2631,21 +2702,43 @@ fn direct_hash_versions_for_item(
     pinned_artifact_versions_for_item(item, mc_version, loader, false)
 }
 
-/// Candidate list for a hand-pinned manifest entry (`direct_hash`, or a
-/// Technic pack promoted to Tier C via `technic_pack`).
-///
-/// With `allow_http` set the pinned URL may be plain HTTP — the curator-pinned
-/// SHA-256 is out-of-band, so transport is not the trust anchor. Regardless of
-/// scheme, the URL must still end in a filename (the download is named from
-/// the last path segment), the hash and `compatible_versions` must be present,
-/// and each declared version must name a real `mod_version`.
+/// [`pinned_artifact_versions_for_source`] against the item's *preferred*
+/// source, reconstructed from the legacy manifest columns.
+#[cfg(test)]
 fn pinned_artifact_versions_for_item(
     item: &crate::registry::RegistryItem,
     mc_version: &str,
     loader: &str,
     allow_http: bool,
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
-    let strategy = item.download_strategy.trim();
+    let source = crate::registry::DownloadSource {
+        strategy: item.download_strategy.clone(),
+        identifier: item.source_identifier.clone(),
+    };
+    pinned_artifact_versions_for_source(item, &source, mc_version, loader, allow_http)
+}
+
+/// Candidate list for one hand-pinned download source (`direct_hash`, or a
+/// Technic pack promoted to Tier C via `technic_pack`).
+///
+/// The URL comes from `source`, not from the item's preferred
+/// `source_identifier`, so a pinned mirror listed as a fallback is resolved
+/// against its own URL. The pinned SHA-256 is still the item's: additional
+/// pinned sources are mirrors of the same bytes, never a different build.
+///
+/// With `allow_http` set the pinned URL may be plain HTTP — the curator-pinned
+/// SHA-256 is out-of-band, so transport is not the trust anchor. Regardless of
+/// scheme, the URL must still end in a filename (the download is named from
+/// the last path segment), the hash and `compatible_versions` must be present,
+/// and each declared version must name a real `mod_version`.
+fn pinned_artifact_versions_for_source(
+    item: &crate::registry::RegistryItem,
+    source: &crate::registry::DownloadSource,
+    mc_version: &str,
+    loader: &str,
+    allow_http: bool,
+) -> LauncherResult<Vec<ModVersionCandidate>> {
+    let strategy = source.strategy.trim();
     let label = if strategy.is_empty() {
         "pinned artifact"
     } else {
@@ -2660,7 +2753,7 @@ fn pinned_artifact_versions_for_item(
         message,
     };
 
-    let url = item.source_identifier.trim();
+    let url = source.identifier.trim();
     let scheme_ok = if allow_http {
         url.starts_with("https://") || url.starts_with("http://")
     } else {
@@ -2737,6 +2830,8 @@ fn pinned_artifact_versions_for_item(
             sha256: Some(sha256.clone()),
             sha512: None,
             size: None,
+            source_strategy: None,
+            source_identifier: None,
         });
     }
 
@@ -2882,27 +2977,55 @@ fn curated_artifact(
             modrinth_id: item.modrinth_id.clone(),
             content_type: item.content_type.clone(),
             version: Some(candidate.version.clone()),
-            download_strategy: Some(item.download_strategy.clone()),
+            download_strategy: Some(candidate_strategy(item, candidate).to_string()),
             // Taken from the signed registry row, not from the candidate's
             // download URL, so the staging fetch is constrained by what the
             // curator actually reviewed.
-            pinned_host: pinned_host_for_item(item),
+            pinned_host: pinned_host_for_candidate(item, candidate),
         },
     }))
 }
 
-/// Host of a hand-pinned item's curator-reviewed `source_identifier`.
+/// Which download source produced `candidate`.
+///
+/// Falls back to the item's preferred strategy for candidates built before the
+/// resolver stamped their origin (e.g. one round-tripped through an older
+/// frontend), which is the pre-multi-source behaviour.
+fn candidate_strategy<'a>(
+    item: &'a crate::registry::RegistryItem,
+    candidate: &'a ModVersionCandidate,
+) -> &'a str {
+    candidate
+        .source_strategy
+        .as_deref()
+        .map(str::trim)
+        .filter(|strategy| !strategy.is_empty())
+        .unwrap_or(&item.download_strategy)
+}
+
+/// Host of the curator-reviewed identifier of the source that produced
+/// `candidate`.
 ///
 /// `None` for API-resolved strategies, whose hosts are covered by the normal
-/// category allowlist.
-fn pinned_host_for_item(item: &crate::registry::RegistryItem) -> Option<String> {
+/// category allowlist. Keyed off the candidate rather than the item so a
+/// pinned *fallback* authorizes its own host, not the preferred source's.
+fn pinned_host_for_candidate(
+    item: &crate::registry::RegistryItem,
+    candidate: &ModVersionCandidate,
+) -> Option<String> {
     if !matches!(
-        item.download_strategy.as_str(),
+        candidate_strategy(item, candidate),
         "direct_hash" | "technic_pack"
     ) {
         return None;
     }
-    reqwest::Url::parse(item.source_identifier.trim())
+    let pinned_url = candidate
+        .source_identifier
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .unwrap_or(item.source_identifier.trim());
+    reqwest::Url::parse(pinned_url)
         .ok()?
         .host_str()
         .map(str::to_string)
@@ -3283,6 +3406,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v2.0".into(),
@@ -3297,6 +3422,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
         ];
         let selected = select_curated_candidate(&candidates, None).unwrap();
@@ -3318,6 +3445,8 @@ mod tests {
             sha512: None,
             size: None,
             version_compat: "incompatible".into(),
+            source_strategy: None,
+            source_identifier: None,
         }];
 
         assert!(matches!(
@@ -3358,6 +3487,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v2.0".into(),
@@ -3372,6 +3503,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
         ];
         let selected = select_curated_candidate(&candidates, Some("v1.0")).unwrap();
@@ -3393,6 +3526,8 @@ mod tests {
             sha512: None,
             size: None,
             version_compat: "".into(),
+            source_strategy: None,
+            source_identifier: None,
         }];
         let selected = select_curated_candidate(&candidates, Some("specific.jar")).unwrap();
         assert_eq!(selected.filename, "specific.jar");
@@ -3513,6 +3648,7 @@ mod tests {
             license_id: None,
             source_updated_at: None,
             modrinth_id: None,
+            download_sources_json: None,
             recommendation_reason: None,
             recommendation_overlap: None,
         }
@@ -3627,6 +3763,110 @@ mod tests {
     }
 
     #[test]
+    fn modrinth_versions_are_listable_without_an_instance() {
+        // With an instance, filter on it.
+        assert_eq!(
+            modrinth_versions_url("AANobbMI", "1.21", "fabric"),
+            "https://api.modrinth.com/v2/project/AANobbMI/version?game_versions=[\"1.21\"]&loaders=[\"fabric\"]"
+        );
+        // Without one, ask for everything rather than for versions matching the
+        // empty string — which is what makes the Versions tab work from Browse.
+        assert_eq!(
+            modrinth_versions_url("AANobbMI", "", ""),
+            "https://api.modrinth.com/v2/project/AANobbMI/version"
+        );
+        // A half-known filter still narrows what it can.
+        assert_eq!(
+            modrinth_versions_url("AANobbMI", "1.21", ""),
+            "https://api.modrinth.com/v2/project/AANobbMI/version?game_versions=[\"1.21\"]"
+        );
+    }
+
+    #[test]
+    fn a_pinned_fallback_resolves_against_its_own_url() {
+        // Preferred source is Modrinth; the pinned mirror is a fallback. The
+        // mirror must be resolved from *its* URL, not from the item's
+        // source_identifier, which is a Modrinth project id here.
+        let mut item = direct_hash_item(
+            "https://mirror.example.com/files/mod-1.0.0.jar",
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#),
+        );
+        item.download_strategy = "modrinth_id".into();
+        item.source_identifier = "AANobbMI".into();
+        item.download_sources_json = Some(
+            r#"[{"strategy":"modrinth_id","identifier":"AANobbMI"},
+                {"strategy":"direct_hash","identifier":"https://mirror.example.com/files/mod-1.0.0.jar"}]"#
+                .into(),
+        );
+
+        let fallback = item.download_sources()[1].clone();
+        let candidates =
+            pinned_artifact_versions_for_source(&item, &fallback, "1.21", "fabric", false).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].download_url,
+            "https://mirror.example.com/files/mod-1.0.0.jar"
+        );
+        assert_eq!(candidates[0].filename, "mod-1.0.0.jar");
+    }
+
+    #[test]
+    fn install_policy_follows_the_candidates_source_not_the_items_primary() {
+        let mut item = direct_hash_item(
+            "https://mirror.example.com/files/mod-1.0.0.jar",
+            Some(r#"[{"mc_version":"1.21","loader":"fabric","mod_version":"1.0.0"}]"#),
+        );
+        item.download_strategy = "modrinth_id".into();
+        item.source_identifier = "AANobbMI".into();
+
+        let mut candidate = ModVersionCandidate {
+            version: "1.0.0".into(),
+            filename: "mod-1.0.0.jar".into(),
+            download_url: "https://mirror.example.com/files/mod-1.0.0.jar".into(),
+            mc_version: Some("1.21".into()),
+            loader: Some("fabric".into()),
+            release_date: None,
+            is_compatible: true,
+            version_compat: "compatible".into(),
+            sha1: None,
+            sha256: Some("d".repeat(64)),
+            sha512: None,
+            size: None,
+            source_strategy: Some("direct_hash".into()),
+            source_identifier: Some("https://mirror.example.com/files/mod-1.0.0.jar".into()),
+        };
+
+        let artifact = curated_artifact(&item, &candidate).unwrap();
+        let ResolvedArtifact::Download(download) = artifact else {
+            panic!("expected a download artifact");
+        };
+        assert_eq!(
+            download.metadata.download_strategy.as_deref(),
+            Some("direct_hash"),
+            "the fallback that served the file decides the staging policy"
+        );
+        assert_eq!(
+            download.metadata.pinned_host.as_deref(),
+            Some("mirror.example.com"),
+            "the fallback authorizes its own host"
+        );
+
+        // Same item resolved from its preferred API source: no pinned host, so
+        // the ordinary category allowlist applies.
+        candidate.source_strategy = Some("modrinth_id".into());
+        candidate.source_identifier = Some("AANobbMI".into());
+        let artifact = curated_artifact(&item, &candidate).unwrap();
+        let ResolvedArtifact::Download(download) = artifact else {
+            panic!("expected a download artifact");
+        };
+        assert_eq!(
+            download.metadata.download_strategy.as_deref(),
+            Some("modrinth_id")
+        );
+        assert!(download.metadata.pinned_host.is_none());
+    }
+
+    #[test]
     fn direct_hash_missing_pinned_hash_is_rejected() {
         let mut item = direct_hash_item(
             "https://example.com/files/mod-1.0.0.jar",
@@ -3723,6 +3963,7 @@ mod tests {
             license_id: None,
             source_updated_at: None,
             modrinth_id: Some("1bokaNcj".into()),
+            download_sources_json: None,
             recommendation_reason: None,
             recommendation_overlap: None,
         };
@@ -3739,6 +3980,8 @@ mod tests {
             sha512: Some("c".repeat(128)),
             size: Some(1),
             version_compat: "compatible".into(),
+            source_strategy: None,
+            source_identifier: None,
         };
 
         let hashes = curated_hashes(&item, &candidate).unwrap();
@@ -3776,6 +4019,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v2".into(),
@@ -3790,6 +4035,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v3".into(),
@@ -3804,6 +4051,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "major_match".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
         ];
         sort_versions_by_compatibility(&mut versions);
@@ -4036,6 +4285,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v2".into(),
@@ -4050,6 +4301,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v3".into(),
@@ -4064,6 +4317,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "major_match".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v2dup".into(),
@@ -4078,6 +4333,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
         ];
         sort_versions_by_compatibility(&mut candidates);
@@ -4113,6 +4370,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v2".into(),
@@ -4127,6 +4386,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "major_match".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
         ];
         let tail = vec![
@@ -4143,6 +4404,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
             ModVersionCandidate {
                 version: "v11".into(),
@@ -4157,6 +4420,8 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                source_strategy: None,
+                source_identifier: None,
             },
         ];
         let mut merged = page1;

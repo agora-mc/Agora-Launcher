@@ -67,14 +67,17 @@ function parseBool(raw: unknown): boolean {
   return raw === true || raw === 'true' || raw === 1 || raw === '1';
 }
 
+/**
+ * Whether live Modrinth *browsing* is on.
+ *
+ * This is the third-party discovery axis only, and it is off by default —
+ * curated-only is the default state, not a mode. It says nothing about curated
+ * catalog entries that happen to be Modrinth-sourced: those are governed by
+ * `curated_source_modrinth_id_enabled` and stay browsable and installable here.
+ */
 async function modrinthEffectivelyEnabled(): Promise<boolean> {
-  const [mr, curatedOnly] = await Promise.allSettled([
-    getSetting('modrinth_enabled'),
-    getSetting('browse_curated_only'),
-  ]);
-  const modrinthOn = mr.status === 'fulfilled' && parseBool(mr.value);
-  const curatedOnlyOn = curatedOnly.status === 'fulfilled' && parseBool(curatedOnly.value);
-  return modrinthOn && !curatedOnlyOn;
+  const mr = await Promise.allSettled([getSetting('modrinth_enabled')]);
+  return mr[0].status === 'fulfilled' && parseBool(mr[0].value);
 }
 
 function useDebounce<T>(value: T, delay: number): T {

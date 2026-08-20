@@ -204,7 +204,7 @@ test.describe('Instances — create, launch, and exit flow', () => {
     await expect(page.getByText('No instances yet.')).toBeVisible();
 
     // ---- Open the create dialog ----
-    await page.getByRole('button', { name: '+ Create Instance' }).click();
+    await page.getByRole('button', { name: 'Create Instance' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByText('Create Custom Instance')).toBeVisible();
 
@@ -227,7 +227,9 @@ test.describe('Instances — create, launch, and exit flow', () => {
 
     // ---- Verify the new instance appears in the list ----
     await expect(page.getByText('My Test Pack')).toBeVisible();
-    await expect(page.getByText('fabric 0.16.9 · MC 1.21')).toBeVisible();
+    // Loader and MC version are separate chips on the card.
+    await expect(page.getByText('fabric 0.16.9', { exact: true })).toBeVisible();
+    await expect(page.getByText('MC 1.21', { exact: true })).toBeVisible();
     await expect(page.getByText('Never launched')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Launch' })).toBeVisible();
 

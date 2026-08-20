@@ -8,6 +8,7 @@ import {
   contentTypeFromPath,
   contentTypeLabel,
   contentTypePath,
+  downloadSourcesOf,
   CONTENT_TYPES,
   type RegistryItem,
 } from '@/lib/db';
@@ -98,6 +99,8 @@ export default async function DetailPage({ params }: DetailPageProps) {
     notFound();
   }
 
+  const sources = downloadSourcesOf(item);
+
   return (
     <div className="space-y-8">
       {item.is_immune && (
@@ -129,7 +132,7 @@ export default async function DetailPage({ params }: DetailPageProps) {
           <p className="text-gray-600 dark:text-gray-400">by {item.author}</p>
         )}
         <p className="text-gray-600 dark:text-gray-400">
-          {contentTypeLabel(contentType)} · {item.download_strategy}
+          {contentTypeLabel(contentType)} · {sources.map((source) => source.strategy).join(' → ')}
           {item.license && <> · {item.license}</>}
         </p>
       </div>
@@ -236,13 +239,19 @@ export default async function DetailPage({ params }: DetailPageProps) {
 
       <div className="panel-inset p-4">
         <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
-          <div>
-            <span className="font-semibold text-gray-500">Source:</span>{' '}
-            <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">{item.source_identifier}</code>
-          </div>
-          <div>
-            <span className="font-semibold text-gray-500">Strategy:</span>{' '}
-            <span>{item.download_strategy}</span>
+          <div className="sm:col-span-2 lg:col-span-2">
+            <span className="font-semibold text-gray-500">
+              {sources.length > 1 ? 'Sources (in order):' : 'Source:'}
+            </span>{' '}
+            <ol className="mt-1 space-y-1">
+              {sources.map((source, index) => (
+                <li key={`${source.strategy}:${source.identifier}`}>
+                  <span className="text-gray-500">{index + 1}.</span>{' '}
+                  <span>{source.strategy}</span>{' '}
+                  <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">{source.identifier}</code>
+                </li>
+              ))}
+            </ol>
           </div>
           <div>
             <span className="font-semibold text-gray-500">SHA-256:</span>{' '}

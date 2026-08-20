@@ -360,6 +360,14 @@ async function lastInstallCall(page: Page, command: string): Promise<number> {
   return index;
 }
 
+/** The `intent` argument a recorded install-pipeline call was made with. */
+async function installCallArgs(page: Page, index: number): Promise<any> {
+  return page.evaluate((idx: number) => {
+    const calls = (window as any).__installCalls as InstallCall[];
+    return (calls[idx]?.args as any)?.intent ?? null;
+  }, index);
+}
+
 async function resolveInstallCall(page: Page, index: number, result: unknown) {
   await page.evaluate(
     ({ idx, res }: { idx: number; res: unknown }) => {
@@ -530,36 +538,42 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expectResultView(page);
   });
 
-  test('ModDetail Modrinth-linked install reaches resolve+apply and shows same UI', async ({ page }) => {
+  test('a curated Modrinth-sourced mod installs through the catalog, not raw Modrinth', async ({ page }) => {
+    // `bridged-mod` is a catalog entry whose preferred download source is
+    // Modrinth, opened while live Modrinth browsing is on. It must still
+    // install as a curated item: live browsing is a discovery setting, and it
+    // must not decide which pipeline a catalog entry installs through — that
+    // is what keeps the entry's registry id, curated dependencies and ordered
+    // download sources.
     await installFlowMock(page, {
       registryItems: { 'bridged-mod': MODRINTH_BRIDGE_MOD },
       modrinthProject: { 'modrinth-abc': MODRINTH_PROJECT },
     });
-    // Preload mod-detail destination for a Modrinth-bridged item
     await page.addInitScript(() => {
       window.history.replaceState({ __agora: { type: 'mod-detail', itemId: 'bridged-mod' } }, '');
     });
     await page.goto('/');
 
-    // The mod has a modrinth_id so the inline install flow uses Modrinth version
-    // picker (listRawModrinthVersions). Click "Install to Instance".
     await page.getByRole('button', { name: 'Install to Instance' }).click();
 
     // Select instance
     await pickFirstInstanceSelect(page, 'test-instance');
     await page.getByRole('button', { name: 'Next: Choose Version' }).click();
 
-    // Should see Modrinth versions — but wait for them to load. The install flow
-    // for Modrinth items renders the version list as <li> items, not a <table>.
-    await expect(page.getByText('bridged-mod-2.0.0.jar')).toBeVisible({ timeout: 10000 });
-    await page.getByText('bridged-mod-2.0.0.jar').click();
-    await page.getByRole('button', { name: /Install bridged-mod-2.0.0.jar/ }).click();
+    // The catalog version list, not the raw-Modrinth one.
+    await expect(page.getByText('test-mod-1.0.0.jar')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('bridged-mod-2.0.0.jar')).toHaveCount(0);
+    await page.getByText('test-mod-1.0.0.jar').click();
+    await page.getByRole('button', { name: /Install test-mod-1.0.0.jar/ }).click();
 
-    // Resolve
+    // Resolve — as a curated install of the registry id.
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
     const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
+    const intent = await installCallArgs(page, resolveIdx);
+    expect(intent?.action?.sourceType).toBe('curated');
+    expect(intent?.action?.itemId).toBe('bridged-mod');
     await resolveInstallCall(page, resolveIdx, makePlan({
-      intent: { action: { type: 'install', sourceType: 'modrinth', itemId: 'modrinth-abc', candidateVersion: 'mrv-001' } },
+      intent: { action: { type: 'install', sourceType: 'curated', itemId: 'bridged-mod', candidateVersion: '1.0.0' } },
     }));
 
     await expectReviewView(page);
@@ -571,6 +585,32 @@ test.describe('Release C3 — Install flow entry points', () => {
     await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
 
     await expectResultView(page);
+  });
+
+  test('a curated Modrinth-sourced mod lists versions with live Modrinth browsing off', async ({ page }) => {
+    // Live Modrinth browsing is the third-party discovery axis and is off by
+    // default. A catalog entry whose download source is Modrinth is enabled by
+    // `curated_source_modrinth_id_enabled` instead, so it stays browsable and
+    // installable — and its Versions tab has to agree, rather than sending the
+    // user to Settings for a switch that is not the one gating this entry.
+    await installFlowMock(page, {
+      modrinthEnabled: false,
+      registryItems: { 'bridged-mod': MODRINTH_BRIDGE_MOD },
+      modrinthProject: { 'modrinth-abc': MODRINTH_PROJECT },
+    });
+    await page.addInitScript(() => {
+      window.history.replaceState({ __agora: { type: 'mod-detail', itemId: 'bridged-mod' } }, '');
+    });
+    await page.goto('/');
+
+    await page.getByRole('button', { name: 'Versions' }).click();
+
+    // The catalog resolver's version table, not a "go enable Modrinth" dead end.
+    await expect(page.getByRole('cell', { name: '1.0.0', exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('cell', { name: '0.9.0', exact: true })).toBeVisible();
+    await expect(
+      page.getByText('Enable Modrinth integration in Settings to view live versions.'),
+    ).toHaveCount(0);
   });
 
   test('InstanceEditor Add Mod opens Browse with its instance selected', async ({ page }) => {

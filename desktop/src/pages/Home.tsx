@@ -4,6 +4,8 @@ import { RegistryStatusView } from '../components/registry-status-view';
 import {
   checkInstanceCrash,
   detectDrift,
+  downloadSourceLabel,
+  downloadSourcesOf,
   getLkgMarker,
   getSetting,
   listInstances,
@@ -610,10 +612,11 @@ function RecommendationsCard({
           >
             <span className="block text-sm font-medium">{item.name}</span>
             <span className="mt-1 block text-xs text-muted-foreground line-clamp-2">
-              {item.description || `Curated ${item.content_type} from ${item.download_strategy}.`}
+              {item.description || `Curated ${item.content_type} from ${downloadSourceLabel(item.download_strategy)}.`}
             </span>
             <span className="mt-2 block text-[11px] text-primary">
-              {item.status === 'active' ? 'Curated and active' : item.status} · {item.download_strategy}
+              {item.status === 'active' ? 'Curated and active' : item.status} ·{' '}
+              {downloadSourcesOf(item).map((source) => downloadSourceLabel(source.strategy)).join(' → ')}
             </span>
           </button>
         ))}

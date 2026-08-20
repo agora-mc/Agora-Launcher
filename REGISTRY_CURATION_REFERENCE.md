@@ -37,9 +37,47 @@ A nightly compiler (`.github/workflows/compile.yml`) walks the 7 content dirs (`
 
 ## 2. Mod manifest schema (`registry/mods/<id>.json`)
 
-Required fields: `id`, `name`, `content_type`, `author`, `license`, `download_strategy`, `source_identifier`, `sha256`. Other fields are optional or auto-populated.
+Required fields: `id`, `name`, `content_type`, `author`, `license`, `sha256`, and a statement of
+where the file comes from — either `download_sources` (preferred) or the legacy
+`download_strategy` + `source_identifier` pair. Other fields are optional or auto-populated.
 
-### Full example (GitHub-release strategy)
+### Where the file comes from: `download_sources`
+
+An entry declares an **ordered list** of places its file can be fetched from. The launcher walks
+the list at install time and uses the first source that is both enabled in the user's Settings and
+actually answering. Index 0 is your preference; everything after it is a fallback.
+
+```json
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "AANobbMI" },
+    { "strategy": "github_release", "identifier": "CaffeineMC/sodium" }
+  ],
+```
+
+This is what makes an entry survive a bad day upstream: GitHub's unauthenticated API allows 60
+requests an hour, Modrinth has outages, and a self-hosted mirror can simply be down. With one
+source, any of those is a failed install; with a list, it is a slower one. It also gives the user a
+real choice — turning a source off in Settings (*Content sources*) is respected at install time,
+not just in Browse, and an entry stays installable as long as one of its sources is still enabled.
+
+Rules:
+
+- Each entry is `{"strategy": ..., "identifier": ...}`. `strategy` is one of `github_release`,
+  `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`; `identifier` is what that strategy
+  resolves (repo, project id, or pinned URL — same values as `source_identifier`).
+- The list is what the launcher walks, so **every pinned source in it is held to the full
+  `direct_hash` contract**, not just the first. A fallback that only fails once the preferred
+  source is down would be worse than no fallback at all.
+- Additional `direct_hash` sources are *mirrors of the same bytes*. All sources of an entry share
+  one `sha256`; a genuinely different file needs its own registry entry.
+- `download_strategy` and `source_identifier` may be omitted when `download_sources` is present —
+  the compiler derives them from index 0 for the website and for older launcher builds. If you do
+  write them, they must match index 0 or the build fails.
+- Omitting `download_sources` entirely is still valid: the compiler builds the list from
+  `download_strategy` + `source_identifier`, plus `modrinth_id` as an implicit fallback. That is
+  exactly what the launcher already did for such entries.
+
+### Full example (Modrinth preferred, GitHub fallback)
 
 ```json
 {
@@ -48,8 +86,11 @@ Required fields: `id`, `name`, `content_type`, `author`, `license`, `download_st
   "content_type": "mod",
   "author": "CaffeineMC",
   "license": "LGPL-3.0",
-  "download_strategy": "github_release",
-  "source_identifier": "CaffeineMC/sodium",
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "AANobbMI" },
+    { "strategy": "github_release", "identifier": "CaffeineMC/sodium" }
+  ],
+  "modrinth_id": "AANobbMI",
   "sha256": "ee9d62778c8b664aa8501af83ec4738e01d20f2cdca133208c7bf66cbcaa37b8",
   "package_signatures": [
     "me.jellysquid.mods.sodium",
@@ -70,9 +111,12 @@ Required fields: `id`, `name`, `content_type`, `author`, `license`, `download_st
 }
 ```
 
-### Minimal example (Modrinth-ID strategy)
+### Minimal example (single Modrinth source)
 
-The shortest valid manifest. The compiler queries Modrinth's API to hydrate icon, gallery, description, body markdown, page URL, license, and `compatible_versions` automatically.
+The shortest valid manifest, still using the legacy single-source form — which stays valid, and is
+the right shape when there genuinely is only one place to get the file. The compiler queries
+Modrinth's API to hydrate icon, gallery, description, body markdown, page URL, license, and
+`compatible_versions` automatically.
 
 ```json
 {
@@ -135,11 +179,12 @@ incomplete `direct_hash` entry rather than shipping one that is browsable but un
 }
 ```
 
-Rules the compiler enforces for `direct_hash`:
+Rules the compiler enforces for **every** `direct_hash` source an entry declares — the preferred
+one and any pinned mirror listed after it:
 
 | Requirement | Why |
 |---|---|
-| `source_identifier` is an `https://` URL | Pinned artifacts are never fetched over plaintext. |
+| The identifier is an `https://` URL | Pinned artifacts are never fetched over plaintext. |
 | The URL ends in a filename (`.../mod-1.0.0.jar`) | There is no `filename` field; the launcher names the download from the URL's last path segment. A URL like `.../download?id=12` cannot be used. |
 | `sha256` is manually pinned | It is the only integrity guarantee — nothing else verifies this file. |
 | `compatible_versions` is present and non-empty | Nothing can infer which MC versions and loaders the file supports. |
@@ -154,9 +199,22 @@ out-of-band, so it stays authoritative regardless of where the file happens to b
 
 One entry describes one file. All declared `compatible_versions` point at the same pinned URL and
 hash, so a mod needing genuinely different files per Minecraft version needs one registry entry
-per file. Adding an optional `modrinth_id` is still worthwhile when the project also exists on
-Modrinth: it hydrates display metadata, and the launcher falls back to it if the pinned host is
-unreachable — the download is SHA-256-verified whichever source delivers it.
+per file. Adding a Modrinth source is still worthwhile when the project also exists there: it
+hydrates display metadata, and the launcher falls back to it if the pinned host is unreachable —
+the download is SHA-256-verified whichever source delivers it.
+
+A pinned **mirror** is written as a second `direct_hash` source. Because the entry has a single
+`sha256`, the mirror must serve byte-identical content:
+
+```json
+  "download_sources": [
+    { "strategy": "direct_hash", "identifier": "https://developer.com/releases/mod-v1.0.0.jar" },
+    { "strategy": "direct_hash", "identifier": "https://mirror.example.org/mod-v1.0.0.jar" }
+  ],
+```
+
+Each pinned source authorizes only its *own* host, taken from the signed manifest — the fallback
+does not inherit the preferred source's host policy.
 
 ### Field reference
 
@@ -167,9 +225,10 @@ unreachable — the download is SHA-256-verified whichever source delivers it.
 | `content_type` | string | Yes | Always `"mod"` for this directory. Other valid values: `pack`, `shader`, `resourcepack`, `server`, `datapack`, `world`. |
 | `author` | string | Yes | Creator or organization name. |
 | `license` | string | Yes | SPDX license identifier (see §3 below). |
-| `download_strategy` | string | Yes | One of: `github_release` (primary), `modrinth_id` (supplementary fallback), `direct_hash` (closed-source / self-hosted). |
-| `source_identifier` | string | Yes | Depends on strategy: `github_release` → GitHub `"owner/repo"`; `modrinth_id` → Modrinth project ID; `direct_hash` → direct HTTPS URL ending in the file's name. |
-| `sha256` | string | Yes | SHA-256 hash of the downloadable file (64 lowercase hex chars). For `github_release` and `modrinth_id`, the compiler populates this from API metadata. For `direct_hash`, it MUST be manually provided. The launcher **blocks download** if the computed hash doesn't match. |
+| `download_sources` | array | Yes, unless the legacy pair is used | Ordered `{strategy, identifier}` objects, best first. The launcher installs from the first source that is enabled and reachable. See "Where the file comes from" above. |
+| `download_strategy` | string | Only without `download_sources` | One of: `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`. Describes the *preferred* source; derived from `download_sources[0]` when that list is present. |
+| `source_identifier` | string | Only without `download_sources` | Depends on strategy: `github_release` → GitHub `"owner/repo"`; `modrinth_id` → Modrinth project ID; `direct_hash` → direct HTTPS URL ending in the file's name. |
+| `sha256` | string | Yes | SHA-256 hash of the downloadable file (64 lowercase hex chars). For `github_release` and `modrinth_id`, the compiler populates this from API metadata. For `direct_hash`, it MUST be manually provided. One hash covers the whole entry, so every pinned source must serve identical bytes. The launcher **blocks download** if the computed hash doesn't match. |
 | `package_signatures` | string[] | Recommended | Java package prefixes used to attribute crash-log stack frames to this mod (e.g. `me.jellysquid.mods.sodium`). Use 2+ segments; single top-level like `net` is too broad. |
 | `base_categories` | string[] | Recommended | Official curated category tags. Free-form lowercase strings. |
 | `community_categories` | string[] | Optional | Freeform community tags. Auto-discovered by the compiler if absent. |
@@ -438,7 +497,7 @@ For `github_release` and `modrinth_id` strategies, the compiler populates the ha
 ### Curation principles
 
 - **Boutique, not warehoused.** Every entry is community-reviewed. Quality over quantity.
-- **`github_release` is the preferred strategy** — it points directly to the developer's own GitHub release, with no intermediary. Use `modrinth_id` when the mod isn't on GitHub or as a supplementary metadata source. Use `direct_hash` only when neither API can resolve the file: closed-source, self-hosted, or a download that lives on the project's own site. It is the most manual option and every field must be maintained by hand, including a fresh `sha256` and `compatible_versions` on every version bump.
+- **List every source a file is genuinely available from, best first.** Most mods are on Modrinth and on GitHub; declaring both means a rate-limited API or an outage costs the user a slower install rather than a failed one. Put Modrinth first for a mod that publishes there — its version API is unauthenticated, ungated, and carries per-file hashes — and keep `github_release` behind it as the developer's own no-intermediary source. Use `direct_hash` only when no API can resolve the file: closed-source, self-hosted, or a download that lives on the project's own site. It is the most manual option and every field must be maintained by hand, including a fresh `sha256` and `compatible_versions` on every version bump.
 - **`direct_hash` cannot be used for CurseForge.** Since July 2026 the CurseForge CDN requires API-key authentication; unauthenticated requests to `edge.forgecdn.net` / `mediafilez.forgecdn.net` are refused. A pinned `forgecdn` URL will not download, and Agora has nowhere to hold a key (secrets never enter manifests or source, and a key-holding proxy would mean running a backend). CurseForge-exclusive mods are simply out of scope.
 - **Curator notes matter.** The `curator_note` field is shown in the UI and used as semantic context for the AI crash investigator. Write a clear, 1-3 sentence summary of what the mod does and why a user would (or wouldn't) want it.
 - **Don't set `compatible_versions` manually** unless you have a specific reason to override. The compiler fetches real version data from Modrinth's API for any mod with a resolvable `modrinth_id` (or whose manifest `id` matches a Modrinth slug). Manual overrides should be rare — `direct_hash` is the one strategy where it is mandatory.
@@ -454,8 +513,9 @@ Before submitting a PR, verify:
 - [ ] Filename matches `id`.
 - [ ] `content_type` matches the directory (mods → `"mod"`, packs → `"pack"`, etc.).
 - [ ] `license` is a valid SPDX identifier (or `LicenseRef-*` for custom).
-- [ ] `download_strategy` is one of `github_release`, `modrinth_id`, `direct_hash`.
-- [ ] `source_identifier` matches the strategy format (GitHub `owner/repo`, Modrinth ID, or HTTPS URL).
+- [ ] Every `download_sources` strategy is one of `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`.
+- [ ] Each identifier matches its strategy's format (GitHub `owner/repo`, Modrinth ID, or HTTPS URL).
+- [ ] The sources are in genuine preference order, and every fallback actually serves this entry's file.
 - [ ] `sha256` is 64 lowercase hex chars (compute via §8).
 - [ ] `package_signatures` uses 2+ segment prefixes (for mods).
 - [ ] `governance.immune` is `false` unless you have an `override_justification`.
@@ -495,6 +555,6 @@ For mods with no Modrinth presence (pure GitHub-release mods whose slug doesn't 
 5. **Putting a pack manifest in `registry/mods/`** — packs go in `registry/packs/` and use `id` with `content_type: "pack"`.
 6. **Deleting a manifest to retire it** — move to `registry/archived/` instead to preserve git history.
 7. **Setting `governance.immune: true` without `override_justification`** — the compiler rejects it.
-8. **Inventing a `download_strategy`** like `"curseforge"` — only `github_release`, `modrinth_id`, and `direct_hash` are supported.
-9. **Using a URL as `source_identifier` for `github_release`** — it must be `owner/repo` format (e.g. `CaffeineMC/sodium`), not a full URL.
+8. **Inventing a strategy** like `"curseforge"` — only `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, and `curated_pack` are supported.
+9. **Using a URL as the identifier for `github_release`** — it must be `owner/repo` format (e.g. `CaffeineMC/sodium`), not a full URL.
 10. **Forgetting `sha256` on a `direct_hash` mod** — it's required for all strategies; for `direct_hash` it's the only integrity guarantee and must be manually provided.

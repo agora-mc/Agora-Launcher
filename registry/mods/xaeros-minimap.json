@@ -4,8 +4,9 @@
   "content_type": "mod",
   "author": "Xaero96",
   "license": "LicenseRef-ARR",
-  "download_strategy": "modrinth_id",
-  "source_identifier": "1bokaNcj",
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "1bokaNcj" }
+  ],
   "modrinth_id": "1bokaNcj",
   "sha256": "acba53bff782903d64ed8d92fc1f21116830f389c003eb37bc49579980f333bf",
   "package_signatures": [

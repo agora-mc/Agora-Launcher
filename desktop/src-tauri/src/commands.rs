@@ -1543,10 +1543,23 @@ pub async fn list_mod_versions(
     };
     let item = mod_install::load_registry_item(&app, &item_id)?;
 
-    match item.download_strategy.as_str() {
+    // A GitHub source gets the paginated release browser; everything else
+    // resolves through the generic path, which walks the item's sources in
+    // order.
+    let listing = mod_install::version_listing_source(&app, &item)?;
+    let listing_strategy = listing
+        .as_ref()
+        .map(|source| source.strategy.as_str())
+        .unwrap_or("");
+
+    match listing_strategy {
         "github_release" => {
+            let repo = listing
+                .as_ref()
+                .map(|source| source.identifier.clone())
+                .unwrap_or_default();
             let (all_versions, total_pages, pages_fetched) =
-                mod_install::resolve_github_releases_initial(&app, &item, &mc_ver, &loader).await?;
+                mod_install::resolve_github_releases_initial(&app, &repo, &mc_ver, &loader).await?;
             let pages_set: BTreeSet<u32> = pages_fetched.into_iter().collect();
             let total = all_versions.len();
             version_cache::load_versions(
@@ -1554,8 +1567,8 @@ pub async fn list_mod_versions(
                 &item_id,
                 &mc_ver,
                 &loader,
-                &item.source_identifier,
-                &item.download_strategy,
+                &repo,
+                listing_strategy,
                 all_versions,
                 total_pages,
                 pages_set,
@@ -1570,27 +1583,40 @@ pub async fn list_mod_versions(
                 });
             Ok(page)
         }
-        // For Modrinth strategy, fetch all versions (no pagination needed)
+        // Every other strategy returns its whole list in one shot (no
+        // pagination). `mc_ver`/`loader` are empty when no instance is
+        // selected, which asks each source for its unfiltered version list.
         _ => {
-            let iid = match &instance_id {
-                Some(id) => id.as_str(),
-                None => {
-                    return Err(LauncherError::Generic {
-                        code: "ERR_INSTANCE_REQUIRED".to_string(),
-                        message: "An instance is required for this download strategy.".to_string(),
-                    })
-                }
-            };
-            let all_versions = mod_install::list_mod_versions(&app, iid, &item_id).await?;
+            let all_versions =
+                mod_install::list_mod_versions_for(&app, &item_id, &mc_ver, &loader).await?;
             let total = all_versions.len();
             let pages_set: BTreeSet<u32> = [1].into_iter().collect();
+            // Record the source that actually produced the list, so a later
+            // "load more" targets that source rather than the item's primary.
+            let resolved = all_versions
+                .first()
+                .and_then(|candidate| {
+                    Some((
+                        candidate.source_identifier.clone()?,
+                        candidate.source_strategy.clone()?,
+                    ))
+                })
+                .unwrap_or_else(|| {
+                    (
+                        listing
+                            .as_ref()
+                            .map(|source| source.identifier.clone())
+                            .unwrap_or_else(|| item.source_identifier.clone()),
+                        listing_strategy.to_string(),
+                    )
+                });
             version_cache::load_versions(
                 &VERSION_CACHE,
                 &item_id,
                 &mc_ver,
                 &loader,
-                &item.source_identifier,
-                &item.download_strategy,
+                &resolved.0,
+                &resolved.1,
                 all_versions,
                 1,
                 pages_set,
@@ -1637,13 +1663,15 @@ pub async fn list_mod_versions_load_more(
         }
     }
 
-    // Cache miss or empty page — fetch more GitHub pages.
-    let item = mod_install::load_registry_item(&app, &item_id)?;
-
-    // Figure out which pages are still missing.
+    // Cache miss or empty page — fetch more pages from whichever source built
+    // this entry. The item's primary source is not necessarily that source.
     let entry = version_cache::get_entry(&VERSION_CACHE, &item_id, &mc_ver, &loader).await;
-    let (pages_fetched, total_pages) = match &entry {
-        Some(e) => (e.pages_fetched.clone(), e.total_pages),
+    let (pages_fetched, total_pages, source_identifier) = match &entry {
+        Some(e) => (
+            e.pages_fetched.clone(),
+            e.total_pages,
+            e.source_identifier.clone(),
+        ),
         None => {
             // Shouldn't happen if list_mod_versions was called first,
             // but guard against it.
@@ -1674,7 +1702,7 @@ pub async fn list_mod_versions_load_more(
 
     let results = mod_install::fetch_github_versions_batch(
         &app,
-        &item.source_identifier,
+        &source_identifier,
         &mc_ver,
         &loader,
         &batch,
@@ -3785,18 +3813,19 @@ pub async fn browse_search(
     ) = {
         let ctx = crate::core_context(&app)?;
         let svc = agora_core::settings::SettingsService::new(ctx.clone());
+        // Live third-party browsing is opt-in per source and off by default, so
+        // each source's own toggle is the whole story: curated-only *is* the
+        // default state, not a mode to switch into.
         let me = svc.get_bool("modrinth_enabled").unwrap_or(false);
-        let curated_only = svc.get_bool("browse_curated_only").unwrap_or(false);
         let net_mr = svc
             .get("network_modrinth_enabled")
             .ok()
             .flatten()
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let api_ok = me && net_mr && !curated_only;
-        // Technic rides the same curated-only switch, plus its own consent gate.
+        let api_ok = me && net_mr;
         // Tier Z packs stay hidden until unverified packs are allowed too.
-        let technic_ok = svc.get_bool("technic_enabled").unwrap_or(false) && !curated_only;
+        let technic_ok = svc.get_bool("technic_enabled").unwrap_or(false);
         let allow_unverified = svc.get_bool("allow_unverified_packs").unwrap_or(false);
         let curated_strategies = curated_strategies_from_settings(&app);
         let svc = agora_core::registry::RegistryService::new(ctx);

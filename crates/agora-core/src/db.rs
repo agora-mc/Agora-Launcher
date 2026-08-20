@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 9;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 10;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -395,6 +395,31 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         );
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (9)",
+            [],
+        )?;
+    }
+
+    // Migration v10: retire `browse_curated_only`. Live third-party browsing is
+    // already off by default and has its own per-source toggles, so the master
+    // switch was a second way of saying the same thing. Anyone who had turned it
+    // on wanted no live browsing, so fold that intent into the toggles it
+    // suppressed before dropping the key — otherwise removing it would silently
+    // re-enable a source they had opted out of.
+    if current < 10 {
+        let curated_only = matches!(
+            get_setting(conn, "browse_curated_only").ok().flatten(),
+            Some(serde_json::Value::Bool(true))
+        );
+        if curated_only {
+            set_setting(conn, "modrinth_enabled", &serde_json::json!(false))?;
+            set_setting(conn, "technic_enabled", &serde_json::json!(false))?;
+        }
+        conn.execute(
+            "DELETE FROM user_settings WHERE key = 'browse_curated_only'",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (10)",
             [],
         )?;
     }
@@ -1391,6 +1416,51 @@ mod tests {
             get_setting(&conn, "always_pre_touch").unwrap(),
             Some(serde_json::json!(false))
         );
+    }
+
+    #[test]
+    fn retiring_curated_only_keeps_live_browsing_off() {
+        // Someone who had switched curated-only on wanted no live third-party
+        // browsing. Dropping the switch must not hand that back to them.
+        let (conn, path) = test_db();
+        set_setting(&conn, "browse_curated_only", &serde_json::json!(true)).unwrap();
+        set_setting(&conn, "modrinth_enabled", &serde_json::json!(true)).unwrap();
+        set_setting(&conn, "technic_enabled", &serde_json::json!(true)).unwrap();
+        conn.execute("DELETE FROM schema_version WHERE version >= 10", [])
+            .unwrap();
+        drop(conn);
+
+        init_local_state_db(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            get_setting(&conn, "modrinth_enabled").unwrap(),
+            Some(serde_json::json!(false))
+        );
+        assert_eq!(
+            get_setting(&conn, "technic_enabled").unwrap(),
+            Some(serde_json::json!(false))
+        );
+        assert_eq!(get_setting(&conn, "browse_curated_only").unwrap(), None);
+    }
+
+    #[test]
+    fn retiring_curated_only_leaves_an_opted_in_user_alone() {
+        // Curated-only off means the per-source toggles were already the whole
+        // story; they must survive the key being dropped.
+        let (conn, path) = test_db();
+        set_setting(&conn, "browse_curated_only", &serde_json::json!(false)).unwrap();
+        set_setting(&conn, "modrinth_enabled", &serde_json::json!(true)).unwrap();
+        conn.execute("DELETE FROM schema_version WHERE version >= 10", [])
+            .unwrap();
+        drop(conn);
+
+        init_local_state_db(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            get_setting(&conn, "modrinth_enabled").unwrap(),
+            Some(serde_json::json!(true))
+        );
+        assert_eq!(get_setting(&conn, "browse_curated_only").unwrap(), None);
     }
 
     #[test]

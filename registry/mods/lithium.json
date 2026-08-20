@@ -4,8 +4,10 @@
   "content_type": "mod",
   "author": "CaffeineMC",
   "license": "LGPL-3.0",
-  "download_strategy": "github_release",
-  "source_identifier": "CaffeineMC/lithium",
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "gvQqBUqZ" },
+    { "strategy": "github_release", "identifier": "CaffeineMC/lithium" }
+  ],
   "sha256": "14b5cc1f2283528355fa32474ebec6a024d6c46c0e9992ae35643d2e025855c8",
   "package_signatures": [
     "me.jellysquid.mods.lithium"

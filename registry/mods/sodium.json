@@ -9,8 +9,9 @@
     "optional": [],
     "incompatible": ["optifine"]
   },
-  "download_strategy": "modrinth_id",
-  "source_identifier": "AANobbMI",
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "AANobbMI" }
+  ],
   "modrinth_id": "AANobbMI",
   "sha256": "ee9d62778c8b664aa8501af83ec4738e01d20f2cdca133208c7bf66cbcaa37b8",
   "package_signatures": [

@@ -1049,5 +1049,153 @@ class TestDiscordAlert(unittest.TestCase):
         self.assertTrue(True)
 
 
+# ---------------------------------------------------------------------------
+# normalize_download_sources
+# ---------------------------------------------------------------------------
+
+class TestNormalizeDownloadSources(unittest.TestCase):
+    """Tests for normalize_download_sources.
+
+    The ordered source list is what the launcher walks at install time, so a
+    manifest that states its sources ambiguously must fail here rather than
+    ship a fallback that silently resolves to the wrong file.
+    """
+
+    def test_explicit_list_keeps_curator_order(self):
+        item = {
+            "id": "sodium",
+            "download_sources": [
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+                {"strategy": "github_release", "identifier": "CaffeineMC/sodium"},
+            ],
+        }
+        sources = _compile.normalize_download_sources(item)
+        self.assertEqual(
+            sources,
+            [
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+                {"strategy": "github_release", "identifier": "CaffeineMC/sodium"},
+            ],
+        )
+
+    def test_legacy_columns_are_derived_from_the_preferred_source(self):
+        item = {
+            "id": "sodium",
+            "download_sources": [
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+                {"strategy": "github_release", "identifier": "CaffeineMC/sodium"},
+            ],
+        }
+        _compile.normalize_download_sources(item)
+        self.assertEqual(item["download_strategy"], "modrinth_id")
+        self.assertEqual(item["source_identifier"], "AANobbMI")
+
+    def test_modrinth_id_is_surfaced_from_the_list(self):
+        # Hydration and the website's Modrinth link both read modrinth_id, so a
+        # project id stated only inside the list must still reach them.
+        item = {
+            "id": "iris",
+            "download_sources": [
+                {"strategy": "github_release", "identifier": "IrisShaders/Iris"},
+                {"strategy": "modrinth_id", "identifier": "YL57xq9U"},
+            ],
+        }
+        _compile.normalize_download_sources(item)
+        self.assertEqual(item["modrinth_id"], "YL57xq9U")
+
+    def test_legacy_manifest_keeps_its_implicit_modrinth_fallback(self):
+        item = {
+            "id": "iris",
+            "download_strategy": "github_release",
+            "source_identifier": "IrisShaders/Iris",
+            "modrinth_id": "YL57xq9U",
+        }
+        self.assertEqual(
+            _compile.normalize_download_sources(item),
+            [
+                {"strategy": "github_release", "identifier": "IrisShaders/Iris"},
+                {"strategy": "modrinth_id", "identifier": "YL57xq9U"},
+            ],
+        )
+
+    def test_modrinth_primary_is_not_duplicated_as_its_own_fallback(self):
+        item = {
+            "id": "sodium",
+            "download_strategy": "modrinth_id",
+            "source_identifier": "AANobbMI",
+            "modrinth_id": "AANobbMI",
+        }
+        self.assertEqual(
+            _compile.normalize_download_sources(item),
+            [{"strategy": "modrinth_id", "identifier": "AANobbMI"}],
+        )
+
+    def test_repeated_source_is_dropped(self):
+        item = {
+            "id": "dup",
+            "download_sources": [
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+            ],
+        }
+        self.assertEqual(len(_compile.normalize_download_sources(item)), 1)
+
+    def test_contradicting_legacy_pair_is_rejected(self):
+        item = {
+            "id": "conflict",
+            "download_strategy": "github_release",
+            "source_identifier": "owner/repo",
+            "download_sources": [{"strategy": "modrinth_id", "identifier": "AANobbMI"}],
+        }
+        with self.assertRaises(SystemExit):
+            _compile.normalize_download_sources(item)
+
+    def test_invalid_entries_are_rejected(self):
+        cases = [
+            ("empty list", {"id": "x", "download_sources": []}),
+            ("not a list", {"id": "x", "download_sources": {"strategy": "modrinth_id"}}),
+            (
+                "unknown strategy",
+                {"id": "x", "download_sources": [{"strategy": "ftp", "identifier": "a"}]},
+            ),
+            (
+                "missing identifier",
+                {"id": "x", "download_sources": [{"strategy": "modrinth_id"}]},
+            ),
+        ]
+        for why, item in cases:
+            with self.subTest(why=why), self.assertRaises(SystemExit):
+                _compile.normalize_download_sources(item)
+
+    def test_a_pinned_fallback_is_held_to_the_pinned_contract(self):
+        # The whole point of a fallback is that it runs when the preferred
+        # source is down; an unchecked one would only fail then.
+        item = {
+            "id": "mirrored",
+            "download_sources": [
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+                {"strategy": "direct_hash", "identifier": "http://mirror.example.com/mod.jar"},
+            ],
+            "compatible_versions": [
+                {"mc_version": "1.21", "loader": "fabric", "mod_version": "1.0.0"}
+            ],
+        }
+        with self.assertRaises(SystemExit):
+            _compile.normalize_download_sources(item)
+
+    def test_a_valid_pinned_fallback_is_accepted(self):
+        item = {
+            "id": "mirrored",
+            "download_sources": [
+                {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+                {"strategy": "direct_hash", "identifier": "https://mirror.example.com/mod-1.0.0.jar"},
+            ],
+            "compatible_versions": [
+                {"mc_version": "1.21", "loader": "fabric", "mod_version": "1.0.0"}
+            ],
+        }
+        self.assertEqual(len(_compile.normalize_download_sources(item)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

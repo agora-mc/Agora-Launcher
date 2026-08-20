@@ -3,13 +3,20 @@ import { BrowseIcon } from './BrowseIcon';
 import { BrowseContextLabels, BrowseStats, BrowseVersions, CuratedBadge } from './BrowseContextLabels';
 import type { BrowseCardProps } from './types';
 import { sourceLabel } from './sourceLabel';
-import { openExternalUrl } from '../../lib/tauri';
+import { downloadSourceLabel, downloadSourcesOf, openExternalUrl } from '../../lib/tauri';
 
 function sourceSummary(item: BrowseCardProps['item']): string {
   const source = sourceLabel(item.source);
   if (item.author) return `by ${item.author} · ${source}`;
   if (item.registryItem?.download_strategy) {
-    return `${source} · ${item.registryItem.download_strategy.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())}`;
+    // Name the preferred source, and say how many fallbacks stand behind it
+    // rather than listing every one in a card subtitle.
+    const sources = downloadSourcesOf(item.registryItem);
+    const preferred = downloadSourceLabel(sources[0].strategy);
+    const fallbacks = sources.length - 1;
+    return fallbacks > 0
+      ? `${source} · ${preferred} +${fallbacks} fallback${fallbacks > 1 ? 's' : ''}`
+      : `${source} · ${preferred}`;
   }
   return source;
 }

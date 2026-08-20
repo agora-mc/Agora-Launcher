@@ -8,7 +8,7 @@ Use this skill when adding or reviewing entries under `registry/`, `crash-signat
 
 ## JSON Schema Compliance
 
-Every manifest must match the schemas in `.kilo/plans/MASTER_SPEC.md` §2. Required fields include `id`, `name`, `content_type`, `author`, `license`, `download_strategy`, `source_identifier`, and `sha256`.
+Every manifest must match the schemas in `.kilo/plans/MASTER_SPEC.md` §2. Required fields include `id`, `name`, `content_type`, `author`, `license`, `sha256`, and a statement of where the file comes from: a `download_sources` list of `{strategy, identifier}` objects in preference order, or the legacy `download_strategy` + `source_identifier` pair.
 
 ## SPDX Licenses
 

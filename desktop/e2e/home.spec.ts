@@ -364,9 +364,9 @@ test.describe('Home — zone D: Discovery / Recommendations', () => {
     await expect(page.getByText('A recommended mod for your instance.')).toBeVisible();
 
     // The recommendation reason is shown indirectly via the item's metadata
-    // (status/download_strategy) — the reason is embedded in the RegistryItem
+    // (status + download sources) — the reason is embedded in the RegistryItem
     // and shown in the card's description/status area.
-    await expect(page.getByText(/github_release/)).toBeVisible();
+    await expect(page.getByText(/GitHub Release/)).toBeVisible();
     await expect(page.getByText(/Curated and active/)).toBeVisible();
   });
 

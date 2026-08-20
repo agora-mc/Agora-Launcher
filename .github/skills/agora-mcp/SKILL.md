@@ -69,7 +69,7 @@ The server speaks JSON-RPC 2.0 over HTTP with SSE (Server-Sent Events) for respo
 ### 8. `read_mod_manifest`
 
 - **Params:** `mod_id` (string) -- the curated registry ID (e.g. `"sodium"`, `"fabric-api"`).
-- **Returns:** The full registry item record: name, content_type, download_strategy, license, description, body_markdown, page_url, icon_url, upvotes/downvotes/net_score/velocity, status, immunity fields, compatible_versions, and Modrinth ID.
+- **Returns:** The full registry item record: name, content_type, download_strategy (preferred source) and download_sources (ordered list), license, description, body_markdown, page_url, icon_url, upvotes/downvotes/net_score/velocity, status, immunity fields, compatible_versions, and Modrinth ID.
 - **Use when:** You need curator-authored context about a mod -- its description, known behaviors, compatibility notes, or community vote status. This is local SQLite data; no network call required.
 
 ### 9. `enable_mod`

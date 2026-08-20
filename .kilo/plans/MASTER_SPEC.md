@@ -2579,4 +2579,86 @@ Launch records `last_launched_at` immediately after successful handoff or proces
 
 ---
 
+### 19.20 Ordered Download Sources
+
+A registry entry no longer names one place its file comes from. It carries an **ordered list** of
+download sources, `download_sources_json` in `registry_items` (registry schema v8), each entry a
+`{strategy, identifier}` pair drawn from the same strategy vocabulary as before
+(`github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`). Index 0 is the
+curator's preference; the rest are fallbacks in order.
+
+`download_strategy` and `source_identifier` remain in the schema and describe the *preferred*
+source only. The compiler derives them from index 0, so every consumer that cares only about the
+primary — the website's header line, browse-card subtitles, older launcher builds reading a newer
+registry — keeps working unchanged.
+
+**Resolution.** `Resolver::list_curated_versions` walks the list in order and returns the first
+source that yields candidates. A source that is disabled in Settings, erroring, or simply has
+nothing for the requested `(mc_version, loader)` falls through to the next. The first failure is
+the one reported, because it belongs to the preferred source. When every source of an entry is
+disabled the resolve fails with `ERR_NO_ENABLED_SOURCE` rather than silently contacting a source
+the user opted out of.
+
+**Origin travels with the candidate.** `ModVersionCandidate` carries `source_strategy` and
+`source_identifier`, stamped by the resolver. Install-time policy keys off those rather than off
+the item: a pinned fallback authorizes *its own* host in the staging fetch, and the registry's
+pinned SHA-256 is applied only to candidates that came from a pinned source. Judging a
+fallback-served file against the preferred source's rules would be both wrong and unsafe.
+
+**Content-axis filtering.** The per-source opt-out (`curated_source_<strategy>_enabled`, default
+on) now applies at install time as well as in Browse, and Browse's whitelist became "any of this
+entry's sources is enabled" rather than "its single strategy is enabled" — an entry that is still
+installable stays visible. Filtering remains a whitelist and still fails closed.
+
+**Curator contract.** Every pinned source in a list is held to the full `direct_hash` contract at
+compile time, not just the preferred one; a fallback that only fails when the preferred source is
+down would be worse than no fallback. All sources of an entry share one `sha256`, so additional
+pinned sources are mirrors of identical bytes rather than alternate builds. Manifests may still
+use the legacy single-source form: the compiler normalizes it into a list, preserving the implicit
+Modrinth fallback a `modrinth_id`-carrying entry has always had.
+
+---
+
+### 19.21 Two Content Axes, and What Each One Governs
+
+Two settings axes decide what a user sees, and they answer different questions.
+Conflating them is what made a curated entry look broken while it was perfectly
+installable, so the boundary is stated here as an invariant rather than left to
+each call site.
+
+**Axis A — curated sources** (`curated_source_<strategy>_enabled`, default
+**on**, one per entry in `CURATED_DOWNLOAD_STRATEGIES`). Governs curated catalog
+entries: whether they appear in Browse, and which of an entry's ordered download
+sources the resolver may use. An entry stays visible and installable while *any*
+of its sources is enabled (§19.20).
+
+**Axis B — live third-party browsing** (`modrinth_enabled`, `technic_enabled`,
+default **off**). Governs discovery *outside* the catalog: searching Modrinth's
+whole library, the Technic platform API, and live project pages fetched for
+extra metadata such as changelogs and category tags.
+
+**The invariant.** A curated entry's listability and installability depend on
+Axis A alone. Axis B may add richer presentation on top, and must never be the
+reason a curated entry cannot be listed, resolved, or installed. Concretely:
+the version list falls back to the catalog resolver for any registry-backed
+item; an item resolved from the registry installs through the curated pipeline
+even while live Modrinth data is on screen, keeping its registry id, curated
+dependency graph and source order; and curated `technic_pack` artifacts are
+fetched under the signed-manifest host policy rather than the Technic consent
+gate, which belongs to live Technic browsing.
+
+The privacy/network axis (`network_*_enabled`, Lockdown Mode) is separate again
+and legitimately hard-blocks either of the above: it is about whether a host may
+be contacted at all.
+
+**`browse_curated_only` is retired** (local-state schema v10). It was a master
+switch that suppressed live browsing regardless of Axis B — but Axis B is
+already off by default, so curated-only *is* the default state rather than a
+mode to switch into, and a second expression of the same intent could only drift
+from the first. The migration folds the intent forward before dropping the key:
+a stored `true` forces `modrinth_enabled` and `technic_enabled` off, so removing
+the switch never silently re-enables a source the user had opted out of.
+
+---
+
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**
