@@ -63,5 +63,5 @@ test('layout can be reset independently from appearance', async ({ page }) => {
     .getByRole('tab', { name: 'Appearance' }).click();
   await page.getByRole('button', { name: 'Reset layout' }).click();
   await expect(page.getByTestId('sidebar')).toHaveCSS('width', '256px');
-  await expect(page.getByLabel('Accent source')).toHaveValue('agora');
+  await expect(page.getByLabel('Accent source')).toHaveValue('custom');
 });

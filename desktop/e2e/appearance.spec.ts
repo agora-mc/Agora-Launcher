@@ -34,6 +34,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('custom accent updates semantic tokens, persists, and resets', async ({ page }) => {
+  // Default theme is dark (civic gold) which lifts accent lightness to 52%; force light
+  // so the raw hsl conversion (40% for #663399) is tested without dark adaptation.
+  await page.getByLabel('Color mode').selectOption('light');
   await page.getByLabel('Accent source').selectOption('custom');
   await page.getByLabel('Custom accent color').fill('#663399');
 
@@ -54,12 +57,13 @@ test('custom accent updates semantic tokens, persists, and resets', async ({ pag
 });
 
 test('system accent remains a mode and is not persisted as a custom color', async ({ page }) => {
+  await page.getByLabel('Color mode').selectOption('light');
   await page.getByLabel('Accent source').selectOption('system');
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--primary').trim())).toBe('12 80% 42%');
 
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('agora-ui-preferences') ?? '{}'));
   expect(stored.accentMode).toBe('system');
-  expect(stored.customAccent).toBe('#247786');
+  expect(stored.customAccent).toBe('#c28b28');
 });
 
 test('font, scale, contrast, and reduced motion persist', async ({ page }) => {

@@ -151,7 +151,7 @@ jobs:
           node-version: "24"
       - name: Install dependencies
         working-directory: desktop
-        run: npm ci
+        run: npm install
       - name: TypeScript type check
         working-directory: desktop
         run: npx tsc --noEmit

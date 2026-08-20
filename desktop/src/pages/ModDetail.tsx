@@ -57,10 +57,11 @@ import { showToast } from '../components/Toast';
  */
 function externalLinkLabel(url: string): string {
   try {
-    const host = new URL(url).hostname.replace(/^www\./, '');
-    if (host.endsWith('modrinth.com')) return 'View on Modrinth';
-    if (host.endsWith('technicpack.net')) return 'View on Technic';
-    if (host.endsWith('github.com')) return 'View on GitHub';
+    const rawHost = new URL(url).hostname.toLowerCase();
+    const host = rawHost.replace(/^www\./, '');
+    if (host === 'modrinth.com' || host.endsWith('.modrinth.com')) return 'View on Modrinth';
+    if (host === 'technicpack.net' || host.endsWith('.technicpack.net')) return 'View on Technic';
+    if (host === 'github.com' || host.endsWith('.github.com')) return 'View on GitHub';
     return `View on ${host}`;
   } catch {
     return 'View source';

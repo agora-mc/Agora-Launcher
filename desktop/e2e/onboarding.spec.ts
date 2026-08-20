@@ -291,7 +291,9 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
   await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible({ timeout: 3000 });
   // Click Cancel
   await page.getByRole('button', { name: 'Cancel' }).click();
-  // After cancel, we should be able to continue to GitHub step
+  // After cancel, we land on the Launch step (Java -> Launch -> GitHub)
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible({ timeout: 5000 });
 });
 
@@ -304,9 +306,12 @@ test('cancelling GitHub device flow invalidates the active poll', async ({ page 
   await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue (navigates to Java step)
   await page.getByRole('button', { name: 'Continue' }).click();
-  // Java step — uncheck Java download to skip to GitHub quickly
+  // Java step — uncheck Java download to reach Launch step
   await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
   await page.getByRole('switch').click(); // uncheck
+  await page.getByRole('button', { name: 'Continue' }).click();
+  // Launch step
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
   await page.getByRole('button', { name: 'Continue' }).click();
   // GitHub step
   await page.getByRole('button', { name: 'Sign in with GitHub' }).click();

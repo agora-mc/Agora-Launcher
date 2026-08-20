@@ -937,6 +937,10 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(javaSwitch).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('button', { name: 'Continue' }).click();
 
+    // Launch step
+    await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
+    await page.getByRole('button', { name: 'Continue' }).click();
+
     // GitHub step
     await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible();
     await page.getByRole('button', { name: "I'll do this later" }).click();
