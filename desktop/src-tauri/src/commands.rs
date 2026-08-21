@@ -441,6 +441,31 @@ pub async fn launch_instance(
     let dir_for_monitor = instance_dir;
     let snap_id = result.snapshot_id.clone();
     let session_id = result.session_id;
+    // Early release: we cannot reliably know when the Mojang-launched game exits,
+    // so free the install/launch block and return the UI to normal shortly after
+    // handoff. The official launcher owns duplicate-launch prevention from here.
+    let state_for_early = state.inner().clone();
+    let app_for_early = app.clone();
+    let id_for_early = sanitized.clone();
+    let snap_for_early = result.snapshot_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        state_for_early
+            .lock()
+            .await
+            .active_launches
+            .remove(&id_for_early);
+        use tauri::Emitter;
+        let _ = app_for_early.emit(
+            "game-exited",
+            serde_json::json!({
+                "instance_id": id_for_early,
+                "outcome": "unknown",
+                "snapshot_id": snap_for_early,
+                "delegated": true,
+            }),
+        );
+    });
     tokio::spawn(async move {
         // Core-owned wait_delegated handles monitoring, LKG recording,
         // and retention. Desktop only emits the Tauri event.

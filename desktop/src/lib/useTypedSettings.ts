@@ -109,6 +109,7 @@ export const SETTINGS = {
   alwaysAutoConfirmInstalls: boolDef('install_always_auto_confirm'),
   launchMode: enumDef('launch_mode', ['direct', 'delegation'] as const, 'delegation'),
   onboardingComplete: boolDef('onboarding_complete'),
+  versionSortByDate: boolDef('version_sort_by_date'),
 } as const;
 
 // ---------------------------------------------------------------------------

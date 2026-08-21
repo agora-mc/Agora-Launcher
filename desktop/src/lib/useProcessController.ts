@@ -238,6 +238,35 @@ export function useProcessController(): ProcessController {
     };
   }, []);
 
+  // Delegated launches cannot reliably detect when the Mojang-owned game
+  // process exits, so return the pack to normal shortly after handoff.
+  // The backend also emits game-exited after 10s; this is a fallback
+  // if the event is missed so the UI does not stay stuck in 'delegated'.
+  useEffect(() => {
+    if (state.phase !== 'delegated' || !state.instanceId) return;
+    const timer = setTimeout(() => {
+      const current = stateRef.current;
+      if (current.phase === 'delegated') {
+        setState((previous) => ({
+          ...previous,
+          phase: 'exited',
+          pid: null,
+          error: null,
+          errorCode: null,
+          healthReport: null,
+          recoverableIssue: null,
+          recoverableJavaIssue: null,
+          runtimeProgress: null,
+          availableActions: [],
+          exitCode: null,
+          outcome: 'unknown',
+          exitedAt: new Date().toISOString(),
+        }));
+      }
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [state.phase, state.instanceId]);
+
   // Receive bounded batches from the backend so verbose packs cannot flood
   // the webview with one IPC event and React render per log line.
   useEffect(() => {

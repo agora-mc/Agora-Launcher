@@ -1075,6 +1075,7 @@ export interface ModVersionCandidate {
   is_compatible: boolean;
   sha1?: string | null;
   version_compat?: string;
+  is_prerelease?: boolean;
   /// Which of the item's download sources produced this candidate. Set by the
   /// backend resolver; absent on candidates from an older backend.
   source_strategy?: string | null;
@@ -1315,6 +1316,8 @@ export interface RawModrinthVersionCandidate {
   release_date: string | null;
   primary: boolean;
   changelog: string | null;
+  is_prerelease?: boolean;
+  version_type?: string | null;
 }
 
 export const isModrinthEnabled = () => invoke<boolean>('is_modrinth_enabled');

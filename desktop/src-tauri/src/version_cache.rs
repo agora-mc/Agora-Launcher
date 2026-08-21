@@ -77,7 +77,7 @@ pub async fn extend_versions(
     if let Some(ref mut entry) = c.entry {
         if entry.item_id == item_id && entry.mc_version == mc_version && entry.loader == loader {
             entry.versions.append(&mut more);
-            // Re-sort so compatibles stay on top after new data arrives
+            // Re-sort: tier → channel (stable first unless date-only) → date
             entry.versions.sort_by(|a, b| {
                 let tier = |v: &ModVersionCandidate| -> u8 {
                     match v.version_compat.as_str() {
@@ -86,12 +86,25 @@ pub async fn extend_versions(
                         _ => 2,
                     }
                 };
-                tier(a).cmp(&tier(b)).then_with(|| {
-                    b.release_date
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(a.release_date.as_deref().unwrap_or(""))
-                })
+                let ta = tier(a);
+                let tb = tier(b);
+                let tier_ord = ta.cmp(&tb);
+                if tier_ord != std::cmp::Ordering::Equal {
+                    return tier_ord;
+                }
+                // Preserve is_prerelease ordering (stable first) for default mode.
+                // version_sort_by_date is checked at the resolver level for initial
+                // loads; here we keep stable-first as the deterministic re-sort.
+                let ca = if a.is_prerelease { 1 } else { 0 };
+                let cb = if b.is_prerelease { 1 } else { 0 };
+                let chan_ord = ca.cmp(&cb);
+                if chan_ord != std::cmp::Ordering::Equal {
+                    return chan_ord;
+                }
+                b.release_date
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(a.release_date.as_deref().unwrap_or(""))
             });
             for &p in page_numbers {
                 entry.pages_fetched.insert(p);

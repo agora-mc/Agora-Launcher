@@ -15,12 +15,6 @@ import {
 } from '../lib/installFlow';
 import { formatError, getSetting, parseLauncherError, restoreSnapshot } from '../lib/tauri';
 import { emitTourSignal } from '../features/tour/tourSignals';
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog';
 import { LoaderChooser } from './LoaderChooser';
 
 // ---------------------------------------------------------------------------
@@ -549,18 +543,37 @@ export function InstallFlow({
     }
   };
 
+  if (!open) return null;
+
+  // Non-blocking corner panel — lets the user keep browsing, running health
+  // checks, or opening other instances while resolving, reviewing, or
+  // installing. The card expands in place instead of covering the app.
+  // z-50 keeps it above the pack-indicator stacking context when both are
+  // visible, so the review remains actionable; pack progress remains
+  // readable alongside via vertical stacking.
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) handleCancel(); }}>
-      <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden flex flex-col gap-3" data-tour="install-review-dialog">
-        <DialogTitle className="shrink-0">Review Instance Changes</DialogTitle>
-        <DialogDescription className="shrink-0">
-          {instanceName}
-        </DialogDescription>
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
-          {renderContent()}
+    <aside
+      className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+      data-tour="install-review-dialog"
+      aria-live="polite"
+    >
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-semibold">Review Instance Changes</h2>
+          <p className="truncate text-xs text-muted-foreground">{instanceName}</p>
         </div>
-      </DialogContent>
-    </Dialog>
+        <button
+          onClick={handleCancel}
+          className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
+          aria-label="Close install panel"
+        >
+          Close
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {renderContent()}
+      </div>
+    </aside>
   );
 }
 
@@ -948,8 +961,11 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
       : undefined;
   const canRestore =
     rollbackState !== 'restored'
-    && (outcome.type === 'success'
-      || (outcome.type === 'failed' && Boolean(outcome.snapshotId) && !outcome.rollbackPerformed));
+    && (
+      outcome.type === 'success'
+      || outcome.type === 'health-rollback'
+      || (outcome.type === 'failed' && Boolean(outcome.snapshotId) && !outcome.rollbackPerformed)
+    );
 
   const rollback = async () => {
     if (!snapshotId) return;
@@ -977,8 +993,38 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
         </>
       )}
       {outcome.type === 'health-rollback' && (
-        <div className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-          The health scan found blockers, so Agora restored the recovery snapshot. No planned changes remain active.
+        <div className="space-y-3">
+          <div className="rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+            <p className="font-semibold">Health check found blockers — install kept for repair</p>
+            <p className="mt-1 text-xs">
+              The new files are still installed so you can see what failed. The recovery snapshot <span className="font-mono">{outcome.snapshotId.slice(0, 8)}</span> is kept for a one-click rollback. Fix the issue or roll back when ready.
+            </p>
+          </div>
+          {outcome.healthReport.blockers.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold">Blockers ({outcome.healthReport.blockers.length})</h4>
+              <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                {outcome.healthReport.blockers.map((b, i) => (
+                  <div key={i} className="rounded border border-destructive bg-destructive/10 p-2 text-sm">
+                    <p className="text-destructive">{b.message}</p>
+                    {b.suggested_action && <p className="mt-1 text-xs text-muted-foreground">{b.suggested_action}</p>}
+                    {b.filename && <p className="mt-1 text-xs text-muted-foreground font-mono">{b.filename}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {outcome.healthReport.warnings.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold">Warnings ({outcome.healthReport.warnings.length})</h4>
+              <div className="max-h-32 space-y-1 overflow-y-auto pr-1">
+                {outcome.healthReport.warnings.map((w, i) => (
+                  <p key={i} className="rounded bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">{w.message}</p>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">Snapshot <span className="font-mono">{outcome.snapshotId}</span> can restore the pre-install state at any time.</p>
         </div>
       )}
       {outcome.type === 'failed' && (

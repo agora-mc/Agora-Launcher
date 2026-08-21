@@ -187,6 +187,22 @@ pub struct InstalledMod {
     pub incompatible_deps: Vec<String>,
 }
 
+/// Heuristic: whether a version string denotes a pre-release (alpha/beta/rc/snapshot).
+pub fn is_prerelease_version(version: &str) -> bool {
+    let lower = version.to_ascii_lowercase();
+    lower.contains("alpha")
+        || lower.contains("beta")
+        || lower.contains("snapshot")
+        || lower.contains("-rc")
+        || lower.contains(".rc")
+        || lower.contains("_rc")
+        || lower.contains("-pre")
+        || lower.contains(".pre")
+        || lower.contains("_pre")
+        || lower.contains("-dev")
+        || lower.contains(".dev")
+}
+
 /// A candidate version returned by the mod version resolution API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModVersionCandidate {
@@ -207,6 +223,10 @@ pub struct ModVersionCandidate {
     pub size: Option<u64>,
     #[serde(default)]
     pub version_compat: String,
+    /// Whether this version is a pre-release (alpha/beta/rc/snapshot).
+    /// `true` defers it below stable releases when the stable-first sort is active.
+    #[serde(default)]
+    pub is_prerelease: bool,
     /// Which of the item's download sources produced this candidate
     /// (`github_release`, `modrinth_id`, `direct_hash`, ...).
     ///

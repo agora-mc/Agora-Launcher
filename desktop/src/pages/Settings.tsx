@@ -266,6 +266,8 @@ export function Settings({
     }
   };
 
+  const [versionSortByDate, setVersionSortByDate] = useState(false);
+
   // Sync typed settings into local state for backward-compatible render code.
   useEffect(() => {
     if (ts.loading) return;
@@ -279,6 +281,7 @@ export function Settings({
     setDirectLaunch((ts.values.launchMode as string) === 'direct');
     setJavaRuntimeMode((ts.values.javaRuntimeMode as string) as 'automatic' | 'prompt' | 'manual' || 'automatic');
     setGlobalJavaPath((ts.values.javaPath as string) ?? '');
+    setVersionSortByDate(ts.values.versionSortByDate as boolean ?? false);
     setLoading(false);
   }, [ts.loading, ts.values]);
 
@@ -791,6 +794,16 @@ export function Settings({
     }
   };
 
+  const toggleVersionSortByDate = async (value: boolean) => {
+    setVersionSortByDate(value);
+    try {
+      await ts.update(SETTINGS.versionSortByDate, value);
+    } catch (e) {
+      setVersionSortByDate(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
   // --- Launcher path actions ---
 
   const clearLauncherPathFeedback = () => {
@@ -961,6 +974,24 @@ export function Settings({
       {ts.statuses['install_always_auto_confirm']?.status === 'error' && (
         <p className="text-xs text-destructive">{ts.statuses['install_always_auto_confirm']?.error}</p>
       )}
+      <div className="border-t border-border pt-3 space-y-2">
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm">Sort versions by date</span>
+          <input
+            type="checkbox"
+            aria-label="Sort versions by date"
+            checked={versionSortByDate}
+            onChange={(e) => toggleVersionSortByDate(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          When off (default), stable releases appear first with alpha/beta below them. When on, versions are sorted purely by release date, newest first, regardless of release type.
+        </p>
+        {ts.statuses['version_sort_by_date']?.status === 'error' && (
+          <p className="text-xs text-destructive">{ts.statuses['version_sort_by_date']?.error}</p>
+        )}
+      </div>
     </SettingsSection>
   );
 

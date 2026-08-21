@@ -19,7 +19,9 @@
 //! - Planning makes zero instance changes.
 //! - Snapshot is taken BEFORE any instance mutation and is mandatory.
 //! - The manifest atomic rename is the single commit point.
-//! - Post-apply health failure triggers automatic snapshot restore.
+//! - Post-apply health failure keeps the installed files, preserves the
+//!   recovery snapshot for manual rollback, and surfaces the health report
+//!   so the user can inspect and repair.
 //!
 //! Loader-mismatch gate (Work Package 8): when a plan adds local-file
 //! artifacts whose loader requirements the current loader does not satisfy,
@@ -735,6 +737,10 @@ pub enum InstallOutcome {
         health: HealthOutcome,
         snapshot_id: String,
     },
+    /// Post-apply health found blockers. The install is **kept** so the
+    /// user can inspect the report and repair (disable, loader switch,
+    /// or manual snapshot rollback). The `snapshot_id` is the pre-install
+    /// recovery snapshot that can be restored on demand.
     HealthRollback {
         health_report: HealthReport,
         snapshot_id: String,
@@ -1650,24 +1656,24 @@ impl InstallPipeline {
                     }
                 };
             if !report.blockers.is_empty() {
-                let restore_dir = instance_dir.to_path_buf();
-                let restore_id = snapshot.id.clone();
-                let restore = run_blocking_phase(scheduler, "install health rollback", move || {
-                    crate::snapshot::restore_snapshot(&restore_dir, &restore_id)
-                })
-                .await;
+                // Keep the newly installed files so the user can see the exact
+                // health failure, inspect blockers, and choose a repair (disable,
+                // loader switch, or manual rollback) instead of silently
+                // reverting to the pre-install snapshot.
                 cleanup_staging_dir(scheduler, &staging_dir).await;
-                return match restore {
-                    Ok(()) => InstallOutcome::HealthRollback {
-                        health_report: report,
-                        snapshot_id: snapshot.id,
-                        warnings: plan.warnings.clone(),
-                    },
-                    Err(error) => fail(
-                        format!("Health blockers were found and rollback failed: {error}"),
-                        Some(snapshot.id),
-                        false,
-                    ),
+                reporter.report(ProgressEvent {
+                    plan_id: plan.fingerprint.clone(),
+                    phase: ProgressPhase::Done,
+                    step: 1,
+                    total_steps: 1,
+                    bytes_downloaded: plan.disk_estimate.download_bytes,
+                    bytes_total: plan.disk_estimate.download_bytes,
+                    message: "Install complete — health issues need attention.".into(),
+                });
+                return InstallOutcome::HealthRollback {
+                    health_report: report,
+                    snapshot_id: snapshot.id,
+                    warnings: plan.warnings.clone(),
                 };
             }
             HealthOutcome::Completed { report }
@@ -3982,12 +3988,24 @@ mod tests {
                     &CancellationToken::new(),
                 ));
 
+        // Health blockers no longer auto-restore: the install is kept so the
+        // user can inspect and repair. The snapshot remains available for
+        // manual rollback.
         assert!(matches!(outcome, InstallOutcome::HealthRollback { .. }));
-        assert_eq!(
-            crate::snapshot::live_file_index(&instance_dir).unwrap(),
-            before
-        );
-        assert!(!instance_dir.join("mods/blocked.jar").exists());
+        let after = crate::snapshot::live_file_index(&instance_dir).unwrap();
+        assert_ne!(after, before);
+        assert!(instance_dir.join("mods/blocked.jar").exists());
+        if let InstallOutcome::HealthRollback { snapshot_id, health_report, .. } = outcome {
+            assert!(!health_report.blockers.is_empty());
+            crate::snapshot::restore_snapshot(&instance_dir, &snapshot_id).unwrap();
+            assert_eq!(
+                crate::snapshot::live_file_index(&instance_dir).unwrap(),
+                before
+            );
+            assert!(!instance_dir.join("mods/blocked.jar").exists());
+        } else {
+            unreachable!();
+        }
     }
 
     #[test]

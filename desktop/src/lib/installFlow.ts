@@ -229,14 +229,24 @@ export type ProgressPhase = 'resolving' | 'staging' | 'snapshotting' | 'applying
 
 // --- Outcome ---
 
+// Minimal health shape for the install outcome — the full HealthReport type
+// lives in tauri.ts; this keeps the module cycle-free while staying typed
+// enough for the corner UI to render blocker counts and messages.
+export interface HealthBlocker { kind: string; mod_id: string | null; filename: string | null; message: string; suggested_action: string | null; }
+export interface HealthWarning { kind: string; mod_id: string | null; filename: string | null; message: string; suggested_action: string | null; }
+export interface HealthReportLike { score: 'green' | 'yellow' | 'red'; warnings: HealthWarning[]; blockers: HealthBlocker[]; recommendations: unknown[]; scan_token: string; }
+
 export type InstallOutcome =
   | { type: 'success'; installedItems: string[]; existingItemsReused: string[]; warnings: PlanWarning[]; health: HealthOutcome; snapshotId: string }
-  | { type: 'health-rollback'; healthReport: unknown; snapshotId: string; warnings: PlanWarning[] }
+  // Health blockers were found after applying. The install is **kept** so the
+  // user can inspect and repair; snapshotId is the pre-install recovery
+  // snapshot for manual rollback if desired.
+  | { type: 'health-rollback'; healthReport: HealthReportLike; snapshotId: string; warnings: PlanWarning[] }
   | { type: 'cancelled'; phase: string; rollbackPerformed: boolean }
   | { type: 'failed'; error: string; rollbackPerformed: boolean; snapshotId: string | null };
 
 export type HealthOutcome =
-  | { type: 'completed'; report: unknown }
+  | { type: 'completed'; report: HealthReportLike }
   | { type: 'skipped'; reason: string };
 
 // --- Cancellation Token ---

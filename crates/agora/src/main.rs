@@ -1382,7 +1382,8 @@ async fn run_command(
                     }
                     agora_core::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
-                        ..
+                        snapshot_id,
+                        warnings,
                     } => {
                         if json {
                             eprintln!(
@@ -1390,18 +1391,30 @@ async fn run_command(
                                 serde_json::to_string_pretty(&serde_json::json!({
                                     "status": "health_rollback",
                                     "blockers": health_report.blockers,
+                                    "snapshotId": snapshot_id,
+                                    "warnings": warnings,
                                 }))?
                             );
                         } else {
                             eprintln!(
-                                "Install completed but post-install health check found blockers; rolled back."
+                                "Install completed but post-install health check found {} blocker(s) — install kept, snapshot {} kept for manual rollback.",
+                                health_report.blockers.len(),
+                                snapshot_id
                             );
                             for b in &health_report.blockers {
                                 eprintln!("  [BLOCK] {}", b.message);
+                                if let Some(action) = &b.suggested_action {
+                                    eprintln!("    suggestion: {}", action);
+                                }
+                            }
+                            for w in &warnings {
+                                eprintln!("  [WARN] {}", w.message);
                             }
                         }
                         anyhow::bail!(
-                            "Install rolled back due to post-install health check failures"
+                            "Install has {} health blocker(s) (install kept; snapshot {} available for rollback)",
+                            health_report.blockers.len(),
+                            snapshot_id
                         );
                     }
                     agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
@@ -1673,7 +1686,8 @@ async fn run_command(
                     }
                     agora_core::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
-                        ..
+                        snapshot_id,
+                        warnings,
                     } => {
                         if json {
                             eprintln!(
@@ -1681,18 +1695,30 @@ async fn run_command(
                                 serde_json::to_string_pretty(&serde_json::json!({
                                     "status": "health_rollback",
                                     "blockers": health_report.blockers,
+                                    "snapshotId": snapshot_id,
+                                    "warnings": warnings,
                                 }))?
                             );
                         } else {
                             eprintln!(
-                                "Update completed but post-update health check found blockers; rolled back."
+                                "Update completed but post-update health check found {} blocker(s) — install kept, snapshot {} kept for manual rollback.",
+                                health_report.blockers.len(),
+                                snapshot_id
                             );
                             for b in &health_report.blockers {
                                 eprintln!("  [BLOCK] {}", b.message);
+                                if let Some(action) = &b.suggested_action {
+                                    eprintln!("    suggestion: {}", action);
+                                }
+                            }
+                            for w in &warnings {
+                                eprintln!("  [WARN] {}", w.message);
                             }
                         }
                         anyhow::bail!(
-                            "Update rolled back due to post-update health check failures"
+                            "Update has {} health blocker(s) (install kept; snapshot {} available for rollback)",
+                            health_report.blockers.len(),
+                            snapshot_id
                         );
                     }
                     agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
@@ -1850,7 +1876,8 @@ async fn run_command(
                     }
                     agora_core::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
-                        ..
+                        snapshot_id,
+                        warnings,
                     } => {
                         if json {
                             eprintln!(
@@ -1858,18 +1885,30 @@ async fn run_command(
                                 serde_json::to_string_pretty(&serde_json::json!({
                                     "status": "health_rollback",
                                     "blockers": health_report.blockers,
+                                    "snapshotId": snapshot_id,
+                                    "warnings": warnings,
                                 }))?
                             );
                         } else {
                             eprintln!(
-                                "Batch update completed but post-update health check found blockers; rolled back."
+                                "Batch update completed but post-update health check found {} blocker(s) — install kept, snapshot {} kept for manual rollback.",
+                                health_report.blockers.len(),
+                                snapshot_id
                             );
                             for b in &health_report.blockers {
                                 eprintln!("  [BLOCK] {}", b.message);
+                                if let Some(action) = &b.suggested_action {
+                                    eprintln!("    suggestion: {}", action);
+                                }
+                            }
+                            for w in &warnings {
+                                eprintln!("  [WARN] {}", w.message);
                             }
                         }
                         anyhow::bail!(
-                            "Batch update rolled back due to post-update health check failures"
+                            "Batch update has {} health blocker(s) (install kept; snapshot {} available for rollback)",
+                            health_report.blockers.len(),
+                            snapshot_id
                         );
                     }
                     agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {

@@ -85,6 +85,38 @@ import { formatDate, sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
 import type { BatchInstallItem, InstallIntent, SourceType } from '../lib/installFlow';
 
+// Whether a candidate version is a pre-release (alpha/beta/rc/snapshot) —
+// mirrors `agora_core::models::is_prerelease_version` and the backend
+// `is_prerelease` flag. Used to group stable releases above alpha/beta
+// when `version_sort_by_date` is off (default).
+function isPrereleaseVersion(version: string): boolean {
+  const lower = (version ?? '').toLowerCase();
+  return (
+    lower.includes('alpha') ||
+    lower.includes('beta') ||
+    lower.includes('snapshot') ||
+    lower.includes('-rc') ||
+    lower.includes('.rc') ||
+    lower.includes('_rc') ||
+    lower.includes('-pre') ||
+    lower.includes('.pre') ||
+    lower.includes('_pre') ||
+    lower.includes('-dev') ||
+    lower.includes('.dev')
+  );
+}
+
+function candidateIsPrerelease(c: ModVersionCandidate | RawModrinthVersionCandidate): boolean {
+  const any = c as unknown as Record<string, unknown>;
+  if (typeof any.is_prerelease === 'boolean') return any.is_prerelease as boolean;
+  if (typeof any.version_type === 'string') {
+    const vt = (any.version_type as string).toLowerCase();
+    if (vt === 'alpha' || vt === 'beta') return true;
+    if (vt === 'release') return false;
+  }
+  return isPrereleaseVersion(c.version ?? '');
+}
+
 
 // Allowlist schema for rendering community/upstream markdown (Modrinth body).
 // Built on rehype-sanitize's default (already strips <script>, on* handlers,
@@ -191,6 +223,9 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   const [contextInstalledEntry, setContextInstalledEntry] = useState<InstalledMod | null>(null);
   const [flowInstalledEntry, setFlowInstalledEntry] = useState<InstalledMod | null>(null);
   const [versionsTabInstalledEntry, setVersionsTabInstalledEntry] = useState<InstalledMod | null>(null);
+
+  // Whether versions should be sorted purely by date (ignoring stable vs prerelease)
+  const [versionSortByDate, setVersionSortByDate] = useState(false);
 
   // Versions tab: GitHub release version list (for mods without modrinth_id)
   const [curatedTabVersions, setCuratedTabVersions] = useState<ModVersionCandidate[]>([]);
@@ -359,6 +394,20 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
       .then((raw) => {
         if (!cancelled) {
           setAllowUnverifiedPacks(raw === true || raw === 'true' || raw === '1');
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSetting('version_sort_by_date')
+      .then((raw) => {
+        if (!cancelled) {
+          setVersionSortByDate(raw === true || raw === 'true' || raw === '1');
         }
       })
       .catch(() => {});
@@ -1450,84 +1499,154 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                     <p className="text-xs text-muted-foreground mt-2">Loading versions…</p>
                   </div>
                 ) : isModrinthInstall ? (
-                  <ul className="space-y-2 max-h-80 overflow-y-auto" data-tour="install-version-list">
-                    {modrinthCandidates.map((cand, idx) => (
-                      <li
-                        key={cand.version_id}
-                        data-tour={idx === 0 ? 'install-version-first' : undefined}
-                        className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
-                          selectedModrinthCandidate?.version_id === cand.version_id
-                            ? 'border-primary bg-card/50 dark:bg-card/20'
-                            : 'border-border hover:bg-accent'
-                        }`}
-                        onClick={() => setSelectedModrinthCandidate(cand)}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium truncate">{cand.version}</span>
-                          <span className="flex items-center gap-2 shrink-0">
-                            {flowInstalledEntry?.version === cand.version && (
-                              <span className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
-                            )}
-                            {cand.primary && (
-                              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">primary</span>
-                            )}
-                          </span>
+                  (() => {
+                    const stable = versionSortByDate ? modrinthCandidates : modrinthCandidates.filter(c => !candidateIsPrerelease(c));
+                    const prerelease = versionSortByDate ? [] : modrinthCandidates.filter(c => candidateIsPrerelease(c));
+                    const renderModrinthList = (list: RawModrinthVersionCandidate[]) => (
+                      <ul className="space-y-2">
+                        {list.map((cand) => {
+                          const globalIdx = modrinthCandidates.indexOf(cand);
+                          return (
+                            <li
+                              key={cand.version_id}
+                              data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
+                                selectedModrinthCandidate?.version_id === cand.version_id
+                                  ? 'border-primary bg-card/50 dark:bg-card/20'
+                                  : 'border-border hover:bg-accent'
+                              }`}
+                              onClick={() => setSelectedModrinthCandidate(cand)}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium truncate flex items-center gap-2">
+                                  {cand.version}
+                                  {candidateIsPrerelease(cand) && (
+                                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  )}
+                                </span>
+                                <span className="flex items-center gap-2 shrink-0">
+                                  {flowInstalledEntry?.version === cand.version && (
+                                    <span className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                                  )}
+                                  {cand.primary && (
+                                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">primary</span>
+                                  )}
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {cand.mc_versions.join(', ') || '—'}
+                                {' · '}
+                                {cand.loaders.join(', ') || '—'}
+                                {cand.release_date ? ` · ${cand.release_date.slice(0, 10)}` : ''}
+                              </p>
+                              {cand.sha1 ? (
+                                <p className="text-[10px] text-green-600 dark:text-green-400 mt-0.5">
+                                  SHA-1: {cand.sha1.slice(0, 12)}…
+                                </p>
+                              ) : (
+                                <p className="text-[10px] text-destructive mt-0.5">
+                                  No SHA-1 published — install refused
+                                </p>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    );
+                    if (versionSortByDate) {
+                      return (
+                        <div className="max-h-80 overflow-y-auto space-y-2" data-tour="install-version-list">
+                          {renderModrinthList(stable)}
                         </div>
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {cand.mc_versions.join(', ') || '—'}
-                          {' · '}
-                          {cand.loaders.join(', ') || '—'}
-                          {cand.release_date ? ` · ${cand.release_date.slice(0, 10)}` : ''}
-                        </p>
-                        {cand.sha1 ? (
-                          <p className="text-[10px] text-green-600 dark:text-green-400 mt-0.5">
-                            SHA-1: {cand.sha1.slice(0, 12)}…
-                          </p>
-                        ) : (
-                          <p className="text-[10px] text-destructive mt-0.5">
-                            No SHA-1 published — install refused
-                          </p>
+                      );
+                    }
+                    return (
+                      <div className="max-h-80 overflow-y-auto space-y-4" data-tour="install-version-list">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Release {stable.length > 0 ? `· ${stable.length}` : ''}</p>
+                          {stable.length > 0 ? renderModrinthList(stable) : <p className="text-xs text-muted-foreground">No stable releases.</p>}
+                        </div>
+                        {prerelease.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2">Alpha / Beta {prerelease.length > 0 ? `· ${prerelease.length}` : ''}</p>
+                            {renderModrinthList(prerelease)}
+                          </div>
                         )}
-                      </li>
-                    ))}
-                  </ul>
+                      </div>
+                    );
+                  })()
                 ) : (
-                  <ul className="space-y-2 max-h-80 overflow-y-auto" data-tour="install-version-list">
-                    {candidates.map((cand, idx) => (
-                      <li
-                        key={idx}
-                        data-tour={idx === 0 ? 'install-version-first' : undefined}
-                        className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
-                          selectedCandidate?.filename === cand.filename
-                            ? 'border-primary bg-card/50 dark:bg-card/20'
-                            : 'border-border hover:bg-accent'
-                        }`}
-                        onClick={() => setSelectedCandidate(cand)}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">{cand.version}</span>
-                          <span className="flex items-center gap-2">
-                            {flowInstalledEntry?.version === cand.version && (
-                              <span className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
-                            )}
-                            {cand.version_compat === 'compatible' ? (
-                              <span className="text-xs text-green-600 dark:text-green-400">✓ compatible</span>
-                            ) : cand.version_compat === 'major_match' ? (
-                              <span className="text-xs text-yellow-600 dark:text-yellow-400">⚠ may not match your exact version</span>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">may not match your instance</span>
-                            )}
-                          </span>
+                  (() => {
+                    const stable = versionSortByDate ? candidates : candidates.filter(c => !candidateIsPrerelease(c));
+                    const prerelease = versionSortByDate ? [] : candidates.filter(c => candidateIsPrerelease(c));
+                    const renderList = (list: ModVersionCandidate[]) => (
+                      <ul className="space-y-2">
+                        {list.map((cand) => {
+                          const globalIdx = candidates.indexOf(cand);
+                          return (
+                            <li
+                              key={`${cand.version}-${cand.filename}`}
+                              data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
+                                selectedCandidate?.filename === cand.filename && selectedCandidate?.version === cand.version
+                                  ? 'border-primary bg-card/50 dark:bg-card/20'
+                                  : 'border-border hover:bg-accent'
+                              }`}
+                              onClick={() => setSelectedCandidate(cand)}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="font-medium flex items-center gap-2">
+                                  {cand.version}
+                                  {candidateIsPrerelease(cand) && (
+                                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                  )}
+                                </span>
+                                <span className="flex items-center gap-2">
+                                  {flowInstalledEntry?.version === cand.version && (
+                                    <span className="text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
+                                  )}
+                                  {cand.version_compat === 'compatible' ? (
+                                    <span className="text-xs text-green-600 dark:text-green-400">✓ compatible</span>
+                                  ) : cand.version_compat === 'major_match' ? (
+                                    <span className="text-xs text-yellow-600 dark:text-yellow-400">⚠ may not match your exact version</span>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">may not match your instance</span>
+                                  )}
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                {[cand.mc_version, cand.loader].filter(Boolean).join(' · ')}
+                                {cand.release_date ? ` · ${cand.release_date}` : ''}
+                              </p>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    );
+                    if (versionSortByDate) {
+                      return (
+                        <div className="max-h-80 overflow-y-auto space-y-2" data-tour="install-version-list">
+                          {renderList(stable)}
                         </div>
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {[cand.mc_version, cand.loader].filter(Boolean).join(' · ')}
-                          {cand.release_date ? ` · ${cand.release_date}` : ''}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
+                      );
+                    }
+                    return (
+                      <div className="max-h-80 overflow-y-auto space-y-4" data-tour="install-version-list">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Release {stable.length > 0 ? `· ${stable.length}` : ''}</p>
+                          {stable.length > 0 ? renderList(stable) : <p className="text-xs text-muted-foreground">No stable releases.</p>}
+                        </div>
+                        {prerelease.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2">Alpha / Beta {prerelease.length > 0 ? `· ${prerelease.length}` : ''}</p>
+                            {renderList(prerelease)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
                 )}
                 {hasMoreVersions && !isModrinthInstall && (
                   <div ref={versionSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
@@ -1733,19 +1852,11 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
               <p className="text-sm text-muted-foreground">No versions published.</p>
             ) : (
               <div className="flex flex-col lg:flex-row gap-4">
-                {/* Versions table */}
-                <div className="flex-1 overflow-x-auto">
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                        <th className="py-2 pr-3 font-medium">Version</th>
-                        <th className="py-2 pr-3 font-medium">MC Versions</th>
-                        <th className="py-2 pr-3 font-medium">Loaders</th>
-                        <th className="py-2 pr-3 font-medium">Released</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {modrinthVersions.map((v) => {
+                {/* Versions table — grouped stable vs alpha/beta */}
+                <div className="flex-1 overflow-x-auto space-y-4">
+                  {(() => {
+                    const renderRows = (list: RawModrinthVersionCandidate[]) =>
+                      list.map((v) => {
                         const isSelected = selectedVersion?.version_id === v.version_id;
                         return (
                           <tr
@@ -1755,13 +1866,16 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                               setSelectedCuratedTabVersion(null);
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${
-                              isSelected
-                                ? 'bg-accent'
-                                : 'hover:bg-accent'
+                              isSelected ? 'bg-accent' : 'hover:bg-accent'
                             }`}
                           >
                             <td className="py-2 pr-3 font-medium break-all">
-                              {v.name || v.version}
+                              <span className="inline-flex items-center gap-1.5">
+                                {v.name || v.version}
+                                {candidateIsPrerelease(v) && (
+                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                )}
+                              </span>
                               {versionsTabInstalledEntry?.version === v.version && (
                                 <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
@@ -1771,9 +1885,63 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
-                      })}
-                    </tbody>
-                  </table>
+                      });
+                    if (versionSortByDate) {
+                      return (
+                        <table className="w-full text-sm border-collapse">
+                          <thead>
+                            <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                              <th className="py-2 pr-3 font-medium">Version</th>
+                              <th className="py-2 pr-3 font-medium">MC Versions</th>
+                              <th className="py-2 pr-3 font-medium">Loaders</th>
+                              <th className="py-2 pr-3 font-medium">Released</th>
+                            </tr>
+                          </thead>
+                          <tbody>{renderRows(modrinthVersions)}</tbody>
+                        </table>
+                      );
+                    }
+                    const stable = modrinthVersions.filter((v) => !candidateIsPrerelease(v));
+                    const prerelease = modrinthVersions.filter((v) => candidateIsPrerelease(v));
+                    return (
+                      <>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Release {stable.length ? `· ${stable.length}` : ''}</p>
+                          <table className="w-full text-sm border-collapse">
+                            <thead>
+                              <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                                <th className="py-2 pr-3 font-medium">Version</th>
+                                <th className="py-2 pr-3 font-medium">MC Versions</th>
+                                <th className="py-2 pr-3 font-medium">Loaders</th>
+                                <th className="py-2 pr-3 font-medium">Released</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stable.length ? renderRows(stable) : (
+                                <tr><td colSpan={4} className="py-2 text-xs text-muted-foreground">No stable releases.</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                        {prerelease.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-1">Alpha / Beta · {prerelease.length}</p>
+                            <table className="w-full text-sm border-collapse">
+                              <thead>
+                                <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                                  <th className="py-2 pr-3 font-medium">Version</th>
+                                  <th className="py-2 pr-3 font-medium">MC Versions</th>
+                                  <th className="py-2 pr-3 font-medium">Loaders</th>
+                                  <th className="py-2 pr-3 font-medium">Released</th>
+                                </tr>
+                              </thead>
+                              <tbody>{renderRows(prerelease)}</tbody>
+                            </table>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Selected version detail panel */}
@@ -1848,36 +2016,28 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
               <p className="text-sm text-muted-foreground">No versions published.</p>
             ) : (
               <div className="flex flex-col lg:flex-row gap-4">
-                {/* GitHub versions table */}
-                <div className="flex-1 overflow-x-auto">
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                        <th className="py-2 pr-3 font-medium">Version</th>
-                        <th className="py-2 pr-3 font-medium">MC Version</th>
-                        <th className="py-2 pr-3 font-medium">Loader</th>
-                        <th className="py-2 pr-3 font-medium">Released</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {curatedTabVersions.map((v, idx) => {
-                        const isSelected = selectedCuratedTabVersion?.filename === v.filename
-                          && selectedCuratedTabVersion?.version === v.version;
+                {/* GitHub versions table — grouped stable vs alpha/beta */}
+                <div className="flex-1 overflow-x-auto space-y-4">
+                  {(() => {
+                    const renderRows = (list: ModVersionCandidate[]) =>
+                      list.map((v, idx) => {
+                        const isSelected = selectedCuratedTabVersion?.filename === v.filename && selectedCuratedTabVersion?.version === v.version;
                         return (
                           <tr
-                            key={`${v.version}-${idx}`}
+                            key={`${v.version}-${v.filename}-${idx}`}
                             onClick={() => {
                               setSelectedCuratedTabVersion(v);
                               setSelectedVersion(null);
                             }}
-                            className={`cursor-pointer border-b border-border/50 transition-colors ${
-                              isSelected
-                                ? 'bg-accent'
-                                : 'hover:bg-accent'
-                            }`}
+                            className={`cursor-pointer border-b border-border/50 transition-colors ${isSelected ? 'bg-accent' : 'hover:bg-accent'}`}
                           >
                             <td className="py-2 pr-3 font-medium break-all">
-                              {v.version}
+                              <span className="inline-flex items-center gap-1.5">
+                                {v.version}
+                                {candidateIsPrerelease(v) && (
+                                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">beta</span>
+                                )}
+                              </span>
                               {versionsTabInstalledEntry?.version === v.version && (
                                 <span className="ml-2 text-[10px] uppercase tracking-wide text-green-600 dark:text-green-400">installed</span>
                               )}
@@ -1887,14 +2047,75 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             <td className="py-2 pr-3 text-xs text-muted-foreground">{v.release_date ? v.release_date.slice(0, 10) : '—'}</td>
                           </tr>
                         );
-                      })}
-                    </tbody>
-                  </table>
-                  {curatedTabHasMore && (
-                    <div ref={curatedTabSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
-                      {curatedTabLoadingMore ? 'Loading more versions…' : ''}
-                    </div>
-                  )}
+                      });
+                    if (versionSortByDate) {
+                      return (
+                        <>
+                          <table className="w-full text-sm border-collapse">
+                            <thead>
+                              <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                                <th className="py-2 pr-3 font-medium">Version</th>
+                                <th className="py-2 pr-3 font-medium">MC Version</th>
+                                <th className="py-2 pr-3 font-medium">Loader</th>
+                                <th className="py-2 pr-3 font-medium">Released</th>
+                              </tr>
+                            </thead>
+                            <tbody>{renderRows(curatedTabVersions)}</tbody>
+                          </table>
+                          {curatedTabHasMore && (
+                            <div ref={curatedTabSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
+                              {curatedTabLoadingMore ? 'Loading more versions…' : ''}
+                            </div>
+                          )}
+                        </>
+                      );
+                    }
+                    const stable = curatedTabVersions.filter((v) => !candidateIsPrerelease(v));
+                    const prerelease = curatedTabVersions.filter((v) => candidateIsPrerelease(v));
+                    return (
+                      <>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Release {stable.length ? `· ${stable.length}` : ''}</p>
+                          <table className="w-full text-sm border-collapse">
+                            <thead>
+                              <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                                <th className="py-2 pr-3 font-medium">Version</th>
+                                <th className="py-2 pr-3 font-medium">MC Version</th>
+                                <th className="py-2 pr-3 font-medium">Loader</th>
+                                <th className="py-2 pr-3 font-medium">Released</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stable.length ? renderRows(stable) : (
+                                <tr><td colSpan={4} className="py-2 text-xs text-muted-foreground">No stable releases.</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                        {prerelease.length > 0 && (
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-1">Alpha / Beta · {prerelease.length}</p>
+                            <table className="w-full text-sm border-collapse">
+                              <thead>
+                                <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                                  <th className="py-2 pr-3 font-medium">Version</th>
+                                  <th className="py-2 pr-3 font-medium">MC Version</th>
+                                  <th className="py-2 pr-3 font-medium">Loader</th>
+                                  <th className="py-2 pr-3 font-medium">Released</th>
+                                </tr>
+                              </thead>
+                              <tbody>{renderRows(prerelease)}</tbody>
+                            </table>
+                          </div>
+                        )}
+                        {curatedTabHasMore && (
+                          <div ref={curatedTabSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
+                            {curatedTabLoadingMore ? 'Loading more versions…' : ''}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Selected version detail panel */}

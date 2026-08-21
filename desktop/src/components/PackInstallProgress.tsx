@@ -4,6 +4,7 @@ import {
   formatError,
   importInstancePack,
   importModrinthPackByUrl,
+  restoreSnapshot,
 } from '../lib/tauri';
 import { applyInstallPlan, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
@@ -15,7 +16,7 @@ export type PackInstallTask = {
   kind: 'plan' | 'modrinth-pack' | 'pack-file';
   planId?: string;
   operationId?: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'health-blocked';
   phase: string;
   message: string;
   progress: number | null;
@@ -24,6 +25,8 @@ export type PackInstallTask = {
   bytesDownloaded: number;
   bytesTotal: number;
   error: string | null;
+  healthReport?: { blockers: { message: string; suggested_action: string | null; filename: string | null }[]; warnings: { message: string }[]; score: string } | null;
+  snapshotId?: string | null;
 };
 
 type PackInstallProgressEvent = {
@@ -126,6 +129,7 @@ function phaseLabel(phase: string): string {
     case 'snapshotting': return 'Creating recovery snapshot';
     case 'applying': return 'Applying instance changes';
     case 'health-scan': return 'Checking pack health';
+    case 'health-blocked': return 'Health issues — action needed';
     case 'done': return 'Finishing installation';
     case 'failed': return 'Installation failed';
     default: return 'Installing';
@@ -190,6 +194,21 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const completeTask = (id: string, outcome: InstallOutcome) => {
+    if (outcome.type === 'health-rollback') {
+      setTaskMap((current) => updateTask(current, id, {
+        status: 'health-blocked',
+        phase: 'health-blocked',
+        message: `Health check found ${outcome.healthReport.blockers.length} blocker${outcome.healthReport.blockers.length === 1 ? '' : 's'} — install kept for repair`,
+        progress: 1,
+        error: null,
+        healthReport: outcome.healthReport as PackInstallTask['healthReport'],
+        snapshotId: outcome.snapshotId,
+      }));
+      setRevision((value) => value + 1);
+      // Health-blocked tasks stay until the user dismisses or rolls back — they
+      // contain the only visible explanation of why the pack is unhealthy.
+      return;
+    }
     const success = outcome.type === 'success';
     setTaskMap((current) => updateTask(current, id, {
       status: success ? 'completed' : 'failed',
@@ -197,11 +216,13 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       message: success ? 'Installation completed successfully.' : 'Installation did not complete.',
       progress: success ? 1 : null,
       error: success ? null : outcome.type === 'failed' ? outcome.error : 'Installation was cancelled.',
+      healthReport: null,
+      snapshotId: success ? outcome.snapshotId : null,
     }));
     setRevision((value) => value + 1);
     window.setTimeout(() => {
       setTaskMap((current) => {
-        if (!current[id] || current[id].status === 'running') return current;
+        if (!current[id] || current[id].status === 'running' || current[id].status === 'health-blocked') return current;
         const next = { ...current };
         delete next[id];
         return next;
@@ -357,6 +378,33 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
       ? `File ${Math.min(task.step, task.totalSteps)} of ${task.totalSteps}`
       : null;
 
+  if (task.status === 'health-blocked') {
+    return (
+      <div className={compact ? 'mt-3 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 space-y-2' : 'space-y-2'} aria-live="polite">
+        <div className="flex items-center justify-between gap-2">
+          <p className="min-w-0 truncate text-sm font-semibold text-amber-700 dark:text-amber-300">
+            Health issues need attention
+          </p>
+          <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">
+            {task.healthReport?.blockers.length ?? 0} blocker{task.healthReport?.blockers.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground" title={task.message}>{task.message}</p>
+        {task.healthReport && task.healthReport.blockers.length > 0 && (
+          <div className="max-h-28 space-y-1 overflow-y-auto rounded border border-amber-500/30 bg-background p-2">
+            {task.healthReport.blockers.slice(0, 3).map((b, i) => (
+              <p key={i} className="text-xs text-destructive">{b.message}</p>
+            ))}
+            {task.healthReport.blockers.length > 3 && (
+              <p className="text-[10px] text-muted-foreground">+ {task.healthReport.blockers.length - 3} more — open Instance Editor for full details</p>
+            )}
+          </div>
+        )}
+        <p className="text-[10px] text-muted-foreground">Snapshot {task.snapshotId?.slice(0, 8)} kept for rollback. Files remain installed so you can repair.</p>
+      </div>
+    );
+  }
+
   return (
     <div className={compact ? 'mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2' : 'space-y-2'} aria-live="polite">
       <div className="flex items-center justify-between gap-2">
@@ -388,23 +436,85 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
 }
 
 function PackInstallIndicator({ tasks }: { tasks: PackInstallTask[] }) {
+  const { dismissTask } = usePackInstall();
+  const [rollbackBusy, setRollbackBusy] = useState<string | null>(null);
+  const [rollbackError, setRollbackError] = useState<Record<string, string>>({});
+
   if (tasks.length === 0) return null;
   return (
-    <aside className="pointer-events-none fixed bottom-4 right-4 z-[60] w-[min(24rem,calc(100vw-2rem))] space-y-2">
-      {tasks.map((task) => (
-        <div key={task.id} className="pointer-events-auto rounded-xl border border-border bg-card/95 p-4 shadow-2xl backdrop-blur">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">{task.label}</p>
-              <p className="truncate text-xs text-muted-foreground">
-                {task.instanceName}
-              </p>
+    <aside className="pointer-events-none fixed bottom-4 right-4 z-[60] w-[min(26rem,calc(100vw-2rem))] space-y-2">
+      {tasks.map((task) => {
+        const isHealthBlocked = task.status === 'health-blocked';
+        return (
+          <div
+            key={task.id}
+            className={`pointer-events-auto rounded-xl border bg-card/95 p-4 shadow-2xl backdrop-blur ${isHealthBlocked ? 'border-amber-500/50' : 'border-border'}`}
+          >
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">{task.label}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {task.instanceName}
+                </p>
+              </div>
+              {task.status === 'running' && <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
+              {task.status === 'completed' && <span className="shrink-0 text-green-600">✓</span>}
+              {isHealthBlocked && <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">!</span>}
             </div>
-            {task.status === 'running' && <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
+            <PackInstallProgressBar task={task} />
+            <div className="mt-3 flex flex-wrap justify-end gap-2">
+              {isHealthBlocked ? (
+                <>
+                  {task.instanceId && task.snapshotId && (
+                    <button
+                      onClick={async () => {
+                        if (!task.instanceId || !task.snapshotId) return;
+                        setRollbackBusy(task.id);
+                        setRollbackError((prev) => ({ ...prev, [task.id]: '' }));
+                        try {
+                          await restoreSnapshot(task.instanceId, task.snapshotId);
+                          dismissTask(task.id);
+                        } catch (cause) {
+                          setRollbackError((prev) => ({ ...prev, [task.id]: formatError(cause) }));
+                        } finally {
+                          setRollbackBusy(null);
+                        }
+                      }}
+                      disabled={rollbackBusy === task.id}
+                      className="rounded-lg border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      {rollbackBusy === task.id ? 'Restoring…' : 'Roll back'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => dismissTask(task.id)}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Keep & review
+                  </button>
+                </>
+              ) : task.status === 'failed' ? (
+                <button
+                  onClick={() => dismissTask(task.id)}
+                  className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                >
+                  Dismiss
+                </button>
+              ) : task.status === 'completed' ? (
+                <button
+                  onClick={() => dismissTask(task.id)}
+                  className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                >
+                  Dismiss
+                </button>
+              ) : null}
+            </div>
+            {isHealthBlocked && rollbackError[task.id] && (
+              <p className="mt-2 text-xs text-destructive">Rollback failed: {rollbackError[task.id]}</p>
+            )}
           </div>
-          <PackInstallProgressBar task={task} />
-        </div>
-      ))}
+        );
+      })}
     </aside>
   );
 }

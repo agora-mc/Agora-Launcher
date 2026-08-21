@@ -47,12 +47,6 @@ import {
   type ResolvedInstallPlan,
   planNeedsUserReview,
 } from '../lib/installFlow';
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from '../components/ui/dialog';
 import type { BrowseItemContext as ItemContext } from '../components/browse/types';
 import '../components/browse/browse-cards.css';
 import { agoraRepositoryUrl } from '../lib/brandConfig';
@@ -1123,17 +1117,28 @@ function BrowseContent({
   // open on the Bazaar rather than bouncing to the normal Browse view.
   const bulkInstallDialogs = (
     <>
-      {/* Instance picker for bulk install when no instance context is set */}
-      <Dialog open={pickerOpen} onOpenChange={(open) => { if (!open) setPickerOpen(false); }}>
-        <DialogContent className="max-w-md">
-          <DialogTitle>
-            Install {selectedItems.size} selected item{selectedItems.size === 1 ? '' : 's'}
-          </DialogTitle>
-          <DialogDescription>
-            Choose an instance. The latest compatible version of each item will be installed.
-          </DialogDescription>
+      {/* Instance picker for bulk install — corner card so browsing stays usable */}
+      {pickerOpen && (
+        <aside className="fixed bottom-4 right-4 z-[62] w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-border bg-card p-4 shadow-2xl">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">
+                Install {selectedItems.size} selected item{selectedItems.size === 1 ? '' : 's'}
+              </h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Choose an instance. The latest compatible version of each item will be installed.
+              </p>
+            </div>
+            <button
+              onClick={() => setPickerOpen(false)}
+              className="shrink-0 rounded border border-input px-2 py-1 text-xs hover:bg-accent"
+              aria-label="Close picker"
+            >
+              Close
+            </button>
+          </div>
           {instances.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="mt-3 text-sm text-muted-foreground">
               No instances yet. Create an instance from My Instances first.
             </p>
           ) : (
@@ -1142,7 +1147,7 @@ function BrowseContent({
                 value={pickerInstanceId}
                 onChange={(e) => setPickerInstanceId(e.target.value)}
                 aria-label="Target instance"
-                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+                className="mt-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
               >
                 <option value="">Choose an instance…</option>
                 {instances.map((instance) => (
@@ -1151,7 +1156,7 @@ function BrowseContent({
                   </option>
                 ))}
               </select>
-              <div className="flex justify-end gap-2">
+              <div className="mt-3 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setPickerOpen(false)}
@@ -1170,8 +1175,8 @@ function BrowseContent({
               </div>
             </>
           )}
-        </DialogContent>
-      </Dialog>
+        </aside>
+      )}
 
       {/* Canonical install pipeline for the selected batch */}
       {installTarget && (

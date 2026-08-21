@@ -97,4 +97,6 @@ pub struct ModVersionCandidate {
     /// `"major_match"` (same major version, different minor), or `""` (incompatible).
     #[serde(default)]
     pub version_compat: String,
+    #[serde(default)]
+    pub is_prerelease: bool,
 }

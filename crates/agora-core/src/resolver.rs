@@ -52,6 +52,8 @@ pub struct RawModrinthVersionCandidate {
     pub primary: bool,
     pub changelog: Option<String>,
     pub dependencies: Vec<RawModrinthDep>,
+    pub is_prerelease: bool,
+    pub version_type: String,
 }
 
 /// A dependency declared in a raw Modrinth version.
@@ -207,6 +209,8 @@ struct ModrinthApiVersion {
     dependencies: Vec<ModrinthApiDep>,
     #[serde(default)]
     changelog: Option<String>,
+    #[serde(default)]
+    version_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +244,8 @@ struct ModrinthApiDep {
 struct GitHubRelease {
     tag_name: String,
     published_at: Option<String>,
+    #[serde(default)]
+    prerelease: bool,
     assets: Vec<GitHubReleaseAsset>,
 }
 
@@ -767,7 +773,7 @@ impl Resolver {
                 all.extend(cands);
             }
         }
-        sort_versions_by_compatibility(&mut all);
+        sort_versions_with_ctx(&self.ctx, &mut all);
         Ok((all, total_pages, pages_fetched))
     }
 
@@ -979,6 +985,7 @@ impl Resolver {
             candidate.source_strategy = Some(source.strategy.clone());
             candidate.source_identifier = Some(source.identifier.clone());
         }
+        sort_versions_with_ctx(&self.ctx, &mut candidates);
         Ok(candidates)
     }
 
@@ -1017,7 +1024,7 @@ impl Resolver {
             page += 1;
         }
 
-        sort_versions_by_compatibility(&mut all);
+        sort_versions_with_ctx(&self.ctx, &mut all);
         Ok(all)
     }
 
@@ -1113,6 +1120,9 @@ impl Resolver {
                     asset_name = asset.name,
                 );
 
+                let is_prerelease = release.prerelease
+                    || crate::models::is_prerelease_version(&release.tag_name)
+                    || crate::models::is_prerelease_version(&asset.name);
                 candidates.push(ModVersionCandidate {
                     version: release.tag_name.clone(),
                     filename: asset.name.clone(),
@@ -1130,6 +1140,7 @@ impl Resolver {
                         .map(str::to_string),
                     sha512: None,
                     size: asset.size,
+                    is_prerelease,
                     source_strategy: None,
                     source_identifier: None,
                 });
@@ -1303,59 +1314,67 @@ impl Resolver {
             http_client::checked_get_json(&self.ctx.http_clients, ClientCategory::Modrinth, url)
                 .await?;
 
-        Ok(versions
-            .into_iter()
-            .map(|v| {
-                let primary_file = v
-                    .files
-                    .iter()
-                    .find(|f| f.primary)
-                    .or_else(|| v.files.first());
-                let (filename, download_url, sha1, file_size) = match primary_file {
-                    Some(f) => (
-                        f.filename.clone(),
-                        f.url.clone(),
-                        f.hashes.as_ref().and_then(|h| h.sha1.clone()),
-                        f.size,
-                    ),
-                    None => (String::new(), String::new(), None, None),
-                };
-                RawModrinthVersionCandidate {
-                    version: v.version_number,
-                    version_id: v.id,
-                    name: v.name.unwrap_or_default(),
-                    filename,
-                    download_url,
-                    sha1,
-                    sha512: primary_file
-                        .and_then(|f| f.hashes.as_ref())
-                        .and_then(|h| h.sha512.clone()),
-                    size: file_size,
-                    mc_versions: v.game_versions.unwrap_or_default(),
-                    loaders: v
-                        .loaders
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|l| l.to_lowercase())
-                        .collect(),
-                    release_date: v.date_published,
-                    primary: primary_file.map(|f| f.primary).unwrap_or(false),
-                    changelog: v.changelog,
-                    dependencies: v
-                        .dependencies
-                        .into_iter()
-                        .filter_map(|d| {
-                            d.dependency_type.map(|dt| RawModrinthDep {
-                                project_id: d.project_id,
-                                version_id: d.version_id,
-                                dependency_type: dt,
+        {
+            let mut candidates: Vec<RawModrinthVersionCandidate> = versions
+                .into_iter()
+                .map(|v| {
+                    let primary_file = v
+                        .files
+                        .iter()
+                        .find(|f| f.primary)
+                        .or_else(|| v.files.first());
+                    let (filename, download_url, sha1, file_size) = match primary_file {
+                        Some(f) => (
+                            f.filename.clone(),
+                            f.url.clone(),
+                            f.hashes.as_ref().and_then(|h| h.sha1.clone()),
+                            f.size,
+                        ),
+                        None => (String::new(), String::new(), None, None),
+                    };
+                    let vt = v.version_type.as_deref().unwrap_or("release").to_ascii_lowercase();
+                    let is_prerelease = vt == "alpha" || vt == "beta" || crate::models::is_prerelease_version(&v.version_number);
+                    RawModrinthVersionCandidate {
+                        version: v.version_number,
+                        version_id: v.id,
+                        name: v.name.unwrap_or_default(),
+                        filename,
+                        download_url,
+                        sha1,
+                        sha512: primary_file
+                            .and_then(|f| f.hashes.as_ref())
+                            .and_then(|h| h.sha512.clone()),
+                        size: file_size,
+                        mc_versions: v.game_versions.unwrap_or_default(),
+                        loaders: v
+                            .loaders
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|l| l.to_lowercase())
+                            .collect(),
+                        release_date: v.date_published,
+                        primary: primary_file.map(|f| f.primary).unwrap_or(false),
+                        changelog: v.changelog,
+                        dependencies: v
+                            .dependencies
+                            .into_iter()
+                            .filter_map(|d| {
+                                d.dependency_type.map(|dt| RawModrinthDep {
+                                    project_id: d.project_id,
+                                    version_id: d.version_id,
+                                    dependency_type: dt,
+                                })
                             })
-                        })
-                        .collect(),
-                }
-            })
-            .filter(|c| !c.download_url.is_empty())
-            .collect())
+                            .collect(),
+                        is_prerelease,
+                        version_type: vt,
+                    }
+                })
+                .filter(|c| !c.download_url.is_empty())
+                .collect();
+            sort_raw_modrinth_versions_with_ctx(&self.ctx, &mut candidates);
+            Ok(candidates)
+        }
     }
 
     /// Download and verify a selected Modrinth artifact solely to inspect its
@@ -2365,9 +2384,26 @@ pub fn parse_link_total_pages(header_value: Option<&str>) -> u32 {
     1
 }
 
-/// Sort version candidates by compatibility tier (compatible → major_match → other),
-/// then by release date descending within each tier.
+/// Whether version lists should be sorted purely by date (ignoring stable vs prerelease).
+/// Reads `version_sort_by_date` setting, defaulting to false (stable-first).
+fn version_sort_by_date(ctx: &Ctx) -> bool {
+    crate::settings::SettingsService::new(ctx.clone())
+        .get_bool("version_sort_by_date")
+        .unwrap_or(false)
+}
+
+/// Sort version candidates.
+///
+/// Default: compatibility tier → release channel (stable before prerelease) → release date desc.
+/// When `sort_by_date_only` is true, channel is ignored and order is tier → date desc.
 pub fn sort_versions_by_compatibility(versions: &mut [ModVersionCandidate]) {
+    sort_versions_by_compatibility_with_mode(versions, false);
+}
+
+pub fn sort_versions_by_compatibility_with_mode(
+    versions: &mut [ModVersionCandidate],
+    sort_by_date_only: bool,
+) {
     versions.sort_by(|a, b| {
         let tier = |c: &ModVersionCandidate| -> u8 {
             match c.version_compat.as_str() {
@@ -2378,13 +2414,53 @@ pub fn sort_versions_by_compatibility(versions: &mut [ModVersionCandidate]) {
         };
         let ta = tier(a);
         let tb = tier(b);
-        ta.cmp(&tb).then_with(|| {
-            b.release_date
-                .as_deref()
-                .unwrap_or("")
-                .cmp(a.release_date.as_deref().unwrap_or(""))
-        })
+        let tier_ord = ta.cmp(&tb);
+        if tier_ord != std::cmp::Ordering::Equal {
+            return tier_ord;
+        }
+        if !sort_by_date_only {
+            let ca = if a.is_prerelease { 1 } else { 0 };
+            let cb = if b.is_prerelease { 1 } else { 0 };
+            let chan_ord = ca.cmp(&cb);
+            if chan_ord != std::cmp::Ordering::Equal {
+                return chan_ord;
+            }
+        }
+        b.release_date
+            .as_deref()
+            .unwrap_or("")
+            .cmp(a.release_date.as_deref().unwrap_or(""))
     });
+}
+
+/// Sort a slice using the context's `version_sort_by_date` setting.
+pub fn sort_versions_with_ctx(ctx: &Ctx, versions: &mut [ModVersionCandidate]) {
+    sort_versions_by_compatibility_with_mode(versions, version_sort_by_date(ctx));
+}
+
+/// Sort raw Modrinth candidates: stable first (unless date-only), then date desc.
+pub fn sort_raw_modrinth_versions(
+    versions: &mut [RawModrinthVersionCandidate],
+    sort_by_date_only: bool,
+) {
+    versions.sort_by(|a, b| {
+        if !sort_by_date_only {
+            let ca = if a.is_prerelease { 1 } else { 0 };
+            let cb = if b.is_prerelease { 1 } else { 0 };
+            let chan_ord = ca.cmp(&cb);
+            if chan_ord != std::cmp::Ordering::Equal {
+                return chan_ord;
+            }
+        }
+        b.release_date
+            .as_deref()
+            .unwrap_or("")
+            .cmp(a.release_date.as_deref().unwrap_or(""))
+    });
+}
+
+pub fn sort_raw_modrinth_versions_with_ctx(ctx: &Ctx, versions: &mut [RawModrinthVersionCandidate]) {
+    sort_raw_modrinth_versions(versions, version_sort_by_date(ctx));
 }
 
 /// Determine MC version and loader compatibility for a GitHub release asset.
@@ -2589,6 +2665,10 @@ async fn fetch_modrinth_versions_for_item(
     struct MRVersion {
         version_number: String,
         files: Vec<MRFile>,
+        #[serde(default)]
+        version_type: Option<String>,
+        #[serde(default)]
+        date_published: Option<String>,
     }
 
     let versions: Vec<MRVersion> =
@@ -2611,19 +2691,22 @@ async fn fetch_modrinth_versions_for_item(
             mc_version,
             loader,
         );
+        let vt = version.version_type.as_deref().unwrap_or("release").to_ascii_lowercase();
+        let is_prerelease = vt == "alpha" || vt == "beta" || crate::models::is_prerelease_version(&version.version_number);
         candidates.push(ModVersionCandidate {
             version: version.version_number.clone(),
             filename: file.filename.clone(),
             download_url: file.url.clone(),
             mc_version: mc_ver,
             loader: lo,
-            release_date: None,
+            release_date: version.date_published.clone(),
             is_compatible: compat == "compatible",
             version_compat: compat.to_string(),
             sha1: file.hashes.as_ref().and_then(|h| h.sha1.clone()),
             sha256: file.hashes.as_ref().and_then(|h| h.sha256.clone()),
             sha512: file.hashes.as_ref().and_then(|h| h.sha512.clone()),
             size: file.size,
+            is_prerelease,
             source_strategy: None,
             source_identifier: None,
         });
@@ -2817,6 +2900,7 @@ fn pinned_artifact_versions_for_source(
                 ))
             })?;
         let compat = declared_version_compat(&entry.mc_version, &entry.loader, mc_version, loader);
+        let is_prerelease = crate::models::is_prerelease_version(version);
         candidates.push(ModVersionCandidate {
             version: version.to_string(),
             filename: filename.clone(),
@@ -2830,17 +2914,23 @@ fn pinned_artifact_versions_for_source(
             sha256: Some(sha256.clone()),
             sha512: None,
             size: None,
+            is_prerelease,
             source_strategy: None,
             source_identifier: None,
         });
     }
 
     // `select_curated_candidate` takes the first compatible entry, so rank by
-    // verdict instead of letting manifest authoring order decide.
-    candidates.sort_by_key(|candidate| match candidate.version_compat.as_str() {
-        "compatible" => 0,
-        "major_match" => 1,
-        _ => 2,
+    // verdict + channel instead of letting manifest authoring order decide.
+    candidates.sort_by(|a, b| {
+        let tier = |c: &ModVersionCandidate| match c.version_compat.as_str() {
+            "compatible" => 0,
+            "major_match" => 1,
+            _ => 2,
+        };
+        tier(a)
+            .cmp(&tier(b))
+            .then_with(|| (a.is_prerelease as u8).cmp(&(b.is_prerelease as u8)))
     });
     Ok(candidates)
 }
@@ -3406,6 +3496,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -3422,6 +3513,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -3445,6 +3537,7 @@ mod tests {
             sha512: None,
             size: None,
             version_compat: "incompatible".into(),
+                is_prerelease: false,
             source_strategy: None,
             source_identifier: None,
         }];
@@ -3487,6 +3580,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -3503,6 +3597,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -3526,6 +3621,7 @@ mod tests {
             sha512: None,
             size: None,
             version_compat: "".into(),
+                is_prerelease: false,
             source_strategy: None,
             source_identifier: None,
         }];
@@ -3563,7 +3659,9 @@ mod tests {
                 version_id: None,
                 dependency_type: "required".into(),
             }],
-        };
+                is_prerelease: false,
+                version_type: "release".into(),
+            };
         let native_fabric = crate::dependency_ops::JarDeps {
             mod_jar_id: Some("swingthrough".into()),
             depends_on: vec!["native-only".into()],
@@ -3602,7 +3700,9 @@ mod tests {
             release_date: None,
             primary: true,
             changelog: None,
-        };
+                is_prerelease: false,
+                version_type: "release".into(),
+            };
 
         let ResolvedArtifact::Download(artifact) =
             raw_modrinth_artifact("sodium", &candidate).unwrap()
@@ -3828,6 +3928,7 @@ mod tests {
             release_date: None,
             is_compatible: true,
             version_compat: "compatible".into(),
+                is_prerelease: false,
             sha1: None,
             sha256: Some("d".repeat(64)),
             sha512: None,
@@ -3980,6 +4081,7 @@ mod tests {
             sha512: Some("c".repeat(128)),
             size: Some(1),
             version_compat: "compatible".into(),
+                is_prerelease: false,
             source_strategy: None,
             source_identifier: None,
         };
@@ -4019,6 +4121,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4035,6 +4138,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4051,6 +4155,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "major_match".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4285,6 +4390,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4301,6 +4407,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4317,6 +4424,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "major_match".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4333,6 +4441,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4370,6 +4479,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4386,6 +4496,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "major_match".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4404,6 +4515,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "compatible".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4420,6 +4532,7 @@ mod tests {
                 sha512: None,
                 size: None,
                 version_compat: "".into(),
+                is_prerelease: false,
                 source_strategy: None,
                 source_identifier: None,
             },
@@ -4664,6 +4777,8 @@ mod tests {
                 primary: false,
                 changelog: None,
                 dependencies: vec![],
+                is_prerelease: false,
+                version_type: "release".into(),
             },
             RawModrinthVersionCandidate {
                 version: "1.0.0".into(),
@@ -4680,6 +4795,8 @@ mod tests {
                 primary: false,
                 changelog: None,
                 dependencies: vec![],
+                is_prerelease: false,
+                version_type: "release".into(),
             },
         ];
 

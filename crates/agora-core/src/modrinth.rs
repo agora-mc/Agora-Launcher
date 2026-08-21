@@ -408,6 +408,8 @@ pub(crate) struct ModrinthVersion {
     pub(crate) dependencies: Vec<ModrinthApiDep>,
     #[serde(default)]
     pub(crate) changelog: Option<String>,
+    #[serde(default)]
+    pub(crate) version_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -491,6 +493,11 @@ pub struct RawModrinthVersionCandidate {
     pub release_date: Option<String>,
     pub primary: bool,
     pub changelog: Option<String>,
+    #[serde(default)]
+    pub is_prerelease: bool,
+    /// Raw Modrinth version_type: "release" | "beta" | "alpha".
+    #[serde(default)]
+    pub version_type: String,
 }
 
 /// Live Modrinth search with facets, sorting and offset pagination.
@@ -866,56 +873,71 @@ pub(crate) async fn list_raw_modrinth_versions_http(
     let versions: Vec<ModrinthVersion> =
         http_client::checked_get_json(&clients, ClientCategory::Modrinth, &url).await?;
 
-    Ok(versions
-        .into_iter()
-        .map(|v| {
-            let primary_file = v
-                .files
-                .iter()
-                .find(|f| f.primary)
-                .or_else(|| v.files.first());
-            let (filename, download_url, sha1, sha512, size) = match primary_file {
-                Some(f) => (
-                    f.filename.clone(),
-                    f.url.clone(),
-                    f.hashes.as_ref().and_then(|h| h.sha1.clone()),
-                    f.hashes.as_ref().and_then(|h| h.sha512.clone()),
-                    f.size,
-                ),
-                None => (String::new(), String::new(), None, None, None),
-            };
-            RawModrinthVersionCandidate {
-                version: v.version_number,
-                version_id: v.id,
-                name: v.name.unwrap_or_default(),
-                filename,
-                download_url,
-                sha1,
-                sha512,
-                size,
-                dependencies: v
-                    .dependencies
-                    .into_iter()
-                    .map(|d| RawModrinthDependency {
-                        project_id: d.project_id,
-                        version_id: d.version_id,
-                        dependency_type: d.dependency_type,
-                    })
-                    .collect(),
-                mc_versions: v.game_versions.unwrap_or_default(),
-                loaders: v
-                    .loaders
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|l| l.to_lowercase())
-                    .collect(),
-                release_date: v.date_published,
-                primary: primary_file.map(|f| f.primary).unwrap_or(false),
-                changelog: v.changelog,
-            }
-        })
-        .filter(|c| !c.download_url.is_empty())
-        .collect())
+    {
+        let mut candidates: Vec<RawModrinthVersionCandidate> = versions
+            .into_iter()
+            .map(|v| {
+                let primary_file = v
+                    .files
+                    .iter()
+                    .find(|f| f.primary)
+                    .or_else(|| v.files.first());
+                let (filename, download_url, sha1, sha512, size) = match primary_file {
+                    Some(f) => (
+                        f.filename.clone(),
+                        f.url.clone(),
+                        f.hashes.as_ref().and_then(|h| h.sha1.clone()),
+                        f.hashes.as_ref().and_then(|h| h.sha512.clone()),
+                        f.size,
+                    ),
+                    None => (String::new(), String::new(), None, None, None),
+                };
+                let vt = v.version_type.clone().unwrap_or_else(|| "release".to_string()).to_ascii_lowercase();
+                let is_prerelease = vt == "alpha" || vt == "beta" || crate::models::is_prerelease_version(&v.version_number);
+                RawModrinthVersionCandidate {
+                    version: v.version_number,
+                    version_id: v.id,
+                    name: v.name.unwrap_or_default(),
+                    filename,
+                    download_url,
+                    sha1,
+                    sha512,
+                    size,
+                    dependencies: v
+                        .dependencies
+                        .into_iter()
+                        .map(|d| RawModrinthDependency {
+                            project_id: d.project_id,
+                            version_id: d.version_id,
+                            dependency_type: d.dependency_type,
+                        })
+                        .collect(),
+                    mc_versions: v.game_versions.unwrap_or_default(),
+                    loaders: v
+                        .loaders
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|l| l.to_lowercase())
+                        .collect(),
+                    release_date: v.date_published,
+                    primary: primary_file.map(|f| f.primary).unwrap_or(false),
+                    changelog: v.changelog,
+                    is_prerelease,
+                    version_type: vt,
+                }
+            })
+            .filter(|c| !c.download_url.is_empty())
+            .collect();
+        // Default stable-first within API return; backend setting is applied in ModrinthService::list_raw_modrinth_versions.
+        candidates.sort_by(|a, b| {
+            let ca = if a.is_prerelease { 1 } else { 0 };
+            let cb = if b.is_prerelease { 1 } else { 0 };
+            ca.cmp(&cb).then_with(|| {
+                b.release_date.as_deref().unwrap_or("").cmp(a.release_date.as_deref().unwrap_or(""))
+            })
+        });
+        Ok(candidates)
+    }
 }
 
 /// Install a raw (uncurated) Modrinth mod file into an instance.
@@ -1371,7 +1393,22 @@ impl ModrinthService {
             None => None,
         };
 
-        list_raw_modrinth_versions_http(instance.as_ref(), project_id, project_type).await
+        let mut candidates = list_raw_modrinth_versions_http(instance.as_ref(), project_id, project_type).await?;
+        let sort_by_date_only = crate::settings::SettingsService::new(self.ctx.clone())
+            .get_bool("version_sort_by_date")
+            .unwrap_or(false);
+        candidates.sort_by(|a, b| {
+            if !sort_by_date_only {
+                let ca = if a.is_prerelease { 1 } else { 0 };
+                let cb = if b.is_prerelease { 1 } else { 0 };
+                let ord = ca.cmp(&cb);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            b.release_date.as_deref().unwrap_or("").cmp(a.release_date.as_deref().unwrap_or(""))
+        });
+        Ok(candidates)
     }
 
     /// Install a raw Modrinth mod file into an instance.
