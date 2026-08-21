@@ -37016,6 +37016,22 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.20.1",
+        "loader_version": "47.4.23",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.23/forge-1.20.1-47.4.23-installer.jar",
+        "sha256": "75cfcb11f60cc641dc83757c1357c08c9bdba255ec529feb115c5e89a59cf75a",
+        "file_name": "forge-1.20.1-47.4.23-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "03f908a57b8a2e040d2c21bd2f46a8de8b07bd5b571bbe541bcd683f28685a7b",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "47.4.23",
+          "javafml": "47",
+          "lowcodefml": "47"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.20.2",
         "loader_version": "48.0.40",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.2-48.0.40/forge-1.20.2-48.0.40-installer.jar",
@@ -40400,6 +40416,22 @@
         "installer_spec": 1,
         "provided_versions": {
           "forge": "64.1.1",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "64.1.2",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.2/forge-26.1.2-64.1.2-installer.jar",
+        "sha256": "49b6a8a27d131599399bf10121f6269b2b69e0145a6810b17b734dd0aaa6d81b",
+        "file_name": "forge-26.1.2-64.1.2-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "2590e745599b22aa005dd18ffa739a92f5b32f138fe19d7db09703ab90b79e32",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.1.2",
           "javafml": "64",
           "lowcodefml": "64"
         },
