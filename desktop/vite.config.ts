@@ -1,6 +1,14 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+// The release workflow writes the tag into package.json (see
+// scripts/set_release_version.py), so injecting it here is what keeps the
+// version the UI shows in step with the version on the installer. It used to
+// be a string literal in Sidebar.tsx, which is how v0.5.0 shipped showing
+// v0.1.0.
+const { version: APP_VERSION } = createRequire(import.meta.url)('./package.json');
 
 // Tauri expects a fixed port for the dev server; see tauri.conf.json devUrl.
 const host = process.env.TAURI_DEV_HOST;
@@ -20,6 +28,9 @@ export default defineConfig({
     host: host || false,
   },
   envPrefix: ['VITE_', 'TAURI_'],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   build: {
     target: process.env.TAURI_PLATFORM == 'windows' ? 'chrome105' : 'safari13',
     minify: !process.env.TAURI_DEBUG ? 'oxc' : false,

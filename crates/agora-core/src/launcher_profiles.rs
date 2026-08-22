@@ -1,5 +1,6 @@
 use crate::error::{LauncherError, LauncherResult};
 use serde_json::{Map, Value};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -76,6 +77,101 @@ pub fn upsert_profile(
     profiles_map.insert(entry.profile_id.clone(), desired);
 
     atomic_write(profiles_path, &root)
+}
+
+/// Materialize a managed Minecraft version JSON where the official launcher
+/// can read it.
+///
+/// Agora keeps the direct-launch runtime separate from `%APPDATA%/.minecraft`.
+/// Delegated launches still use the official launcher, so its selected profile
+/// and every inherited version must exist in the official `versions` tree.
+/// A valid existing base version is preserved; managed loader profiles are
+/// refreshed so the official launcher cannot select stale launch metadata.
+pub fn materialize_version_json(
+    source_root: &Path,
+    official_root: &Path,
+    version_id: &str,
+    overwrite_existing: bool,
+) -> LauncherResult<()> {
+    crate::app_paths::validate_path_component(version_id)?;
+
+    let source_path = source_root
+        .join("versions")
+        .join(version_id)
+        .join(format!("{version_id}.json"));
+    let target_path = official_root
+        .join("versions")
+        .join(version_id)
+        .join(format!("{version_id}.json"));
+
+    let source_bytes = match std::fs::read(&source_path) {
+        Ok(bytes) => bytes,
+        Err(_error) if target_path.is_file() => {
+            // An existing valid official profile is enough when the managed
+            // cache was cleaned between instance creation and handoff.
+            let existing = std::fs::read(&target_path).map_err(|read_error| {
+                LauncherError::Generic {
+                    code: "ERR_DELEGATED_PROFILE_MISSING".into(),
+                    message: format!(
+                        "The official Minecraft launcher profile {version_id} could not be read: {read_error}"
+                    ),
+                }
+            })?;
+            validate_version_json(&existing, version_id)?;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(LauncherError::Generic {
+                code: "ERR_DELEGATED_PROFILE_MISSING".into(),
+                message: format!(
+                    "Agora could not find the launch profile {version_id} in its managed runtime: {error}"
+                ),
+            });
+        }
+    };
+    validate_version_json(&source_bytes, version_id)?;
+
+    if target_path.is_file() {
+        let existing = std::fs::read(&target_path).map_err(|error| LauncherError::Generic {
+            code: "ERR_DELEGATED_PROFILE_MISSING".into(),
+            message: format!(
+                "The official Minecraft launcher profile {version_id} could not be read: {error}"
+            ),
+        })?;
+        if existing == source_bytes
+            || (!overwrite_existing && validate_version_json(&existing, version_id).is_ok())
+        {
+            return Ok(());
+        }
+    }
+
+    atomic_write_bytes(&target_path, &source_bytes)
+}
+
+fn validate_version_json(bytes: &[u8], version_id: &str) -> LauncherResult<()> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|error| LauncherError::Generic {
+        code: "ERR_DELEGATED_PROFILE_INVALID".into(),
+        message: format!("The Minecraft launch profile {version_id} is not valid JSON: {error}"),
+    })?;
+    if value.get("id").and_then(Value::as_str) != Some(version_id) {
+        return Err(LauncherError::Generic {
+            code: "ERR_DELEGATED_PROFILE_INVALID".into(),
+            message: format!("The Minecraft launch profile {version_id} has the wrong version ID."),
+        });
+    }
+    Ok(())
+}
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> LauncherResult<()> {
+    let parent = path.parent().ok_or(LauncherError::ProfileWriteFailed)?;
+    std::fs::create_dir_all(parent).map_err(|_| LauncherError::ProfileWriteFailed)?;
+    let temp = temp_path(path)?;
+    std::fs::write(&temp, bytes).map_err(|_| LauncherError::ProfileWriteFailed)?;
+    if std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(LauncherError::ProfileWriteFailed);
+    }
+    Ok(())
 }
 
 fn profile_values_match(existing: &Value, desired: &Value) -> bool {
@@ -265,5 +361,62 @@ mod tests {
         let after = std::fs::read(&path).unwrap();
 
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn materializes_managed_version_for_official_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("minecraft-runtime");
+        let official = root.path().join("official-minecraft");
+        let version_id = "fabric-loader-0.19.3-26.2";
+        let source_path = source
+            .join("versions")
+            .join(version_id)
+            .join(format!("{version_id}.json"));
+        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &source_path,
+            format!(r#"{{"id":"{version_id}","inheritsFrom":"26.2","libraries":[]}}"#),
+        )
+        .unwrap();
+
+        materialize_version_json(&source, &official, version_id, true).unwrap();
+        materialize_version_json(&source, &official, version_id, true).unwrap();
+
+        let target = official
+            .join("versions")
+            .join(version_id)
+            .join(format!("{version_id}.json"));
+        assert_eq!(
+            std::fs::read(target).unwrap(),
+            std::fs::read(source_path).unwrap()
+        );
+    }
+
+    #[test]
+    fn preserves_existing_valid_base_version() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("minecraft-runtime");
+        let official = root.path().join("official-minecraft");
+        let version_id = "26.2";
+        let source_path = source
+            .join("versions")
+            .join(version_id)
+            .join(format!("{version_id}.json"));
+        let target_path = official
+            .join("versions")
+            .join(version_id)
+            .join(format!("{version_id}.json"));
+        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
+        std::fs::write(&source_path, br#"{"id":"26.2","source":"agora"}"#).unwrap();
+        std::fs::write(&target_path, br#"{"id":"26.2","source":"official"}"#).unwrap();
+
+        materialize_version_json(&source, &official, version_id, false).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target_path).unwrap(),
+            r#"{"id":"26.2","source":"official"}"#
+        );
     }
 }

@@ -799,7 +799,7 @@ test('docs screenshot: crash doctor', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Troubleshoot' })).toBeVisible({ timeout: 10000 });
   await page.getByRole('button', { name: 'Troubleshoot' }).click();
   await expect(page.getByRole('heading', { name: 'Crash Doctor' })).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText('SUSPECTS')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText(/Mods that might be causing this/)).toBeVisible({ timeout: 10000 });
   await expect(page.getByText('0.85')).toBeVisible();
   await page.waitForTimeout(300);
   await shoot(page, 'crash-doctor');

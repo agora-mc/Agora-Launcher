@@ -2,13 +2,13 @@
 
 ## Mission & Ethos
 
-Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite registry. Delegated launch is the global default; an explicit direct mode performs Microsoft authentication and JVM execution inside Agora.
+Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite registry. Both launch modes are first-class: direct launch runs Minecraft inside Agora with integrated process status and console output, and delegated launch hands execution to the official launcher. Delegation is the *default* only so that a Microsoft sign-in is never required to use Agora -- it is not the point of the project.
 
 > "If CurseForge were a beer, this would be Agora."
 
 Core values:
 - **$0.00/month server footprint.** No backend services; data ships via GitHub Release Assets and static sites.
-- **Secure defaults.** Delegated launch keeps Microsoft/Xbox auth and JVM execution in the official launcher by default; direct launch is explicit and optional.
+- **No forced sign-in.** Agora is fully usable without a Microsoft account, which is why delegated launch is the default rather than the goal. Direct launch is an equally supported mode that runs Minecraft inside Agora; choosing it is a preference, not a downgrade.
 - **Curated, not warehoused.** Boutique quality over infinite inventory; every entry is community reviewed.
 
 ## Directory Map

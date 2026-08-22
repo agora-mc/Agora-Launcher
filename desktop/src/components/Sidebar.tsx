@@ -148,7 +148,7 @@ export function Sidebar({
 
       {!collapsed && (
         <div className="border-t border-border p-4 text-xs text-muted-foreground">
-          <div>v0.1.0 · Community curated</div>
+          <div>v{__APP_VERSION__} · Community curated</div>
           <div className="mt-1">
             {registryStatus == null ? (
               'Checking registry…'

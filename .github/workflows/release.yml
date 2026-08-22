@@ -83,6 +83,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libglib2.0-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
 
+      # The tag is the single source of truth for the version. Without this the
+      # bundle version comes from the checked-in tauri.conf.json, which is how
+      # v0.5.0 shipped installers named Agora.Launcher_0.1.0_*. Runs before the
+      # frontend install so package.json is already correct when Vite inlines it.
+      - name: Set version from tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          PY="$(command -v python3 || command -v python)"
+          "$PY" scripts/set_release_version.py "$TAG"
+          "$PY" scripts/set_release_version.py --check
+
       - name: Install frontend dependencies
         run: |
           cd desktop
@@ -169,6 +181,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
+
+      # The tag is the single source of truth for the version. Without this the
+      # bundle version comes from the checked-in tauri.conf.json, which is how
+      # v0.5.0 shipped installers named Agora.Launcher_0.1.0_*. Runs before the
+      # frontend install so package.json is already correct when Vite inlines it.
+      - name: Set version from tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          PY="$(command -v python3 || command -v python)"
+          "$PY" scripts/set_release_version.py "$TAG"
+          "$PY" scripts/set_release_version.py --check
 
       - name: Build CLI
         run: cargo build --release --locked -p agora-cli --target ${{ matrix.target }}

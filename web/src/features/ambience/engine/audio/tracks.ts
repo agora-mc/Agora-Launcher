@@ -37,6 +37,11 @@ export interface MusicTrack {
   source: string;
   instrument?: string;
   tempoNote?: string;
+  /** Linear crescendo: gain multiplier at the very start of the piece,
+   *  ramping to `crescendoPeak`× voice gain by the end of the pass
+   *  (e.g. 0.35 → 1.5 = pp → ff, louder than 1×). */
+  crescendo?: number;
+  crescendoPeak?: number;
   voices: MusicVoice[];
 }
 

@@ -31,7 +31,7 @@ Agora also includes a searchable **Help & Guide** tied to the current desktop in
 6. Review health findings before launching.
 7. Back up valuable worlds separately before major changes.
 
-Delegated launch is the global default. It leaves Microsoft/Xbox authentication and JVM startup to the official Minecraft Launcher. Direct launch is optional, requires a Microsoft account connected inside Agora, and provides integrated process status and console output. Instances stored with `Auto` follow the global mode; the current desktop UI does not expose a per-instance override selector.
+Agora supports two launch modes. Direct launch runs Minecraft inside Agora and gives you integrated process status and console output; it requires a Microsoft account connected in Agora. Delegated launch leaves Microsoft/Xbox authentication and JVM startup to the official Minecraft Launcher. Delegated is the global default so that Agora never *requires* a sign-in, not because it is the intended way to use Agora. Instances stored with `Auto` follow the global mode; the current desktop UI does not expose a per-instance override selector.
 
 ## Key capabilities
 
@@ -55,7 +55,7 @@ Agora makes no automated analytics calls. Functional features can still contact 
 ## Project principles
 
 - **$0/month server footprint** - GitHub, GitHub Release Assets, and static hosting carry the public distribution load.
-- **Secure defaults** - delegated launch is the default; direct launch is explicit and optional.
+- **No forced sign-in** - Agora works without a Microsoft account, so delegated launch is the default. Direct launch is an equally supported mode, not a fallback.
 - **Curated, not warehoused** - boutique quality and community review take priority over inventory size.
 - **Decentralized governance** - votes, reviews, and triage remain inspectable GitHub interactions.
 - **Modrinth independence** - primary curated artifacts use pinned sources; Modrinth is optional.

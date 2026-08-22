@@ -175,6 +175,8 @@ export interface LiveInteractiveHostProps {
   onLaunch?: () => Promise<void> | void;
   /** Mirrors the Standard editor's complete launch gate, including local busy state. */
   launchAvailable?: boolean;
+  onTrialSuspect?: (suspectName: string) => Promise<{ snapshotId: string | null; disabled: string[]; error?: string }>;
+  onUndoTrial?: (snapshotId: string) => Promise<void>;
 }
 
 /** Map every canonical process phase conservatively onto the visual model. */
@@ -257,6 +259,8 @@ export function LiveInteractiveHost({
   installActive = false,
   onLaunch,
   launchAvailable = true,
+  onTrialSuspect,
+  onUndoTrial,
 }: LiveInteractiveHostProps) {
   const [state, setState] = useState<LiveHostState>({ kind: 'loading' });
   const [selection, setSelection] = useState<VisualId | null>(null);
@@ -561,6 +565,8 @@ export function LiveInteractiveHost({
           reducedMotion={reducedMotion}
           presentation={presentation}
           pending={state.kind === 'scene' && state.pending}
+          onTrialSuspect={onTrialSuspect}
+          onUndoTrial={onUndoTrial}
         />
       ) : null}
     </section>

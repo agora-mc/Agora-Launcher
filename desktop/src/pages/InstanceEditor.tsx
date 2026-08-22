@@ -23,6 +23,7 @@ import {
   enrichInstanceContent,
   enableInstanceMod,
   disableInstanceMod,
+  disableModForTest,
   getDisablePlan,
   checkInstanceUpdates,
   exportInstancePack,
@@ -1207,6 +1208,31 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     suspendHighInteraction();
   }, []);
 
+  const handleHighInteractionTrial = useCallback(async (suspectName: string) => {
+    try {
+      const plan = await getDisablePlan(instanceId, suspectName);
+      const dependents = plan.dependents.map((d) => d.filename);
+      const toDisable = [...dependents, suspectName];
+      const snap = await createSnapshot(instanceId, `trial-${suspectName}-${Date.now()}`);
+      for (const f of toDisable) {
+        await disableModForTest(instanceId, f);
+      }
+      return { snapshotId: snap.id, disabled: toDisable };
+    } catch (e) {
+      return { snapshotId: null, disabled: [], error: formatError(e) };
+    }
+  }, [instanceId]);
+
+  const handleHighInteractionUndo = useCallback(async (snapshotId: string) => {
+    try {
+      await restoreSnapshot(instanceId, snapshotId);
+      try { await deleteSnapshot(instanceId, snapshotId); } catch { /* best effort */ }
+    } catch (e) {
+      setError(formatError(e));
+      throw e;
+    }
+  }, [instanceId]);
+
   if (showInteractive) {
     return (
       <div className="space-y-6" data-tour="page-instance-editor">
@@ -1334,6 +1360,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               setPlayBusy(false);
             }
           }}
+          onTrialSuspect={handleHighInteractionTrial}
+          onUndoTrial={handleHighInteractionUndo}
         />
       </div>
     );

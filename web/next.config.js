@@ -33,6 +33,9 @@ const nextConfig = {
                 : "script-src 'self' 'unsafe-eval' 'unsafe-inline';",
               "connect-src 'self' https://api.github.com https://api.modrinth.com https://*.modrinthcdn.com https://cdn.modrinth.com;",
               "font-src 'self' data:;",
+              // The trailer is a GitHub Release asset (see lib/site.ts). Without
+              // this it inherits default-src 'self' and is blocked outright.
+              "media-src 'self' https://github.com https://*.githubusercontent.com;",
               "object-src 'none';",
               "base-uri 'self';",
               "frame-ancestors 'none';",

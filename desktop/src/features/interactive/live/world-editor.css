@@ -847,17 +847,30 @@
 }
 .we-susp .sn { font-weight: 800; font-size: calc(15.5px * var(--font-scale)); }
 .we-susp .sw { font-size: calc(12.5px * var(--font-scale)); color: hsl(var(--muted-foreground)); }
-.we-gauge { margin-left: auto; width: 52px; height: 52px; flex: none; position: relative; }
-.we-gauge svg { transform: rotate(-90deg); }
+.we-gauge {
+  margin-left: auto;
+  width: 60px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.we-gauge svg { transform: rotate(-90deg); flex: none; }
 .we-gauge .gv {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  font-size: calc(10px * var(--font-scale));
+  position: static;
+  inset: auto;
+  display: block;
+  font-size: calc(9px * var(--font-scale));
   font-weight: 800;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
+  line-height: 1;
+  text-align: center;
+  max-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── toasts ── */

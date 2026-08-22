@@ -22,11 +22,25 @@ export const GITHUB_API_RELEASES_URL =
 /**
  * Homepage trailer.
  *
- * To enable: drop the video at `web/public/trailer.mp4` (and optionally a
- * poster frame at `web/public/trailer-poster.jpg`), then set TRAILER_SRC to
- * '/trailer.mp4'. While it is null the hero renders a framed placeholder
- * instead, so the layout is already the right shape and nothing shifts when
- * the real file arrives.
+ * The video is a GitHub Release asset rather than a file in `web/public`, for
+ * the same reason the registry ships that way: a ~15 MB binary committed here
+ * would sit in git history forever, and every re-render would add another
+ * copy that no `git clone` could ever avoid. Release assets are also outside
+ * the Pages bandwidth budget.
+ *
+ * It hangs off the dedicated `site-assets` tag rather than a `v*` release, so
+ * re-cutting an app release cannot break the homepage. That release is marked
+ * pre-release purely so it never takes the "Latest" badge from a real one.
+ *
+ * The poster stays local — it is small, and it is what renders before anyone
+ * presses play, so it should not depend on a second origin.
+ *
+ * To re-publish after a re-render:
+ *   gh release upload site-assets agora-trailer.mp4 --clobber
+ *
+ * Set TRAILER_SRC to null to fall back to the framed placeholder; the hero
+ * occupies the same box either way, so nothing shifts.
  */
-export const TRAILER_SRC: string | null = null;
-export const TRAILER_POSTER: string | null = null;
+export const TRAILER_SRC: string | null =
+  'https://github.com/agora-mc/Agora-Launcher/releases/download/site-assets/agora-trailer.mp4';
+export const TRAILER_POSTER: string | null = '/trailer-poster.jpg';

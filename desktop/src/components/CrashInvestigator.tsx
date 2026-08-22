@@ -4,9 +4,11 @@ import ReactMarkdown from 'react-markdown';
 import {
   confirmCrashFix,
   createSnapshot,
+  deleteSnapshot,
   disableModForTest,
   formatError,
   getDisablePlan,
+  getSetting,
   investigateCrash,
   investigateInstanceEvidence,
   investigateManual,
@@ -22,6 +24,7 @@ import {
 } from '../lib/tauri';
 import { DependencyPrompt } from './DependencyPrompt';
 import { AiAssistant } from './AiAssistant';
+import { tryEarnInteraction } from '../features/interactive/live/interactionAchievements';
 import type { ProcessState } from '../lib/useProcessController';
 import type { LaunchStartOutcome } from '../lib/useProcessController';
 import {
@@ -42,19 +45,6 @@ interface CrashInvestigatorProps {
   processState: ProcessState;
 }
 
-const SIGNAL_LABELS: Record<string, string> = {
-  stack_frames: 'Stack frames',
-  stack_frame_score: 'Stack frames',
-  curated_conflicts: 'Curated conflicts',
-  curated_conflict_score: 'Curated conflicts',
-  prior_local_crashes: 'Prior local crashes',
-  local_history_score: 'Prior local crashes',
-  dependency_relationships: 'Dependency relationships',
-  dependency_score: 'Dependency relationships',
-  confirmed_prior_fixes: 'Confirmed prior fixes',
-  confirmed_fix_score: 'Confirmed prior fixes',
-};
-
 function investigationResultFromEvidence(investigation: CrashInvestigation): InvestigationResult {
   const top = investigation.suspects[0];
   return {
@@ -72,47 +62,6 @@ function combinedEvidenceText(investigation: CrashInvestigation): string {
   return investigation.evidence.sources
     .map((source) => `===== ${source.meta.basename} =====\n${source.text}`)
     .join('\n\n');
-}
-
-/** Render one deterministic signal with its evidence source. */
-function BreakdownEntry({ signal, value }: { signal: string; value: unknown }) {
-  let displayValue: string;
-  if (value === null || value === undefined) {
-    displayValue = '—';
-  } else if (typeof value === 'number') {
-    displayValue = value.toFixed(2);
-  } else if (typeof value === 'boolean') {
-    displayValue = value ? 'true' : 'false';
-  } else if (Array.isArray(value)) {
-    displayValue = `[${value.length} item${value.length === 1 ? '' : 's'}]`;
-  } else if (typeof value === 'object') {
-    displayValue = JSON.stringify(value);
-  } else {
-    displayValue = String(value);
-  }
-  return (
-    <div className="flex items-center justify-between text-sm py-1">
-      <span className="text-muted-foreground" data-testid={`breakdown-key-${signal}`}>
-        {SIGNAL_LABELS[signal] ?? signal.replace(/_/g, ' ')}
-      </span>
-      <span className="font-mono text-xs text-muted-foreground">
-        {displayValue}
-      </span>
-    </div>
-  );
-}
-
-/** Render the per-signal breakdown for a suspect. */
-function BreakdownList({ breakdown }: { breakdown: Record<string, unknown> }) {
-  const entries = Object.entries(breakdown);
-  if (entries.length === 0) return null;
-  return (
-    <div className="mt-2 space-y-0.5 border-t border-border pt-2">
-      {entries.map(([k, v]) => (
-        <BreakdownEntry key={k} signal={k} value={v} />
-      ))}
-    </div>
-  );
 }
 
 /** Render a single suspect card. */
@@ -141,11 +90,11 @@ function SuspectCard({
           : 'border-border bg-card',
       ].join(' ')}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <span
             className={[
-              'inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold',
+              'inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold shrink-0',
               isTop
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-card text-muted-foreground',
@@ -153,23 +102,27 @@ function SuspectCard({
           >
             {rank}
           </span>
-          <div>
-            <p className="text-sm font-semibold">{suspect.filename}</p>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold break-all">{suspect.filename}</p>
             {suspect.mod_id && suspect.mod_id !== suspect.filename && (
-              <p className="text-xs text-muted-foreground">{suspect.mod_id}</p>
+              <p className="text-xs text-muted-foreground break-all">{suspect.mod_id}</p>
             )}
             {suspect.is_dependent_of && (
               <span className="mt-1 inline-block rounded-md bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300">
-                Indirect — depends on {suspect.is_dependent_of}
+                Needs {suspect.is_dependent_of} to work — they’ll be turned off together
               </span>
+            )}
+            {isTop && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Looks like the most likely cause — try the test below.
+              </p>
             )}
           </div>
         </div>
-        <span className="font-mono text-sm font-bold text-muted-foreground">
+        <span className="font-mono text-sm font-bold text-muted-foreground shrink-0">
           {score}
         </span>
       </div>
-      <BreakdownList breakdown={suspect.breakdown} />
       {isTop && action && (
         <div className="mt-3 pt-3 border-t border-primary/20">
           {action.kind === 'GuidedDisable' && (
@@ -182,7 +135,7 @@ function SuspectCard({
                 'disabled:opacity-50 disabled:cursor-not-allowed',
               ].join(' ')}
             >
-              Disable &quot;{suspect.filename}&quot; &amp; Relaunch
+              Try without &quot;{suspect.filename}&quot;
             </button>
           )}
           {action.kind === 'ConfidenceAutoDisable' && (
@@ -195,7 +148,7 @@ function SuspectCard({
                 'disabled:opacity-50 disabled:cursor-not-allowed',
               ].join(' ')}
             >
-              Disable known culprit &quot;{action.mod_id}&quot; &amp; Relaunch
+              Try without &quot;{action.mod_id}&quot;
             </button>
           )}
         </div>
@@ -219,7 +172,10 @@ function FixConfirmation({
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/10 p-4">
       <p className="text-sm font-semibold mb-3">
-        Did that fix &quot;{filename}&quot;?
+        Did the game start properly without &quot;{filename}&quot;?
+      </p>
+      <p className="text-xs text-muted-foreground mb-3">
+        If the game opened and you could play, choose “Yes.” If it crashed again, choose “No.”
       </p>
       <div className="flex gap-2">
         <button
@@ -231,7 +187,7 @@ function FixConfirmation({
             'disabled:opacity-50 disabled:cursor-not-allowed',
           ].join(' ')}
         >
-          Yes, fixed
+          Yes, it worked
         </button>
         <button
           disabled={loading}
@@ -242,7 +198,7 @@ function FixConfirmation({
             'disabled:opacity-50 disabled:cursor-not-allowed',
           ].join(' ')}
         >
-          Still crashing
+          No, still crashing
         </button>
       </div>
     </div>
@@ -254,7 +210,7 @@ function TriageBanner({ modId, onViewTriage }: { modId: string; onViewTriage: ()
   return (
     <div className="rounded-xl border border-yellow-300 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-900/20 p-4">
       <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-3">
-        This mod ({modId}) is under community review for similar issues.
+        Other players have reported problems with “{modId}” — our moderators are looking into it.
       </p>
       <button
         onClick={onViewTriage}
@@ -293,7 +249,7 @@ function RuledOutList({ ruledOut }: { ruledOut: string[] }) {
   if (ruledOut.length === 0) return null;
   return (
     <div className="mt-2 text-xs text-muted-foreground">
-      Already ruled out:{' '}
+      We already tried without:{' '}
       <span className="font-medium">{ruledOut.join(', ')}</span>
     </div>
   );
@@ -343,6 +299,7 @@ export function CrashInvestigator({
   const [aiError, setAiError] = useState<string | null>(null);
   const [showPaste, setShowPaste] = useState(false);
   const [pasteText, setPasteText] = useState('');
+  const [aiChatEnabled, setAiChatEnabled] = useState(false);
   const cancelledRef = useRef(false);
   const closeInProgressRef = useRef(false);
   const pendingLaunchRef = useRef(false);
@@ -397,10 +354,34 @@ export function CrashInvestigator({
     return snapshot.id;
   }, [instanceId]);
 
+  const clearRecoverySnapshotState = useCallback(() => {
+    recoverySnapshotIdRef.current = null;
+    setRecoverySnapshotId(null);
+    setDisabledByTest([]);
+    setPostLaunch(null);
+  }, []);
+
+  const discardRecoverySnapshot = useCallback(async () => {
+    const snapshotId = recoverySnapshotIdRef.current;
+    clearRecoverySnapshotState();
+    if (!snapshotId) return;
+
+    // The recovery point is protected from normal retention while this
+    // component owns it. Cleanup is best-effort after the experiment ends.
+    try {
+      await deleteSnapshot(instanceId, snapshotId);
+    } catch (cause) {
+      const message = formatError(cause).toLowerCase();
+      if (!message.includes('not found') && !message.includes('not_found')) {
+        console.warn('Crash Doctor could not remove its completed recovery point', cause);
+      }
+    }
+  }, [clearRecoverySnapshotState, instanceId]);
+
   const restoreInvestigationSnapshot = useCallback(async () => {
     const snapshotId = recoverySnapshotIdRef.current;
     if (!snapshotId) {
-      throw new Error('The pre-investigation recovery snapshot is unavailable.');
+      throw new Error('We don’t have a backup to put back — nothing to undo.');
     }
     await restoreSnapshot(instanceId, snapshotId);
     setDisabledByTest([]);
@@ -424,14 +405,29 @@ export function CrashInvestigator({
     setError(null);
     try {
       await restoreInvestigationSnapshot();
+      await discardRecoverySnapshot();
       onClose();
     } catch (cause) {
-      setError(`Could not restore the pre-investigation snapshot: ${formatError(cause)}`);
+      const raw = formatError(cause);
+      const lower = raw.toLowerCase();
+      const isMissing = lower.includes('not found') || lower.includes('not_found') || lower.includes('unavailable') || lower.includes('no backup');
+      if (isMissing) {
+        // Backup is gone — nothing to undo, so let the user close safely.
+        clearRecoverySnapshotState();
+        if (!cancelledRef.current) {
+          setError(null);
+          setLoading(false);
+        }
+        onClose();
+        closeInProgressRef.current = false;
+        return;
+      }
+      setError(`We couldn't put your mods back the way they were: ${raw}. You can try again, or close and keep things as they are — nothing will be lost.`);
     } finally {
       if (!cancelledRef.current) setLoading(false);
       closeInProgressRef.current = false;
     }
-  }, [disabledByTest.length, onClose, recoverySnapshotId, restoreInvestigationSnapshot, success]);
+  }, [clearRecoverySnapshotState, disabledByTest.length, discardRecoverySnapshot, onClose, recoverySnapshotId, restoreInvestigationSnapshot, success]);
 
   const handleDialogOpenChange = useCallback((open: boolean) => {
     if (open) return;
@@ -463,10 +459,13 @@ export function CrashInvestigator({
       filename = action.filename;
       modId = action.mod_id;
     } else {
-      setError('No actionable suspect available.');
+      setError('We didn’t find anything to try turning off right now.');
       setLoading(false);
       return;
     }
+
+    // Detective achievement: picking a crash suspect (counts even if dependents prompt follows)
+    tryEarnInteraction('suspect');
 
     let modified = false;
     try {
@@ -491,7 +490,7 @@ export function CrashInvestigator({
         pendingLaunchRef.current = false;
         setPendingTest(null);
         await restoreInvestigationSnapshot();
-        setError('The test launch did not start. Resolve the health prompt or launch error, then retry this suspect.');
+        setError('The game didn’t start for the test. Check the message shown, fix it, then try again.');
       }
     } catch (e) {
       if (modified) {
@@ -499,7 +498,7 @@ export function CrashInvestigator({
           await restoreInvestigationSnapshot();
         } catch (restoreError) {
           if (!cancelledRef.current) {
-            setError(`Test launch failed and recovery also failed: ${formatError(restoreError)}`);
+            setError(`We tried to test “${filename}” but something went wrong and we couldn’t put your mods back: ${formatError(restoreError)}. You can close and keep things as they are.`);
           }
           return;
         }
@@ -542,14 +541,14 @@ export function CrashInvestigator({
         pendingLaunchRef.current = false;
         setPendingTest(null);
         await restoreInvestigationSnapshot();
-        setError('The test launch did not start. Resolve the health prompt or launch error, then retry this suspect.');
+        setError('The game didn’t start for the test. Check the message shown, fix it, then try again.');
       }
     } catch (e) {
       try {
         await restoreInvestigationSnapshot();
       } catch (restoreError) {
         if (!cancelledRef.current) {
-          setError(`Disable test failed and recovery also failed: ${formatError(restoreError)}`);
+          setError(`We tried to turn off “${originalFilename}” but something went wrong and we couldn’t put your mods back: ${formatError(restoreError)}. You can close and keep things as they are.`);
         }
         return;
       }
@@ -599,6 +598,24 @@ export function CrashInvestigator({
     }
   }, [instanceId, pasteText]);
 
+  // Respect the AI chat setting for both AI entry points.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const v = await getSetting('ai_chat_enabled');
+        if (!cancelled) setAiChatEnabled(v === true || v === 'true');
+      } catch {
+        if (!cancelled) setAiChatEnabled(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!aiChatEnabled) setShowAiAssistant(false);
+  }, [aiChatEnabled]);
+
   // Track whether the component is still mounted.
   // Reset on setup so StrictMode double-invocation (dev) or real remounts
   // don't leave cancelledRef stuck at true from a previous cleanup.
@@ -619,10 +636,13 @@ export function CrashInvestigator({
         await confirmCrashFix(result.fingerprint, postLaunch.modId);
       }
       if (!cancelledRef.current) {
-        setSuccess(`Crash fix confirmed for ${postLaunch.modId}.`);
+        await discardRecoverySnapshot();
+        setSuccess(`Got it — keeping “${postLaunch.modId}” turned off fixed the crash. You can turn it back on later from your mods list.`);
         // Auto-close after a short delay
         setTimeout(() => {
-          if (!cancelledRef.current) onClose();
+          if (!cancelledRef.current) {
+            onClose();
+          }
         }, 2000);
       }
     } catch (e) {
@@ -632,7 +652,7 @@ export function CrashInvestigator({
     } finally {
       if (!cancelledRef.current) setLoading(false);
     }
-  }, [result, postLaunch, onClose]);
+  }, [discardRecoverySnapshot, result, postLaunch, onClose]);
 
   const handleStillCrashing = useCallback(async () => {
     if (!result || !postLaunch) return;
@@ -698,10 +718,10 @@ export function CrashInvestigator({
               stackedHealthDialogRef.current = false;
             }, 250);
             setPendingTest(null);
-            setError(processState.error ?? 'The test launch was cancelled before it started. Changes were restored.');
+            setError(processState.error ?? 'The game didn’t start for the test. We put your mods back how they were.');
           }
         } catch (cause) {
-          if (!cancelled) setError(`The test launch failed and recovery also failed: ${formatError(cause)}`);
+          if (!cancelled) setError(`The test didn’t start and we couldn’t put your mods back: ${formatError(cause)}. You can close and keep things as they are.`);
         }
         return;
       }
@@ -736,16 +756,16 @@ export function CrashInvestigator({
             );
             if (!cancelled) {
               setResult(advanced);
-              setExperimentNotice(`The same crash persisted without ${pendingTest.filename}; it was ruled out.`);
+              setExperimentNotice(`It still crashed without “${pendingTest.filename}”, so that’s probably not the cause. We turned it back on.`);
             }
           } else if (!cancelled) {
             setEvidence(latest);
             setCrashLogText(latestText);
             setResult(investigationResultFromEvidence(latest));
-            setExperimentNotice('The failure changed after this test. The previous suspect was not automatically confirmed or ruled out.');
+            setExperimentNotice('Something different happened this time, so we didn’t learn for sure. We put your mods back how they were.');
           }
         } catch (cause) {
-          if (!cancelled) setError(`Could not evaluate the test launch: ${formatError(cause)}`);
+          if (!cancelled) setError(`We couldn’t check the test result: ${formatError(cause)}. Your mods were put back.`);
         } finally {
           if (!cancelled) {
             pendingLaunchRef.current = false;
@@ -762,11 +782,11 @@ export function CrashInvestigator({
         if (!cancelled) {
           pendingLaunchRef.current = false;
           stackedHealthDialogRef.current = false;
-          setExperimentNotice('The test launch ended before a useful result was available. Changes were restored.');
+          setExperimentNotice('We couldn’t tell if that helped — the game didn’t finish starting. We put your mods back.');
           setPendingTest(null);
         }
       } catch (cause) {
-        if (!cancelled) setError(`Could not restore the inconclusive test: ${formatError(cause)}`);
+        if (!cancelled) setError(`We couldn’t put your mods back after the test: ${formatError(cause)}. You can close and keep things as they are.`);
       }
     };
     void finishTest();
@@ -778,7 +798,7 @@ export function CrashInvestigator({
   }, [onClose]);
 
   const handleAiExplain = useCallback(async () => {
-    if (aiLoading || cancelledRef.current) return;
+    if (!aiChatEnabled || aiLoading || cancelledRef.current) return;
     setAiLoading(true);
     setAiError(null);
     setAiExplanation(null);
@@ -804,19 +824,19 @@ export function CrashInvestigator({
     } finally {
       if (!cancelledRef.current) setAiLoading(false);
     }
-  }, [instanceId, crashLogText, manualLogText, aiLoading]);
+  }, [instanceId, crashLogText, manualLogText, aiLoading, aiChatEnabled]);
 
   if (loading && !result) {
     return (
       <Dialog open onOpenChange={handleDialogOpenChange}>
-        <DialogContent>
+        <DialogContent className="max-w-5xl">
           <DialogTitle>Crash Doctor</DialogTitle>
           <DialogDescription>
-            Finding recent logs and analyzing deterministic crash signals.
+            Checking your recent crash reports and game logs to figure out what went wrong.
           </DialogDescription>
           <div className="flex flex-col items-center gap-3 py-8">
-            <div role="status" aria-label="Investigating crash" className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <p className="text-sm text-muted-foreground">Investigating crash…</p>
+            <div role="status" aria-label="Looking at your crash" className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <p className="text-sm text-muted-foreground">Looking at your crash…</p>
           </div>
         </DialogContent>
       </Dialog>
@@ -824,28 +844,55 @@ export function CrashInvestigator({
   }
 
   if (error) {
+    const lowerErr = error.toLowerCase();
+    const isMissingBackup = lowerErr.includes('not found') || lowerErr.includes('not_found') || lowerErr.includes('no backup') || lowerErr.includes('unavailable');
+    const friendlyMessage = isMissingBackup
+      ? 'We couldn’t find the backup we made before testing, so there’s nothing to put back. Your current mods will stay as they are — you can safely close.'
+      : error.startsWith('We couldn')
+        ? error
+        : `Something didn’t work: ${error}. Your game files are still safe.`;
     return (
       <Dialog open onOpenChange={handleDialogOpenChange}>
-        <DialogContent>
+        <DialogContent className="max-w-5xl">
           <DialogTitle>Crash Doctor</DialogTitle>
           <DialogDescription>
-            The investigation stopped safely. Restore the recovery snapshot before closing if any test changes were made.
+            {isMissingBackup
+              ? 'There’s no backup to restore, so you can close without worry.'
+              : 'We hit a hiccup, but your files are safe. Choose whether to put your mods back how they were or keep them as they are.'}
           </DialogDescription>
-          <ErrorBanner message={error} />
-          <div className="flex justify-end gap-2">
-            {recoverySnapshotId && (
+          <ErrorBanner message={friendlyMessage} />
+          <div className="flex justify-end gap-2 flex-wrap">
+            {recoverySnapshotId && !isMissingBackup && (
               <button
-                onClick={() => { void restoreInvestigationSnapshot().then(onClose).catch((cause) => setError(formatError(cause))); }}
-                className="rounded-lg border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
+                onClick={() => {
+                  void restoreInvestigationSnapshot()
+                    .then(() => discardRecoverySnapshot())
+                    .then(onClose)
+                    .catch((cause) => {
+                      const msg = formatError(cause);
+                      const l = msg.toLowerCase();
+                      if (l.includes('not found') || l.includes('not_found') || l.includes('unavailable')) {
+                        clearRecoverySnapshotState();
+                        onClose();
+                      } else {
+                        setError(`We couldn't put your mods back: ${msg}. You can try again or close and keep things as they are.`);
+                      }
+                    });
+                }}
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
               >
-                Restore All & Close
+                Put mods back and close
               </button>
             )}
             <button
-              onClick={() => { void handleClose(); }}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+              onClick={() => {
+                // Always allow closing without trying to restore again — this breaks the loop.
+                setError(null);
+                void discardRecoverySnapshot().finally(onClose);
+              }}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Close Safely
+              {isMissingBackup ? 'Close' : 'Keep as is and close'}
             </button>
           </div>
         </DialogContent>
@@ -868,16 +915,16 @@ export function CrashInvestigator({
   return (
     <>
       <Dialog open onOpenChange={handleDialogOpenChange}>
-        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+        <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto">
           <div className="flex items-start justify-between gap-4 border-b border-border pb-4 pr-6">
           <div className="flex-1 min-w-0">
             <DialogTitle>Crash Doctor</DialogTitle>
             <DialogDescription>
-              Ranked deterministic evidence with reversible one-mod-at-a-time tests.
+              We look for clues in your logs and test likely causes one at a time. Anything we change can be undone.
             </DialogDescription>
             {fingerprint && (
-              <p className="text-sm text-muted-foreground mt-1 truncate">
-                {fingerprint.exception_class}
+              <p className="text-sm text-muted-foreground mt-1 truncate" title={fingerprint.exception_class}>
+                Error: {fingerprint.exception_class}
               </p>
             )}
             {signature_name && (
@@ -886,27 +933,29 @@ export function CrashInvestigator({
               </p>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowAiAssistant(true)}
-              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              Ask AI Assistant
-            </button>
-          </div>
+          {aiChatEnabled && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowAiAssistant(true)}
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              >
+                Ask AI Assistant
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">
           <div className="rounded-lg border border-border bg-muted/40 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-sm font-semibold">Evidence</p>
+                <p className="text-sm font-semibold">What we checked</p>
                 <p className="text-xs text-muted-foreground">
                   {evidence
-                    ? `${evidence.evidence.sources.length} local source${evidence.evidence.sources.length === 1 ? '' : 's'} analyzed`
+                    ? `We checked ${evidence.evidence.sources.length} file${evidence.evidence.sources.length === 1 ? '' : 's'} from your game folder — nothing was sent online`
                     : manualLogText || crashFilename
-                      ? 'User-provided crash evidence analyzed'
-                      : 'No recent diagnostic files found'}
+                      ? 'Using the crash info you shared'
+                      : 'No recent crash files were found'}
                 </p>
               </div>
               <div className="flex gap-2">
@@ -915,14 +964,14 @@ export function CrashInvestigator({
                   disabled={loading}
                   className="rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
                 >
-                  Browse files
+                  Choose a file
                 </button>
                 <button
                   onClick={() => setShowPaste((value) => !value)}
                   disabled={loading}
                   className="rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
                 >
-                  Paste log
+                  Paste crash text
                 </button>
               </div>
             </div>
@@ -931,7 +980,7 @@ export function CrashInvestigator({
                 <textarea
                   value={pasteText}
                   onChange={(event) => setPasteText(event.target.value)}
-                  placeholder="Paste a crash report or latest.log"
+                  placeholder="Paste your crash report here"
                   className="h-32 w-full resize-y rounded-md border border-input bg-background p-2 font-mono text-xs"
                 />
                 <div className="flex justify-end">
@@ -940,7 +989,7 @@ export function CrashInvestigator({
                     disabled={!pasteText.trim() || loading}
                     className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
                   >
-                    Analyze pasted log
+                    Check this text
                   </button>
                 </div>
               </div>
@@ -951,9 +1000,9 @@ export function CrashInvestigator({
                   <details key={`${source.meta.kind}:${source.meta.basename}:${index}`} className="rounded border border-border bg-background px-2 py-1.5">
                     <summary className="cursor-pointer text-xs font-medium">
                       {source.meta.basename}
-                      {index === evidence.evidence.primary_index ? ' - primary' : ''}
-                      {source.meta.truncated ? ' - truncated' : ''}
-                      {source.meta.stale ? ' - old' : ''}
+                      {index === evidence.evidence.primary_index ? ' — most useful' : ''}
+                      {source.meta.truncated ? ' — trimmed to fit' : ''}
+                      {source.meta.stale ? ' — older file' : ''}
                     </summary>
                     <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-[11px] leading-relaxed">
                       {source.text}
@@ -966,7 +1015,7 @@ export function CrashInvestigator({
 
           {evidence?.triage.matched && evidence.triage.solution_markdown && (
             <div className="rounded-lg border border-primary/30 bg-primary/10 p-4">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Known fix</p>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Fix that often helps</p>
               <div className="prose prose-sm max-w-none text-foreground dark:prose-invert">
                 <ReactMarkdown
                   allowedElements={['p', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li', 'blockquote', 'br']}
@@ -980,18 +1029,32 @@ export function CrashInvestigator({
 
           {recoverySnapshotId && (
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted p-3 text-xs text-muted-foreground">
-              <span>Recovery snapshot ready: {recoverySnapshotId}</span>
+              <span>We saved a backup before changing anything. You can undo the test.</span>
               <button
-                onClick={() => { void restoreInvestigationSnapshot().then(onClose).catch((cause) => setError(formatError(cause))); }}
+                onClick={() => {
+                  void restoreInvestigationSnapshot()
+                    .then(() => discardRecoverySnapshot())
+                    .then(onClose)
+                    .catch((cause) => {
+                      const msg = formatError(cause);
+                      const l = msg.toLowerCase();
+                      if (l.includes('not found') || l.includes('not_found') || l.includes('unavailable') || l.includes('no backup')) {
+                        clearRecoverySnapshotState();
+                        onClose();
+                      } else {
+                        setError(`We couldn't put your mods back: ${msg}.`);
+                      }
+                    });
+                }}
                 disabled={loading}
-                className="shrink-0 rounded-md border border-destructive/40 px-2 py-1 font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                className="shrink-0 rounded-md border border-border px-2 py-1 font-medium hover:bg-accent disabled:opacity-50"
               >
-                Restore All & Close
+                Undo and close
               </button>
             </div>
           )}
-          {/* AI Assistant panel or suspect list */}
-          {showAiAssistant ? (
+          {/* AI Assistant panel or suspect list — gated by ai_chat_enabled */}
+          {aiChatEnabled && showAiAssistant ? (
             <div className="h-[480px] space-y-2">
               <button
                 onClick={() => setShowAiAssistant(false)}
@@ -1013,7 +1076,7 @@ export function CrashInvestigator({
               {suspects.length > 0 && (
                 <div className="space-y-3">
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Suspects
+                    Mods that might be causing this
                   </p>
                   {suspects.map((suspect, idx) => (
                     <SuspectCard
@@ -1032,41 +1095,41 @@ export function CrashInvestigator({
               {/* Ruled out */}
               <RuledOutList ruledOut={ruled_out} />
 
-              {/* AI Explain toggle */}
-              {!aiExplanation && !aiLoading && !aiError && (
+              {/* AI Explain toggle — gated by ai_chat_enabled */}
+              {aiChatEnabled && !aiExplanation && !aiLoading && !aiError && (
                 <button
                   onClick={handleAiExplain}
                   className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                 >
-                  Explain with AI
+                  Explain this crash in plain language
                 </button>
               )}
 
-              {aiLoading && (
+              {aiChatEnabled && aiLoading && (
                 <div className="flex items-center gap-2 rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
-                  <div role="status" aria-label="Analyzing crash with AI" className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  Analyzing crash with AI…
+                  <div role="status" aria-label="Getting plain-language explanation" className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  Getting a plain-language explanation…
                 </div>
               )}
 
-              {aiError === 'connect-github' && (
+              {aiChatEnabled && aiError === 'connect-github' && (
                 <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-muted-foreground">
-                  Copilot is not connected.{' '}
-                  <span className="text-primary">Connect with GitHub</span> to get AI-powered crash explanations.
+                  The AI helper isn’t connected.{' '}
+                  <span className="text-primary">Connect GitHub in Settings</span> to get a plain-language explanation.
                 </div>
               )}
 
-              {aiError && aiError !== 'connect-github' && (
+              {aiChatEnabled && aiError && aiError !== 'connect-github' && (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
                   {aiError}
                 </div>
               )}
 
-              {aiExplanation && (
+              {aiChatEnabled && aiExplanation && (
                 <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      AI Explanation
+                      Here’s what might have happened
                     </p>
                     <button
                       onClick={() => setAiExplanation(null)}
@@ -1081,8 +1144,14 @@ export function CrashInvestigator({
 
               {/* Post-launch confirmation */}
               {pendingTest && (
-                <div className="rounded-xl border border-primary/30 bg-primary/10 p-4 text-sm text-muted-foreground">
-                  Waiting for the test launch to finish before evaluating {pendingTest.filename}.
+                <div className="rounded-xl border border-primary/30 bg-primary/10 p-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="h-3 w-3 animate-pulse rounded-full bg-primary" />
+                    <p className="text-sm font-medium">Game is running without “{pendingTest.filename}”</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Play for a bit, then close the game. When you’re back here, we’ll check if it helped.
+                  </p>
                 </div>
               )}
 
@@ -1113,7 +1182,7 @@ export function CrashInvestigator({
               {suggested_action.kind === 'NoSuspects' && (
                 <div className="rounded-xl border border-border bg-card p-4">
                   <p className="text-sm text-muted-foreground">
-                    No suspects identified. The crash may not be mod-related. Use the manual log viewer for deeper inspection.
+                    We couldn’t tell which mod caused this. It might not be a mod issue at all. Try choosing a different crash file or pasting your crash text directly.
                   </p>
                 </div>
               )}
@@ -1129,8 +1198,8 @@ export function CrashInvestigator({
       {/* Disable dependency prompt */}
       {disablePlanTarget && (
         <DependencyPrompt
-          title="Disable mod and dependents"
-          actionLabel="Disable selected"
+          title={`“${disablePlanTarget.originalFilename}” needs other mods`}
+          actionLabel="Turn off selected and try again"
           candidates={disablePlanTarget.plan.dependents.map((d) => ({
             key: d.mod_id,
             label: d.mod_id,

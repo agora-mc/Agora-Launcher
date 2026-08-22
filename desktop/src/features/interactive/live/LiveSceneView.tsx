@@ -43,6 +43,8 @@ export interface LiveSceneViewProps {
    * without it a first paint announces "Health could not be verified".
    */
   pending?: boolean;
+  onTrialSuspect?: (suspectName: string) => Promise<{ snapshotId: string | null; disabled: string[]; error?: string }>;
+  onUndoTrial?: (snapshotId: string) => Promise<void>;
 }
 
 export function LiveSceneView(props: LiveSceneViewProps) {

@@ -188,3 +188,17 @@ jobs:
           python-version: "3.12"
       - name: Documentation quality gates (internal links, guide integrity, stale claims)
         run: python scripts/check_docs.py
+
+  version-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Catches drift between the seven places that carry the version before a
+      # tag is ever cut. The release workflow rewrites them all from the tag,
+      # but a disagreeing tree still misleads local builds --
+      # and a mismatched Cargo.lock breaks every `cargo build --locked`.
+      - name: Version metadata agrees across package files
+        run: python scripts/set_release_version.py --check

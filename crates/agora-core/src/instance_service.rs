@@ -327,6 +327,25 @@ impl InstanceService {
             )),
         };
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
+            let official_root = profiles_path
+                .parent()
+                .ok_or(LauncherError::MojangNotFound)?;
+            let minecraft_root = self.ctx.paths.minecraft_runtime_root();
+            let profile_version_id = loader_version_id(&row);
+            crate::launcher_profiles::materialize_version_json(
+                &minecraft_root,
+                official_root,
+                &row.minecraft_version,
+                false,
+            )?;
+            if profile_version_id != row.minecraft_version {
+                crate::launcher_profiles::materialize_version_json(
+                    &minecraft_root,
+                    official_root,
+                    &profile_version_id,
+                    true,
+                )?;
+            }
             crate::launcher_profiles::upsert_profile(&profile, profiles_path)?;
         }
         let mod_ids = manifest
@@ -1139,6 +1158,69 @@ mod tests {
             .is_ok());
         service.delete("test", None).unwrap();
         assert!(service.list().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delegated_preparation_materializes_base_and_loader_profiles() {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "Delegated".into(),
+            instance_id: "delegated".into(),
+            minecraft_version: "26.2".into(),
+            loader: "fabric".into(),
+            loader_version: "0.19.3".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+        };
+        let row = prepare_row("delegated", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        let instance_dir = ctx.paths.instance_dir("delegated").unwrap();
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        std::fs::write(
+            ctx.paths.instance_manifest("delegated").unwrap(),
+            serde_json::to_vec(&manifest_from_request("delegated", &request)).unwrap(),
+        )
+        .unwrap();
+
+        let runtime_root = ctx.paths.minecraft_runtime_root();
+        for (version_id, json) in [
+            ("26.2", r#"{"id":"26.2","type":"release"}"#),
+            (
+                "fabric-loader-0.19.3-26.2",
+                r#"{"id":"fabric-loader-0.19.3-26.2","inheritsFrom":"26.2"}"#,
+            ),
+        ] {
+            let path = runtime_root
+                .join("versions")
+                .join(version_id)
+                .join(format!("{version_id}.json"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, json).unwrap();
+        }
+
+        let official_profiles = ctx.launcher_profiles_path.clone().unwrap();
+        let preparation = InstanceService::new(ctx).prepare_delegated_launch("delegated");
+        assert_eq!(preparation.unwrap().profile_id, "agora-delegated");
+        let official_root = official_profiles.parent().unwrap();
+        assert!(official_root.join("versions/26.2/26.2.json").is_file());
+        assert!(official_root
+            .join("versions/fabric-loader-0.19.3-26.2/fabric-loader-0.19.3-26.2.json")
+            .is_file());
+
+        let profiles: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(official_profiles).unwrap()).unwrap();
+        assert_eq!(
+            profiles["profiles"]["agora-delegated"]["lastVersionId"],
+            "fabric-loader-0.19.3-26.2"
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 

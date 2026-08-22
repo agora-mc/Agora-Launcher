@@ -42,6 +42,9 @@ export interface WorldEditorProps {
   selectedDetail?: ContentDetail;
   /** The enrichment read (health, evidence, runtime) is still in flight. */
   pending?: boolean;
+  /** High-interaction inline crash experiment (stays in this view). */
+  onTrialSuspect?: (suspectName: string) => Promise<{ snapshotId: string | null; disabled: string[]; error?: string }>;
+  onUndoTrial?: (snapshotId: string) => Promise<void>;
 }
 
 type Filter = 'all' | 'mod' | 'look' | 'world';
@@ -118,6 +121,8 @@ export function WorldEditor({
   presentation = 'high-interaction',
   selectedDetail = EMPTY_CONTENT_DETAIL,
   pending = false,
+  onTrialSuspect,
+  onUndoTrial,
 }: WorldEditorProps) {
   /**
    * What Simple mode drops, in one place.
@@ -180,6 +185,7 @@ export function WorldEditor({
   const [preflightResult, setPreflightResult] = useState<{ ok: boolean; running: boolean }>({ ok: false, running: false });
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [pickedSuspect, setPickedSuspect] = useState<number | null>(null);
+  const [doctorTrial, setDoctorTrial] = useState<null | { phase: 'working' | 'done' | 'error'; message: string; snapshotId: string | null; disabled: string[] }>(null);
   const [optionalOpen, setOptionalOpen] = useState(false);
 
   // order is local and mutable (drag-to-rearrange), reset when the data changes
@@ -647,17 +653,43 @@ export function WorldEditor({
 
   const openDoctor = useCallback(() => {
     setPickedSuspect(null);
+    setDoctorTrial(null);
     setDoctorOpen(true);
     achieve('🩺', 'Called the doctor', 'Crash Doctor', 'called-doctor');
   }, [achieve]);
 
-  const doctorTry = useCallback(() => {
-    // The reviewed experiment lives in the Standard CrashInvestigator; the
-    // playful entry stays here, the change itself goes through the reviewed
-    // path — gestures create intent, operations stay reviewed.
+  const doctorTry = useCallback(async () => {
+    if (pickedSuspect === null) return;
+    const suspectName = suspects[pickedSuspect]?.name;
+    if (!suspectName) return;
+    // Prefer inline handling when the host provides it; otherwise fall back to
+    // the reviewed Standard CrashInvestigator.
+    if (onTrialSuspect) {
+      setDoctorTrial({ phase: 'working', message: 'Saving a return point first…', snapshotId: null, disabled: [] });
+      try {
+        const result = await onTrialSuspect(suspectName);
+        if (result.error) {
+          setDoctorTrial({ phase: 'error', message: result.error, snapshotId: result.snapshotId ?? null, disabled: result.disabled });
+        } else {
+          setDoctorTrial({
+            phase: 'done',
+            message: result.disabled.length > 1
+              ? `Turned off ${result.disabled.join(', ')} — press Play to see if it helps. You can undo.`
+              : `Turned off ${suspectName} — press Play to see if it helps. You can undo.`,
+            snapshotId: result.snapshotId ?? null,
+            disabled: result.disabled,
+          });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setDoctorTrial({ phase: 'error', message: msg, snapshotId: null, disabled: [] });
+      }
+      return;
+    }
+    // Fallback: the reviewed experiment lives in the Standard CrashInvestigator.
     setDoctorOpen(false);
     onIntent({ kind: 'open-crash-doctor' });
-  }, [onIntent]);
+  }, [pickedSuspect, suspects, onTrialSuspect, onIntent]);
 
   const statusClick = useCallback(() => {
     if (editor.hasCrash) { openDoctor(); return; }
@@ -1027,42 +1059,92 @@ export function WorldEditor({
       <div className={`we-scrim ${doctorOpen ? 'show' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}>
         <div className="we-doc" role="dialog" aria-modal="true" aria-label="Crash Doctor">
           <h3>Your game stopped</h3>
-          <p className="sub">Let's work out which mod did it. Pick the one you want to test first.</p>
-          <div className="we-suspects">
-            {suspects.map((s, i) => {
-              const c = 2 * Math.PI * 20;
-              return (
-                <button
-                  key={s.name}
-                  type="button"
-                  className="we-susp"
-                  aria-pressed={pickedSuspect === i}
-                  onClick={() => { setPickedSuspect(i); achieve('�️', 'A suspect', s.name, 'suspect'); }}
-                >
-                  <span className="st" style={{ background: tileBackground(s.name) }}>{monoOf(s.name)}</span>
-                  <span>
-                    <span className="sn">{s.name}</span><br />
-                    <span className="sw">{s.why}</span>
-                  </span>
-                  <span className="we-gauge">
-                    <svg width="52" height="52" aria-hidden="true">
-                      <circle cx="26" cy="26" r="20" fill="none" stroke="hsl(var(--border))" strokeWidth="5" />
-                      <circle cx="26" cy="26" r="20" fill="none" stroke={gaugeColor(s.conf)} strokeWidth="5" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - s.conf)} />
-                    </svg>
-                    <span className="gv" style={{ color: gaugeColor(s.conf) }}>{gaugeLabel(s.conf)}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="we-pf-actions">
-            {pickedSuspect === null ? null : (
-              <>
-                <button type="button" className="we-btn" onClick={() => setPickedSuspect(null)}>Pick another</button>
-                <button type="button" className="we-btn go" onClick={doctorTry}>Turn it off and try</button>
-              </>
-            )}
-          </div>
+          <p className="sub">
+            {doctorTrial
+              ? (doctorTrial.phase === 'working' ? 'Trying one thing at a time…' : doctorTrial.phase === 'done' ? 'We turned it off — you can test it.' : 'Something didn’t work.')
+              : 'Let’s work out which mod did it. Pick the one you want to test first.'}
+          </p>
+          {!doctorTrial && suspects.length === 0 ? (
+            <p className="sub" style={{ marginTop: 8 }}>We couldn’t tell which mod caused this. It might not be a mod issue — try the Standard view for the full logs.</p>
+          ) : null}
+          {!doctorTrial && suspects.length > 0 ? (
+            <>
+              <div className="we-suspects">
+                {suspects.map((s, i) => {
+                  const c = 2 * Math.PI * 20;
+                  return (
+                    <button
+                      key={s.name}
+                      type="button"
+                      className="we-susp"
+                      aria-pressed={pickedSuspect === i}
+                      onClick={() => { setPickedSuspect(i); achieve('🕵️', 'Detective', 'Picked a crash suspect', 'suspect'); }}
+                    >
+                      <span className="st" style={{ background: tileBackground(s.name) }}>{monoOf(s.name)}</span>
+                      <span>
+                        <span className="sn">{s.name}</span><br />
+                        <span className="sw">{s.why}</span>
+                      </span>
+                      <span className="we-gauge">
+                        <svg width="52" height="52" aria-hidden="true">
+                          <circle cx="26" cy="26" r="20" fill="none" stroke="hsl(var(--border))" strokeWidth="5" />
+                          <circle cx="26" cy="26" r="20" fill="none" stroke={gaugeColor(s.conf)} strokeWidth="5" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - s.conf)} />
+                        </svg>
+                        <span className="gv" style={{ color: gaugeColor(s.conf) }}>{gaugeLabel(s.conf)}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="sub" style={{ fontSize: 'calc(11px * var(--font-scale))', marginBottom: 12 }}>A return point is saved first — you can always undo.</p>
+              <div className="we-pf-actions">
+                {pickedSuspect === null ? null : (
+                  <>
+                    <button type="button" className="we-btn" onClick={() => setPickedSuspect(null)}>Pick another</button>
+                    <button type="button" className="we-btn go" onClick={doctorTry}>Turn it off and try</button>
+                  </>
+                )}
+                {!onTrialSuspect ? (
+                  <button type="button" className="we-btn" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }} style={{ marginLeft: 'auto', fontSize: 'calc(11px * var(--font-scale))', padding: '6px 10px' }}>Open full doctor</button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+          {doctorTrial?.phase === 'working' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', color: 'hsl(var(--muted-foreground))', fontSize: 'calc(13px * var(--font-scale))' }}>
+              <span className="we-step">
+                <span className="mark" style={{ borderColor: 'var(--we-accent)', borderRightColor: 'transparent', animation: 'we-spin 0.7s linear infinite', width: 18, height: 18, display: 'inline-grid' }} />
+              </span>
+              {doctorTrial.message}
+            </div>
+          ) : null}
+          {doctorTrial?.phase === 'done' ? (
+            <div style={{ marginTop: 8 }}>
+              <p style={{ fontSize: 'calc(13.5px * var(--font-scale))', fontWeight: 600, marginBottom: 12 }}>{doctorTrial.message}</p>
+              <div className="we-pf-actions">
+                <button type="button" className="we-btn" onClick={() => setDoctorTrial(null)}>Pick another</button>
+                {doctorTrial.snapshotId && onUndoTrial ? (
+                  <button type="button" className="we-btn" onClick={async () => { if (!doctorTrial.snapshotId) return; await onUndoTrial(doctorTrial.snapshotId); setDoctorTrial(null); setDoctorOpen(false); }}>Undo and put it back</button>
+                ) : null}
+                {onLaunch ? (
+                  <button type="button" className="we-btn go" onClick={() => { setDoctorOpen(false); void onLaunch(); }}>Play to test</button>
+                ) : null}
+                <button type="button" className="we-btn" onClick={() => setDoctorOpen(false)}>Close</button>
+              </div>
+            </div>
+          ) : null}
+          {doctorTrial?.phase === 'error' ? (
+            <div style={{ marginTop: 8 }}>
+              <p style={{ fontSize: 'calc(13px * var(--font-scale))', color: 'hsl(var(--destructive))', marginBottom: 12 }}>{doctorTrial.message}</p>
+              <div className="we-pf-actions">
+                <button type="button" className="we-btn" onClick={() => setDoctorTrial(null)}>Try again</button>
+                <button type="button" className="we-btn" onClick={() => setDoctorOpen(false)}>Close</button>
+                {!onTrialSuspect ? (
+                  <button type="button" className="we-btn go" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }}>Open full doctor</button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 

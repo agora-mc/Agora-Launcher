@@ -314,6 +314,9 @@ pub struct RetentionEntry {
     pub is_lkg: bool,
     pub is_current_lkg: bool,
     pub is_pre_restore: bool,
+    /// A live Crash Doctor recovery point. It must survive retention until
+    /// Crash Doctor explicitly finishes or discards its experiment.
+    pub is_protected: bool,
 }
 
 impl Default for RetentionPolicy {
@@ -344,6 +347,7 @@ pub fn retention_plan(
             is_lkg: lkg_ids.contains(id),
             is_current_lkg: current == Some(id),
             is_pre_restore: pre_restore_ids.contains(id),
+            is_protected: false,
         })
         .collect();
     retention_plan_with_sizes(&entries, policy)
@@ -371,6 +375,10 @@ pub fn retention_plan_with_sizes(
     let mut kept_non_lkg = 0usize;
     let mut kept_pre_restore = 0usize;
     for entry in entries_newest_first {
+        if entry.is_protected {
+            keep.insert(entry.id.clone());
+            continue;
+        }
         if entry.is_current_lkg {
             continue;
         }
@@ -400,6 +408,7 @@ pub fn retention_plan_with_sizes(
             .iter()
             .rev() // oldest first within each safety tier
             .filter(|entry| keep.contains(&entry.id) && !entry.is_current_lkg)
+            .filter(|entry| !entry.is_protected)
             .collect();
         candidates.sort_by_key(|entry| {
             if !entry.is_lkg && !entry.is_pre_restore {
@@ -461,6 +470,10 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
                     .label
                     .as_deref()
                     .is_some_and(|label| label.starts_with("pre-restore-")),
+                is_protected: snapshot
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.starts_with("crash-doctor-")),
             }
         })
         .collect();
@@ -865,6 +878,52 @@ mod tests {
             is_lkg,
             is_current_lkg,
             is_pre_restore,
+            is_protected: false,
         }
+    }
+
+    #[test]
+    fn test_retention_keeps_protected_crash_doctor_snapshot() {
+        let entries = vec![
+            RetentionEntry {
+                id: "active-recovery".into(),
+                size_bytes: 200,
+                is_lkg: false,
+                is_current_lkg: false,
+                is_pre_restore: false,
+                is_protected: true,
+            },
+            retention("newer-regular", 10, false, false, false),
+        ];
+        let policy = RetentionPolicy {
+            keep_lkg_count: 0,
+            keep_non_lkg_count: 0,
+            keep_pre_restore_count: 0,
+            size_cap_bytes: 1,
+        };
+
+        let evicted = retention_plan_with_sizes(&entries, &policy);
+
+        assert_eq!(evicted, vec!["newer-regular".to_string()]);
+    }
+
+    #[test]
+    fn run_retention_preserves_live_crash_doctor_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let instance_dir = temp.path();
+        let protected = create_test_snapshot(instance_dir, "crash-doctor-active");
+        let _ = create_test_snapshot(instance_dir, "regular-old");
+        let evicted = create_test_snapshot(instance_dir, "regular-new");
+
+        run_retention(instance_dir).unwrap();
+
+        let remaining: Vec<_> = crate::snapshot::list_snapshots(instance_dir)
+            .unwrap()
+            .into_iter()
+            .map(|snapshot| snapshot.id)
+            .collect();
+        assert!(remaining.contains(&protected));
+        assert!(remaining.contains(&evicted));
+        assert_eq!(remaining.len(), 2);
     }
 }

@@ -13,7 +13,7 @@ Do not treat a successful registry release as proof that a desktop package was b
 
 ### Before tagging
 
-- [ ] Version metadata agrees across desktop package files.
+- [ ] Version metadata agrees across package files (`python scripts/set_release_version.py --check`; also enforced by the `version-metadata` CI job).
 - [ ] Changelog or release notes describe user-visible changes.
 - [ ] Required public build variables are present in the release workflow.
 - [ ] Signing and updater configuration are available for intended platforms.
@@ -26,7 +26,7 @@ Do not treat a successful registry release as proof that a desktop package was b
 
 ### Build and inspect
 
-The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. It tests core and CLI code, builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
+The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. It tests core and CLI code, builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
 
 Public desktop build variables and secret boundaries are documented once in [DEVELOPMENT.md](./DEVELOPMENT.md). Confirm the workflow has every required public value and protected signing credential without copying their values into release notes or logs.
 

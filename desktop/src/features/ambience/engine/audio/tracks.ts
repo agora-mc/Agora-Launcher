@@ -64,6 +64,12 @@ export interface MusicTrack {
   source: string;
   instrument?: string;
   tempoNote?: string;
+  /** Linear crescendo: gain multiplier at the very start of the piece,
+   *  ramping to `crescendoPeak`× voice gain by the end of the pass
+   *  (e.g. 0.35 → 1.5 = pp → ff, louder than 1×). Mountain King declares
+   *  the only entry here; others default to 1 (no crescendo). */
+  crescendo?: number;
+  crescendoPeak?: number;
   voices: MusicVoice[];
 }
 
@@ -264,7 +270,9 @@ export const MUSIC_TRACKS: MusicTrack[] = [
     id: "mountain-king", name: "In the Hall of the Mountain King", composer: "Edvard Grieg", year: 1875,
     marking: "Alla marcia e molto marcato", mood: "exciting", bpm: 138, beatsPerBar: 4, bars: 88, beats: 352,
     source: "MusicXML, rights: Public Domain",
-    instrument: "pluck",
+    instrument: "chip",
+    crescendo: 0.35,
+    crescendoPeak: 1.45,
     voices: [
       { name: "right hand", wave: "triangle", gain: 0.18, seq: [
          [["F#3","F#4"],4], ["B1",0.5], ["C#2",0.5], ["D2",0.5], ["E2",0.5],

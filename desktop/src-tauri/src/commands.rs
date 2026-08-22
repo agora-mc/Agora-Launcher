@@ -2997,10 +2997,23 @@ pub async fn copilot_logout(
 /// message.
 #[tauri::command]
 pub async fn ai_chat(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     messages: Vec<ChatMessage>,
     context: Option<serde_json::Value>,
 ) -> Result<ChatResponse, LauncherError> {
+    // Respect the AI chat setting — when disabled, no AI calls should be made.
+    {
+        let ctx = crate::core_context(&app)?;
+        let enabled = agora_core::settings::SettingsService::new(ctx)
+            .get_bool("ai_chat_enabled")
+            .unwrap_or(false);
+        if !enabled {
+            return Err(LauncherError::Generic {
+                code: "ERR_AI_DISABLED".into(),
+                message: "AI Assistant is disabled in Settings → AI & automation.".into(),
+            });
+        }
+    }
     let token = ai_assistant::load_copilot_token()?
         .ok_or_else(|| LauncherError::Generic {
             code: "ERR_AI_NOT_AUTHENTICATED".to_string(),
@@ -3069,11 +3082,23 @@ pub async fn ai_chat(
 /// Get an AI explanation for a detected crash.
 #[tauri::command]
 pub async fn explain_crash(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     crash_log: String,
 ) -> Result<String, LauncherError> {
+    {
+        let ctx = crate::core_context(&app)?;
+        let enabled = agora_core::settings::SettingsService::new(ctx)
+            .get_bool("ai_chat_enabled")
+            .unwrap_or(false);
+        if !enabled {
+            return Err(LauncherError::Generic {
+                code: "ERR_AI_DISABLED".into(),
+                message: "AI Assistant is disabled in Settings → AI & automation.".into(),
+            });
+        }
+    }
     let token = ai_assistant::load_copilot_token()?.ok_or_else(|| LauncherError::Generic {
         code: "ERR_AI_NOT_AUTHENTICATED".into(),
         message: "GitHub Copilot is not connected. Click 'Connect with GitHub' in the chat panel."

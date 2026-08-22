@@ -18,6 +18,7 @@ interface CrashCfg {
   stillCrashingSuspects?: number;
   stillCrashingRuledOut?: string;
   launchError?: string;
+  aiChatEnabled?: boolean;
 }
 
 async function installMock(page: Page, cfg: CrashCfg = {}) {
@@ -32,6 +33,7 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
     stillCrashingSuspects: 1,
     stillCrashingRuledOut: 'suspect-mod',
     launchError: '',
+    aiChatEnabled: true,
   };
   const merged = { ...defaults, ...cfg };
 
@@ -104,6 +106,12 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'launch_mode') return Promise.resolve('direct');
             if (key === 'modrinth_enabled') return Promise.resolve(true);
+            if (key === 'ai_chat_enabled') {
+              // Respect the CrashCfg ai chat toggle for gating tests; default true
+              // so existing AI tests keep working.
+              if ((cfg as any).aiChatEnabled === false) return Promise.resolve(false);
+              return Promise.resolve(true);
+            }
             if (key === 'last_home_visit') return Promise.resolve(null);
             return Promise.resolve(false);
           }
@@ -219,18 +227,18 @@ async function openDialog(page: Page) {
 
 async function waitForContent(page: Page) {
   await expect(
-    page.getByText('SUSPECTS').or(page.getByText(/No suspects identified/)),
+    page.getByText(/Mods that might be causing this/).or(page.getByText(/We couldn’t tell which mod caused this/)),
   ).toBeVisible({ timeout: 10000 });
 }
 
 async function relaunch(page: Page) {
-  await page.getByRole('button', { name: /Relaunch/ }).first().click();
+  await page.getByRole('button', { name: /Try without/ }).first().click();
   await finishSuccessfulLaunch(page);
 }
 
 async function finishSuccessfulLaunch(page: Page) {
-  const waiting = page.getByText(/Waiting for the test launch to finish/);
-  await expect(waiting.or(page.getByText(/The test launch did not start/))).toBeVisible({ timeout: 8000 });
+  const waiting = page.getByText(/Game is running without/);
+  await expect(waiting.or(page.getByText(/The game didn’t start for the test/))).toBeVisible({ timeout: 8000 });
   if (await waiting.count() === 0) return;
   await page.evaluate(() => {
     const listeners = (window as any).__tauriEventListeners as Map<string, number>;
@@ -265,46 +273,47 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { snapshotId: '' });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
     await expect(page.getByText('Snapshot creation failed')).toBeVisible({ timeout: 8000 });
   });
 
-  test('displays suspects with scores and breakdown signals', async ({ page }) => {
+  test('displays suspects with readable cues', async ({ page }) => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
     await expect(page.getByText('0.85')).toBeVisible();
     await expect(page.getByText('0.45')).toBeVisible();
-    await expect(page.getByText('Stack frames').first()).toBeVisible();
-    await expect(page.getByText('Curated conflicts').first()).toBeVisible();
-    await expect(page.getByText('Prior local crashes').first()).toBeVisible();
+    // Breakdown gibberish (A/B/C etc) was removed for user-friendly UI — ensure it's not shown
+    await expect(page.getByText('ubiquity dampener')).toHaveCount(0);
+    await expect(page.getByText('conflict pairs')).toHaveCount(0);
+    await expect(page.getByText('Looks like the most likely cause').first()).toBeVisible();
   });
 
   test('displays exception class and signature name', async ({ page }) => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
-    await expect(page.getByText('java.lang.NullPointerException', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(/Error: java\.lang\.NullPointerException/).first()).toBeVisible();
     await expect(page.getByText('NullPointerException in rendering')).toBeVisible();
   });
 
   test('no-suspects message when none identified', async ({ page }) => {
     await installMock(page, { noSuspects: true });
     await openDialog(page);
-    await expect(page.getByText(/No suspects identified/)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/We couldn’t tell which mod caused this/)).toBeVisible({ timeout: 10000 });
   });
 
   test('ruled-out absent initially, appears after still-crashing', async ({ page }) => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
-    await expect(page.getByText(/Already ruled out/)).toHaveCount(0);
+    await expect(page.getByText(/We already tried without/)).toHaveCount(0);
 
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
-    await page.getByRole('button', { name: 'Still crashing' }).click();
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: /No, still crashing/ }).click();
     await expect(page.getByText('second-suspect.jar').first()).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText(/Already ruled out/)).toBeVisible();
+    await expect(page.getByText(/We already tried without/)).toBeVisible();
   });
 
   test('Disable & Relaunch calls disable_mod_for_test and launches', async ({ page }) => {
@@ -312,7 +321,7 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
 
     const calls = await getCalls(page);
     expect(calls['disable_mod_for_test']).toBe(1);
@@ -325,9 +334,8 @@ test.describe('CrashInvestigator', () => {
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
-    await expect(page.getByText(/Recovery snapshot ready/)).toBeVisible();
-    await expect(page.getByText(RECOVERY_SNAPSHOT_ID)).toBeVisible();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
+    await expect(page.getByText(/We saved a backup before changing anything/)).toBeVisible();
   });
 
   test('Restore All & Close restores snapshot and closes', async ({ page }) => {
@@ -335,7 +343,7 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await page.getByRole('button', { name: 'Restore All & Close' }).click();
+    await page.getByRole('button', { name: /Undo and close/ }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 8000 });
     const args = await getArgs(page);
     expect(args['restore_snapshot']).toBeDefined();
@@ -345,8 +353,8 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { withDependents: true });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
-    await expect(page.getByText('Disable mod and dependents')).toBeVisible();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
+    await expect(page.getByText(/needs other mods/)).toBeVisible();
     await expect(page.getByText('dependent-mod')).toBeVisible();
   });
 
@@ -354,21 +362,21 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { withDependents: true });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
-    await expect(page.getByText('Disable mod and dependents')).toBeVisible();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
+    await expect(page.getByText(/needs other mods/)).toBeVisible();
     await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByText('SUSPECTS')).toBeVisible();
+    await expect(page.getByText(/Mods that might be causing this/)).toBeVisible();
   });
 
   test('DependencyPrompt confirm disables all and launches', async ({ page }) => {
     await installMock(page, { withDependents: true });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
-    await expect(page.getByText('Disable mod and dependents')).toBeVisible();
-    await page.getByRole('button', { name: 'Disable selected' }).click();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
+    await expect(page.getByText(/needs other mods/)).toBeVisible();
+    await page.getByRole('button', { name: /Turn off selected and try again/ }).click();
     await finishSuccessfulLaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
     const calls = await getCalls(page);
     expect(calls['disable_mod_for_test']).toBe(2);
   });
@@ -378,19 +386,19 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
-    await expect(page.getByRole('button', { name: 'Yes, fixed' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Still crashing' })).toBeVisible();
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole('button', { name: 'Yes, it worked' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'No, still crashing' })).toBeVisible();
   });
 
   test('launched=false shows error without FixConfirmation', async ({ page }) => {
     await installMock(page, { launchError: 'ERR_MSA_AUTH_REQUIRED' });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
-    await expect(page.getByText(/The test launch did not start/)).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText(/Did that fix/)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Yes, fixed' })).toHaveCount(0);
+    await page.getByRole('button', { name: /Try without/ }).first().click();
+    await expect(page.getByText(/The game didn’t start for the test/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/Did the game start properly without/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Yes, it worked' })).toHaveCount(0);
     const calls = await getCalls(page);
     expect(calls['restore_snapshot']).toBeGreaterThanOrEqual(1);
   });
@@ -399,22 +407,22 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { healthWarning: true });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
-    await expect(page.getByText(/Waiting for the test launch to finish/)).toBeVisible();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
+    await expect(page.getByText(/Game is running without/)).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
     await page.getByRole('button', { name: 'Launch Anyway' }).click();
     await finishSuccessfulLaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
   });
 
   test('cancelling health approval restores the guided experiment', async ({ page }) => {
     await installMock(page, { healthWarning: true });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: /Relaunch/ }).first().click();
+    await page.getByRole('button', { name: /Try without/ }).first().click();
     await expect(page.getByRole('heading', { name: 'Health Check' })).toBeVisible();
     await page.getByRole('button', { name: 'Cancel' }).last().click();
-    await expect(page.getByText(/Changes were restored/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/We put your mods back how they were/)).toBeVisible({ timeout: 8000 });
     const calls = await getCalls(page);
     expect(calls['restore_snapshot']).toBeGreaterThanOrEqual(1);
   });
@@ -424,12 +432,13 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
-    await page.getByRole('button', { name: 'Yes, fixed' }).click();
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'Yes, it worked' }).click();
 
     const calls = await getCalls(page);
     expect(calls['confirm_crash_fix']).toBe(1);
-    await expect(page.getByText(/Crash fix confirmed/)).toBeVisible({ timeout: 5000 });
+    expect(calls['delete_snapshot']).toBe(1);
+    await expect(page.getByText(/Got it — keeping/)).toBeVisible({ timeout: 5000 });
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 5000 });
   });
 
@@ -438,8 +447,8 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
-    await page.getByRole('button', { name: 'Still crashing' }).click();
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'No, still crashing' }).click();
     await expect(page.getByText('second-suspect.jar').first()).toBeVisible({ timeout: 8000 });
 
     const calls = await getCalls(page);
@@ -452,9 +461,9 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
-    await page.getByRole('button', { name: 'Still crashing' }).click();
-    await expect(page.getByText(/No suspects identified/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'No, still crashing' }).click();
+    await expect(page.getByText(/We couldn’t tell which mod caused this/)).toBeVisible({ timeout: 8000 });
   });
 
   test('read-only close does not restore a snapshot', async ({ page }) => {
@@ -474,8 +483,8 @@ test.describe('CrashInvestigator', () => {
     await openDialog(page);
     await waitForContent(page);
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
-    await page.getByRole('button', { name: 'Yes, fixed' }).click();
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'Yes, it worked' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 5000 });
     const calls = await getCalls(page);
     expect(calls['restore_snapshot'] ?? 0).toBe(0);
@@ -485,30 +494,30 @@ test.describe('CrashInvestigator', () => {
     await installMock(page, { aiFail: true });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: 'Explain with AI' }).click();
-    await expect(page.getByText(/Copilot is not connected/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'Explain this crash in plain language' }).click();
+    await expect(page.getByText(/The AI helper isn’t connected/)).toBeVisible({ timeout: 8000 });
     await expect(page.getByText('0.85')).toBeVisible();
     await relaunch(page);
-    await expect(page.getByText(/Did that fix/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
   });
 
   test('AI explanation renders and Dismiss clears it', async ({ page }) => {
     await installMock(page, { aiFail: false });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: 'Explain with AI' }).click();
+    await page.getByRole('button', { name: 'Explain this crash in plain language' }).click();
     await expect(page.getByText(/This crash is likely caused/)).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText('AI Explanation')).toBeVisible();
+    await expect(page.getByText('Here’s what might have happened')).toBeVisible();
     await page.getByText('Dismiss').click();
     await expect(page.getByText(/This crash is likely caused/)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Explain with AI' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Explain this crash in plain language' })).toBeVisible();
   });
 
   test('rapid Explain clicks only trigger one invocation', async ({ page }) => {
     await installMock(page, { aiFail: false });
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: 'Explain with AI' }).click({ clickCount: 3 });
+    await page.getByRole('button', { name: 'Explain this crash in plain language' }).click({ clickCount: 3 });
     await expect(page.getByText(/This crash is likely caused/)).toBeVisible({ timeout: 8000 });
     const calls = await getCalls(page);
     expect(calls['explain_crash']).toBe(1);
@@ -518,18 +527,20 @@ test.describe('CrashInvestigator', () => {
     await installMock(page);
     await openDialog(page);
     // Before the investigation completes (instantly in mock), the loading state
-    // briefly shows "Investigating crash…" text.
+    // briefly shows “Looking at your crash…” text.
     // Since the mock resolves immediately, check the text rather than spinner.
-    await expect(page.getByText('Investigating crash…').or(page.getByText('SUSPECTS'))).toBeVisible({ timeout: 3000 });
+    await expect(page.getByText('Looking at your crash…').or(page.getByText(/Mods that might be causing this/))).toBeVisible({ timeout: 3000 });
   });
 
-  test('breakdown keys have test IDs', async ({ page }) => {
+  test('keeps internal breakdown keys hidden', async ({ page }) => {
+    // Breakdown gibberish removed for user-friendly UI — ensure it stays hidden
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
-    await expect(page.getByTestId('breakdown-key-stack_frame_score').first()).toBeVisible();
-    await expect(page.getByTestId('breakdown-key-curated_conflict_score').first()).toBeVisible();
-    await expect(page.getByTestId('breakdown-key-prior_local_crashes').first()).toBeVisible();
+    await expect(page.getByTestId('breakdown-key-stack_frame_score')).toHaveCount(0);
+    await expect(page.getByText('ubiquity dampener')).toHaveCount(0);
+    await expect(page.getByText('conflict pairs')).toHaveCount(0);
+    await expect(page.getByText('0.85')).toBeVisible();
   });
 
   test('dialog has correct title', async ({ page }) => {
@@ -555,6 +566,14 @@ test.describe('CrashInvestigator', () => {
     await expect(page.getByText('Connect with GitHub')).toBeVisible();
     // The "Back to suspects" and AI panel should be visible instead of suspects
     await page.getByText('Back to suspects').click();
-    await expect(page.getByText('SUSPECTS')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/Mods that might be causing this/)).toBeVisible({ timeout: 5000 });
+  });
+
+  test('AI buttons hidden when ai_chat_enabled is false', async ({ page }) => {
+    await installMock(page, { aiChatEnabled: false });
+    await openDialog(page);
+    await waitForContent(page);
+    await expect(page.getByRole('button', { name: 'Ask AI Assistant' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Explain this crash in plain language' })).toHaveCount(0);
   });
 });

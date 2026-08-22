@@ -274,11 +274,23 @@ export class MusicEngine {
     (INSTRUMENTS[this.instrument ?? 'chip'] ?? INSTRUMENTS.chip).play(this.ctx, this.master, freq, at, dur, peak);
   }
 
-  private blip(f: number, at: number, dur: number, voice: MusicVoice): void {
+  private blip(f: number, at: number, dur: number, voice: MusicVoice, dyn = 1): void {
     if (!this.ctx || !this.master) return;
-    const peak = voice.gain * this.vol * rolloff(f, this.tame);
+    const peak = voice.gain * dyn * this.vol * rolloff(f, this.tame);
     if (this.muted[voice.name] || peak <= 0) return;
     (INSTRUMENTS[this.instrument ?? 'chip'] ?? INSTRUMENTS.chip).play(this.ctx, this.master, f, at, dur, peak);
+  }
+
+  private dynamics(st: MusicState, time: number): number {
+    const from = st.track.crescendo;
+    if (from == null) return 1;
+    const to = st.track.crescendoPeak ?? 1;
+    if (from >= to) return 1;
+    const total = st.track.beats * st.beat;
+    if (total <= 0) return 1;
+    const pos = (time - st.t0) % total;
+    const p = Math.min(1, Math.max(0, pos / total));
+    return from + (to - from) * p;
   }
 
   private ensureGraph(): AudioContext | null {
@@ -343,7 +355,8 @@ export class MusicEngine {
         const ev = vs.v.seq[vs.i], dur = ev[1] * st.beat;
         if (ev[0] !== 'R') {
           const ns = Array.isArray(ev[0]) ? ev[0] : [ev[0]];
-          for (const n of ns) this.blip(noteFreq(n), vs.time, dur, vs.v);
+          const dyn = this.dynamics(st, vs.time);
+          for (const n of ns) this.blip(noteFreq(n), vs.time, dur, vs.v, dyn);
         }
         vs.time += dur;
         if (++vs.i >= vs.v.seq.length) {
