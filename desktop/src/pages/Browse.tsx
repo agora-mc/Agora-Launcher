@@ -1119,10 +1119,15 @@ function BrowseContent({
     <>
       {/* Instance picker for bulk install — corner card so browsing stays usable */}
       {pickerOpen && (
-        <aside className="fixed bottom-4 right-4 z-[62] w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-border bg-card p-4 shadow-2xl">
+        <aside
+          className="fixed bottom-4 right-4 z-[62] w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-border bg-card p-4 shadow-2xl"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="bulk-install-picker-title"
+        >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold">
+              <h2 id="bulk-install-picker-title" className="text-sm font-semibold">
                 Install {selectedItems.size} selected item{selectedItems.size === 1 ? '' : 's'}
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">

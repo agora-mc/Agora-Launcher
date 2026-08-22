@@ -2,6 +2,7 @@
 """Unit tests for pure functions in Agora utility scripts."""
 
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -22,14 +23,23 @@ import validate_loader_catalog_delta
 import build_docs_web as bdw
 
 
+def _response(read_side_effect=None, read_value=b"data"):
+    """A urlopen context manager whose read() behaves as configured."""
+    response = mock.MagicMock()
+    if read_side_effect is not None:
+        response.__enter__.return_value.read.side_effect = read_side_effect
+    else:
+        response.__enter__.return_value.read.return_value = read_value
+    return response
+
+
+@mock.patch("fetch_loader_manifests.time.sleep")
 class TestFetchBytes(unittest.TestCase):
-    """Tests for network error normalization in _fetch_bytes."""
+    """Tests for retries and network error normalization in _fetch_bytes."""
 
     @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
-    def test_read_timeout_is_normalized_to_url_error(self, urlopen):
-        response = mock.MagicMock()
-        response.__enter__.return_value.read.side_effect = TimeoutError("timed out")
-        urlopen.return_value = response
+    def test_read_timeout_is_normalized_to_url_error(self, urlopen, _sleep):
+        urlopen.return_value = _response(read_side_effect=TimeoutError("timed out"))
 
         with self.assertRaises(urllib.error.URLError) as raised:
             fetch_loader_manifests._fetch_bytes("https://example.test/file.jar")
@@ -37,7 +47,7 @@ class TestFetchBytes(unittest.TestCase):
         self.assertIsInstance(raised.exception.__cause__, TimeoutError)
 
     @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
-    def test_url_error_is_not_wrapped_again(self, urlopen):
+    def test_url_error_is_not_wrapped_again(self, urlopen, _sleep):
         original = urllib.error.URLError("not found")
         urlopen.side_effect = original
 
@@ -47,10 +57,78 @@ class TestFetchBytes(unittest.TestCase):
         self.assertIs(raised.exception, original)
 
     @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
-    def test_custom_timeout_is_passed_to_urlopen(self, urlopen):
-        response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b"data"
-        urlopen.return_value = response
+    def test_truncated_body_is_retried_until_it_succeeds(self, urlopen, sleep):
+        truncated = http.client.IncompleteRead(b"partial", 6_091_457)
+        urlopen.side_effect = [
+            _response(read_side_effect=truncated),
+            _response(read_value=b"whole jar"),
+        ]
+
+        data = fetch_loader_manifests._fetch_bytes("https://example.test/file.jar")
+
+        self.assertEqual(data, b"whole jar")
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(fetch_loader_manifests.FETCH_RETRY_BACKOFF)
+
+    @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
+    def test_truncated_body_surfaces_as_url_error_once_attempts_run_out(
+        self, urlopen, _sleep
+    ):
+        urlopen.return_value = _response(
+            read_side_effect=http.client.IncompleteRead(b"partial", 10)
+        )
+
+        with self.assertRaises(urllib.error.URLError) as raised:
+            fetch_loader_manifests._fetch_bytes("https://example.test/file.jar")
+
+        self.assertIsInstance(raised.exception.__cause__, http.client.IncompleteRead)
+        self.assertEqual(
+            urlopen.call_count, fetch_loader_manifests.FETCH_ATTEMPTS
+        )
+
+    @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
+    def test_missing_artifact_is_not_retried(self, urlopen, _sleep):
+        urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.test/file.jar", 404, "Not Found", {}, None
+        )
+
+        with self.assertRaises(urllib.error.HTTPError):
+            fetch_loader_manifests._fetch_bytes("https://example.test/file.jar")
+
+        self.assertEqual(urlopen.call_count, 1)
+
+    @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
+    def test_server_error_is_retried(self, urlopen, _sleep):
+        urlopen.side_effect = [
+            urllib.error.HTTPError(
+                "https://example.test/file.jar", 503, "Unavailable", {}, None
+            ),
+            _response(read_value=b"whole jar"),
+        ]
+
+        data = fetch_loader_manifests._fetch_bytes("https://example.test/file.jar")
+
+        self.assertEqual(data, b"whole jar")
+        self.assertEqual(urlopen.call_count, 2)
+
+    @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
+    def test_retry_backoff_doubles(self, urlopen, sleep):
+        urlopen.return_value = _response(
+            read_side_effect=http.client.IncompleteRead(b"partial", 10)
+        )
+
+        with self.assertRaises(urllib.error.URLError):
+            fetch_loader_manifests._fetch_bytes("https://example.test/file.jar")
+
+        backoff = fetch_loader_manifests.FETCH_RETRY_BACKOFF
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [backoff * 2 ** n for n in range(fetch_loader_manifests.FETCH_ATTEMPTS - 1)],
+        )
+
+    @mock.patch("fetch_loader_manifests.urllib.request.urlopen")
+    def test_custom_timeout_is_passed_to_urlopen(self, urlopen, _sleep):
+        urlopen.return_value = _response(read_value=b"data")
 
         fetch_loader_manifests._fetch_bytes(
             "https://example.test/file.jar", timeout=1

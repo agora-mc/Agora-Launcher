@@ -390,36 +390,50 @@ async function rejectInstallCall(page: Page, index: number, error: unknown) {
 
 // ---------------------------------------------------------------------------
 // Helpers: common assertions on the InstallFlow dialog
+//
+// The review panel is a non-modal dialog, so the page behind it stays in the
+// accessibility tree — ModDetail's own "Install to Instance" button included.
+// Every assertion below is scoped to the panel so it cannot match the page
+// underneath.
 // ---------------------------------------------------------------------------
 
 async function expectReviewView(page: Page) {
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByText('Review Instance Changes')).toBeVisible();
-  await expect(page.getByText(/\+1 to add/)).toBeVisible();
-  await expect(page.getByText(/Before installing/)).toBeVisible();
-  await expect(page.getByRole('button', { name: /Install|Review Selected Changes/ })).toBeVisible();
+  const panel = page.getByRole('dialog');
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText('Review Instance Changes')).toBeVisible();
+  await expect(panel.getByText(/\+1 to add/)).toBeVisible();
+  await expect(panel.getByText(/Before installing/)).toBeVisible();
+  await expect(panel.getByRole('button', { name: /Install|Review Selected Changes/ })).toBeVisible();
 }
 
 async function expectResultView(page: Page) {
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByText('All verified changes were applied successfully.')).toBeVisible();
-  // The dialog has both a Radix close-X button and a content Close button.
+  const panel = page.getByRole('dialog');
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText('All verified changes were applied successfully.')).toBeVisible();
+  // The panel has both a header Close button and a content Close button.
   // Use .first() to disambiguate.
-  await expect(page.getByRole('button', { name: 'Close' }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Open Instance' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Roll Back' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Close' }).first()).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Open Instance' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Roll Back' })).toBeVisible();
 }
 
 async function expectErrorView(page: Page, message: string) {
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByText(message)).toBeVisible();
-  // Two "Close" buttons (Radix X + content button); first() disambiguates.
-  await expect(page.getByRole('button', { name: 'Close' }).first()).toBeVisible();
+  const panel = page.getByRole('dialog');
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText(message)).toBeVisible();
+  // Two "Close" buttons (header + content); first() disambiguates.
+  await expect(panel.getByRole('button', { name: 'Close' }).first()).toBeVisible();
+}
+
+/** Click the review panel's confirm button, scoped so the page behind cannot match. */
+async function confirmInstall(page: Page) {
+  await page.getByRole('dialog').getByRole('button', { name: 'Install', exact: true }).click();
 }
 
 async function expectBlockedConfirm(page: Page) {
-  await expect(page.getByRole('dialog')).toBeVisible();
-  const btn = page.getByRole('button', { name: /Resolve Conflicts First|Cannot Apply/ });
+  const panel = page.getByRole('dialog');
+  await expect(panel).toBeVisible();
+  const btn = panel.getByRole('button', { name: /Resolve Conflicts First|Cannot Apply/ });
   await expect(btn).toBeVisible();
   await expect(btn).toBeDisabled();
 }
@@ -477,7 +491,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expectReviewView(page);
 
     // Confirm
-    await page.getByRole('button', { name: 'Install' }).click();
+    await confirmInstall(page);
 
     // Apply
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
@@ -530,7 +544,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expectReviewView(page);
 
     // Confirm → apply
-    await page.getByRole('button', { name: 'Install' }).click();
+    await confirmInstall(page);
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
     const applyIdx = await lastInstallCall(page, 'apply_install_plan');
     await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
@@ -579,7 +593,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     await expectReviewView(page);
 
     // Confirm → apply
-    await page.getByRole('button', { name: 'Install' }).click();
+    await confirmInstall(page);
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
     const applyIdx = await lastInstallCall(page, 'apply_install_plan');
     await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
@@ -745,7 +759,7 @@ test.describe('Release C3 — Install flow entry points', () => {
     expect(args.intent.action.candidateVersion).toBe('1.0.0');
     await resolveInstallCall(page, resolveIdx, makePlan());
     await expectReviewView(page);
-    await page.getByRole('button', { name: 'Install' }).click();
+    await confirmInstall(page);
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
     const applyIdx = await lastInstallCall(page, 'apply_install_plan');
     await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
@@ -845,8 +859,13 @@ test.describe('Release C3 — Install flow behaviors', () => {
     // Resolve with a clean plan (no pending choices)
     await resolveInstallCall(page, reResolveIdx, makePlan({ fingerprint: 'plan-fp-optional-002', pendingChoices: [] }));
 
-    // Should now show "Install" (no longer "Review Selected Changes")
-    await expect(page.getByRole('button', { name: 'Install' })).toBeVisible();
+    // Should now show "Install" (no longer "Review Selected Changes"). The
+    // review panel is non-modal, so ModDetail's own "Install to Instance"
+    // button stays in the accessibility tree — scope to the panel and match
+    // the label exactly.
+    await expect(
+      page.getByRole('dialog').getByRole('button', { name: 'Install', exact: true }),
+    ).toBeVisible();
   });
 
   test('resolve failure offers retry and close', async ({ page }) => {
@@ -890,7 +909,7 @@ test.describe('Release C3 — Install flow behaviors', () => {
     await expectReviewView(page);
 
     // Confirm → apply
-    await page.getByRole('button', { name: 'Install' }).click();
+    await confirmInstall(page);
 
     // Wait for apply_install_plan to be called
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);

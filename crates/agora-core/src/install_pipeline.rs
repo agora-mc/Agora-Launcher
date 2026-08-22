@@ -3995,7 +3995,12 @@ mod tests {
         let after = crate::snapshot::live_file_index(&instance_dir).unwrap();
         assert_ne!(after, before);
         assert!(instance_dir.join("mods/blocked.jar").exists());
-        if let InstallOutcome::HealthRollback { snapshot_id, health_report, .. } = outcome {
+        if let InstallOutcome::HealthRollback {
+            snapshot_id,
+            health_report,
+            ..
+        } = outcome
+        {
             assert!(!health_report.blockers.is_empty());
             crate::snapshot::restore_snapshot(&instance_dir, &snapshot_id).unwrap();
             assert_eq!(

@@ -551,15 +551,21 @@ export function InstallFlow({
   // z-50 keeps it above the pack-indicator stacking context when both are
   // visible, so the review remains actionable; pack progress remains
   // readable alongside via vertical stacking.
+  // It is still a dialog — a task the user is asked to act on — so it keeps
+  // the role and an accessible name; aria-modal="false" is what states that
+  // the rest of the app stays live behind it.
   return (
     <aside
       className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       data-tour="install-review-dialog"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="install-review-title"
       aria-live="polite"
     >
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">Review Instance Changes</h2>
+          <h2 id="install-review-title" className="truncate text-sm font-semibold">Review Instance Changes</h2>
           <p className="truncate text-xs text-muted-foreground">{instanceName}</p>
         </div>
         <button

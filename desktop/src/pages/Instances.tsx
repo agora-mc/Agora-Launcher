@@ -1062,10 +1062,15 @@ function UpdatesSection({
       })}
 
       {showConfirm && (
-        <aside className="fixed bottom-4 right-4 z-[62] w-[min(28rem,calc(100vw-2rem))] max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card p-4 shadow-2xl flex flex-col gap-3">
+        <aside
+          className="fixed bottom-4 right-4 z-[62] w-[min(28rem,calc(100vw-2rem))] max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card p-4 shadow-2xl flex flex-col gap-3"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="update-confirm-title"
+        >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold">
+              <h2 id="update-confirm-title" className="text-sm font-semibold">
                 Review {showConfirm.updates.filter((update) => selected.has(`${showConfirm.instanceId}:${update.mod_jar_id}`) || selected.size === 0).length} updates
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -377,6 +379,33 @@ def _failed_record_failure(key: str) -> None:
     logger.warning("Could not download candidate %s; it will be retried next run", key)
 
 
+#: Attempts per request before a failure is taken at face value.
+FETCH_ATTEMPTS = 3
+#: Seconds before the first retry; doubled for every attempt after that.
+FETCH_RETRY_BACKOFF = 1.0
+#: Statuses where the server is reachable but momentarily unwilling to answer.
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Return True when repeating the request could plausibly succeed.
+
+    A truncated body, dropped connection or read timeout says nothing about
+    whether the artifact exists upstream, so one of them must not be able to
+    fail a nightly run on its own. A 404 does say something definitive, and
+    retrying those would only cost every run the thousands of probes for Forge
+    versions that were never published.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_STATUSES
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        return not isinstance(reason, BaseException) or _is_transient(reason)
+    # IncompleteRead and RemoteDisconnected arrive as HTTPException; timeouts,
+    # connection resets, TLS errors and DNS blips arrive as OSError.
+    return isinstance(exc, (http.client.HTTPException, OSError))
+
+
 def _fetch_bytes(url: str, timeout: float = 60) -> bytes:
     headers = {
         "User-Agent": (
@@ -385,16 +414,33 @@ def _fetch_bytes(url: str, timeout: float = 60) -> bytes:
         ),
     }
     req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except urllib.error.URLError:
-        raise
-    except TimeoutError as exc:
-        # urllib wraps connection-time timeouts in URLError, but a timeout
-        # raised while reading the response body escapes as TimeoutError.
-        # Normalize both phases so loader-specific skip logic can handle them.
-        raise urllib.error.URLError(f"timeout reading {url}: {exc}") from exc
+
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+            if attempt < FETCH_ATTEMPTS and _is_transient(exc):
+                delay = FETCH_RETRY_BACKOFF * 2 ** (attempt - 1)
+                logger.warning(
+                    "Attempt %d/%d for %s failed (%s); retrying in %.1fs",
+                    attempt,
+                    FETCH_ATTEMPTS,
+                    url,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            if isinstance(exc, urllib.error.URLError):
+                raise
+            # urllib wraps connection-phase failures in URLError, but a timeout
+            # or a truncated body raised while reading the response escapes as
+            # TimeoutError/IncompleteRead. Normalize every phase so
+            # loader-specific skip logic can handle them.
+            raise urllib.error.URLError(f"failed reading {url}: {exc}") from exc
+
+    raise AssertionError("unreachable: the retry loop always returns or raises")
 
 
 def _fetch_json(url: str) -> Any:

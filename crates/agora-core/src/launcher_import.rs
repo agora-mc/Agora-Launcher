@@ -1524,7 +1524,7 @@ fn enumerate_modrinth_db_instances(
                     LauncherKind::Modrinth,
                     &row.id,
                     &payload_base,
-                    vec![format!("Profile directory not found")],
+                    vec!["Profile directory not found".to_string()],
                 ));
                 continue;
             }

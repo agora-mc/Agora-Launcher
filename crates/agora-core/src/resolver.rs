@@ -1332,8 +1332,14 @@ impl Resolver {
                         ),
                         None => (String::new(), String::new(), None, None),
                     };
-                    let vt = v.version_type.as_deref().unwrap_or("release").to_ascii_lowercase();
-                    let is_prerelease = vt == "alpha" || vt == "beta" || crate::models::is_prerelease_version(&v.version_number);
+                    let vt = v
+                        .version_type
+                        .as_deref()
+                        .unwrap_or("release")
+                        .to_ascii_lowercase();
+                    let is_prerelease = vt == "alpha"
+                        || vt == "beta"
+                        || crate::models::is_prerelease_version(&v.version_number);
                     RawModrinthVersionCandidate {
                         version: v.version_number,
                         version_id: v.id,
@@ -2459,7 +2465,10 @@ pub fn sort_raw_modrinth_versions(
     });
 }
 
-pub fn sort_raw_modrinth_versions_with_ctx(ctx: &Ctx, versions: &mut [RawModrinthVersionCandidate]) {
+pub fn sort_raw_modrinth_versions_with_ctx(
+    ctx: &Ctx,
+    versions: &mut [RawModrinthVersionCandidate],
+) {
     sort_raw_modrinth_versions(versions, version_sort_by_date(ctx));
 }
 
@@ -2691,8 +2700,14 @@ async fn fetch_modrinth_versions_for_item(
             mc_version,
             loader,
         );
-        let vt = version.version_type.as_deref().unwrap_or("release").to_ascii_lowercase();
-        let is_prerelease = vt == "alpha" || vt == "beta" || crate::models::is_prerelease_version(&version.version_number);
+        let vt = version
+            .version_type
+            .as_deref()
+            .unwrap_or("release")
+            .to_ascii_lowercase();
+        let is_prerelease = vt == "alpha"
+            || vt == "beta"
+            || crate::models::is_prerelease_version(&version.version_number);
         candidates.push(ModVersionCandidate {
             version: version.version_number.clone(),
             filename: file.filename.clone(),
@@ -3537,7 +3552,7 @@ mod tests {
             sha512: None,
             size: None,
             version_compat: "incompatible".into(),
-                is_prerelease: false,
+            is_prerelease: false,
             source_strategy: None,
             source_identifier: None,
         }];
@@ -3621,7 +3636,7 @@ mod tests {
             sha512: None,
             size: None,
             version_compat: "".into(),
-                is_prerelease: false,
+            is_prerelease: false,
             source_strategy: None,
             source_identifier: None,
         }];
@@ -3659,9 +3674,9 @@ mod tests {
                 version_id: None,
                 dependency_type: "required".into(),
             }],
-                is_prerelease: false,
-                version_type: "release".into(),
-            };
+            is_prerelease: false,
+            version_type: "release".into(),
+        };
         let native_fabric = crate::dependency_ops::JarDeps {
             mod_jar_id: Some("swingthrough".into()),
             depends_on: vec!["native-only".into()],
@@ -3700,9 +3715,9 @@ mod tests {
             release_date: None,
             primary: true,
             changelog: None,
-                is_prerelease: false,
-                version_type: "release".into(),
-            };
+            is_prerelease: false,
+            version_type: "release".into(),
+        };
 
         let ResolvedArtifact::Download(artifact) =
             raw_modrinth_artifact("sodium", &candidate).unwrap()
@@ -3928,7 +3943,7 @@ mod tests {
             release_date: None,
             is_compatible: true,
             version_compat: "compatible".into(),
-                is_prerelease: false,
+            is_prerelease: false,
             sha1: None,
             sha256: Some("d".repeat(64)),
             sha512: None,
@@ -4081,7 +4096,7 @@ mod tests {
             sha512: Some("c".repeat(128)),
             size: Some(1),
             version_compat: "compatible".into(),
-                is_prerelease: false,
+            is_prerelease: false,
             source_strategy: None,
             source_identifier: None,
         };

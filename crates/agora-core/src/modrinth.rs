@@ -892,8 +892,14 @@ pub(crate) async fn list_raw_modrinth_versions_http(
                     ),
                     None => (String::new(), String::new(), None, None, None),
                 };
-                let vt = v.version_type.clone().unwrap_or_else(|| "release".to_string()).to_ascii_lowercase();
-                let is_prerelease = vt == "alpha" || vt == "beta" || crate::models::is_prerelease_version(&v.version_number);
+                let vt = v
+                    .version_type
+                    .clone()
+                    .unwrap_or_else(|| "release".to_string())
+                    .to_ascii_lowercase();
+                let is_prerelease = vt == "alpha"
+                    || vt == "beta"
+                    || crate::models::is_prerelease_version(&v.version_number);
                 RawModrinthVersionCandidate {
                     version: v.version_number,
                     version_id: v.id,
@@ -933,7 +939,10 @@ pub(crate) async fn list_raw_modrinth_versions_http(
             let ca = if a.is_prerelease { 1 } else { 0 };
             let cb = if b.is_prerelease { 1 } else { 0 };
             ca.cmp(&cb).then_with(|| {
-                b.release_date.as_deref().unwrap_or("").cmp(a.release_date.as_deref().unwrap_or(""))
+                b.release_date
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(a.release_date.as_deref().unwrap_or(""))
             })
         });
         Ok(candidates)
@@ -1393,7 +1402,8 @@ impl ModrinthService {
             None => None,
         };
 
-        let mut candidates = list_raw_modrinth_versions_http(instance.as_ref(), project_id, project_type).await?;
+        let mut candidates =
+            list_raw_modrinth_versions_http(instance.as_ref(), project_id, project_type).await?;
         let sort_by_date_only = crate::settings::SettingsService::new(self.ctx.clone())
             .get_bool("version_sort_by_date")
             .unwrap_or(false);
@@ -1406,7 +1416,10 @@ impl ModrinthService {
                     return ord;
                 }
             }
-            b.release_date.as_deref().unwrap_or("").cmp(a.release_date.as_deref().unwrap_or(""))
+            b.release_date
+                .as_deref()
+                .unwrap_or("")
+                .cmp(a.release_date.as_deref().unwrap_or(""))
         });
         Ok(candidates)
     }
