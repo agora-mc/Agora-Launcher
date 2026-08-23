@@ -930,15 +930,15 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await expect(page.getByRole('heading', { name: 'Connect External Services' })).toBeVisible();
     await page.getByRole('button', { name: 'Continue' }).click();
 
+    // Launch step — this mock reports direct launch, so Java follows it
+    await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
+    await page.getByRole('button', { name: 'Continue' }).click();
+
     // Java step — uncheck to skip Java download
     await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
     const javaSwitch = page.getByRole('switch');
     await javaSwitch.click();
     await expect(javaSwitch).toHaveAttribute('aria-checked', 'false');
-    await page.getByRole('button', { name: 'Continue' }).click();
-
-    // Launch step
-    await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
     await page.getByRole('button', { name: 'Continue' }).click();
 
     // GitHub step

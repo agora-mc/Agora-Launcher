@@ -94,9 +94,9 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
   await expect(switches.nth(4)).toHaveAttribute('aria-checked', 'true');
 
   await switches.nth(1).click();
-  // Go to Java step
+  // Go to Launch step
   await page.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
   // Back to Services
   await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
@@ -156,6 +156,10 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
   await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
+  // Launch step — turn on direct launch, which is what makes Java relevant
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
+  await page.getByRole('switch').click();
+  await page.getByRole('button', { name: 'Continue' }).click();
   // Java step — should be checked by default
   await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
   const javaSwitch = page.getByRole('switch');
@@ -213,6 +217,10 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
   // Appearance → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
+  // Launch step — turn on direct launch so the Java step is reachable
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
+  await page.getByRole('switch').click();
   await page.getByRole('button', { name: 'Continue' }).click();
   // Java step — uncheck
   await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
@@ -283,6 +291,10 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
   await page.getByRole('button', { name: 'Continue' }).click();
   // Services → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
+  // Launch step — turn on direct launch so the Java step is reachable
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
+  await page.getByRole('switch').click();
+  await page.getByRole('button', { name: 'Continue' }).click();
   // Java step
   await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
   // Click Continue to start download
@@ -291,10 +303,75 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
   await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible({ timeout: 3000 });
   // Click Cancel
   await page.getByRole('button', { name: 'Cancel' }).click();
-  // After cancel, we land on the Launch step (Java -> Launch -> GitHub)
-  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
+  // After cancel, we land on the GitHub step (Launch -> Java -> GitHub)
+  await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible({ timeout: 5000 });
+});
+
+test('delegated launch skips the Java step and never provisions a runtime', async ({ page }) => {
+  await page.addInitScript(() => {
+    const callbacks = new Map<number, (...args: unknown[]) => void>();
+    let callbackId = 0;
+    const internals = {
+      transformCallback(callback: (...args: unknown[]) => void) {
+        const id = ++callbackId;
+        callbacks.set(id, callback);
+        return id;
+      },
+      unregisterCallback(id: number) { callbacks.delete(id); },
+      invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'get_setting') {
+          if (args.key === 'onboarding_complete') return Promise.resolve(false);
+          if (args.key === 'launch_mode') return Promise.resolve('delegation');
+          return Promise.resolve(null);
+        }
+        if (command === 'set_setting') return Promise.resolve(null);
+        if (command === 'get_windows_accent_color') return Promise.resolve(null);
+        if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
+        if (command === 'ensure_java_runtime') {
+          (window as any).__ensureJavaCalls ??= [];
+          (window as any).__ensureJavaCalls.push(args);
+          return Promise.resolve({ path: '/mock/java21', version: 21, version_string: 'Java 21.0.1', source: 'Managed', arch: 'x64' });
+        }
+        return Promise.resolve(null);
+      },
+    };
+    Object.assign(window as unknown as Record<string, unknown>, {
+      __TAURI_INTERNALS__: internals,
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
+      __ensureJavaCalls: [] as Array<Record<string, unknown>>,
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Get Started' }).click();
+  // Appearance → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
+  // Services → Continue
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  // Launch step comes before Java, so the wizard knows whether Java applies.
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
+  const directLaunchSwitch = page.getByRole('switch');
+  await expect(directLaunchSwitch).toHaveAttribute('aria-checked', 'false');
+  // Delegation drops Java from the progress rail entirely.
+  await expect(page.getByText('Java', { exact: true })).toHaveCount(0);
+  // Turning direct launch on puts it back, so the rail tracks the real path.
+  await directLaunchSwitch.click();
+  await expect(page.getByText('Java', { exact: true })).toHaveCount(1);
+  await directLaunchSwitch.click();
+  await expect(page.getByText('Java', { exact: true })).toHaveCount(0);
+
+  // Continue under delegation goes straight to GitHub.
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toHaveCount(0);
+
+  // Back from GitHub returns to Launch, not through a hidden Java step.
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
+
+  const calls = await page.evaluate(() => (window as any).__ensureJavaCalls ?? []);
+  expect(calls.length).toBe(0);
 });
 
 test('cancelling GitHub device flow invalidates the active poll', async ({ page }) => {
@@ -304,13 +381,9 @@ test('cancelling GitHub device flow invalidates the active poll', async ({ page 
   await page.getByRole('button', { name: 'Get Started' }).click();
   // Appearance → Continue
   await page.getByRole('button', { name: 'Continue' }).click();
-  // Services → Continue (navigates to Java step)
+  // Services → Continue (navigates to Launch step)
   await page.getByRole('button', { name: 'Continue' }).click();
-  // Java step — uncheck Java download to reach Launch step
-  await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
-  await page.getByRole('switch').click(); // uncheck
-  await page.getByRole('button', { name: 'Continue' }).click();
-  // Launch step
+  // Launch step — delegated is the default, so the Java step is skipped
   await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 5000 });
   await page.getByRole('button', { name: 'Continue' }).click();
   // GitHub step

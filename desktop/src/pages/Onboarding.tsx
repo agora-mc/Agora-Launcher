@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import {
@@ -35,9 +35,23 @@ import {
 } from '../features/interactive/live/presentationPreference';
 import { pinnedMotion } from '../components/presentation-capabilities';
 
-type Step = 'welcome' | 'appearance' | 'services' | 'java' | 'launch' | 'github' | 'registry' | 'import';
+type Step = 'welcome' | 'appearance' | 'services' | 'launch' | 'java' | 'github' | 'registry' | 'import';
 
-const STEP_ORDER: Step[] = ['welcome', 'appearance', 'services', 'java', 'launch', 'github', 'registry', 'import'];
+// `launch` precedes `java` because Java is only needed by one of the two modes:
+// direct launch runs Minecraft inside Agora and needs a managed JRE, while
+// delegated launch hands off to the official Mojang launcher, which brings its
+// own runtime. The mode has to be chosen before the wizard can know whether the
+// Java step applies at all.
+const STEP_ORDER: Step[] = ['welcome', 'appearance', 'services', 'launch', 'java', 'github', 'registry', 'import'];
+
+/** Steps that exist only on the direct-launch path. */
+const DIRECT_LAUNCH_ONLY_STEPS: Step[] = ['java'];
+
+/**
+ * Shape of the wizard for the launch mode the user picked. Read by `Stepper`
+ * so the progress rail lists the steps this run will actually visit.
+ */
+const OnboardingFlowContext = createContext<{ directLaunch: boolean }>({ directLaunch: false });
 
 function isStep(value: unknown): value is Step {
   return typeof value === 'string' && (STEP_ORDER as string[]).includes(value);
@@ -84,13 +98,16 @@ export function Onboarding({ onComplete }: OnboardingProps) {
         aiMcp: aiMcp.status === 'fulfilled' ? parseBooleanSetting(aiMcp.value) : false,
         aiChat: aiChat.status === 'fulfilled' ? parseBooleanSetting(aiChat.value) : false,
       });
-      setDirectLaunch(
-        launchMode.status === 'fulfilled' && launchMode.value === 'direct',
-      );
+      const direct = launchMode.status === 'fulfilled' && launchMode.value === 'direct';
+      setDirectLaunch(direct);
       // Resume an interrupted wizard at the step it was on, so closing or
       // restarting during onboarding does not silently discard progress.
       if (savedStep.status === 'fulfilled' && isStep(savedStep.value)) {
-        setStep(savedStep.value);
+        // A saved step the current launch mode no longer reaches (Java under
+        // delegation) would strand the user on a dead screen, so resume at the
+        // step that decides it instead.
+        const resumed = savedStep.value;
+        setStep(!direct && DIRECT_LAUNCH_ONLY_STEPS.includes(resumed) ? 'launch' : resumed);
       }
       setServicesLoading(false);
       setSettingsLoaded(true);
@@ -116,46 +133,53 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     }
   };
 
+  // Java sits between Launch and GitHub only on the direct-launch path, so the
+  // neighbours of that gap depend on the choice made on the Launch step.
+  const afterLaunch: Step = directLaunch ? 'java' : 'github';
+  const beforeGithub: Step = directLaunch ? 'java' : 'launch';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <OnboardingFlowContext.Provider value={{ directLaunch }}>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
         <div className="w-full max-w-xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
-        <div className="p-6 sm:p-8">
-          {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
-          {step === 'appearance' && (
-            <AppearanceStep onContinue={() => setStep('services')} onBack={() => setStep('welcome')} />
-          )}
-          {step === 'services' && (
-            <ServicesStep
-              values={services}
-              loading={servicesLoading}
-              onChange={setServices}
-              onContinue={() => setStep('java')}
-              onBack={() => setStep('appearance')}
-            />
-          )}
-          {step === 'java' && (
-            <JavaStep onContinue={() => setStep('launch')} onBack={() => setStep('services')} />
-          )}
-          {step === 'launch' && (
-            <LaunchStep
-              directLaunch={directLaunch}
-              onChange={setDirectLaunch}
-              onContinue={() => setStep('github')}
-              onBack={() => setStep('java')}
-            />
-          )}
-          {step === 'github' && (
-            <GithubStep onContinue={() => setStep('registry')} onBack={() => setStep('launch')} />
-          )}
-          {step === 'registry' && (
-            <RegistryStep onFinish={() => setStep('import')} onBack={() => setStep('github')} hasAutoDownloaded={registryAutoDownloaded} />
-          )}
-          {step === 'import' && (
-            <ImportStep onFinish={finish} onBack={() => setStep('registry')} />
-          )}
+          <div className="p-6 sm:p-8">
+            {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
+            {step === 'appearance' && (
+              <AppearanceStep onContinue={() => setStep('services')} onBack={() => setStep('welcome')} />
+            )}
+            {step === 'services' && (
+              <ServicesStep
+                values={services}
+                loading={servicesLoading}
+                onChange={setServices}
+                onContinue={() => setStep('launch')}
+                onBack={() => setStep('appearance')}
+              />
+            )}
+            {step === 'launch' && (
+              <LaunchStep
+                directLaunch={directLaunch}
+                onChange={setDirectLaunch}
+                onContinue={() => setStep(afterLaunch)}
+                onBack={() => setStep('services')}
+              />
+            )}
+            {step === 'java' && (
+              <JavaStep onContinue={() => setStep('github')} onBack={() => setStep('launch')} />
+            )}
+            {step === 'github' && (
+              <GithubStep onContinue={() => setStep('registry')} onBack={() => setStep(beforeGithub)} />
+            )}
+            {step === 'registry' && (
+              <RegistryStep onFinish={() => setStep('import')} onBack={() => setStep('github')} hasAutoDownloaded={registryAutoDownloaded} />
+            )}
+            {step === 'import' && (
+              <ImportStep onFinish={finish} onBack={() => setStep('registry')} />
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </OnboardingFlowContext.Provider>
   );
 }
 
@@ -163,17 +187,24 @@ function parseBooleanSetting(value: unknown): boolean {
   return value === true || value === 1 || value === 'true' || value === '1';
 }
 
+const STEP_LABELS: { id: Step; label: string }[] = [
+  { id: 'welcome', label: 'Welcome' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'services', label: 'Services' },
+  { id: 'launch', label: 'Launch' },
+  { id: 'java', label: 'Java' },
+  { id: 'github', label: 'GitHub' },
+  { id: 'registry', label: 'Registry' },
+  { id: 'import', label: 'Import' },
+];
+
 function Stepper({ current }: { current: Step }) {
-  const steps: { id: Step; label: string }[] = [
-    { id: 'welcome', label: 'Welcome' },
-    { id: 'appearance', label: 'Appearance' },
-    { id: 'services', label: 'Services' },
-    { id: 'java', label: 'Java' },
-    { id: 'launch', label: 'Launch' },
-    { id: 'github', label: 'GitHub' },
-    { id: 'registry', label: 'Registry' },
-    { id: 'import', label: 'Import' },
-  ];
+  const { directLaunch } = useContext(OnboardingFlowContext);
+  // Delegated launch never reaches the Java step, so it is dropped from the
+  // rail instead of shown as a stop the user silently skips past.
+  const steps = STEP_LABELS.filter(
+    (s) => directLaunch || !DIRECT_LAUNCH_ONLY_STEPS.includes(s.id),
+  );
   const currentIndex = steps.findIndex((s) => s.id === current);
   return (
     <div className="mb-6 flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -702,7 +733,8 @@ function JavaStep({
       <Stepper current="java" />
       <h2 className="text-2xl font-bold mb-2">Prepare Java for Minecraft</h2>
       <p className="text-muted-foreground mb-6">
-        Modern Minecraft (1.17+) requires Java 17 or higher. Agora can download Java 21 — the
+        You chose direct launch, so Agora runs Minecraft itself and needs its own Java runtime.
+        Modern Minecraft (1.17+) requires Java 17 or higher, and Agora can download Java 21 — the
         latest long-term support version — so your instances work out of the box.
       </p>
 

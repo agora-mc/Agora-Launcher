@@ -623,6 +623,8 @@ export function HealthDialog({
           <DialogDescription>
             Agora found {activeBlockers.length} blocker{activeBlockers.length === 1 ? '' : 's'}.
             Continuing may cause a failed launch, crash, or unstable gameplay.
+            Your instance could be functional, but Agora cannot guarantee it. If you are unsure, review the findings first.
+            If this is a downloaded modpack, the pack may install additional content or make other changes at launch time, which Agora cannot predict.
           </DialogDescription>
           <div role="alert" className="rounded border border-destructive bg-destructive/10 p-3 text-sm">
             <p className="font-medium text-destructive">The runtime loader will still validate this mod set.</p>

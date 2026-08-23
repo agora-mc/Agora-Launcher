@@ -66,7 +66,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'The onboarding wizard checks the optional services and local tools Agora can use. You can skip optional connections and change them later in Settings.',
           steps: [
             'Review the service switches. Leave Modrinth on for a larger live catalog, or off to use only Agora-curated data.',
-            'Let Agora find Java. If no suitable runtime exists, use the managed Java download.',
+            'Choose how Minecraft launches: delegated to the official Mojang launcher (the default, no sign-in required) or direct launch inside Agora.',
+            'If you chose direct launch, let Agora prepare Java. Delegated launch skips this step because the official launcher brings its own runtime.',
             'Connect GitHub only if you want to vote or participate in community governance.',
             'Download the signed registry when prompted.',
             'Finish onboarding and open Browse to choose a pack, or My Instances to build an empty instance.',
