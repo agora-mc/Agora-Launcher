@@ -24,7 +24,7 @@ async function installOnboardingMock(page: Page) {
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
         if (command === 'ensure_java_runtime') {
-          return Promise.resolve({ path: '/mock/java21', version: 21, version_string: 'Java 21.0.1', source: 'Managed', arch: 'x64' });
+          return Promise.resolve({ path: '/mock/java25', version: 25, version_string: 'Java 25.0.1', source: 'Managed', arch: 'x64' });
         }
         if (command === 'github_login') {
           return Promise.resolve({
@@ -46,6 +46,8 @@ async function installOnboardingMock(page: Page) {
       __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} },
       __resolveGithubPoll(value: unknown) { pollResolve?.(value); },
     });
+    // Onboarding technic/unverified toggles now show window.confirm warnings
+    (window as unknown as { confirm: (msg: string) => boolean }).confirm = () => true;
   });
 }
 
@@ -135,10 +137,11 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
+        if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
         if (command === 'ensure_java_runtime') {
           (window as any).__ensureJavaCalls ??= [];
           (window as any).__ensureJavaCalls.push(args);
-          return Promise.resolve({ path: '/mock/java21', version: 21, version_string: 'Java 21.0.1', source: 'Managed', arch: 'x64' });
+          return Promise.resolve({ path: '/mock/java25', version: 25, version_string: 'Java 25.0.1', source: 'Managed', arch: 'x64' });
         }
         return Promise.resolve(null);
       },
@@ -159,6 +162,7 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
   // Launch step — turn on direct launch, which is what makes Java relevant
   await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });
   await page.getByRole('switch').click();
+  await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
   await page.getByRole('button', { name: 'Continue' }).click();
   // Java step — should be checked by default
   await expect(page.getByRole('heading', { name: 'Prepare Java for Minecraft' })).toBeVisible({ timeout: 3000 });
@@ -170,8 +174,8 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
   await page.waitForTimeout(500);
   const calls = await page.evaluate(() => (window as any).__ensureJavaCalls ?? []);
   expect(calls.length).toBeGreaterThanOrEqual(1);
-  expect(calls[0]).toHaveProperty('major', 21);
-  expect(calls[0]).toHaveProperty('operationId', 'onboarding-java-21');
+  expect(calls[0]).toHaveProperty('major', 25);
+  expect(calls[0]).toHaveProperty('operationId', 'onboarding-java-25');
 });
 
 test('Java step unchecked does not invoke ensure_java_runtime', async ({ page }) => {
@@ -197,10 +201,11 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
+        if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
         if (command === 'ensure_java_runtime') {
           (window as any).__ensureJavaCalls ??= [];
           (window as any).__ensureJavaCalls.push(args);
-          return Promise.resolve({ path: '/mock/java21', version: 21, version_string: 'Java 21.0.1', source: 'Managed', arch: 'x64' });
+          return Promise.resolve({ path: '/mock/java25', version: 25, version_string: 'Java 25.0.1', source: 'Managed', arch: 'x64' });
         }
         return Promise.resolve(null);
       },
@@ -256,6 +261,7 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
         }
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
+        if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
         if (command === 'ensure_java_runtime') {
           return new Promise((_, reject) => {
@@ -268,8 +274,8 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
           if (reject) {
             reject({
               code: 'ERR_JAVA_RUNTIME_CANCELLED',
-              message: 'Java 21 runtime provisioning was cancelled.',
-              details: { major: 21, suggested_actions: ['cancel'] },
+              message: 'Java 25 runtime provisioning was cancelled.',
+              details: { major: 25, suggested_actions: ['cancel'] },
               suggested_action: null,
             });
           }
@@ -330,7 +336,7 @@ test('delegated launch skips the Java step and never provisions a runtime', asyn
         if (command === 'ensure_java_runtime') {
           (window as any).__ensureJavaCalls ??= [];
           (window as any).__ensureJavaCalls.push(args);
-          return Promise.resolve({ path: '/mock/java21', version: 21, version_string: 'Java 21.0.1', source: 'Managed', arch: 'x64' });
+          return Promise.resolve({ path: '/mock/java25', version: 25, version_string: 'Java 25.0.1', source: 'Managed', arch: 'x64' });
         }
         return Promise.resolve(null);
       },

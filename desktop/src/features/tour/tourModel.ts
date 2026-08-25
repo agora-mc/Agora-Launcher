@@ -106,7 +106,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     id: 'instances-nav',
     title: 'Next: make an instance',
     body:
-      'An instance is where your mods are organised — you might call it a custom modpack. '
+      'An instance is where your mods are organized — you might call it a custom modpack. '
       + 'Open My Instances to make one.',
     anchors: ['nav-instances'],
     advance: { kind: 'appear', anchor: 'page-instances' },

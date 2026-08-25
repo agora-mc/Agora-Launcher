@@ -26,12 +26,15 @@ export interface UiPreferences {
   customText: string;
   backgroundTextMode: CustomColorMode;
   customBackgroundText: string;
+  borderMode: CustomColorMode;
+  customBorder: string;
+  /** Multiplier applied to every border-width utility (1 = normal 1px borders). */
+  borderThickness: number;
   fontFamily: FontFamily;
   fontScale: number;
   density: Density;
   cornerStyle: CornerStyle;
   motion: MotionPreference;
-  highContrast: boolean;
 }
 
 interface UiPreferencesValues {
@@ -61,12 +64,14 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   customText: '#f4ead4',
   backgroundTextMode: 'custom',
   customBackgroundText: '#e8d9bb',
+  borderMode: 'theme',
+  customBorder: '#c28b28',
+  borderThickness: 1,
   fontFamily: 'serif',
-  fontScale: 1,
+  fontScale: 1.5,
   density: 'comfortable',
   cornerStyle: 'soft',
   motion: 'system',
-  highContrast: false,
 };
 
 const AGORA_CLASSIC_PREFERENCES: UiPreferences = {
@@ -86,12 +91,14 @@ const AGORA_CLASSIC_PREFERENCES: UiPreferences = {
   customText: '#11233a',
   backgroundTextMode: 'theme',
   customBackgroundText: '#11233a',
+  borderMode: 'theme',
+  customBorder: '#247786',
+  borderThickness: 1,
   fontFamily: 'system',
   fontScale: 1,
   density: 'comfortable',
   cornerStyle: 'soft',
   motion: 'system',
-  highContrast: false,
 };
 
 /** Curated appearance presets shared by the Settings page and onboarding. */
@@ -137,7 +144,8 @@ export const APPEARANCE_PRESETS: Record<string, { label: string; preferences: Ui
     label: 'High readability',
     preferences: {
       ...AGORA_CLASSIC_PREFERENCES,
-      fontFamily: 'readable', fontScale: 1.1, highContrast: true,
+      fontFamily: 'readable', fontScale: 1.1,
+      borderMode: 'custom', customBorder: '#506478',
       motion: 'reduced', density: 'spacious',
     },
   },
@@ -163,6 +171,9 @@ function validatePreferences(value: unknown): UiPreferences | null {
   const navOpacity = typeof candidate.navOpacity === 'number'
     ? Math.min(1, Math.max(0.35, candidate.navOpacity))
     : DEFAULT_UI_PREFERENCES.navOpacity;
+  const borderThickness = typeof candidate.borderThickness === 'number'
+    ? Math.min(3, Math.max(1, candidate.borderThickness))
+    : DEFAULT_UI_PREFERENCES.borderThickness;
 
   return {
     version: 1,
@@ -207,6 +218,13 @@ function validatePreferences(value: unknown): UiPreferences | null {
     customBackgroundText: typeof candidate.customBackgroundText === 'string' && HEX_COLOR.test(candidate.customBackgroundText)
       ? candidate.customBackgroundText
       : DEFAULT_UI_PREFERENCES.customBackgroundText,
+    borderMode: isOneOf(candidate.borderMode, ['theme', 'custom'])
+      ? candidate.borderMode
+      : DEFAULT_UI_PREFERENCES.borderMode,
+    customBorder: typeof candidate.customBorder === 'string' && HEX_COLOR.test(candidate.customBorder)
+      ? candidate.customBorder
+      : DEFAULT_UI_PREFERENCES.customBorder,
+    borderThickness,
     fontFamily: isOneOf(candidate.fontFamily, ['system', 'readable', 'rounded', 'serif', 'mono', 'playful', 'typewriter'])
       ? candidate.fontFamily
       : DEFAULT_UI_PREFERENCES.fontFamily,
@@ -220,7 +238,6 @@ function validatePreferences(value: unknown): UiPreferences | null {
     motion: isOneOf(candidate.motion, ['system', 'reduced', 'full'])
       ? candidate.motion
       : DEFAULT_UI_PREFERENCES.motion,
-    highContrast: candidate.highContrast === true,
   };
 }
 
@@ -421,14 +438,34 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       root.style.removeProperty('--nav-surface');
     }
 
+    // Border color: a custom pick wins; otherwise borders follow the accent
+    // (the same adapted HSL --primary uses, so "defaults to the accent color"
+    // stays true in both color modes).
+    const borderCustom = preferences.borderMode === 'custom'
+      ? hexToHsl(preferences.customBorder)
+      : null;
+    if (borderCustom) {
+      const value = `${borderCustom.h} ${borderCustom.s}% ${borderCustom.l}%`;
+      root.style.setProperty('--border', value);
+      root.style.setProperty('--input', value);
+    } else if (accent) {
+      const value = `${accent.h} ${Math.max(45, accent.s)}% ${dark ? Math.max(52, accent.l) : Math.min(42, accent.l)}%`;
+      root.style.setProperty('--border', value);
+      root.style.setProperty('--input', value);
+    } else {
+      root.style.removeProperty('--border');
+      root.style.removeProperty('--input');
+    }
+
     root.dataset.font = preferences.fontFamily;
     root.dataset.density = preferences.density;
     root.dataset.motion = preferences.motion;
-    root.dataset.contrast = preferences.highContrast ? 'high' : 'normal';
     root.style.setProperty('--font-scale', String(preferences.fontScale));
+    root.style.setProperty('--border-scale', String(preferences.borderThickness));
     root.style.setProperty('--surface-opacity', String(preferences.surfaceOpacity));
     root.style.setProperty('--nav-opacity', String(preferences.navOpacity));
-    root.style.setProperty('--radius', preferences.cornerStyle === 'square' ? '0.125rem' : preferences.cornerStyle === 'round' ? '1rem' : '0.75rem');
+    // "Round" must read clearly rounder than the soft default, not a nudge.
+    root.style.setProperty('--radius', preferences.cornerStyle === 'square' ? '0.125rem' : preferences.cornerStyle === 'round' ? '1.5rem' : '0.75rem');
   }, [preferences, systemAccent, effectiveDark]);
 
   const setPreferences = (update: Partial<UiPreferences>) => {

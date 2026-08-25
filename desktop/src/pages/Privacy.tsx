@@ -224,6 +224,10 @@ export function Privacy() {
           <p className="text-xs text-muted-foreground max-w-prose leading-relaxed">
             Agora makes zero automated telemetry calls. Below is every network endpoint the app can reach, each independently toggleable and enforced by the backend. Lockdown Mode blocks them all at once; the individual toggles fine-tune access when Lockdown is off.
           </p>
+          <br />
+          <p className="text-xs text-muted-foreground">
+            Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
+          </p>
         </div>
         <Badge
           variant="outline"

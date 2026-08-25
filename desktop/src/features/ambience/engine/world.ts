@@ -224,6 +224,11 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
     },
     spawnRainbow: function () {
       if (this.flags.rainbowUp) return; this.flags.rainbowUp = true; this.flags.rainbowEnds = {}; this.flags.rainbowT = 0;
+      // Wall-clock deadline alongside the frame-counted `rainbowT`: frames can
+      // stall far below real time (occluded window, heavy page, tab hidden),
+      // and a shower's rainbow that outlives the shower by MINUTES reads as
+      // stuck. The pinned branch ignores this deadline on purpose.
+      this.flags.rainbowExpiresAt = Date.now() + RAINBOW_SECONDS * 1000;
       const lx = state.W * 0.22, rx = state.W * 0.78;
       // F-rainbow: anchor the arc's ends to the terrain so the rainbow reads
       // as rising from BEHIND the hills, not floating high in the sky. The
@@ -260,6 +265,7 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
     clearRainbow: function () {
       this.flags.rainbowUp = false;
       this.flags.rainbowT = 0;
+      this.flags.rainbowExpiresAt = 0;
       this.props = this.props.filter(function (p) { return p.key !== 'rainbow-end'; });
     },
     spawnSwarm: function () {
@@ -302,9 +308,17 @@ export function createWorld(state: EngineState, opts: WorldOpts): WorldState {
       if (this.flags.rainbowPinned) {
         if (!this.flags.rainbowUp) this.spawnRainbow();
       } else if (this.flags.rainbowUp) {
-        const age = ((this.flags.rainbowT as number) || 0) + dt;
-        this.flags.rainbowT = age;
-        if (age >= RAINBOW_SECONDS) this.clearRainbow();
+        // Expire on wall-clock time too (see spawnRainbow): the frame-counted
+        // age below assumes frames arrive at real-time pace, which an occluded
+        // or loaded window does not guarantee.
+        const expiresAt = this.flags.rainbowExpiresAt as number | undefined;
+        if (expiresAt !== undefined && expiresAt > 0 && Date.now() >= expiresAt) {
+          this.clearRainbow();
+        } else {
+          const age = ((this.flags.rainbowT as number) || 0) + dt;
+          this.flags.rainbowT = age;
+          if (age >= RAINBOW_SECONDS) this.clearRainbow();
+        }
       }
       if (state.reduce) { return; } // props stay static, no wanderers, no ambient motion
       const TIMERFIELDS = ['shakeT', 'ripple', 'blink', 'spin', 'rainT'];

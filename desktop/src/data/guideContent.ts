@@ -969,7 +969,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       summary: 'Settings changes how Agora looks and behaves. Appearance controls are independent from Minecraft graphics settings and can be reset without changing instances.',
       outcomes: [
         'Apply a coherent appearance preset.',
-        'Adjust text, contrast, motion, spacing, and sidebar layout.',
+        'Adjust text, colors, motion, spacing, and sidebar layout.',
         'Find service, account, launch, Java, launcher, and update controls.',
       ],
       sections: [
@@ -979,7 +979,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Improve comfort and access',
-          body: 'Use High contrast for stronger boundaries, Reduce motion to minimize animation, Text scale for typography, and Density for control spacing. These settings are separate so larger text does not have to make every panel excessively spacious.',
+          body: 'Use the custom border color for stronger boundaries, Reduce motion to minimize animation, Text scale for typography, and Density for control spacing. These settings are separate so larger text does not have to make every panel excessively spacious.',
           callout: {
             tone: 'tip',
             title: 'System settings are respected',

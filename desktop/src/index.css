@@ -6,7 +6,8 @@
 
 @layer base {
   :root {
-    --font-scale: 1;
+    --font-scale: 1.5;
+    --border-scale: 1;
     /* Emoji need their own font: none of the UI faces below carry colour emoji,
        so ❤️/💔/🎒 fell back to whatever the renderer could find — usually a
        monochrome glyph or a box. Appended to EVERY stack, including the custom
@@ -127,16 +128,6 @@
   :root[data-density="comfortable"] body { line-height: 1.5; }
   :root[data-density="spacious"] body { line-height: 1.65; }
 
-  :root[data-contrast="high"] {
-    --border: 210 25% 42%;
-    --muted-foreground: 213 45% 25%;
-  }
-
-  :root.dark[data-contrast="high"] {
-    --border: 210 20% 65%;
-    --muted-foreground: 210 25% 80%;
-  }
-
   :root[data-motion="reduced"] *,
   :root[data-motion="reduced"] *::before,
   :root[data-motion="reduced"] *::after {
@@ -181,6 +172,15 @@
 :root .text-3xl { font-size: calc(1.875rem * var(--font-scale)); }
 :root .text-4xl { font-size: calc(2.25rem * var(--font-scale)); }
 
+/* Markdown prose (ModDetail About tab) — Tailwind Typography uses fixed rem values
+   that bypass the body font-size, so the parsed HTML would not follow the user's
+   text-scale preference. Mirror the text-sm/base scaling here. */
+:root .prose { font-size: calc(1rem * var(--font-scale)); }
+:root .prose-sm { font-size: calc(0.875rem * var(--font-scale)); }
+:root .prose :where(p, ul, ol, li, blockquote, table, pre, code) {
+  font-size: inherit;
+}
+
 :root .rounded-sm { border-radius: calc(var(--radius) * 0.4); }
 :root .rounded,
 :root .rounded-md { border-radius: calc(var(--radius) * 0.7); }
@@ -188,6 +188,35 @@
 :root .rounded-xl { border-radius: calc(var(--radius) * 1.25); }
 :root .rounded-2xl,
 :root .rounded-3xl { border-radius: calc(var(--radius) * 1.6); }
+
+/* Border thickness (Interface settings): every Tailwind border-width utility
+   scales off --border-scale, so 200% turns 1px borders into 2px and 2px
+   accents (tab underlines, callout edges) into 4px. Zero-width utilities stay
+   zero — scaling those would resurrect borders the markup removed on purpose.
+   Specificity (0,2,0) beats Tailwind's own single-class rules without needing
+   !important. */
+:root .border,
+:root .border-t,
+:root .border-r,
+:root .border-b,
+:root .border-l,
+:root .border-x,
+:root .border-y { border-width: calc(1px * var(--border-scale)); }
+:root .border-2,
+:root .border-t-2,
+:root .border-r-2,
+:root .border-b-2,
+:root .border-l-2,
+:root .border-x-2,
+:root .border-y-2 { border-width: calc(2px * var(--border-scale)); }
+:root .border-4,
+:root .border-t-4,
+:root .border-r-4,
+:root .border-b-4,
+:root .border-l-4,
+:root .border-x-4,
+:root .border-y-4 { border-width: calc(4px * var(--border-scale)); }
+:root .border-8 { border-width: calc(8px * var(--border-scale)); }
 
 :root[data-density="compact"] .p-3 { padding: 0.5rem; }
 :root[data-density="compact"] .p-4 { padding: 0.7rem; }
@@ -353,20 +382,20 @@
 
 /* "Hide the standard background" (living background settings): hide ONLY the
    flat page background color so the living world shows through — the UI stays
-   readable. `main` keeps a faint tint + soft blur over the world (so headings
-   and text directly on the page remain legible) but no solid color; cards and
-   panels stay opaque via their own surfaces. */
+   readable. `main` goes fully transparent so EVERY page shows the world
+   exactly like the Living Background page does (a residual tint read as a
+   tone difference between that page and the rest); cards and panels stay
+   opaque via their own surfaces, which is what keeps text legible. */
 :root[data-ambience-clear="on"] body {
   background: transparent;
   background-image: none !important;
 }
 
 :root[data-ambience-clear="on"] main {
-  /* No blur: "hide the standard background" means SEE the world, and a 6px
-     blur made it a smear. Legibility comes from a slightly stronger tint on
-     `main` plus the panels' own opaque surfaces, not from blurring the thing
-     the setting exists to reveal. */
-  background-color: hsl(var(--background) / 0.34) !important;
+  /* No blur and no tint: "hide the standard background" means SEE the world.
+     Legibility comes from the panels' own opaque surfaces, not from veiling
+     the thing the setting exists to reveal. */
+  background: transparent !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }

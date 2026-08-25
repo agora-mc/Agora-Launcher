@@ -22,17 +22,18 @@ export default function GuidesIndexPage() {
           <span className="text-gray-700 dark:text-gray-300">Task guides</span>
         </nav>
         <h1 className="text-3xl font-bold tracking-tight">Task guides</h1>
+        <p className="mt-3 max-w-3xl text-sm text-gray-500 dark:text-gray-400">
+          These are the same guides built into the desktop app under{' '}
+          <strong>Help &amp; Guide</strong>, published here so you can read them
+          before installing or link someone straight to an answer.
+        </p>
         <p className="mt-3 max-w-3xl leading-7 text-gray-600 dark:text-gray-300">
           {total} guides covering what Agora does and how to do it. Each one is
           written twice: <strong>step by step</strong> for following along, and{' '}
           <strong>in depth</strong> for understanding the behavior behind the
           steps. Pick whichever suits you — they describe the same product.
         </p>
-        <p className="mt-3 max-w-3xl text-sm text-gray-500 dark:text-gray-400">
-          These are the same guides built into the desktop app under{' '}
-          <strong>Help &amp; Guide</strong>, published here so you can read them
-          before installing or link someone straight to an answer.
-        </p>
+        
       </header>
 
       {categories.map((section) => (

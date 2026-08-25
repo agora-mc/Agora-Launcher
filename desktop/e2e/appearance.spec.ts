@@ -66,18 +66,38 @@ test('system accent remains a mode and is not persisted as a custom color', asyn
   expect(stored.customAccent).toBe('#c28b28');
 });
 
-test('font, scale, contrast, and reduced motion persist', async ({ page }) => {
+test('font, scale, border color, and reduced motion persist', async ({ page }) => {
   await openAppearance(page, 'Interface');
   await page.getByLabel('Interface font').selectOption('readable');
   await page.getByLabel('Text scale').fill('1.15');
   await page.getByLabel('Motion preference').selectOption('reduced');
-  await page.getByLabel('High contrast').check();
+
+  // Border color replaced the old high-contrast toggle; theme mode defaults it
+  // to the accent, and a custom pick overrides both.
+  await openAppearance(page, 'Theme');
+  await page.getByLabel('Toggle custom colors').click();
+  await page.getByLabel('Use custom border color').check();
+  await page.getByLabel('Border color').fill('#506478');
 
   await expect(page.locator('html')).toHaveAttribute('data-font', 'readable');
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'reduced');
   await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-contrast', 'high');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await openAppearance(page, 'Theme');
+  await page.getByLabel('Toggle custom colors').click();
+  await expect(page.getByLabel('Use custom border color')).toBeChecked();
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--border').trim())).toBe('210 20% 39%');
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--font-scale'))).toBe('1.15');
+});
+
+test('border color defaults to the accent when left on theme mode', async ({ page }) => {
+  await openAppearance(page, 'Theme');
+  await page.getByLabel('Toggle custom colors').click();
+  await expect(page.getByLabel('Use custom border color')).not.toBeChecked();
+  await page.getByLabel('Accent source').selectOption('custom');
+  await page.getByLabel('Custom accent color').fill('#663399');
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--primary').trim())).toBe('270 50% 40%');
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--border').trim())).toBe('270 50% 40%');
 });
 
 test('text scale slider extends to 200%', async ({ page }) => {
@@ -87,6 +107,28 @@ test('text scale slider extends to 200%', async ({ page }) => {
   await slider.fill('2');
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--font-scale'))).toBe('2');
   await expect(page.getByText('200%')).toBeVisible();
+});
+
+test('border thickness slider scales every border width', async ({ page }) => {
+  await openAppearance(page, 'Interface');
+  const slider = page.getByLabel('Border thickness');
+  await expect(slider).toHaveAttribute('min', '1');
+  await expect(slider).toHaveAttribute('max', '3');
+
+  const railBorder = () => page.evaluate(() => {
+    const el = document.querySelector('.settings-rail-list');
+    return el ? getComputedStyle(el).borderTopWidth : '';
+  });
+  await expect.poll(railBorder).toBe('1px');
+
+  await slider.fill('2');
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--border-scale'))).toBe('2');
+  // A plain 1px outline doubles...
+  await expect.poll(railBorder).toBe('2px');
+
+  // ...and a 2px accent underline (mod detail tabs use border-b-2) quadruples.
+  await openAppearance(page, 'Theme'); // navigate within settings; scale persists
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--border-scale'))).toBe('2');
 });
 
 test('background, text, density, scale, corners, and fonts apply broadly', async ({ page }) => {

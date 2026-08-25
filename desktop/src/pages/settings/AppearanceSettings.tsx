@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Contrast, Mountain, Palette, Type } from 'lucide-react';
+import { Mountain, Palette, Type, Zap } from 'lucide-react';
 import {
   APPEARANCE_PRESETS,
   useUiPreferences,
@@ -102,7 +102,7 @@ export function AppearanceThemeSettings() {
       <details className="group rounded-lg border border-border bg-muted">
         <summary aria-label="Toggle custom colors" className="cursor-pointer select-none px-3 py-2.5 text-sm font-semibold">
           Custom colors
-          <span className="ml-2 text-xs font-normal text-muted-foreground">Block, navigation, background, and text colors</span>
+          <span className="ml-2 text-xs font-normal text-muted-foreground">Block, navigation, background, border, and text colors</span>
         </summary>
         <div className="grid gap-4 border-t border-border p-3 lg:grid-cols-2">
           <div className="space-y-3 rounded-lg border border-border bg-card p-3">
@@ -173,6 +173,18 @@ export function AppearanceThemeSettings() {
             <input type="color" aria-label="Background text color" value={preferences.customBackgroundText} onChange={(event) => setPreferences({ customBackgroundText: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
           )}
           </div>
+          <div className="space-y-2 rounded-lg border border-border bg-muted p-3 lg:col-span-2">
+          <label className="flex items-center justify-between gap-3 text-sm">
+            <span>
+              <span className="block font-medium">Custom border color</span>
+              <span className="text-xs text-muted-foreground">Outlines of cards, inputs, and panels. Defaults to your accent color.</span>
+            </span>
+            <input type="checkbox" aria-label="Use custom border color" checked={preferences.borderMode === 'custom'} onChange={(event) => setPreferences({ borderMode: event.target.checked ? 'custom' : 'theme' })} className="h-5 w-5 accent-primary" />
+          </label>
+          {preferences.borderMode === 'custom' && (
+            <input type="color" aria-label="Border color" value={preferences.customBorder} onChange={(event) => setPreferences({ customBorder: event.target.value })} className="h-9 w-full cursor-pointer rounded border border-input bg-background p-1" />
+          )}
+          </div>
         </div>
       </details>
     </SettingsSection>
@@ -180,7 +192,7 @@ export function AppearanceThemeSettings() {
 }
 
 /**
- * Interface sub-page — type, spacing, corners, contrast, motion, and the
+ * Interface sub-page — type, spacing, corners, motion, and the
  * instance presentation preference.
  */
 export function AppearanceInterfaceSettings() {
@@ -191,12 +203,16 @@ export function AppearanceInterfaceSettings() {
   // clearly named interaction control — this is that control.
   const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
   const applyInteraction = (value: InteractionPreference) => {
+    const previous = interaction;
     setInteraction(value);
     savePreference(value);
     // Simple and High Interaction both render the live instance view, so both
     // resume it; only Standard suspends.
     if (value === 'standard') suspendHighInteraction();
     else resumeHighInteractionView();
+    // Leaving Simple hands motion back to the user: its `reduced` pin was the
+    // mode's choice, not theirs, so follow system rather than staying pinned.
+    if (previous === 'simple' && value !== 'simple') setPreferences({ motion: 'system' });
   };
   // Simple pins motion to `reduced` (PresentationMotionCoordinator applies it).
   // Showing the control as disabled beats letting the user pick a value that is
@@ -208,7 +224,7 @@ export function AppearanceInterfaceSettings() {
       <SettingsSection
         icon={Type}
         title="Type & spacing"
-        description="Font, density, corners, and text size apply across every page."
+        description="Font, density, corners, border thickness, and text size apply across every page."
         contentClassName="space-y-4"
         data-testid="appearance-interface"
       >
@@ -256,18 +272,31 @@ export function AppearanceInterfaceSettings() {
             className="w-full accent-primary"
           />
         </label>
+
+        <label className="block space-y-1 text-sm">
+          <span className="flex justify-between font-medium"><span>Border thickness</span><span>{Math.round(preferences.borderThickness * 100)}%</span></span>
+          <input
+            type="range"
+            aria-label="Border thickness"
+            min="1"
+            max="3"
+            step="0.25"
+            value={preferences.borderThickness}
+            onChange={(event) => setPreferences({ borderThickness: Number(event.target.value) })}
+            className="w-full accent-primary"
+          />
+          <span className="block text-xs text-muted-foreground">
+            Scales every card, panel, and input outline. 100% is the normal 1px line; 200% doubles it.
+          </span>
+        </label>
       </SettingsSection>
 
       <SettingsSection
-        icon={Contrast}
-        title="Contrast & motion"
-        description="Readability and animation preferences, including how instances are presented."
+        icon={Zap}
+        title="Motion & interaction"
+        description="Animation preferences, including how instances are presented."
         contentClassName="space-y-4"
       >
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span>High contrast</span>
-          <input type="checkbox" aria-label="High contrast" checked={preferences.highContrast} onChange={(event) => setPreferences({ highContrast: event.target.checked })} className="h-5 w-5 accent-primary" />
-        </label>
         <label className="space-y-1 text-sm">
           <span className="font-medium">Motion</span>
           <select
@@ -341,9 +370,24 @@ export function AppearanceResetControls({ onResetLayout }: { onResetLayout: () =
  */
 export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLivingBackground?: () => void }) {
   const { enabled, setEnabled, soundOn, setSoundOn, soundVolume, setSoundVolume, musicVolume, setMusicVolume, musicOn, setMusicOn, clearBackground, setClearBackground, motionSuppressed } = useAmbience();
+  const { setPreferences } = useUiPreferences();
+  // The interaction preference is owned by the Interface sub-page; read it
+  // directly so this card can tell "the world is off because of Simple mode"
+  // from "off because the user chose Reduce motion".
+  const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { setLoaded(true); }, []);
   if (!loaded) return null;
+
+  const suppressed = motionSuppressed || interaction === 'simple';
+
+  /** Leave Simple mode and pin Full motion so the living background can run. */
+  const enableLivingBackgroundMotion = () => {
+    setInteraction('standard');
+    savePreference('standard');
+    suspendHighInteraction();
+    setPreferences({ motion: 'full' });
+  };
 
   return (
     <SettingsSection
@@ -354,7 +398,7 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
       contentClassName="space-y-3"
       data-testid="living-background-settings"
     >
-      {onOpenLivingBackground && (
+      {onOpenLivingBackground && !suppressed && (
         <div className="settings-feature-card">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold">Open the Living Background page</p>
@@ -372,6 +416,25 @@ export function LivingBackgroundSettings({ onOpenLivingBackground }: { onOpenLiv
             className="shrink-0 rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             {enabled ? 'Open' : 'Turn on and open'}
+          </button>
+        </div>
+      )}
+
+      {onOpenLivingBackground && suppressed && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2.5 space-y-2" role="alert">
+          <p className="text-sm font-semibold text-red-700 dark:text-red-300">
+            To use the living background you must disable reduced motion and Simple mode.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            The world is movement — weather, animals, day and night — so it stays off while motion is
+            reduced or Simple interaction mode is selected. Your other ambience settings are kept.
+          </p>
+          <button
+            type="button"
+            onClick={enableLivingBackgroundMotion}
+            className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Disable Simple mode and use full motion
           </button>
         </div>
       )}

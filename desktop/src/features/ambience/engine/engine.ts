@@ -223,6 +223,12 @@ export class AmbienceEngine {
 
   getView(): { zoom: number; tx: number; ty: number } { return { ...this.view }; }
 
+  /** Whether the player has a rainbow pinned via the Living Background page. */
+  isRainbowPinned(): boolean {
+    const world = this.state.world as WorldState | null;
+    return world?.flags.rainbowPinned === true;
+  }
+
   private applyView(): void {
     const { zoom, tx, ty } = this.view;
     this.bg.style.transformOrigin = '50% 50%';
@@ -272,8 +278,11 @@ export class AmbienceEngine {
     else world.clearRainbow();
   }
 
+  private lastPinnedTrackId: string | null = null;
+
   /** Play a specific piece. Implies the player is choosing, so autoplay stops. */
   setTrack(id: string): void {
+    this.lastPinnedTrackId = id;
     this.musicAuto = false;
     this.withTracks((all) => {
       const track = all.find((t) => t.id === id);
@@ -284,6 +293,11 @@ export class AmbienceEngine {
   /** Force an instrument for every track until the player picks another. */
   setInstrument(id: string): void {
     music.setInstrument(id, true);
+  }
+
+  /** The id of the piece currently playing, or null during silence. */
+  currentTrackId(): string | null {
+    return music.currentTrackId();
   }
 
   /** Toggle the cursor companion (buddy) on/off. */
@@ -318,6 +332,19 @@ export class AmbienceEngine {
     // the current piece and start another. Only the end of a piece (or an
     // explicit pick) changes the track.
     if (music.isPlaying()) return;
+    // Only autoplay a random piece when "Let it choose" (musicAuto) is on.
+    // If the user pinned a specific piece, resume that piece instead of
+    // shuffling to a random one — otherwise toggling music off/on would
+    // unexpectedly jump to a random track even though Let it decide is off.
+    if (!this.musicAuto && this.lastPinnedTrackId) {
+      this.withTracks((all) => {
+        const pinned = all.find((t) => t.id === this.lastPinnedTrackId);
+        if (pinned) music.start(pinned);
+        else this.playNextAuto(all);
+      });
+      return;
+    }
+    if (!this.musicAuto) return;
     this.withTracks((all) => this.playNextAuto(all));
   }
 

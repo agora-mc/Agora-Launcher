@@ -272,7 +272,16 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
         </div>
 
         <h3 className="mt-3 text-base font-bold text-foreground">{step.title}</h3>
-        <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{step.body}</p>
+        {step.id === 'mod-detail-tabs' ? (
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+            <span className="text-primary underline decoration-primary/40 underline-offset-2 font-medium">About</span> describes the mod,{' '}
+            <span className="text-primary underline decoration-primary/40 underline-offset-2 font-medium">Gallery</span> shows it in action, and{' '}
+            <span className="text-primary underline decoration-primary/40 underline-offset-2 font-medium">Versions</span> lists every release you can install. Curated entries also get an{' '}
+            <span className="text-primary underline decoration-primary/40 underline-offset-2 font-medium">Agora</span> tab with their review history and curated status.
+          </p>
+        ) : (
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{step.body}</p>
+        )}
 
         {hint && (
           <p

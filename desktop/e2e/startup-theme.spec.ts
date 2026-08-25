@@ -32,7 +32,6 @@ test('stored preferences apply before optional Windows accent resolves', async (
       density: 'comfortable',
       cornerStyle: 'soft',
       motion: 'system',
-      highContrast: false,
     }));
     Object.assign(window as unknown as Record<string, unknown>, {
       __TAURI_INTERNALS__: {

@@ -54,10 +54,13 @@ export function LivingBackground() {
     setTodLocked,
     setWeatherLocked,
     readClock,
+    readView,
     setZoom,
     setRainbow,
+    isRainbowPinned,
     setTrack,
     setInstrument,
+    currentTrackId,
     setMusicAuto,
     shuffleMusic,
     setBuddy,
@@ -78,15 +81,30 @@ export function LivingBackground() {
   const [rainbow, setRainbowValue] = useState(false);
   const [track, setTrackValue] = useState('');
   const [instrument, setInstrumentValue] = useState('');
+  // The piece the engine is playing right now — surfaced as a marker in the
+  // piece dropdown while "Let it choose" is selected. Polled because playback
+  // changes never pass through this component's state.
+  const [nowPlaying, setNowPlaying] = useState<string | null>(null);
   // The panel covers a good part of the world it is configuring, so it folds
   // away — but the reopen control stays put, never hunted for.
   const [panelOpen, setPanelOpen] = useState(true);
 
-  // Announce the page to the engine (companion on).
+  // Announce the page to the engine (companion on) and mirror state the engine
+  // owns: a rainbow pinned from an earlier visit to this page is still up in
+  // the world, and a checkbox that reads unchecked while an arc sits in the sky
+  // makes the rainbow impossible to turn off (it also read as "stuck on").
   useEffect(() => {
     setBuddy(buddy);
+    setRainbowValue(isRainbowPinned());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const sync = () => setNowPlaying(currentTrackId());
+    sync();
+    const id = window.setInterval(sync, 500);
+    return () => window.clearInterval(id);
+  }, [currentTrackId]);
 
   /**
    * Keep the engine in step with what the piece selector is showing.
@@ -147,11 +165,19 @@ export function LivingBackground() {
     setWeatherLockedValue(next);
     setWeatherLocked(next);
   };
-  // Push the default down to the engine as soon as it exists.
+  // Mirror the engine's zoom instead of pushing the default: the world (and its
+  // zoom) live on the global canvas and survive page navigation, so resetting
+  // to DEFAULT_ZOOM here snapped the world back every time the user left this
+  // page and came back. Read once when the engine is ready; the slider then
+  // drives it as usual.
+  const zoomSyncedRef = useRef(false);
   useEffect(() => {
-    if (ready) setZoom(DEFAULT_ZOOM);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+    if (!ready || zoomSyncedRef.current) return;
+    const view = readView();
+    if (!view) return;
+    zoomSyncedRef.current = true;
+    setZoomValue(Math.max(MIN_ZOOM, Math.min(2, view.zoom)));
+  }, [ready, readView]);
 
   const changeZoom = (z: number) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(2, Math.round(z * 10) / 10));
@@ -422,9 +448,18 @@ export function LivingBackground() {
                 className="block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
               >
                 <option value="">Let it choose</option>
-                {MUSIC_TRACK_CHOICES.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name} · {t.mood}</option>
-                ))}
+                {MUSIC_TRACK_CHOICES.map((t) => {
+                  const playing = track === '' && nowPlaying === t.id;
+                  return (
+                    <option
+                      key={t.id}
+                      value={t.id}
+                      className={playing ? 'bg-primary/25 font-semibold' : undefined}
+                    >
+                      {playing ? '▶ ' : ''}{t.name} · {t.mood}{playing ? ' — now playing' : ''}
+                    </option>
+                  );
+                })}
               </select>
             </label>
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import {
+  AlertTriangle,
   Bot,
   Boxes,
   Coffee,
@@ -1070,14 +1071,11 @@ export function Settings({
         />
       </label>
       <p className="text-xs text-muted-foreground">
-        <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles auth and JVM execution.
+        <strong>Off (default):</strong> Delegates to the official Mojang launcher — handles authentication and Minecraft execution.
         The Mojang launcher opens with your instance pre-selected via <code className="bg-muted px-1 py-0.5 rounded">--profile</code>.
       </p>
       <p className="text-xs text-muted-foreground">
         <strong>On:</strong> Agora launches Minecraft directly — shows game console output in-app and gives you more control. Requires a Microsoft Account sign-in above for full online play.
-      </p>
-      <p className="text-xs text-muted-foreground">
-        Mojang Metadata, Mojang Content, and Modloader Metadata &amp; Content are <strong>enabled by default</strong> under <strong>Privacy → Launch</strong>. Once files are cached, installed instances can launch with those categories disabled.
       </p>
       {ts.statuses['launch_mode']?.status === 'error' && (
         <p className="text-xs text-destructive">{ts.statuses['launch_mode']?.error}</p>
@@ -1145,6 +1143,18 @@ export function Settings({
       )}
       <p className="text-xs text-muted-foreground">
         Override the official Mojang launcher executable location.
+      </p>
+    </SettingsSection>
+  );
+
+  const disclaimerCard = (
+    <SettingsSection
+      id="settings-disclaimer"
+      icon={AlertTriangle}
+      title="Disclaimer"
+    >
+      <p className="text-xs text-muted-foreground">
+        Agora is a third-party launcher and is not affiliated with Mojang Studios or Microsoft. It is provided as-is, without warranty of any kind. Use at your own risk.
       </p>
     </SettingsSection>
   );
@@ -2049,6 +2059,7 @@ export function Settings({
             <>
               {launchModeCard}
               {gate(launcherPathCard)}
+              {disclaimerCard}
             </>
           ),
         },

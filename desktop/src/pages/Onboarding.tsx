@@ -141,7 +141,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   return (
     <OnboardingFlowContext.Provider value={{ directLaunch }}>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-        <div className="w-full max-w-xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
+        <div className="w-[70vw] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
           <div className="p-6 sm:p-8">
             {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
             {step === 'appearance' && (
@@ -301,14 +301,7 @@ function WelcomeStep({ onContinue }: { onContinue: () => void }) {
       <Stepper current="welcome" />
       <h2 className="text-2xl font-bold mb-2">Welcome to Agora</h2>
       <p className="text-muted-foreground mb-4">
-        A decentralized, ad-free, open-source Minecraft mod launcher and discovery platform.
-      </p>
-      <p className="text-sm mb-6">
-        Agora returns platform control to the community. The GitHub repository itself is the
-        database — flat-file manifests are compiled into a signed SQLite registry. Agora can launch
-        directly with optional in-app Microsoft authentication, while delegation to the official
-        Mojang launcher remains available as the default fallback. GitHub governance sign-in and
-        GitHub Copilot sign-in are separate optional accounts.
+        A decentralized, ad-free, community run, open-source Minecraft mod launcher and discovery platform.
       </p>
       <div className="flex justify-end">
         <button
@@ -530,6 +523,26 @@ function ServicesStep({
     void setSetting(key, value).catch(() => {});
   };
 
+  const TECHNIC_ENABLE_WARNING = [
+    'Enable Technic browsing?',
+    '',
+    'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
+    '',
+    'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
+    '',
+    'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
+  ].join('\n');
+
+  const UNVERIFIED_PACKS_ENABLE_WARNING = [
+    'Allow unverified zip packs?',
+    '',
+    'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+    '',
+    'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
+    '',
+    'Only enable this if you already trust the specific pack you are installing.',
+  ].join('\n');
+
   return (
     <div>
       <Stepper current="services" />
@@ -548,24 +561,47 @@ function ServicesStep({
             handleToggle('modrinth_enabled', modrinth);
           }}
         />
-        <ServiceToggle
-          title="Technic modpacks"
-          description="Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides."
-          checked={values.technic}
-          onChange={(technic) => {
-            onChange({ ...values, technic });
-            handleToggle('technic_enabled', technic);
-          }}
-        />
-        <ServiceToggle
-          title="Unverified zip packs"
-          description="More packs become available, but Agora cannot verify these files: no hash, no curator review, no per-file audit. You are accepting files on the pack author's word."
-          checked={values.allowUnverifiedPacks}
-          onChange={(allowUnverifiedPacks) => {
-            onChange({ ...values, allowUnverifiedPacks });
-            handleToggle('allow_unverified_packs', allowUnverifiedPacks);
-          }}
-        />
+        <div>
+          <ServiceToggle
+            title="Technic modpacks"
+            description="Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides. You are trading high security for extra options — only recommended if you trust the developer."
+            checked={values.technic}
+            onChange={(technic) => {
+              if (technic && !window.confirm(TECHNIC_ENABLE_WARNING)) return;
+              if (!technic && values.allowUnverifiedPacks) {
+                const next = { ...values, technic, allowUnverifiedPacks: false };
+                onChange(next);
+                void setSetting('technic_enabled', technic).catch(() => {});
+                void setSetting('allow_unverified_packs', false).catch(() => {});
+                return;
+              }
+              onChange({ ...values, technic });
+              handleToggle('technic_enabled', technic);
+            }}
+          />
+          {values.technic && (
+            <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              You are trading high security for extra options — Technic packs are not curated or verified by Agora. Only install packs from developers you trust.
+            </div>
+          )}
+        </div>
+        <div>
+          <ServiceToggle
+            title="Unverified zip packs"
+            description="More packs become available, but Agora cannot verify these files: no hash, no curator review, no per-file audit. You are accepting files on the pack author's word. Only enable if you trust the developer — this is the weakest security tier."
+            checked={values.allowUnverifiedPacks}
+            onChange={(allowUnverifiedPacks) => {
+              if (allowUnverifiedPacks && !window.confirm(UNVERIFIED_PACKS_ENABLE_WARNING)) return;
+              onChange({ ...values, allowUnverifiedPacks });
+              handleToggle('allow_unverified_packs', allowUnverifiedPacks);
+            }}
+          />
+          {values.allowUnverifiedPacks && (
+            <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+              Unverified packs have NO integrity information. Agora cannot detect tampering in transit. Only install if you already trust the specific pack and its host.
+            </div>
+          )}
+        </div>
         <ServiceToggle
           title="AI / MCP Server"
           description="Enable the local MCP server for external AI tools to interact with Agora."
@@ -585,12 +621,6 @@ function ServicesStep({
           }}
         />
       </div>
-
-      <p className="mt-3 text-xs text-muted-foreground">
-        <strong>MCP Server</strong> connects your existing AI agent to Agora.{' '}
-        <strong>Integrated AI</strong> gives you a built-in chat — simpler, no setup, but less
-        powerful. You can use either, both, or neither.
-      </p>
 
       {error && <p className="mt-4 text-xs text-destructive">{error}</p>}
 
@@ -665,7 +695,7 @@ function JavaStep({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  const OPERATION_ID = 'onboarding-java-21';
+  const OPERATION_ID = 'onboarding-java-25';
 
   // Listen for java-runtime-progress events for onboarding
   useEffect(() => {
@@ -678,7 +708,7 @@ function JavaStep({
         setPercent(event.payload.percent);
         if (event.payload.stage === 'ready') {
           setDone(true);
-          setProgress('Java 21 is ready.');
+          setProgress('Java 25 is ready.');
         }
       },
     );
@@ -710,11 +740,11 @@ function JavaStep({
     }
     setBusy(true);
     setError(null);
-    setProgress('Preparing Java 21 runtime…');
+    setProgress('Preparing Java 25 runtime…');
     setPercent(0);
     try {
-      await ensureJavaRuntime(21, OPERATION_ID);
-      setProgress('Java 21 is ready.');
+      await ensureJavaRuntime(25, OPERATION_ID);
+      setProgress('Java 25 is ready.');
       setPercent(100);
       setDone(true);
       setTimeout(() => onContinue(), 800);
@@ -734,16 +764,16 @@ function JavaStep({
       <h2 className="text-2xl font-bold mb-2">Prepare Java for Minecraft</h2>
       <p className="text-muted-foreground mb-6">
         You chose direct launch, so Agora runs Minecraft itself and needs its own Java runtime.
-        Modern Minecraft (1.17+) requires Java 17 or higher, and Agora can download Java 21 — the
-        latest long-term support version — so your instances work out of the box.
+        Modern Minecraft (1.17+) requires Java 17 or higher, and the latest releases require Java 25 — the
+        current long-term support version — so Agora can download it for you and your instances work out of the box.
       </p>
 
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <p className="font-medium text-sm">Prepare Java 21 for modern Minecraft</p>
+            <p className="font-medium text-sm">Prepare Java 25 for modern Minecraft</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Downloads and manages a private Java 21 runtime in Agora's app data directory.
+              Downloads and manages a private Java 25 runtime in Agora's app data directory.
               Older exact versions download automatically when needed for specific instances.
             </p>
           </div>
@@ -751,7 +781,7 @@ function JavaStep({
             type="button"
             role="switch"
             aria-checked={checked}
-            aria-label="Prepare Java 21 for modern Minecraft"
+            aria-label="Prepare Java 25 for modern Minecraft"
             onClick={() => {
               if (!busy) setChecked(!checked);
             }}
@@ -901,67 +931,77 @@ function LaunchStep({
     }
   };
 
+  const canContinue = !directLaunch || !!msa;
+
   return (
     <div>
       <Stepper current="launch" />
       <h2 className="text-2xl font-bold mb-2">Choose How to Launch</h2>
       <p className="text-muted-foreground mb-6">
-        Decide whether Agora or the official Mojang launcher runs Minecraft. This can be changed at
-        any time in Settings.
+        Agora delegates to the official Mojang launcher for Microsoft authentication and game launch by default. You can also let Agora handle the launch directly, which gives you faster launches (no waiting for the Mojang launcher to start) and in-app console output, but requires a Microsoft sign-in for full online play.
       </p>
 
       <div className="space-y-4">
-        <ServiceToggle
-          title="Direct launch (in-app launcher)"
-          description="On: Agora launches Minecraft directly — the game runs inside Agora with in-app console output and process control. Requires the Microsoft sign-in below for full online play. Off (default): Agora prepares your instance and hands off to the official Mojang launcher, which handles Microsoft authentication and starts the game itself."
-          checked={directLaunch}
-          onChange={handleToggle}
-        />
-
         <div className="rounded-xl border border-border bg-card p-4">
-          <p className="font-medium text-sm">Microsoft Account</p>
-          {msaLoading ? (
-            <p className="mt-2 text-xs text-muted-foreground">Checking connection…</p>
-          ) : msa ? (
-            <div className="mt-2 space-y-1">
-              <p className="text-sm text-green-600 dark:text-green-400">
-                ● Signed in as <strong>{msa.username}</strong>
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Used to authenticate with Minecraft services during direct launch.
-              </p>
-              <button
-                onClick={handleMsaSignOut}
-                className="text-xs text-muted-foreground hover:text-foreground underline"
-              >
-                Sign out
-              </button>
+          <ServiceToggle
+            title="Direct launch (in-app launcher)"
+            description="On: Agora launches Minecraft directly — the game runs inside Agora with in-app console output and process control. Requires the Microsoft sign-in below for full online play. Off (default): Agora prepares your instance and hands off to the official Mojang launcher, which handles Microsoft authentication and starts the game itself."
+            checked={directLaunch}
+            onChange={handleToggle}
+          />
+          {/* Microsoft Account — childed subsection of the launch mode toggle so it reads as two parts of the same choice */}
+          <div className="mt-4 ml-4 pl-4 border-l-2 border-primary/30">
+            <div className="rounded-lg border border-border bg-muted/30 p-4">
+              <p className="font-medium text-sm">Microsoft Account</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">Part of launch mode — required for direct launch, not needed for delegated launch.</p>
+              {msaLoading ? (
+                <p className="mt-2 text-xs text-muted-foreground">Checking connection…</p>
+              ) : msa ? (
+                <div className="mt-2 space-y-1">
+                  <p className="text-sm text-green-600 dark:text-green-400">
+                    ● Signed in as <strong>{msa.username}</strong>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Used to authenticate with Minecraft services during direct launch.
+                  </p>
+                  <button
+                    onClick={handleMsaSignOut}
+                    className="text-xs text-muted-foreground hover:text-foreground underline"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-2 space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    Sign in with your Microsoft account to use direct launch with full online play.
+                    Delegated launch keeps authentication in the official Mojang launcher and does not need this.
+                  </p>
+                  {msaError && <p className="text-xs text-destructive">{msaError}</p>}
+                  <button
+                    onClick={handleMsaSignIn}
+                    disabled={msaBusy}
+                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+                  </button>
+                </div>
+              )}
+              {directLaunch && !msaLoading && !msa && (
+                <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs font-medium text-amber-800 dark:text-amber-200">
+                  Direct launch requires a Microsoft sign-in to continue. Sign in above, or switch direct launch off to use delegated launch.
+                </p>
+              )}
             </div>
-          ) : (
-            <div className="mt-2 space-y-3">
-              <p className="text-xs text-muted-foreground">
-                Sign in with your Microsoft account to use direct launch with full online play.
-                Optional — delegated launch keeps authentication in the official Mojang launcher.
-              </p>
-              {msaError && <p className="text-xs text-destructive">{msaError}</p>}
-              <button
-                onClick={handleMsaSignIn}
-                disabled={msaBusy}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
-              </button>
-            </div>
-          )}
-          {directLaunch && !msaLoading && !msa && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Direct launch is enabled without a Microsoft account — you can still launch, but
-              online play and skins will not work until you sign in.
-            </p>
-          )}
+          </div>
         </div>
       </div>
 
+      {!canContinue && (
+        <p className="mt-4 text-xs font-medium text-destructive">
+          You must sign in with Microsoft to use direct launch, or turn direct launch off to continue with delegated launch.
+        </p>
+      )}
       {error && <p className="mt-4 text-xs text-destructive">{error}</p>}
 
       <div className="mt-8 flex justify-between">
@@ -973,7 +1013,8 @@ function LaunchStep({
         </button>
         <button
           onClick={handleContinue}
-          disabled={saving || msaBusy}
+          disabled={saving || msaBusy || !canContinue}
+          title={!canContinue ? 'Sign in with Microsoft or switch back to delegated launch to continue' : undefined}
           className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Continue'}

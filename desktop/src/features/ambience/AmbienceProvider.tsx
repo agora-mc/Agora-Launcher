@@ -56,13 +56,19 @@ export interface AmbienceContextValue {
   setWeatherLocked: (on: boolean) => void;
   /** Read the world's clock so controls can follow it. Null before the engine exists. */
   readClock: () => AmbienceClock | null;
+  /** The world's current zoom, so controls can mirror the engine instead of resetting it. */
+  readView: () => { zoom: number; tx: number; ty: number } | null;
   setZoom: (z: number) => void;
   setBuddy: (on: boolean) => void;
   /** Rainbow: put one up now, or take it down. */
   setRainbow: (on: boolean) => void;
+  /** Whether a player-pinned rainbow is currently up (the page's checkbox mirrors this). */
+  isRainbowPinned: () => boolean;
   /** Music: pick a piece, an instrument, or hand it back to autoplay. */
   setTrack: (id: string) => void;
   setInstrument: (id: string) => void;
+  /** The piece the music engine is playing right now (for "now playing" markers). */
+  currentTrackId: () => string | null;
   /**
    * Hand the choice of piece back to autoplay ("Let it choose"). Engine-only,
    * deliberately not persisted: it is implied by the piece selector, which
@@ -227,11 +233,14 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
     setTodLocked: (on) => engine?.setTodLocked(on),
     setWeatherLocked: (on) => engine?.setWeatherLocked(on),
     readClock: () => (engine ? (engine.clockState() as AmbienceClock) : null),
+    readView: () => (engine ? engine.getView() : null),
     setZoom: (z) => engine?.setZoom(z),
     setBuddy: (on) => engine?.setBuddy(on),
     setRainbow: (on) => engine?.setRainbow(on),
+    isRainbowPinned: () => engine?.isRainbowPinned() ?? false,
     setTrack: (id) => engine?.setTrack(id),
     setInstrument: (id) => engine?.setInstrument(id),
+    currentTrackId: () => engine?.currentTrackId() ?? null,
     setMusicAuto: (on) => engine?.setMusicAuto(on),
     shuffleMusic: () => engine?.shuffleNow(),
     ready: settings !== null,

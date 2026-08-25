@@ -33,19 +33,19 @@ const ROUTES = [
 const WAYS_TO_READ = [
   {
     href: '/docs/tour',
-    title: 'Show me',
+    title: 'Show me (quick)',
     body: 'An annotated screenshot tour of the six screens that cover most of what Agora does.',
   },
   {
     href: '/docs/guides',
-    title: 'Walk me through it',
+    title: 'Walk me through it (task guides)',
     body: 'Numbered steps for a specific task, assuming no prior modding knowledge. Every guide has this version.',
   },
-  {
-    href: '/docs/guides/modding-foundations#advanced',
-    title: 'Explain how it works',
-    body: 'The same guides written a second time as models rather than recipes — for readers who would rather understand than follow.',
-  },
+  // {
+  //   href: '/docs/guides/modding-foundations#advanced',
+  //   title: 'Explain how it works',
+  //   body: 'The same guides written a second time as models rather than recipes — for readers who would rather understand than follow.',
+  // },
   {
     href: '/docs/cli',
     title: 'Just give me the syntax',
@@ -79,7 +79,7 @@ export default async function DocsPage() {
         <p className="mt-4 max-w-3xl text-lg leading-8 text-gray-600 dark:text-gray-300">
           Agora is documented in a few different ways on purpose, because
           &ldquo;show me a picture&rdquo;, &ldquo;give me the steps&rdquo;, &ldquo;explain the
-          model&rdquo;, and &ldquo;just the flags&rdquo; are different questions. Pick the
+          model&rdquo;, and &ldquo;just the flags&rdquo; are different needs. Pick the
           lane that fits, or jump straight to a topic below.
         </p>
       </header>

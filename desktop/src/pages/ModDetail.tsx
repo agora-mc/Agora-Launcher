@@ -1757,7 +1757,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                       Source: Modrinth
                     </span>
                   </div>
-                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground">
+                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground" style={{ fontSize: 'calc(0.875rem * var(--font-scale))' }}>
                     <ReactMarkdown
                       rehypePlugins={[[rehypeRaw, { passThrough: ['html'] }], [rehypeSanitize, SANITIZE_SCHEMA]]}
                       components={{
@@ -1789,7 +1789,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                       Source: upstream
                     </span>
                   </div>
-                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground">
+                  <div className="prose prose-sm dark:prose-invert max-w-none text-foreground" style={{ fontSize: 'calc(0.875rem * var(--font-scale))' }}>
                     <ReactMarkdown
                       rehypePlugins={[[rehypeRaw, { passThrough: ['html'] }], [rehypeSanitize, SANITIZE_SCHEMA]]}
                       components={{
