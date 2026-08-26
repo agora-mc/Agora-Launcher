@@ -17,10 +17,22 @@ const ROUTES = [
     cta: 'Install and first run',
   },
   {
+    href: '/docs/guides',
+    heading: 'I want step-by-step guides for everything',
+    body: 'Step-by-step guides for common tasks, from installing mods to sharing setups.',
+    cta: 'Task guides',
+  },
+  {
     href: '/docs/troubleshooting',
     heading: 'Something is not working',
     body: 'Start from the symptom: launch blocked, loader mismatch, missing Java, crash after launch, offline failures.',
     cta: 'Troubleshooting',
+  },
+  {
+    href: '/docs/cli',
+    heading: 'I want to use the command line',
+    body: 'The CLI reference describes every command, flag, exit code, and file location.',
+    cta: 'CLI reference',
   },
   {
     href: '/docs/development',
@@ -46,11 +58,11 @@ const WAYS_TO_READ = [
   //   title: 'Explain how it works',
   //   body: 'The same guides written a second time as models rather than recipes — for readers who would rather understand than follow.',
   // },
-  {
-    href: '/docs/cli',
-    title: 'Just give me the syntax',
-    body: 'Exhaustive reference: commands, flags, output shapes, exit codes, file locations, and evidence collection.',
-  },
+  // {
+  //   href: '/docs/cli',
+  //   title: 'Just give me the syntax',
+  //   body: 'Exhaustive reference: commands, flags, output shapes, exit codes, file locations, and evidence collection.',
+  // },
 ];
 
 const COMMON_QUESTIONS = [
@@ -64,9 +76,24 @@ const COMMON_QUESTIONS = [
   { href: '/docs/guides/java-performance', label: 'How much memory should I give Minecraft?' },
 ];
 
+// Troubleshooting is already a primary route card on this page, so it is
+// skipped in the advanced and developer listing below to avoid duplication.
+const SLUGS_HIDDEN_FROM_LIBRARY = new Set(['troubleshooting']);
+
 export default async function DocsPage() {
   const sections = await getDocNav();
-  const library = sections.filter((section) => section.audience !== 'internal');
+  const library = sections
+    .filter((section) => section.audience !== 'internal')
+    .map((section) => ({
+      ...section,
+      groups: section.groups
+        .map((group) => ({
+          ...group,
+          docs: group.docs.filter((doc) => !SLUGS_HIDDEN_FROM_LIBRARY.has(doc.slug)),
+        }))
+        .filter((group) => group.docs.length > 0),
+    }))
+    .filter((section) => section.groups.length > 0);
   const guideCount = getGuideTopics().length;
 
   return (
@@ -77,10 +104,11 @@ export default async function DocsPage() {
         </p>
         <h1 className="mt-2 text-4xl font-bold tracking-tight">What are you trying to do?</h1>
         <p className="mt-4 max-w-3xl text-lg leading-8 text-gray-600 dark:text-gray-300">
-          Agora is documented in a few different ways on purpose, because
-          &ldquo;show me a picture&rdquo;, &ldquo;give me the steps&rdquo;, &ldquo;explain the
-          model&rdquo;, and &ldquo;just the flags&rdquo; are different needs. Pick the
-          lane that fits, or jump straight to a topic below.
+          This page is a hub for all the documentation Agora provides. It is organized by what you are trying to do, so you can find the right information quickly. 
+          If you are new to Agora, start with the install and first run guide. If you are troubleshooting an issue, check the troubleshooting guide. 
+          If you are using the CLI tool, check the CLI reference. If you want to contribute or build Agora, check the development guide.
+          <br/>
+          The links below are the same as the left sidebar with additional descriptions and grouped by audience.
         </p>
       </header>
 
@@ -104,7 +132,7 @@ export default async function DocsPage() {
         </div>
       </section>
 
-      <section>
+      {/* <section>
         <h2 className="text-2xl font-bold">Four ways to read the same thing</h2>
         <p className="mt-2 max-w-3xl text-gray-600 dark:text-gray-300">
           These are not four different sets of facts. They are the same product
@@ -123,7 +151,7 @@ export default async function DocsPage() {
             </Link>
           ))}
         </div>
-      </section>
+      </section> */}
 
       <section>
         <h2 className="text-2xl font-bold">Common questions</h2>
@@ -162,10 +190,10 @@ export default async function DocsPage() {
 
       <section className="space-y-8">
         <div>
-          <h2 className="text-2xl font-bold">Reference library</h2>
+          <h2 className="text-2xl font-bold">Advanced and developer docs</h2>
           <p className="mt-2 max-w-3xl text-gray-600 dark:text-gray-300">
-            Rendered directly from the repository&rsquo;s markdown, so the site and
-            the source cannot disagree. Grouped by who needs them.
+            The above guides are meant for desktop app users. If you are using the CLI tool, wish to contribute, or want to understand the inner workings of Agora, check the developer docs. 
+            They cover the CLI reference, local builds, validation gates, architecture boundaries, registry curation, and release procedure.
           </p>
         </div>
         {library.map((section) => (

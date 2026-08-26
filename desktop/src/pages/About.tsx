@@ -87,10 +87,11 @@ export function About() {
           <h3 className="text-lg font-semibold">What makes Agora unique</h3>
         </div>
         <p className="text-sm leading-6 text-muted-foreground">
+          Agora works to bring user-friendliness, advanced features, and multiple sources of mods together in one place.
           Most launchers and mod platforms are run for profit, alienate non-tech savvy and visual focused users, are littered with ads, and/or bury
           great mods under a mountain of mediocre downloads. Agora is the opposite — it puts the
           community in charge and keeps the experience personal, private, and free.
-          Too much of the modding community it built around which platform is used and their philosophies. Modding was never meant to be an industry, it was meant to be a community. As with the Origin of the word in ancient Greece Agora is the beating heart that brings that community together.
+          Too much of the modding community is built around which platform is used and their philosophies. Modding was never meant to be an industry, it was meant to be a community. As with the Origin of the word in ancient Greece Agora is the beating heart that brings that community together.
         </p>
       </section>
 
