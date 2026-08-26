@@ -701,7 +701,7 @@
   gap: 0.25rem;
   overflow-x: auto;
   border-radius: calc(var(--radius) * 1.15);
-  border: 1px solid hsl(var(--border));
+  border: calc(1px * var(--border-scale)) solid hsl(var(--border));
   background-color: hsl(var(--card) / var(--surface-opacity));
   padding: 0.35rem;
   box-shadow: 0 10px 30px -26px hsl(var(--foreground) / 0.8);

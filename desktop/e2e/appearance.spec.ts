@@ -77,7 +77,7 @@ test('font, scale, border color, and reduced motion persist', async ({ page }) =
   await openAppearance(page, 'Theme');
   await page.getByLabel('Toggle custom colors').click();
   await page.getByLabel('Use custom border color').check();
-  await page.getByLabel('Border color').fill('#506478');
+  await page.getByLabel('Border color', { exact: true }).fill('#506478');
 
   await expect(page.locator('html')).toHaveAttribute('data-font', 'readable');
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'reduced');
@@ -94,6 +94,7 @@ test('border color defaults to the accent when left on theme mode', async ({ pag
   await openAppearance(page, 'Theme');
   await page.getByLabel('Toggle custom colors').click();
   await expect(page.getByLabel('Use custom border color')).not.toBeChecked();
+  await page.getByLabel('Color mode').selectOption('light');
   await page.getByLabel('Accent source').selectOption('custom');
   await page.getByLabel('Custom accent color').fill('#663399');
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--primary').trim())).toBe('270 50% 40%');
@@ -106,7 +107,7 @@ test('text scale slider extends to 200%', async ({ page }) => {
   await expect(slider).toHaveAttribute('max', '2');
   await slider.fill('2');
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--font-scale'))).toBe('2');
-  await expect(page.getByText('200%')).toBeVisible();
+  await expect(page.getByText('200%', { exact: true })).toBeVisible();
 });
 
 test('border thickness slider scales every border width', async ({ page }) => {
@@ -134,7 +135,7 @@ test('border thickness slider scales every border width', async ({ page }) => {
 test('background, text, density, scale, corners, and fonts apply broadly', async ({ page }) => {
   await openAppearance(page, 'Interface');
   const card = page.getByTestId('appearance-interface');
-  const sampleText = card.getByText('Font, density, corners, and text size apply across every page.');
+  const sampleText = card.getByText('Font, density, corners, border thickness, and text size apply across every page.');
   const initialPadding = await card.evaluate((element) => getComputedStyle(element).paddingTop);
   const initialFontSize = await sampleText.evaluate((element) => getComputedStyle(element).fontSize);
   const initialRadius = await card.evaluate((element) => getComputedStyle(element).borderRadius);

@@ -1,5 +1,6 @@
 import {
   Info,
+  Landmark,
   Sparkles,
   SlidersHorizontal,
   Vote,
@@ -73,10 +74,15 @@ export function About() {
         </div>
       </section>
 
-      <section className="panel space-y-4">
-        <h2 className="rule-gold text-xl font-semibold text-ink">Why "Agora"?</h2>
-        <p className="leading-7 text-gray-700 dark:text-gray-300">
-          The name "Agora" comes from the ancient Greek word for a public gathering place. Just as the Agora was the heart of social and political life in ancient Athens, Agora is designed to be a central hub for the Minecraft modding community.
+      <section className="rounded-xl border border-border bg-card p-6">
+        <div className="flex items-center gap-2 mb-3">
+          <Landmark className="h-5 w-5 text-primary" aria-hidden="true" />
+          <h3 className="text-lg font-semibold">Why &ldquo;Agora&rdquo;?</h3>
+        </div>
+        <p className="text-sm leading-6 text-muted-foreground">
+          The name &ldquo;Agora&rdquo; comes from the ancient Greek word for a public gathering
+          place. Just as the agora was the heart of social and political life in ancient Athens,
+          Agora is designed to be a central hub for the Minecraft modding community.
         </p>
       </section>
 
@@ -86,15 +92,22 @@ export function About() {
           <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
           <h3 className="text-lg font-semibold">What makes Agora unique</h3>
         </div>
-        <p className="text-sm leading-6 text-muted-foreground">
-          Agora works to bring user-friendliness, advanced features, and multiple sources of mods together in one place.
-          Most launchers and mod platforms are run for profit, alienate non-tech savvy and visual focused users, are littered with ads, and/or bury
-          great mods under a mountain of mediocre downloads. Agora is the opposite — it puts the
-          community in charge and keeps the experience personal, private, and free.
-          Too much of the modding community is built around which platform is used and their philosophies. Modding was never meant to be an industry, it was meant to be a community. As with the Origin of the word in ancient Greece Agora is the beating heart that brings that community together.
-        </p>
+        <div className="space-y-3 text-sm leading-6 text-muted-foreground">
+          <p>
+            Agora works to bring user-friendliness, advanced features, and multiple sources of
+            mods together in one place. Most launchers and mod platforms are run for profit,
+            alienate non-tech-savvy and visually focused users, are littered with ads, and bury
+            great mods under a mountain of mediocre downloads. Agora is the opposite — it puts
+            the community in charge and keeps the experience personal, private, and free.
+          </p>
+          <p>
+            Too much of the modding community is built around which platform is used and their
+            philosophies. Modding was never meant to be an industry; it was meant to be a
+            community. As with the origin of the word in ancient Greece, Agora is the beating
+            heart that brings that community together.
+          </p>
+        </div>
       </section>
-
 
       {/* Pillars */}
       <div className="grid gap-4 sm:grid-cols-2">

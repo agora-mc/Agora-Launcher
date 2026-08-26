@@ -439,6 +439,11 @@ async function installOnboardingMockWithImport(page: Page) {
         }
         if (command === 'check_registry_update') return Promise.resolve(null);
 
+        // --- Microsoft auth (onboarding Launch step blocks Continue on direct launch without it) ---
+        if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'msa_login') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'msa_logout') return Promise.resolve(null);
+
         // --- Browse / ambient ---
         if (command === 'list_categories') return Promise.resolve([]);
         if (command === 'browse_search') return Promise.resolve({ items: [], total: 0, page: 0, hasMore: false });
