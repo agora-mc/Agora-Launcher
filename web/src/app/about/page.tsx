@@ -58,11 +58,19 @@ export default function AboutPage() {
       </section>
 
       <section className="panel space-y-4">
+        <h2 className="rule-gold text-xl font-semibold text-ink">Why "Agora"?</h2>
+        <p className="leading-7 text-gray-700 dark:text-gray-300">
+          The name "Agora" comes from the ancient Greek word for a public gathering place. Just as the Agora was the heart of social and political life in ancient Athens, Agora is designed to be a central hub for the Minecraft modding community.
+        </p>
+      </section>
+
+      <section className="panel space-y-4">
         <h2 className="rule-gold text-xl font-semibold text-ink">What makes Agora unique</h2>
         <p className="leading-7 text-gray-700 dark:text-gray-300">
-          Most launchers and mod platforms are run for profit, are littered with ads, or bury
+          Most launchers and mod platforms are run for profit, alienate non-tech savvy and visual focused users, are littered with ads, and/or bury
           great mods under a mountain of mediocre downloads. Agora is the opposite — it puts the
           community in charge and keeps the experience personal, private, and free.
+          Too much of the modding community it built around which platform is used and their philosophies. Modding was never meant to be an industry, it was meant to be a community. As with the Origin of the word in ancient Greece Agora is the beating heart that brings that community together.
         </p>
       </section>
 
