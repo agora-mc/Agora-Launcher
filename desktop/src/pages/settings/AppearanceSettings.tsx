@@ -316,27 +316,29 @@ export function AppearanceInterfaceSettings() {
           </span>
         </label>
 
-        <label className="block space-y-1 border-t border-border pt-3 text-sm">
-          <span className="font-medium">Interaction mode</span>
-          <select
-            aria-label="Interaction mode"
-            value={interaction}
-            onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
-            className={`${selectClass} block w-full sm:w-72`}
-          >
-            <option value="standard">Standard</option>
-            <option value="simple">Simple</option>
-            <option value="high-interaction">High Interaction</option>
-          </select>
-          <span className="block text-xs text-muted-foreground">
-            Standard is the full launcher. High Interaction turns an instance into a visual workbench and
-            Browse into the Bazaar. Simple is the quiet version of that workbench — the same big Play
-            button, shelf and pre-flight check with the decoration, scores and surprises removed, plain
-            Browse sorted by Best, and reduced motion (so the living background stays off). Reviews and
-            content changes always open the Standard screens, which remain the only place a change is
-            applied.
-          </span>
-        </label>
+        <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-1 text-sm">
+          <label className="block space-y-1">
+            <span className="font-medium">Interaction mode</span>
+            <select
+              aria-label="Interaction mode"
+              value={interaction}
+              onChange={(event) => applyInteraction(event.target.value as InteractionPreference)}
+              className={`${selectClass} block w-full sm:w-72`}
+            >
+              <option value="standard">Standard</option>
+              <option value="simple">Simple</option>
+              <option value="high-interaction">High Interaction</option>
+            </select>
+            <span className="block text-xs text-muted-foreground">
+              Standard is the full launcher. High Interaction turns an instance into a visual workbench and
+              Browse into the Bazaar. Simple is the quiet version of that workbench — the same big Play
+              button, shelf and pre-flight check with the decoration, scores and surprises removed, plain
+              Browse sorted by Best, and reduced motion (so the living background stays off). Reviews and
+              content changes always open the Standard screens, which remain the only place a change is
+              applied.
+            </span>
+          </label>
+        </div>
       </SettingsSection>
     </>
   );

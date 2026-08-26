@@ -16,6 +16,7 @@ import { AmbienceEngine, type AmbienceProfile } from './engine/engine';
 import type { AmbienceEvent } from './engine/state';
 import type { JournalData } from './engine/eggs';
 import { loadAmbienceSettings, saveAmbienceSettings, type AmbienceSettings } from './ambienceSettings';
+import { ensureJournalLoaded } from './journalStorage';
 
 export interface AmbienceContextValue {
   /** The effective profile the canvas renders with. */
@@ -139,7 +140,7 @@ export function AmbienceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let alive = true;
-    void loadAmbienceSettings().then((s) => { if (alive) setSettings(s); });
+    void Promise.all([loadAmbienceSettings(), ensureJournalLoaded()]).then(([s]) => { if (alive) setSettings(s); });
     return () => { alive = false; };
   }, []);
 

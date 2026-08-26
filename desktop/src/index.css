@@ -230,6 +230,8 @@
 :root[data-density="compact"] .py-2\.5 { padding-top: 0.4rem; padding-bottom: 0.4rem; }
 :root[data-density="compact"] .py-3 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
 :root[data-density="compact"] .py-4 { padding-top: 0.7rem; padding-bottom: 0.7rem; }
+:root[data-density="compact"] .pt-2 { padding-top: 0.35rem; }
+:root[data-density="compact"] .pt-3 { padding-top: 0.5rem; }
 :root[data-density="compact"] .gap-3 { gap: 0.5rem; }
 :root[data-density="compact"] .gap-4 { gap: 0.7rem; }
 :root[data-density="compact"] .gap-6 { gap: 1rem; }
@@ -249,6 +251,8 @@
 :root[data-density="spacious"] .py-2\.5 { padding-top: 0.9rem; padding-bottom: 0.9rem; }
 :root[data-density="spacious"] .py-3 { padding-top: 1rem; padding-bottom: 1rem; }
 :root[data-density="spacious"] .py-4 { padding-top: 1.4rem; padding-bottom: 1.4rem; }
+:root[data-density="spacious"] .pt-2 { padding-top: 0.7rem; }
+:root[data-density="spacious"] .pt-3 { padding-top: 1rem; }
 :root[data-density="spacious"] .gap-3 { gap: 1rem; }
 :root[data-density="spacious"] .gap-4 { gap: 1.4rem; }
 :root[data-density="spacious"] .gap-6 { gap: 2rem; }
@@ -409,13 +413,14 @@
 /* Living Background page: a full, un-blurred view of the living world. The
    page shell drops its translucency and blur entirely so the canvas reads
    edge to edge and stays interactive. The :root[data-ambience] prefix keeps
-   specificity above the ambience translucency rules. */
+   specificity above the ambience translucency rules. Margins intentionally
+   stay on the standard `p-6` from `App.tsx` so this page lines up with every
+   other page despite being an overlay over the ambience canvas. */
 :root[data-ambience] main.living-bg-active {
   background: transparent !important;
   background-color: transparent !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-  padding: 10px 16px 40px !important;
 }
 
 :root[data-ambience] main.living-bg-active :where(.bg-card, .bg-muted, .bg-secondary) {
@@ -627,7 +632,7 @@
     linear-gradient(125deg, hsl(var(--card)), hsl(var(--primary) / 0.42)),
     hsl(var(--card));
   color: hsl(var(--card-foreground));
-  border: 1px solid hsl(var(--primary) / 0.35);
+  border: calc(1px * var(--border-scale)) solid hsl(var(--primary) / 0.35);
   box-shadow: 0 10px 30px -20px hsl(var(--foreground) / 0.55);
   padding: 1.5rem;
 }
@@ -778,7 +783,7 @@
   max-width: 100%;
   overflow-x: auto;
   border-radius: 999px;
-  border: 1px solid hsl(var(--border));
+  border: calc(1px * var(--border-scale)) solid hsl(var(--border));
   background-color: hsl(var(--muted));
   padding: 0.25rem;
 }
@@ -837,7 +842,7 @@
   align-items: center;
   gap: 1rem;
   border-radius: var(--radius);
-  border: 1px solid hsl(var(--primary) / 0.35);
+  border: calc(1px * var(--border-scale)) solid hsl(var(--primary) / 0.35);
   background-color: hsl(var(--card) / var(--surface-opacity));
   background-image: linear-gradient(120deg, hsl(var(--primary) / 0.16), hsl(var(--primary) / 0.03));
   padding: 0.85rem 1rem;

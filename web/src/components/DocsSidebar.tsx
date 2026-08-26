@@ -30,8 +30,7 @@ function NavGroup({
 }) {
   return (
     <div className="mt-3">
-      <p className="px-2 text-xs font-medium text-gray-400 dark:text-gray-500">{group.group}</p>
-      <ul className="mt-1 space-y-0.5 text-sm">
+      <ul className="space-y-0.5 text-sm">
         {group.links.map((link) => {
           const href = `/docs/${link.slug}`;
           const active = pathname === href;
@@ -91,9 +90,11 @@ export function DocsSidebar({ sections }: DocsSidebarProps) {
       </button>
 
       <div id="docs-nav-panel" className={`${mobileOpen ? 'mt-4' : 'hidden'} lg:mt-0 lg:block`}>
-      <p className="px-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-        Start here
-      </p>
+      <div className="border-y border-gray-200 py-2.5 dark:border-gray-700">
+        <p className="px-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Start here
+        </p>
+      </div>
       <ul className="mt-2 space-y-0.5 text-sm">
         {START_HERE.map((item) => {
           const active =
@@ -116,9 +117,11 @@ export function DocsSidebar({ sections }: DocsSidebarProps) {
 
       {primary.map((section) => (
         <div key={section.audience} className="mt-6">
-          <p className="px-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            {section.label}
-          </p>
+          <div className="border-y border-gray-200 py-2.5 dark:border-gray-700">
+            <p className="px-2 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              {section.label}
+            </p>
+          </div>
           {section.groups.map((group) => (
             <NavGroup key={group.group} group={group} pathname={pathname} />
           ))}
@@ -127,7 +130,7 @@ export function DocsSidebar({ sections }: DocsSidebarProps) {
 
       {internal.length > 0 && (
         <details className="mt-6" open={internalIsActive}>
-          <summary className="cursor-pointer px-2 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400">
+          <summary className="cursor-pointer border-y border-gray-200 px-2 py-2.5 text-sm font-semibold uppercase tracking-wide text-gray-500 hover:text-indigo-600 dark:border-gray-700 dark:text-gray-400 dark:hover:text-indigo-400">
             Working notes and archive
           </summary>
           <p className="px-2 pt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">

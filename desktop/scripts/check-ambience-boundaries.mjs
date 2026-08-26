@@ -56,8 +56,8 @@ function importsOf(source) {
 
 function violationsFor(file, source) {
   const out = [];
-  const rel = relative(ROOT, file);
-  const isSettings = rel.replace(/\\/g, '/') === 'ambienceSettings.ts';
+  const rel = relative(ROOT, file).replace(/\\/g, '/').replace(/\\/g, '/');
+  const isAllowedTauri = rel === 'ambienceSettings.ts' || rel === 'journalStorage.ts';
   for (const spec of importsOf(source)) {
     if (spec === 'react') continue;
     if (spec.startsWith('./') || spec.startsWith('../')) {
@@ -69,8 +69,8 @@ function violationsFor(file, source) {
       continue;
     }
     if (spec.startsWith('@/lib/tauri')) {
-      if (isSettings) continue; // the one permitted settings read
-      out.push(`imports @/lib/tauri outside ambienceSettings.ts: '${spec}'`);
+      if (isAllowedTauri) continue; // permitted settings/journal storage
+      out.push(`imports @/lib/tauri outside ambienceSettings.ts/journalStorage.ts: '${spec}'`);
       continue;
     }
     out.push(`imports outside the ambience allowlist: '${spec}'`);

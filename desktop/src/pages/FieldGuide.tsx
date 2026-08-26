@@ -13,7 +13,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BookOpen, RotateCcw } from 'lucide-react';
 import { useAmbience } from '../features/ambience/AmbienceProvider';
 import {
-  JOURNAL_KEY,
   journalFromSaved,
   milestoneAchievements,
   parseSavedJournal,
@@ -21,6 +20,7 @@ import {
   type JournalData,
 } from '../features/ambience/engine/eggs';
 import { FieldJournalView } from '../features/ambience/FieldJournal';
+import { getCachedJournalRawSync, loadJournalRaw } from '../features/ambience/journalStorage';
 import {
   INTERACTION_ACHIEVEMENTS,
   loadEarnedInteraction,
@@ -42,11 +42,25 @@ interface FieldGuideData {
   unlocked: Set<string>;
 }
 
-/** Read the persisted journal + achievements straight from localStorage. */
-function loadSavedGuide(): FieldGuideData {
+/** Read the persisted journal + achievements from Agora app data with fallback. */
+function loadSavedGuideSync(): FieldGuideData {
   let raw: string | null = null;
   try {
-    raw = window.localStorage.getItem(JOURNAL_KEY);
+    raw = getCachedJournalRawSync();
+  } catch {
+    /* ignore */
+  }
+  const saved = parseSavedJournal(raw);
+  return {
+    journal: journalFromSaved(saved),
+    unlocked: new Set(saved?.unlocked ?? []),
+  };
+}
+
+async function loadSavedGuideAsync(): Promise<FieldGuideData> {
+  let raw: string | null = null;
+  try {
+    raw = await loadJournalRaw();
   } catch {
     /* ignore */
   }
@@ -71,7 +85,13 @@ function computeEarned(data: FieldGuideData): Set<string> {
 
 export function FieldGuide() {
   const { journal: liveJournal, enabled } = useAmbience();
-  const [saved, setSaved] = useState<FieldGuideData>(() => loadSavedGuide());
+  const [saved, setSaved] = useState<FieldGuideData>(() => loadSavedGuideSync());
+
+  // Hydrate from Agora app data (local_state.db) — migrates legacy WebView
+  // storage once and ensures deleting the Agora data folder resets progress.
+  useEffect(() => {
+    void loadSavedGuideAsync().then(setSaved);
+  }, []);
 
   // When the engine is running, prefer its live journal (it is fresher); the
   // saved snapshot stays the fallback and the source of persistence.
@@ -81,18 +101,18 @@ export function FieldGuide() {
     }
   }, [liveJournal]);
 
-  const refresh = useCallback(() => setSaved(loadSavedGuide()), []);
+  const refresh = useCallback(() => { void loadSavedGuideAsync().then(setSaved); }, []);
 
   // Re-read on visibility/focus so closing the app and reopening is reflected.
   useEffect(() => {
-    const onShow = () => refresh();
+    const onShow = () => { void loadSavedGuideAsync().then(setSaved); };
     window.addEventListener('focus', onShow);
     document.addEventListener('visibilitychange', onShow);
     return () => {
       window.removeEventListener('focus', onShow);
       document.removeEventListener('visibilitychange', onShow);
     };
-  }, [refresh]);
+  }, []);
 
   const earned = useMemo(() => computeEarned(saved), [saved]);
   const earnedCount = ACHIEVEMENTS.filter((a) => earned.has(a.key)).length;
@@ -100,7 +120,7 @@ export function FieldGuide() {
   // Interaction achievements (the High Interaction instance editor's toasts):
   // same persisted store the WorldEditor writes, so each is earned exactly once.
   const [interactionEarned, setInteractionEarned] = useState<Set<string>>(() => loadEarnedInteraction());
-  useEffect(() => { setInteractionEarned(loadEarnedInteraction()); }, [saved, refresh]);
+  useEffect(() => { setInteractionEarned(loadEarnedInteraction()); }, [saved]);
   const interactionCount = INTERACTION_ACHIEVEMENTS.filter((a) => interactionEarned.has(a.key)).length;
 
   return (

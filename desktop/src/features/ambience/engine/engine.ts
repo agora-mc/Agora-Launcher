@@ -17,7 +17,8 @@
 import { buddyStep, createBuddy, drawBuddy, buddySnap, buddyTarget, buddyVisible, type BuddyState } from './buddy';
 import { advanceClock, createClock, setWeather as clockSetWeather, type ClockState } from './clock';
 import { viewToCanvas, worldViewport } from './terrain';
-import { checkAchievements, journalData, loadJournalState, saveJournalState, JOURNAL_KEY } from './eggs';
+import { checkAchievements, journalData, loadJournalState, saveJournalState } from './eggs';
+import { getCachedJournalRawSync, saveJournalRaw } from '../journalStorage';
 import { music } from './audio/music';
 import type { MusicTrack } from './audio/tracks';
 import { blip as sfxBlip, resumeSfx } from './audio/sfx';
@@ -500,11 +501,11 @@ export class AmbienceEngine {
     this.persist();
   }
 
-  /** Persist the journal (called on stop and after discoveries). */
+  /** Persist the journal (called on stop and after discoveries) to Agora app data. */
   private persist(): void {
     try {
       const raw = saveJournalState(this.state);
-      if (raw !== null) window.localStorage.setItem(JOURNAL_KEY, raw);
+      if (raw !== null) void saveJournalRaw(raw);
     } catch {
       // journal persistence is best-effort
     }
@@ -607,9 +608,9 @@ export class AmbienceEngine {
       emit,
     });
     state.world = world;
-    // journal restore
+    // journal restore — from Agora app data (local_state.db) with WebView fallback
     let raw: string | null = null;
-    try { raw = window.localStorage.getItem(JOURNAL_KEY); } catch { /* ignore */ }
+    try { raw = getCachedJournalRawSync(); } catch { /* ignore */ }
     const saved = loadJournalState(state, raw);
     if (saved) {
       (saved.unlocked || []).forEach((name) => { state.unlocked[name] = true; });

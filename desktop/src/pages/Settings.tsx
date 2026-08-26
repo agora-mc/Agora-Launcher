@@ -958,24 +958,26 @@ export function Settings({
       {ts.statuses['install_auto_confirm_clean']?.status === 'error' && (
         <p className="text-xs text-destructive">{ts.statuses['install_auto_confirm_clean']?.error}</p>
       )}
-      <label className="flex items-center justify-between gap-4 border-t border-border pt-3">
-        <span className="text-sm">Always auto-confirm installs</span>
-        <input
-          type="checkbox"
-          aria-label="Always auto-confirm installs"
-          checked={alwaysAutoConfirmInstalls}
-          disabled={!autoConfirmCleanInstalls}
-          onChange={(e) => toggleAlwaysAutoConfirmInstalls(e.target.checked)}
-          className="h-5 w-5 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
-        />
-      </label>
-      <p className="text-xs text-muted-foreground">
-        Skip dependency details too and accept the default of not installing optional dependencies. Enable Auto-confirm clean installs first.
-      </p>
-      {ts.statuses['install_always_auto_confirm']?.status === 'error' && (
-        <p className="text-xs text-destructive">{ts.statuses['install_always_auto_confirm']?.error}</p>
-      )}
-      <div className="border-t border-border pt-3 space-y-2">
+      <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+        <label className="flex items-center justify-between gap-4">
+          <span className="text-sm">Always auto-confirm installs</span>
+          <input
+            type="checkbox"
+            aria-label="Always auto-confirm installs"
+            checked={alwaysAutoConfirmInstalls}
+            disabled={!autoConfirmCleanInstalls}
+            onChange={(e) => toggleAlwaysAutoConfirmInstalls(e.target.checked)}
+            className="h-5 w-5 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+          />
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Skip dependency details too and accept the default of not installing optional dependencies. Enable Auto-confirm clean installs first.
+        </p>
+        {ts.statuses['install_always_auto_confirm']?.status === 'error' && (
+          <p className="text-xs text-destructive">{ts.statuses['install_always_auto_confirm']?.error}</p>
+        )}
+      </div>
+      <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
         <label className="flex items-center justify-between gap-4">
           <span className="text-sm">Sort versions by date</span>
           <input
@@ -1538,7 +1540,7 @@ export function Settings({
         <p className="text-xs text-destructive">{ts.statuses['modrinth_enabled']?.error}</p>
       )}
 
-      <div className="pt-2 border-t border-border space-y-3">
+      <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
         <h4 className="text-sm font-medium">Curated catalog sources</h4>
         <p className="text-xs text-muted-foreground">
           Curated entries are hand-reviewed and ship with curator-pinned SHA-256 hashes in the signed catalog. These toggles control which curated sources appear — they are independent of live third-party browsing and default to on.
@@ -1600,37 +1602,41 @@ export function Settings({
         </label>
       </div>
 
-      <label className="flex items-center justify-between pt-3 border-t border-border">
-        <div>
-          <span className="text-sm">Technic browsing</span>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides — see the install confirmation before files are written.
-          </p>
-        </div>
-        <input
-          type="checkbox"
-          aria-label="Technic browsing"
-          checked={technic}
-          onChange={(e) => toggleTechnic(e.target.checked)}
-          className="h-5 w-5 accent-primary"
-        />
-      </label>
+      <div className="rounded-lg border border-border bg-card p-3">
+        <label className="flex items-center justify-between">
+          <div>
+            <span className="text-sm">Technic browsing</span>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides — see the install confirmation before files are written.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Technic browsing"
+            checked={technic}
+            onChange={(e) => toggleTechnic(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+      </div>
 
-      <label className="flex items-center justify-between pt-3 border-t border-border">
-        <div>
-          <span className="text-sm">Allow unverified zip packs</span>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
-          </p>
-        </div>
-        <input
-          type="checkbox"
-          aria-label="Allow unverified zip packs"
-          checked={allowUnverifiedPacks}
-          onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
-          className="h-5 w-5 accent-primary"
-        />
-      </label>
+      <div className="rounded-lg border border-border bg-card p-3">
+        <label className="flex items-center justify-between">
+          <div>
+            <span className="text-sm">Allow unverified zip packs</span>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Allow unverified zip packs"
+            checked={allowUnverifiedPacks}
+            onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+      </div>
     </SettingsSection>
   );
 

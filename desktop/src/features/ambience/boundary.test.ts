@@ -48,10 +48,11 @@ describe('ambience boundary', () => {
           continue;
         }
         if (spec.startsWith('@/lib/tauri')) {
-          // the one permitted settings read — ambienceSettings.ts only
-          if (rel !== 'features/ambience/ambienceSettings.ts') {
-            violations.push(`${rel}: imports @/lib/tauri outside ambienceSettings.ts ('${spec}')`);
+          // permitted settings/journal storage — ambienceSettings + journalStorage
+          if (rel === 'features/ambience/ambienceSettings.ts' || rel === 'features/ambience/journalStorage.ts') {
+            continue;
           }
+          violations.push(`${rel}: imports @/lib/tauri outside ambienceSettings.ts/journalStorage.ts ('${spec}')`);
           continue;
         }
         if (spec.startsWith('@/features/ambience/')) continue;
