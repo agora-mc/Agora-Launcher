@@ -111,6 +111,8 @@ enum CmpOp {
     Less,
     LessEqual,
     Equal,
+    SameToNextMinor,
+    SameToNextMajor,
     Any,
 }
 
@@ -120,8 +122,8 @@ enum CmpOp {
 /// sub-predicates that are AND-joined. Returns `true` only if ALL
 /// sub-predicates match.
 ///
-/// Recognized operators: `>=`, `<=`, `>`, `<`, `=`, `~` (approximate —
-/// treats as `>=` for now), and `*` (any version). A bare version with no
+/// Recognized operators: `>=`, `<=`, `>`, `<`, `=`, `~` (same major.minor),
+/// `^` (same major), and `*` (any version). A bare version with no
 /// operator is treated as exact match.
 pub fn fabric_predicate_matches(predicate: &str, version: &str) -> bool {
     let trimmed = predicate.trim();
@@ -161,7 +163,45 @@ fn fabric_single_matches(sub: &str, version: &str) -> bool {
             )
         }
         CmpOp::Equal => compare_versions(version, ver) == Ordering::Equal,
+        CmpOp::SameToNextMinor => tilde_matches(version, ver),
+        CmpOp::SameToNextMajor => caret_matches(version, ver),
     }
+}
+
+fn tilde_matches(version: &str, reference: &str) -> bool {
+    if compare_versions(version, reference) == Ordering::Less {
+        return false;
+    }
+    // Mirror StrictOp::SameToNextMinor::test — version >= reference and
+    // major/minor must match.
+    let v_segs = split_version_segments(strip_build_metadata(version));
+    let r_segs = split_version_segments(strip_build_metadata(reference));
+    // Since split_version_segments splits on '-', the first two entries remain
+    // major/minor even when a prerelease suffix is present.
+    let v_major = v_segs.first().copied().unwrap_or("0");
+    let r_major = r_segs.first().copied().unwrap_or("0");
+    if compare_segments(v_major, r_major) != Ordering::Equal {
+        return false;
+    }
+    let v_minor = v_segs.get(1).copied().unwrap_or("0");
+    let r_minor = r_segs.get(1).copied().unwrap_or("0");
+    if compare_segments(v_minor, r_minor) != Ordering::Equal {
+        return false;
+    }
+    true
+}
+
+fn caret_matches(version: &str, reference: &str) -> bool {
+    if compare_versions(version, reference) == Ordering::Less {
+        return false;
+    }
+    // Mirror StrictOp::SameToNextMajor::test — version >= reference and
+    // major must match (minor unconstrained).
+    let v_segs = split_version_segments(strip_build_metadata(version));
+    let r_segs = split_version_segments(strip_build_metadata(reference));
+    let v_major = v_segs.first().copied().unwrap_or("0");
+    let r_major = r_segs.first().copied().unwrap_or("0");
+    compare_segments(v_major, r_major) == Ordering::Equal
 }
 
 /// Parse the operator prefix from a predicate like `">=1.0"` → `(GreaterEqual, "1.0")`.
@@ -172,7 +212,8 @@ fn parse_predicate_operator(s: &str) -> (CmpOp, &str) {
         (">", CmpOp::Greater),
         ("<", CmpOp::Less),
         ("=", CmpOp::Equal),
-        ("~", CmpOp::GreaterEqual), // approximate → treat as >=
+        ("~", CmpOp::SameToNextMinor),
+        ("^", CmpOp::SameToNextMajor),
     ] {
         if let Some(rest) = s.strip_prefix(prefix) {
             return (op, rest.trim());
@@ -1598,6 +1639,46 @@ mod tests {
                 sat(&decl, provided),
                 *expected,
                 "range '{range}' vs '{provided}'"
+            );
+        }
+    }
+
+    #[test]
+    fn lenient_tilde_requires_same_minor() {
+        let cases: &[(&str, &str, VersionMatch)] = &[
+            ("~1.2.0", "1.2.0", VersionMatch::Matched),
+            ("~1.2.0", "1.2.5", VersionMatch::Matched),
+            ("~1.2.0", "1.3.0", VersionMatch::NotMatched),
+            ("~1.2.0", "1.1.9", VersionMatch::NotMatched),
+            ("~1.2", "1.2.5", VersionMatch::Matched),
+            ("~1.2", "1.3.0", VersionMatch::NotMatched),
+        ];
+        for (pred, version, expected) in cases {
+            let ranges = vec![pred.to_string()];
+            assert_eq!(
+                evaluate_version_match(&ranges, version, true),
+                *expected,
+                "pred '{pred}' vs '{version}'"
+            );
+        }
+    }
+
+    #[test]
+    fn lenient_caret_requires_same_major() {
+        let cases: &[(&str, &str, VersionMatch)] = &[
+            ("^1.2.0", "1.2.0", VersionMatch::Matched),
+            ("^1.2.0", "1.9.9", VersionMatch::Matched),
+            ("^1.2.0", "2.0.0", VersionMatch::NotMatched),
+            ("^1.2.0", "1.1.0", VersionMatch::NotMatched),
+            ("^1.2", "1.9.9", VersionMatch::Matched),
+            ("^1.2", "2.0.0", VersionMatch::NotMatched),
+        ];
+        for (pred, version, expected) in cases {
+            let ranges = vec![pred.to_string()];
+            assert_eq!(
+                evaluate_version_match(&ranges, version, true),
+                *expected,
+                "pred '{pred}' vs '{version}'"
             );
         }
     }
