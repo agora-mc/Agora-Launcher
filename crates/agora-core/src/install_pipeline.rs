@@ -2992,6 +2992,10 @@ fn content_entries_mut<'a>(
 mod tests {
     use super::*;
 
+    /// Minecraft version of the instance built by `make_instance`.
+    /// Shared so the catalog lookup and the instance manifest cannot drift.
+    const TEST_INSTANCE_MC_VERSION: &str = "1.21.1";
+
     #[test]
     fn test_intent_install_round_trip() {
         let intent = InstallIntent {
@@ -4343,7 +4347,7 @@ mod tests {
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
-            minecraft_version: "1.21.1".into(),
+            minecraft_version: TEST_INSTANCE_MC_VERSION.into(),
             loader: "fabric".into(),
             loader_version: "0.16.0".into(),
             is_locked: false,
@@ -4588,11 +4592,42 @@ mod tests {
             .unwrap()
     }
 
+    /// The newest stable fabric loader the embedded catalog carries for the
+    /// test instance's Minecraft version.
+    ///
+    /// Derived rather than written as a literal. `loader-manifests/` is owned
+    /// by the loader-refresh workflow and gains new versions on a schedule, so
+    /// a pinned expectation here fails on a commit that changed no launcher
+    /// code — which is exactly what a catalog refresh to 0.19.5 did to a test
+    /// asserting 0.19.3. What these tests are actually about is that the
+    /// pipeline recommends the newest usable loader and excludes the
+    /// instance's current one; the specific number is incidental.
+    fn newest_stable_fabric_for_test_instance() -> String {
+        let catalog = crate::loader_manifests::LoaderCatalog::embedded();
+        let mut versions: Vec<&str> = catalog
+            .loaders
+            .get("fabric")
+            .expect("embedded catalog must carry fabric")
+            .iter()
+            .filter(|entry| {
+                entry.mc_version == TEST_INSTANCE_MC_VERSION
+                    && entry.release_channel
+                        == crate::loader_manifests::LoaderReleaseChannel::Stable
+            })
+            .map(|entry| entry.loader_version.as_str())
+            .collect();
+        versions.sort_by(|a, b| crate::version_match::compare_versions(a, b));
+        versions
+            .last()
+            .expect("embedded catalog must carry a stable fabric entry for the test MC version")
+            .to_string()
+    }
+
     /// A fabric JAR whose loader requirement is `fabricloader >= <range>`.
     /// The test instance is MC 1.21.1 / fabric 0.16.0 (both pinned tuples in
-    /// the embedded signed catalog, which also carries 0.17.0..0.19.3 for
-    /// 1.21.1), so a `>=0.17.0` requirement proves an Incompatible status
-    /// with a deterministic recommendation of 0.19.3.
+    /// the embedded signed catalog, which also carries later 1.21.1 entries),
+    /// so a `>=0.17.0` requirement proves an Incompatible status with a
+    /// deterministic recommendation of the newest stable catalog entry.
     fn write_loader_requiring_fabric_jar(path: &Path, loader_range: &str) {
         write_fabric_test_jar(
             path,
@@ -4636,11 +4671,14 @@ mod tests {
         else {
             unreachable!()
         };
+        let newest = newest_stable_fabric_for_test_instance();
         assert_eq!(choice_id, "loader-change");
         assert_eq!(loader, "fabric");
         assert_eq!(current_version, "0.16.0");
-        assert_eq!(recommended_version, "0.19.3");
-        assert!(compatible_versions.contains(&"0.19.3".to_string()));
+        assert_eq!(recommended_version, &newest);
+        assert!(compatible_versions.contains(&newest));
+        // The instance's own version does not satisfy `>=0.17.0`, so it must
+        // not be offered as a way out of the mismatch.
         assert!(!compatible_versions.contains(&"0.16.0".to_string()));
         assert_eq!(requirements.len(), 1);
         assert_eq!(requirements[0].target_id, "fabricloader");
@@ -4662,10 +4700,13 @@ mod tests {
 
         let plan = resolve_local_plan(&instance_dir, &source_path, "needy.jar", None);
         let value = serde_json::to_value(loader_change_choice(&plan).unwrap()).unwrap();
+        let newest = newest_stable_fabric_for_test_instance();
         assert_eq!(value["type"], "loader-change");
         assert_eq!(value["currentVersion"], "0.16.0");
-        assert_eq!(value["recommendedVersion"], "0.19.3");
-        assert_eq!(value["compatibleVersions"][0], "0.19.3");
+        assert_eq!(value["recommendedVersion"], newest.as_str());
+        // Compatible versions are preference-sorted, so the recommendation is
+        // also the head of the list.
+        assert_eq!(value["compatibleVersions"][0], newest.as_str());
         assert_eq!(value["requirements"][0]["target_id"], "fabricloader");
         assert_eq!(value["requirements"][0]["candidate_version"], "0.16.0");
         assert_eq!(value["requirements"][0]["verdict"], "unsatisfied");
