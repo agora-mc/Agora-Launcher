@@ -138,6 +138,28 @@ fn write_token_file(app_data_dir: &std::path::Path, token: &str) {
     }
 }
 
+/// Read one line, refusing to buffer more than `limit` bytes. `Ok(None)` means
+/// the line exceeded `limit`.
+///
+/// `BufReader::read_line` grows its target without bound, so a client that never
+/// sends a newline can drive allocation until the 30 s connection timeout — and
+/// this runs before authentication. Checking the size only *after* a line has
+/// been fully read is too late, so the cap goes on the read itself.
+async fn read_line_bounded<R>(
+    reader: &mut R,
+    buf: &mut String,
+    limit: usize,
+) -> std::io::Result<Option<usize>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let read = reader.take(limit as u64).read_line(buf).await?;
+    if read == limit && !buf.ends_with('\n') {
+        return Ok(None);
+    }
+    Ok(Some(read))
+}
+
 fn extract_bearer_token(headers: &std::collections::HashMap<String, String>) -> Option<String> {
     if let Some(auth) = headers.get("authorization") {
         if let Some(t) = auth.strip_prefix("Bearer ") {
@@ -148,6 +170,41 @@ fn extract_bearer_token(headers: &std::collections::HashMap<String, String>) -> 
         }
     }
     None
+}
+
+/// Compare two tokens without short-circuiting on the first differing byte.
+///
+/// `==` on `str` stops as soon as it finds a mismatch, so how long a rejection
+/// takes reveals how many leading characters were correct — which turns
+/// guessing a 64-character token into guessing it one character at a time. This
+/// reads every byte of the expected token regardless.
+///
+/// Length is compared up front and is not itself secret: the token is a
+/// fixed-width hex string, so its length is public.
+fn tokens_match(candidate: &str, expected: &str) -> bool {
+    let (candidate, expected) = (candidate.as_bytes(), expected.as_bytes());
+    if candidate.len() != expected.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in candidate.iter().zip(expected.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+/// Whether a request's headers carry the expected bearer token.
+///
+/// The empty-`expected` guard is not redundant with `start_server`'s refusal to
+/// launch without a token: `extract_bearer_token` trims, so a bare
+/// `Authorization: Bearer ` yields `Some("")`, which would compare equal to an
+/// empty expected token and authorize the request. Auth must fail closed even if
+/// a future change reintroduces a keyless state.
+fn is_authorized(expected: &str, headers: &std::collections::HashMap<String, String>) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    extract_bearer_token(headers).is_some_and(|token| tokens_match(&token, expected))
 }
 
 // ---------------------------------------------------------------------------
@@ -380,10 +437,20 @@ async fn handle_connection(
         let (raw_read, mut write_half) = stream.into_split();
         let mut read_half = BufReader::new(raw_read);
 
+        // The request line and every header line are bounded by the remaining
+        // header budget, so an endless line can never outgrow MAX_HEADER_SIZE.
+        let too_large = b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n";
+
         // Read request line
         let mut request_line = String::new();
-        if read_half.read_line(&mut request_line).await? == 0 {
-            return Ok(());
+        match read_line_bounded(&mut read_half, &mut request_line, MAX_HEADER_SIZE).await? {
+            Some(0) => return Ok(()),
+            Some(_) => {}
+            None => {
+                let _ = write_half.write_all(too_large).await;
+                let _ = write_half.shutdown().await;
+                return Ok(());
+            }
         }
 
         let (method, full_path) = match parse_request_line(&request_line) {
@@ -396,15 +463,22 @@ async fn handle_connection(
         let mut total_header_bytes: usize = 0;
         loop {
             let mut header_line = String::new();
-            let bytes = read_half.read_line(&mut header_line).await?;
+            let remaining = MAX_HEADER_SIZE.saturating_sub(total_header_bytes);
+            let bytes =
+                match read_line_bounded(&mut read_half, &mut header_line, remaining).await? {
+                    Some(bytes) => bytes,
+                    None => {
+                        let _ = write_half.write_all(too_large).await;
+                        let _ = write_half.shutdown().await;
+                        return Ok(());
+                    }
+                };
             if bytes == 0 {
                 break;
             }
             total_header_bytes += bytes;
             if total_header_bytes > MAX_HEADER_SIZE {
-                let _ = write_half
-                    .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\n\r\n")
-                    .await;
+                let _ = write_half.write_all(too_large).await;
                 let _ = write_half.shutdown().await;
                 return Ok(());
             }
@@ -434,7 +508,7 @@ async fn handle_connection(
         let route = extract_route(&full_path);
 
         // Token auth: reject unauthenticated connections (spec 10.0 #2, B2 2026-07-05).
-        if extract_bearer_token(&headers).is_none_or(|t| t != state.expected_token) {
+        if !is_authorized(&state.expected_token, &headers) {
             let body = br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"Unauthorized: MCP Bearer token required. Copy it from Settings > Integrations > MCP Server."}}"#;
             let msg = format!(
                 "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -910,9 +984,18 @@ pub async fn start_server(app: AppHandle) -> Result<McpServer, std::io::Error> {
     let port: u16 = 39741;
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
 
+    // Establish the bearer token BEFORE binding. A listener with no token would
+    // accept `Authorization: Bearer ` (which trims to "") as a match against an
+    // empty expected token, so a failed settings write must abort the start
+    // rather than degrade into an unauthenticated server.
+    let expected_token = get_or_create_mcp_token(&app).ok_or_else(|| {
+        std::io::Error::other(
+            "MCP bearer token could not be created or persisted; refusing to start an \
+             unauthenticated MCP server.",
+        )
+    })?;
+
     let listener = TcpListener::bind(addr).await?;
-    // Ensure the MCP bearer token exists on server start (generates + persists on first call).
-    let expected_token = get_or_create_mcp_token(&app).unwrap_or_default();
     let server_state = Arc::new(McpServerState {
         sessions: std::sync::Mutex::new(HashMap::new()),
         rate_limiter: std::sync::Mutex::new(RateLimiter::new()),
@@ -1603,5 +1686,93 @@ mod tests {
         // Third acquire without permit should not complete
         let try_result = semaphore.try_acquire();
         assert!(try_result.is_err(), "semaphore should be exhausted at 3");
+    }
+
+    fn auth_headers(value: &str) -> HashMap<String, String> {
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), value.to_string());
+        headers
+    }
+
+    /// An empty expected token must never authorize anything. `start_server`
+    /// refuses to launch without a token, but `extract_bearer_token` trims, so a
+    /// bare `Authorization: Bearer ` produces `Some("")` — which a naive
+    /// `token != expected` comparison would accept against an empty expected
+    /// token, silently turning the listener into an open one.
+    #[test]
+    fn empty_expected_token_authorizes_nothing() {
+        assert!(!is_authorized("", &auth_headers("Bearer ")));
+        assert!(!is_authorized("", &auth_headers("Bearer")));
+        assert!(!is_authorized("", &auth_headers("bearer ")));
+        assert!(!is_authorized("", &auth_headers("Bearer anything")));
+        assert!(!is_authorized("", &HashMap::new()));
+    }
+
+    #[test]
+    fn is_authorized_accepts_only_the_exact_token() {
+        assert!(is_authorized(
+            TEST_TOKEN,
+            &auth_headers(&format!("Bearer {TEST_TOKEN}"))
+        ));
+        // Lowercase scheme is accepted by design (some clients send it).
+        assert!(is_authorized(
+            TEST_TOKEN,
+            &auth_headers(&format!("bearer {TEST_TOKEN}"))
+        ));
+        assert!(!is_authorized(
+            TEST_TOKEN,
+            &auth_headers("Bearer wrong-token")
+        ));
+        assert!(!is_authorized(TEST_TOKEN, &auth_headers("Bearer ")));
+        assert!(!is_authorized(TEST_TOKEN, &HashMap::new()));
+        // A non-Bearer scheme is not a token.
+        assert!(!is_authorized(
+            TEST_TOKEN,
+            &auth_headers(&format!("Basic {TEST_TOKEN}"))
+        ));
+    }
+
+    #[test]
+    fn tokens_match_is_exact() {
+        assert!(tokens_match(TEST_TOKEN, TEST_TOKEN));
+        assert!(!tokens_match("", TEST_TOKEN));
+        assert!(!tokens_match(TEST_TOKEN, ""));
+        // Differs only in the last byte — the loop must still reach it.
+        let mut nearly = TEST_TOKEN.to_string();
+        nearly.pop();
+        nearly.push('f');
+        assert_ne!(nearly, TEST_TOKEN);
+        assert!(!tokens_match(&nearly, TEST_TOKEN));
+        // A correct prefix is not a match.
+        assert!(!tokens_match(&TEST_TOKEN[..10], TEST_TOKEN));
+    }
+
+    /// A header line that never terminates must be refused at the read, not
+    /// buffered until the connection timeout. `read_line_bounded` returning
+    /// `None` is what drives the 431 response.
+    #[tokio::test]
+    async fn read_line_bounded_refuses_an_unterminated_line() {
+        let endless = vec![b'x'; 4096];
+        let mut reader = BufReader::new(std::io::Cursor::new(endless));
+        let mut buf = String::new();
+        let result = read_line_bounded(&mut reader, &mut buf, 1024)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "an unterminated over-long line must be rejected"
+        );
+        assert_eq!(buf.len(), 1024, "no more than the limit may be buffered");
+    }
+
+    #[tokio::test]
+    async fn read_line_bounded_passes_a_normal_line() {
+        let mut reader = BufReader::new(std::io::Cursor::new(b"GET /mcp HTTP/1.1\r\n".to_vec()));
+        let mut buf = String::new();
+        let result = read_line_bounded(&mut reader, &mut buf, 1024)
+            .await
+            .unwrap();
+        assert_eq!(result, Some(19));
+        assert_eq!(buf, "GET /mcp HTTP/1.1\r\n");
     }
 }

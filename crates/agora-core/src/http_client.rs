@@ -426,20 +426,11 @@ pub fn check_request_url_with_policy(
     //    connect. DNS-level hostname validation without DNSSEC cannot
     //    fully prevent DNS rebinding on attacker-controlled infrastructure.
     //    For first-party allowlisted domains this risk is negligible.
-    if let Some(addr) = parsed
-        .socket_addrs(|| None)
-        .ok()
-        .and_then(|addrs| addrs.into_iter().next())
-    {
-        let ip = addr.ip();
-        let blocked = ip.is_loopback()
-            || ip.is_unspecified()
-            || ip.is_multicast()
-            || match ip {
-                IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-                IpAddr::V6(_) => false,
-            };
-        if blocked {
+    //    Every resolved address is checked, not just the first: a host that
+    //    resolves to both a public and a private address must not pass because
+    //    the public one happened to sort first.
+    if let Ok(addrs) = parsed.socket_addrs(|| None) {
+        if addrs.iter().any(|addr| is_blocked_ip(addr.ip())) {
             return Err(LauncherError::Generic {
                 code: "ERR_SSRF_BLOCKED".into(),
                 message: format!("Request blocked: {host} resolves to a private/reserved address"),
@@ -448,6 +439,30 @@ pub fn check_request_url_with_policy(
     }
 
     Ok(parsed)
+}
+
+/// Whether an address is private or reserved, and so not a legitimate
+/// destination for an outbound request.
+///
+/// The IPv6 ranges are spelled out because the matching `Ipv6Addr` helpers
+/// (`is_unique_local`, `is_unicast_link_local`) are still unstable. An
+/// IPv4-mapped or IPv4-compatible address is re-checked under the IPv4 rules so
+/// that `::ffff:127.0.0.1` cannot slip past them by wearing a v6 shape.
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4() {
+                return is_blocked_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            // fc00::/7 unique local, fe80::/10 link-local unicast.
+            (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 /// Decide whether `host` is authorized under `policy`.
@@ -1407,6 +1422,41 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), "ERR_SSRF_BLOCKED");
+    }
+
+    #[test]
+    fn blocked_ip_covers_ipv6_private_ranges() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        // Unique local (fc00::/7) and link-local unicast (fe80::/10).
+        assert!(is_blocked_ip(IpAddr::V6(
+            "fd00::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "fc00::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "fe80::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        // Loopback and unspecified.
+        assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        // An IPv4-mapped address must be judged by the IPv4 rules, not waved
+        // through for being v6-shaped.
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::ffff:192.168.1.1".parse::<Ipv6Addr>().unwrap()
+        )));
+        // A global unicast v6 address is still allowed.
+        assert!(!is_blocked_ip(IpAddr::V6(
+            "2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap()
+        )));
+        // IPv4 behaviour is unchanged.
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1))));
+        assert!(!is_blocked_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
     }
 
     #[test]

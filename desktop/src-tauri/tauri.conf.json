@@ -30,10 +30,20 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/agora-mc/Agora-Launcher/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3ODdEMTNEQzU1MzA1NDIKUldSQ0JWUEZQZEdITnoyNXkvbkJ0SDlWUU5TMDdXRm94c2RMcGFyNVp1c3dZOXZHSVpCM0R5Wk0K",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",

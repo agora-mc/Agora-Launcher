@@ -67,6 +67,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_sql::Builder::new().build())
+        // Update checks are signature-verified against the `pubkey` in
+        // tauri.conf.json; an unsigned or wrongly-signed bundle is rejected by
+        // the plugin before anything is installed.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // A second launch focuses the existing window instead of starting
             // a duplicate process (which previously could leave orphaned
@@ -231,6 +235,7 @@ pub fn run() {
             commands::open_instance_folder,
             commands::open_data_folder,
             commands::reveal_path,
+            commands::restart_app,
             commands::open_external_url,
         ])
         .setup(|app| {

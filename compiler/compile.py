@@ -3365,6 +3365,17 @@ def compile_registry(
         ("registry/governance/audit_log.json",),
     )
 
+    # Anti-rollback stamp. The release tag a client compares against arrives in
+    # an unsigned GitHub API response, so it cannot by itself prove a registry
+    # is newer -- an old but validly-signed database stays validly signed
+    # forever. This timestamp lives *inside* the signed bytes, so a client can
+    # refuse a database built before the one it already trusts. `system_config`
+    # is key/value, so older clients simply ignore the key.
+    audit_conn.execute(
+        "INSERT OR REPLACE INTO system_config (key, value_json) VALUES ('built_at', ?)",
+        (json.dumps(datetime.now(timezone.utc).isoformat()),),
+    )
+
     # Bake audit log entries into a queryable table.
     audit_conn.execute(
         "CREATE TABLE IF NOT EXISTS audit_log ("

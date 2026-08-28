@@ -149,8 +149,20 @@ impl CoreContext {
             &paths,
         ));
 
-        // 3. Validate cached registry schema version (warning only — the
-        //    cached db may be absent or stale, which is recoverable).
+        // 3. Verify the cached registry's Ed25519 signature before anything
+        //    reads it. Download-time verification only covers transit; the
+        //    cached copy sits in a user-writable directory and supplies every
+        //    download URL and expected hash the launcher trusts. A failing db is
+        //    quarantined here, which also leaves no `registry.db` behind so the
+        //    next sync re-downloads a good copy.
+        if let crate::registry_sync::CachedRegistryIntegrity::Quarantined(reason) =
+            crate::registry_sync::verify_cached_registry(paths.root())
+        {
+            warnings.push(reason);
+        }
+
+        //    Then validate the cached registry schema version (warning only —
+        //    the cached db may be absent or stale, which is recoverable).
         let reg_path = paths.registry_db();
         let mut runtime_catalog = RuntimeCatalog::embedded();
         if reg_path.exists() {

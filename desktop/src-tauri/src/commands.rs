@@ -5976,6 +5976,19 @@ pub async fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
     open_path_in_explorer(&path)
 }
 
+/// Relaunch the app.
+///
+/// Called after the updater has staged a new version. `AppHandle::restart` is
+/// part of Tauri core, so this needs no additional plugin — the frontend
+/// previously invoked `plugin:process|restart`, which would have failed because
+/// `tauri-plugin-process` is not a dependency.
+///
+/// This never returns: `restart` terminates the current process.
+#[tauri::command]
+pub async fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    app.restart()
+}
+
 #[tauri::command]
 pub async fn reveal_path(path: String) -> Result<(), String> {
     reveal_in_explorer(std::path::Path::new(&path))

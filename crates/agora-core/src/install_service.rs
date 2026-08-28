@@ -276,20 +276,31 @@ impl InstallService {
         let bytes =
             crate::download::download_mod_bytes(&self.ctx.http_clients, download_url).await?;
 
+        // Verification is mandatory and fails closed, matching the install
+        // pipeline's `verify_bytes`. A candidate whose source published no
+        // usable hash (e.g. an older GitHub release with no asset digest, where
+        // the registry's pinned hash describes a different file) must not be
+        // silently installed unverified.
         let candidate_sha1 = expected_sha1.unwrap_or("").trim().to_lowercase();
+        let candidate_sha256 = expected_sha256.unwrap_or("").trim().to_lowercase();
         if !candidate_sha1.is_empty() {
             let actual_sha1 = crate::download::sha1_hex(&bytes);
             if actual_sha1 != candidate_sha1 {
                 return Err(LauncherError::HashMismatch);
             }
-        } else if let Some(pinned) = expected_sha256 {
-            let trimmed = pinned.trim();
-            if !trimmed.is_empty() {
-                let actual_sha = crate::download::sha256_hex(&bytes);
-                if actual_sha != trimmed {
-                    return Err(LauncherError::HashMismatch);
-                }
+        } else if !candidate_sha256.is_empty() {
+            let actual_sha = crate::download::sha256_hex(&bytes);
+            if actual_sha != candidate_sha256 {
+                return Err(LauncherError::HashMismatch);
             }
+        } else {
+            return Err(LauncherError::Generic {
+                code: "ERR_NO_PUBLISHED_HASH".into(),
+                message: format!(
+                    "{filename} cannot be installed: its source published no SHA-1 or SHA-256 \
+                     for this version, so Agora cannot verify the download."
+                ),
+            });
         }
 
         let installed_sha256 = crate::download::sha256_hex(&bytes);

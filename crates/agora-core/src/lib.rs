@@ -11,7 +11,6 @@ pub mod app_paths;
 pub mod artifact_receipt;
 pub mod auth;
 pub mod browse_cache;
-pub mod catalog;
 pub mod clone;
 pub mod crash_diagnostics;
 pub mod crash_evidence;
