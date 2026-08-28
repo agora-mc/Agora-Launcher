@@ -1448,6 +1448,7 @@ function BrowseContent({
         </div>
       )}
 
+      <section className="rounded-xl border border-border bg-card p-4">
       {/* Category filters */}
       {sort !== 'for_you' && (
         <div className="space-y-3">
@@ -1506,6 +1507,7 @@ function BrowseContent({
           )}
         </div>
       )}
+      </section>
 
       {/* Metadata error (categories) — separate from search error */}
       {metaError && (

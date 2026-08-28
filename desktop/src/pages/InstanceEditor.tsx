@@ -1672,7 +1672,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={[
-              'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+              'px-4 py-2 text-sm font-medium border-b-2 rounded-t-md transition-colors -mb-px',
               activeTab === tab
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground',
@@ -1685,7 +1685,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             key="java-args"
             onClick={() => setActiveTab('java-args')}
             className={[
-              'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+              'px-4 py-2 text-sm font-medium border-b-2 rounded-t-md transition-colors -mb-px',
               activeTab === 'java-args'
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground',

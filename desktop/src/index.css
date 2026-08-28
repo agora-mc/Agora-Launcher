@@ -188,6 +188,66 @@
 :root .rounded-xl { border-radius: calc(var(--radius) * 1.25); }
 :root .rounded-2xl,
 :root .rounded-3xl { border-radius: calc(var(--radius) * 1.6); }
+:root .rounded-none { border-radius: 0; }
+/* Directional rounded — border-radius scales with cornerStyle like the base utilities */
+:root .rounded-t-sm,
+:root .rounded-t,
+:root .rounded-t-md { border-top-left-radius: calc(var(--radius) * 0.7); border-top-right-radius: calc(var(--radius) * 0.7); }
+:root .rounded-t-lg { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
+:root .rounded-t-xl { border-top-left-radius: calc(var(--radius) * 1.25); border-top-right-radius: calc(var(--radius) * 1.25); }
+:root .rounded-t-2xl,
+:root .rounded-t-3xl { border-top-left-radius: calc(var(--radius) * 1.6); border-top-right-radius: calc(var(--radius) * 1.6); }
+:root .rounded-b-sm,
+:root .rounded-b,
+:root .rounded-b-md { border-bottom-left-radius: calc(var(--radius) * 0.7); border-bottom-right-radius: calc(var(--radius) * 0.7); }
+:root .rounded-b-lg { border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+:root .rounded-b-xl { border-bottom-left-radius: calc(var(--radius) * 1.25); border-bottom-right-radius: calc(var(--radius) * 1.25); }
+:root .rounded-b-2xl,
+:root .rounded-b-3xl { border-bottom-left-radius: calc(var(--radius) * 1.6); border-bottom-right-radius: calc(var(--radius) * 1.6); }
+:root .rounded-l-sm,
+:root .rounded-l,
+:root .rounded-l-md { border-top-left-radius: calc(var(--radius) * 0.7); border-bottom-left-radius: calc(var(--radius) * 0.7); }
+:root .rounded-l-lg { border-top-left-radius: var(--radius); border-bottom-left-radius: var(--radius); }
+:root .rounded-l-xl { border-top-left-radius: calc(var(--radius) * 1.25); border-bottom-left-radius: calc(var(--radius) * 1.25); }
+:root .rounded-l-2xl,
+:root .rounded-l-3xl { border-top-left-radius: calc(var(--radius) * 1.6); border-bottom-left-radius: calc(var(--radius) * 1.6); }
+:root .rounded-r-sm,
+:root .rounded-r,
+:root .rounded-r-md { border-top-right-radius: calc(var(--radius) * 0.7); border-bottom-right-radius: calc(var(--radius) * 0.7); }
+:root .rounded-r-lg { border-top-right-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+:root .rounded-r-xl { border-top-right-radius: calc(var(--radius) * 1.25); border-bottom-right-radius: calc(var(--radius) * 1.25); }
+:root .rounded-r-2xl,
+:root .rounded-r-3xl { border-top-right-radius: calc(var(--radius) * 1.6); border-bottom-right-radius: calc(var(--radius) * 1.6); }
+:root .rounded-tl-sm { border-top-left-radius: calc(var(--radius) * 0.4); }
+:root .rounded-tl,
+:root .rounded-tl-md { border-top-left-radius: calc(var(--radius) * 0.7); }
+:root .rounded-tl-lg { border-top-left-radius: var(--radius); }
+:root .rounded-tl-xl { border-top-left-radius: calc(var(--radius) * 1.25); }
+:root .rounded-tl-2xl,
+:root .rounded-tl-3xl { border-top-left-radius: calc(var(--radius) * 1.6); }
+:root .rounded-tr-sm { border-top-right-radius: calc(var(--radius) * 0.4); }
+:root .rounded-tr,
+:root .rounded-tr-md { border-top-right-radius: calc(var(--radius) * 0.7); }
+:root .rounded-tr-lg { border-top-right-radius: var(--radius); }
+:root .rounded-tr-xl { border-top-right-radius: calc(var(--radius) * 1.25); }
+:root .rounded-tr-2xl,
+:root .rounded-tr-3xl { border-top-right-radius: calc(var(--radius) * 1.6); }
+:root .rounded-bl-sm { border-bottom-left-radius: calc(var(--radius) * 0.4); }
+:root .rounded-bl,
+:root .rounded-bl-md { border-bottom-left-radius: calc(var(--radius) * 0.7); }
+:root .rounded-bl-lg { border-bottom-left-radius: var(--radius); }
+:root .rounded-bl-xl { border-bottom-left-radius: calc(var(--radius) * 1.25); }
+:root .rounded-bl-2xl,
+:root .rounded-bl-3xl { border-bottom-left-radius: calc(var(--radius) * 1.6); }
+:root .rounded-br-sm { border-bottom-right-radius: calc(var(--radius) * 0.4); }
+:root .rounded-br,
+:root .rounded-br-md { border-bottom-right-radius: calc(var(--radius) * 0.7); }
+:root .rounded-br-lg { border-bottom-right-radius: var(--radius); }
+:root .rounded-br-xl { border-bottom-right-radius: calc(var(--radius) * 1.25); }
+:root .rounded-br-2xl,
+:root .rounded-br-3xl { border-bottom-right-radius: calc(var(--radius) * 1.6); }
+/* Arbitrary 0.7rem used by BrandMark maps to ~0.7*var — keep it on the same scale so cornerStyle affects it */
+:root .rounded-\[0\.7rem\] { border-radius: calc(var(--radius) * 0.93); }
 
 /* Border thickness (Interface settings): every Tailwind border-width utility
    scales off --border-scale, so 200% turns 1px borders into 2px and 2px
@@ -447,7 +507,7 @@
   align-items: center;
   gap: 11px;
   padding: 11px 15px 11px 11px;
-  border-radius: 15px;
+  border-radius: calc(var(--radius) * 1.25);
   background: hsl(var(--popover) / 0.9);
   border: 1px solid var(--ambience-gold);
   box-shadow: 0 0 30px -10px var(--ambience-gold), 0 16px 34px -18px #000;
@@ -463,7 +523,7 @@
 .ambience-toast-ico {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
+  border-radius: calc(var(--radius) * 0.85);
   display: grid;
   place-items: center;
   font-size: 19px;
@@ -568,7 +628,7 @@
   gap: 9px;
   align-items: center;
   padding: 8px 10px;
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: hsl(var(--muted) / 0.5);
   border: 1px solid hsl(var(--border));
   font-size: calc(12px * var(--font-scale));
@@ -581,7 +641,7 @@
 .ambience-journal-ico {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: calc(var(--radius) * 0.66);
   flex: none;
   display: grid;
   place-items: center;

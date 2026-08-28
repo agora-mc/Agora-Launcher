@@ -566,7 +566,7 @@ export default function App() {
       <AmbienceProvider>
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
       <QueuedTourStarter />
-      <div className="app-shell flex h-screen w-screen overflow-hidden">
+      <div className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
         <OfflineBanner />
         <SandboxBanner />
         <Sidebar
@@ -636,7 +636,7 @@ export default function App() {
           />
         )}
 
-        <main ref={mainRef} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
+        <main ref={mainRef} className={`flex-1 overflow-y-auto bg-background p-6 text-background-foreground rounded-xl border border-border ${effectiveTab === 'living-background' ? 'living-bg-active' : ''}`}>
           <div className="contents">
             {!isKnownDestType ? (
               <NotFoundView
