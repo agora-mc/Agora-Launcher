@@ -309,7 +309,7 @@ export function Home({
       <GuideCard onOpenGuide={() => onNavigateTab('guide')} />
 
       {/* Support Agora */}
-            <section className="rounded-xl border border-pink-500/40 bg-pink-500/15 p-6">
+            <section className="rounded-xl border border-pink-500/100 bg-pink-500/50 p-6">
               <div className="flex items-center gap-2 mb-3">
                 <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
                 <h3 className="text-lg font-semibold">Support Agora’s future</h3>

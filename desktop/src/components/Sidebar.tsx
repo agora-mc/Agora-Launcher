@@ -99,7 +99,7 @@ export function Sidebar({
     // positioning is unchanged.
     <div className="relative flex shrink-0" style={{ width: collapsed ? 64 : width }}>
       <aside
-        className="app-sidebar decorative-shell flex h-full w-full min-w-0 flex-col border-r border-border bg-card/95 shadow-[4px_0_24px_hsl(var(--midnight)/0.04)] backdrop-blur"
+        className="app-sidebar decorative-shell flex h-full w-full min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card/95 shadow-[4px_0_24px_hsl(var(--midnight)/0.04)] backdrop-blur"
         data-testid="sidebar"
       >
       <div className={`border-b border-border ${collapsed ? 'p-3' : 'p-4'}`}>

@@ -714,15 +714,6 @@ async fn modrinth_get_json<T: serde::de::DeserializeOwned>(url: &str) -> Launche
     http_client::checked_get_json(&clients, ClientCategory::Modrinth, url).await
 }
 
-/// Internal: GET a JSON endpoint using a caller-provided client.
-/// Used by the catalog source to share the host's HTTP client.
-pub(crate) async fn modrinth_get_json_with_client<T: serde::de::DeserializeOwned>(
-    clients: &HttpClients,
-    url: &str,
-) -> LauncherResult<T> {
-    http_client::checked_get_json(clients, ClientCategory::Modrinth, url).await
-}
-
 /// Fetch a single Modrinth project's full details including the body (markdown
 /// description) via `GET /v2/project/{id}`.
 pub async fn fetch_project_full(

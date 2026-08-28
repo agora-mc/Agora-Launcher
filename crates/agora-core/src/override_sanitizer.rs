@@ -9,6 +9,21 @@ const MAX_EXTRACTED_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2GB total extracted
 const MAX_FILE_COUNT: usize = 5000; // 5000 files max
 
 /// Directory whitelist (§7.2.2). Only files under these prefixes are extracted.
+///
+/// # `kubejs/` is deliberately allowed, and is NOT inert
+///
+/// Every other prefix here holds data the game reads. `kubejs/` does not: the
+/// KubeJS mod *executes* the `.js` files it finds there, and those scripts can
+/// reach Java classes directly — they are not sandboxed the way browser
+/// JavaScript is. A pack that ships `kubejs/startup_scripts/x.js` is shipping
+/// code that runs on the player's machine with the game's own permissions.
+///
+/// This is an accepted trade-off, not an oversight: KubeJS scripting is a
+/// normal part of how packs are built, and packs are reviewed by hand before
+/// they enter the registry. **Curation is the control for this prefix, not
+/// [`BANNED_EXTENSIONS`].** Do not reason about `kubejs/` as though the
+/// extension ban made overrides safe, and do not widen either list on the
+/// assumption that it did.
 const ALLOWED_PREFIXES: &[&str] = &[
     "config/",
     "defaultconfigs/",
@@ -19,6 +34,10 @@ const ALLOWED_PREFIXES: &[&str] = &[
 ];
 
 /// Banned extensions (§7.2.2). Hard-banned even inside whitelisted directories.
+///
+/// This list stops an overrides bundle from dropping a binary or a shell script
+/// where a config file belongs. It does not, and cannot, make overrides
+/// generally inert — see the `kubejs/` note on [`ALLOWED_PREFIXES`].
 const BANNED_EXTENSIONS: &[&str] = &[
     ".jar", ".class", ".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".so", ".dylib", ".msi",
     ".dmg",
@@ -113,7 +132,7 @@ pub fn extract_overrides(zip_path: &Path, dest_dir: &Path) -> LauncherResult<Ext
     let mut bytes_written: u64 = 0;
 
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|_| LauncherError::Generic {
+        let entry = archive.by_index(i).map_err(|_| LauncherError::Generic {
             code: "ERR_OVERRIDE_FAILED".to_string(),
             message: "Could not read zip entry during extraction.".to_string(),
         })?;
@@ -183,8 +202,18 @@ pub fn extract_overrides(zip_path: &Path, dest_dir: &Path) -> LauncherResult<Ext
         }
 
         // Write the file, tracking actual bytes.
+        //
+        // The Phase 1 prescan sums `entry.size()`, which is the *declared*
+        // uncompressed size from the central directory — attacker-controlled
+        // metadata. A single entry can declare a few KB and inflate to
+        // gigabytes, so an unbounded `read_to_end` here would exhaust memory
+        // before the running-total check below ever runs. Cap the read at the
+        // remaining budget (plus one byte, so an over-long stream is detected
+        // rather than silently truncated).
+        let remaining_budget = MAX_EXTRACTED_SIZE.saturating_sub(bytes_written);
         let mut file_data = Vec::new();
         entry
+            .take(remaining_budget.saturating_add(1))
             .read_to_end(&mut file_data)
             .map_err(|_| LauncherError::Generic {
                 code: "ERR_OVERRIDE_FAILED".to_string(),
@@ -192,16 +221,16 @@ pub fn extract_overrides(zip_path: &Path, dest_dir: &Path) -> LauncherResult<Ext
             })?;
 
         let file_len = file_data.len() as u64;
-        bytes_written = bytes_written.saturating_add(file_len);
 
         // Mid-stream check: abort if actual bytes exceed limit.
-        if bytes_written > MAX_EXTRACTED_SIZE {
+        if file_len > remaining_budget {
             cleanup_partial(dest_dir, &extracted);
             return Err(LauncherError::Generic {
                 code: "ERR_ZIP_BOMB".to_string(),
                 message: "Actual extracted size exceeds the 2GB limit. Aborting.".to_string(),
             });
         }
+        bytes_written = bytes_written.saturating_add(file_len);
 
         std::fs::write(&dest_path, &file_data).map_err(|_| LauncherError::Generic {
             code: "ERR_OVERRIDE_FAILED".to_string(),

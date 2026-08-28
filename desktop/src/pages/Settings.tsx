@@ -21,7 +21,6 @@ import {
 } from 'lucide-react';
 import { check } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
-import { invoke } from '@tauri-apps/api/core';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -56,6 +55,7 @@ import {
   regenerateMCPToken,
   testLauncherPath,
   openDataFolder,
+  restartApp,
 } from '../lib/tauri';
 import type { CopilotToken, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
 import { Privacy } from './Privacy';
@@ -1020,7 +1020,11 @@ export function Settings({
                 );
                 if (ok) {
                   await update.downloadAndInstall();
-                  await invoke('plugin:process|restart');
+                  // `plugin:process|restart` was invoked here previously, but
+                  // tauri-plugin-process is not a dependency, so the call threw
+                  // and the staged update was never applied. `restart_app`
+                  // wraps AppHandle::restart, which is part of Tauri core.
+                  await restartApp();
                 }
               } else {
                 showToast('You are running the latest version of Agora.', 'success');

@@ -1,19 +1,22 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// Matches a Windows user profile path on any drive, in any case. Minecraft and
+/// mod loaders print paths in whatever case the JVM handed them, so an
+/// anchored, case-sensitive `C:\Users\` misses `c:\users\` and `D:\Users\`.
 fn windows_user_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"C:\\Users\\([^\\]+)").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)([a-z]):\\Users\\([^\\]+)").unwrap())
 }
 
 fn linux_home_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"/home/([^/]+)").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)/home/([^/]+)").unwrap())
 }
 
 fn macos_home_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"/Users/([^/]+)").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)/Users/([^/]+)").unwrap())
 }
 
 fn token_re() -> &'static Regex {
@@ -22,7 +25,8 @@ fn token_re() -> &'static Regex {
 }
 
 pub fn sanitize_log(input: &str) -> String {
-    let s = windows_user_re().replace_all(input, r"C:\Users\<user>");
+    // `${1}` preserves the original drive letter; only the user name is dropped.
+    let s = windows_user_re().replace_all(input, r"${1}:\Users\<user>");
     let s = linux_home_re().replace_all(&s, r"/home/<user>");
     let s = macos_home_re().replace_all(&s, r"/Users/<user>");
     let s = token_re().replace_all(&s, "<redacted>");
@@ -62,6 +66,23 @@ mod tests {
         let result = sanitize_log(input);
         assert!(!result.contains("JohnDoe"));
         assert!(result.contains(r"C:\Users\<user>"));
+    }
+
+    #[test]
+    fn test_sanitize_windows_user_any_drive_and_case() {
+        for input in [
+            r"c:\users\JohnDoe\.minecraft\mods",
+            r"D:\Users\JohnDoe\.minecraft\mods",
+            r"C:\USERS\JohnDoe\.minecraft\mods",
+        ] {
+            let result = sanitize_log(input);
+            assert!(
+                !result.contains("JohnDoe"),
+                "user name survived sanitization of {input}: {result}"
+            );
+        }
+        // The drive letter is not privacy-relevant and is preserved.
+        assert!(sanitize_log(r"D:\Users\JohnDoe\x").starts_with(r"D:\Users\<user>"));
     }
 
     #[test]

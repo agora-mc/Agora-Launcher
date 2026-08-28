@@ -780,14 +780,21 @@ pub async fn chat_completion(
 pub fn build_context_message(context: &AiContext) -> String {
     let mut parts: Vec<String> = Vec::new();
 
+    // Crash data leaves the machine here. A Minecraft crash report routinely
+    // carries the OS home directory (and therefore the user's real name), and
+    // on some loaders the launch command line. Redact before handing any of it
+    // to a third-party API.
     if let Some(ref crash_log) = context.crash_log {
-        parts.push(format!("## Crash Log\n\n```\n{}\n```", crash_log));
+        parts.push(format!(
+            "## Crash Log\n\n```\n{}\n```",
+            crate::log_sanitizer::sanitize_log_lines(crash_log)
+        ));
     }
 
     if let Some(ref crash_signatures) = context.crash_signatures {
         parts.push(format!(
             "## Curated Crash Signatures Matched\n\n{}",
-            crash_signatures
+            crate::log_sanitizer::sanitize_log_lines(crash_signatures)
         ));
     }
 
@@ -813,14 +820,21 @@ pub fn build_context_message_with_app(
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
+    // Crash data leaves the machine here. A Minecraft crash report routinely
+    // carries the OS home directory (and therefore the user's real name), and
+    // on some loaders the launch command line. Redact before handing any of it
+    // to a third-party API.
     if let Some(ref crash_log) = context.crash_log {
-        parts.push(format!("## Crash Log\n\n```\n{}\n```", crash_log));
+        parts.push(format!(
+            "## Crash Log\n\n```\n{}\n```",
+            crate::log_sanitizer::sanitize_log_lines(crash_log)
+        ));
     }
 
     if let Some(ref crash_signatures) = context.crash_signatures {
         parts.push(format!(
             "## Curated Crash Signatures Matched\n\n{}",
-            crash_signatures
+            crate::log_sanitizer::sanitize_log_lines(crash_signatures)
         ));
     }
 

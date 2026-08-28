@@ -10,7 +10,7 @@ export function BrandMark({ className = '', compact = false }: BrandMarkProps) {
         src="/brand/agora-launcher-icon.png"
         alt=""
         aria-hidden="true"
-        className="h-10 w-10 rounded-[0.7rem] object-cover shadow-sm ring-1 ring-midnight/10"
+        className="h-10 w-10 rounded-lg object-cover shadow-sm ring-1 ring-midnight/10"
       />
       {!compact && (
         <div className="min-w-0">

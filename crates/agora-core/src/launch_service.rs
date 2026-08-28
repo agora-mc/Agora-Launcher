@@ -725,19 +725,31 @@ impl LaunchService {
             self.ctx.process_session_manager.remove(session_id);
         })?;
 
-        crate::lkg::record_launch_outcome(
+        // The game already ran to completion, so a failed LKG write must not
+        // retroactively fail the launch: that would skip `finished` and leave
+        // the adapter's running-process state set. Log and continue, matching
+        // the delegated path.
+        if let Err(error) = crate::lkg::record_launch_outcome(
             &request.game_dir,
             Some(&snapshot_id),
             &format!("session-{session_id}"),
             outcome.clone(),
-        )
-        .map_err(|error| {
-            self.ctx.process_session_manager.remove(session_id);
-            LauncherError::Generic {
-                code: "ERR_LKG_UPDATE".into(),
-                message: error.to_string(),
-            }
-        })?;
+        ) {
+            eprintln!(
+                "[launch] could not record launch outcome for {}: {error}",
+                request.instance_id
+            );
+        }
+        // Retention is core-owned and runs for both modes: a direct launch
+        // promotes its pre-launch snapshot exactly like a delegated one, so it
+        // must prune under the same policy. Running it here also covers the
+        // CLI, which has no adapter-side retention of its own.
+        if let Err(error) = crate::lkg::run_retention(&request.game_dir) {
+            eprintln!(
+                "[launch] snapshot retention failed after launch for {}: {error}",
+                request.instance_id
+            );
+        }
         if outcome == LaunchOutcome::Success {
             let _ = crate::runtime_manager::mark_successful_use(&request.runtimes_root, &java_path);
         }
@@ -773,9 +785,10 @@ impl LaunchService {
     }
 
     /// Monitor a delegated launch by polling for crash reports, log markers,
-    /// and staleness (per-instance, never global). After the loop completes,
-    /// records the LKG outcome and runs snapshot retention. The desktop
-    /// adapter only needs to emit the Tauri event from the return value.
+    /// and staleness (per-instance, never global). Unless the monitor was
+    /// superseded by a newer session for the same instance, it then records
+    /// the LKG outcome and runs snapshot retention. The desktop adapter only
+    /// needs to emit the Tauri event from the return value.
     ///
     /// Staleness is checked against the instance's latest session in
     /// [`ProcessSessionManager`]: a newer launch for a *different* instance
@@ -791,6 +804,7 @@ impl LaunchService {
         const MAX_CAPTURED_LAUNCH_LOG_BYTES: usize = 1_048_576;
         let started = std::time::Instant::now();
 
+        let mut superseded = false;
         let outcome = loop {
             // Per-instance staleness: only a newer session for the SAME
             // instance ends this monitor. Different instances are independent.
@@ -798,6 +812,7 @@ impl LaunchService {
                 .process_session_manager
                 .is_latest_for_instance(instance_id, session_id)
             {
+                superseded = true;
                 break LaunchOutcome::Unknown;
             }
 
@@ -857,6 +872,13 @@ impl LaunchService {
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         };
+
+        // A newer session for this instance already owns the LKG state.
+        // Recording here would overwrite that session's outcome with this
+        // stale monitor's `Unknown`.
+        if superseded {
+            return outcome;
+        }
 
         // Record LKG outcome and run retention — core-owned, not desktop.
         let _ = crate::lkg::record_launch_outcome(

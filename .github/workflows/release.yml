@@ -95,6 +95,29 @@ jobs:
           "$PY" scripts/set_release_version.py "$TAG"
           "$PY" scripts/set_release_version.py --check
 
+      # The updater is only as good as its signing key. A placeholder pubkey or
+      # a missing private key produces installers the updater can never verify,
+      # and that is not visible until a user tries to update — so fail here
+      # instead of shipping a release that can never be updated from.
+      - name: Verify updater signing configuration
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          PUBKEY="$(python -c "import json;print(json.load(open('desktop/src-tauri/tauri.conf.json'))['plugins']['updater']['pubkey'])")"
+          if [ -z "$PUBKEY" ] || [ "$PUBKEY" = "REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY" ]; then
+            echo "::error::tauri.conf.json still holds the updater pubkey placeholder."
+            echo "Generate a keypair with 'npx tauri signer generate', set the private half"
+            echo "as the TAURI_SIGNING_PRIVATE_KEY secret, and commit the public half."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set for this repository."
+            echo "Without it tauri-action cannot sign updater artifacts, so clients would"
+            echo "reject every update."
+            exit 1
+          fi
+
       - name: Install frontend dependencies
         run: |
           cd desktop

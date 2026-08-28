@@ -155,7 +155,16 @@ pub async fn check_and_download_update(
 
     set_last_check_time(local_state_path, chrono::Utc::now().timestamp())?;
 
-    let update_available = cached_tag.as_deref() != Some(&latest.tag_name);
+    // A merely *different* tag is not grounds to update: a signature stays
+    // valid forever, so an older release republished as "latest" (or promoted
+    // by release pruning) would otherwise be installed over a newer registry,
+    // reinstating entries that curation has since quarantined.
+    let update_available = match cached_tag.as_deref() {
+        Some(cached) if has_cached_db => tag_is_newer(cached, &latest.tag_name),
+        // No cached tag, or a tag with no database behind it: nothing to
+        // roll back from.
+        _ => true,
+    };
 
     if !update_available && has_cached_db {
         return Ok(RegistryStatus {
@@ -195,6 +204,24 @@ pub async fn check_and_download_update(
 
     verify_signature(&db_bytes, &sig_bytes)?;
 
+    // Anti-rollback, checked only after the signature so the compared stamp is
+    // one the signing key vouched for. The tag pre-check above works on
+    // unsigned API metadata and can be forged; this cannot.
+    let candidate_built_at = read_built_at_from_bytes(app_data_dir, &db_bytes);
+    let cached_built_at = read_cached_built_at(app_data_dir);
+    if is_rollback(cached_built_at.as_deref(), candidate_built_at.as_deref()) {
+        return Err(LauncherError::Generic {
+            code: "ERR_REGISTRY_ROLLBACK".into(),
+            message: format!(
+                "Refusing registry {}: it was built at {}, older than the registry already \
+                 installed ({}). The cached registry has been kept.",
+                latest.tag_name,
+                candidate_built_at.as_deref().unwrap_or("unknown"),
+                cached_built_at.as_deref().unwrap_or("unknown"),
+            ),
+        });
+    }
+
     let schema_version = read_schema_version_from_bytes(app_data_dir, &db_bytes)?;
     if schema_version > APP_REGISTRY_SCHEMA_VERSION {
         return Err(LauncherError::Generic {
@@ -226,6 +253,80 @@ pub async fn check_and_download_update(
         checked: true,
         message: format!("Registry updated to {}.", latest.tag_name),
     })
+}
+
+/// Outcome of the startup integrity check on the cached registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CachedRegistryIntegrity {
+    /// No cached registry on disk — nothing to verify.
+    Absent,
+    /// The cached db verified against its `.sig` sidecar.
+    Verified,
+    /// The cached db failed verification and was quarantined. The payload is a
+    /// human-readable reason suitable for a startup warning.
+    Quarantined(String),
+}
+
+/// Verify the cached `registry.db` against the `registry.db.sig` sidecar that
+/// [`atomic_replace_db`] stores next to it, quarantining the pair on failure.
+///
+/// Signature checking at download time (see [`check_and_download_update`]) only
+/// establishes that the bytes were authentic *in transit*. The cached copy lives
+/// in a user-writable data directory, and every download URL and expected hash
+/// the launcher trusts comes out of it — so it is re-verified once per process,
+/// at startup, before anything reads it.
+///
+/// A failing db is renamed to `registry.db.untrusted` (and its sidecar likewise)
+/// rather than deleted: that preserves the evidence, and leaving no
+/// `registry.db` behind is what makes the next sync re-download a good copy.
+pub fn verify_cached_registry(app_data_dir: &Path) -> CachedRegistryIntegrity {
+    let db_path = match paths::registry_db_path(app_data_dir) {
+        Ok(path) => path,
+        Err(_) => return CachedRegistryIntegrity::Absent,
+    };
+    if !db_path.exists() {
+        return CachedRegistryIntegrity::Absent;
+    }
+    let sig_path = match paths::registry_sig_path(app_data_dir) {
+        Ok(path) => path,
+        Err(_) => return CachedRegistryIntegrity::Absent,
+    };
+
+    let quarantine = |reason: String| -> CachedRegistryIntegrity {
+        let _ = std::fs::rename(&db_path, db_path.with_extension("db.untrusted"));
+        let _ = std::fs::rename(&sig_path, sig_path.with_extension("sig.untrusted"));
+        CachedRegistryIntegrity::Quarantined(reason)
+    };
+
+    let db_bytes = match std::fs::read(&db_path) {
+        Ok(bytes) => bytes,
+        // Unreadable is not the same as untrusted — leave it in place and let
+        // the caller fall back rather than destroying a file we cannot inspect.
+        Err(error) => {
+            return CachedRegistryIntegrity::Quarantined(format!(
+                "Cached registry could not be read ({error}); it will not be used."
+            ))
+        }
+    };
+    let sig_bytes = match std::fs::read(&sig_path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return quarantine(
+                "Cached registry has no signature sidecar; it was quarantined and will be \
+                 re-downloaded."
+                    .to_string(),
+            )
+        }
+    };
+
+    match verify_signature(&db_bytes, &sig_bytes) {
+        Ok(()) => CachedRegistryIntegrity::Verified,
+        Err(_) => quarantine(
+            "Cached registry failed Ed25519 signature verification; it was quarantined and \
+             will be re-downloaded."
+                .to_string(),
+        ),
+    }
 }
 
 /// Return the current registry status without performing a network check.
@@ -545,6 +646,107 @@ fn read_schema_version_from_bytes(
     result
 }
 
+/// Read the compiler's `built_at` stamp out of an open registry database.
+///
+/// Returns `None` when the key is absent, which is the normal case for any
+/// database compiled before the stamp was introduced.
+fn read_built_at(conn: &rusqlite::Connection) -> Option<String> {
+    let raw: String = conn
+        .query_row(
+            "SELECT value_json FROM system_config WHERE key = 'built_at'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    // Stored JSON-encoded, matching `runtime_catalog_source`.
+    serde_json::from_str::<String>(&raw).ok()
+}
+
+/// Read `built_at` from raw database bytes, using the same private-directory
+/// staging as [`read_schema_version_from_bytes`].
+fn read_built_at_from_bytes(app_data_dir: &std::path::Path, db_bytes: &[u8]) -> Option<String> {
+    let temp_db = app_data_dir.join("registry_rollback.tmp");
+    let _ = std::fs::remove_file(&temp_db);
+    std::fs::write(&temp_db, db_bytes).ok()?;
+
+    let built_at = (|| {
+        let conn = rusqlite::Connection::open_with_flags(
+            &temp_db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .ok()?;
+        let value = read_built_at(&conn);
+        drop(conn);
+        value
+    })();
+
+    let _ = std::fs::remove_file(&temp_db);
+    built_at
+}
+
+/// Read `built_at` from the cached registry database, if there is one.
+fn read_cached_built_at(app_data_dir: &std::path::Path) -> Option<String> {
+    let path = paths::registry_db_path(app_data_dir).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    read_built_at(&conn)
+}
+
+/// Whether `latest` names a strictly newer registry release than `cached`.
+///
+/// Registry releases are tagged `registry-YYYY-MM-DD` (UTC) by
+/// `scripts/deploy_release_assets.py`. This is a cheap pre-filter on *unsigned*
+/// GitHub API metadata — it stops the realistic accident, where pruning
+/// releases promotes an older one to "latest" — but it proves nothing on its
+/// own, because a forged API response can claim any tag. The binding check is
+/// [`is_rollback`], which compares a stamp carried inside the signed bytes.
+///
+/// An unparseable *cached* tag is treated as replaceable so a client can never
+/// wedge itself permanently; an unparseable *remote* tag is never accepted over
+/// a known-good one.
+fn tag_is_newer(cached: &str, latest: &str) -> bool {
+    match (parse_registry_tag(cached), parse_registry_tag(latest)) {
+        (Some(cached_date), Some(latest_date)) => latest_date > cached_date,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+/// Parse `registry-YYYY-MM-DD` into a comparable tuple.
+fn parse_registry_tag(tag: &str) -> Option<(u16, u8, u8)> {
+    let mut parts = tag.strip_prefix("registry-")?.split('-');
+    let year: u16 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+/// Whether installing `candidate` over `cached` would move the registry
+/// backwards in time.
+///
+/// Both stamps come from inside signature-verified database bytes, so unlike
+/// the release tag they cannot be forged without the signing key. ISO-8601 UTC
+/// timestamps from the compiler compare correctly as strings.
+///
+/// Unknown is not treated as older: a cached database predating the stamp has
+/// no value to compare, and refusing every update in that state would strand
+/// clients on exactly the registry we want them to move off.
+fn is_rollback(cached_built_at: Option<&str>, candidate_built_at: Option<&str>) -> bool {
+    match (cached_built_at, candidate_built_at) {
+        (Some(cached), Some(candidate)) => candidate < cached,
+        _ => false,
+    }
+}
+
 /// Read the schema version from the cached registry database at `path`.
 fn read_cached_schema_version(path: Option<&std::path::Path>) -> LauncherResult<i64> {
     let path = path.ok_or(LauncherError::RegistryMissing)?;
@@ -823,6 +1025,133 @@ mod tests {
         let short_sig = b"deadbeef"; // 8 bytes, not 64
         let result = verify_signature(db_bytes, short_sig);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_registry_tag_accepts_only_the_release_format() {
+        assert_eq!(
+            parse_registry_tag("registry-2026-08-27"),
+            Some((2026, 8, 27))
+        );
+        assert_eq!(
+            parse_registry_tag("registry-2026-01-01"),
+            Some((2026, 1, 1))
+        );
+        // Not a registry release tag.
+        assert_eq!(parse_registry_tag("v0.9.0"), None);
+        assert_eq!(parse_registry_tag("site-assets"), None);
+        // Trailing junk must not be ignored — otherwise a crafted tag could
+        // smuggle a date past the check.
+        assert_eq!(parse_registry_tag("registry-2026-08-27-evil"), None);
+        assert_eq!(parse_registry_tag("registry-2026-13-01"), None);
+        assert_eq!(parse_registry_tag("registry-2026-08-32"), None);
+        assert_eq!(parse_registry_tag("registry-not-a-date"), None);
+    }
+
+    /// The realistic accident this guards: `deploy_release_assets.py` prunes
+    /// old registry releases, so deleting the newest promotes an older one to
+    /// "latest". Without ordering, every client would install it.
+    #[test]
+    fn tag_is_newer_rejects_an_older_release() {
+        assert!(tag_is_newer("registry-2026-08-26", "registry-2026-08-27"));
+        assert!(!tag_is_newer("registry-2026-08-27", "registry-2026-08-26"));
+        assert!(!tag_is_newer("registry-2026-08-27", "registry-2026-08-27"));
+        assert!(!tag_is_newer("registry-2026-08-27", "registry-2025-12-31"));
+        // An unrecognisable remote tag never displaces a known-good one...
+        assert!(!tag_is_newer("registry-2026-08-27", "v0.9.0"));
+        // ...but an unrecognisable cached tag must not wedge the client.
+        assert!(tag_is_newer("some-legacy-tag", "registry-2026-08-27"));
+    }
+
+    /// The binding check: both stamps come from inside signature-verified
+    /// bytes, so unlike the tag they cannot be forged without the signing key.
+    #[test]
+    fn is_rollback_compares_signed_build_stamps() {
+        let older = "2026-08-26T03:19:02+00:00";
+        let newer = "2026-08-27T12:20:15+00:00";
+        assert!(is_rollback(Some(newer), Some(older)));
+        assert!(!is_rollback(Some(older), Some(newer)));
+        assert!(!is_rollback(Some(newer), Some(newer)));
+        // Absent stamps are not "older": a cached db predating the stamp must
+        // not block every future update.
+        assert!(!is_rollback(None, Some(newer)));
+        assert!(!is_rollback(Some(newer), None));
+        assert!(!is_rollback(None, None));
+    }
+
+    #[test]
+    fn built_at_round_trips_through_system_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("stamped.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE system_config (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);",
+        )
+        .unwrap();
+        assert_eq!(read_built_at(&conn), None, "absent key must read as None");
+
+        // Stored JSON-encoded, exactly as the compiler writes it.
+        conn.execute(
+            "INSERT INTO system_config (key, value_json) VALUES ('built_at', ?)",
+            ["\"2026-08-27T12:20:15+00:00\""],
+        )
+        .unwrap();
+        assert_eq!(
+            read_built_at(&conn).as_deref(),
+            Some("2026-08-27T12:20:15+00:00")
+        );
+    }
+
+    #[test]
+    fn verify_cached_registry_reports_absent_when_no_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            verify_cached_registry(dir.path()),
+            CachedRegistryIntegrity::Absent
+        );
+    }
+
+    /// A cached db whose signature does not verify must be quarantined, and the
+    /// quarantine must leave no `registry.db` behind — that absence is what
+    /// makes the next sync re-download a good copy instead of reporting
+    /// "up to date".
+    #[test]
+    fn verify_cached_registry_quarantines_a_tampered_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = paths::registry_db_path(dir.path()).unwrap();
+        let sig_path = paths::registry_sig_path(dir.path()).unwrap();
+        std::fs::write(&db_path, b"tampered registry contents").unwrap();
+        std::fs::write(&sig_path, [0u8; SIGNATURE_LENGTH]).unwrap();
+
+        let result = verify_cached_registry(dir.path());
+        assert!(
+            matches!(result, CachedRegistryIntegrity::Quarantined(_)),
+            "a db that fails signature verification must be quarantined, got {result:?}"
+        );
+        assert!(
+            !db_path.exists(),
+            "the untrusted db must not remain in place"
+        );
+        assert!(
+            db_path.with_extension("db.untrusted").exists(),
+            "the untrusted db should be preserved for inspection"
+        );
+    }
+
+    /// A missing sidecar is treated the same as a bad signature: an unsigned db
+    /// is not a trusted one.
+    #[test]
+    fn verify_cached_registry_quarantines_a_db_with_no_signature() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = paths::registry_db_path(dir.path()).unwrap();
+        std::fs::write(&db_path, b"unsigned registry contents").unwrap();
+
+        let result = verify_cached_registry(dir.path());
+        assert!(
+            matches!(result, CachedRegistryIntegrity::Quarantined(_)),
+            "a db with no signature sidecar must be quarantined, got {result:?}"
+        );
+        assert!(!db_path.exists());
     }
 
     #[test]

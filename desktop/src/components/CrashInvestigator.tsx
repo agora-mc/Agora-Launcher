@@ -915,8 +915,8 @@ export function CrashInvestigator({
   return (
     <>
       <Dialog open onOpenChange={handleDialogOpenChange}>
-        <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto">
-          <div className="flex items-start justify-between gap-4 border-b border-border pb-4 pr-6">
+        <DialogContent className="max-h-[90vh] max-w-5xl overflow-hidden flex flex-col">
+          <div className="flex items-start justify-between gap-4 border-b border-border pb-4 pr-6 shrink-0">
           <div className="flex-1 min-w-0">
             <DialogTitle>Crash Doctor</DialogTitle>
             <DialogDescription>
@@ -945,7 +945,7 @@ export function CrashInvestigator({
           )}
         </div>
 
-        <div className="space-y-4">
+        <div className="flex-1 overflow-y-auto space-y-4 pr-1">
           <div className="rounded-lg border border-border bg-muted/40 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
