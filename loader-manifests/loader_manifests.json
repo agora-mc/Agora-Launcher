@@ -134,6 +134,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.14",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14/0.19.4/profile/json",
+        "sha256": "f3986c502c13dea258912c09354e06281baa39c2658e9c621ea60f7b3829bfdd",
+        "file_name": "fabric-loader-0.19.4-1.14.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14/0.19.5/profile/json",
+        "sha256": "2465c3c902ee68703fe80eaa78bca68e47fad654320d1a8c4685851548bd4107",
+        "file_name": "fabric-loader-0.19.5-1.14.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.14.1",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.1/0.18.1/profile/json",
@@ -250,6 +274,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.1/0.19.4/profile/json",
+        "sha256": "51470d7adb386274acc1a20ee0094ae72d7cac94a9e4a6ae1aaa65bfadfccf88",
+        "file_name": "fabric-loader-0.19.4-1.14.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.1/0.19.5/profile/json",
+        "sha256": "451a7bb3faa4f91cf6e1babdd9155001b18494701c0390f64063dea6bc5f5035",
+        "file_name": "fabric-loader-0.19.5-1.14.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -374,6 +422,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.14.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.2/0.19.4/profile/json",
+        "sha256": "42e29fe050a73312838f681fb6fef99d484c746b82a2df9eabf894352c8e64b0",
+        "file_name": "fabric-loader-0.19.4-1.14.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.2/0.19.5/profile/json",
+        "sha256": "b39c7326fb3811e4283421f0ff6c1d46d2cefb49f193b9d2e511a412c33a687a",
+        "file_name": "fabric-loader-0.19.5-1.14.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.14.3",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.3/0.18.1/profile/json",
@@ -490,6 +562,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.3",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.3/0.19.4/profile/json",
+        "sha256": "148918825a69b68cdbaeccf08c0e48f7d9feb77c7ed5e624b962cbe6c8e3be51",
+        "file_name": "fabric-loader-0.19.4-1.14.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.3",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.3/0.19.5/profile/json",
+        "sha256": "3f4f27754d51729ae5d8c60a9fec21f11b262e13755dfc60dfb049c31c2d48cf",
+        "file_name": "fabric-loader-0.19.5-1.14.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -614,6 +710,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.14.4",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.4/0.19.4/profile/json",
+        "sha256": "1fff2b6b8f00216d24aa6fc4a72e9008d96f409b01aa69ac9d4e0338c9327195",
+        "file_name": "fabric-loader-0.19.4-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.4",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.14.4/0.19.5/profile/json",
+        "sha256": "e70e65c70881d4a5cc4d69b4eb3343c03a94cdfead2c05bee2b390f2aed6741c",
+        "file_name": "fabric-loader-0.19.5-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.15",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15/0.18.1/profile/json",
@@ -730,6 +850,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15/0.19.4/profile/json",
+        "sha256": "cdc58037b4b996b807bdc31363199b78b860b946b48a9a5cdd9956c64814c8a1",
+        "file_name": "fabric-loader-0.19.4-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15/0.19.5/profile/json",
+        "sha256": "a14f004c3c398fca77f09e08b97113ef6d2c160d98f0db234acad784bb89a51c",
+        "file_name": "fabric-loader-0.19.5-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -854,6 +998,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.15.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15.1/0.19.4/profile/json",
+        "sha256": "6a811843c706873923b11e2f7d5e0e7bc7a5353ecac7cedfb81c0471fc7f9a28",
+        "file_name": "fabric-loader-0.19.4-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15.1/0.19.5/profile/json",
+        "sha256": "c84d55ac80e50d21cb4f62e4818752b09e1d00520d377022b1653fa5e48d5445",
+        "file_name": "fabric-loader-0.19.5-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.15.2",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15.2/0.18.1/profile/json",
@@ -970,6 +1138,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15.2/0.19.4/profile/json",
+        "sha256": "811cd91b32701597b661b3a58d375a3e8cb873cccf71dd1e32ff910148df97e5",
+        "file_name": "fabric-loader-0.19.4-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.15.2/0.19.5/profile/json",
+        "sha256": "cbe6880a46836d071c7028eaeef11cd599673018fb24cf24275ade90340c218e",
+        "file_name": "fabric-loader-0.19.5-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -1094,6 +1286,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.16",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16/0.19.4/profile/json",
+        "sha256": "194615474d91b0a0622ab7cb448527b326b4aab283276a2b0dc7e4ccd669a926",
+        "file_name": "fabric-loader-0.19.4-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16/0.19.5/profile/json",
+        "sha256": "fb8ebfb4cf69b2fe12687e92022c97b738f61389d517c6a0c9980f47048c280e",
+        "file_name": "fabric-loader-0.19.5-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.16.1",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.1/0.18.1/profile/json",
@@ -1210,6 +1426,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.1/0.19.4/profile/json",
+        "sha256": "dd28b547c7d2ff0cc0ccad6d9b65ebf92711fe39fd12cf4952455e7016f9176f",
+        "file_name": "fabric-loader-0.19.4-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.1/0.19.5/profile/json",
+        "sha256": "2997fa871bb48d907ca9436ef728e04d7cde1f22e4ddf5ab8ff60812844dce6b",
+        "file_name": "fabric-loader-0.19.5-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -1334,6 +1574,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.16.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.2/0.19.4/profile/json",
+        "sha256": "644ef84d5696dc5daa7316186869ee53ae0669db94736b565ec939a7256b2172",
+        "file_name": "fabric-loader-0.19.4-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.2/0.19.5/profile/json",
+        "sha256": "94796b43ebfce4e97750606ea0a694c098f005d27281415a3f39764929040804",
+        "file_name": "fabric-loader-0.19.5-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.16.3",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.3/0.18.1/profile/json",
@@ -1450,6 +1714,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.3/0.19.4/profile/json",
+        "sha256": "dfcc749d24fb1545ce52d06c1d18e9e73cb30715073f868dedb07a4cefb620f6",
+        "file_name": "fabric-loader-0.19.4-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.3/0.19.5/profile/json",
+        "sha256": "e7a2c715623d0399a41d889f1233e30f5164389a55301f2d704b182ff3498297",
+        "file_name": "fabric-loader-0.19.5-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -1574,6 +1862,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.16.4",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.4/0.19.4/profile/json",
+        "sha256": "53559726b230c409dae68948cd2b17cff15764dfa8fde7fee8ab73533fa81690",
+        "file_name": "fabric-loader-0.19.4-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.4",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.4/0.19.5/profile/json",
+        "sha256": "ac59edffe61aa22ebf6741a977d21bfa7fd4bb67f59f2bd2fea2be697482331c",
+        "file_name": "fabric-loader-0.19.5-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.16.5",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.5/0.18.1/profile/json",
@@ -1690,6 +2002,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.5/0.19.4/profile/json",
+        "sha256": "ec8f3012a2caccf837b5eb92a6830ce9271538f16d660adb52ad7dc5a09759fd",
+        "file_name": "fabric-loader-0.19.4-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.16.5/0.19.5/profile/json",
+        "sha256": "13ac10edf077dbdee6aa2e41e673d297dd40c2032ba2359556bd8be96e5557d2",
+        "file_name": "fabric-loader-0.19.5-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -1814,6 +2150,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.17",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.17/0.19.4/profile/json",
+        "sha256": "5bcc44a075b22c8a652fe47deb6ebe5cbed1119b8826d4fba59e3061831bc61b",
+        "file_name": "fabric-loader-0.19.4-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.17",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.17/0.19.5/profile/json",
+        "sha256": "964831ae2084f5443702ae499464707e12290cafd90d97a71aba2eb47409e6f2",
+        "file_name": "fabric-loader-0.19.5-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.17.1",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.17.1/0.18.1/profile/json",
@@ -1930,6 +2290,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.17.1/0.19.4/profile/json",
+        "sha256": "5486ee2cc8e3be4b555e40116adead75309beb6d09da45c31dd0c6747aad3a0c",
+        "file_name": "fabric-loader-0.19.4-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.17.1/0.19.5/profile/json",
+        "sha256": "5960a147916452655cb8ff7e5327226c044a1f73a0722b9592a8db5ce82adc68",
+        "file_name": "fabric-loader-0.19.5-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -2054,6 +2438,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.18",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18/0.19.4/profile/json",
+        "sha256": "0f0bad2f6ef6c7674109467d027cc56925e2b3f10ef4f66b8703e94f6d6f6071",
+        "file_name": "fabric-loader-0.19.4-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18/0.19.5/profile/json",
+        "sha256": "18a1c36b794d062ce85b8fed89897a8dfaa5268f5b480c25d3d80159b4dd0942",
+        "file_name": "fabric-loader-0.19.5-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.18.1",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18.1/0.18.1/profile/json",
@@ -2170,6 +2578,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18.1/0.19.4/profile/json",
+        "sha256": "8f989496c3dfbb756165020cf94b31d066a82adfcc4540d2b792cfcbc8b3a9df",
+        "file_name": "fabric-loader-0.19.4-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18.1/0.19.5/profile/json",
+        "sha256": "e92abb1f282b4d181a96822745b4e2e3cf781d00ca6494930a8ae44064802de3",
+        "file_name": "fabric-loader-0.19.5-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -2294,6 +2726,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.18.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18.2/0.19.4/profile/json",
+        "sha256": "832cfbe321e31b58d9173708476c3df1f3649c71f2682c7dc0f754fa57855dd3",
+        "file_name": "fabric-loader-0.19.4-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.18.2/0.19.5/profile/json",
+        "sha256": "9a1c3c1775de7e41bebc094b660afb4ae663fa3e0d3e53215890ccd9f44f1462",
+        "file_name": "fabric-loader-0.19.5-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.19",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19/0.18.1/profile/json",
@@ -2410,6 +2866,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19/0.19.4/profile/json",
+        "sha256": "d9a86ed175633075e561a9da29bfa876e18a568f7da58c7d622843b723397068",
+        "file_name": "fabric-loader-0.19.4-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19/0.19.5/profile/json",
+        "sha256": "0228b5a203a4f7950d2a61eabf7df18fa681ef9934fb701334fd045cd380dbca",
+        "file_name": "fabric-loader-0.19.5-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -2534,6 +3014,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.19.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.1/0.19.4/profile/json",
+        "sha256": "847ecd0a1e7b4e01f74be1156ce7c3d39badea43bade93a0cd995dcb73881567",
+        "file_name": "fabric-loader-0.19.4-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.1/0.19.5/profile/json",
+        "sha256": "03d6454f2ce4b03b2c0dc8359889be2727ee3bccaeaeca094ca9d0a07166ea03",
+        "file_name": "fabric-loader-0.19.5-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.19.2",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.2/0.18.1/profile/json",
@@ -2650,6 +3154,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.2/0.19.4/profile/json",
+        "sha256": "04acf02fb4beb50898658f73bc19f91739c83450b9c4c0889515b4c3d4727130",
+        "file_name": "fabric-loader-0.19.4-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.2/0.19.5/profile/json",
+        "sha256": "8342993a555a06af331fe090d1c11be126154ee8463d0e6d6d63894f5d7cc6ae",
+        "file_name": "fabric-loader-0.19.5-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -2774,6 +3302,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.19.3",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.3/0.19.4/profile/json",
+        "sha256": "5d2757ad3f982d377d8e58b883fc0096302fa4e05da1809b6955a671345e02fd",
+        "file_name": "fabric-loader-0.19.4-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.3",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.3/0.19.5/profile/json",
+        "sha256": "3d8c5161f5f7806f622f62aad19c95c88cbbba23b36af81adf424781f7dc80cb",
+        "file_name": "fabric-loader-0.19.5-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.19.4",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.4/0.18.1/profile/json",
@@ -2894,6 +3446,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.19.4",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.4/0.19.4/profile/json",
+        "sha256": "2e624986d052df5a7f4cde2558086bf8f9a677ab96b82078fecc014292c857d1",
+        "file_name": "fabric-loader-0.19.4-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.4",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.19.4/0.19.5/profile/json",
+        "sha256": "b6fe048df2d8507ddb441d8d07e0e17ff45a1ec0a4499c025229e860600802ce",
+        "file_name": "fabric-loader-0.19.5-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.20",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20/0.18.1/profile/json",
@@ -3010,6 +3586,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20/0.19.4/profile/json",
+        "sha256": "5921913e17c30d4ee6fc9259228e0b4372fb1376d09ff6b7394b208cfad941d9",
+        "file_name": "fabric-loader-0.19.4-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20/0.19.5/profile/json",
+        "sha256": "d54cd40932f7a2038753a8e0dee7bbb86f080cbfafe7907c608effeb830a82d2",
+        "file_name": "fabric-loader-0.19.5-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -6026,6 +6626,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.20.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.1/0.19.4/profile/json",
+        "sha256": "dcdf1484aba87d4c9065daa0d45af8a47ed12ce1e7fbab8f19e69266c20638ba",
+        "file_name": "fabric-loader-0.19.4-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.1/0.19.5/profile/json",
+        "sha256": "34652cd603234cde976ff1d89ddbcffe46b36e090f73b33ee06b4fa5fdfec490",
+        "file_name": "fabric-loader-0.19.5-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.20.2",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.2/0.18.1/profile/json",
@@ -6142,6 +6766,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.2/0.19.4/profile/json",
+        "sha256": "b0a5d02c0e39f95013cc18fb41aa0975955245afe3af8bdff92c9bec3acd794b",
+        "file_name": "fabric-loader-0.19.4-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.2/0.19.5/profile/json",
+        "sha256": "772de3c28c8e4897ee61bab3687b95a47108493b9a9dae0d0a7a3200ce760676",
+        "file_name": "fabric-loader-0.19.5-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -6266,6 +6914,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.20.3",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.3/0.19.4/profile/json",
+        "sha256": "9b85b5430d86d2003ccd48424fd9d39d7c6a58ed96384061fd5f733ff6090f7e",
+        "file_name": "fabric-loader-0.19.4-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.3",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.3/0.19.5/profile/json",
+        "sha256": "bda8d73229d773fafa9b3ef0368e4f077583de4726cd1a3c8c38a80d12475fdb",
+        "file_name": "fabric-loader-0.19.5-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.20.4",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.4/0.18.1/profile/json",
@@ -6382,6 +7054,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.4/0.19.4/profile/json",
+        "sha256": "bc2dec34ff1b04a39dcf03f20f84acd38a9da0d5e214bae3e233c3a381c4de52",
+        "file_name": "fabric-loader-0.19.4-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.4/0.19.5/profile/json",
+        "sha256": "f43fbfef04e7b974fcfa4872668279a37abfb37786c6146c7a575da18ed7ddcc",
+        "file_name": "fabric-loader-0.19.5-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -6506,6 +7202,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.20.5",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.5/0.19.4/profile/json",
+        "sha256": "df99818332a8cbb18901f610cd9c833f8f40e0a82424b5d03aa026767722e877",
+        "file_name": "fabric-loader-0.19.4-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.5",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.5/0.19.5/profile/json",
+        "sha256": "cb3fc6dbf344e161f864c879e85f971359dd08878b62a2a10b62c254c2f70173",
+        "file_name": "fabric-loader-0.19.5-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.20.6",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.6/0.18.1/profile/json",
@@ -6626,6 +7346,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.20.6",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.6/0.19.4/profile/json",
+        "sha256": "e961fb0c7e1f24a4b8e2da7c7c35091fd9f2b4e6275aad692c1836155e422c4e",
+        "file_name": "fabric-loader-0.19.4-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.6",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.20.6/0.19.5/profile/json",
+        "sha256": "b5fa4de776818b95d7c76754d6940f04d37158a28200fcff14f26972a37f8beb",
+        "file_name": "fabric-loader-0.19.5-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21/0.18.1/profile/json",
@@ -6742,6 +7486,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21/0.19.4/profile/json",
+        "sha256": "26cc46eb2e84a8f1280a57dc25cc02b3140037bd0837e5519b92dcc76d6a966d",
+        "file_name": "fabric-loader-0.19.4-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21/0.19.5/profile/json",
+        "sha256": "647bd92a97942ad7990df6c24f5eed55b709ccd002d11704d8cc43c8fb1950c7",
+        "file_name": "fabric-loader-0.19.5-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -9758,6 +10526,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.19.4/profile/json",
+        "sha256": "920f8172babf9062861ed8b201818634b5bf6cad80e928b13eb916efa04c0744",
+        "file_name": "fabric-loader-0.19.4-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.19.5/profile/json",
+        "sha256": "af35bc80df2d8b6ff34c900322118ccf2a464095e27dd88f734754b7287e1854",
+        "file_name": "fabric-loader-0.19.5-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21.2",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.2/0.18.1/profile/json",
@@ -9874,6 +10666,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.2/0.19.4/profile/json",
+        "sha256": "a87bd8ba47970f612860d47e530ea6160e3eb98cbd01b3b925ca62ea3b52cfde",
+        "file_name": "fabric-loader-0.19.4-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.2/0.19.5/profile/json",
+        "sha256": "6607bc834eabee52a5d336f1a2847ff88c8638a4a83d343f20925be153acdea8",
+        "file_name": "fabric-loader-0.19.5-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -9998,6 +10814,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.3",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.3/0.19.4/profile/json",
+        "sha256": "8a129f6097bee69a5aca6aba57131a7d6f02c08b3a587486ca67411813614839",
+        "file_name": "fabric-loader-0.19.4-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.3",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.3/0.19.5/profile/json",
+        "sha256": "5c2b9cd40210837f69a0b9ed7b4f62a9b5ef1fc97b8f4cac4dc0de9d12ad03f4",
+        "file_name": "fabric-loader-0.19.5-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21.4",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.4/0.18.1/profile/json",
@@ -10114,6 +10954,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.4/0.19.4/profile/json",
+        "sha256": "5b54f698646dd613cbb22adf14b8a9e221c4f3dba278d1a58ed715e76279036e",
+        "file_name": "fabric-loader-0.19.4-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.4/0.19.5/profile/json",
+        "sha256": "9782a25e331548d9c72dd8d1a11b3e750788694a202fbf589b998a49fda70a82",
+        "file_name": "fabric-loader-0.19.5-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -10238,6 +11102,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.5",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.5/0.19.4/profile/json",
+        "sha256": "49b1dac6f823ccbc7faeef36dc6aab75ce269576f8fdabbae44530d2ff28a916",
+        "file_name": "fabric-loader-0.19.4-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.5",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.5/0.19.5/profile/json",
+        "sha256": "4918371c99b4f2fdf463c822f754cffa43e304b8f578df2bf640e4ecaf1df962",
+        "file_name": "fabric-loader-0.19.5-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21.6",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.6/0.18.1/profile/json",
@@ -10354,6 +11242,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.6/0.19.4/profile/json",
+        "sha256": "d6eb69164aa6b4b112c5da24e821024b14875e387538da7625a0773e26a77333",
+        "file_name": "fabric-loader-0.19.4-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.6/0.19.5/profile/json",
+        "sha256": "2f385340e0d4b85279809db1b8d31591f60d4930b314e751df869d2c16ca8e4f",
+        "file_name": "fabric-loader-0.19.5-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -10478,6 +11390,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.7",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.7/0.19.4/profile/json",
+        "sha256": "77883681bb57933331477f110dfbde210bee055391b12c0adc7b408ddc824b4b",
+        "file_name": "fabric-loader-0.19.4-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.7",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.7/0.19.5/profile/json",
+        "sha256": "6a75d0b6116452728a160c9382295eca36d4208bbacb0e12fbf568d4a823b74f",
+        "file_name": "fabric-loader-0.19.5-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21.8",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.8/0.18.1/profile/json",
@@ -10594,6 +11530,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.8/0.19.4/profile/json",
+        "sha256": "a917360c12d036150f104c5d19faed6821d1186d19c69a850f5a0a7c5c156ee0",
+        "file_name": "fabric-loader-0.19.4-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.8/0.19.5/profile/json",
+        "sha256": "9a01320c189d2d405cf33e984eca7ebbf26a697e4239211a9e5e96fe22aa04fe",
+        "file_name": "fabric-loader-0.19.5-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -10718,6 +11678,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.9",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.9/0.19.4/profile/json",
+        "sha256": "d32ef1bdcb4c3b1b03578efa96f05ad743e32eca76dbc3398322f4f898de407c",
+        "file_name": "fabric-loader-0.19.4-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.9",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.9/0.19.5/profile/json",
+        "sha256": "f810661cbc20fd79bd12e3e9e613997fd9fd18e1398b3aeb4dcf2eaa75b3d488",
+        "file_name": "fabric-loader-0.19.5-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21.10",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.10/0.18.1/profile/json",
@@ -10834,6 +11818,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.10/0.19.4/profile/json",
+        "sha256": "0e89fe6b852a3a796cb0df31fe3ca289a95e3e2d75a311f73f7b5d942dae9951",
+        "file_name": "fabric-loader-0.19.4-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.10/0.19.5/profile/json",
+        "sha256": "8f16c0d8ee1ba9f95dcd9e1585c88ed1985573006154cdad64dd54dc19184847",
+        "file_name": "fabric-loader-0.19.5-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -10958,6 +11966,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.11",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.19.4/profile/json",
+        "sha256": "54b1cb8c5e3ddc2a5001846a834c4841a30f7d8cc365af3504eba7c407ea4950",
+        "file_name": "fabric-loader-0.19.4-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.19.5/profile/json",
+        "sha256": "7a36e0912bea3937311f8dc303ed0605be02f144d700d652c8fc52183c53210e",
+        "file_name": "fabric-loader-0.19.5-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "26.1",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1/0.18.1/profile/json",
@@ -11074,6 +12106,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1/0.19.4/profile/json",
+        "sha256": "6666ca813b3551c25d7b6bd23cd97c65eabb9325510d3f160a695a389c71756b",
+        "file_name": "fabric-loader-0.19.4-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1/0.19.5/profile/json",
+        "sha256": "439abcf13ff0216e4e5110a171e6f91a2b76d7eed8c3b705608ec861f8fff2ad",
+        "file_name": "fabric-loader-0.19.5-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       },
@@ -11198,6 +12254,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "26.1.1",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1.1/0.19.4/profile/json",
+        "sha256": "20210a289c07050569889349101380dc6cbb734fc1db896a2aff42f157154858",
+        "file_name": "fabric-loader-0.19.4-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1.1",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1.1/0.19.5/profile/json",
+        "sha256": "3a9e33194ec6b7ad4362ec532712b2e4b6f3b562379d4cb217283e710b3a6061",
+        "file_name": "fabric-loader-0.19.5-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "26.1.2",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.18.1/profile/json",
@@ -11318,6 +12398,30 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "26.1.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.19.4/profile/json",
+        "sha256": "4d82f74f4de5d9be6479d37542d7dc579cf367c56f056ad2ea2d9a83780480bb",
+        "file_name": "fabric-loader-0.19.4-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.1.2/0.19.5/profile/json",
+        "sha256": "c22fb02a9e519f8980eb8fb7a433393a06e10672714f6d76b6a12ff463e0f5ef",
+        "file_name": "fabric-loader-0.19.5-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "26.2",
         "loader_version": "0.18.1",
         "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.2/0.18.1/profile/json",
@@ -11434,6 +12538,30 @@
         "file_type": "profile_json",
         "provided_versions": {
           "fabricloader": "0.19.3"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.19.4",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.2/0.19.4/profile/json",
+        "sha256": "0c46c26216ce7f6209187c56850c1e449bd89ee86bb2b617ba509b67be431904",
+        "file_name": "fabric-loader-0.19.4-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.4"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.19.5",
+        "source_url": "https://meta.fabricmc.net/v2/versions/loader/26.2/0.19.5/profile/json",
+        "sha256": "03d7afb12e337e85f922a7eb8b7e355e55272c1ac96529b3e5da5a0d52406d88",
+        "file_name": "fabric-loader-0.19.5-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "fabricloader": "0.19.5"
         },
         "release_channel": "stable"
       }
@@ -11572,6 +12700,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.14.4",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.30.1-beta.4/profile/json",
+        "sha256": "18700d879bbe1cefafa842549ffb1138abea942be590253f952014c33602735e",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.15",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.30.0-beta.0/profile/json",
@@ -11700,6 +12840,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.30.1-beta.4/profile/json",
+        "sha256": "bcff9a4d456b21bca700b50526f07dab37e05c1b756d6777741e0f52acdcaff5",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -11836,6 +12988,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.15.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.30.1-beta.4/profile/json",
+        "sha256": "bf594206652b2b2896084c9c66dd10edbfc8997e75d2672ae427adba80c33afe",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.15.2",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.30.0-beta.0/profile/json",
@@ -11964,6 +13128,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.30.1-beta.4/profile/json",
+        "sha256": "faac7a897a85d28da14b50bbd4ea2cae787dfd56f7f95f9bd668afdb0db075a6",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -12100,6 +13276,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.16",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.30.1-beta.4/profile/json",
+        "sha256": "ba490755a8043596ac6409881adf7d5c8318cb995f1905c221e147810c6fac07",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.16.1",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.30.0-beta.0/profile/json",
@@ -12228,6 +13416,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.30.1-beta.4/profile/json",
+        "sha256": "97ba1499dd817d344280b1061a508eaf993045369986277f57828bca6dedadc0",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -12364,6 +13564,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.16.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.30.1-beta.4/profile/json",
+        "sha256": "d90cd3c5bd4712fdb548f0a495ebbbde4adf6cc1af911b610c7c2c0e7ab086a8",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.16.3",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.30.0-beta.0/profile/json",
@@ -12492,6 +13704,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.30.1-beta.4/profile/json",
+        "sha256": "d993d031a448fb831d7015d3edb610f3eefbd8d0b83a02664f54011c2838ceda",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -12628,6 +13852,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.16.4",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.30.1-beta.4/profile/json",
+        "sha256": "cecc9a7bc635ffa956b9f6a4d8dfac0a2abe085068da642d70c88890fa10505a",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.16.5",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.30.0-beta.0/profile/json",
@@ -12756,6 +13992,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.30.1-beta.4/profile/json",
+        "sha256": "30844db76b863e165f07b7634a45d18b004926c7587477ee38097e26e6f139fb",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -12892,6 +14140,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.17",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.30.1-beta.4/profile/json",
+        "sha256": "e2f6a064774a972dcaa6b651a20c8caf09e7a3a1a365d49d835552fcea585a75",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.17.1",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.30.0-beta.0/profile/json",
@@ -13020,6 +14280,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.30.1-beta.4/profile/json",
+        "sha256": "8821c83b35d9b6852765339327276d9df1e7ad4cec93ced5f1184fd2c4c6c97f",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -13156,6 +14428,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.18",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.30.1-beta.4/profile/json",
+        "sha256": "600b907fffd6ce5873fcbaadd645e3e84025a9b85f85a924d9c97def3d1d50f1",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.18.1",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.30.0-beta.0/profile/json",
@@ -13284,6 +14568,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.30.1-beta.4/profile/json",
+        "sha256": "bb3d3188700c44dd9c083301a85155f509225c27d98df05651bd5c95d28b466b",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -13420,6 +14716,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.18.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.30.1-beta.4/profile/json",
+        "sha256": "6deac374694f4e4edbbf326dc3c0d6aed9a0d1acdcbe872c5182766a6eb21822",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.19",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.30.0-beta.0/profile/json",
@@ -13548,6 +14856,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.30.1-beta.4/profile/json",
+        "sha256": "69397dc2a4685d2c73322672a75db20235178f8b8cb9c170b2f1120cc2aae9a5",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -13684,6 +15004,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.19.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.30.1-beta.4/profile/json",
+        "sha256": "fbfe03ac225e1ab7a04b44a91296a568f83a1c78b82e8a904e130363c1e49693",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.19.2",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.30.0-beta.0/profile/json",
@@ -13812,6 +15144,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.30.1-beta.4/profile/json",
+        "sha256": "4b54130161d999de0005642932622e7afa2e85a838b6d1db4a70af5310a1487e",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -13948,6 +15292,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.19.3",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.30.1-beta.4/profile/json",
+        "sha256": "a9b8c21f19c469c9ae2174e3309515ba33b9f8ca0472d7ab0e64e61d81fe1db6",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.19.4",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.30.0-beta.0/profile/json",
@@ -14080,6 +15436,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.19.4",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.30.1-beta.4/profile/json",
+        "sha256": "f0388f62786d6711758a9a3e9bd3c6160dff89f2bfde888fcf78dcbd72b82a05",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.20",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.30.0-beta.0/profile/json",
@@ -14208,6 +15576,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.30.1-beta.4/profile/json",
+        "sha256": "3967aad29e2c45f1557dc0216cf87c76041de70d5df2003f82062c7e5cb22f22",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -17812,6 +19192,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.20.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.30.1-beta.4/profile/json",
+        "sha256": "dfaccec41cc95bb670b63a5c23d5e4dc33bc79f77181738cdc4ceeca969fcc7a",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.20.2",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.30.0-beta.0/profile/json",
@@ -17940,6 +19332,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.30.1-beta.4/profile/json",
+        "sha256": "51404d1bd70cecfb9c1e661379d4141d96e079adc382bb5d8d2938fb39d65896",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -18076,6 +19480,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.20.3",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.30.1-beta.4/profile/json",
+        "sha256": "7eb56f29826531a645b3b17a8b91a4da610d1105c313fb45beeb96fb7331ad4a",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.20.4",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.30.0-beta.0/profile/json",
@@ -18204,6 +19620,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.30.1-beta.4/profile/json",
+        "sha256": "09dbb71f4de3822dc16734ddb912b9987856c50377a7f4343f70b3445c212249",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -18340,6 +19768,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.20.5",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.30.1-beta.4/profile/json",
+        "sha256": "92316b366455356ea822fbb6df35c42de6505d25456eaa49e12f1915f8c061ac",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.20.6",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.30.0-beta.0/profile/json",
@@ -18472,6 +19912,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.20.6",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.30.1-beta.4/profile/json",
+        "sha256": "93cff5576b24b0a6de0d8a8d93fc4bfe22e35c4d812385057a828597ac73d67e",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.21",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.30.0-beta.0/profile/json",
@@ -18600,6 +20052,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.30.1-beta.4/profile/json",
+        "sha256": "6ef2c20d77165f4501ce00b56efb79e5b43dba93931e295342e5f3ea66fdacc8",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -22204,6 +23668,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.21.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.30.1-beta.4/profile/json",
+        "sha256": "71ff015adfd770f25b65a022cec535189feec991b51ad56dead82158952f488d",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.21.2",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.30.0-beta.0/profile/json",
@@ -22332,6 +23808,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.30.1-beta.4/profile/json",
+        "sha256": "62a35ecc71a36f39d3aac80893f73340bdaa523c8ffbccf4b34c175bb8c6325d",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -22468,6 +23956,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.21.3",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.30.1-beta.4/profile/json",
+        "sha256": "48962b439144c0674f915932122a5b466ec48b573be68d02be0fca8fd8eebadd",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.21.4",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.30.0-beta.0/profile/json",
@@ -22596,6 +24096,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.30.1-beta.4/profile/json",
+        "sha256": "23ee019c9032ff6a45f108a81a7b9acd6117dc8237b871184df39b9568eac5f8",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -22732,6 +24244,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.21.5",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.30.1-beta.4/profile/json",
+        "sha256": "695f01d746056d242dcb19c01bd812a70c83707570655f4ba1a31cf7a5cd9a3a",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.21.6",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.30.0-beta.0/profile/json",
@@ -22860,6 +24384,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.30.1-beta.4/profile/json",
+        "sha256": "1df80bde27e3dd1d94ffaf2cb509a4cd1a0a81be06988d94f7eff04bd58791a6",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -22996,6 +24532,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.21.7",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.30.1-beta.4/profile/json",
+        "sha256": "d9e8a33bd4b43b8dd15f80d806996194259c71cdd3ff3cdffe2c1c0a006ad4dc",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.21.8",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.30.0-beta.0/profile/json",
@@ -23124,6 +24672,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.30.1-beta.4/profile/json",
+        "sha256": "82f338ed158d0c3c066005bd8f60aabef10d68a52424e4a0a9733a067927b57e",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -23260,6 +24820,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.21.9",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.30.1-beta.4/profile/json",
+        "sha256": "c25a81297950923cbb0b5071a43396763508433c70a2b45104da56466d5853e1",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "1.21.10",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.30.0-beta.0/profile/json",
@@ -23388,6 +24960,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.30.1-beta.4/profile/json",
+        "sha256": "66832d78999eab7e217bae8739faa11188389249db48826099a0a2a58e3a4702",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -23524,6 +25108,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "1.21.11",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.30.1-beta.4/profile/json",
+        "sha256": "213151e9135217af587467fa1b7f0c565073bf6fa587139346bb7fd346bf86a9",
+        "file_name": "quilt-loader-0.30.1-beta.4-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "26.1",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.30.0-beta.0/profile/json",
@@ -23652,6 +25248,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.30.1-beta.4/profile/json",
+        "sha256": "458774ffc0e9ebb2395b6818e7c7cec39f4277f3710e075d87cac26fc0e6057c",
+        "file_name": "quilt-loader-0.30.1-beta.4-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       },
@@ -23788,6 +25396,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "26.1.1",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.30.1-beta.4/profile/json",
+        "sha256": "85c78d8b96b07f6edcc53fa6b54aa096f7af7dd61c4d7d6da453e35b80f8f810",
+        "file_name": "quilt-loader-0.30.1-beta.4-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "26.1.2",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.30.0-beta.0/profile/json",
@@ -23920,6 +25540,18 @@
         "release_channel": "prerelease"
       },
       {
+        "mc_version": "26.1.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.30.1-beta.4/profile/json",
+        "sha256": "fc3fdbaa70f30d8174e9f29abf79dec5b83db3edc682e7cc50920510c7df4646",
+        "file_name": "quilt-loader-0.30.1-beta.4-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
         "mc_version": "26.2",
         "loader_version": "0.30.0-beta.0",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.30.0-beta.0/profile/json",
@@ -24048,6 +25680,18 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.3"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.30.1-beta.4",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.30.1-beta.4/profile/json",
+        "sha256": "2da287ca4f36a8034d8d1fd39b0fe2cad3d3d8759482b3f9e79241397720f203",
+        "file_name": "quilt-loader-0.30.1-beta.4-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1-beta.4"
         },
         "release_channel": "prerelease"
       }
@@ -28356,6 +30000,22 @@
           "neoforge": "21.1.248",
           "javafml": "4.0.43",
           "lowcodefml": "4.0.43"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.249",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.249/neoforge-21.1.249-installer.jar",
+        "sha256": "d88b448eab73cd65bdf1720844a4828262de30a15fc71bd04dd81acc61c5399a",
+        "file_name": "neoforge-21.1.249-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "86d5aca1e8e744b97149d3a762c8b8c10a400ed49748a421d99ae55870ee204c",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.1.249",
+          "javafml": "4.0.44",
+          "lowcodefml": "4.0.44"
         },
         "release_channel": "stable"
       },
@@ -35566,6 +37226,22 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.19.4",
+        "loader_version": "45.4.5",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.19.4-45.4.5/forge-1.19.4-45.4.5-installer.jar",
+        "sha256": "1b4475d6ece01e7242855504fbe0fe37ac79efd7b3281bf42b8dcf390d421f35",
+        "file_name": "forge-1.19.4-45.4.5-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "01a80e94d7ec7f2af9cbb849978acc6d1c10074f7ac8f4b276a932aad9ebdcfd",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "45.4.5",
+          "javafml": "45",
+          "lowcodefml": "45"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.20",
         "loader_version": "46.0.1",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20-46.0.1/forge-1.20-46.0.1-installer.jar",
@@ -40954,6 +42630,22 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "26.1.2",
+        "loader_version": "64.1.3",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.1.2-64.1.3/forge-26.1.2-64.1.3-installer.jar",
+        "sha256": "ae8e4d771d41367d3d8bffe06d74089f4f6397d875744eee779300ab6cde57da",
+        "file_name": "forge-26.1.2-64.1.3-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d3c291a634256cc038f0c5cc73730307899f6acc85a9cf87d4f6b0eff63d74b4",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "64.1.3",
+          "javafml": "64",
+          "lowcodefml": "64"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "26.2",
         "loader_version": "65.0.0",
         "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.0.0/forge-26.2-65.0.0-installer.jar",
@@ -41154,6 +42846,22 @@
         "installer_spec": 1,
         "provided_versions": {
           "forge": "65.1.2",
+          "javafml": "65",
+          "lowcodefml": "65"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "65.1.3",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.2-65.1.3/forge-26.2-65.1.3-installer.jar",
+        "sha256": "57dc567dc125d963f352fcb38136ba171326cc0b9516e6f7f6b2ef05251ccc33",
+        "file_name": "forge-26.2-65.1.3-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "e42f1b8c8fe8103ffd2a91ac1f2285981fe588564ac5ae4dbdb378fee931cfdd",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "65.1.3",
           "javafml": "65",
           "lowcodefml": "65"
         },
