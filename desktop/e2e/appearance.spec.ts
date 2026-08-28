@@ -127,7 +127,7 @@ test('border thickness slider scales every border width', async ({ page }) => {
   // A plain 1px outline doubles...
   await expect.poll(railBorder).toBe('2px');
 
-  // ...and a 2px accent underline (mod detail tabs use border-b-2) quadruples.
+  // ...and the scale persists across settings sub-pages.
   await openAppearance(page, 'Theme'); // navigate within settings; scale persists
   await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--border-scale'))).toBe('2');
 });

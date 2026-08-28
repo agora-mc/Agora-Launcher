@@ -254,29 +254,79 @@
    accents (tab underlines, callout edges) into 4px. Zero-width utilities stay
    zero — scaling those would resurrect borders the markup removed on purpose.
    Specificity (0,2,0) beats Tailwind's own single-class rules without needing
-   !important. */
-:root .border,
-:root .border-t,
-:root .border-r,
-:root .border-b,
-:root .border-l,
-:root .border-x,
-:root .border-y { border-width: calc(1px * var(--border-scale)); }
-:root .border-2,
-:root .border-t-2,
-:root .border-r-2,
-:root .border-b-2,
-:root .border-l-2,
-:root .border-x-2,
-:root .border-y-2 { border-width: calc(2px * var(--border-scale)); }
-:root .border-4,
-:root .border-t-4,
-:root .border-r-4,
-:root .border-b-4,
-:root .border-l-4,
-:root .border-x-4,
-:root .border-y-4 { border-width: calc(4px * var(--border-scale)); }
+   !important.
+
+   Each utility must scale ONLY the sides it owns. Using the `border-width`
+   shorthand here painted all four sides for `border-t`/`border-b`/`border-l`/
+   `border-r`, so every divider rule in the app silently became a full box —
+   square-cornered outlines around headers, footers, and tab strips that the
+   markup never asked for. Per-side longhands keep a divider a divider. */
+:root .border { border-width: calc(1px * var(--border-scale)); }
+:root .border-t { border-top-width: calc(1px * var(--border-scale)); }
+:root .border-r { border-right-width: calc(1px * var(--border-scale)); }
+:root .border-b { border-bottom-width: calc(1px * var(--border-scale)); }
+:root .border-l { border-left-width: calc(1px * var(--border-scale)); }
+:root .border-x {
+  border-left-width: calc(1px * var(--border-scale));
+  border-right-width: calc(1px * var(--border-scale));
+}
+:root .border-y {
+  border-top-width: calc(1px * var(--border-scale));
+  border-bottom-width: calc(1px * var(--border-scale));
+}
+:root .border-2 { border-width: calc(2px * var(--border-scale)); }
+:root .border-t-2 { border-top-width: calc(2px * var(--border-scale)); }
+:root .border-r-2 { border-right-width: calc(2px * var(--border-scale)); }
+:root .border-b-2 { border-bottom-width: calc(2px * var(--border-scale)); }
+:root .border-l-2 { border-left-width: calc(2px * var(--border-scale)); }
+:root .border-x-2 {
+  border-left-width: calc(2px * var(--border-scale));
+  border-right-width: calc(2px * var(--border-scale));
+}
+:root .border-y-2 {
+  border-top-width: calc(2px * var(--border-scale));
+  border-bottom-width: calc(2px * var(--border-scale));
+}
+:root .border-4 { border-width: calc(4px * var(--border-scale)); }
+:root .border-t-4 { border-top-width: calc(4px * var(--border-scale)); }
+:root .border-r-4 { border-right-width: calc(4px * var(--border-scale)); }
+:root .border-b-4 { border-bottom-width: calc(4px * var(--border-scale)); }
+:root .border-l-4 { border-left-width: calc(4px * var(--border-scale)); }
+:root .border-x-4 {
+  border-left-width: calc(4px * var(--border-scale));
+  border-right-width: calc(4px * var(--border-scale));
+}
+:root .border-y-4 {
+  border-top-width: calc(4px * var(--border-scale));
+  border-bottom-width: calc(4px * var(--border-scale));
+}
 :root .border-8 { border-width: calc(8px * var(--border-scale)); }
+/* Zero-width utilities are an explicit "no border here" in the markup, and the
+   rules above out-specify Tailwind's own (0,1,0) versions. Restate them at the
+   same (0,2,0) weight, after, so `border-b border-t-0` still means what it says. */
+:root .border-0 { border-width: 0; }
+:root .border-t-0 { border-top-width: 0; }
+:root .border-r-0 { border-right-width: 0; }
+:root .border-b-0 { border-bottom-width: 0; }
+:root .border-l-0 { border-left-width: 0; }
+:root .border-x-0 { border-left-width: 0; border-right-width: 0; }
+:root .border-y-0 { border-top-width: 0; border-bottom-width: 0; }
+/* Variants in use in the markup (last row of a table, file inputs) need the
+   same weight, since the scaled rules above would otherwise win on order. */
+:root .last\:border-0:last-child { border-width: 0; }
+:root .last\:border-b-0:last-child { border-bottom-width: 0; }
+
+/* Safety net for the corner-style setting: an element the markup gives a full
+   box border to, but no explicit `rounded-*`, still follows --radius instead of
+   rendering as a hard square slab. Deliberately in @layer base — every Tailwind
+   radius utility (including `rounded-none`) lives in @layer utilities and so
+   wins outright, which keeps this a default rather than an override. */
+@layer base {
+  .border,
+  .border-2,
+  .border-4,
+  .border-8 { border-radius: calc(var(--radius) * 0.7); }
+}
 
 :root[data-density="compact"] .p-3 { padding: 0.5rem; }
 :root[data-density="compact"] .p-4 { padding: 0.7rem; }
@@ -906,6 +956,54 @@
   background-color: hsl(var(--card) / var(--surface-opacity));
   background-image: linear-gradient(120deg, hsl(var(--primary) / 0.16), hsl(var(--primary) / 0.03));
   padding: 0.85rem 1rem;
+}
+
+/* ── Page tab strips ──────────────────────────────────────────────────
+   The instance editor and mod detail tab rows. These were a bare underline on
+   a transparent row: over the living background there was nothing behind the
+   labels, so the strip read as loose text floating on the world, and the
+   underline had no box to sit on. They were also a single non-wrapping flex
+   line, which overflowed into a horizontal scrollbar (and squashed labels onto
+   three lines) as soon as the tab count or the text-scale grew.
+
+   So: a real surface, like every other block, and a row that wraps onto a
+   second line instead of scrolling. Radius comes from --radius, so the strip
+   follows the corner-style setting along with everything else. */
+.agora-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-radius: calc(var(--radius) * 1.25);
+  border: calc(1px * var(--border-scale)) solid hsl(var(--border));
+  background-color: hsl(var(--card) / var(--surface-opacity));
+  padding: 0.3rem;
+}
+
+.agora-tab {
+  /* Labels never break mid-phrase; the strip wraps as a whole instead. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  border-radius: var(--radius);
+  padding: 0.4rem 0.9rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.agora-tab:hover {
+  background-color: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+.agora-tab:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.agora-tab[data-active="true"] {
+  color: hsl(var(--primary-foreground));
+  background-image: linear-gradient(120deg, hsl(var(--primary)), hsl(var(--primary) / 0.7));
+  box-shadow: 0 10px 22px -16px hsl(var(--primary));
 }
 
 /* ── Instance tiles, chips, and cards ─────────────────────────────────

@@ -1721,7 +1721,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         )}
       </section>
       {/* Tab bar */}
-      <div className="flex gap-1 border-b border-border" data-tour="mod-detail-tabs">
+      <div className="agora-tabbar" data-tour="mod-detail-tabs">
         {([
           { key: 'description' as const, label: 'About' },
           { key: 'gallery' as const, label: 'Gallery' },
@@ -1731,11 +1731,10 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 rounded-t-md transition-colors ${
-              activeTab === tab.key
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
-            } ${tab.key === 'agora' ? 'text-amber-700 dark:text-amber-400' : ''}`}
+            data-active={activeTab === tab.key}
+            className={`agora-tab text-sm ${
+              tab.key === 'agora' && activeTab !== tab.key ? 'text-amber-700 dark:text-amber-400' : ''
+            }`}
           >
             {tab.label}
           </button>

@@ -1666,17 +1666,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       </section>
 
       {/* Sub-sidebar tabs */}
-      <div className="flex border-b border-border gap-0">
+      <div className="agora-tabbar">
         {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'import', 'export', 'console'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={[
-              'px-4 py-2 text-sm font-medium border-b-2 rounded-t-md transition-colors -mb-px',
-              activeTab === tab
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground',
-            ].join(' ')}
+            data-active={activeTab === tab}
+            className="agora-tab text-sm"
           >
             {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
           </button>
@@ -1684,12 +1680,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         <button
             key="java-args"
             onClick={() => setActiveTab('java-args')}
-            className={[
-              'px-4 py-2 text-sm font-medium border-b-2 rounded-t-md transition-colors -mb-px',
-              activeTab === 'java-args'
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground',
-            ].join(' ')}
+            data-active={activeTab === 'java-args'}
+            className="agora-tab text-sm"
           >
             Java & Args
         </button>
