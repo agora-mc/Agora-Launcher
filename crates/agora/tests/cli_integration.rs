@@ -14,7 +14,11 @@ use std::time::{Duration, Instant};
 /// Path to the compiled `agora` binary, set by Cargo for integration tests.
 const AGORA_BIN: &str = env!("CARGO_BIN_EXE_agora");
 const TEST_MSA_CREDENTIALS_ENV: &str = "AGORA_TEST_MSA_CREDENTIALS_JSON";
-const CLI_TIMEOUT: Duration = Duration::from_secs(30);
+/// Per-command ceiling.  Commands normally finish in well under a second, so
+/// this is a backstop against a genuine hang, not a performance assertion.
+/// It is deliberately generous: on a loaded Windows CI runner an I/O stall has
+/// taken a plain `agora paths` past 30s while the rest of the suite passed.
+const CLI_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn agora_command(data_dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(AGORA_BIN);
@@ -30,29 +34,35 @@ fn run_command(mut cmd: Command, args: &[&str]) -> std::process::Output {
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd.spawn().expect("failed to execute agora binary");
+
+    // Drain both pipes on their own threads.  The stdio pipe buffer is only a
+    // few kilobytes, and a command that fills it blocks in `write` until
+    // someone reads, which the poll below would report as a command timeout
+    // rather than the harness deadlock it actually is.
+    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buf);
+        buf
+    });
+
     let deadline = Instant::now() + CLI_TIMEOUT;
-    loop {
+    let (status, timed_out) = loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .expect("failed to collect agora output");
-            }
+            Ok(Some(status)) => break (status, false),
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
                 let _ = child.kill();
-                let output = child
-                    .wait_with_output()
-                    .expect("failed to collect timed-out agora output");
-                panic!(
-                    "agora command timed out after {:?}: {:?}\nstdout:\n{}\nstderr:\n{}",
-                    CLI_TIMEOUT,
-                    args,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr),
-                );
+                let status = child.wait().expect("failed to reap timed-out agora");
+                break (status, true);
             }
             Err(error) => {
                 let _ = child.kill();
@@ -60,6 +70,26 @@ fn run_command(mut cmd: Command, args: &[&str]) -> std::process::Output {
                 panic!("failed while waiting for agora command {args:?}: {error}");
             }
         }
+    };
+
+    // Killing the child closes its write ends, so both readers finish here.
+    let stdout = stdout_reader.join().expect("stdout reader panicked");
+    let stderr = stderr_reader.join().expect("stderr reader panicked");
+
+    if timed_out {
+        panic!(
+            "agora command timed out after {:?}: {:?}\nstdout:\n{}\nstderr:\n{}",
+            CLI_TIMEOUT,
+            args,
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+    }
+
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
     }
 }
 
