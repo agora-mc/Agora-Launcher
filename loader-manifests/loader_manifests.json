@@ -12665,6 +12665,18 @@
       },
       {
         "mc_version": "1.14.4",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.30.1/profile/json",
+        "sha256": "ec3c1c812a4ad8feb60b9eff0712e43c97237d81e3c910e76d7ec1b8c03165f1",
+        "file_name": "quilt-loader-0.30.1-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.14.4",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.30.1-beta.1/profile/json",
         "sha256": "b016a6cfdb523103943d198651d36787369f28fecbc13f31bbede3289533ae9a",
@@ -12708,6 +12720,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.14.4",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.30.2-beta.1/profile/json",
+        "sha256": "35b6840aa9de00cd36b02159c22b9306b7829e99ed4533aea0a2024044a6ef76",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.14.4",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.31.0-beta.1/profile/json",
+        "sha256": "f60dff2db369a8358b031259ac14f96b2bed9948f4eaacdb5edaeeb25aa48380",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.14.4",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.31.0-beta.2/profile/json",
+        "sha256": "b72af1f248dd2ae27e43dee30c5803bfa9d034b0617b5e31b3b3a6949adb648b",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.14.4",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.14.4/0.31.0-beta.3/profile/json",
+        "sha256": "98eb8b283b24341951bec61b264b7536779622892dd4e491db639d90556096c6",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.14.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -12809,6 +12869,18 @@
       },
       {
         "mc_version": "1.15",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.30.1/profile/json",
+        "sha256": "bf48f83648b0d366928131dcff39b7b48982568ea1a2d947303e931dec16a280",
+        "file_name": "quilt-loader-0.30.1-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.30.1-beta.1/profile/json",
         "sha256": "3b470907eae587f22fdd2bbc2a4b96f62671b00b44c49912b7e54e05de93fbab",
@@ -12852,6 +12924,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.30.2-beta.1/profile/json",
+        "sha256": "0ed9bbeeb95141ee2de889343e7fa757a06db495743da13727951682dc76cff2",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.31.0-beta.1/profile/json",
+        "sha256": "03eb3ba4f96a0957aa1f80a169f47af5ff3cf70868a93df7e9999cdcdbc6710b",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.31.0-beta.2/profile/json",
+        "sha256": "8f167c1cc001b1c91e0c1b235c5ac42abcb59d898ea167d1e93f86d36b24d167",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15/0.31.0-beta.3/profile/json",
+        "sha256": "05a695f03779baa9cda0e02c8f9d7e56cb1c94d5709766d02d3b78948c002fb7",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.15.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -12953,6 +13073,18 @@
       },
       {
         "mc_version": "1.15.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.30.1/profile/json",
+        "sha256": "d0417340ffe103049b620b28c04a9c5e3c4ac44e938f330253397bf75ac4ead8",
+        "file_name": "quilt-loader-0.30.1-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.30.1-beta.1/profile/json",
         "sha256": "e194a0be63d4dd563ed540e55f3f2805b0269072b33b8ee3051013e58b388fe3",
@@ -12996,6 +13128,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.30.2-beta.1/profile/json",
+        "sha256": "54dc1108fa759f1188ff14722e8b8bb7131e48891f35cbcdd85ac35c5ff6375b",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.31.0-beta.1/profile/json",
+        "sha256": "ccfb3723432e188a48dfbbb747be4fcf05a96d1f58ed0d514bf7183467c07336",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.31.0-beta.2/profile/json",
+        "sha256": "86fb3fcea665222c37fd768d09666b2f020b50fdba4caed712c917dcf2849d22",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.1/0.31.0-beta.3/profile/json",
+        "sha256": "c2ac9a120472c4798ad2581b2d460a810021797bf37a4f3eb798c4fc79621849",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.15.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13097,6 +13277,18 @@
       },
       {
         "mc_version": "1.15.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.30.1/profile/json",
+        "sha256": "408b1d2f899cf6b00d83c41ef4ff2ec40a010fa9a493d65aafa77102d6504f8d",
+        "file_name": "quilt-loader-0.30.1-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.15.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.30.1-beta.1/profile/json",
         "sha256": "93e019fb2df42a3983c76c45f416511d10be98529ffb91063addda42df63601b",
@@ -13140,6 +13332,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.30.2-beta.1/profile/json",
+        "sha256": "69855ec2411daad63d7e35ad4f96eb09241ff625aca91af02b29b925218f3f65",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.31.0-beta.1/profile/json",
+        "sha256": "1e124214cbbf9ca47e9a0dbcc2417a736ad87ac073e0ed40a9d6e766edb249df",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.31.0-beta.2/profile/json",
+        "sha256": "58c359e248a759ac354f798702e6a6533cdbaad1cb047549a542cb2343adfbf8",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.15.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.15.2/0.31.0-beta.3/profile/json",
+        "sha256": "403fb376702e48a6ff7ca085c004dc35afc8cd2b252bdd0d9d51fe6cccd13a6d",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.15.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13241,6 +13481,18 @@
       },
       {
         "mc_version": "1.16",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.30.1/profile/json",
+        "sha256": "367b62c153092beb71dfc6145f4e6c135322d30a7693b2c03dfcb035c1d43d80",
+        "file_name": "quilt-loader-0.30.1-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.30.1-beta.1/profile/json",
         "sha256": "fd91a938f96b103de045017f7befd1c36f71e1dd2b83cba50daf59ca5938d60b",
@@ -13284,6 +13536,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.30.2-beta.1/profile/json",
+        "sha256": "fd095ae7c266e0ba56c322ace3b72c51149565e7691e50ec65ca6b0e7c278217",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.31.0-beta.1/profile/json",
+        "sha256": "8056d3ccb7fa089b26b5b810b6aba3dd0e415dd4eb21aee097a659ce12c6f582",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.31.0-beta.2/profile/json",
+        "sha256": "14e485e77f1b336a947aa7c42d865aeb584b1960d1cbe1a866d0d50d1a960a4b",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16/0.31.0-beta.3/profile/json",
+        "sha256": "5b1bfbff91bc536aa55f4cbcd2ecc1986898b02022425f27ae682d04c0a6bc08",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.16.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13385,6 +13685,18 @@
       },
       {
         "mc_version": "1.16.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.30.1/profile/json",
+        "sha256": "d8d4fe280a478bceb1b9d1da34ce11a2a27c21aa833a2ca2dc3e5aa6afdb538b",
+        "file_name": "quilt-loader-0.30.1-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.30.1-beta.1/profile/json",
         "sha256": "081f9a6b3b3af510cdcc2eccdc80096aeaf9e26bb0dcaae564104ec517c17657",
@@ -13428,6 +13740,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.30.2-beta.1/profile/json",
+        "sha256": "0fe44a818a2cfc7961a4d6c205870d8b75f930f2cb1631368f119caaaf17c53d",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.31.0-beta.1/profile/json",
+        "sha256": "5a4c838ad2196ec5b9c0b226933bcbf4fccccab456a1530667d03a724e2861ec",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.31.0-beta.2/profile/json",
+        "sha256": "dbe20a02fd257b217b40961f20dadd4224718f4a8213b13b5a2aa07185634cb4",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.1/0.31.0-beta.3/profile/json",
+        "sha256": "1312d8e1e218f756e86e85aa959fb9ed028615610528f2cdba71cf14cd66db2b",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.16.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13529,6 +13889,18 @@
       },
       {
         "mc_version": "1.16.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.30.1/profile/json",
+        "sha256": "cfd3b4fdc06ab50e9312e2eff0e13f4c121ba9605c9c0b1b06c62e6742628b16",
+        "file_name": "quilt-loader-0.30.1-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.30.1-beta.1/profile/json",
         "sha256": "5179e0e86b98c51218c314ad10a1dc49bf4dc0fbb0c79d53f9e6ef56aadc2acf",
@@ -13572,6 +13944,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.30.2-beta.1/profile/json",
+        "sha256": "b0b62525b9457b33e39048db1979c3bdc2887272eabbdfba450ed64fb3008b36",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.31.0-beta.1/profile/json",
+        "sha256": "93e2af4714973864a93e98fa6178e5d52328ba22ef17f32bf3a206874a2f3fa8",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.31.0-beta.2/profile/json",
+        "sha256": "2c5d291e33b46de527a336a8db0a65f432b917b062c8f969f694f58da2dd4d07",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.2/0.31.0-beta.3/profile/json",
+        "sha256": "c86622d601a9bc28e1bdbea43e0b706742590467155e91e55e05a406dd6cd160",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.16.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13673,6 +14093,18 @@
       },
       {
         "mc_version": "1.16.3",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.30.1/profile/json",
+        "sha256": "5deb7bfddf2e678226f184c5a79eae516bfe3d2ec5fadd8787d8ec4efa2ec0c3",
+        "file_name": "quilt-loader-0.30.1-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.3",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.30.1-beta.1/profile/json",
         "sha256": "9436af6bb8f41d75d1f927c854a944b19d77d966e4aa12ec81f9ba9844951716",
@@ -13716,6 +14148,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.30.2-beta.1/profile/json",
+        "sha256": "6f154f0d771718dc98fdb7edd2f8b179aabf331c51f238ea659fb7f3574ead39",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.31.0-beta.1/profile/json",
+        "sha256": "6ab6a3acb94df7d112beafa3735da57446ffdceb52173b86f3ad76499005b52a",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.31.0-beta.2/profile/json",
+        "sha256": "5f9c80d94df17062566a3db6615cd5042350e0455bf6a7b761f6f00f968ab54f",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.3",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.3/0.31.0-beta.3/profile/json",
+        "sha256": "f31d2453acc67afb60b98e856a5fb334117e8fda3792462d1ae35d33010cef02",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.16.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13817,6 +14297,18 @@
       },
       {
         "mc_version": "1.16.4",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.30.1/profile/json",
+        "sha256": "936e80bab0643f3099f67431b2ed3326ac933514a28a49cb39bc0d5d7f24ee8d",
+        "file_name": "quilt-loader-0.30.1-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.4",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.30.1-beta.1/profile/json",
         "sha256": "2711a57d917e4b4f664eabecae10acfe34e304bc76dca8d51b8a06f99b0e09ab",
@@ -13860,6 +14352,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.4",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.30.2-beta.1/profile/json",
+        "sha256": "21b2480a520937e57779d4f0252bcb42f067d829a57bfce7a7a1b7ec87ccd9a3",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.4",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.31.0-beta.1/profile/json",
+        "sha256": "c93125d2cff5d30cd3af48a3dc3b3109a32aea2c00260ebbd9b43d13afa4ab2e",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.4",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.31.0-beta.2/profile/json",
+        "sha256": "836403391f741b13821d6b1f72b78701f9e4ce18a7fc1039bed8466a8895fff8",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.4",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.4/0.31.0-beta.3/profile/json",
+        "sha256": "6b2487bef9bd161db6464d6806f13989464204153e045cde5054346946fdacad",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.16.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -13961,6 +14501,18 @@
       },
       {
         "mc_version": "1.16.5",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.30.1/profile/json",
+        "sha256": "1c1a5b957ddacaea2e6236179b5cfd9ca750d3d8758c192f6b490746429d97c6",
+        "file_name": "quilt-loader-0.30.1-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.16.5",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.30.1-beta.1/profile/json",
         "sha256": "67787040a04df068284a10b75c0360b6f82fa3c49136a3f449b4143b8b97afc8",
@@ -14004,6 +14556,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.30.2-beta.1/profile/json",
+        "sha256": "b40c107785f06574d2f0fa80d1ee9980388d9d528c9ce281e71bee1dd33060d3",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.31.0-beta.1/profile/json",
+        "sha256": "7a3f9bf526f80874ef60ff9e05106c1546abef2a86425795f540e5fda59c7cae",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.31.0-beta.2/profile/json",
+        "sha256": "062487b8d28708ee39f6be9434eab02875fd8cbf01ff25796b6eede9d40037ff",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.16.5",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.16.5/0.31.0-beta.3/profile/json",
+        "sha256": "2bcff68ebf292645ac5e7a38ceee6289fbd3e9dc20ccfb8ad4d9c893fea89dee",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.16.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14105,6 +14705,18 @@
       },
       {
         "mc_version": "1.17",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.30.1/profile/json",
+        "sha256": "c2128b829d6c2421cc7d4e1c4f8d30093da33d1e4eda7aa9c0e718c49f79f3ae",
+        "file_name": "quilt-loader-0.30.1-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.17",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.30.1-beta.1/profile/json",
         "sha256": "b084887d11320113f34989a7f430f42d9406726cea1b760d956cb5a58c96add9",
@@ -14148,6 +14760,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.30.2-beta.1/profile/json",
+        "sha256": "5cd7b744f90385508bcbf36f8c176d45343e1e058cf30b23aface08c1080d2d3",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.31.0-beta.1/profile/json",
+        "sha256": "0ea45979f32bf7ccf5a6910f1e6f6e792d1385fc6a6026e3676b7cfe5956b106",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.31.0-beta.2/profile/json",
+        "sha256": "f288b770daebcd16c16d7ee1b32b2b9d23bd03b4490dadfde457eacff4b99be3",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17/0.31.0-beta.3/profile/json",
+        "sha256": "f3c010a7bf697acd5341364dc6b5ce8ac2ff00608c69b6a49c7217389ae90746",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.17.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14249,6 +14909,18 @@
       },
       {
         "mc_version": "1.17.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.30.1/profile/json",
+        "sha256": "92d2d2b1bdc4634415c2b5d57f6a37f65eea5a513f072c50f69309db877c7a2c",
+        "file_name": "quilt-loader-0.30.1-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.17.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.30.1-beta.1/profile/json",
         "sha256": "6037f5699754614f553450e9877aeb3e21436eec70c02051c5c48070c37bfa7c",
@@ -14292,6 +14964,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.30.2-beta.1/profile/json",
+        "sha256": "64773eaa2d7b31195c1855429a85ee65d716b4745f2864faf43d0aaa54d348ce",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.31.0-beta.1/profile/json",
+        "sha256": "67798a774f2d205e360ae6b2b305e90999150bd040b5c9d3313ecec47bf6caca",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.31.0-beta.2/profile/json",
+        "sha256": "c6389dc62a5c58951b8b79ff9a5f0fd2284547d31dec920396b9ad0e187c7dd8",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.17.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.17.1/0.31.0-beta.3/profile/json",
+        "sha256": "03eb8c3c078d7c1bcbf14b301e5c26069d11d84fa86ef52649abfbe16bb9f528",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.17.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14393,6 +15113,18 @@
       },
       {
         "mc_version": "1.18",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.30.1/profile/json",
+        "sha256": "04aa2dda4bdd25e6868a47a7594cdf9b3448a162bdc6a713a1f677daf76b9765",
+        "file_name": "quilt-loader-0.30.1-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.30.1-beta.1/profile/json",
         "sha256": "a6718f2e679c36fe26127483afafc3f63f8992171e09878742a17e277fff6029",
@@ -14436,6 +15168,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.30.2-beta.1/profile/json",
+        "sha256": "8872e25290118c60361cfeeda97ea0a6efa19ad713eda8e82b3d5622f5d8c243",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.31.0-beta.1/profile/json",
+        "sha256": "dd6ed91c7d7a1354562ef3b6f15774a30e69caaced6f89c3173d3689e58e838b",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.31.0-beta.2/profile/json",
+        "sha256": "a26f0d0f7fdd5b8725d4d60aa8efa15d4033620ef7f5cbb175019e07bfcecc7f",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18/0.31.0-beta.3/profile/json",
+        "sha256": "f8c486397bddcd6853bba7a642eca97368cbae081fcdd9485acc65b36c84bc90",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.18.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14537,6 +15317,18 @@
       },
       {
         "mc_version": "1.18.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.30.1/profile/json",
+        "sha256": "aeee7cf1670007b1c5dce3a8832bd36067ad897e7d7b0457edc36aba90d2d2dd",
+        "file_name": "quilt-loader-0.30.1-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.30.1-beta.1/profile/json",
         "sha256": "8187bd2c47b5bbdb2778e6c7b6d5012d857c5c5a17309f666f690e50f8f7ee8f",
@@ -14580,6 +15372,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.30.2-beta.1/profile/json",
+        "sha256": "000fa03d9a391120d4f9f5068e17e2c44a4013f338ca6cfda4943f3f84b7dc6c",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.31.0-beta.1/profile/json",
+        "sha256": "a2cc6b07175ccc50412daf19ced27d5a6043cdccb08465394bc54216161ac631",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.31.0-beta.2/profile/json",
+        "sha256": "7a88828024301b621367fbbfa1f66ed73f9f556f84e594844853935637de3c7f",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.1/0.31.0-beta.3/profile/json",
+        "sha256": "79332d040666a4c447f660463994df98c0c326310abaf62e89d444d4954ab71a",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.18.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14681,6 +15521,18 @@
       },
       {
         "mc_version": "1.18.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.30.1/profile/json",
+        "sha256": "78397c6e99da0eca9748dc9fb74d37ec70cd41c2f05134d9e14d8a2c930a0a7f",
+        "file_name": "quilt-loader-0.30.1-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.18.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.30.1-beta.1/profile/json",
         "sha256": "92a597e0a52b6a9ea8bcaa8f8e1cab381ce7476724b3021e5e483f4bdd28a282",
@@ -14724,6 +15576,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.30.2-beta.1/profile/json",
+        "sha256": "1be21ac8aec8d5c565b2e183cd9c86991b10e166c629530f19dc404216010c0c",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.31.0-beta.1/profile/json",
+        "sha256": "5f774eaf2b511bf51450e912890f7129d660bf916f8258af954308a797c33eed",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.31.0-beta.2/profile/json",
+        "sha256": "7e44f11acbc23e15d9d51354798271ab2dafdc051e928f347af0a66bf527b0a7",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.18.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.18.2/0.31.0-beta.3/profile/json",
+        "sha256": "5e729a2ae12a84262c7511f59ed9cebcab283ca6c195bcf936007bf7c7c2b5c8",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.18.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14825,6 +15725,18 @@
       },
       {
         "mc_version": "1.19",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.30.1/profile/json",
+        "sha256": "b99e78e9942316825761e8ab13fef1af0286610f5ada9b2c16413e8ced1c57d9",
+        "file_name": "quilt-loader-0.30.1-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.30.1-beta.1/profile/json",
         "sha256": "689f84f7feec0ba80b1d9f49e1f3edd9ea6d0281d288f9bc7dfe40424c2526be",
@@ -14868,6 +15780,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.30.2-beta.1/profile/json",
+        "sha256": "7cfe597d472ab0bd25f92ee560d41e0c9f3640c422cafce97c5bb3a4cac82bff",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.31.0-beta.1/profile/json",
+        "sha256": "a56121e045a709cae99d8b037511be9dabc57c27a7a9c2901a86b1eda2efc7f6",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.31.0-beta.2/profile/json",
+        "sha256": "470b617623d59775dd87b9ba1e76c35aa9fed91fdc56e1f13b4b9f498f0afcd2",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19/0.31.0-beta.3/profile/json",
+        "sha256": "a9c0ce2a55f6ae89fb8bef00e06decf5c61d351eab1ad3158adc14fd6eb653a2",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.19.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -14969,6 +15929,18 @@
       },
       {
         "mc_version": "1.19.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.30.1/profile/json",
+        "sha256": "ae50d13c2273a7d6c7383be4356a6ee96c53846194437809c3c1d3999c53fa1f",
+        "file_name": "quilt-loader-0.30.1-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.30.1-beta.1/profile/json",
         "sha256": "337b62d97c30b288d5d4a94e2f0b57fa2cbaffbad2bf8c2daff83bccd1692ad2",
@@ -15012,6 +15984,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.30.2-beta.1/profile/json",
+        "sha256": "969a7096286ed60b1a9c8d318b037fc48fc843f41cccf88ae96671325ae28517",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.31.0-beta.1/profile/json",
+        "sha256": "728a0332b271a2e8ff48a449747c9fc81a9c7147ab1cb99521f9fa5e992e7744",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.31.0-beta.2/profile/json",
+        "sha256": "5053bf30592916c0eed63baa642c0a0a48190c2093ca16c9055d6f9d1a99dac1",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.1/0.31.0-beta.3/profile/json",
+        "sha256": "2d4cfa31844446edafae08c9d5e8f1f0cd58ab975693618e60067b7bc10a3428",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.19.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -15113,6 +16133,18 @@
       },
       {
         "mc_version": "1.19.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.30.1/profile/json",
+        "sha256": "780c8365d91360c855b6e3d73a9e5db233c2b7522dec207eace739bc7cb86ff7",
+        "file_name": "quilt-loader-0.30.1-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.30.1-beta.1/profile/json",
         "sha256": "864c00efaefe61da2ce17b7942a02c624657a0ffb7a28d1cea2758705e61f2d3",
@@ -15156,6 +16188,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.30.2-beta.1/profile/json",
+        "sha256": "a045977e7a8c9ab0ac092afa8b60eb326c162bfc5ef562a9480b40194190d322",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.31.0-beta.1/profile/json",
+        "sha256": "e65ef1a299e7246ac177ca12349fc472e37b5d245dc76f8c57952d1bba3383c8",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.31.0-beta.2/profile/json",
+        "sha256": "7a58ee0041fc5358871cd4d18bbb7969eb4f3c91455928912b39f84ed0d7e2e0",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.2/0.31.0-beta.3/profile/json",
+        "sha256": "6393981de7eea4a3543af62fdd9689bb48eb3acbfb7f2f253819e7cb6fc8a5fc",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.19.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -15257,6 +16337,18 @@
       },
       {
         "mc_version": "1.19.3",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.30.1/profile/json",
+        "sha256": "7dc4548bdf555152b54715d38a2e1c431ad0c4e85d6548084424c90e064788a0",
+        "file_name": "quilt-loader-0.30.1-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.3",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.30.1-beta.1/profile/json",
         "sha256": "4583f047a04562c66b0b071376123ab98745c4cff0a2ec17b271fc49b600586a",
@@ -15300,6 +16392,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.3",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.30.2-beta.1/profile/json",
+        "sha256": "ed8c5a93d147866baac8857a9564c89396bb8cc64b029243f6dafa9d4cce8f50",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.3",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.31.0-beta.1/profile/json",
+        "sha256": "baa212c85cd06288e4747333d5b95a6cb870ecc3b071ae122bc6d3f9f545a797",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.3",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.31.0-beta.2/profile/json",
+        "sha256": "2a127046c64439f9990028ab456c760d0dad2670ef1c8e064e2eaf0e455f222b",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.3",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.3/0.31.0-beta.3/profile/json",
+        "sha256": "683e537d53eaa7f92123366108b9c8d78315f43a9c8bd9094d55cdb7578504da",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.19.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -15401,6 +16541,18 @@
       },
       {
         "mc_version": "1.19.4",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.30.1/profile/json",
+        "sha256": "a68686a5bac10fa105fbc0fb782d1647dcb66b7569e1c9bf04a5231d2d95cd43",
+        "file_name": "quilt-loader-0.30.1-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.19.4",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.30.1-beta.1/profile/json",
         "sha256": "2ac4470a610b4ff7c7bb6b1cd08b17b06701ec915be1f528e18d41571532ccca",
@@ -15444,6 +16596,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.4",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.30.2-beta.1/profile/json",
+        "sha256": "3e3f5a9457237ee4f5f341043e33cabf37f6b71e578fb6302de453839f6e8ce9",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.4",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.31.0-beta.1/profile/json",
+        "sha256": "41e795517218c8a9aee29a34bbacb42ab24e92e7913fe8201eaf521bc836f215",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.4",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.31.0-beta.2/profile/json",
+        "sha256": "743a4098c090837a020b49b510e985d0c9110ef66f994e70f5196570644f9f07",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.19.4",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.19.4/0.31.0-beta.3/profile/json",
+        "sha256": "673e3909aa52a4714e7a0d79c3a6fd165213db04c0df0b1b4ed01aff61eeb1fb",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.19.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -15545,6 +16745,18 @@
       },
       {
         "mc_version": "1.20",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.30.1/profile/json",
+        "sha256": "a5453dc0adc0d4a63bac122ad10f77927cf2622b4c1942d459aefb1cf4b7ddf7",
+        "file_name": "quilt-loader-0.30.1-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.30.1-beta.1/profile/json",
         "sha256": "e35fb11904b5a8dc326cd487a7db3f07df837c39072cc3bda92559a749810676",
@@ -15588,6 +16800,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.30.2-beta.1/profile/json",
+        "sha256": "82bfec6f75c07b3015ffb3a25ccd8320afaaf242708125696d887519b62b1b84",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.31.0-beta.1/profile/json",
+        "sha256": "381b501d550419080cad6999928ee3eb0a14fffbbd3e44b488c0f90751bfaee2",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.31.0-beta.2/profile/json",
+        "sha256": "ffe85bcf0cf59deec45304db53302017ac19bd7df951169caff5a3aa8b9d8b97",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20/0.31.0-beta.3/profile/json",
+        "sha256": "ec9252621a9cd7e648c68455a2d24d640353a7ddb36f70aeae3debbb01eb6687",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -19157,6 +20417,18 @@
       },
       {
         "mc_version": "1.20.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.30.1/profile/json",
+        "sha256": "f5da7b7f344e273c6a064885a6afa8ccd3f4591b1bb755d3db860d31928f31db",
+        "file_name": "quilt-loader-0.30.1-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.30.1-beta.1/profile/json",
         "sha256": "73647d6fa1889357cce664baefa67769fa481d041696262e84244c4c8e9ea35a",
@@ -19200,6 +20472,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.30.2-beta.1/profile/json",
+        "sha256": "8d7c29ed6aeb3682beed4d0d69b405d8526d050d694d0aebe38dcd292631575f",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.31.0-beta.1/profile/json",
+        "sha256": "6bccc69a511a53bc67be41871481f75fe9869c299ad3b8a031e1eff35ad4bd43",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.31.0-beta.2/profile/json",
+        "sha256": "e2038669073a770f66a269160c8ed29999371c12c1c9f5f61c97d2cdef949fe9",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.1/0.31.0-beta.3/profile/json",
+        "sha256": "40b55af0069d25e59139a817314420d13e802c6fa8dfdb805309a45f8140dfa4",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -19301,6 +20621,18 @@
       },
       {
         "mc_version": "1.20.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.30.1/profile/json",
+        "sha256": "9a8565728847722495291da7ebdffd40ace166893d531ec344d89bc67f3e2852",
+        "file_name": "quilt-loader-0.30.1-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.30.1-beta.1/profile/json",
         "sha256": "6ed5e62bd9ef8222e4fdba621555241b3da83e5a226fe2a80f2c18a734cd5b23",
@@ -19344,6 +20676,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.30.2-beta.1/profile/json",
+        "sha256": "809fc6df9e4607a117ac5390e7f81c1c7c95c2b9ee87a1e98048c18780c8b572",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.31.0-beta.1/profile/json",
+        "sha256": "90f02146245d3ab8b46b7e3d738061158ca5aa7f25797fc00a0608824cd76403",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.31.0-beta.2/profile/json",
+        "sha256": "379012d9b8437b2dc4b0db0d87d46677b87a246ded51d2ad0edb29e7cb4bbe98",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.2/0.31.0-beta.3/profile/json",
+        "sha256": "3a9da414cb6eb952d22531fe67aa05475c674b1b71d8411193c9c6fafd6822ed",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -19445,6 +20825,18 @@
       },
       {
         "mc_version": "1.20.3",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.30.1/profile/json",
+        "sha256": "d67a3e3a4b0a63f071b4eb71383967a617e9279cc358b22b6e877803a28a0732",
+        "file_name": "quilt-loader-0.30.1-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.3",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.30.1-beta.1/profile/json",
         "sha256": "33c3cff14b02bdcb5a1e120d02494b0e225fd3031564a7a9a71c1a7580c6b09f",
@@ -19488,6 +20880,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.3",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.30.2-beta.1/profile/json",
+        "sha256": "34c924b746454b98f4cfc5956ac52cb8044e48d97eb6478bf0efb3d6f4f10f2e",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.3",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.31.0-beta.1/profile/json",
+        "sha256": "2ef5b29fbbf279b46edc6bb8c31cb896e62834e2fd819d331fe54b1dcf68ce6d",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.3",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.31.0-beta.2/profile/json",
+        "sha256": "b087a85cad174313a851a9ac6a0f5c19f1959e954502bdc27315d73eaee73673",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.3",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.3/0.31.0-beta.3/profile/json",
+        "sha256": "6cc60cb58f7626eee2ee2989c6895deb932045b84672184f246be8fd0af59106",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -19589,6 +21029,18 @@
       },
       {
         "mc_version": "1.20.4",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.30.1/profile/json",
+        "sha256": "6f31ab5b073257dd9eb7ca3ca69658c0c13a902a9c599599d7135e6dab5249c1",
+        "file_name": "quilt-loader-0.30.1-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.4",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.30.1-beta.1/profile/json",
         "sha256": "984a92cde5cf0b738486695b2202419926081117e50b4ac6788fdd023aa8b21b",
@@ -19632,6 +21084,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.30.2-beta.1/profile/json",
+        "sha256": "64f26af952cbe3100bb00e0567a731701c83d3e5072fc86de2e6bebc895ee9cb",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.31.0-beta.1/profile/json",
+        "sha256": "5e72d3b82029046ee6f8eb57de8cac4e42352b3601394714c10bcbeca10f8d8d",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.31.0-beta.2/profile/json",
+        "sha256": "1c0f2868636c5f09f01d48d0f36a76055abe5fa5b6811438225b9079ca5f0b52",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.4",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.4/0.31.0-beta.3/profile/json",
+        "sha256": "5c10a770c3f1b4427225aa71c725ca849b14b4d659531456e2a080d881e1fb2b",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -19733,6 +21233,18 @@
       },
       {
         "mc_version": "1.20.5",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.30.1/profile/json",
+        "sha256": "583686665406b8027873f1cbe44fefff312230ea2f6de84e564ab694da4ac095",
+        "file_name": "quilt-loader-0.30.1-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.5",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.30.1-beta.1/profile/json",
         "sha256": "8633d428e4e5dd415445ed02e8bce08e6439d87b32618e11091889d11e42f6dd",
@@ -19776,6 +21288,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.5",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.30.2-beta.1/profile/json",
+        "sha256": "9bffb159b12c9c4fe1e389172996bce3cc6e1bc32c4d43e7b108f9971e69d40d",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.5",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.31.0-beta.1/profile/json",
+        "sha256": "e2b086dbf78d481f15de86c7c3a1f35479ed6d9cae9581af4dd173cd6af5d40a",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.5",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.31.0-beta.2/profile/json",
+        "sha256": "ebbe4483f530385b294c711ec96c9e3cfa12be27b7656f6c8b044fe6e3f59461",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.5",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.5/0.31.0-beta.3/profile/json",
+        "sha256": "3fc2d39375b52c3cb46dd89510b5fcd7c889557fe759cfa8989052915b25cade",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -19877,6 +21437,18 @@
       },
       {
         "mc_version": "1.20.6",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.30.1/profile/json",
+        "sha256": "94042b46cb435d8912642992a9adff6942de5ed4cc8533abea96698a7951bd57",
+        "file_name": "quilt-loader-0.30.1-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.6",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.30.1-beta.1/profile/json",
         "sha256": "6cdec76896bd1dff7ec64a1793925d9cffb75122b53eb212aea3e6eb57157016",
@@ -19920,6 +21492,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.6",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.30.2-beta.1/profile/json",
+        "sha256": "d1a7b4da77b486d81e418f095f8dfedef2fa9bb6e6eb3d6c44184cb7f13c2c86",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.6",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.31.0-beta.1/profile/json",
+        "sha256": "982db4bacd385a2001eafe54528294fb843a8abd6601db5bf113e73c84c8bd95",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.6",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.31.0-beta.2/profile/json",
+        "sha256": "d8ca50e536cdbae5b19ccb0f92efd1d15891be7a8272f86a2e6d5e4e8ffdfcc6",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.20.6",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.20.6/0.31.0-beta.3/profile/json",
+        "sha256": "e8a85c30c94ae2f872128cf6ed7154671a1ec36bcd44d4028752dda44d9fcb68",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.20.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -20021,6 +21641,18 @@
       },
       {
         "mc_version": "1.21",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.30.1/profile/json",
+        "sha256": "8241bc9cb07c7581015940a15a685a6c7091b87b034c7eb74cdbfcf1d89efbf5",
+        "file_name": "quilt-loader-0.30.1-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.30.1-beta.1/profile/json",
         "sha256": "401fa363f9940f1b905e89bfde7845612b823ffefd87fb663b36d9259398ea96",
@@ -20064,6 +21696,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.30.2-beta.1/profile/json",
+        "sha256": "f34c84f2a418680c0f3687b175e51e295a433bbcc4a5f8f6e725598b0fa9c560",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.31.0-beta.1/profile/json",
+        "sha256": "7f4573cc56c55ff3f898a9586900c2dce82f3779ed9ebb002498e631232d8bc4",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.31.0-beta.2/profile/json",
+        "sha256": "ccd43d5267de2c88a16574fa620cee281e234cde31dda6d7611abd68061c07e3",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21/0.31.0-beta.3/profile/json",
+        "sha256": "954f03aa2e7146bbd3f55b64222ec71d2c4ae7216ddd917bd284fa5ae58c0d8b",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -23633,6 +25313,18 @@
       },
       {
         "mc_version": "1.21.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.30.1/profile/json",
+        "sha256": "7c0392006efb9161b31fa7de4b6c19b9161c23e33c57e8e3dd58c032f1450c73",
+        "file_name": "quilt-loader-0.30.1-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.30.1-beta.1/profile/json",
         "sha256": "e90ac4a14e58793b0dec767324c2fa41c230642a7ffff4e3b481a576d9de3f37",
@@ -23676,6 +25368,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.30.2-beta.1/profile/json",
+        "sha256": "0d87782be5e513dedd35fbbdc8a7c7fa88f99664fd407627016c2b392932eafa",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.31.0-beta.1/profile/json",
+        "sha256": "a0e09d35d0034670f418dc52dca2b64dac67b5f79e279263815a1514d960bb5e",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.31.0-beta.2/profile/json",
+        "sha256": "40bb8fbcff9629305480bbdf2449d1b926d2ac818e1c65dbf0cd502bc904a996",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.1/0.31.0-beta.3/profile/json",
+        "sha256": "2efa1fa4d15d536f68fc672b39b7c7bd3c45a4688c9a7801e391e92e99cdef12",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -23777,6 +25517,18 @@
       },
       {
         "mc_version": "1.21.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.30.1/profile/json",
+        "sha256": "226ee90995d2b3e993f9e547fe8998ff28e56e43e943aad9f106cafa75f8b0f5",
+        "file_name": "quilt-loader-0.30.1-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.30.1-beta.1/profile/json",
         "sha256": "b90e968f876b42c9ddb221e3dba6cebb7a19d2fcb28ea7cf6a5f2aab6159a166",
@@ -23820,6 +25572,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.30.2-beta.1/profile/json",
+        "sha256": "5b42a7dfc76da3698c68e32288ca2298f2657fc82a8eeeadb587c3a7a7f58630",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.31.0-beta.1/profile/json",
+        "sha256": "45c1c822a93fbae2246e985847e36bd06a3a129a78999d61c3639b97954187d4",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.31.0-beta.2/profile/json",
+        "sha256": "0b426639af2f0fae9d77ced855df80da9d4f34370030c095e495fa6a53aab17e",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.2/0.31.0-beta.3/profile/json",
+        "sha256": "6e2d2ed6f069975267f7f97de061d5ce617a3c075084c022bfe41b21c44f88d7",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -23921,6 +25721,18 @@
       },
       {
         "mc_version": "1.21.3",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.30.1/profile/json",
+        "sha256": "9f0c56763f5099bca69e7e8a87a6f3b0cf8ff6b151b95676a83f6cf714d34dc2",
+        "file_name": "quilt-loader-0.30.1-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.3",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.30.1-beta.1/profile/json",
         "sha256": "7adcba10ae1c3ee9209efdcbfb355e9f93538dbe9b43f5668da171cea0947866",
@@ -23964,6 +25776,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.3",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.30.2-beta.1/profile/json",
+        "sha256": "1a208085327f46749fe43ac96fa6f5e8a316cfbaf693c53bfcc67d6c9cd4fa6b",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.3",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.31.0-beta.1/profile/json",
+        "sha256": "f8979780f142983e0f4b18d4d9da1890de7f92429b123b3b2ba70227e73b2df6",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.3",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.31.0-beta.2/profile/json",
+        "sha256": "e03d8da71a7f7141d9c14083facf674d5290e54b001a444fe23ec2d4dec46b9f",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.3",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.3/0.31.0-beta.3/profile/json",
+        "sha256": "c283793d6e6a0097d227869685c490e19c807dac0e42ddf8363baf4f0822db97",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.3.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24065,6 +25925,18 @@
       },
       {
         "mc_version": "1.21.4",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.30.1/profile/json",
+        "sha256": "9603e9cb5f27efbd460ca2157c26eeddea56e20f25965771a4ead68b31f767d2",
+        "file_name": "quilt-loader-0.30.1-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.4",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.30.1-beta.1/profile/json",
         "sha256": "d64c75236d3107695668c5af35664a90e8fa1359986e6a5afd5d08ead23d2671",
@@ -24108,6 +25980,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.30.2-beta.1/profile/json",
+        "sha256": "ef108621827775d8dcc00668e4d10aec5ac5ee1ebaf688743274f37887ccb092",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.31.0-beta.1/profile/json",
+        "sha256": "525c688c578255dd6e317a50b6e08c1a5534ba00ff133a59e1ca542b4eb9159d",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.31.0-beta.2/profile/json",
+        "sha256": "ef4af3a666cfc6c922b7e5510ebac0b59b171aa61048f532485f50fdc831c8d8",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.4/0.31.0-beta.3/profile/json",
+        "sha256": "92d884460c9515c8fcb23b218509d551cd6c08fc7c5953a33274631fbab781c6",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.4.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24209,6 +26129,18 @@
       },
       {
         "mc_version": "1.21.5",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.30.1/profile/json",
+        "sha256": "2d76d7412331028ff957ced77ed607ee0e7183f2be46212e698ad97c5db821aa",
+        "file_name": "quilt-loader-0.30.1-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.5",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.30.1-beta.1/profile/json",
         "sha256": "988e951de1f76ab012efd07f3f6c5e14de1d5d2d1d9ef209a5b6cdac5db601d1",
@@ -24252,6 +26184,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.5",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.30.2-beta.1/profile/json",
+        "sha256": "7f905643f29228bf852ac66343d69850fafcad2e6176ac098a2e15bfc8b331b8",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.5",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.31.0-beta.1/profile/json",
+        "sha256": "d72af7506eff4f722ec3151a78c4540a05cc7b724dafec40b16d5b3ac357b179",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.5",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.31.0-beta.2/profile/json",
+        "sha256": "2f420ba3a6348f03e400184ab9f2815197a3625cd16958f4b3f87603a42cd599",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.5",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.5/0.31.0-beta.3/profile/json",
+        "sha256": "13fbcb22118dde74b289812c3281dfd01eee4a7f270170f55a6d47f4dcf2aea8",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.5.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24353,6 +26333,18 @@
       },
       {
         "mc_version": "1.21.6",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.30.1/profile/json",
+        "sha256": "923505c20a4205345427136463c38f2d5bd55e6f0969a4c0f615ab369b626035",
+        "file_name": "quilt-loader-0.30.1-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.6",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.30.1-beta.1/profile/json",
         "sha256": "f4d1c4d6c1f4fa8f77568305e4f1b8e9c7e02be5878a2a4e1df3c58fd6ea1559",
@@ -24396,6 +26388,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.30.2-beta.1/profile/json",
+        "sha256": "3bb78a10fef063fbcea232905b767f19e4621a239a5e83c4e1512745d55dc698",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.31.0-beta.1/profile/json",
+        "sha256": "bd3bd1a54703e1ef35725012b8665a503f48980095eba6975c3b01c409712ddd",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.31.0-beta.2/profile/json",
+        "sha256": "fd4c92f6c4cf3bb8b268da6149fb78d585d428baddb9a49bcb5ee02db103e4aa",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.6",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.6/0.31.0-beta.3/profile/json",
+        "sha256": "42b6a61b628b33b731d87b2971e59ecbd9f5d2b5a99570b9c412d2dc80752b5b",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.6.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24497,6 +26537,18 @@
       },
       {
         "mc_version": "1.21.7",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.30.1/profile/json",
+        "sha256": "b84eaee88fd5f7ef6eed5d1121f5de6be324353257bd815e317b941bc0385ef9",
+        "file_name": "quilt-loader-0.30.1-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.7",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.30.1-beta.1/profile/json",
         "sha256": "5f014863d421ebe3e2a8ea60c3ef2623fddcecf1ae210342e9c97f14ef6f7c47",
@@ -24540,6 +26592,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.7",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.30.2-beta.1/profile/json",
+        "sha256": "e2fa28a8d2983bec80025c7fda0d9a5f30a9567cd67004c04d2dc785130b15e8",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.7",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.31.0-beta.1/profile/json",
+        "sha256": "ecd222926788a8a352bfbf8dd4571994fb82d0e5123d795dea29a885baba98a3",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.7",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.31.0-beta.2/profile/json",
+        "sha256": "8d7c1c7404bf9b10707834495603614588e24ca6ad996d6a8717353db7046406",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.7",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.7/0.31.0-beta.3/profile/json",
+        "sha256": "fad2975d848cf4976a745f5a6a8af7c311e4f3fcc619e3856964ef5a6db91bb6",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.7.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24641,6 +26741,18 @@
       },
       {
         "mc_version": "1.21.8",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.30.1/profile/json",
+        "sha256": "ba7b9dcbecc13bc1a713ae6ea1e0909e34032b2c4f8bd78e4e55e85b3e0c2026",
+        "file_name": "quilt-loader-0.30.1-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.8",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.30.1-beta.1/profile/json",
         "sha256": "75232b7cdcb70350a0392fce7a17eb89e948c2ae6ba8c554bb44d54fd710422a",
@@ -24684,6 +26796,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.30.2-beta.1/profile/json",
+        "sha256": "b065bf36ae777988d4a2cce331672c1b493d9358852b25fb334ba07e8ba440c3",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.31.0-beta.1/profile/json",
+        "sha256": "ca69cd9eff642a97d1bf29fd4f164214ba8c5b061b6a4e1cc7fbe8f0f348cb9b",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.31.0-beta.2/profile/json",
+        "sha256": "b18ea7aa398ca3868c925ae4c9708c12ebc68829abdb462ad0cd3adc0beb3d3f",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.8",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.8/0.31.0-beta.3/profile/json",
+        "sha256": "d568cd6c76d8d49a6b1a5b090c0667fea32d897ba22e4460555ac972981b5741",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.8.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24785,6 +26945,18 @@
       },
       {
         "mc_version": "1.21.9",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.30.1/profile/json",
+        "sha256": "a7d832c18b68f326239aba4ee39743e499fc1387ab0570d3cf355cfdc947fe11",
+        "file_name": "quilt-loader-0.30.1-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.9",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.30.1-beta.1/profile/json",
         "sha256": "bf76bea6457b0aaaabc7e88928704a051c268e62873f31fbceb5bf9539b448a3",
@@ -24828,6 +27000,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.9",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.30.2-beta.1/profile/json",
+        "sha256": "ad5c3208e528d08f619ce2b233df92c113a15b855fbff39cd5b7328356cc24eb",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.9",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.31.0-beta.1/profile/json",
+        "sha256": "7dc649d2d426bf08f5a279c026179e64e8017d9eda20114b0e116a15b4ba7ab1",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.9",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.31.0-beta.2/profile/json",
+        "sha256": "76948507c033529785456e9609df34f24f228199d9ebe1a1939e30e952bab571",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.9",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.9/0.31.0-beta.3/profile/json",
+        "sha256": "0bab9be0a8deb203d7764214e7a7e4158c23f5d76b1cdbd45719b84cbec2ac55",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.9.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -24929,6 +27149,18 @@
       },
       {
         "mc_version": "1.21.10",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.30.1/profile/json",
+        "sha256": "a0a97f1f19c3f2c5d8c9be4805ff52a37ed17224e539751f15520fd04eaa10a2",
+        "file_name": "quilt-loader-0.30.1-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.10",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.30.1-beta.1/profile/json",
         "sha256": "789478a12140a9e1695bdd6a3a9061040ddbb12de856b428a7637051796eb8e6",
@@ -24972,6 +27204,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.30.2-beta.1/profile/json",
+        "sha256": "9155622d5ed71b14c2cb564143c5058a0000512da8da2dbf166a54a34abcc5c5",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.31.0-beta.1/profile/json",
+        "sha256": "e65e8db874a213c3685a217882b038e7757293cdd297ae91ec5baf278858e1ea",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.31.0-beta.2/profile/json",
+        "sha256": "480974e65e4330313dae84645e3a001f28f8b277a9bc939e3e25e51b6595ff9b",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.10",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.10/0.31.0-beta.3/profile/json",
+        "sha256": "594e478c3f49e3dcc492e0f00d0408c8b87ebe1bead5b409f6e273e3e090b479",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.10.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -25073,6 +27353,18 @@
       },
       {
         "mc_version": "1.21.11",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.30.1/profile/json",
+        "sha256": "c43a6a432b3b69239618e429826539d57be29f75d80131a2b25181f2ef1dcc7e",
+        "file_name": "quilt-loader-0.30.1-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.11",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.30.1-beta.1/profile/json",
         "sha256": "bd6ed5b440ec091f3ac5937b0dfaba65da76b133ecd0c2bd7b8d5ab33c223c62",
@@ -25116,6 +27408,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.30.2-beta.1/profile/json",
+        "sha256": "7d74d64b7a7985d402d8f639b71d13d90d3f0014a4061d532f441b0de687a182",
+        "file_name": "quilt-loader-0.30.2-beta.1-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.31.0-beta.1/profile/json",
+        "sha256": "f509b6064165e6f4335bd65cb7cd71489aafe1190abdb36e8f277a7fb3890ce7",
+        "file_name": "quilt-loader-0.31.0-beta.1-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.31.0-beta.2/profile/json",
+        "sha256": "ffa784e4017dee158e20a2748c774363542cfe55a9289d9836ef3cab8a2bdd6d",
+        "file_name": "quilt-loader-0.31.0-beta.2-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "1.21.11",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/1.21.11/0.31.0-beta.3/profile/json",
+        "sha256": "5377aed59abb3d318e770dd9f0f45416b26794a2ddef1aff34f3dd6ec49a97ca",
+        "file_name": "quilt-loader-0.31.0-beta.3-1.21.11.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -25217,6 +27557,18 @@
       },
       {
         "mc_version": "26.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.30.1/profile/json",
+        "sha256": "f7ca2b21542bdbdc7d1019d695bd03154deb9a7f0b04a4bd4005ad1203cee82f",
+        "file_name": "quilt-loader-0.30.1-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.30.1-beta.1/profile/json",
         "sha256": "cbe679adc5505a0b66c4a959c9bb1165459b99c60eaeab64ecc6127293de08b0",
@@ -25260,6 +27612,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.30.2-beta.1/profile/json",
+        "sha256": "58066f9a8022cf673e374bcf66c5d438a3bc0fcbc9e46cc0666f423ddd3326e8",
+        "file_name": "quilt-loader-0.30.2-beta.1-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.31.0-beta.1/profile/json",
+        "sha256": "db0ebd8cde93045388bbcdcbfe6fe2e43f8a28a1cbd480f20b4eab5fcf02283e",
+        "file_name": "quilt-loader-0.31.0-beta.1-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.31.0-beta.2/profile/json",
+        "sha256": "d314f2542e3d02c618dfab763cc77a381c58542ddc58d5d3c4515aefd2e12b76",
+        "file_name": "quilt-loader-0.31.0-beta.2-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1/0.31.0-beta.3/profile/json",
+        "sha256": "a235df15d639829a7ee4b1fc707a0cb905faedbba4913f820567b7c2c5ffa42e",
+        "file_name": "quilt-loader-0.31.0-beta.3-26.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -25361,6 +27761,18 @@
       },
       {
         "mc_version": "26.1.1",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.30.1/profile/json",
+        "sha256": "dfb44b58b24483aae8ba8ffadbb72f2cf7c981df9959f90fe225fe57b149f9b7",
+        "file_name": "quilt-loader-0.30.1-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1.1",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.30.1-beta.1/profile/json",
         "sha256": "56b68295463077b071038155ffb9006d773fcca47acf681049ace1f296de5bd3",
@@ -25404,6 +27816,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.1",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.30.2-beta.1/profile/json",
+        "sha256": "6fa59cd033b085a5fd5bc512459d19b8a95eb1697877597ef13fea69cf87c268",
+        "file_name": "quilt-loader-0.30.2-beta.1-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.1",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.31.0-beta.1/profile/json",
+        "sha256": "1d58f92a070efcd896d8622f3d61de4d5441a8c26e6c6d25acc88eec6456df5c",
+        "file_name": "quilt-loader-0.31.0-beta.1-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.1",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.31.0-beta.2/profile/json",
+        "sha256": "aec83b9a76d6c16afcf3558c63527cde033440f69e6aa582aa35d52c01b57519",
+        "file_name": "quilt-loader-0.31.0-beta.2-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.1",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.1/0.31.0-beta.3/profile/json",
+        "sha256": "f9643a1c87cf1e3b27ff4521e858a267fc261a919727567b5ff086d372417a0a",
+        "file_name": "quilt-loader-0.31.0-beta.3-26.1.1.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -25505,6 +27965,18 @@
       },
       {
         "mc_version": "26.1.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.30.1/profile/json",
+        "sha256": "02420039eb7574995e6b9b44a478ca9f127af662afa70db0a89e4b3f0aa2e841",
+        "file_name": "quilt-loader-0.30.1-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.1.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.30.1-beta.1/profile/json",
         "sha256": "fe80454e74eb37485d04dbbaf41c18418d47a93298912fa7d263fa48f1b426a0",
@@ -25548,6 +28020,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.30.2-beta.1/profile/json",
+        "sha256": "6a1264c089a5046a921df5c1dcb4dad2d843b02f4793efaebfa244ae760e5f6d",
+        "file_name": "quilt-loader-0.30.2-beta.1-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.31.0-beta.1/profile/json",
+        "sha256": "8c0031f977d6694993b47e90d7006f78c4670af208b898d648d3c42ca9bedfcb",
+        "file_name": "quilt-loader-0.31.0-beta.1-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.31.0-beta.2/profile/json",
+        "sha256": "09febf4a4adca05378486637916dc41ca951c5ec975e788ee2ed968b5c29bc75",
+        "file_name": "quilt-loader-0.31.0-beta.2-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.1.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.1.2/0.31.0-beta.3/profile/json",
+        "sha256": "9ca847ae15e5469261692cb3790365b2439dd477512bb9e74e0a6e2a6bb11afd",
+        "file_name": "quilt-loader-0.31.0-beta.3-26.1.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       },
@@ -25649,6 +28169,18 @@
       },
       {
         "mc_version": "26.2",
+        "loader_version": "0.30.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.30.1/profile/json",
+        "sha256": "1c252f3afa68d92b7fc933f61390eb143c5063c25f3ceb11e69dde1157e7ad3a",
+        "file_name": "quilt-loader-0.30.1-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.1"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.2",
         "loader_version": "0.30.1-beta.1",
         "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.30.1-beta.1/profile/json",
         "sha256": "9e27509ffdb16c0449d61049bb6fb0a0d803bfd742658b46c899242c827093fe",
@@ -25692,6 +28224,54 @@
         "file_type": "profile_json",
         "provided_versions": {
           "quilt_loader": "0.30.1-beta.4"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.30.2-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.30.2-beta.1/profile/json",
+        "sha256": "93e6cec970a53c452191cbef9a9bc84a9c3667468c089cea11bc814ca2918517",
+        "file_name": "quilt-loader-0.30.2-beta.1-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.30.2-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.31.0-beta.1",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.31.0-beta.1/profile/json",
+        "sha256": "c544bffc105314c94c42f232d509f27e3d023d2c70507b1832c6d375027f7e3a",
+        "file_name": "quilt-loader-0.31.0-beta.1-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.1"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.31.0-beta.2",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.31.0-beta.2/profile/json",
+        "sha256": "ad60ada4492f390323889f635c446523b2e0d14ebf0ff51b66c118832346f23c",
+        "file_name": "quilt-loader-0.31.0-beta.2-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.2"
+        },
+        "release_channel": "prerelease"
+      },
+      {
+        "mc_version": "26.2",
+        "loader_version": "0.31.0-beta.3",
+        "source_url": "https://meta.quiltmc.org/v3/versions/loader/26.2/0.31.0-beta.3/profile/json",
+        "sha256": "7cd706b04431e2cad57c8a8bd1958b4f26d5b5862af6839554961c17ef361c12",
+        "file_name": "quilt-loader-0.31.0-beta.3-26.2.json",
+        "file_type": "profile_json",
+        "provided_versions": {
+          "quilt_loader": "0.31.0-beta.3"
         },
         "release_channel": "prerelease"
       }
@@ -26444,6 +29024,22 @@
         "installer_spec": 1,
         "provided_versions": {
           "neoforge": "20.6.139",
+          "javafml": "3.0.45@jar",
+          "lowcodefml": "3.0.45@jar"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.6",
+        "loader_version": "20.6.141",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/20.6.141/neoforge-20.6.141-installer.jar",
+        "sha256": "ad9e9af2c321f87d143b6907318fb0b8ebdfeaf529edc76a97fe5dce0e5b8ceb",
+        "file_name": "neoforge-20.6.141-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "970f196be529a630ed65f158d542a21356198d6197f94006d2eacd3bcd1f0c28",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "20.6.141",
           "javafml": "3.0.45@jar",
           "lowcodefml": "3.0.45@jar"
         },
