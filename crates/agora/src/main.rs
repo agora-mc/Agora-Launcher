@@ -3426,6 +3426,7 @@ mod tests {
         let target = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: "core-lib.jar".into(),
             registry_id: Some("core-lib".into()),
             modrinth_id: None,
@@ -3447,6 +3448,7 @@ mod tests {
         let dependent = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: "dependent-mod.jar".into(),
             registry_id: Some("dependent-mod".into()),
             modrinth_id: None,
@@ -3480,6 +3482,7 @@ mod tests {
         let target = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: "standalone.jar".into(),
             registry_id: None,
             modrinth_id: None,
@@ -3501,6 +3504,7 @@ mod tests {
         let other = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: "other.jar".into(),
             registry_id: Some("other".into()),
             modrinth_id: None,
@@ -4078,6 +4082,7 @@ mod tests {
             mods: vec![InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: "test-mod.jar".into(),
                 source: "manual".into(),
                 source_url: None,
@@ -4650,6 +4655,7 @@ mod tests {
             files_to_add: vec![],
             files_to_remove: vec![],
             files_to_disable: vec![],
+            files_to_promote: vec![],
             snapshot: SnapshotPlan {
                 label: "".into(),
                 estimated_bytes: 0,
@@ -4708,6 +4714,7 @@ mod tests {
             files_to_add: vec![],
             files_to_remove: vec![],
             files_to_disable: vec![],
+            files_to_promote: vec![],
             snapshot: SnapshotPlan {
                 label: "".into(),
                 estimated_bytes: 0,

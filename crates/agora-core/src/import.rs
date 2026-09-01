@@ -260,6 +260,7 @@ fn inventory_pack_content(
             update_pinned: false,
             // Inventoried from the .mrpack index: contributed by the pack.
             pack_managed: true,
+            installed_as_dependency: false,
             filename: entry.file_name().to_string_lossy().into_owned(),
             registry_id: None,
             modrinth_id: modrinth_file.map(|file| file.project_id.clone()),

@@ -201,6 +201,8 @@ pub fn run() {
             commands::confirm_crash_fix,
             commands::report_still_crashing,
             commands::get_dependency_graph,
+            commands::get_orphaned_dependencies,
+            commands::explain_mod_presence,
             commands::get_disable_plan,
             commands::get_removal_plan,
             commands::get_install_plan,

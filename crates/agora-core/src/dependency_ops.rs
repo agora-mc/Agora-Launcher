@@ -884,7 +884,200 @@ pub fn build_install_plan(
 }
 
 // ---------------------------------------------------------------------------
-// 6. Tests
+// 6. Provenance analysis: orphans and "why is this here?"
+// ---------------------------------------------------------------------------
+
+/// Largest number of root-to-target chains [`explain_presence`] will return.
+///
+/// The number of distinct paths through a dependency graph is combinatorial; a
+/// handful of shortest chains answers "why is this here?" and the rest is noise
+/// the UI would truncate anyway.
+const MAX_ROOT_PATHS: usize = 8;
+
+/// A mod that exists only because something else once needed it, and that
+/// nothing reachable from a user-installed mod needs any more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrphanedDependency {
+    pub filename: String,
+    pub mod_jar_id: Option<String>,
+    pub content_type: String,
+}
+
+/// Why a given installed item is present.
+#[derive(Debug, Clone, Serialize)]
+pub struct PresenceExplanation {
+    pub filename: String,
+    /// Agora installed this to satisfy someone else's declaration.
+    pub installed_as_dependency: bool,
+    /// The instance's modpack contributed this.
+    pub pack_managed: bool,
+    /// Items that directly declare a dependency on this one.
+    pub dependents: Vec<DependentInfo>,
+    /// Shortest chains from a user-installed mod down to this item, by
+    /// filename, root first and target last. Empty when the item is itself a
+    /// root, or when nothing reaches it.
+    pub root_paths: Vec<Vec<String>>,
+    /// Nothing reachable from a root needs this, and the user never asked for
+    /// it directly.
+    pub orphaned: bool,
+}
+
+/// Map every loader-visible ID to the filename that supplies it.
+fn supplier_index<'a>(
+    installed: &'a [InstalledMod],
+    aliases: &AliasMap,
+) -> HashMap<String, &'a str> {
+    let mut supplier: HashMap<String, &str> = HashMap::new();
+    for m in installed {
+        for id in installed_mod_ids(m, aliases) {
+            supplier.entry(id).or_insert(m.filename.as_str());
+        }
+    }
+    supplier
+}
+
+/// Filenames reachable by following dependency declarations out of the
+/// user-installed (non-dependency) items.
+///
+/// Optional declarations count as reachable on purpose: if mod A optionally
+/// uses B and B was pulled in for that reason, deleting B silently degrades A.
+/// Being conservative here proposes fewer removals, which is the right
+/// direction to be wrong in.
+fn reachable_from_roots(installed: &[InstalledMod], aliases: &AliasMap) -> HashSet<String> {
+    let supplier = supplier_index(installed, aliases);
+    let by_filename: HashMap<&str, &InstalledMod> =
+        installed.iter().map(|m| (m.filename.as_str(), m)).collect();
+
+    let mut reached: HashSet<String> = HashSet::new();
+    let mut queue: Vec<&str> = Vec::new();
+    for m in installed {
+        if !m.installed_as_dependency && reached.insert(m.filename.clone()) {
+            queue.push(m.filename.as_str());
+        }
+    }
+
+    while let Some(filename) = queue.pop() {
+        let Some(entry) = by_filename.get(filename) else {
+            continue;
+        };
+        for dep in entry.depends_on.iter().chain(entry.optional_deps.iter()) {
+            let key = aliases.resolve_or_self(dep).to_lowercase();
+            let Some(&target) = supplier.get(&key) else {
+                continue;
+            };
+            if reached.insert(target.to_string()) {
+                queue.push(target);
+            }
+        }
+    }
+    reached
+}
+
+/// Auto-installed items nothing needs any more.
+///
+/// Call this on the manifest as it stands *after* a removal: the answer is then
+/// simply "which dependency-installed items are no longer reachable", which
+/// cascades for free — a dependency of an orphan is never reached either.
+pub fn find_orphaned_dependencies_with_aliases(
+    installed: &[InstalledMod],
+    aliases: &AliasMap,
+) -> Vec<OrphanedDependency> {
+    let reached = reachable_from_roots(installed, aliases);
+    let mut orphans: Vec<OrphanedDependency> = installed
+        .iter()
+        .filter(|m| m.installed_as_dependency && !reached.contains(&m.filename))
+        .map(|m| OrphanedDependency {
+            filename: m.filename.clone(),
+            mod_jar_id: m.mod_jar_id.clone(),
+            content_type: m.content_type.clone(),
+        })
+        .collect();
+    orphans.sort_by(|a, b| a.filename.cmp(&b.filename));
+    orphans
+}
+
+/// Alias-free convenience wrapper for [`find_orphaned_dependencies_with_aliases`].
+pub fn find_orphaned_dependencies(installed: &[InstalledMod]) -> Vec<OrphanedDependency> {
+    find_orphaned_dependencies_with_aliases(installed, &AliasMap::from_pairs(&[]))
+}
+
+/// Explain why one installed item is present.
+///
+/// Walks the dependency graph *backwards* from the target to the nearest
+/// user-installed mods, which is the question a user actually asks when they
+/// find a jar they do not recognize.
+pub fn explain_presence_with_aliases(
+    installed: &[InstalledMod],
+    filename: &str,
+    aliases: &AliasMap,
+) -> Option<PresenceExplanation> {
+    let target = installed.iter().find(|m| m.filename == filename)?;
+
+    let dependents = target
+        .mod_jar_id
+        .as_deref()
+        .map(|id| find_dependents_with_aliases(installed, id, aliases))
+        .unwrap_or_default();
+
+    // Reverse adjacency over the same edges the graph view draws, so the two
+    // features can never disagree about what depends on what.
+    let mut incoming: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in build_dependency_graph_with_aliases(installed, aliases) {
+        incoming
+            .entry(edge.to_filename)
+            .or_default()
+            .push(edge.from_filename);
+    }
+    let is_root: HashMap<&str, bool> = installed
+        .iter()
+        .map(|m| (m.filename.as_str(), !m.installed_as_dependency))
+        .collect();
+
+    // Breadth-first, so the chains that come back are the shortest ones.
+    let mut root_paths: Vec<Vec<String>> = Vec::new();
+    let mut queue: std::collections::VecDeque<Vec<String>> =
+        std::collections::VecDeque::from([vec![filename.to_string()]]);
+    let mut visited: HashSet<String> = HashSet::from([filename.to_string()]);
+    while let Some(path) = queue.pop_front() {
+        if root_paths.len() >= MAX_ROOT_PATHS {
+            break;
+        }
+        let tail = path.last().expect("paths are never empty");
+        if path.len() > 1 && is_root.get(tail.as_str()).copied().unwrap_or(false) {
+            // Recorded root-first; the walk built it target-first.
+            let mut chain = path.clone();
+            chain.reverse();
+            root_paths.push(chain);
+            continue;
+        }
+        for parent in incoming.get(tail).into_iter().flatten() {
+            if !visited.insert(parent.clone()) {
+                continue;
+            }
+            let mut next = path.clone();
+            next.push(parent.clone());
+            queue.push_back(next);
+        }
+    }
+
+    let reached = reachable_from_roots(installed, aliases);
+    Some(PresenceExplanation {
+        filename: filename.to_string(),
+        installed_as_dependency: target.installed_as_dependency,
+        pack_managed: target.pack_managed,
+        dependents,
+        root_paths,
+        orphaned: target.installed_as_dependency && !reached.contains(filename),
+    })
+}
+
+/// Alias-free convenience wrapper for [`explain_presence_with_aliases`].
+pub fn explain_presence(installed: &[InstalledMod], filename: &str) -> Option<PresenceExplanation> {
+    explain_presence_with_aliases(installed, filename, &AliasMap::from_pairs(&[]))
+}
+
+// ---------------------------------------------------------------------------
+// 7. Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -927,6 +1120,21 @@ mod tests {
             provided_mod_ids: Vec::new(),
             enabled: true,
             content_type: "mod".to_string(),
+            installed_as_dependency: false,
+        }
+    }
+
+    /// Same as [`installed`], but marked as auto-installed to satisfy another
+    /// mod's declaration.
+    fn installed_dep(
+        filename: &str,
+        jar_id: Option<&str>,
+        deps: &[&str],
+        opt_deps: &[&str],
+    ) -> InstalledMod {
+        InstalledMod {
+            installed_as_dependency: true,
+            ..installed(filename, jar_id, deps, opt_deps)
         }
     }
 
@@ -1596,6 +1804,144 @@ mod tests {
         assert_eq!(restored.optional_deps, vec!["opt_dep"]);
         assert_eq!(restored.dependency_decls.len(), 1);
         assert_eq!(restored.dependency_decls[0].target_id, "minecraft");
+    }
+
+    // -----------------------------------------------------------------------
+    // Orphaned dependencies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_standalone_user_mod_is_never_an_orphan() {
+        // Sodium depends on nothing and nothing depends on it. Without
+        // provenance this is indistinguishable from a stale dependency, which
+        // is exactly why the flag exists.
+        let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[])];
+        assert!(find_orphaned_dependencies(&mods).is_empty());
+    }
+
+    #[test]
+    fn an_auto_installed_library_survives_while_something_needs_it() {
+        let mods = vec![
+            installed("caves.jar", Some("caves"), &["corelib"], &[]),
+            installed_dep("corelib.jar", Some("corelib"), &[], &[]),
+        ];
+        assert!(find_orphaned_dependencies(&mods).is_empty());
+    }
+
+    #[test]
+    fn removing_the_last_dependent_orphans_the_whole_chain() {
+        // corelib was pulled in for caves, and corelib itself pulled in base.
+        // With caves gone, both are unreachable and both should be offered.
+        let mods = vec![
+            installed_dep("corelib.jar", Some("corelib"), &["base"], &[]),
+            installed_dep("base.jar", Some("base"), &[], &[]),
+            installed("sodium.jar", Some("sodium"), &[], &[]),
+        ];
+        let orphans = find_orphaned_dependencies(&mods);
+        let names: Vec<&str> = orphans.iter().map(|o| o.filename.as_str()).collect();
+        assert_eq!(names, vec!["base.jar", "corelib.jar"]);
+    }
+
+    #[test]
+    fn an_optional_dependent_still_keeps_a_library_alive() {
+        // Deleting a mod something merely "recommends" degrades it silently,
+        // so an optional edge has to count as a reason to keep.
+        let mods = vec![
+            installed("caves.jar", Some("caves"), &[], &["corelib"]),
+            installed_dep("corelib.jar", Some("corelib"), &[], &[]),
+        ];
+        assert!(find_orphaned_dependencies(&mods).is_empty());
+    }
+
+    #[test]
+    fn two_orphans_that_only_need_each_other_do_not_keep_each_other_alive() {
+        let mods = vec![
+            installed_dep("a.jar", Some("a"), &["b"], &[]),
+            installed_dep("b.jar", Some("b"), &["a"], &[]),
+            installed("unrelated.jar", Some("unrelated"), &[], &[]),
+        ];
+        let names: Vec<String> = find_orphaned_dependencies(&mods)
+            .into_iter()
+            .map(|o| o.filename)
+            .collect();
+        assert_eq!(names, vec!["a.jar".to_string(), "b.jar".to_string()]);
+    }
+
+    #[test]
+    fn a_provided_alias_still_counts_as_supplying_the_dependency() {
+        let mut fabric_api = installed_dep("fabric-api.jar", Some("fabric-api"), &[], &[]);
+        fabric_api.provided_mod_ids = vec!["fabric".to_string()];
+        let mods = vec![
+            installed("caves.jar", Some("caves"), &["fabric"], &[]),
+            fabric_api,
+        ];
+        assert!(find_orphaned_dependencies(&mods).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // "Why is this mod here?"
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn presence_of_a_user_installed_mod_reports_no_chain() {
+        let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[])];
+        let why = explain_presence(&mods, "sodium.jar").expect("target is installed");
+        assert!(!why.installed_as_dependency);
+        assert!(!why.orphaned);
+        assert!(why.root_paths.is_empty());
+        assert!(why.dependents.is_empty());
+    }
+
+    #[test]
+    fn presence_traces_a_transitive_chain_back_to_its_root() {
+        let mods = vec![
+            installed("caves.jar", Some("caves"), &["corelib"], &[]),
+            installed_dep("corelib.jar", Some("corelib"), &["base"], &[]),
+            installed_dep("base.jar", Some("base"), &[], &[]),
+        ];
+        let why = explain_presence(&mods, "base.jar").expect("target is installed");
+        assert!(why.installed_as_dependency);
+        assert!(!why.orphaned);
+        assert_eq!(
+            why.root_paths,
+            vec![vec![
+                "caves.jar".to_string(),
+                "corelib.jar".to_string(),
+                "base.jar".to_string(),
+            ]]
+        );
+        // Direct dependents stay direct — the chain is the transitive answer.
+        assert_eq!(why.dependents.len(), 1);
+        assert_eq!(why.dependents[0].filename, "corelib.jar");
+    }
+
+    #[test]
+    fn presence_of_an_unreachable_dependency_reports_it_as_orphaned() {
+        let mods = vec![installed_dep("corelib.jar", Some("corelib"), &[], &[])];
+        let why = explain_presence(&mods, "corelib.jar").expect("target is installed");
+        assert!(why.orphaned);
+        assert!(why.root_paths.is_empty());
+    }
+
+    #[test]
+    fn presence_bounds_the_number_of_chains_it_returns() {
+        let mut mods = vec![installed_dep("corelib.jar", Some("corelib"), &[], &[])];
+        for index in 0..(MAX_ROOT_PATHS + 5) {
+            mods.push(installed(
+                &format!("root{index}.jar"),
+                Some(&format!("root{index}")),
+                &["corelib"],
+                &[],
+            ));
+        }
+        let why = explain_presence(&mods, "corelib.jar").expect("target is installed");
+        assert_eq!(why.root_paths.len(), MAX_ROOT_PATHS);
+    }
+
+    #[test]
+    fn presence_of_an_unknown_filename_is_none_rather_than_an_empty_answer() {
+        let mods = vec![installed("sodium.jar", Some("sodium"), &[], &[])];
+        assert!(explain_presence(&mods, "ghost.jar").is_none());
     }
 
     #[test]

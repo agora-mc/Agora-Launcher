@@ -1003,8 +1003,14 @@ function CreateInstanceDialog({
         if (cancelled) return;
         setTemplates(available);
         const defaultId = typeof storedDefault === 'string' ? storedDefault : '';
-        if (defaultId && available.some((template) => template.id === defaultId)) {
-          setTemplateId(defaultId);
+        const preselected = available.find((template) => template.id === defaultId);
+        if (preselected) {
+          setTemplateId(preselected.id);
+          if (typeof preselected.jvm?.jvm_memory_mb === 'number') {
+            setMemoryMb(preselected.jvm.jvm_memory_mb);
+          }
+          const mode = preselected.jvm?.jvm_memory_mode;
+          if (mode === 'auto' || mode === 'manual') setMemoryMode(mode);
         }
       })
       .catch(() => {
@@ -1022,6 +1028,19 @@ function CreateInstanceDialog({
     });
     return () => { unlisten.then(fn => fn()); };
   }, [busy]);
+
+  // The memory controls always submit a value, so a template's memory settings
+  // would otherwise never take effect. Reflecting them into the visible fields
+  // keeps "what the request says wins" true while still honouring the template
+  // — and the user can see and override what they picked.
+  const applyTemplateChoice = (nextId: string) => {
+    setTemplateId(nextId);
+    const chosen = templates.find((template) => template.id === nextId);
+    const memory = chosen?.jvm?.jvm_memory_mb;
+    const mode = chosen?.jvm?.jvm_memory_mode;
+    if (typeof memory === 'number') setMemoryMb(memory);
+    if (mode === 'auto' || mode === 'manual') setMemoryMode(mode);
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -1135,7 +1154,7 @@ function CreateInstanceDialog({
               <span className="text-sm font-medium">Template</span>
               <select
                 value={templateId}
-                onChange={(e) => setTemplateId(e.target.value)}
+                onChange={(e) => applyTemplateChoice(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
               >
                 <option value="">None</option>

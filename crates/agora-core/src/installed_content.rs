@@ -40,6 +40,9 @@ pub struct InstalledContentRow {
     /// it. Distinct from `source`, which mixes origin with acquisition method
     /// and is a display string.
     pub pack_managed: bool,
+    /// Whether Agora installed this only to satisfy another mod's dependency.
+    /// Drives the "why is this here?" affordance and orphan cleanup.
+    pub installed_as_dependency: bool,
     /// Whether the user pinned this entry against updates.
     pub update_pinned: bool,
     pub source_url: Option<String>,
@@ -193,6 +196,7 @@ fn build_row(
         source: entry.source.clone(),
         source_label,
         pack_managed: entry.pack_managed,
+        installed_as_dependency: entry.installed_as_dependency,
         update_pinned: entry.update_pinned,
         source_url: entry.source_url.clone(),
         registry_id: entry.registry_id.clone(),
@@ -305,6 +309,7 @@ mod tests {
         InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: filename.to_string(),
             registry_id: None,
             modrinth_id: None,

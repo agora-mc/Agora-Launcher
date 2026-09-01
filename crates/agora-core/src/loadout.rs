@@ -213,6 +213,7 @@ mod tests {
             .map(|f| InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: f.to_string(),
                 registry_id: None,
                 modrinth_id: None,
@@ -410,6 +411,7 @@ mod tests {
         manifest.shaders.push(InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: "bsl.zip".to_string(),
             registry_id: None,
             modrinth_id: None,

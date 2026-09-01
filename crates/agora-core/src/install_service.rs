@@ -349,6 +349,7 @@ impl InstallService {
         let installed_mod = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: filename.to_string(),
             registry_id: registry_id.map(|s| s.to_string()),
             modrinth_id: modrinth_id.map(|s| s.to_string()),
@@ -504,6 +505,7 @@ impl InstallService {
         let installed_mod = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: file_name.to_string(),
             registry_id: None,
             modrinth_id: None,

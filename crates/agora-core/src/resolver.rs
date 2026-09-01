@@ -4237,6 +4237,7 @@ mod tests {
             mods: vec![InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: "a.jar".into(),
                 source: "registry".into(),
                 sha256: "aa".into(),
@@ -4257,6 +4258,7 @@ mod tests {
             resourcepacks: vec![InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: "b.zip".into(),
                 source: "registry".into(),
                 sha256: "bb".into(),

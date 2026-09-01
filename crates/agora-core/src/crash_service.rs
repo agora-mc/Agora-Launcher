@@ -1423,6 +1423,7 @@ mod tests {
                 .map(|fname| crate::models::InstalledMod {
                     update_pinned: false,
                     pack_managed: false,
+                    installed_as_dependency: false,
                     filename: fname.to_string(),
                     registry_id: None,
                     modrinth_id: None,

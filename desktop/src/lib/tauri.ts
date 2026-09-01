@@ -360,6 +360,8 @@ export interface InstalledMod {
   /** True when the modpack contributed this entry rather than the user. */
   pack_managed?: boolean;
   update_pinned?: boolean;
+  /** True when Agora installed this only to satisfy another mod's dependency. */
+  installed_as_dependency?: boolean;
 }
 
 export interface InstanceManifest {
@@ -400,6 +402,8 @@ export interface InstalledContentRow {
   source_label: string;
   /** True when the modpack contributed this entry rather than the user. */
   pack_managed: boolean;
+  /** True when Agora installed this only to satisfy another mod's dependency. */
+  installed_as_dependency: boolean;
   /** True when the user pinned this entry against updates. */
   update_pinned: boolean;
   source_url: string | null;
@@ -1717,6 +1721,36 @@ export interface DependencyEdge {
   to_filename: string;
   requirement: Requirement;
 }
+
+/** Serialized `dependency_ops::OrphanedDependency`. */
+export interface OrphanedDependency {
+  filename: string;
+  mod_jar_id: string | null;
+  content_type: string;
+}
+
+/** Serialized `dependency_ops::PresenceExplanation`. */
+export interface PresenceExplanation {
+  filename: string;
+  installed_as_dependency: boolean;
+  pack_managed: boolean;
+  dependents: DependentInfo[];
+  /** Shortest chains from a user-installed mod down to this item, root first. */
+  root_paths: string[][];
+  orphaned: boolean;
+}
+
+/**
+ * Mods that were installed only as dependencies and that nothing needs any
+ * more. Read this after a removal — the answer is always about the manifest as
+ * it stands right now.
+ */
+export const getOrphanedDependencies = (instanceId: string) =>
+  invoke<OrphanedDependency[]>('get_orphaned_dependencies', { instanceId });
+
+/** "Why is this mod here?" — traces one item back to the mods that need it. */
+export const explainModPresence = (instanceId: string, filename: string) =>
+  invoke<PresenceExplanation | null>('explain_mod_presence', { instanceId, filename });
 
 /** Every dependency edge between installed content, in one read. */
 export const getDependencyGraph = (instanceId: string) =>

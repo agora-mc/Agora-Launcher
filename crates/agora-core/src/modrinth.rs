@@ -1052,6 +1052,7 @@ pub async fn install_raw_modrinth(
     let installed_mod = InstalledMod {
         update_pinned: false,
         pack_managed: false,
+        installed_as_dependency: false,
         filename: candidate.filename.clone(),
         registry_id: None,
         modrinth_id: Some(project_id.to_string()),

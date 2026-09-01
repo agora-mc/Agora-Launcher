@@ -1633,6 +1633,7 @@ mod tests {
                 .map(|fname| crate::models::InstalledMod {
                     update_pinned: false,
                     pack_managed: false,
+                    installed_as_dependency: false,
                     filename: fname.to_string(),
                     registry_id: None,
                     modrinth_id: None,
@@ -1966,6 +1967,7 @@ Exception in thread \"main\" java.lang.RuntimeException: Test
                 .map(|(fname, packages)| crate::models::InstalledMod {
                     update_pinned: false,
                     pack_managed: false,
+                    installed_as_dependency: false,
                     filename: fname.to_string(),
                     registry_id: Some(fname.trim_end_matches(".jar").to_string()),
                     modrinth_id: None,

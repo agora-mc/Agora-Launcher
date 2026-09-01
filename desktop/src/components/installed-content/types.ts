@@ -74,6 +74,8 @@ export interface InstalledContentPanelProps {
   onUpdateAll?: (updates: UpdateInfo[]) => void;
   /** Pin or unpin a row against updates. */
   onTogglePin?: (row: InstalledContentRow, pinned: boolean) => void;
+  /** Open the "why is this mod here?" trace for a row. */
+  onExplainPresence?: (row: InstalledContentRow) => void;
   /**
    * Last persisted update check, read from cache so results survive navigation
    * and restart. Must be a stable reference — a fresh array each render would

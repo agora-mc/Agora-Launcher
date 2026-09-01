@@ -587,6 +587,7 @@ fn inventory_directory(
             update_pinned: false,
             // Copied out of another launcher's instance, not user-added here.
             pack_managed: true,
+            installed_as_dependency: false,
             filename,
             registry_id: None,
             modrinth_id: None,

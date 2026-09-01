@@ -1891,6 +1891,7 @@ mod tests {
             mods: vec![InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: "mod-with-dep.jar".into(),
                 registry_id: None,
                 modrinth_id: None,
@@ -2002,6 +2003,7 @@ mod tests {
             .map(|(filename, jar_id)| InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: filename.to_string(),
                 registry_id: None,
                 modrinth_id: None,

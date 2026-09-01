@@ -192,6 +192,15 @@ pub struct InstalledMod {
     /// and are healed on load by [`heal_pack_managed`].
     #[serde(default)]
     pub pack_managed: bool,
+    /// Whether Agora installed this entry only to satisfy another mod's
+    /// dependency, rather than because the user asked for it.
+    ///
+    /// This is the provenance that makes orphan cleanup safe: without it every
+    /// installed mod looks equally deliberate, and "nothing depends on this"
+    /// would flag standalone mods like Sodium. Legacy manifests deserialize as
+    /// `false`, which errs toward never proposing a removal.
+    #[serde(default)]
+    pub installed_as_dependency: bool,
     /// REQUIRED dependencies only (Fabric `depends`, Forge type=required);
     /// see `optional_deps` and `incompatible_deps` for non-required dep types.
     #[serde(default)]
@@ -546,6 +555,7 @@ mod tests {
             mods: vec![InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: "rt-mod.jar".to_string(),
                 registry_id: Some("reg-1".to_string()),
                 modrinth_id: None,
@@ -690,6 +700,13 @@ mod tests {
         assert!(manifest.pack_origin.is_none());
         assert_eq!(manifest.created_from_pack.as_deref(), Some("Some Pack"));
         assert!(manifest.mods.iter().all(|entry| !entry.pack_managed));
+        // No provenance recorded means "the user wanted it", which is the only
+        // safe reading: orphan cleanup must never propose removing a mod it
+        // cannot prove was auto-installed.
+        assert!(manifest
+            .mods
+            .iter()
+            .all(|entry| !entry.installed_as_dependency));
     }
 
     #[test]

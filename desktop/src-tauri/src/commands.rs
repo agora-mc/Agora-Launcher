@@ -2575,6 +2575,48 @@ pub async fn get_dependency_graph(
     .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
+/// Mods that were installed only as dependencies and that nothing needs now.
+///
+/// Read this *after* a removal: the answer is always about the manifest as it
+/// stands, so the caller never has to model what a removal would cascade into.
+#[tauri::command]
+pub async fn get_orphaned_dependencies(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::dependency_ops::OrphanedDependency>> {
+    tokio::task::spawn_blocking(move || {
+        let mut manifest = load_manifest(&app, &instance_id)?;
+        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        Ok(agora_core::dependency_ops::find_orphaned_dependencies(
+            &manifest.mods,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// "Why is this mod here?" — trace one installed item back to the mods that
+/// need it, and to the mod the user actually asked for.
+#[tauri::command]
+pub async fn explain_mod_presence(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+) -> LauncherResult<Option<agora_core::dependency_ops::PresenceExplanation>> {
+    tokio::task::spawn_blocking(move || {
+        let mut manifest = load_manifest(&app, &instance_id)?;
+        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        Ok(agora_core::dependency_ops::explain_presence(
+            &manifest.mods,
+            &filename,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// Build a disable plan for a mod: which other installed mods would be affected
 /// if this mod is disabled (renamed to `.disabled`).
 #[tauri::command]
@@ -6693,6 +6735,7 @@ mod command_helper_tests {
         agora_core::models::InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: filename.into(),
             registry_id: Some("example".into()),
             modrinth_id: None,

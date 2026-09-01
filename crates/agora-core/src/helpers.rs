@@ -451,6 +451,7 @@ mod tests {
         let mod_item = InstalledMod {
             update_pinned: false,
             pack_managed: false,
+            installed_as_dependency: false,
             filename: "test.jar".into(),
             registry_id: None,
             modrinth_id: None,

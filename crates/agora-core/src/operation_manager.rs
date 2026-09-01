@@ -828,6 +828,7 @@ mod tests {
             files_to_add: Vec::new(),
             files_to_remove: Vec::new(),
             files_to_disable: Vec::new(),
+            files_to_promote: Vec::new(),
             snapshot: SnapshotPlan {
                 label: "test-snapshot".into(),
                 estimated_bytes: 1024,

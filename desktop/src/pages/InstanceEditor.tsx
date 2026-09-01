@@ -55,6 +55,7 @@ import {
   planLoaderChange,
   changeLoaderVersion,
   getDependencyGraph,
+  getOrphanedDependencies,
   listSnapshots,
   createSnapshot,
   restoreSnapshot,
@@ -70,6 +71,7 @@ import {
   clearCachedInstanceUpdates,
   type InstanceDetail,
   type InstanceManifest,
+  type OrphanedDependency,
   type JavaRuntimeSummary,
   type GcProfile,
   type RegistryItem,
@@ -89,6 +91,8 @@ import {
   type LoaderChangePlan,
 } from '../lib/tauri';
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
+import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
+import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
@@ -155,6 +159,7 @@ function fallbackContentRows(manifest: InstanceManifest | null): InstalledConten
       filename: entry.filename,
       display_name: entry.filename.replace(/\.[^.]+$/, ''),
       pack_managed: entry.pack_managed ?? false,
+      installed_as_dependency: entry.installed_as_dependency ?? false,
       update_pinned: entry.update_pinned ?? false,
       version: entry.version,
       content_type: entry.content_type,
@@ -584,6 +589,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       .catch(() => { /* Cache is an optimization; an explicit check still works. */ });
     return () => { cancelled = true; };
   }, [instanceId]);
+
+  const [orphans, setOrphans] = useState<OrphanedDependency[]>([]);
+  const [explainTarget, setExplainTarget] = useState<InstalledContentRow | null>(null);
 
   const beginCanonicalOperation = (action: InstallIntent['action']) => {
     setCanonicalOperation({
@@ -1759,7 +1767,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onRevealFile={handleRevealInstalledContent}
           onCheckUpdates={() => checkInstanceUpdates(instanceId)}
           onApplyUpdate={handleApplyUpdate}
-          onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin}
+          onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget}
           initialUpdates={cachedUpdates}
           onSetCustomIcon={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
@@ -1779,15 +1787,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -2823,6 +2831,26 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         />
       ) : null}
 
+      {orphans.length > 0 && (
+        <OrphanCleanupDialog
+          orphans={orphans}
+          onClose={() => setOrphans([])}
+          onConfirm={(filenames) => {
+            setOrphans([]);
+            beginCanonicalOperation({ type: 'batch-remove', filenames });
+          }}
+        />
+      )}
+
+      {explainTarget && (
+        <WhyInstalledDialog
+          instanceId={instanceId}
+          filename={explainTarget.filename}
+          displayName={explainTarget.display_name}
+          onClose={() => setExplainTarget(null)}
+        />
+      )}
+
       {canonicalOperation && (
         <InstallFlow
           open
@@ -2842,6 +2870,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             // a re-render loop if it is ever signalled more than once.
             setCachedUpdates((current) => (current && current.length === 0 ? current : []));
             void clearCachedInstanceUpdates(targetId).catch(() => {});
+            // Only a removal can strand a dependency, and the answer is read
+            // from the manifest as it now stands rather than modelled from the
+            // plan — so this is a plain question, asked once, after the fact.
+            const action = canonicalOperation?.intent.action.type;
+            if (action === 'remove' || action === 'batch-remove') {
+              void getOrphanedDependencies(targetId)
+                .then(setOrphans)
+                .catch(() => { /* Cleanup is an offer; failing to ask is fine. */ });
+            }
           }}
            onClose={() => {
               setCanonicalOperation(null);

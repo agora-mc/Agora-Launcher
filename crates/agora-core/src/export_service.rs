@@ -247,6 +247,7 @@ mod tests {
             mods: vec![crate::models::InstalledMod {
                 update_pinned: false,
                 pack_managed: false,
+                installed_as_dependency: false,
                 filename: "test.jar".into(),
                 registry_id: None,
                 modrinth_id: None,
