@@ -278,6 +278,11 @@ enum InstanceCmd {
         jvm_custom_args: Option<String>,
         #[arg(long)]
         jvm_always_pre_touch: Option<bool>,
+        #[arg(
+            long = "template",
+            help = "Instance template id to seed configs and JVM settings from"
+        )]
+        template_id: Option<String>,
     },
     /// Clone an existing instance with copy-preference flags.
     Clone {
@@ -1004,6 +1009,7 @@ async fn run_command(
                 jvm_gc,
                 jvm_custom_args,
                 jvm_always_pre_touch,
+                template_id,
             } => {
                 let instance_id = agora_core::paths::sanitize_id(&name);
                 let jvm_memory_mode = Some(if jvm_memory_mb.is_some() {
@@ -1024,6 +1030,7 @@ async fn run_command(
                     jvm_always_pre_touch,
                     is_modpack: None,
                     pack_icon_url: None,
+                    template_id,
                 };
                 let row = InstanceService::new(ctx.clone()).create(request).await?;
                 if json {

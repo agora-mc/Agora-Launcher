@@ -559,6 +559,9 @@ export interface CreateInstanceRequest {
   jvm_custom_args?: string;
   is_modpack?: boolean;
   pack_icon_url?: string | null;
+  /** Instance template to seed configs and JVM settings from. Omit to use the
+   *  stored default template (if any); explicit request fields always win. */
+  template_id?: string | null;
 }
 
 export interface PackModRow {
@@ -1951,6 +1954,86 @@ export const restoreSnapshot = (instanceId: string, snapshotId: string) =>
 
 export const deleteSnapshot = (instanceId: string, snapshotId: string) =>
   invoke<void>('delete_snapshot', { instanceId, snapshotId });
+
+/** Serialized `template_service::TemplateJvm`. Every field is optional; `null`
+ *  means "leave the instance's own value alone". */
+export interface TemplateJvm {
+  java_path?: string | null;
+  jvm_memory_mb?: number | null;
+  jvm_memory_mode?: string | null;
+  jvm_gc?: string | null;
+  jvm_custom_args?: string | null;
+  jvm_always_pre_touch?: boolean | null;
+}
+
+/** Serialized `template_service::TemplateFile`. */
+export interface TemplateFile {
+  relative_path: string;
+  sha256: string;
+  size: number;
+}
+
+/** Serialized `template_service::InstanceTemplate`. */
+export interface InstanceTemplate {
+  template_version: number;
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  jvm: TemplateJvm;
+  files: TemplateFile[];
+}
+
+/** Serialized `template_service::CapturableFile`. */
+export interface CapturableFile {
+  relative_path: string;
+  size: number;
+  category: string;
+  too_large: boolean;
+}
+
+export const listCapturableTemplateFiles = (instanceId: string) =>
+  invoke<CapturableFile[]>('list_capturable_template_files', { instanceId });
+
+export const listInstanceTemplates = () =>
+  invoke<InstanceTemplate[]>('list_instance_templates', {});
+
+export const createInstanceTemplate = (args: {
+  name: string;
+  description?: string | null;
+  jvm?: TemplateJvm | null;
+  sourceInstanceId?: string | null;
+  selectedPaths?: string[];
+}) =>
+  invoke<InstanceTemplate>('create_instance_template', {
+    name: args.name,
+    description: args.description ?? null,
+    jvm: args.jvm ?? null,
+    sourceInstanceId: args.sourceInstanceId ?? null,
+    selectedPaths: args.selectedPaths ?? [],
+  });
+
+export const updateInstanceTemplate = (args: {
+  templateId: string;
+  name?: string | null;
+  /** Nested option: omit to leave the description alone, pass `[value]` to set
+   *  it (including `[null]` to clear). Mirrors the Rust `Option<Option<_>>`. */
+  description?: [string | null] | null;
+  jvm?: TemplateJvm | null;
+}) =>
+  invoke<InstanceTemplate>('update_instance_template', {
+    templateId: args.templateId,
+    name: args.name ?? null,
+    description: args.description ? args.description[0] : null,
+    jvm: args.jvm ?? null,
+  });
+
+export const deleteInstanceTemplate = (templateId: string) =>
+  invoke<void>('delete_instance_template', { templateId });
+
+export const applyInstanceTemplate = (instanceId: string, templateId: string) =>
+  invoke<number>('apply_instance_template', { instanceId, templateId });
 
 export const listLoadoutProfiles = (instanceId: string) =>
   invoke<LoadoutProfile[]>('list_loadout_profiles', { instanceId });

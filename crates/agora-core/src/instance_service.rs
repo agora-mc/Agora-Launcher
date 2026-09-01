@@ -31,7 +31,18 @@ pub struct CreateInstanceRequest {
     pub is_modpack: Option<bool>,
     #[serde(default)]
     pub pack_icon_url: Option<String>,
+    /// Optional instance template to seed this instance from.
+    ///
+    /// The template supplies config files and JVM settings; anything the
+    /// request states explicitly wins, so a user who typed a heap size in the
+    /// create dialog keeps it even when the template also carries one.
+    #[serde(default)]
+    pub template_id: Option<String>,
 }
+
+/// Settings key holding the id of the template applied when a create request
+/// names none.
+pub const DEFAULT_TEMPLATE_SETTING_KEY: &str = "default_instance_template";
 
 /// Request used to clone an existing instance.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -814,6 +825,37 @@ impl InstanceService {
     /// Create the instance directory, bootstrap shared metadata, install its
     /// loader, and persist the row. All partial instance state is removed on
     /// failure; shared loader artifacts are retained.
+    /// Resolve which template a create request should use.
+    ///
+    /// An explicit id must exist — a typo should surface, not silently create a
+    /// bare instance. The stored default is best-effort: if the user deleted the
+    /// template their setting still points at, creating an instance must still
+    /// work.
+    fn resolve_template(
+        &self,
+        requested: Option<&str>,
+    ) -> LauncherResult<Option<crate::template_service::InstanceTemplate>> {
+        let root = self.ctx.paths.templates_root();
+        if let Some(id) = requested.map(str::trim).filter(|id| !id.is_empty()) {
+            return crate::template_service::get_template(&root, id)
+                .map(Some)
+                .map_err(|message| LauncherError::Generic {
+                    code: "ERR_TEMPLATE_NOT_FOUND".into(),
+                    message,
+                });
+        }
+        let conn = self.connection()?;
+        let default_id = crate::db::get_setting(&conn, DEFAULT_TEMPLATE_SETTING_KEY)
+            .ok()
+            .flatten()
+            .and_then(|value| value.as_str().map(str::to_string));
+        drop(conn);
+        let Some(default_id) = default_id.filter(|id| !id.trim().is_empty()) else {
+            return Ok(None);
+        };
+        Ok(crate::template_service::get_template(&root, &default_id).ok())
+    }
+
     pub async fn create(&self, request: CreateInstanceRequest) -> LauncherResult<InstanceRow> {
         let instance_id = self.validate_id(&request.instance_id)?;
         if request.name.trim().is_empty() || request.minecraft_version.trim().is_empty() {
@@ -845,12 +887,48 @@ impl InstanceService {
             ProgressPhase::Staging,
             "Preparing instance directory",
         ));
-        let row = prepare_row(&instance_id, &request);
+        // Resolve the template before anything is written: a bad template id
+        // should fail the create, not leave a half-configured instance.
+        let template = match self.resolve_template(request.template_id.as_deref()) {
+            Ok(template) => template,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&staging_dir);
+                op.fail(error.to_string());
+                return Err(error);
+            }
+        };
+        let mut request = request;
+        if let Some(template) = template.as_ref() {
+            apply_template_jvm_to_request(&mut request, &template.jvm);
+        }
+        let request = request;
+
+        let mut row = prepare_row(&instance_id, &request);
+        if let Some(template) = template.as_ref() {
+            if row.java_path.is_none() {
+                row.java_path = template.jvm.java_path.clone();
+            }
+        }
+        let row = row;
         let manifest = manifest_from_request(&instance_id, &request);
         if let Err(error) = self.prepare_files(&staging_dir, &manifest) {
             let _ = std::fs::remove_dir_all(&staging_dir);
             op.fail(error.to_string());
             return Err(error);
+        }
+        if let Some(template) = template.as_ref() {
+            if let Err(error) = crate::template_service::apply_template_files(
+                &self.ctx.paths.templates_root(),
+                &template.id,
+                &staging_dir,
+            ) {
+                let _ = std::fs::remove_dir_all(&staging_dir);
+                op.fail(error.clone());
+                return Err(LauncherError::Generic {
+                    code: "ERR_TEMPLATE_APPLY".into(),
+                    message: error,
+                });
+            }
         }
         if let Err(error) = std::fs::write(staging_dir.join("staging-complete"), b"complete") {
             let _ = std::fs::remove_dir_all(&staging_dir);
@@ -1038,6 +1116,30 @@ impl InstanceService {
     }
 }
 
+/// Fill unset JVM fields on a create request from a template.
+///
+/// One-directional on purpose: the template is a default, never an override.
+fn apply_template_jvm_to_request(
+    request: &mut CreateInstanceRequest,
+    jvm: &crate::template_service::TemplateJvm,
+) {
+    if request.jvm_memory_mb.is_none() {
+        request.jvm_memory_mb = jvm.jvm_memory_mb;
+    }
+    if request.jvm_memory_mode.is_none() {
+        request.jvm_memory_mode = jvm.jvm_memory_mode.clone();
+    }
+    if request.jvm_gc.is_none() {
+        request.jvm_gc = jvm.jvm_gc.clone();
+    }
+    if request.jvm_custom_args.is_none() {
+        request.jvm_custom_args = jvm.jvm_custom_args.clone();
+    }
+    if request.jvm_always_pre_touch.is_none() {
+        request.jvm_always_pre_touch = jvm.jvm_always_pre_touch;
+    }
+}
+
 fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRow {
     InstanceRow {
         instance_id: instance_id.into(),
@@ -1159,6 +1261,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("test", &request);
         assert_eq!(row.jvm_memory_mode, "auto");
@@ -1210,6 +1313,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("delegated", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1273,6 +1377,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("original", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1333,6 +1438,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("locked", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1393,6 +1499,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("delop", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1446,6 +1553,7 @@ mod tests {
                 jvm_always_pre_touch: None,
                 is_modpack: None,
                 pack_icon_url: None,
+                template_id: None,
             };
             let row = prepare_row("src", &request);
             let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1524,6 +1632,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("source-pack", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();

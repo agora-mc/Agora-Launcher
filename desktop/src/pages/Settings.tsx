@@ -69,6 +69,7 @@ import {
   AppearanceThemeSettings,
   LivingBackgroundSettings,
 } from './settings/AppearanceSettings';
+import { TemplateSettings } from './settings/TemplateSettings';
 import { SettingsSection } from './settings/SettingsSection';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
@@ -2089,6 +2090,7 @@ export function Settings({
           ),
         },
         { id: 'walkthrough', label: 'Walkthrough', content: walkthroughCard },
+        { id: 'templates', label: 'Templates', content: <TemplateSettings /> },
         {
           id: 'updates',
           label: 'Updates',

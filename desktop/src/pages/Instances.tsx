@@ -15,6 +15,7 @@ import {
   listLoaderVersions,
   listManifestLoaders,
   listManifestMcVersions,
+  listInstanceTemplates,
   formatError,
   type ClonePrefs,
   type CreateInstanceRequest,
@@ -23,6 +24,7 @@ import {
   type LauncherAction,
   type LoaderVersionSummary,
   type HealthReport,
+  type InstanceTemplate,
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
 } from '../lib/tauri';
@@ -914,6 +916,8 @@ function CreateInstanceDialog({
   const [loaderVersion, setLoaderVersion] = useState('');
   const [memoryMb, setMemoryMb] = useState(4096);
   const [memoryMode, setMemoryMode] = useState<'auto' | 'manual'>('auto');
+  const [templates, setTemplates] = useState<InstanceTemplate[]>([]);
+  const [templateId, setTemplateId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -990,6 +994,25 @@ function CreateInstanceDialog({
     if (loader === 'vanilla') setLoaderVersion('');
   }, [loader]);
 
+  // Templates are optional; a failed load must not block instance creation, so
+  // the picker simply stays hidden.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listInstanceTemplates(), getSetting('default_instance_template')])
+      .then(([available, storedDefault]) => {
+        if (cancelled) return;
+        setTemplates(available);
+        const defaultId = typeof storedDefault === 'string' ? storedDefault : '';
+        if (defaultId && available.some((template) => template.id === defaultId)) {
+          setTemplateId(defaultId);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   // Progress event listener during creation
   useEffect(() => {
     if (!busy) return;
@@ -1020,6 +1043,10 @@ function CreateInstanceDialog({
         loader_version: loaderVersion,
         jvm_memory_mb: memoryMb,
         jvm_memory_mode: memoryMode,
+        // '' is "no template" and must be sent as null rather than omitted:
+        // omitting it would fall back to the stored default, overriding the
+        // user's explicit choice in this dialog.
+        template_id: templateId || null,
       };
       await createInstance(request);
       // A closing dialog alone cannot tell the walkthrough whether the user
@@ -1100,6 +1127,27 @@ function CreateInstanceDialog({
                   </option>
                 ))}
               </select>
+            </label>
+          )}
+
+          {templates.length > 0 && (
+            <label className="block">
+              <span className="text-sm font-medium">Template</span>
+              <select
+                value={templateId}
+                onChange={(e) => setTemplateId(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">None</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Seeds the new instance with saved config files and JVM settings.
+              </span>
             </label>
           )}
 

@@ -3437,6 +3437,209 @@ pub async fn restore_snapshot(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Instance templates
+// ---------------------------------------------------------------------------
+
+fn templates_root(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> {
+    Ok(crate::core_context(app)?.paths.templates_root())
+}
+
+fn template_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_TEMPLATE".into(),
+        message,
+    }
+}
+
+/// Files in an instance a template is allowed to capture, for the picker.
+#[tauri::command]
+pub async fn list_capturable_template_files(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::template_service::CapturableFile>> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::list_capturable_files(&instance_dir)
+    })
+    .await
+    .map_err(|e| template_error(format!("Template scan task failed: {e}")))?
+    .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn list_instance_templates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<Vec<agora_core::template_service::InstanceTemplate>> {
+    let root = templates_root(&app)?;
+    tokio::task::spawn_blocking(move || agora_core::template_service::list_templates(&root))
+        .await
+        .map_err(|e| template_error(format!("Template listing task failed: {e}")))?
+        .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn create_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    name: String,
+    description: Option<String>,
+    jvm: Option<agora_core::template_service::TemplateJvm>,
+    source_instance_id: Option<String>,
+    selected_paths: Vec<String>,
+) -> LauncherResult<agora_core::template_service::InstanceTemplate> {
+    let root = templates_root(&app)?;
+    // The id is generated rather than derived from the name: two templates may
+    // legitimately share a display name, and a name is renameable while the id
+    // is what the default-template setting and instance rows point at. The name
+    // slug is appended only so the directory is recognizable on disk.
+    let slug: String = paths::sanitize_id(&name).chars().take(24).collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let id = if slug.is_empty() {
+        format!("tpl-{stamp}")
+    } else {
+        format!("tpl-{stamp}-{slug}")
+    };
+    let source_dir = match source_instance_id {
+        Some(instance_id) => {
+            let sanitized = paths::sanitize_id(&instance_id);
+            Some(
+                paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                    code: "ERR_PATH".into(),
+                    message: e.to_string(),
+                })?,
+            )
+        }
+        None => None,
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::create_template(
+            &root,
+            agora_core::template_service::CreateTemplateRequest {
+                id: &id,
+                name: &name,
+                description,
+                jvm: jvm.unwrap_or_default(),
+                source_instance_dir: source_dir.as_deref(),
+                selected_paths: &selected_paths,
+                now: &now,
+            },
+        )
+    })
+    .await
+    .map_err(|e| template_error(format!("Template capture task failed: {e}")))?
+    .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn update_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    template_id: String,
+    name: Option<String>,
+    description: Option<Option<String>>,
+    jvm: Option<agora_core::template_service::TemplateJvm>,
+) -> LauncherResult<agora_core::template_service::InstanceTemplate> {
+    let root = templates_root(&app)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::update_template(
+            &root,
+            &template_id,
+            name.as_deref(),
+            description,
+            jvm,
+            &now,
+        )
+    })
+    .await
+    .map_err(|e| template_error(format!("Template update task failed: {e}")))?
+    .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn delete_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    template_id: String,
+) -> LauncherResult<()> {
+    let root = templates_root(&app)?;
+    // Clearing the default alongside the delete keeps the setting from pointing
+    // at a template that no longer exists.
+    let ctx = crate::core_context(&app)?;
+    let conn =
+        agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+            LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: e.to_string(),
+            }
+        })?;
+    let is_default = agora_core::db::get_setting(
+        &conn,
+        agora_core::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
+    )
+    .ok()
+    .flatten()
+    .and_then(|value| value.as_str().map(str::to_string))
+    .is_some_and(|current| current == template_id);
+    if is_default {
+        let _ = agora_core::db::set_setting(
+            &conn,
+            agora_core::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
+            &serde_json::Value::String(String::new()),
+        );
+    }
+    drop(conn);
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::delete_template(&root, &template_id)
+    })
+    .await
+    .map_err(|e| template_error(format!("Template delete task failed: {e}")))?
+    .map_err(template_error)
+}
+
+/// Apply a template's captured files onto an existing instance.
+///
+/// Separate from instance creation so a user can retrofit a template onto an
+/// instance they already have.
+#[tauri::command]
+pub async fn apply_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    template_id: String,
+) -> LauncherResult<usize> {
+    let root = templates_root(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    tokio::task::spawn_blocking(move || {
+        let applied =
+            agora_core::template_service::apply_template_files(&root, &template_id, &instance_dir)?;
+        // Config changes are exactly the kind of drift the pre-launch snapshot
+        // reuse check must notice.
+        agora_core::snapshot::mark_instance_mutated(&instance_dir)?;
+        Ok::<_, String>(applied)
+    })
+    .await
+    .map_err(|e| template_error(format!("Template apply task failed: {e}")))?
+    .map_err(template_error)
+}
+
 #[tauri::command]
 pub async fn delete_snapshot(
     app: tauri::AppHandle,
@@ -4897,6 +5100,9 @@ pub async fn import_lockfile(
         minecraft_version: lockfile.instance.minecraft_version.clone(),
         loader: lockfile.instance.loader.clone(),
         loader_version: lockfile.instance.loader_version.clone(),
+        // Pack-driven creates take the default template too; pack content is
+        // written afterwards, so anything the pack ships wins over it.
+        template_id: None,
         jvm_memory_mb: Some(memory),
         jvm_memory_mode: Some(
             if explicit_memory.is_some() {

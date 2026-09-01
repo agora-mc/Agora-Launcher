@@ -134,6 +134,11 @@ impl AppPaths {
         self.root.join("staging")
     }
 
+    /// Root directory for reusable instance templates (`templates/`).
+    pub fn templates_root(&self) -> PathBuf {
+        crate::template_service::templates_root(&self.root)
+    }
+
     // ------------------------------------------------------------------
     // Validated helpers (user-controlled input — may return Err)
     // ------------------------------------------------------------------

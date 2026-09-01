@@ -88,6 +88,7 @@ import {
   type HealthReport,
   type LoaderChangePlan,
 } from '../lib/tauri';
+import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
@@ -247,7 +248,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
 
   // Sub-sidebar active tab
-  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'import' | 'export' | 'console' | 'java-args'>('mods');
+  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'import' | 'export' | 'console' | 'java-args'>('mods');
 
   // Snapshots state (Phase 6)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -1723,14 +1724,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
       {/* Sub-sidebar tabs */}
       <div className="agora-tabbar">
-        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'import', 'export', 'console'] as const).map((tab) => (
+        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'templates', 'import', 'export', 'console'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             data-active={activeTab === tab}
             className="agora-tab text-sm"
           >
-            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
+            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
           </button>
         ))}
         <button
@@ -2115,6 +2116,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           )}
         </section>
+      )}
+
+      {activeTab === 'templates' && (
+        <InstanceTemplatePanel
+          instanceId={instanceId}
+          row={detail?.row}
+          disabled={recoveryBlocked}
+          onApplied={() => { void refreshDetail(); }}
+        />
       )}
 
       {activeTab === 'loadout-profiles' && (
