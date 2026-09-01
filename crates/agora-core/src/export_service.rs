@@ -181,6 +181,8 @@ mod tests {
         let exports_dir = tmp.path().join("exports");
 
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test-export".into(),
             name: "Test Export".into(),
             created_from_pack: None,
@@ -213,6 +215,8 @@ mod tests {
         std::fs::write(instance_dir.join("mods").join("test.jar"), b"fake jar").unwrap();
 
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test-mrp".into(),
             name: "Test MRP".into(),
             created_from_pack: None,
@@ -221,6 +225,7 @@ mod tests {
             loader_version: "0.16".into(),
             is_locked: false,
             mods: vec![crate::models::InstalledMod {
+                pack_managed: false,
                 filename: "test.jar".into(),
                 registry_id: None,
                 modrinth_id: None,
@@ -258,6 +263,8 @@ mod tests {
         let instance_dir = tmp.path().join("instance");
         std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,

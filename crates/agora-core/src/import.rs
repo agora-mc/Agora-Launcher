@@ -248,6 +248,8 @@ fn inventory_pack_content(
             None
         };
         installed.push(InstalledMod {
+            // Inventoried from the .mrpack index: contributed by the pack.
+            pack_managed: true,
             filename: entry.file_name().to_string_lossy().into_owned(),
             registry_id: None,
             modrinth_id: modrinth_file.map(|file| file.project_id.clone()),
@@ -699,6 +701,8 @@ pub fn import_mrpack_with_progress(
         let worlds = inventory_pack_content(target_dir, "saves", "world", &modrinth_files)?;
         let imported_mods = mods.len();
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: target.instance_id.clone(),
             name: name.clone(),
             minecraft_version: minecraft_version.clone(),
@@ -915,6 +919,8 @@ pub fn import_prism_zip(
 
         let identities = BTreeMap::new();
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: target.instance_id.clone(),
             name: name.clone(),
             minecraft_version: minecraft_version.clone(),
@@ -1098,6 +1104,8 @@ pub fn import_directory(
         let manifest_path = target.staging_dir.join("instance_manifest.json");
         if !manifest_path.exists() {
             let manifest = InstanceManifest {
+                manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+                pack_origin: None,
                 instance_id: target.instance_id.clone(),
                 name: name.clone(),
                 minecraft_version: String::new(),
@@ -1508,6 +1516,8 @@ fn write_import_manifest(
     loader_version: String,
 ) -> LauncherResult<()> {
     let manifest = InstanceManifest {
+        manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+        pack_origin: None,
         instance_id: target.instance_id.clone(),
         name: name.to_string(),
         minecraft_version,

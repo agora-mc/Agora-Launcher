@@ -909,6 +909,7 @@ mod tests {
         opt_deps: &[&str],
     ) -> InstalledMod {
         InstalledMod {
+            pack_managed: false,
             filename: filename.to_string(),
             registry_id: Some(filename.to_string()),
             modrinth_id: None,

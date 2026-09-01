@@ -330,6 +330,8 @@ mod tests {
     #[test]
     fn test_push_and_remove_content_array() {
         let mut manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -346,6 +348,7 @@ mod tests {
         };
 
         let mod_item = InstalledMod {
+            pack_managed: false,
             filename: "test.jar".into(),
             registry_id: None,
             modrinth_id: None,

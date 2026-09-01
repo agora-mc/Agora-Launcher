@@ -628,6 +628,8 @@ fn inventory_directory(
         };
 
         items.push(InstalledMod {
+            // Copied out of another launcher's instance, not user-added here.
+            pack_managed: true,
             filename,
             registry_id: None,
             modrinth_id: None,
@@ -1581,6 +1583,8 @@ impl LauncherImportService {
             .unwrap_or_else(|| (String::new(), String::new(), String::new()));
 
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: dest_id.clone(),
             name: dest_name.clone(),
             minecraft_version: mc_version.clone(),

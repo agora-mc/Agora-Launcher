@@ -211,6 +211,7 @@ mod tests {
         let mods: Vec<InstalledMod> = mod_files
             .iter()
             .map(|f| InstalledMod {
+                pack_managed: false,
                 filename: f.to_string(),
                 registry_id: None,
                 modrinth_id: None,
@@ -230,6 +231,8 @@ mod tests {
             })
             .collect();
         InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".to_string(),
             name: "Test".to_string(),
             created_from_pack: None,
@@ -404,6 +407,7 @@ mod tests {
 
         let mut manifest = make_manifest(&dir, &["sodium.jar"]);
         manifest.shaders.push(InstalledMod {
+            pack_managed: false,
             filename: "bsl.zip".to_string(),
             registry_id: None,
             modrinth_id: None,

@@ -1619,6 +1619,8 @@ mod tests {
         }
 
         let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: instance_id.to_string(),
             name: instance_id.to_string(),
             created_from_pack: None,
@@ -1629,6 +1631,7 @@ mod tests {
             mods: mod_filenames
                 .iter()
                 .map(|fname| crate::models::InstalledMod {
+                    pack_managed: false,
                     filename: fname.to_string(),
                     registry_id: None,
                     modrinth_id: None,
@@ -1948,6 +1951,8 @@ Exception in thread \"main\" java.lang.RuntimeException: Test
         }
 
         let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: instance_id.to_string(),
             name: instance_id.to_string(),
             created_from_pack: None,
@@ -1958,6 +1963,7 @@ Exception in thread \"main\" java.lang.RuntimeException: Test
             mods: mods
                 .iter()
                 .map(|(fname, packages)| crate::models::InstalledMod {
+                    pack_managed: false,
                     filename: fname.to_string(),
                     registry_id: Some(fname.trim_end_matches(".jar").to_string()),
                     modrinth_id: None,

@@ -1852,6 +1852,8 @@ mod tests {
     #[test]
     fn health_empty_instance_is_green() {
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -1877,6 +1879,8 @@ mod tests {
     #[test]
     fn health_missing_required_dep_is_red() {
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -1885,6 +1889,7 @@ mod tests {
             loader_version: "0.15.11".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                pack_managed: false,
                 filename: "mod-with-dep.jar".into(),
                 registry_id: None,
                 modrinth_id: None,
@@ -1994,6 +1999,7 @@ mod tests {
         let mods: Vec<InstalledMod> = mods
             .iter()
             .map(|(filename, jar_id)| InstalledMod {
+                pack_managed: false,
                 filename: filename.to_string(),
                 registry_id: None,
                 modrinth_id: None,
@@ -2013,6 +2019,8 @@ mod tests {
             })
             .collect();
         InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,

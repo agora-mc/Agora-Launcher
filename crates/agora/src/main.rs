@@ -3422,6 +3422,7 @@ mod tests {
     #[test]
     fn removal_plan_detects_reverse_dependents() {
         let target = InstalledMod {
+            pack_managed: false,
             filename: "core-lib.jar".into(),
             registry_id: Some("core-lib".into()),
             modrinth_id: None,
@@ -3441,6 +3442,7 @@ mod tests {
         };
 
         let dependent = InstalledMod {
+            pack_managed: false,
             filename: "dependent-mod.jar".into(),
             registry_id: Some("dependent-mod".into()),
             modrinth_id: None,
@@ -3472,6 +3474,7 @@ mod tests {
     #[test]
     fn removal_plan_empty_for_unreferenced_mod() {
         let target = InstalledMod {
+            pack_managed: false,
             filename: "standalone.jar".into(),
             registry_id: None,
             modrinth_id: None,
@@ -3491,6 +3494,7 @@ mod tests {
         };
 
         let other = InstalledMod {
+            pack_managed: false,
             filename: "other.jar".into(),
             registry_id: Some("other".into()),
             modrinth_id: None,
@@ -4056,6 +4060,8 @@ mod tests {
         fs::write(&mod_path, b"fake mod content").expect("write mod file");
 
         let manifest = InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test-instance".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -4064,6 +4070,7 @@ mod tests {
             loader_version: "0.16.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                pack_managed: false,
                 filename: "test-mod.jar".into(),
                 source: "manual".into(),
                 source_url: None,

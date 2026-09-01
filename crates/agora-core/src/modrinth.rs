@@ -1050,6 +1050,7 @@ pub async fn install_raw_modrinth(
     let sha256 = crate::download::sha256_hex(&bytes);
     let metadata = parse_jar_metadata(&mod_path);
     let installed_mod = InstalledMod {
+        pack_managed: false,
         filename: candidate.filename.clone(),
         registry_id: None,
         modrinth_id: Some(project_id.to_string()),

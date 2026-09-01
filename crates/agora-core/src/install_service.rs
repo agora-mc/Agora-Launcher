@@ -315,6 +315,7 @@ impl InstallService {
             crate::jar_metadata::parse_jar_metadata_for_loader(&item_path, &manifest.loader);
 
         let installed_mod = InstalledMod {
+            pack_managed: false,
             filename: filename.to_string(),
             registry_id: registry_id.map(|s| s.to_string()),
             modrinth_id: modrinth_id.map(|s| s.to_string()),
@@ -474,6 +475,7 @@ impl InstallService {
 
         let metadata = crate::jar_metadata::parse_jar_metadata_for_loader(&dest, &manifest.loader);
         let installed_mod = InstalledMod {
+            pack_managed: false,
             filename: file_name.to_string(),
             registry_id: None,
             modrinth_id: None,

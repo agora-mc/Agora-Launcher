@@ -610,6 +610,8 @@ impl InstanceService {
         } else {
             // Synthesise a minimal manifest from the DB row.
             InstanceManifest {
+                manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+                pack_origin: None,
                 instance_id: new_id.clone(),
                 name: request.new_name.trim().to_owned(),
                 created_from_pack: None,
@@ -1051,6 +1053,8 @@ fn manifest_from_request(instance_id: &str, request: &CreateInstanceRequest) -> 
         );
     }
     InstanceManifest {
+        manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+        pack_origin: None,
         instance_id: instance_id.into(),
         name: request.name.clone(),
         created_from_pack: None,

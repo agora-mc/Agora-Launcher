@@ -1125,6 +1125,8 @@ mod tests {
             std::fs::write(dir.join("mods").join(filename), content).unwrap();
         }
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: instance_id.into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -1135,6 +1137,7 @@ mod tests {
             mods: mods
                 .iter()
                 .map(|(filename, _)| InstalledMod {
+                    pack_managed: false,
                     filename: filename.to_string(),
                     registry_id: None,
                     modrinth_id: None,
@@ -1316,6 +1319,8 @@ mod tests {
         let manifest_path = ctx.paths.instance_manifest("ghost").unwrap();
         std::fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "ghost".into(),
             name: "Ghost".into(),
             created_from_pack: None,

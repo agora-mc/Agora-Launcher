@@ -4204,6 +4204,8 @@ mod tests {
     #[test]
     fn test_find_installed_by_identity_empty_manifest() {
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             minecraft_version: "1.20.1".into(),
@@ -4224,6 +4226,8 @@ mod tests {
     #[test]
     fn test_all_installed() {
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             minecraft_version: "1.20.1".into(),
@@ -4231,6 +4235,7 @@ mod tests {
             loader_version: "0.15.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                pack_managed: false,
                 filename: "a.jar".into(),
                 source: "registry".into(),
                 sha256: "aa".into(),
@@ -4249,6 +4254,7 @@ mod tests {
                 incompatible_deps: vec![],
             }],
             resourcepacks: vec![InstalledMod {
+                pack_managed: false,
                 filename: "b.zip".into(),
                 source: "registry".into(),
                 sha256: "bb".into(),

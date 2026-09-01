@@ -6580,6 +6580,8 @@ mod command_helper_tests {
 
     fn test_manifest() -> agora_core::models::InstanceManifest {
         agora_core::models::InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -6598,6 +6600,7 @@ mod command_helper_tests {
 
     fn test_installed_mod(filename: &str, enabled: bool) -> agora_core::models::InstalledMod {
         agora_core::models::InstalledMod {
+            pack_managed: false,
             filename: filename.into(),
             registry_id: Some("example".into()),
             modrinth_id: None,

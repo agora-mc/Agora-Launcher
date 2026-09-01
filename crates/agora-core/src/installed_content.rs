@@ -295,6 +295,7 @@ mod tests {
 
     fn manifest_entry(filename: &str, content_type: &str, enabled: bool) -> InstalledMod {
         InstalledMod {
+            pack_managed: false,
             filename: filename.to_string(),
             registry_id: None,
             modrinth_id: None,
@@ -334,6 +335,8 @@ mod tests {
         fs::write(dir.join("resourcepacks/pack.zip"), b"x").unwrap();
 
         let mut manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".to_string(),
             name: "Test".to_string(),
             created_from_pack: None,

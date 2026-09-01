@@ -2632,6 +2632,9 @@ fn prepare_manifest(
         };
         let sha256 = crate::download::sha256_hex(&contents);
         let installed = crate::models::InstalledMod {
+            // Individual install through the transaction pipeline. Pack-driven
+            // installs stamp their own provenance; see PackOrigin.
+            pack_managed: false,
             filename: add.target_filename.clone(),
             registry_id: metadata.registry_id.clone(),
             modrinth_id: metadata.modrinth_id.clone(),
@@ -4344,6 +4347,8 @@ mod tests {
         let directory = tmp.path().join("instance");
         std::fs::create_dir_all(directory.join("mods")).unwrap();
         let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -4475,6 +4480,7 @@ mod tests {
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.mods.push(crate::models::InstalledMod {
+            pack_managed: false,
             filename: filename.into(),
             registry_id: Some(item_id.into()),
             modrinth_id: None,
