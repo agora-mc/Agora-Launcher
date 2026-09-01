@@ -75,20 +75,12 @@ pub async fn list_mod_versions_for(
         .await
 }
 
-/// Resolve the bounded candidate set used by explicit automatic update checks.
-pub async fn list_mod_versions_for_update(
-    app: &tauri::AppHandle,
-    instance_id: &str,
-    item_id: &str,
-) -> LauncherResult<Vec<ModVersionCandidate>> {
-    let ctx = crate::core_context(app)?;
-    let instance = load_instance_info(app, instance_id)?;
-    let item = load_registry_item(app, item_id)?;
-    make_resolver(ctx, app)
-        .await
-        .list_curated_versions_for_update(&item, &instance.minecraft_version, &instance.loader)
-        .await
-}
+// The bounded candidate set for update checks is resolved by
+// `agora_core::update_cache::check_single_instance_updates_with`, which owns
+// the caching and the matching rules for both the background sweep and the
+// `check_instance_updates` command. Adapters must not open a second door to
+// `Resolver::list_curated_versions_for_update` — see check 9 in
+// `scripts/check_architecture.py`.
 
 /// Quick compatibility badge via core Resolver.
 pub async fn check_mod_compat(

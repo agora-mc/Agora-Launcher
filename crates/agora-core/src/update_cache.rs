@@ -10,7 +10,10 @@
 
 use crate::ctx::Ctx;
 use crate::db;
-use crate::models::{InstanceManifest, ModVersionCandidate};
+use crate::error::{LauncherError, LauncherResult};
+use crate::models::{InstalledMod, InstanceManifest, ModVersionCandidate};
+use crate::modrinth::RawModrinthVersionCandidate;
+use crate::state::LauncherState;
 use crate::task_scheduler::BlockingPriority;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -18,10 +21,11 @@ use std::time::Duration;
 
 /// Information about an available update for an installed content item.
 ///
-/// Shape must stay identical to the Tauri `UpdateInfo` at
-/// `desktop/src-tauri/src/commands.rs:5360` and the TS interface at
-/// `desktop/src/lib/tauri.ts:633`. Changing fields without coordinating both
-/// sides breaks the IPC contract.
+/// The canonical definition: `desktop/src-tauri/src/commands.rs` re-exports
+/// this type rather than declaring its own. Shape must stay identical to the
+/// TS interface at `desktop/src/lib/tauri.ts:633` — changing fields without
+/// coordinating that side breaks the IPC contract. It is also the row
+/// serialized into `instance_update_cache`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateInfo {
     pub filename: String,
@@ -34,7 +38,9 @@ pub struct UpdateInfo {
 
 /// How long a cached candidate list is considered fresh for read-through.
 ///
-/// Mirrors `UPDATE_CANDIDATE_CACHE_TTL` at `desktop/src-tauri/src/commands.rs:5369`.
+/// Applies to both layers: the persistent `update_candidate_cache` row and the
+/// process-local `AppState::update_candidate_cache` entry the Tauri host
+/// layers over it, so neither can serve a result the other would call expired.
 pub const UPDATE_CANDIDATE_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 // ---------------------------------------------------------------------------
@@ -449,79 +455,304 @@ pub async fn sweep_all_updates(ctx: Ctx) -> Result<SweepSummary, String> {
     Ok(summary)
 }
 
-/// Check a single instance for updates using core services only (no AppHandle).
+// ---------------------------------------------------------------------------
+// Update matching rules
+// ---------------------------------------------------------------------------
+//
+// The helpers below are the *only* definition of "does this installed item
+// have an update?". Both callers -- the background sweep here and the Tauri
+// `check_instance_updates` command -- reach them through
+// `check_single_instance_updates_with`; neither re-implements them. The two
+// results drive different surfaces (the instance badge and the update panel),
+// so a second copy shows up to the user as those two disagreeing.
+// `scripts/check_architecture.py` check 9 fails the build if the adapter grows
+// its own copy again.
+
+/// How a per-item resolution failure is treated during an update check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemErrorPolicy {
+    /// Skip the failing item and keep going.
+    ///
+    /// The background sweep uses this: one unreachable source must not blank
+    /// out the rest of an otherwise-valid result for the whole instance.
+    Skip,
+    /// Abort the check and return the error.
+    ///
+    /// The explicit "Check for updates" button uses this, so a network failure
+    /// surfaces as an error instead of silently reading as "up to date".
+    Fail,
+}
+
+/// Caller-specific knobs for [`check_single_instance_updates_with`].
 ///
-/// Replicates the logic in `desktop/src-tauri/src/commands.rs:5403` but via
-/// `Ctx` + `Resolver`/`ModrinthService` so the core stays host-independent.
+/// Everything *not* in here is deliberately shared: the manifest read, the
+/// `(mc_version, loader)` candidates are resolved against, the GitHub token,
+/// and the matching rules are identical for both callers.
+pub struct UpdateCheckOptions<'a> {
+    /// Process-local candidate cache layered above the persistent one.
+    ///
+    /// `None` for the background sweep, which runs without an `AppState`.
+    pub memory_cache: Option<&'a LauncherState>,
+    /// What to do when one item's candidate lookup fails.
+    pub on_item_error: ItemErrorPolicy,
+}
+
+impl UpdateCheckOptions<'_> {
+    /// Defaults for the background sweep: no in-memory layer, skip bad items.
+    pub fn sweep() -> Self {
+        Self {
+            memory_cache: None,
+            on_item_error: ItemErrorPolicy::Skip,
+        }
+    }
+}
+
+/// Map a manifest `content_type` to the Modrinth project type used for listing.
+fn modrinth_project_type(content_type: &str) -> &'static str {
+    match content_type {
+        "resourcepack" | "resourcepacks" => "resourcepack",
+        "shader" | "shaders" | "shaderpack" | "shaderpacks" => "shader",
+        "datapack" | "datapacks" => "datapack",
+        "world" | "worlds" => "modpack",
+        _ => "mod",
+    }
+}
+
+/// Decide whether a raw-Modrinth item has an update available.
+///
+/// `None` means "already current": the installed version matches either the
+/// Modrinth version id or its display version *and* the filename is unchanged.
+/// Both are accepted because older manifests recorded whichever of the two the
+/// install path happened to have.
+fn raw_modrinth_update(
+    installed: &InstalledMod,
+    project_id: &str,
+    candidate: &RawModrinthVersionCandidate,
+) -> Option<UpdateInfo> {
+    let current = installed.version.as_deref().unwrap_or("");
+    if (current == candidate.version_id || current == candidate.version)
+        && installed.filename == candidate.filename
+    {
+        return None;
+    }
+    Some(UpdateInfo {
+        filename: installed.filename.clone(),
+        mod_jar_id: project_id.to_string(),
+        current_version: installed
+            .version
+            .clone()
+            .unwrap_or_else(|| "unknown".into()),
+        latest_version: candidate.version.clone(),
+        // Raw Modrinth installs address a version by its opaque id, not its
+        // display string.
+        target_version: candidate.version_id.clone(),
+        source: installed.source.clone(),
+    })
+}
+
+/// Pick the candidate an update check compares against: the newest compatible
+/// one, falling back to the newest overall when none is marked compatible.
+fn pick_curated_candidate(candidates: &[ModVersionCandidate]) -> Option<&ModVersionCandidate> {
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_compatible)
+        .or_else(|| candidates.first())
+}
+
+/// Decide whether a curated item has an update available.
+///
+/// `None` means "already current", which requires version, filename *and* hash
+/// to agree. A candidate carrying no `sha256` counts as matching, so a source
+/// that omits hashes cannot manufacture a phantom update.
+fn curated_update(
+    installed: &InstalledMod,
+    registry_id: &str,
+    candidate: &ModVersionCandidate,
+) -> Option<UpdateInfo> {
+    let same_version = installed.version.as_deref() == Some(candidate.version.as_str());
+    let same_filename = installed.filename == candidate.filename;
+    let same_hash = candidate
+        .sha256
+        .as_deref()
+        .map(|hash| hash.eq_ignore_ascii_case(&installed.sha256))
+        .unwrap_or(true);
+    if same_version && same_filename && same_hash {
+        return None;
+    }
+    Some(UpdateInfo {
+        filename: installed.filename.clone(),
+        mod_jar_id: registry_id.to_string(),
+        current_version: installed
+            .version
+            .clone()
+            .unwrap_or_else(|| "unknown".into()),
+        latest_version: candidate.version.clone(),
+        // Curated installs address a version by its display string.
+        target_version: candidate.version.clone(),
+        source: installed.source.clone(),
+    })
+}
+
+/// Cache key for one curated candidate list.
+fn candidate_cache_key(source_identifier: &str, mc_version: &str, loader: &str) -> String {
+    format!("{source_identifier}\n{mc_version}\n{loader}")
+}
+
+/// Store a candidate list in the process-local cache.
+async fn store_candidates_in_memory(
+    state: &LauncherState,
+    cache_key: &str,
+    candidates: &[ModVersionCandidate],
+) {
+    let mut state = state.lock().await;
+    state.update_candidate_cache.insert(
+        cache_key.to_string(),
+        crate::state::UpdateCandidateCacheEntry {
+            fetched_at: std::time::Instant::now(),
+            candidates: candidates.to_vec(),
+        },
+    );
+}
+
+/// Resolve curated candidates through memory -> persistent -> network.
+///
+/// The in-memory layer is optional because only the Tauri host has an
+/// `AppState`; the persistent layer and the network fallback are shared, so the
+/// sweep warms the same rows the button later reads.
+async fn curated_candidates_cached(
+    ctx: &Ctx,
+    resolver: &crate::resolver::Resolver,
+    item: &crate::registry::RegistryItem,
+    mc_version: &str,
+    loader: &str,
+    memory_cache: Option<&LauncherState>,
+) -> LauncherResult<Vec<ModVersionCandidate>> {
+    let cache_key = candidate_cache_key(&item.source_identifier, mc_version, loader);
+
+    // 1) Process-local fast path (5-minute TTL).
+    if let Some(state) = memory_cache {
+        let hit = {
+            let state = state.lock().await;
+            state
+                .update_candidate_cache
+                .get(&cache_key)
+                .filter(|entry| entry.fetched_at.elapsed() < UPDATE_CANDIDATE_CACHE_TTL)
+                .map(|entry| entry.candidates.clone())
+        };
+        if let Some(candidates) = hit {
+            return Ok(candidates);
+        }
+    }
+
+    // 2) Persistent read-through, so a restart does not force network.
+    if let Ok(conn) = db::local_state_connection(&ctx.paths.local_state_db()) {
+        if let Ok(Some(candidates)) = get_cached_candidates(&conn, &cache_key) {
+            if let Some(state) = memory_cache {
+                store_candidates_in_memory(state, &cache_key, &candidates).await;
+            }
+            return Ok(candidates);
+        }
+    }
+
+    // 3) Network.
+    let candidates = resolver
+        .list_curated_versions_for_update(item, mc_version, loader)
+        .await?;
+
+    if let Some(state) = memory_cache {
+        store_candidates_in_memory(state, &cache_key, &candidates).await;
+    }
+    if let Ok(conn) = db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = set_cached_candidates(&conn, &cache_key, &candidates);
+    }
+    Ok(candidates)
+}
+
+/// Check a single instance for updates with the background sweep's policy.
 pub async fn check_single_instance_updates(
     ctx: &Ctx,
     instance_id: &str,
-) -> anyhow::Result<Vec<UpdateInfo>> {
-    // Validate and resolve manifest path via core AppPaths.
-    let manifest_path = ctx
-        .paths
-        .instance_manifest(instance_id)
-        .map_err(|e| anyhow::anyhow!("invalid instance id: {e}"))?;
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| anyhow::anyhow!("could not read manifest: {e}"))?;
-    let manifest: InstanceManifest = serde_json::from_str(&manifest_text)
-        .map_err(|e| anyhow::anyhow!("could not parse manifest: {e}"))?;
+) -> LauncherResult<Vec<UpdateInfo>> {
+    check_single_instance_updates_with(ctx, instance_id, UpdateCheckOptions::sweep()).await
+}
+
+/// Check a single instance for updates using core services only (no AppHandle).
+///
+/// This is the one implementation. `check_instance_updates` in
+/// `desktop/src-tauri/src/commands.rs` is a thin wrapper over it that supplies
+/// the in-memory cache layer and [`ItemErrorPolicy::Fail`]; the background
+/// sweep calls it with [`UpdateCheckOptions::sweep`].
+pub async fn check_single_instance_updates_with(
+    ctx: &Ctx,
+    instance_id: &str,
+    opts: UpdateCheckOptions<'_>,
+) -> LauncherResult<Vec<UpdateInfo>> {
+    let instance_id = crate::paths::sanitize_id(instance_id);
+    let manifest_path = ctx.paths.instance_manifest(&instance_id)?;
+    let manifest_text =
+        std::fs::read_to_string(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)?;
+    let manifest: InstanceManifest =
+        serde_json::from_str(&manifest_text).map_err(|_| LauncherError::LocalStateFailed)?;
+
+    // Resolve candidates against the instance row rather than the manifest.
+    // `ModrinthService::list_raw_modrinth_versions` already scopes to the row,
+    // so reading it here keeps the curated and raw branches targeting the same
+    // (mc_version, loader) -- and keeps the candidate cache key consistent with
+    // the values the candidates were actually resolved for.
+    let instance = crate::instance_service::InstanceService::new(ctx.clone())
+        .get(&instance_id)?
+        .ok_or_else(|| LauncherError::Generic {
+            code: "ERR_INSTANCE_NOT_FOUND".into(),
+            message: format!("Instance '{instance_id}' not found."),
+        })?
+        .row;
+
+    // A stored GitHub token lifts the anonymous rate limit for
+    // github_release-sourced items; without it a curated check can silently see
+    // a truncated release list.
+    let resolver = {
+        let base = crate::resolver::Resolver::new(ctx.clone());
+        match crate::auth::get_valid_access_token().await {
+            Some(token) => base.with_stored_github_token(token),
+            None => base,
+        }
+    };
 
     let mut updates = Vec::new();
-
-    // We need the instance row for mc_version/loader only for Modrinth candidates
-    // that scope to instance. The manifest already carries those, so we can skip DB read.
-
-    let all_mods = manifest
+    for installed in manifest
         .mods
         .iter()
         .chain(manifest.resourcepacks.iter())
         .chain(manifest.shaders.iter())
         .chain(manifest.datapacks.iter())
-        .chain(manifest.worlds.iter());
-
-    for installed in all_mods {
+        .chain(manifest.worlds.iter())
+    {
         if let Some(project_id) = installed
             .modrinth_id
             .as_deref()
             .filter(|_| installed.source == "modrinth_raw")
         {
-            let project_type = match installed.content_type.as_str() {
-                "resourcepack" | "resourcepacks" => "resourcepack",
-                "shader" | "shaders" | "shaderpack" | "shaderpacks" => "shader",
-                "datapack" | "datapacks" => "datapack",
-                "world" | "worlds" => "modpack",
-                _ => "mod",
-            };
-            // Use ModrinthService (core) instead of desktop adapter.
             let svc = crate::modrinth::ModrinthService::new(ctx.clone());
             let candidates = match svc
-                .list_raw_modrinth_versions(Some(instance_id), project_id, Some(project_type))
+                .list_raw_modrinth_versions(
+                    Some(&instance_id),
+                    project_id,
+                    Some(modrinth_project_type(&installed.content_type)),
+                )
                 .await
             {
-                Ok(c) => c,
-                Err(_) => continue,
+                Ok(candidates) => candidates,
+                Err(err) => match opts.on_item_error {
+                    ItemErrorPolicy::Skip => continue,
+                    ItemErrorPolicy::Fail => return Err(err),
+                },
             };
             let Some(candidate) = candidates.first() else {
                 continue;
             };
-            let current = installed.version.as_deref().unwrap_or("");
-            if (current == candidate.version_id || current == candidate.version)
-                && installed.filename == candidate.filename
-            {
-                continue;
+            if let Some(info) = raw_modrinth_update(installed, project_id, candidate) {
+                updates.push(info);
             }
-            updates.push(UpdateInfo {
-                filename: installed.filename.clone(),
-                mod_jar_id: project_id.to_string(),
-                current_version: installed
-                    .version
-                    .clone()
-                    .unwrap_or_else(|| "unknown".into()),
-                latest_version: candidate.version.clone(),
-                target_version: candidate.version_id.clone(),
-                source: installed.source.clone(),
-            });
             continue;
         }
 
@@ -529,57 +760,47 @@ pub async fn check_single_instance_updates(
             continue;
         };
 
-        // Curated path: resolver via core.
-        let item = {
-            // Registry DB is separate; open it read-only.
-            let reg_conn = match db::registry_connection(&ctx.paths.registry_db()) {
-                Ok(c) => c,
-                Err(_) => continue,
+        let item =
+            match crate::registry::RegistryService::new(ctx.clone()).get_item_by_id(registry_id) {
+                Ok(Some(item)) => item,
+                Ok(None) => match opts.on_item_error {
+                    ItemErrorPolicy::Skip => continue,
+                    ItemErrorPolicy::Fail => {
+                        return Err(LauncherError::Generic {
+                            code: "ERR_ITEM_NOT_FOUND".into(),
+                            message: format!("Registry item '{registry_id}' not found."),
+                        })
+                    }
+                },
+                Err(err) => match opts.on_item_error {
+                    ItemErrorPolicy::Skip => continue,
+                    ItemErrorPolicy::Fail => return Err(err),
+                },
             };
-            // Load item from registry. If not found, skip.
-            match crate::registry::get_item_by_id(&reg_conn, registry_id) {
-                Ok(Some(it)) => it,
-                _ => continue,
-            }
+
+        let candidates = match curated_candidates_cached(
+            ctx,
+            &resolver,
+            &item,
+            &instance.minecraft_version,
+            &instance.loader,
+            opts.memory_cache,
+        )
+        .await
+        {
+            Ok(candidates) => candidates,
+            Err(err) => match opts.on_item_error {
+                ItemErrorPolicy::Skip => continue,
+                ItemErrorPolicy::Fail => return Err(err),
+            },
         };
 
-        // Build resolver and list candidates. Use bounded (update) path.
-        let resolver = crate::resolver::Resolver::new(ctx.clone());
-        let candidates = match resolver
-            .list_curated_versions_for_update(&item, &manifest.minecraft_version, &manifest.loader)
-            .await
-        {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let Some(candidate) = candidates
-            .iter()
-            .find(|c| c.is_compatible)
-            .or_else(|| candidates.first())
-        else {
+        let Some(candidate) = pick_curated_candidate(&candidates) else {
             continue;
         };
-        let same_version = installed.version.as_deref() == Some(candidate.version.as_str());
-        let same_filename = installed.filename == candidate.filename;
-        let same_hash = candidate
-            .sha256
-            .as_deref()
-            .map(|h| h.eq_ignore_ascii_case(&installed.sha256))
-            .unwrap_or(true);
-        if same_version && same_filename && same_hash {
-            continue;
+        if let Some(info) = curated_update(installed, registry_id, candidate) {
+            updates.push(info);
         }
-        updates.push(UpdateInfo {
-            filename: installed.filename.clone(),
-            mod_jar_id: registry_id.to_string(),
-            current_version: installed
-                .version
-                .clone()
-                .unwrap_or_else(|| "unknown".into()),
-            latest_version: candidate.version.clone(),
-            target_version: candidate.version.clone(),
-            source: installed.source.clone(),
-        });
     }
 
     Ok(updates)
@@ -816,5 +1037,225 @@ mod tests {
         // Future timestamp is not stale (clock skew)
         let future = (now + chrono::Duration::hours(1)).to_rfc3339();
         assert!(!is_checked_at_stale(Some(&future), 12, now));
+    }
+
+    // -----------------------------------------------------------------------
+    // Matching rules
+    // -----------------------------------------------------------------------
+    //
+    // These cover the rules that used to be duplicated between
+    // `check_single_instance_updates` (background sweep -> instance badge) and
+    // the Tauri `check_instance_updates` command (-> update panel). Both now
+    // route through `check_single_instance_updates_with`, so these assert the
+    // one shared behaviour. Fixtures go through serde rather than struct
+    // literals so a new field with a `#[serde(default)]` does not silently
+    // rewrite what is under test.
+
+    fn installed_fixture(version: Option<&str>, filename: &str, sha256: &str) -> InstalledMod {
+        serde_json::from_value(serde_json::json!({
+            "filename": filename,
+            "registry_id": "sodium",
+            "modrinth_id": null,
+            "source": "registry",
+            "version": version,
+            "sha256": sha256,
+            "installed_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("installed mod fixture")
+    }
+
+    fn curated_fixture(
+        version: &str,
+        filename: &str,
+        sha256: Option<&str>,
+        is_compatible: bool,
+    ) -> ModVersionCandidate {
+        serde_json::from_value(serde_json::json!({
+            "version": version,
+            "filename": filename,
+            "download_url": "https://example.invalid/a.jar",
+            "mc_version": "1.21",
+            "loader": "fabric",
+            "release_date": null,
+            "is_compatible": is_compatible,
+            "sha256": sha256,
+        }))
+        .expect("curated candidate fixture")
+    }
+
+    fn raw_fixture(version: &str, version_id: &str, filename: &str) -> RawModrinthVersionCandidate {
+        serde_json::from_value(serde_json::json!({
+            "version": version,
+            "version_id": version_id,
+            "name": version,
+            "filename": filename,
+            "download_url": "https://example.invalid/a.jar",
+            "sha1": null,
+            "sha512": null,
+            "size": null,
+            "dependencies": [],
+            "mc_versions": ["1.21"],
+            "loaders": ["fabric"],
+            "release_date": null,
+            "primary": true,
+            "changelog": null,
+        }))
+        .expect("raw modrinth candidate fixture")
+    }
+
+    #[test]
+    fn raw_modrinth_current_when_version_id_and_filename_match() {
+        let installed = installed_fixture(Some("abc123"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = raw_fixture("0.5.0", "abc123", "sodium-0.5.0.jar");
+        assert_eq!(
+            raw_modrinth_update(&installed, "AANobbMI", &candidate),
+            None
+        );
+    }
+
+    #[test]
+    fn raw_modrinth_current_when_display_version_and_filename_match() {
+        // Older manifests recorded the display version rather than the id.
+        let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = raw_fixture("0.5.0", "abc123", "sodium-0.5.0.jar");
+        assert_eq!(
+            raw_modrinth_update(&installed, "AANobbMI", &candidate),
+            None
+        );
+    }
+
+    #[test]
+    fn raw_modrinth_updates_when_only_filename_differs() {
+        // A matching version with a different file is still a change on disk.
+        let installed = installed_fixture(Some("abc123"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = raw_fixture("0.5.0", "abc123", "sodium-0.5.0+fix.jar");
+        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate).expect("update");
+        assert_eq!(info.latest_version, "0.5.0");
+        // Raw installs address a version by its opaque id.
+        assert_eq!(info.target_version, "abc123");
+    }
+
+    #[test]
+    fn raw_modrinth_update_reports_ids_and_versions() {
+        let installed = installed_fixture(Some("abc123"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = raw_fixture("0.6.0", "xyz789", "sodium-0.6.0.jar");
+        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate).expect("update");
+        assert_eq!(info.filename, "sodium-0.5.0.jar");
+        assert_eq!(info.mod_jar_id, "AANobbMI");
+        assert_eq!(info.current_version, "abc123");
+        assert_eq!(info.latest_version, "0.6.0");
+        assert_eq!(info.target_version, "xyz789");
+        assert_eq!(info.source, "registry");
+    }
+
+    #[test]
+    fn raw_modrinth_unknown_current_version_when_manifest_has_none() {
+        let installed = installed_fixture(None, "sodium-0.5.0.jar", "deadbeef");
+        let candidate = raw_fixture("0.6.0", "xyz789", "sodium-0.6.0.jar");
+        let info = raw_modrinth_update(&installed, "AANobbMI", &candidate).expect("update");
+        assert_eq!(info.current_version, "unknown");
+    }
+
+    #[test]
+    fn curated_current_when_version_filename_and_hash_all_match() {
+        let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "DEADBEEF");
+        // Hash comparison is case-insensitive.
+        let candidate = curated_fixture("0.5.0", "sodium-0.5.0.jar", Some("deadbeef"), true);
+        assert_eq!(curated_update(&installed, "sodium", &candidate), None);
+    }
+
+    #[test]
+    fn curated_updates_when_only_the_hash_differs() {
+        // Same version and filename, repacked artifact: still an update.
+        let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = curated_fixture("0.5.0", "sodium-0.5.0.jar", Some("cafebabe"), true);
+        let info = curated_update(&installed, "sodium", &candidate).expect("update");
+        // Curated installs address a version by its display string.
+        assert_eq!(info.target_version, "0.5.0");
+        assert_eq!(info.latest_version, "0.5.0");
+    }
+
+    #[test]
+    fn curated_missing_candidate_hash_counts_as_matching() {
+        // A source that publishes no hash must not manufacture a phantom
+        // update on every check.
+        let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = curated_fixture("0.5.0", "sodium-0.5.0.jar", None, true);
+        assert_eq!(curated_update(&installed, "sodium", &candidate), None);
+    }
+
+    #[test]
+    fn curated_update_reports_ids_and_versions() {
+        let installed = installed_fixture(Some("0.5.0"), "sodium-0.5.0.jar", "deadbeef");
+        let candidate = curated_fixture("0.6.0", "sodium-0.6.0.jar", Some("cafebabe"), true);
+        let info = curated_update(&installed, "sodium", &candidate).expect("update");
+        assert_eq!(info.filename, "sodium-0.5.0.jar");
+        assert_eq!(info.mod_jar_id, "sodium");
+        assert_eq!(info.current_version, "0.5.0");
+        assert_eq!(info.latest_version, "0.6.0");
+        assert_eq!(info.target_version, "0.6.0");
+        assert_eq!(info.source, "registry");
+    }
+
+    #[test]
+    fn curated_candidate_prefers_first_compatible() {
+        let candidates = vec![
+            curated_fixture("0.7.0", "sodium-0.7.0.jar", None, false),
+            curated_fixture("0.6.0", "sodium-0.6.0.jar", None, true),
+            curated_fixture("0.5.0", "sodium-0.5.0.jar", None, true),
+        ];
+        let picked = pick_curated_candidate(&candidates).expect("candidate");
+        assert_eq!(picked.version, "0.6.0");
+    }
+
+    #[test]
+    fn curated_candidate_falls_back_to_first_when_none_compatible() {
+        let candidates = vec![
+            curated_fixture("0.7.0", "sodium-0.7.0.jar", None, false),
+            curated_fixture("0.6.0", "sodium-0.6.0.jar", None, false),
+        ];
+        let picked = pick_curated_candidate(&candidates).expect("candidate");
+        assert_eq!(picked.version, "0.7.0");
+    }
+
+    #[test]
+    fn curated_candidate_none_for_empty_list() {
+        assert!(pick_curated_candidate(&[]).is_none());
+    }
+
+    #[test]
+    fn modrinth_project_type_maps_every_manifest_content_type() {
+        // These are the `content_type` values `InstalledMod` can carry, plus
+        // the plural spellings older manifests used.
+        assert_eq!(modrinth_project_type("mod"), "mod");
+        assert_eq!(modrinth_project_type("resourcepack"), "resourcepack");
+        assert_eq!(modrinth_project_type("resourcepacks"), "resourcepack");
+        assert_eq!(modrinth_project_type("shader"), "shader");
+        assert_eq!(modrinth_project_type("shaders"), "shader");
+        assert_eq!(modrinth_project_type("shaderpack"), "shader");
+        assert_eq!(modrinth_project_type("shaderpacks"), "shader");
+        assert_eq!(modrinth_project_type("datapack"), "datapack");
+        assert_eq!(modrinth_project_type("datapacks"), "datapack");
+        assert_eq!(modrinth_project_type("world"), "modpack");
+        assert_eq!(modrinth_project_type("worlds"), "modpack");
+        // Anything unrecognised is treated as a mod.
+        assert_eq!(modrinth_project_type("something-new"), "mod");
+    }
+
+    #[test]
+    fn candidate_cache_key_separates_its_parts() {
+        let key = candidate_cache_key("owner/repo", "1.21", "fabric");
+        assert_eq!(key, "owner/repo\n1.21\nfabric");
+        // Distinct (mc_version, loader) targets must not collide.
+        assert_ne!(key, candidate_cache_key("owner/repo", "1.21", "forge"));
+        assert_ne!(key, candidate_cache_key("owner/repo", "1.20", "fabric"));
+    }
+
+    #[test]
+    fn sweep_options_skip_failing_items() {
+        // The sweep must not let one unreachable source blank an instance.
+        let opts = UpdateCheckOptions::sweep();
+        assert_eq!(opts.on_item_error, ItemErrorPolicy::Skip);
+        assert!(opts.memory_cache.is_none());
     }
 }

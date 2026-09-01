@@ -5361,186 +5361,34 @@ pub async fn cancel_install(app: tauri::AppHandle, plan_id: String) -> LauncherR
 /// also the row serialized into `instance_update_cache`.
 pub use agora_core::update_cache::UpdateInfo;
 
-const UPDATE_CANDIDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
-async fn cached_curated_update_candidates(
-    state: &LauncherState,
-    app: &tauri::AppHandle,
-    instance_id: &str,
-    item_id: &str,
-    cache_key: String,
-) -> LauncherResult<Vec<ModVersionCandidate>> {
-    // 1) In-memory fast path (5-min TTL).
-    let cached = {
-        let state = state.lock().await;
-        state
-            .update_candidate_cache
-            .get(&cache_key)
-            .filter(|entry| entry.fetched_at.elapsed() < UPDATE_CANDIDATE_CACHE_TTL)
-            .map(|entry| entry.candidates.clone())
-    };
-    if let Some(candidates) = cached {
-        return Ok(candidates);
-    }
-
-    // 2) Persistent read-through (DB) so a restart does not force network.
-    if let Ok(ctx) = crate::core_context(app) {
-        if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-            if let Ok(Some(candidates)) =
-                agora_core::update_cache::get_cached_candidates(&conn, &cache_key)
-            {
-                let mut state = state.lock().await;
-                state.update_candidate_cache.insert(
-                    cache_key.clone(),
-                    agora_core::state::UpdateCandidateCacheEntry {
-                        fetched_at: std::time::Instant::now(),
-                        candidates: candidates.clone(),
-                    },
-                );
-                return Ok(candidates);
-            }
-        }
-    }
-
-    let candidates = mod_install::list_mod_versions_for_update(app, instance_id, item_id).await?;
-
-    // 3) Populate both layers (memory + DB).
-    {
-        let mut state = state.lock().await;
-        state.update_candidate_cache.insert(
-            cache_key.clone(),
-            agora_core::state::UpdateCandidateCacheEntry {
-                fetched_at: std::time::Instant::now(),
-                candidates: candidates.clone(),
-            },
-        );
-    }
-    if let Ok(ctx) = crate::core_context(app) {
-        if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
-            let _ = agora_core::update_cache::set_cached_candidates(&conn, &cache_key, &candidates);
-        }
-    }
-    Ok(candidates)
-}
-
 /// Check for available updates for all tracked content in an instance.
 ///
-/// Resolves the newest compatible, verified candidate for each tracked item.
+/// Thin wrapper over `agora_core::update_cache::check_single_instance_updates_with`,
+/// which is the single implementation of the matching rules -- the background
+/// sweep (`sweep_all_updates`) drives the instance badge from that same code, so
+/// the badge and this panel cannot disagree. All this adds is the process-local
+/// candidate cache layered over core's persistent one, and the stricter error
+/// policy an explicit user action needs: a failed lookup must surface as an
+/// error here rather than read as "up to date".
 #[tauri::command]
 pub async fn check_instance_updates(
     app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<Vec<UpdateInfo>> {
-    use crate::models::InstanceManifest;
-    use crate::paths;
-
     let ctx = crate::core_context(&app)?;
+    let sanitized = crate::paths::sanitize_id(&instance_id);
     let shared_state = state.inner().clone();
-    let sanitized = paths::sanitize_id(&instance_id);
-    let manifest_path = paths::instance_manifest_path(&app, &sanitized)
-        .map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest_text =
-        std::fs::read_to_string(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest: InstanceManifest =
-        serde_json::from_str(&manifest_text).map_err(|_| LauncherError::LocalStateFailed)?;
 
-    let mut updates = Vec::new();
-    for installed_mod in manifest
-        .mods
-        .iter()
-        .chain(manifest.resourcepacks.iter())
-        .chain(manifest.shaders.iter())
-        .chain(manifest.datapacks.iter())
-        .chain(manifest.worlds.iter())
-    {
-        if let Some(project_id) = installed_mod
-            .modrinth_id
-            .as_deref()
-            .filter(|_| installed_mod.source == "modrinth_raw")
-        {
-            let candidates = modrinth_raw::list_raw_modrinth_versions(
-                &ctx.http_clients,
-                &app,
-                Some(&sanitized),
-                project_id,
-                Some(match installed_mod.content_type.as_str() {
-                    "resourcepack" | "resourcepacks" => "resourcepack",
-                    "shader" | "shaders" | "shaderpack" | "shaderpacks" => "shader",
-                    "datapack" | "datapacks" => "datapack",
-                    "world" | "worlds" => "modpack",
-                    _ => "mod",
-                }),
-            )
-            .await?;
-            let Some(candidate) = candidates.first() else {
-                continue;
-            };
-            let current = installed_mod.version.as_deref().unwrap_or("");
-            if (current == candidate.version_id || current == candidate.version)
-                && installed_mod.filename == candidate.filename
-            {
-                continue;
-            }
-            updates.push(UpdateInfo {
-                filename: installed_mod.filename.clone(),
-                mod_jar_id: project_id.to_string(),
-                current_version: installed_mod
-                    .version
-                    .clone()
-                    .unwrap_or_else(|| "unknown".into()),
-                latest_version: candidate.version.clone(),
-                target_version: candidate.version_id.clone(),
-                source: installed_mod.source.clone(),
-            });
-            continue;
-        }
-
-        let Some(registry_id) = installed_mod.registry_id.as_deref() else {
-            continue;
-        };
-        let item = mod_install::load_registry_item(&app, registry_id)?;
-        let cache_key = format!(
-            "{}\n{}\n{}",
-            item.source_identifier, manifest.minecraft_version, manifest.loader
-        );
-        let candidates = cached_curated_update_candidates(
-            &shared_state,
-            &app,
-            &sanitized,
-            registry_id,
-            cache_key,
-        )
-        .await?;
-        let Some(candidate) = candidates
-            .iter()
-            .find(|candidate| candidate.is_compatible)
-            .or_else(|| candidates.first())
-        else {
-            continue;
-        };
-        let same_version = installed_mod.version.as_deref() == Some(candidate.version.as_str());
-        let same_filename = installed_mod.filename == candidate.filename;
-        let same_hash = candidate
-            .sha256
-            .as_deref()
-            .map(|hash| hash.eq_ignore_ascii_case(&installed_mod.sha256))
-            .unwrap_or(true);
-        if same_version && same_filename && same_hash {
-            continue;
-        }
-        updates.push(UpdateInfo {
-            filename: installed_mod.filename.clone(),
-            mod_jar_id: registry_id.to_string(),
-            current_version: installed_mod
-                .version
-                .clone()
-                .unwrap_or_else(|| "unknown".into()),
-            latest_version: candidate.version.clone(),
-            target_version: candidate.version.clone(),
-            source: installed_mod.source.clone(),
-        });
-    }
+    let updates = agora_core::update_cache::check_single_instance_updates_with(
+        &ctx,
+        &sanitized,
+        agora_core::update_cache::UpdateCheckOptions {
+            memory_cache: Some(&shared_state),
+            on_item_error: agora_core::update_cache::ItemErrorPolicy::Fail,
+        },
+    )
+    .await?;
 
     // Persist so the result survives restart and can be read back without network.
     if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
