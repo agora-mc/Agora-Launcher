@@ -72,6 +72,8 @@ export interface InstalledContentPanelProps {
   onApplyUpdate?: (row: InstalledContentRow, update: UpdateInfo) => void;
   /** Apply every available update for this panel as one reviewed transaction. */
   onUpdateAll?: (updates: UpdateInfo[]) => void;
+  /** Pin or unpin a row against updates. */
+  onTogglePin?: (row: InstalledContentRow, pinned: boolean) => void;
   /**
    * Last persisted update check, read from cache so results survive navigation
    * and restart. Must be a stable reference — a fresh array each render would

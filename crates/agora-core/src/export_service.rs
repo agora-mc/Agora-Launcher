@@ -245,6 +245,7 @@ mod tests {
             loader_version: "0.16".into(),
             is_locked: false,
             mods: vec![crate::models::InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: "test.jar".into(),
                 registry_id: None,

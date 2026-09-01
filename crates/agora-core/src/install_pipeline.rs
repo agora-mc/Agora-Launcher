@@ -1595,11 +1595,8 @@ impl InstallPipeline {
             let cache_result =
                 run_blocking_phase(scheduler, "install JAR metadata precompute", move || {
                     let manifest_path = cache_dir.join("instance_manifest.json");
-                    let manifest_text = std::fs::read_to_string(&manifest_path)
-                        .map_err(|error| format!("committed manifest is unreadable ({error})"))?;
-                    let manifest: crate::models::InstanceManifest =
-                        serde_json::from_str(&manifest_text)
-                            .map_err(|error| format!("committed manifest is invalid ({error})"))?;
+                    let manifest = crate::helpers::read_manifest(&manifest_path)
+                        .map_err(|e| format!("Cannot read instance manifest: {e}"))?;
                     crate::health::precompute_jar_metadata_cache(&cache_dir, &manifest)
                 })
                 .await;
@@ -1614,14 +1611,10 @@ impl InstallPipeline {
             let health_registry = registry_db_path.map(Path::to_path_buf);
             let report =
                 match run_blocking_phase(scheduler, "post-install health scan", move || {
-                    let manifest_text =
-                        std::fs::read_to_string(health_dir.join("instance_manifest.json"))
-                            .map_err(|error| {
-                                format!("Committed manifest is unreadable ({error})")
-                            })?;
-                    let manifest: crate::models::InstanceManifest =
-                        serde_json::from_str(&manifest_text)
-                            .map_err(|error| format!("Committed manifest is invalid ({error})"))?;
+                    let manifest = crate::helpers::read_manifest(
+                        &health_dir.join("instance_manifest.json"),
+                    )
+                    .map_err(|error| format!("Committed manifest is unreadable ({error})"))?;
                     // The post-commit health pass is already part of the
                     // install's longer-running work.  Use the cache-aware
                     // path so this scan publishes both the durable report
@@ -2626,6 +2619,7 @@ fn prepare_manifest(
         };
         let sha256 = crate::download::sha256_hex(&contents);
         let installed = crate::models::InstalledMod {
+            update_pinned: false,
             // Individual install through the transaction pipeline. Pack-driven
             // installs stamp their own provenance; see PackOrigin.
             pack_managed: false,
@@ -4250,6 +4244,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         let manifest_path = instance_dir.join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.is_locked = true;
@@ -4472,9 +4468,12 @@ mod tests {
         let file_path = instance_dir.join("mods").join(filename);
         std::fs::write(&file_path, contents).unwrap();
         let manifest_path = instance_dir.join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.mods.push(crate::models::InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: filename.into(),
             registry_id: Some(item_id.into()),
@@ -4964,6 +4963,8 @@ mod tests {
 
         assert!(matches!(outcome, InstallOutcome::Failed { .. }));
         assert!(!instance_dir.join("mods/needy.jar").exists());
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.loader, "fabric");

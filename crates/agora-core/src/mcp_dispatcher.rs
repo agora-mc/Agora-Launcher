@@ -1631,6 +1631,7 @@ mod tests {
             mods: mod_filenames
                 .iter()
                 .map(|fname| crate::models::InstalledMod {
+                    update_pinned: false,
                     pack_managed: false,
                     filename: fname.to_string(),
                     registry_id: None,
@@ -1963,6 +1964,7 @@ Exception in thread \"main\" java.lang.RuntimeException: Test
             mods: mods
                 .iter()
                 .map(|(fname, packages)| crate::models::InstalledMod {
+                    update_pinned: false,
                     pack_managed: false,
                     filename: fname.to_string(),
                     registry_id: Some(fname.trim_end_matches(".jar").to_string()),

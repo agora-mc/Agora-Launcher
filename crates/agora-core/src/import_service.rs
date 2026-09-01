@@ -1050,9 +1050,13 @@ mod tests {
             .instance_dir("rt-pack")
             .unwrap()
             .join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: crate::models::InstanceManifest =
             serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
         let serialized = serde_json::to_string_pretty(&manifest).unwrap();
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let deserialized: crate::models::InstanceManifest =
             serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized.instance_id, manifest.instance_id);
@@ -1300,6 +1304,8 @@ mod tests {
             .instance_dir("Service-Pack")
             .unwrap()
             .join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: crate::models::InstanceManifest =
             serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
         let origin = manifest.pack_origin.expect("service must stamp PackOrigin");
@@ -1368,6 +1374,8 @@ mod tests {
             .instance_dir("Solder-Service-Pack")
             .unwrap()
             .join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: crate::models::InstanceManifest =
             serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
         let origin = manifest.pack_origin.expect("solder must stamp PackOrigin");

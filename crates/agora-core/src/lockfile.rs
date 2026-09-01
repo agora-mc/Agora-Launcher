@@ -358,15 +358,12 @@ fn verify_signature(content_hash: &str, signature: &LockfileSignature) -> Result
 /// shaderpacks, datapacks, saves/worlds), computes SHA-256 for every artifact,
 /// and produces a privacy-preserving lockfile (no config file contents).
 pub fn build_from_instance(instance_dir: &std::path::Path) -> Result<InstanceLockfile, String> {
-    use crate::models::InstanceManifest;
     use std::collections::BTreeMap;
     use std::fs;
 
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = fs::read_to_string(&manifest_path)
+    let manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("Cannot read instance manifest: {e}"))?;
-    let manifest: InstanceManifest =
-        serde_json::from_str(&text).map_err(|e| format!("Cannot parse manifest: {e}"))?;
 
     let content_dirs: BTreeMap<&str, &[crate::models::InstalledMod]> = BTreeMap::from([
         ("mods", manifest.mods.as_slice()),

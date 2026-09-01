@@ -211,6 +211,7 @@ mod tests {
         let mods: Vec<InstalledMod> = mod_files
             .iter()
             .map(|f| InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: f.to_string(),
                 registry_id: None,
@@ -407,6 +408,7 @@ mod tests {
 
         let mut manifest = make_manifest(&dir, &["sodium.jar"]);
         manifest.shaders.push(InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: "bsl.zip".to_string(),
             registry_id: None,

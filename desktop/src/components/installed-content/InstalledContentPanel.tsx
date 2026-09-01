@@ -260,8 +260,10 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     }
   };
 
-  const updateForRow = (row: InstalledContentRow) => updatesByFilename[row.filename];
+  const updateForRow = (row: InstalledContentRow) =>
+    (row.update_pinned ? undefined : updatesByFilename[row.filename]);
   const updateStatusForRow = (row: InstalledContentRow) => {
+    if (row.update_pinned) return 'pinned';
     if (updateForRow(row)) return 'available';
     if (!updatesChecked) return 'unchecked';
     return row.registry_id || row.modrinth_id ? 'current' : 'unavailable';
@@ -271,8 +273,9 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
   // panel's own rows — Update All must never touch another content type.
   const availableUpdates = useMemo(
     () => rows
-      .map((row) => updatesByFilename[row.filename])
+      .map((row) => updateForRow(row))
       .filter((update): update is UpdateInfo => Boolean(update)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- updateForRow is derived from these
     [rows, updatesByFilename],
   );
 
@@ -360,7 +363,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
           </button>
         ) : null}
         <button type="button" onClick={() => props.onRemove(row)} disabled={props.locked} className="rounded p-1.5 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? 'Unlock the instance to remove content.' : `Remove ${row.display_name}`} aria-label={`Remove ${row.display_name}`}><Trash2 className="h-4 w-4" aria-hidden="true" /></button>
-        <details className="relative"><summary className="list-none rounded p-1.5 text-muted-foreground hover:bg-accent cursor-pointer" title="More actions" aria-label={`More actions for ${row.display_name}`}><MoreHorizontal className="h-4 w-4" aria-hidden="true" /></summary><div className={`absolute right-0 z-20 w-40 rounded-lg border border-border bg-card p-1 shadow-lg ${rowIndex >= visibleRows.length - 2 ? 'bottom-full mb-1' : 'top-full mt-1'}`}><button type="button" disabled={!row.resolved_path} onClick={() => props.onRevealFile?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Reveal file</button><button type="button" onClick={() => void navigator.clipboard.writeText(row.filename)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">Copy filename</button>{props.onSetCustomIcon ? <button type="button" disabled={props.locked} onClick={() => props.onSetCustomIcon?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Set custom image</button> : null}{row.registry_id || row.modrinth_id || row.mod_jar_id ? <button type="button" onClick={() => props.onOpenDetails?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">View details</button> : null}</div></details>
+        <details className="relative"><summary className="list-none rounded p-1.5 text-muted-foreground hover:bg-accent cursor-pointer" title="More actions" aria-label={`More actions for ${row.display_name}`}><MoreHorizontal className="h-4 w-4" aria-hidden="true" /></summary><div className={`absolute right-0 z-20 w-40 rounded-lg border border-border bg-card p-1 shadow-lg ${rowIndex >= visibleRows.length - 2 ? 'bottom-full mb-1' : 'top-full mt-1'}`}><button type="button" disabled={!row.resolved_path} onClick={() => props.onRevealFile?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Reveal file</button><button type="button" onClick={() => void navigator.clipboard.writeText(row.filename)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">Copy filename</button>{props.onTogglePin ? <button type="button" disabled={props.locked} onClick={() => props.onTogglePin?.(row, !row.update_pinned)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50" title={row.update_pinned ? 'Include this again in Update All' : 'Keep this version; skip it in Update All'}>{row.update_pinned ? 'Unpin updates' : 'Pin updates'}</button> : null}{props.onSetCustomIcon ? <button type="button" disabled={props.locked} onClick={() => props.onSetCustomIcon?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Set custom image</button> : null}{row.registry_id || row.modrinth_id || row.mod_jar_id ? <button type="button" onClick={() => props.onOpenDetails?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">View details</button> : null}</div></details>
       </div></td>;
       }
       case 'version': return <td key={column} className="px-3 py-2 text-sm">{row.version ?? 'Unknown'}</td>;
@@ -376,6 +379,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
           {status === 'current' ? <span className="text-muted-foreground">Up to date</span> : null}
           {status === 'unavailable' ? <span className="text-muted-foreground">Unavailable</span> : null}
           {status === 'unchecked' ? <span className="text-muted-foreground">Not checked</span> : null}
+          {status === 'pinned' ? <span className="text-muted-foreground">Pinned</span> : null}
         </td>;
       }
       case 'loader_mod_id': return <td key={column} className="px-3 py-2 text-xs">Unknown</td>;

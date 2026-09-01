@@ -269,6 +269,7 @@ export function Settings({
 
   const [versionSortByDate, setVersionSortByDate] = useState(false);
   const [updateSweepIntervalHours, setUpdateSweepIntervalHours] = useState<number>(12);
+  const [showUpdateChangelogs, setShowUpdateChangelogs] = useState<boolean>(true);
 
   // Sync typed settings into local state for backward-compatible render code.
   useEffect(() => {
@@ -285,6 +286,7 @@ export function Settings({
     setGlobalJavaPath((ts.values.javaPath as string) ?? '');
     setVersionSortByDate(ts.values.versionSortByDate as boolean ?? false);
     setUpdateSweepIntervalHours((ts.values.updateSweepIntervalHours as number) ?? 12);
+    setShowUpdateChangelogs((ts.values.showUpdateChangelogs as boolean) ?? true);
     setLoading(false);
   }, [ts.loading, ts.values]);
 
@@ -807,6 +809,17 @@ export function Settings({
     }
   };
 
+  const handleShowUpdateChangelogsChange = async (value: boolean) => {
+    const previous = showUpdateChangelogs;
+    setShowUpdateChangelogs(value);
+    try {
+      await ts.update(SETTINGS.showUpdateChangelogs, value);
+    } catch (e) {
+      setShowUpdateChangelogs(previous);
+      showToast(formatError(e), 'error');
+    }
+  };
+
   const handleUpdateSweepIntervalChange = async (value: number) => {
     const previous = updateSweepIntervalHours;
     setUpdateSweepIntervalHours(value);
@@ -1103,6 +1116,24 @@ export function Settings({
       </p>
       {ts.statuses['update_sweep_interval_hours']?.status === 'error' && (
         <p className="text-xs text-destructive">{ts.statuses['update_sweep_interval_hours']?.error}</p>
+      )}
+
+      <label className="mt-4 flex items-center justify-between">
+        <span className="text-sm">Show changelogs before updating</span>
+        <input
+          type="checkbox"
+          checked={showUpdateChangelogs}
+          onChange={(e) => void handleShowUpdateChangelogsChange(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+          aria-label="Show changelogs before updating"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Review what changed before an update is applied. Changelogs come from the signed registry,
+        so this works offline; mods with nothing published simply say so.
+      </p>
+      {ts.statuses['show_update_changelogs']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['show_update_changelogs']?.error}</p>
       )}
     </SettingsSection>
   );

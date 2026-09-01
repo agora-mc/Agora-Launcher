@@ -1137,6 +1137,7 @@ mod tests {
             mods: mods
                 .iter()
                 .map(|(filename, _)| InstalledMod {
+                    update_pinned: false,
                     pack_managed: false,
                     filename: filename.to_string(),
                     registry_id: None,
@@ -1304,6 +1305,8 @@ mod tests {
             "0.19.0",
         )
         .unwrap();
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let updated: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(updated.loader_version, "0.19.0");
@@ -1350,6 +1353,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "ERR_LOADER_CHANGE_CONFLICT");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let restored: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(restored.loader_version, "0.18.6");
@@ -1386,6 +1391,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "ERR_LOADER_CHANGE_CONFLICT");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let restored: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(restored.loader_version, "0.18.6");

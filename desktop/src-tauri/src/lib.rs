@@ -107,6 +107,8 @@ pub fn run() {
             commands::check_instance_updates,
             commands::get_cached_instance_updates,
             commands::get_cached_all_updates,
+            commands::get_update_changelogs,
+            commands::set_mod_update_pinned,
             commands::clear_cached_instance_updates,
             commands::get_lkg_marker,
             commands::export_lockfile,

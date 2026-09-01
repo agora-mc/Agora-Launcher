@@ -60,15 +60,7 @@ impl InstallService {
                 message: format!("Instance '{instance_id}' not found."),
             });
         }
-        let text = std::fs::read_to_string(&manifest_path).map_err(|e| LauncherError::Generic {
-            code: "ERR_MANIFEST_READ".into(),
-            message: format!("Could not read manifest: {e}"),
-        })?;
-        let manifest: InstanceManifest =
-            serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
-                code: "ERR_MANIFEST_PARSE".into(),
-                message: format!("Invalid manifest: {e}"),
-            })?;
+        let manifest = crate::helpers::read_manifest(&manifest_path)?;
         let registry_revision = self.compute_registry_revision()?;
         Ok(InstanceLoadResult {
             instance_dir,
@@ -234,15 +226,55 @@ impl InstallService {
     }
 
     /// Check that the instance is not locked.
+    /// Pin or unpin an installed entry against updates.
+    ///
+    /// A pinned entry is skipped by "Update All" and shows no update badge, but
+    /// stays installed and can still be updated deliberately. Matching is by
+    /// filename across every content array, the same identity the enable/disable
+    /// path uses.
+    ///
+    /// Returns `Ok(false)` when no entry matches, so a caller can distinguish
+    /// "nothing to do" from a write failure.
+    pub fn set_update_pinned(
+        &self,
+        instance_id: &str,
+        filename: &str,
+        pinned: bool,
+    ) -> LauncherResult<bool> {
+        let sanitized = crate::paths::sanitize_id(instance_id);
+        let _guard = self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(sanitized.clone()),
+            "set_update_pinned",
+        )?;
+        let manifest_path = self.ctx.paths.instance_manifest(&sanitized)?;
+        let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
+
+        let mut changed = false;
+        for entry in manifest
+            .mods
+            .iter_mut()
+            .chain(manifest.resourcepacks.iter_mut())
+            .chain(manifest.shaders.iter_mut())
+            .chain(manifest.datapacks.iter_mut())
+            .chain(manifest.worlds.iter_mut())
+        {
+            if entry.filename == filename && entry.update_pinned != pinned {
+                entry.update_pinned = pinned;
+                changed = true;
+            }
+        }
+        if changed {
+            crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        }
+        Ok(changed)
+    }
+
     pub fn check_not_locked(&self, instance_id: &str) -> LauncherResult<()> {
         let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
         if !manifest_path.exists() {
             return Ok(());
         }
-        let text = std::fs::read_to_string(&manifest_path)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        let manifest: InstanceManifest =
-            serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let manifest = crate::helpers::read_manifest(&manifest_path)?;
         if manifest.is_locked {
             return Err(LauncherError::InstanceLocked);
         }
@@ -315,6 +347,7 @@ impl InstallService {
             crate::jar_metadata::parse_jar_metadata_for_loader(&item_path, &manifest.loader);
 
         let installed_mod = InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: filename.to_string(),
             registry_id: registry_id.map(|s| s.to_string()),
@@ -368,10 +401,7 @@ impl InstallService {
 
         let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
         if manifest_path.exists() {
-            let text = std::fs::read_to_string(&manifest_path)
-                .map_err(|_| LauncherError::InstanceCreateFailed)?;
-            let mut manifest: InstanceManifest =
-                serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+            let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
 
             if crate::helpers::remove_from_content_array(&mut manifest, filename) {
                 crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
@@ -468,13 +498,11 @@ impl InstallService {
                 message: "Instance manifest not found. Create the instance first.".to_string(),
             });
         }
-        let text = std::fs::read_to_string(&manifest_path)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        let mut manifest: InstanceManifest =
-            serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+        let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
 
         let metadata = crate::jar_metadata::parse_jar_metadata_for_loader(&dest, &manifest.loader);
         let installed_mod = InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: file_name.to_string(),
             registry_id: None,

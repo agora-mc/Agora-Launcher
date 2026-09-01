@@ -17,6 +17,7 @@ function row(overrides: Partial<InstalledContentRow> & { filename: string }): In
     installed_at: '2026-01-01T00:00:00Z',
     source: 'modrinth',
     source_label: 'Modrinth',
+    update_pinned: false,
     source_url: null,
     registry_id: null,
     modrinth_id: 'proj',
@@ -172,5 +173,39 @@ describe('InstalledContentPanel Update All', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /Update all/i }));
     expect(onUpdateAll).not.toHaveBeenCalled();
+  });
+});
+
+describe('per-mod update pin', () => {
+  it('excludes a pinned row from Update All and shows no badge for it', async () => {
+    const onUpdateAll = vi.fn();
+    render(
+      <InstalledContentPanel
+        {...baseProps}
+        rows={[row({ filename: 'sodium.jar' }), row({ filename: 'iris.jar', update_pinned: true })]}
+        onCheckUpdates={async () => [update('sodium.jar'), update('iris.jar')]}
+        onUpdateAll={onUpdateAll}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Check for updates/i }));
+    // Both have updates upstream, but the pinned one must not be offered.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Update all 1 mods/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Update all/i }));
+    expect(onUpdateAll.mock.calls[0][0].map((entry: UpdateInfo) => entry.filename)).toEqual(['sodium.jar']);
+  });
+
+  it('offers to unpin a pinned row and to pin an unpinned one', () => {
+    const onTogglePin = vi.fn();
+    render(
+      <InstalledContentPanel
+        {...baseProps}
+        rows={[row({ filename: 'iris.jar', update_pinned: true })]}
+        onTogglePin={onTogglePin}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Unpin updates/i }));
+    expect(onTogglePin).toHaveBeenCalledWith(expect.objectContaining({ filename: 'iris.jar' }), false);
   });
 });

@@ -414,17 +414,20 @@ def check_instance_manifest_raw() -> None:
                 window = lines[max(0, lineno - 2) : lineno + 2]
                 if any("allow-raw-instance-manifest" in entry for entry in window):
                     continue
-                # Any line that mentions InstanceManifest and does a serde_json
-                # deserialization is considered raw. This catches both turbofish
-                # `from_str::<InstanceManifest>` and inferred `let x: InstanceManifest = from_str`.
-                if "InstanceManifest" in line and (
-                    "from_str" in line or "from_slice" in line or "from_reader" in line
-                ):
-                    # Ensure it's actually a deserialization, not just a type reference
-                    if "serde_json" in line or "serde" in line or "from_str" in line:
-                        rel = path.relative_to(REPO_ROOT)
-                        hits.append(f"  {rel}:{lineno}: {stripped}")
-                        continue
+                # Any mention of InstanceManifest near a serde_json
+                # deserialization is raw. The deserialization is frequently on
+                # the *next* line, because rustfmt breaks
+                #   let mut manifest: InstanceManifest =
+                #       serde_json::from_str(&text)...
+                # across two lines. Matching only the annotation's own line
+                # missed 28 real sites, so scan a small window.
+                if "InstanceManifest" not in line:
+                    continue
+                window = chr(10).join(lines[lineno - 1 : lineno + 2])
+                if "from_str" in window or "from_slice" in window or "from_reader" in window:
+                    rel = path.relative_to(REPO_ROOT)
+                    hits.append(f"  {rel}:{lineno}: {stripped}")
+                    continue
     if hits:
         err(
             "Raw InstanceManifest deserialization found outside "

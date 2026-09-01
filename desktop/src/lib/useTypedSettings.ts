@@ -12,14 +12,16 @@ interface SettingDef<T> {
   toStoredValue: (value: T) => unknown;
 }
 
-export function boolDef(key: string): SettingDef<boolean> {
+export function boolDef(key: string, fallback = false): SettingDef<boolean> {
   return {
     key,
     parse(raw) {
       if (typeof raw === 'boolean') return raw;
       if (typeof raw === 'string') return raw === 'true' || raw === '1';
       if (typeof raw === 'number') return raw === 1;
-      return false;
+      // Unset. Takes the fallback so an opt-out setting can default to on
+      // without inverting its name, which is a reliable source of bugs.
+      return fallback;
     },
     toStoredValue: (v) => v,
   };
@@ -111,6 +113,7 @@ export const SETTINGS = {
   onboardingComplete: boolDef('onboarding_complete'),
   versionSortByDate: boolDef('version_sort_by_date'),
   updateSweepIntervalHours: numberDef('update_sweep_interval_hours', 12),
+  showUpdateChangelogs: boolDef('show_update_changelogs', true),
 } as const;
 
 // ---------------------------------------------------------------------------

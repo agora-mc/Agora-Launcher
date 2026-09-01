@@ -4235,6 +4235,7 @@ mod tests {
             loader_version: "0.15.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: "a.jar".into(),
                 source: "registry".into(),
@@ -4254,6 +4255,7 @@ mod tests {
                 incompatible_deps: vec![],
             }],
             resourcepacks: vec![InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: "b.zip".into(),
                 source: "registry".into(),

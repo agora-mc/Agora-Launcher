@@ -26,6 +26,8 @@ import {
   disableModForTest,
   getDisablePlan,
   checkInstanceUpdates,
+  getSetting,
+  setModUpdatePinned,
   getCachedInstanceUpdates,
   exportInstancePack,
   formatError,
@@ -86,6 +88,8 @@ import {
   type HealthReport,
   type LoaderChangePlan,
 } from '../lib/tauri';
+import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
+import { SETTINGS } from '../lib/useTypedSettings';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { LoaderChooser } from '../components/LoaderChooser';
 import {
@@ -150,6 +154,7 @@ function fallbackContentRows(manifest: InstanceManifest | null): InstalledConten
       filename: entry.filename,
       display_name: entry.filename.replace(/\.[^.]+$/, ''),
       pack_managed: entry.pack_managed ?? false,
+      update_pinned: entry.update_pinned ?? false,
       version: entry.version,
       content_type: entry.content_type,
       enabled: entry.enabled,
@@ -560,6 +565,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   // before (or without) any network call. Held in state so the reference stays
   // stable across renders — the panels re-seed whenever it changes.
   const [cachedUpdates, setCachedUpdates] = useState<UpdateInfo[] | null>(null);
+  /** Updates awaiting the changelog review step; null when nothing is pending. */
+  const [pendingUpdates, setPendingUpdates] = useState<UpdateInfo[] | null>(null);
+  const [showUpdateChangelogs, setShowUpdateChangelogs] = useState(true);
+
+  useEffect(() => {
+    void getSetting(SETTINGS.showUpdateChangelogs.key)
+      .then((raw) => setShowUpdateChangelogs(SETTINGS.showUpdateChangelogs.parse(raw)))
+      .catch(() => { /* Default to showing it; a preview is never harmful. */ });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -711,22 +725,37 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     }
   };
 
-  const handleApplyUpdate = (row: InstalledContentRow, update: UpdateInfo) => {
-    if (row?.enabled === false || !row.mod_jar_id && !row.modrinth_id && !row.registry_id) return;
+  const handleTogglePin = async (content: InstalledContentRow, pinned: boolean) => {
+    if (row?.is_locked) return;
+    setError(null);
+    try {
+      await setModUpdatePinned(instanceId, content.filename, pinned);
+      await refreshContent();
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
+  /** Apply a reviewed set of updates as one transaction. */
+  const applyUpdates = (updates: UpdateInfo[]) => {
     beginCanonicalOperation({
       type: 'batch-update',
-      items: [{ itemId: update.mod_jar_id, targetVersion: update.target_version }],
+      items: updates.map((update) => ({ itemId: update.mod_jar_id, targetVersion: update.target_version })),
     });
+  };
+
+  const handleApplyUpdate = (row: InstalledContentRow, update: UpdateInfo) => {
+    if (row?.enabled === false || !row.mod_jar_id && !row.modrinth_id && !row.registry_id) return;
+    if (showUpdateChangelogs) setPendingUpdates([update]);
+    else applyUpdates([update]);
   };
 
   /** One plan, one snapshot, full rollback for every update in a panel. */
   const handleUpdateAll = (updates: UpdateInfo[]) => {
     if (row?.is_locked || updates.length === 0) return;
     setError(null);
-    beginCanonicalOperation({
-      type: 'batch-update',
-      items: updates.map((update) => ({ itemId: update.mod_jar_id, targetVersion: update.target_version })),
-    });
+    if (showUpdateChangelogs) setPendingUpdates(updates);
+    else applyUpdates(updates);
   };
 
   const handleSetInstanceIcon = async () => {
@@ -1729,7 +1758,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onRevealFile={handleRevealInstalledContent}
           onCheckUpdates={() => checkInstanceUpdates(instanceId)}
           onApplyUpdate={handleApplyUpdate}
-          onUpdateAll={handleUpdateAll}
+          onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin}
           initialUpdates={cachedUpdates}
           onSetCustomIcon={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
@@ -1749,15 +1778,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -2768,6 +2797,21 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onCancel={() => setDisablePlanTarget(null)}
         />
       )}
+
+      {pendingUpdates ? (
+        <UpdateChangelogDialog
+          updates={pendingUpdates}
+          displayNameFor={(update) =>
+            displayedContentRows.find((content) => content.filename === update.filename)?.display_name
+            ?? update.filename}
+          onConfirm={() => {
+            const updates = pendingUpdates;
+            setPendingUpdates(null);
+            applyUpdates(updates);
+          }}
+          onCancel={() => setPendingUpdates(null)}
+        />
+      ) : null}
 
       {canonicalOperation && (
         <InstallFlow

@@ -257,6 +257,7 @@ fn inventory_pack_content(
             None
         };
         installed.push(InstalledMod {
+            update_pinned: false,
             // Inventoried from the .mrpack index: contributed by the pack.
             pack_managed: true,
             filename: entry.file_name().to_string_lossy().into_owned(),
@@ -2036,6 +2037,8 @@ mod tests {
         assert_eq!(result.instance_id, "a-pack");
         let manifest_path = instances_root.join("a-pack").join("instance_manifest.json");
         assert!(manifest_path.exists());
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: InstanceManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         assert!(!manifest.is_locked);
@@ -2145,6 +2148,8 @@ mod tests {
         assert!(instance
             .join("config/fancymenu/customization/title.txt")
             .exists());
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: InstanceManifest =
             serde_json::from_slice(&fs::read(instance.join("instance_manifest.json")).unwrap())
                 .unwrap();
@@ -2417,6 +2422,8 @@ mod tests {
             .join("instance_manifest.json");
         assert!(manifest_path.exists());
 
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: InstanceManifest =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.instance_id, "launchable-instance");

@@ -5443,6 +5443,51 @@ pub async fn get_cached_all_updates(
     .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
+/// Pin or unpin an installed entry against updates.
+#[tauri::command]
+pub async fn set_mod_update_pinned(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+    pinned: bool,
+) -> LauncherResult<bool> {
+    check_not_locked(&app, &instance_id)?;
+    tokio::task::spawn_blocking(move || {
+        let ctx = crate::core_context(&app)?;
+        agora_core::install_service::InstallService::new(ctx).set_update_pinned(
+            &instance_id,
+            &filename,
+            pinned,
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Changelogs for every release between the installed version and the update.
+///
+/// Read from the signed `registry.db` — no network call, so this works offline
+/// and cannot stall the update dialog. Returns an empty list when the item has
+/// no upstream changelogs (curated or self-hosted items), when the registry
+/// predates the table, or on a downgrade; callers show a graceful fallback
+/// rather than treating empty as an error.
+#[tauri::command]
+pub async fn get_update_changelogs(
+    app: tauri::AppHandle,
+    item_id: String,
+    from_version: String,
+    to_version: String,
+) -> LauncherResult<Vec<agora_core::version_changelogs::VersionChangelog>> {
+    tokio::task::spawn_blocking(move || {
+        let ctx = crate::core_context(&app)?;
+        let svc = agora_core::registry::RegistryService::new(ctx);
+        svc.get_changelogs_between(&item_id, &from_version, &to_version)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// Invalidate the cached update row after a successful install.
 ///
 /// The cache behaves like an invalidated view: the installer never touches it
@@ -6440,6 +6485,7 @@ mod command_helper_tests {
 
     fn test_installed_mod(filename: &str, enabled: bool) -> agora_core::models::InstalledMod {
         agora_core::models::InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: filename.into(),
             registry_id: Some("example".into()),

@@ -174,6 +174,14 @@ pub struct InstalledMod {
     /// deserialize as `"mod"`.
     #[serde(default = "default_mod_content_type")]
     pub content_type: String,
+    /// Whether the user pinned this entry against updates.
+    ///
+    /// Pinned entries are excluded from "Update All" and show no update badge,
+    /// but remain installable and updatable explicitly. Lives in the manifest
+    /// beside `enabled` because it is the same kind of durable user intent and
+    /// should travel with an exported instance.
+    #[serde(default)]
+    pub update_pinned: bool,
     /// Whether this entry was contributed by the instance's modpack rather than
     /// added by the user.
     ///
@@ -536,6 +544,7 @@ mod tests {
             loader_version: "52.0.0".to_string(),
             is_locked: true,
             mods: vec![InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: "rt-mod.jar".to_string(),
                 registry_id: Some("reg-1".to_string()),

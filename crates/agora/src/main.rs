@@ -3417,6 +3417,7 @@ mod tests {
     #[test]
     fn removal_plan_detects_reverse_dependents() {
         let target = InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: "core-lib.jar".into(),
             registry_id: Some("core-lib".into()),
@@ -3437,6 +3438,7 @@ mod tests {
         };
 
         let dependent = InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: "dependent-mod.jar".into(),
             registry_id: Some("dependent-mod".into()),
@@ -3469,6 +3471,7 @@ mod tests {
     #[test]
     fn removal_plan_empty_for_unreferenced_mod() {
         let target = InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: "standalone.jar".into(),
             registry_id: None,
@@ -3489,6 +3492,7 @@ mod tests {
         };
 
         let other = InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: "other.jar".into(),
             registry_id: Some("other".into()),
@@ -4065,6 +4069,7 @@ mod tests {
             loader_version: "0.16.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: "test-mod.jar".into(),
                 source: "manual".into(),
@@ -4113,6 +4118,8 @@ mod tests {
             "disabled file exists"
         );
 
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let updated: InstanceManifest =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         assert!(!updated.mods[0].enabled, "mod disabled in manifest");
@@ -4136,6 +4143,8 @@ mod tests {
             "disabled file gone"
         );
 
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let updated2: InstanceManifest =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         assert!(updated2.mods[0].enabled, "mod enabled in manifest");

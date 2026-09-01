@@ -141,10 +141,7 @@ impl CrashService {
         let manifest_path = self.ctx.paths.instance_manifest(&sanitized)?;
         let result = if manifest_path.exists() {
             (|| -> LauncherResult<()> {
-                let text = std::fs::read_to_string(&manifest_path)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                let mut manifest: crate::models::InstanceManifest =
-                    serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+                let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
                 set_enabled_in_all_arrays(&mut manifest, filename, false);
                 crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
             })()
@@ -179,10 +176,7 @@ impl CrashService {
         let manifest_path = self.ctx.paths.instance_manifest(&sanitized)?;
         let result = if manifest_path.exists() {
             (|| -> LauncherResult<()> {
-                let text = std::fs::read_to_string(&manifest_path)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                let mut manifest: crate::models::InstanceManifest =
-                    serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+                let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
                 set_enabled_in_all_arrays(&mut manifest, filename, true);
                 crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
             })()
@@ -1299,15 +1293,7 @@ fn update_manifest_disable(manifest_path: &std::path::Path, filename: &str) -> L
     if !manifest_path.exists() {
         return Ok(());
     }
-    let text = std::fs::read_to_string(manifest_path).map_err(|e| LauncherError::Generic {
-        code: "ERR_MANIFEST_READ".into(),
-        message: format!("Could not read manifest: {e}"),
-    })?;
-    let mut manifest: InstanceManifest =
-        serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
-            code: "ERR_MANIFEST_PARSE".into(),
-            message: format!("Invalid manifest: {e}"),
-        })?;
+    let mut manifest = crate::helpers::read_manifest(manifest_path)?;
 
     for entry in all_mod_entries_mut(&mut manifest) {
         if entry.filename == filename {
@@ -1334,15 +1320,7 @@ fn update_manifest_enable(manifest_path: &std::path::Path, filename: &str) -> La
     if !manifest_path.exists() {
         return Ok(());
     }
-    let text = std::fs::read_to_string(manifest_path).map_err(|e| LauncherError::Generic {
-        code: "ERR_MANIFEST_READ".into(),
-        message: format!("Could not read manifest: {e}"),
-    })?;
-    let mut manifest: InstanceManifest =
-        serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
-            code: "ERR_MANIFEST_PARSE".into(),
-            message: format!("Invalid manifest: {e}"),
-        })?;
+    let mut manifest = crate::helpers::read_manifest(manifest_path)?;
 
     for entry in all_mod_entries_mut(&mut manifest) {
         if entry.filename == filename {
@@ -1443,6 +1421,7 @@ mod tests {
             mods: mod_filenames
                 .iter()
                 .map(|fname| crate::models::InstalledMod {
+                    update_pinned: false,
                     pack_managed: false,
                     filename: fname.to_string(),
                     registry_id: None,

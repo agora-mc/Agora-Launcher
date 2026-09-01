@@ -281,16 +281,7 @@ impl LaunchService {
                 message: format!("Instance '{}' not found.", request.instance_id),
             })?;
         let manifest_path = self.ctx.paths.instance_manifest(&request.instance_id)?;
-        let manifest_text =
-            std::fs::read_to_string(&manifest_path).map_err(|error| LauncherError::Generic {
-                code: "ERR_INSTANCE_MANIFEST".into(),
-                message: error.to_string(),
-            })?;
-        let manifest: InstanceManifest =
-            serde_json::from_str(&manifest_text).map_err(|error| LauncherError::Generic {
-                code: "ERR_INSTANCE_MANIFEST".into(),
-                message: error.to_string(),
-            })?;
+        let manifest = crate::helpers::read_manifest(&manifest_path)?;
         let network_policy = NetworkPolicy::from_db(&conn);
         let identity = if request.mode == LaunchMode::Direct {
             network_policy.check(crate::network::NetworkCategory::MicrosoftAuthentication)?;

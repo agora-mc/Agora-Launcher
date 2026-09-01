@@ -1889,6 +1889,7 @@ mod tests {
             loader_version: "0.15.11".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: "mod-with-dep.jar".into(),
                 registry_id: None,
@@ -1999,6 +2000,7 @@ mod tests {
         let mods: Vec<InstalledMod> = mods
             .iter()
             .map(|(filename, jar_id)| InstalledMod {
+                update_pinned: false,
                 pack_managed: false,
                 filename: filename.to_string(),
                 registry_id: None,

@@ -11,7 +11,7 @@
 use crate::ctx::Ctx;
 use crate::db;
 use crate::error::{LauncherError, LauncherResult};
-use crate::models::{InstalledMod, InstanceManifest, ModVersionCandidate};
+use crate::models::{InstalledMod, ModVersionCandidate};
 use crate::modrinth::RawModrinthVersionCandidate;
 use crate::state::LauncherState;
 use crate::task_scheduler::BlockingPriority;
@@ -689,10 +689,8 @@ pub async fn check_single_instance_updates_with(
 ) -> LauncherResult<Vec<UpdateInfo>> {
     let instance_id = crate::paths::sanitize_id(instance_id);
     let manifest_path = ctx.paths.instance_manifest(&instance_id)?;
-    let manifest_text =
-        std::fs::read_to_string(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest: InstanceManifest =
-        serde_json::from_str(&manifest_text).map_err(|_| LauncherError::LocalStateFailed)?;
+    let manifest = crate::helpers::read_manifest(&manifest_path)
+        .map_err(|_| LauncherError::LocalStateFailed)?;
 
     // Resolve candidates against the instance row rather than the manifest.
     // `ModrinthService::list_raw_modrinth_versions` already scopes to the row,

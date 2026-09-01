@@ -40,6 +40,8 @@ pub struct InstalledContentRow {
     /// it. Distinct from `source`, which mixes origin with acquisition method
     /// and is a display string.
     pub pack_managed: bool,
+    /// Whether the user pinned this entry against updates.
+    pub update_pinned: bool,
     pub source_url: Option<String>,
     pub registry_id: Option<String>,
     pub modrinth_id: Option<String>,
@@ -191,6 +193,7 @@ fn build_row(
         source: entry.source.clone(),
         source_label,
         pack_managed: entry.pack_managed,
+        update_pinned: entry.update_pinned,
         source_url: entry.source_url.clone(),
         registry_id: entry.registry_id.clone(),
         modrinth_id: entry
@@ -300,6 +303,7 @@ mod tests {
 
     fn manifest_entry(filename: &str, content_type: &str, enabled: bool) -> InstalledMod {
         InstalledMod {
+            update_pinned: false,
             pack_managed: false,
             filename: filename.to_string(),
             registry_id: None,

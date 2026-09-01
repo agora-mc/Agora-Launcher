@@ -359,6 +359,7 @@ export interface InstalledMod {
   content_type: string;
   /** True when the modpack contributed this entry rather than the user. */
   pack_managed?: boolean;
+  update_pinned?: boolean;
 }
 
 export interface InstanceManifest {
@@ -399,6 +400,8 @@ export interface InstalledContentRow {
   source_label: string;
   /** True when the modpack contributed this entry rather than the user. */
   pack_managed: boolean;
+  /** True when the user pinned this entry against updates. */
+  update_pinned: boolean;
   source_url: string | null;
   registry_id: string | null;
   modrinth_id: string | null;
@@ -645,6 +648,27 @@ export interface UpdateInfo {
 
 export const checkInstanceUpdates = (instanceId: string) =>
   invoke<UpdateInfo[]>('check_instance_updates', { instanceId });
+
+export interface VersionChangelog {
+  item_id: string;
+  version: string;
+  /** Markdown. Render with react-markdown; never dangerouslySetInnerHTML. */
+  changelog: string;
+  published_at: string | null;
+  source: string;
+}
+
+/**
+ * Changelogs for every release between the installed version and the update.
+ * Read from the signed registry — offline, and empty when the item simply has
+ * no upstream changelogs rather than on error.
+ */
+export const getUpdateChangelogs = (itemId: string, fromVersion: string, toVersion: string) =>
+  invoke<VersionChangelog[]>('get_update_changelogs', { itemId, fromVersion, toVersion });
+
+/** Pin or unpin an installed entry against updates. Resolves false if nothing matched. */
+export const setModUpdatePinned = (instanceId: string, filename: string, pinned: boolean) =>
+  invoke<boolean>('set_mod_update_pinned', { instanceId, filename, pinned });
 
 /** Instant, offline read of the last persisted update check (no network). */
 export const getCachedInstanceUpdates = (instanceId: string) =>
