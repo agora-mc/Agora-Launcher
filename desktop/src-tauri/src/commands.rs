@@ -5355,16 +5355,11 @@ pub async fn cancel_install(app: tauri::AppHandle, plan_id: String) -> LauncherR
     })
 }
 
-/// Information about an available update for an installed content item.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UpdateInfo {
-    pub filename: String,
-    pub mod_jar_id: String,
-    pub current_version: String,
-    pub latest_version: String,
-    pub target_version: String,
-    pub source: String,
-}
+/// Re-export the core `UpdateInfo` so the IPC shape stays identical to the
+/// frontend contract at `desktop/src/lib/tauri.ts:633`. The canonical
+/// definition lives in core (`crates/agora-core/src/update_cache.rs`) and is
+/// also the row serialized into `instance_update_cache`.
+pub use agora_core::update_cache::UpdateInfo;
 
 const UPDATE_CANDIDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -5375,6 +5370,7 @@ async fn cached_curated_update_candidates(
     item_id: &str,
     cache_key: String,
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
+    // 1) In-memory fast path (5-min TTL).
     let cached = {
         let state = state.lock().await;
         state
@@ -5387,15 +5383,43 @@ async fn cached_curated_update_candidates(
         return Ok(candidates);
     }
 
+    // 2) Persistent read-through (DB) so a restart does not force network.
+    if let Ok(ctx) = crate::core_context(app) {
+        if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+            if let Ok(Some(candidates)) =
+                agora_core::update_cache::get_cached_candidates(&conn, &cache_key)
+            {
+                let mut state = state.lock().await;
+                state.update_candidate_cache.insert(
+                    cache_key.clone(),
+                    agora_core::state::UpdateCandidateCacheEntry {
+                        fetched_at: std::time::Instant::now(),
+                        candidates: candidates.clone(),
+                    },
+                );
+                return Ok(candidates);
+            }
+        }
+    }
+
     let candidates = mod_install::list_mod_versions_for_update(app, instance_id, item_id).await?;
-    let mut state = state.lock().await;
-    state.update_candidate_cache.insert(
-        cache_key,
-        agora_core::state::UpdateCandidateCacheEntry {
-            fetched_at: std::time::Instant::now(),
-            candidates: candidates.clone(),
-        },
-    );
+
+    // 3) Populate both layers (memory + DB).
+    {
+        let mut state = state.lock().await;
+        state.update_candidate_cache.insert(
+            cache_key.clone(),
+            agora_core::state::UpdateCandidateCacheEntry {
+                fetched_at: std::time::Instant::now(),
+                candidates: candidates.clone(),
+            },
+        );
+    }
+    if let Ok(ctx) = crate::core_context(app) {
+        if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+            let _ = agora_core::update_cache::set_cached_candidates(&conn, &cache_key, &candidates);
+        }
+    }
     Ok(candidates)
 }
 
@@ -5518,7 +5542,94 @@ pub async fn check_instance_updates(
         });
     }
 
+    // Persist so the result survives restart and can be read back without network.
+    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = agora_core::update_cache::set_cached_instance_updates(&conn, &sanitized, &updates);
+    }
+
     Ok(updates)
+}
+
+/// Read cached update results for a single instance without network.
+///
+/// Instant, offline-safe read from `instance_update_cache` (db.rs:370-v11).
+/// Returns `None` when no sweep or explicit check has been cached yet.
+#[tauri::command]
+pub async fn get_cached_instance_updates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Option<Vec<UpdateInfo>>> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        let cached = agora_core::update_cache::get_cached_instance_updates(&conn, &sanitized)
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        Ok(cached.map(|(updates, _checked_at)| updates))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Cached update envelope for one instance.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CachedInstanceUpdates {
+    pub instance_id: String,
+    pub updates: Vec<UpdateInfo>,
+    pub checked_at: String,
+}
+
+/// Read every cached instance row without network (instant hydration).
+///
+/// The frontend can render the last sweep's results immediately on mount
+/// without waiting for a fresh network check; a background refresh can follow.
+#[tauri::command]
+pub async fn get_cached_all_updates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<Vec<CachedInstanceUpdates>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        let rows = agora_core::update_cache::get_all_cached_instance_updates(&conn)
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        Ok(rows
+            .into_iter()
+            .map(|(instance_id, updates, checked_at)| CachedInstanceUpdates {
+                instance_id,
+                updates,
+                checked_at,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Invalidate the cached update row after a successful install.
+///
+/// The cache behaves like an invalidated view: the installer never touches it
+/// (install_pipeline/install_service remain unaware). The frontend clears
+/// optimistically on `InstallFlow` success so the badge does not linger.
+#[tauri::command]
+pub async fn clear_cached_instance_updates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        agora_core::update_cache::delete_cached_instance_updates(&conn, &sanitized)
+            .map_err(|_| LauncherError::LocalStateFailed)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 10;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 11;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -77,6 +77,18 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
         if get_setting(&conn, key).ok().flatten().is_none() {
             set_setting(&conn, key, &serde_json::Value::Bool(false))?;
         }
+    }
+
+    // Update sweep interval in hours. 12h is the default: twice daily balances
+    // freshness (mods rarely release more than once a day) against Modrinth
+    // traffic for users who open the launcher many times a day. 0 disables
+    // automatic refresh (manual "Check for updates" only).
+    if get_setting(&conn, "update_sweep_interval_hours")
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        set_setting(&conn, "update_sweep_interval_hours", &serde_json::json!(12))?;
     }
 
     normalize_boolean_settings(&conn)?;
@@ -420,6 +432,33 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (10)",
+            [],
+        )?;
+    }
+
+    // Migration v11: persist update-check results and candidate lists so they
+    // survive restart and can be read back without network. Mirrors the
+    // modrinth_content_metadata_cache pattern from v8 (db.rs:370, modrinth.rs:94,147).
+    if current < 11 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS instance_update_cache (
+                 instance_id TEXT PRIMARY KEY,
+                 updates_json TEXT NOT NULL,
+                 checked_at TEXT NOT NULL,
+                 FOREIGN KEY(instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_update_cache_checked_at
+                 ON instance_update_cache (checked_at);
+             CREATE TABLE IF NOT EXISTS update_candidate_cache (
+                 cache_key TEXT PRIMARY KEY,
+                 candidates_json TEXT NOT NULL,
+                 fetched_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_update_candidate_cache_fetched_at
+                 ON update_candidate_cache (fetched_at);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (11)",
             [],
         )?;
     }

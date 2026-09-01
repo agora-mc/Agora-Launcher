@@ -96,6 +96,15 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     setSelectedKeys(new Set());
   }, [props.rows]);
 
+  // Seed from the persisted check so navigating away and back — or restarting
+  // the app — does not throw away what we already know. An explicit check
+  // overwrites this; it never overwrites an explicit check.
+  useEffect(() => {
+    if (!props.initialUpdates) return;
+    setUpdatesByFilename(Object.fromEntries(props.initialUpdates.map((update) => [update.filename, update])));
+    setUpdatesChecked(true);
+  }, [props.initialUpdates]);
+
   const rows = useMemo(() => props.rows.map((row) => optimisticEnabled[row.key] === undefined ? row : { ...row, enabled: optimisticEnabled[row.key] }), [props.rows, optimisticEnabled]);
   const available = useMemo(() => deriveAvailableFilters(rows), [rows]);
   const visibleRows = useMemo(() => sortInstalledContent(
@@ -218,6 +227,20 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     return row.registry_id || row.modrinth_id ? 'current' : 'unavailable';
   };
 
+  // `updatesByFilename` covers the whole instance, so intersect with this
+  // panel's own rows — Update All must never touch another content type.
+  const availableUpdates = useMemo(
+    () => rows
+      .map((row) => updatesByFilename[row.filename])
+      .filter((update): update is UpdateInfo => Boolean(update)),
+    [rows, updatesByFilename],
+  );
+
+  const handleUpdateAll = () => {
+    if (props.locked || availableUpdates.length === 0) return;
+    props.onUpdateAll?.(availableUpdates);
+  };
+
   const clearFilters = () => setFilters({ categories: [], curation: 'all', source: 'all', enabled: 'all' });
   const toggleCategory = (category: string) => setFilters((current) => ({
     ...current,
@@ -322,7 +345,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
   return <section className="rounded-xl border border-border bg-card p-4" onDragOver={props.onDrop ? (event) => { event.preventDefault(); } : undefined} onDrop={props.onDrop}>
     <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
       <div><h3 className="font-semibold text-sm">{titleForType[props.contentType]} ({props.rows.length})</h3><p className="mt-1 text-xs text-muted-foreground">Manage installed {contentLabel.toLowerCase()} without changing their safe removal workflow.</p></div>
-      <div className="flex flex-wrap items-center gap-2"><button type="button" onClick={props.onAdd} disabled={props.locked} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? `Unlock the instance to add ${contentLabel.toLowerCase()}.` : undefined}>{props.locked ? 'Locked' : props.addLabel}</button>{props.extraActions}</div>
+      <div className="flex flex-wrap items-center gap-2">{props.onUpdateAll && availableUpdates.length > 0 ? <button type="button" onClick={handleUpdateAll} disabled={props.locked} className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? `Unlock the instance to update ${contentLabel.toLowerCase()}.` : `Review one plan updating ${availableUpdates.length} ${contentLabel.toLowerCase()}`} aria-label={`Update all ${availableUpdates.length} ${contentLabel.toLowerCase()}`}><ArrowUpCircle className="h-4 w-4" aria-hidden="true" />Update All ({availableUpdates.length})</button> : null}<button type="button" onClick={props.onAdd} disabled={props.locked} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? `Unlock the instance to add ${contentLabel.toLowerCase()}.` : undefined}>{props.locked ? 'Locked' : props.addLabel}</button>{props.extraActions}</div>
     </div>
     {selectedRows.length > 0 ? <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2 text-xs"><span className="font-medium">{selectedRows.length} selected</span><button type="button" onClick={() => void handleBulkToggle(true)} disabled={props.locked || bulkBusy} className="rounded border border-input bg-background px-2 py-1 hover:bg-accent disabled:opacity-50">Enable selected</button><button type="button" onClick={() => void handleBulkToggle(false)} disabled={props.locked || bulkBusy} className="rounded border border-input bg-background px-2 py-1 hover:bg-accent disabled:opacity-50">Disable selected</button><button type="button" onClick={handleBulkRemove} disabled={props.locked || bulkBusy} className="rounded border border-destructive/40 bg-background px-2 py-1 text-destructive hover:bg-destructive/10 disabled:opacity-50">Remove selected</button><button type="button" onClick={() => setSelectedKeys(new Set())} className="ml-auto text-primary hover:underline">Clear selection</button></div> : null}
     <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">

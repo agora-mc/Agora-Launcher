@@ -268,6 +268,7 @@ export function Settings({
   };
 
   const [versionSortByDate, setVersionSortByDate] = useState(false);
+  const [updateSweepIntervalHours, setUpdateSweepIntervalHours] = useState<number>(12);
 
   // Sync typed settings into local state for backward-compatible render code.
   useEffect(() => {
@@ -283,6 +284,7 @@ export function Settings({
     setJavaRuntimeMode((ts.values.javaRuntimeMode as string) as 'automatic' | 'prompt' | 'manual' || 'automatic');
     setGlobalJavaPath((ts.values.javaPath as string) ?? '');
     setVersionSortByDate(ts.values.versionSortByDate as boolean ?? false);
+    setUpdateSweepIntervalHours((ts.values.updateSweepIntervalHours as number) ?? 12);
     setLoading(false);
   }, [ts.loading, ts.values]);
 
@@ -805,6 +807,17 @@ export function Settings({
     }
   };
 
+  const handleUpdateSweepIntervalChange = async (value: number) => {
+    const previous = updateSweepIntervalHours;
+    setUpdateSweepIntervalHours(value);
+    try {
+      await ts.update(SETTINGS.updateSweepIntervalHours, value);
+    } catch (e) {
+      setUpdateSweepIntervalHours(previous);
+      showToast(formatError(e), 'error');
+    }
+  };
+
   // --- Launcher path actions ---
 
   const clearLauncherPathFeedback = () => {
@@ -1058,6 +1071,39 @@ export function Settings({
       <p className="text-xs text-muted-foreground">
         Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.
       </p>
+    </SettingsSection>
+  );
+
+  const instanceUpdatesCard = (
+    <SettingsSection
+      id="settings-instance-updates"
+      icon={PackageCheck}
+      title="Instance mod updates"
+      description="How often Agora checks your instances for newer mod versions in the background."
+    >
+      <label className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Automatic update checks</span>
+        <select
+          value={String(updateSweepIntervalHours)}
+          onChange={(e) => void handleUpdateSweepIntervalChange(Number(e.target.value))}
+          className="w-full max-w-xs rounded-lg border border-input bg-background px-3 py-2 text-sm"
+          aria-label="Automatic update checks"
+        >
+          <option value="0">Manual only — only when I check</option>
+          <option value="6">Every 6 hours</option>
+          <option value="12">Every 12 hours (default)</option>
+          <option value="24">Once a day</option>
+          <option value="48">Every 2 days</option>
+        </select>
+      </label>
+      <p className="text-xs text-muted-foreground">
+        {updateSweepIntervalHours === 0
+          ? 'Automatic checks are off. Use “Check for updates” in the instance editor when you want fresh results.'
+          : `Agora will refresh an instance only if its last check is older than ${updateSweepIntervalHours} hours. Startup checks skip fresh entries to avoid Modrinth traffic when you open the launcher several times a day.`}
+      </p>
+      {ts.statuses['update_sweep_interval_hours']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['update_sweep_interval_hours']?.error}</p>
+      )}
     </SettingsSection>
   );
 
@@ -2012,7 +2058,16 @@ export function Settings({
           ),
         },
         { id: 'walkthrough', label: 'Walkthrough', content: walkthroughCard },
-        { id: 'updates', label: 'Updates', content: gate(updatesCard) },
+        {
+          id: 'updates',
+          label: 'Updates',
+          content: (
+            <>
+              {gate(updatesCard)}
+              {gate(instanceUpdatesCard)}
+            </>
+          ),
+        },
       ],
     },
     {

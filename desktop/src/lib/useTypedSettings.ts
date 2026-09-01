@@ -110,6 +110,7 @@ export const SETTINGS = {
   launchMode: enumDef('launch_mode', ['direct', 'delegation'] as const, 'delegation'),
   onboardingComplete: boolDef('onboarding_complete'),
   versionSortByDate: boolDef('version_sort_by_date'),
+  updateSweepIntervalHours: numberDef('update_sweep_interval_hours', 12),
 } as const;
 
 // ---------------------------------------------------------------------------

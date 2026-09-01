@@ -642,6 +642,24 @@ export interface UpdateInfo {
 export const checkInstanceUpdates = (instanceId: string) =>
   invoke<UpdateInfo[]>('check_instance_updates', { instanceId });
 
+/** Instant, offline read of the last persisted update check (no network). */
+export const getCachedInstanceUpdates = (instanceId: string) =>
+  invoke<UpdateInfo[] | null>('get_cached_instance_updates', { instanceId });
+
+export interface CachedInstanceUpdates {
+  instance_id: string;
+  updates: UpdateInfo[];
+  checked_at: string;
+}
+
+/** Instant hydration of all cached update rows (no network). */
+export const getCachedAllUpdates = () =>
+  invoke<CachedInstanceUpdates[]>('get_cached_all_updates');
+
+/** Invalidate the cached row after a successful install (view invalidation). */
+export const clearCachedInstanceUpdates = (instanceId: string) =>
+  invoke<void>('clear_cached_instance_updates', { instanceId });
+
 export interface RunningProcess {
   instance_id: string;
   pid: number;

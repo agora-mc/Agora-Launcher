@@ -202,6 +202,7 @@ interface InstallFlowProps {
   instanceName: string;
   onOpenInstance?: (instanceId: string) => void;
   onClose?: () => void;
+  onSuccess?: (instanceId: string) => void;
   onBackgroundStart?: (plan: ResolvedInstallPlan) => void;
   background?: boolean;
   open: boolean;
@@ -224,6 +225,7 @@ export function InstallFlow({
   instanceName,
   onOpenInstance,
   onClose,
+  onSuccess,
   onBackgroundStart,
   background = false,
   open,
@@ -415,6 +417,26 @@ export function InstallFlow({
     dispatch({ type: 'close' });
     onClose?.();
   }, [onClose]);
+
+  // Invalidate the update cache on success so the badge does not linger. The
+  // cache is an invalidated view (install path stays unaware); clearing is
+  // honest and cheap, re-check is eager network work the sweep will do later.
+  //
+  // Fired exactly once per success via a ref, and reset when we leave the
+  // success state so a later install in the same mount still signals. Callers
+  // pass an inline closure, so a plain dependency on `onSuccess` would re-fire
+  // on every render — and if the handler sets state, that is an infinite loop.
+  const signalledSuccessRef = useRef(false);
+  const installSucceeded = state.phase === 'result' && state.outcome.type === 'success';
+  useEffect(() => {
+    if (!installSucceeded) {
+      signalledSuccessRef.current = false;
+      return;
+    }
+    if (signalledSuccessRef.current) return;
+    signalledSuccessRef.current = true;
+    onSuccess?.(intent.targetInstance);
+  }, [installSucceeded, intent.targetInstance, onSuccess]);
 
   /**
    * Approve switching the instance loader to a signed-catalog compatible

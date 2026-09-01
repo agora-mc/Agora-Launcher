@@ -57,6 +57,14 @@ export interface InstalledContentPanelProps {
   onSetCustomIcon?: (row: InstalledContentRow) => void;
   onCheckUpdates?: () => Promise<UpdateInfo[]>;
   onApplyUpdate?: (row: InstalledContentRow, update: UpdateInfo) => void;
+  /** Apply every available update for this panel as one reviewed transaction. */
+  onUpdateAll?: (updates: UpdateInfo[]) => void;
+  /**
+   * Last persisted update check, read from cache so results survive navigation
+   * and restart. Must be a stable reference — a fresh array each render would
+   * re-seed on every parent render.
+   */
+  initialUpdates?: UpdateInfo[] | null;
   onError?: (message: string) => void;
   onDrop?: React.DragEventHandler<HTMLElement>;
   extraActions?: React.ReactNode;

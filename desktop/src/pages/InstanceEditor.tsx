@@ -26,6 +26,7 @@ import {
   disableModForTest,
   getDisablePlan,
   checkInstanceUpdates,
+  getCachedInstanceUpdates,
   exportInstancePack,
   formatError,
   inspectJavaExecutable,
@@ -64,6 +65,7 @@ import {
   deleteLoadoutProfile,
   openInstanceFolder,
   revealPath,
+  clearCachedInstanceUpdates,
   type InstanceDetail,
   type InstanceManifest,
   type JavaRuntimeSummary,
@@ -553,6 +555,20 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     return () => { cancelled = true; };
   }, [instanceId, activeTab]);
 
+  // Hydrated from the persisted check so the panels show what we already know
+  // before (or without) any network call. Held in state so the reference stays
+  // stable across renders — the panels re-seed whenever it changes.
+  const [cachedUpdates, setCachedUpdates] = useState<UpdateInfo[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCachedUpdates(null);
+    void getCachedInstanceUpdates(instanceId)
+      .then((updates) => { if (!cancelled) setCachedUpdates(updates); })
+      .catch(() => { /* Cache is an optimization; an explicit check still works. */ });
+    return () => { cancelled = true; };
+  }, [instanceId]);
+
   const beginCanonicalOperation = (action: InstallIntent['action']) => {
     setCanonicalOperation({
       instanceName: detail?.row.name ?? instanceId,
@@ -699,6 +715,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     beginCanonicalOperation({
       type: 'batch-update',
       items: [{ itemId: update.mod_jar_id, targetVersion: update.target_version }],
+    });
+  };
+
+  /** One plan, one snapshot, full rollback for every update in a panel. */
+  const handleUpdateAll = (updates: UpdateInfo[]) => {
+    if (row?.is_locked || updates.length === 0) return;
+    setError(null);
+    beginCanonicalOperation({
+      type: 'batch-update',
+      items: updates.map((update) => ({ itemId: update.mod_jar_id, targetVersion: update.target_version })),
     });
   };
 
@@ -1702,6 +1728,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onRevealFile={handleRevealInstalledContent}
           onCheckUpdates={() => checkInstanceUpdates(instanceId)}
           onApplyUpdate={handleApplyUpdate}
+          onUpdateAll={handleUpdateAll}
+          initialUpdates={cachedUpdates}
           onSetCustomIcon={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
             if (mod) void handleSetModIcon(mod);
@@ -1720,15 +1748,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -2748,15 +2776,27 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           background
           onBackgroundStart={(plan) => startPlan(plan, `Installing pack in ${canonicalOperation.instanceName}`, canonicalOperation.instanceName)}
           onOpenInstance={onOpenInstanceEditor}
+          onSuccess={(targetId) => {
+            // Invalidate the view: the cache lists updates that were just
+            // installed, so clearing is honest. Re-checking eagerly would
+            // add Modrinth traffic right after a user action; the next
+            // explicit "Check for updates" or the interval sweep will
+            // repopulate. Optimistically clear local state too so the badge
+            // disappears without a round-trip.
+            // Keep the same reference when already empty so this cannot drive
+            // a re-render loop if it is ever signalled more than once.
+            setCachedUpdates((current) => (current && current.length === 0 ? current : []));
+            void clearCachedInstanceUpdates(targetId).catch(() => {});
+          }}
            onClose={() => {
-             setCanonicalOperation(null);
-             void getInstanceDetail(instanceId)
-               .then((result) => {
-                 setDetail(result);
-                 return refreshContent();
-               })
-               .catch((cause) => setError(formatError(cause)));
-           }}
+              setCanonicalOperation(null);
+              void getInstanceDetail(instanceId)
+                .then((result) => {
+                  setDetail(result);
+                  return refreshContent();
+                })
+                .catch((cause) => setError(formatError(cause)));
+            }}
         />
       )}
 

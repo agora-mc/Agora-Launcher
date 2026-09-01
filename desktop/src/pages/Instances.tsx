@@ -3,14 +3,14 @@ import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } f
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
-  checkInstanceUpdates,
   cloneInstance,
   createInstance,
   createSnapshot,
   deleteInstance,
-  getSetting,
+  getCachedAllUpdates,
   getCustomIcon,
   getInstanceDetail,
+  getSetting,
   listInstances,
   listLoaderVersions,
   listManifestLoaders,
@@ -25,13 +25,10 @@ import {
   type HealthReport,
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
-  type UpdateInfo,
 } from '../lib/tauri';
-import type { InstallIntent } from '../lib/installFlow';
 import { sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { type ProcessState } from '../lib/useProcessController';
-import { InstallFlow } from '../components/InstallFlow';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -81,6 +78,7 @@ export function Instances({
   const [instanceIcons, setInstanceIcons] = useState<Record<string, string>>({});
   const [snapshotReadiness, setSnapshotReadiness] = useState<Record<string, 'ready' | 'pending' | 'failed'>>({});
   const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
+  const [updateCounts, setUpdateCounts] = useState<Record<string, number>>({});
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<InstanceRow | null>(null);
@@ -158,6 +156,29 @@ export function Instances({
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Update badge counts from the persisted cache (sweep-populated). No
+  // network call here; the editor and startup sweep own freshness.
+  useEffect(() => {
+    if (instances.length === 0) {
+      setUpdateCounts({});
+      return;
+    }
+    let cancelled = false;
+    void getCachedAllUpdates()
+      .then((rows) => {
+        if (cancelled) return;
+        const counts: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.updates.length > 0) counts[row.instance_id] = row.updates.length;
+        }
+        setUpdateCounts(counts);
+      })
+      .catch(() => {
+        if (!cancelled) setUpdateCounts({});
+      });
+    return () => { cancelled = true; };
+  }, [instances]);
 
   // Surfaced in the hero so "is anything running?" is answerable without
   // scanning the grid.
@@ -321,14 +342,11 @@ export function Instances({
                   await createSnapshot(instance.instance_id, 'Initial import retry');
                   await refresh();
                 }}
+                updateCount={updateCounts[instance.instance_id] ?? 0}
               />
             );
           })}
         </ul>
-      )}
-
-      {instances.length > 0 && (
-        <UpdatesSection instances={instances} />
       )}
 
       {showCreate && (
@@ -411,6 +429,7 @@ function InstanceCard({
   onReviewHealth,
   onRefreshHealth,
   onRetryRecovery,
+  updateCount,
 }: {
   instance: InstanceRow;
   iconSrc: string | null;
@@ -441,6 +460,7 @@ function InstanceCard({
   onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
   onRefreshHealth: () => Promise<void>;
   onRetryRecovery: () => Promise<void>;
+  updateCount?: number;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
@@ -546,6 +566,17 @@ function InstanceCard({
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <LoaderChip loader={instance.loader} loaderVersion={instance.loader_version} />
               <MetaChip>MC {instance.minecraft_version}</MetaChip>
+              {typeof updateCount === 'number' && updateCount > 0 && !instance.is_locked && (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+                  aria-label={`${updateCount} update${updateCount === 1 ? '' : 's'} available for ${instance.name}`}
+                  title={`${updateCount} update${updateCount === 1 ? '' : 's'} available — click to manage`}
+                >
+                  <span aria-hidden="true">↻</span> {updateCount} update{updateCount === 1 ? '' : 's'}
+                </button>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mt-1.5">
               {isRunning ? (
@@ -860,269 +891,6 @@ function InstanceCard({
         </button>
       </div>
     </li>
-  );
-}
-
-/** A section that checks for updates, batches them, and applies them safely. */
-
-function UpdatesSection({
-  instances,
-}: {
-  instances: InstanceRow[];
-}) {
-  const [updatesByInstance, setUpdatesByInstance] = useState<Record<string, UpdateInfo[]>>({});
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [checking, setChecking] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [batchFlow, setBatchFlow] = useState<{
-    intent: InstallIntent;
-    instanceName: string;
-  } | null>(null);
-  const [showConfirm, setShowConfirm] = useState<{
-    instanceId: string;
-    instanceName: string;
-    updates: UpdateInfo[];
-  } | null>(null);
-
-  const checkAll = async () => {
-    setChecking(true);
-    setUpdateError(null);
-    const results: Record<string, UpdateInfo[]> = {};
-    let failedChecks = 0;
-    for (const inst of instances) {
-      if (inst.is_locked) continue; // skip locked instances
-      try {
-        const updates = await checkInstanceUpdates(inst.instance_id);
-        if (updates.length > 0) results[inst.instance_id] = updates;
-      } catch {
-        failedChecks += 1;
-      }
-    }
-    setUpdatesByInstance(results);
-    setSelected(new Set());
-    if (failedChecks > 0) {
-      setUpdateError(`Could not check ${failedChecks} instance${failedChecks === 1 ? '' : 's'} for updates.`);
-    }
-    setChecking(false);
-  };
-
-  const totalUpdates = Object.values(updatesByInstance).reduce((sum, u) => sum + u.length, 0);
-
-  /** Toggle per-mod selection. */
-  const toggleSelected = (key: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-
-  const applyUpdates = () => {
-    if (!showConfirm) return;
-
-    const { instanceId, instanceName, updates } = showConfirm;
-    const toUpdate = selected.size > 0
-      ? updates.filter((update) => selected.has(`${instanceId}:${update.mod_jar_id}`))
-      : updates;
-    if (toUpdate.length === 0) return;
-
-    setShowConfirm(null);
-    setUpdateError(null);
-    setBatchFlow({
-      instanceName,
-      intent: {
-        action: {
-          type: 'batch-update',
-          items: toUpdate.map((update) => ({
-            itemId: update.mod_jar_id,
-            targetVersion: update.target_version,
-          })),
-        },
-        targetInstance: instanceId,
-        optionalDeps: { type: 'prompt' },
-        requestedBy: 'auto-update',
-        overrides: {
-          allowReplace: false,
-          skipHealthScan: false,
-          forceConflictResolution: {},
-        },
-      },
-    });
-  };
-
-  if (totalUpdates === 0 && !checking) {
-    return (
-      <div className="mt-6">
-        <button
-          onClick={checkAll}
-          disabled={checking}
-          className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
-        >
-          {checking ? 'Checking…' : 'Check for Updates'}
-        </button>
-      </div>
-    );
-  }
-
-  const allSelected = (updates: UpdateInfo[], instId: string) =>
-    updates.every((u) => selected.has(`${instId}:${u.mod_jar_id}`));
-
-  return (
-    <div className="mt-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Updates Available ({totalUpdates})</h3>
-        <button
-          onClick={checkAll}
-          disabled={checking}
-          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
-        >
-          {checking ? 'Checking…' : 'Refresh'}
-        </button>
-      </div>
-      {updateError && (
-        <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-          {updateError}
-        </div>
-      )}
-      {Object.entries(updatesByInstance).map(([instId, updates]) => {
-        const inst = instances.find((i) => i.instance_id === instId);
-        const locked = inst?.is_locked ?? false;
-        const selectedCount = updates.filter((u) => selected.has(`${instId}:${u.mod_jar_id}`)).length;
-        return (
-          <div key={instId} className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium">{inst?.name ?? instId}</p>
-              {locked && <span className="text-xs text-muted-foreground">🔒 Locked — updates disabled</span>}
-            </div>
-            <div className="space-y-1">
-              {updates.map((u) => {
-                const key = `${instId}:${u.mod_jar_id}`;
-                return (
-                  <div key={u.mod_jar_id} className="flex items-center gap-2 text-xs">
-                    {!locked && (
-                      <input
-                        type="checkbox"
-                        checked={selected.has(key)}
-                        onChange={() => toggleSelected(key)}
-                        className="rounded"
-                      />
-                    )}
-                    <span className="flex-1">{u.filename}</span>
-                    <span className="text-muted-foreground">{u.current_version} → <span className="text-primary">{u.latest_version}</span></span>
-                  </div>
-                );
-              })}
-            </div>
-            {!locked && (
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    // Select/deselect all for this instance
-                    setSelected((previous) => {
-                      const next = new Set(previous);
-                      if (updates.every((update) => next.has(`${instId}:${update.mod_jar_id}`))) {
-                        updates.forEach((update) => next.delete(`${instId}:${update.mod_jar_id}`));
-                      } else {
-                        updates.forEach((update) => next.add(`${instId}:${update.mod_jar_id}`));
-                      }
-                      return next;
-                    });
-                  }}
-                  className="text-xs text-primary hover:underline"
-                >
-                  {allSelected(updates, instId) ? 'Deselect all' : 'Select all'}
-                </button>
-                {selectedCount > 0 && (
-                  <button
-                    onClick={() => setShowConfirm({ instanceId: instId, instanceName: inst?.name ?? instId, updates })}
-                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    Update Selected ({selectedCount})
-                  </button>
-                )}
-                {selectedCount === 0 && (
-                  <button
-                    onClick={() => {
-                      setSelected((previous) => {
-                        const next = new Set(previous);
-                        updates.forEach((update) => next.add(`${instId}:${update.mod_jar_id}`));
-                        return next;
-                      });
-                      setShowConfirm({ instanceId: instId, instanceName: inst?.name ?? instId, updates });
-                    }}
-                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    Update All ({updates.length})
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {showConfirm && (
-        <aside
-          className="fixed bottom-4 right-4 z-[62] w-[min(28rem,calc(100vw-2rem))] max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card p-4 shadow-2xl flex flex-col gap-3"
-          role="dialog"
-          aria-modal="false"
-          aria-labelledby="update-confirm-title"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 id="update-confirm-title" className="text-sm font-semibold">
-                Review {showConfirm.updates.filter((update) => selected.has(`${showConfirm.instanceId}:${update.mod_jar_id}`) || selected.size === 0).length} updates
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Agora will resolve dependencies and conflicts for {showConfirm.instanceName} before anything changes.
-              </p>
-            </div>
-            <button onClick={() => setShowConfirm(null)} className="shrink-0 rounded border border-input px-2 py-1 text-xs hover:bg-accent">Close</button>
-          </div>
-          <ul className="max-h-48 space-y-1 overflow-y-auto text-xs pr-1">
-            {showConfirm.updates
-              .filter((update) => selected.has(`${showConfirm.instanceId}:${update.mod_jar_id}`) || selected.size === 0)
-              .map((update) => (
-                <li key={update.mod_jar_id} className="flex justify-between gap-4">
-                  <span className="truncate">{update.filename}</span>
-                  <span className="shrink-0 text-muted-foreground">
-                    {update.current_version} → <span className="text-primary">{update.latest_version}</span>
-                  </span>
-                </li>
-              ))}
-          </ul>
-          <p className="text-xs text-muted-foreground">
-            The complete batch is staged and verified first, then applied atomically behind one recovery snapshot.
-          </p>
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setShowConfirm(null)}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={applyUpdates}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              Review Plan
-            </button>
-          </div>
-        </aside>
-      )}
-
-      {batchFlow && (
-        <InstallFlow
-          open
-          intent={batchFlow.intent}
-          instanceName={batchFlow.instanceName}
-          onClose={() => {
-            setBatchFlow(null);
-            void checkAll();
-          }}
-        />
-      )}
-    </div>
   );
 }
 

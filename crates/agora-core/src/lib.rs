@@ -90,4 +90,5 @@ pub mod snapshot;
 pub mod state;
 pub mod task_scheduler;
 pub mod technic;
+pub mod update_cache;
 pub mod version_match;
