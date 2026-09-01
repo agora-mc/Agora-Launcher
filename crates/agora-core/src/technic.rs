@@ -671,6 +671,9 @@ async fn resolve_solder_build_http(
         loader: loader.into(),
         loader_version: forge_version.unwrap_or_default(),
         mods,
+        slug: slug.to_string(),
+        solder_url: solder.to_string(),
+        build: build.to_string(),
     })
 }
 

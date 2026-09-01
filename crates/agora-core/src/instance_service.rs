@@ -595,17 +595,13 @@ impl InstanceService {
         }
         drop(conn);
 
-        // Read source manifest
+        // Read source manifest via canonical loader — heals pack_managed and
+        // synthesizes a name-only PackOrigin for legacy instances.
         let manifest_path = self.ctx.paths.instance_manifest(&source_id)?;
         let source_manifest: InstanceManifest = if manifest_path.exists() {
-            let text =
-                std::fs::read_to_string(&manifest_path).map_err(|e| LauncherError::Generic {
-                    code: "ERR_CLONE".into(),
-                    message: format!("Cannot read source manifest: {e}"),
-                })?;
-            serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
+            crate::helpers::read_manifest(&manifest_path).map_err(|e| LauncherError::Generic {
                 code: "ERR_CLONE".into(),
-                message: format!("Cannot parse source manifest: {e}"),
+                message: format!("Cannot read source manifest: {e}"),
             })?
         } else {
             // Synthesise a minimal manifest from the DB row.
@@ -651,14 +647,24 @@ impl InstanceService {
             launch_mode_override: "auto".into(),
             import_source: None,
         };
-        let new_manifest = InstanceManifest {
+        let mut new_manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
             instance_id: new_id.clone(),
             name: request.new_name.trim().to_owned(),
             // A clone is always a fresh, unlocked working copy — never inherit
             // the source's locked flag (the DB row and manifest must agree).
             is_locked: false,
-            ..source_manifest
+            ..source_manifest.clone()
         };
+        // Clone keeps pack identity so it can still be updated, but records
+        // where it came from and refreshes installed_at. pack_content_hash
+        // is recomputed after the directory is cloned, so clear it here.
+        if let Some(mut origin) = new_manifest.pack_origin.take() {
+            origin.cloned_from = Some(source_id.clone());
+            origin.installed_at = chrono::Utc::now().to_rfc3339();
+            origin.pack_content_hash = None;
+            new_manifest.pack_origin = Some(origin);
+        }
 
         let operation_id = op.id().clone();
         self.ctx.progress_sink.report(ProgressEvent::new(
@@ -681,6 +687,20 @@ impl InstanceService {
                 code: "ERR_CLONE".into(),
                 message: error,
             });
+        }
+
+        // Recompute pack content hash from the cloned directory (respecting
+        // ClonePrefs; symlinks/hardlinks are hashed via file contents, so
+        // recomputing is more accurate than copying DB rows).
+        if let Some(origin) = new_manifest.pack_origin.as_mut() {
+            let pack_files =
+                crate::pack_inventory::collect_pack_inventory(&staging).unwrap_or_default();
+            let pack_hash = if pack_files.is_empty() {
+                None
+            } else {
+                Some(crate::pack_inventory::pack_content_hash(&pack_files))
+            };
+            origin.pack_content_hash = pack_hash;
         }
 
         // Write updated manifest
@@ -739,6 +759,15 @@ impl InstanceService {
                 code: "ERR_LOCAL_STATE_FAILED".into(),
                 message: error.to_string(),
             });
+        }
+
+        // Persist pack file inventory for the clone — recomputed from the
+        // cloned directory so ClonePrefs filtering and symlink/hardlink
+        // handling are reflected, not just copied DB rows.
+        if new_manifest.pack_origin.is_some() {
+            if let Ok(pack_files) = crate::pack_inventory::collect_pack_inventory(&dest_dir) {
+                let _ = crate::db::replace_instance_pack_files(&conn, &new_id, &pack_files);
+            }
         }
 
         // Launcher profile
@@ -1474,6 +1503,104 @@ mod tests {
         let clone_ops: Vec<_> = all.iter().filter(|o| o.label == "Clone instance").collect();
         assert_eq!(clone_ops.len(), 1);
         assert!(matches!(clone_ops[0].status, OpStatus::Failed(_)));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clone_keeps_pack_identity_with_cloned_from_and_fresh_hash() {
+        let (ctx, root) = context();
+        // Create source instance with a real PackOrigin and a file to hash
+        let request = CreateInstanceRequest {
+            name: "SourcePack".into(),
+            instance_id: "source-pack".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+        };
+        let row = prepare_row("source-pack", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        drop(conn);
+        let src_dir = ctx.paths.instance_dir("source-pack").unwrap();
+        std::fs::create_dir_all(src_dir.join("mods")).unwrap();
+        std::fs::write(src_dir.join("mods").join("a.jar"), b"pack mod").unwrap();
+        std::fs::create_dir_all(src_dir.join("config")).unwrap();
+        std::fs::write(src_dir.join("config").join("pack.toml"), b"cfg").unwrap();
+
+        let mut manifest = manifest_from_request("source-pack", &request);
+        let pack_files = crate::pack_inventory::collect_pack_inventory(&src_dir).unwrap();
+        let pack_hash = crate::pack_inventory::pack_content_hash(&pack_files);
+        manifest.pack_origin = Some(crate::models::PackOrigin {
+            platform: crate::models::PackPlatform::Modrinth,
+            pack_name: "SourcePack".into(),
+            project_id: Some("proj-123".into()),
+            version_id: Some("v1".into()),
+            version_number: None,
+            origin_url: Some("https://cdn.modrinth.com/pack.mrpack".into()),
+            pack_content_hash: Some(pack_hash.clone()),
+            pack_minecraft_version: Some("1.20.1".into()),
+            pack_loader: Some("fabric".into()),
+            pack_loader_version: Some("0.15.0".into()),
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: "2024-01-01T00:00:00Z".into(),
+        });
+        std::fs::write(
+            ctx.paths.instance_manifest("source-pack").unwrap(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        // Persist pack inventory for source
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::replace_instance_pack_files(&conn, "source-pack", &pack_files).unwrap();
+        drop(conn);
+
+        let service = InstanceService::new(ctx.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let clone_row = rt
+            .block_on(service.clone(CloneRequest {
+                source_instance_id: "source-pack".into(),
+                new_name: "ClonedPack".into(),
+                prefs: ClonePrefs::default(),
+            }))
+            .unwrap();
+        assert_eq!(clone_row.instance_id, "ClonedPack");
+
+        // Manifest should keep pack identity but set cloned_from and fresh installed_at
+        let clone_manifest =
+            crate::helpers::read_manifest(&ctx.paths.instance_manifest("ClonedPack").unwrap())
+                .unwrap();
+        let origin = clone_manifest
+            .pack_origin
+            .expect("clone must keep PackOrigin");
+        assert_eq!(origin.platform, crate::models::PackPlatform::Modrinth);
+        assert_eq!(origin.pack_name, "SourcePack");
+        assert_eq!(origin.project_id.as_deref(), Some("proj-123"));
+        assert_eq!(origin.cloned_from.as_deref(), Some("source-pack"));
+        assert_ne!(origin.installed_at, "2024-01-01T00:00:00Z");
+        assert!(origin.pack_content_hash.is_some());
+        // Hash must match the cloned directory's actual inventory (recomputed, not copied stale)
+        let clone_dir = ctx.paths.instance_dir("ClonedPack").unwrap();
+        let live_files = crate::pack_inventory::collect_pack_inventory(&clone_dir).unwrap();
+        assert_eq!(
+            origin.pack_content_hash.as_deref(),
+            Some(crate::pack_inventory::pack_content_hash(&live_files).as_str())
+        );
+        // DB inventory for clone must exist and match live files (recomputed, not empty)
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let db_files = crate::db::list_instance_pack_files(&conn, "ClonedPack").unwrap();
+        assert!(!db_files.is_empty());
+        assert_eq!(db_files, live_files);
 
         let _ = std::fs::remove_dir_all(root);
     }

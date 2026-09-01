@@ -149,6 +149,7 @@ function fallbackContentRows(manifest: InstanceManifest | null): InstalledConten
       key: `${entry.content_type}:${entry.filename}:${entry.sha256}`,
       filename: entry.filename,
       display_name: entry.filename.replace(/\.[^.]+$/, ''),
+      pack_managed: entry.pack_managed ?? false,
       version: entry.version,
       content_type: entry.content_type,
       enabled: entry.enabled,

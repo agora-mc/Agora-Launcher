@@ -29,6 +29,7 @@ import {
 import { sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { type ProcessState } from '../lib/useProcessController';
+import { type RunningProcess } from '../lib/tauri';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -43,6 +44,7 @@ import {
 export function Instances({
   onEditInstance,
   processState,
+  liveSessions,
   onStartLaunch,
   onKillProcess,
   onStartCrashInvestigation,
@@ -56,6 +58,8 @@ export function Instances({
 }: {
   onEditInstance: (id: string) => void;
   processState: ProcessState;
+  /** Every tracked session. More than one instance can run at once. */
+  liveSessions: RunningProcess[];
   onStartLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
   onKillProcess: () => Promise<void>;
   onStartCrashInvestigation: (investigation: {
@@ -293,7 +297,9 @@ export function Instances({
       ) : (
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {instances.map((instance) => {
-            const isRunning = processState.instanceId === instance.instance_id && processState.phase === 'running';
+            const sessionCount = liveSessions.filter((session) => session.instance_id === instance.instance_id).length;
+            const isRunning = sessionCount > 0
+              || (processState.instanceId === instance.instance_id && processState.phase === 'running');
             const isCurrentFailed = processState.instanceId === instance.instance_id && processState.phase === 'failed';
             const isLaunchBusy = processState.phase === 'launching';
             const isCurrentLaunchBusy = isLaunchBusy && processState.instanceId === instance.instance_id;

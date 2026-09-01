@@ -1,6 +1,9 @@
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
-use crate::models::{InstalledMod, InstanceManifest};
+use crate::models::{
+    heal_pack_managed, InstalledMod, InstanceManifest, PackOrigin, PackPlatform,
+    CURRENT_MANIFEST_VERSION,
+};
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -111,10 +114,7 @@ pub fn check_not_locked(ctx: &Ctx, instance_id: &str) -> LauncherResult<()> {
     if !manifest_path.exists() {
         return Ok(());
     }
-    let text =
-        std::fs::read_to_string(&manifest_path).map_err(|_| LauncherError::InstanceCreateFailed)?;
-    let manifest: InstanceManifest =
-        serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    let manifest = read_manifest(&manifest_path)?;
     if manifest.is_locked {
         return Err(LauncherError::InstanceLocked);
     }
@@ -141,15 +141,24 @@ pub fn atomic_write_manifest(
     manifest_path: &Path,
     manifest: &InstanceManifest,
 ) -> LauncherResult<()> {
+    let mut to_write = manifest.clone();
+    to_write.manifest_version = CURRENT_MANIFEST_VERSION;
     let tmp_path = manifest_path.with_extension("json.tmp");
     let text =
-        serde_json::to_string_pretty(manifest).map_err(|_| LauncherError::InstanceCreateFailed)?;
+        serde_json::to_string_pretty(&to_write).map_err(|_| LauncherError::InstanceCreateFailed)?;
     std::fs::write(&tmp_path, text).map_err(|_| LauncherError::InstanceCreateFailed)?;
     std::fs::rename(&tmp_path, manifest_path).map_err(|_| LauncherError::InstanceCreateFailed)?;
     Ok(())
 }
 
-/// Read the instance manifest from disk.
+/// Read the instance manifest from disk, healing legacy fields lazily.
+///
+/// After deserializing, runs `heal_pack_managed` and, if `pack_origin` is
+/// still `None` but `created_from_pack` is `Some(name)`, synthesizes a
+/// name-only `PackOrigin { platform: Unknown, pack_name: name, .. }`.
+/// The healed value exists only in memory; the file is rewritten only on
+/// the next `atomic_write_manifest`, so there is no startup mass-rewrite.
+/// `created_from_pack == None` is treated as UNKNOWN, not "user-created".
 pub fn read_manifest(manifest_path: &Path) -> LauncherResult<InstanceManifest> {
     if !manifest_path.exists() {
         return Err(LauncherError::Generic {
@@ -162,7 +171,36 @@ pub fn read_manifest(manifest_path: &Path) -> LauncherResult<InstanceManifest> {
     }
     let text =
         std::fs::read_to_string(manifest_path).map_err(|_| LauncherError::InstanceCreateFailed)?;
-    serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)
+    let mut manifest: InstanceManifest =
+        serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    // Lazy backfill: heal pack_managed flags for pre-v2 manifests.
+    heal_pack_managed(&mut manifest);
+    // Synthesize a name-only PackOrigin for legacy instances that only had
+    // `created_from_pack`. Do not invent when it is None — that is UNKNOWN.
+    if manifest.pack_origin.is_none() {
+        if let Some(name) = manifest.created_from_pack.clone() {
+            if !name.trim().is_empty() {
+                manifest.pack_origin = Some(PackOrigin {
+                    platform: PackPlatform::Unknown,
+                    pack_name: name,
+                    project_id: None,
+                    version_id: None,
+                    version_number: None,
+                    origin_url: None,
+                    pack_content_hash: None,
+                    pack_minecraft_version: None,
+                    pack_loader: None,
+                    pack_loader_version: None,
+                    launcher_kind: None,
+                    installation_key: None,
+                    source_key: None,
+                    cloned_from: None,
+                    installed_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        }
+    }
+    Ok(manifest)
 }
 
 /// Stream a single file into the zip writer, computing SHA-256 + size as bytes
@@ -276,6 +314,69 @@ pub fn check_disk_space(instance_dir: &Path) -> LauncherResult<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Filesystem safety helpers — shared between launcher import and pack inventory
+// ---------------------------------------------------------------------------
+
+const LAUNCHER_EXCLUDED_FILENAMES: &[&str] = &[
+    ".curseclient",
+    "minecraftinstance.json",
+    "profile.json",
+    "instance_manifest.json",
+    ".agora",
+    ".agora_snapshots",
+    ".agora-import",
+];
+const LAUNCHER_EXCLUDED_DIRNAMES: &[&str] = &[".agora", ".agora_snapshots", ".agora-import"];
+
+pub(crate) fn is_excluded_source_name(name: &str, is_directory: bool) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with(".agora")
+        || LAUNCHER_EXCLUDED_FILENAMES
+            .iter()
+            .any(|excluded| lower == excluded.to_ascii_lowercase())
+        || (is_directory
+            && LAUNCHER_EXCLUDED_DIRNAMES
+                .iter()
+                .any(|excluded| lower == excluded.to_ascii_lowercase()))
+}
+
+pub(crate) fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType) -> bool {
+    if file_type.is_symlink() {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if std::fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            .unwrap_or(true)
+        {
+            return true;
+        }
+    }
+    // Silence unused warning on non-Windows when path is unused.
+    let _ = path;
+    false
+}
+
+pub(crate) fn hash_file_sha256(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    let mut input = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        use std::io::Read;
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +474,108 @@ mod tests {
         assert_eq!(manifest.mods.len(), 0);
 
         assert!(!remove_from_content_array(&mut manifest, "nonexistent.jar"));
+    }
+
+    #[test]
+    fn test_read_manifest_heals_legacy_and_synthesizes_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_path = tmp.path().join("instance_manifest.json");
+        // Legacy manifest: no manifest_version, no pack_origin, no pack_managed,
+        // but has created_from_pack and a mod with source modrinth-pack.
+        let legacy_json = r#"{
+            "instance_id": "legacy-test",
+            "name": "Legacy",
+            "created_from_pack": "Old Pack",
+            "minecraft_version": "1.20.1",
+            "loader": "fabric",
+            "loader_version": "0.15.0",
+            "mods": [
+                {"filename":"a.jar","source":"modrinth-pack","sha256":"aa","installed_at":"t"},
+                {"filename":"b.jar","source":"registry","sha256":"bb","installed_at":"t"}
+            ],
+            "user_preferences": {}
+        }"#;
+        std::fs::write(&manifest_path, legacy_json).unwrap();
+        let before = std::fs::read_to_string(&manifest_path).unwrap();
+
+        let manifest = read_manifest(&manifest_path).unwrap();
+        // Healed in memory
+        assert_eq!(manifest.manifest_version, 1); // read does not stamp, just heals
+        assert!(manifest.pack_origin.is_some());
+        let origin = manifest.pack_origin.as_ref().unwrap();
+        assert_eq!(origin.platform, crate::models::PackPlatform::Unknown);
+        assert_eq!(origin.pack_name, "Old Pack");
+        assert!(origin.project_id.is_none());
+        assert!(origin.version_id.is_none());
+        // pack_managed healed for modrinth-pack but not registry
+        assert!(manifest.mods[0].pack_managed);
+        assert!(!manifest.mods[1].pack_managed);
+        // File on disk unchanged
+        let after = std::fs::read_to_string(&manifest_path).unwrap();
+        assert_eq!(before, after);
+
+        // Now write via atomic_write_manifest and verify it stamps to v2
+        atomic_write_manifest(&manifest_path, &manifest).unwrap();
+        let reread = read_manifest(&manifest_path).unwrap();
+        assert_eq!(
+            reread.manifest_version,
+            crate::models::CURRENT_MANIFEST_VERSION
+        );
+        // Still has synthesized origin, now persisted
+        assert!(reread.pack_origin.is_some());
+    }
+
+    #[test]
+    fn test_read_manifest_unknown_without_created_from_pack_stays_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_path = tmp.path().join("instance_manifest.json");
+        let legacy_json = r#"{
+            "instance_id": "plain",
+            "name": "Plain",
+            "minecraft_version": "1.20.1",
+            "loader": "fabric",
+            "loader_version": "0.15.0",
+            "mods": [],
+            "user_preferences": {}
+        }"#;
+        std::fs::write(&manifest_path, legacy_json).unwrap();
+        let manifest = read_manifest(&manifest_path).unwrap();
+        // created_from_pack is None => UNKNOWN, not LocalFile, and pack_origin stays None
+        assert!(manifest.created_from_pack.is_none());
+        assert!(manifest.pack_origin.is_none());
+    }
+
+    #[test]
+    fn test_atomic_write_stamps_version_even_when_passed_v1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_path = tmp.path().join("instance_manifest.json");
+        let manifest = InstanceManifest {
+            manifest_version: 1,
+            pack_origin: None,
+            instance_id: "stamp-test".into(),
+            name: "Stamp".into(),
+            created_from_pack: None,
+            minecraft_version: "1.20.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        atomic_write_manifest(&manifest_path, &manifest).unwrap();
+        // Even though we passed v1, the file should be v2
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v.get("manifest_version").and_then(|v| v.as_u64()), Some(2));
+        // Reading back also heals but version is now 2
+        let reread = read_manifest(&manifest_path).unwrap();
+        assert_eq!(
+            reread.manifest_version,
+            crate::models::CURRENT_MANIFEST_VERSION
+        );
     }
 }

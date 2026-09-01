@@ -138,10 +138,30 @@ pub async fn export_instance_pack(
                     manifest.loader.clone(),
                     serde_json::Value::String(manifest.loader_version.clone()),
                 );
+                // `versionId` identifies the *pack* version, not the loader's.
+                // Writing `loader_version` here mislabels every exported pack
+                // for any launcher that reads it, and since import now records
+                // this field as provenance, a round-trip through Agora would
+                // store the Fabric version as the pack version.
+                //
+                // Prefer what we recorded at import so identity survives an
+                // export/import round-trip; otherwise stamp the export date,
+                // which is at least true. An edited instance still claims its
+                // source version — mrpack has no way to express "derived from".
+                let version_id = manifest
+                    .pack_origin
+                    .as_ref()
+                    .and_then(|origin| {
+                        origin
+                            .version_number
+                            .clone()
+                            .or_else(|| origin.version_id.clone())
+                    })
+                    .unwrap_or_else(|| chrono::Utc::now().format("%Y.%m.%d").to_string());
                 let index = serde_json::json!({
                     "formatVersion": 1,
                     "game": "minecraft",
-                    "versionId": manifest.loader_version,
+                    "versionId": version_id,
                     "name": manifest.name,
                     "dependencies": deps,
                     "files": files_meta,
@@ -283,5 +303,101 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), "ERR_INVALID_FORMAT");
+    }
+
+    /// Read `modrinth.index.json` back out of an exported `.mrpack`.
+    fn read_exported_index(path: &str) -> serde_json::Value {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name("modrinth.index.json").unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut text).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn export_fixture(pack_origin: Option<crate::models::PackOrigin>) -> InstanceManifest {
+        InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin,
+            instance_id: "ver-id".into(),
+            name: "Version Id".into(),
+            created_from_pack: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.5".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        }
+    }
+
+    /// Regression: `versionId` identifies the pack, never the loader. Writing
+    /// `loader_version` here mislabelled every exported pack, and since import
+    /// now reads this field as provenance it would round-trip as a lie.
+    #[tokio::test]
+    async fn mrpack_export_never_writes_the_loader_version_as_version_id() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let manifest = export_fixture(None);
+
+        let result = export_instance_pack(
+            &instance_dir,
+            &manifest,
+            &tmp.path().join("exports"),
+            "mrpack",
+        )
+        .await
+        .unwrap();
+        let index = read_exported_index(&result);
+        let version_id = index["versionId"].as_str().unwrap();
+        assert_ne!(
+            version_id, "0.16.5",
+            "that is the Fabric version, not the pack's"
+        );
+        assert!(!version_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mrpack_export_round_trips_a_recorded_pack_version() {
+        let tmp = TempDir::new().unwrap();
+        let instance_dir = tmp.path().join("instance");
+        std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+        let manifest = export_fixture(Some(crate::models::PackOrigin {
+            platform: crate::models::PackPlatform::Modrinth,
+            pack_name: "Some Pack".into(),
+            project_id: None,
+            version_id: Some("abcd1234".into()),
+            version_number: Some("1.4.2".into()),
+            origin_url: None,
+            pack_content_hash: None,
+            pack_minecraft_version: None,
+            pack_loader: None,
+            pack_loader_version: None,
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: "2026-08-31T00:00:00Z".into(),
+        }));
+
+        let result = export_instance_pack(
+            &instance_dir,
+            &manifest,
+            &tmp.path().join("exports"),
+            "mrpack",
+        )
+        .await
+        .unwrap();
+        let index = read_exported_index(&result);
+        assert_eq!(
+            index["versionId"].as_str().unwrap(),
+            "1.4.2",
+            "the human version is preferred over the opaque id when both are known"
+        );
     }
 }

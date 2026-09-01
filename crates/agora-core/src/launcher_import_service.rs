@@ -261,18 +261,6 @@ fn resolve_destination_id(
 // ---------------------------------------------------------------------------
 
 const COPY_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
-/// Files that are excluded from the copy (launcher metadata, Agora internals).
-const EXCLUDED_FILENAMES: &[&str] = &[
-    ".curseclient",
-    "minecraftinstance.json",
-    "profile.json",
-    "instance_manifest.json",
-    ".agora",
-    ".agora_snapshots",
-    ".agora-import",
-];
-/// Subdirectory names whose entire tree is excluded.
-const EXCLUDED_DIRNAMES: &[&str] = &[".agora", ".agora_snapshots", ".agora-import"];
 /// Stream-copy a regular file from `src` to `dst` while computing SHA-256.
 /// Never follows symlinks. The caller must verify `src` is a regular file.
 #[cfg(test)]
@@ -281,17 +269,7 @@ fn copy_file_with_hash(src: &Path, dst: &Path) -> io::Result<String> {
 }
 
 fn hash_regular_file(path: &Path) -> io::Result<String> {
-    let mut input = std::fs::File::open(path)?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = [0u8; COPY_BUFFER_SIZE];
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hex::encode(hasher.finalize()))
+    crate::helpers::hash_file_sha256(path)
 }
 
 fn copy_file_with_hash_control(
@@ -324,33 +302,11 @@ fn copy_file_with_hash_control(
 }
 
 fn is_excluded_source_name(name: &str, is_directory: bool) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.starts_with(".agora")
-        || EXCLUDED_FILENAMES
-            .iter()
-            .any(|excluded| lower == excluded.to_ascii_lowercase())
-        || (is_directory
-            && EXCLUDED_DIRNAMES
-                .iter()
-                .any(|excluded| lower == excluded.to_ascii_lowercase()))
+    crate::helpers::is_excluded_source_name(name, is_directory)
 }
 
-fn unsafe_filesystem_entry(_path: &Path, file_type: &std::fs::FileType) -> bool {
-    if file_type.is_symlink() {
-        return true;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if std::fs::symlink_metadata(_path)
-            .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
-            .unwrap_or(true)
-        {
-            return true;
-        }
-    }
-    false
+fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType) -> bool {
+    crate::helpers::unsafe_filesystem_entry(path, file_type)
 }
 
 use sha2::Digest;
@@ -1582,9 +1538,56 @@ impl LauncherImportService {
             })
             .unwrap_or_else(|| (String::new(), String::new(), String::new()));
 
+        // Synthesize PackOrigin for launcher batch — platform Launcher, honest
+        // identity is launcher_kind + installation_key + source_key. No
+        // project/version id exists for a launcher copy; hash covers drift.
+        let launcher_kind_str = match item.launcher_kind {
+            LauncherKind::Prism => "prism",
+            LauncherKind::CurseForge => "curseforge",
+            LauncherKind::Modrinth => "modrinth",
+        };
+        let pack_files_for_manifest =
+            crate::pack_inventory::collect_pack_inventory(&staging).unwrap_or_default();
+        let pack_hash_for_manifest = if pack_files_for_manifest.is_empty() {
+            None
+        } else {
+            Some(crate::pack_inventory::pack_content_hash(
+                &pack_files_for_manifest,
+            ))
+        };
+        let pack_origin = crate::models::PackOrigin {
+            platform: crate::models::PackPlatform::Launcher,
+            pack_name: dest_name.clone(),
+            project_id: None,
+            version_id: None,
+            version_number: None,
+            origin_url: None,
+            pack_content_hash: pack_hash_for_manifest,
+            pack_minecraft_version: if mc_version.is_empty() {
+                None
+            } else {
+                Some(mc_version.clone())
+            },
+            pack_loader: if loader_name.is_empty() {
+                None
+            } else {
+                Some(loader_name.clone())
+            },
+            pack_loader_version: if loader_version.is_empty() {
+                None
+            } else {
+                Some(loader_version.clone())
+            },
+            launcher_kind: Some(launcher_kind_str.to_string()),
+            installation_key: Some(item.installation_key.clone()),
+            source_key: Some(item.source_key.clone()),
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
-            pack_origin: None,
+            pack_origin: Some(pack_origin),
             instance_id: dest_id.clone(),
             name: dest_name.clone(),
             minecraft_version: mc_version.clone(),
@@ -1813,6 +1816,11 @@ impl LauncherImportService {
                         code: "ERR_LOCAL_STATE_FAILED".into(),
                         message: msg,
                     });
+                }
+
+                // ── Persist pack file inventory for three-way merge (M1b) ─
+                if let Ok(pack_files) = crate::pack_inventory::collect_pack_inventory(&final_dir) {
+                    let _ = crate::db::replace_instance_pack_files(&conn, dest_id, &pack_files);
                 }
 
                 // ── Clean up job ─────────────────────────────────────────
@@ -2103,6 +2111,11 @@ impl LauncherImportService {
                         code: "ERR_LOCAL_STATE_FAILED".into(),
                         message: format!("Failed to commit import provenance: {e}"),
                     });
+                }
+
+                // ── Persist pack file inventory for three-way merge (M1b) ─
+                if let Ok(pack_files) = crate::pack_inventory::collect_pack_inventory(&final_dir) {
+                    let _ = crate::db::replace_instance_pack_files(&conn, dest_id, &pack_files);
                 }
 
                 // ── Clean up quarantine ──────────────────────────────────

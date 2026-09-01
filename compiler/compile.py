@@ -1648,7 +1648,7 @@ logger = logging.getLogger("compiler")
 # Schema setup
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 CREATE_INDEXES = [
@@ -1658,6 +1658,7 @@ CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_item_categories_category_id ON item_categories(category_id)",
     "CREATE INDEX IF NOT EXISTS idx_pack_mods_pack_id ON pack_mods(pack_id)",
     "CREATE INDEX IF NOT EXISTS idx_pack_mods_mod_id ON pack_mods(mod_id)",
+    "CREATE INDEX IF NOT EXISTS idx_version_changelogs_item_id ON item_version_changelogs(item_id)",
 ]
 
 
@@ -1872,6 +1873,25 @@ def create_tables(conn: sqlite3.Connection) -> None:
             description TEXT,
             PRIMARY KEY (pack_id, mod_id),
             FOREIGN KEY (mod_id) REFERENCES registry_items(id)
+        )
+    """)
+
+    # Per-version changelogs (Modrinth + GitHub). The db ships to every user,
+    # so each entry is truncated and only the most recent N per item are kept
+    # (see _CHANGELOG_MAX_CHARS / _CHANGELOG_MAX_VERSIONS_PER_ITEM). Lookup is
+    # by (item_id, version) where version is the display version string the
+    # resolver and the instance manifest already use (Modrinth version_number
+    # or GitHub tag_name). Generic shape: works for any source; curated
+    # items with no upstream simply have no rows.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS item_version_changelogs (
+            item_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            changelog TEXT NOT NULL,
+            published_at TEXT,
+            source TEXT NOT NULL,
+            PRIMARY KEY (item_id, version),
+            FOREIGN KEY (item_id) REFERENCES registry_items(id) ON DELETE CASCADE
         )
     """)
 
@@ -2437,6 +2457,23 @@ _MODRINTH_USER_AGENT = "AgoraCompiler/1.0"
 _MODRINTH_BATCH_SIZE = 100
 _MODRINTH_PAGE_BASE = "https://modrinth.com"
 
+# Per-version changelogs: the signed db ships to every user, so we bound both
+# dimensions. A project with 200 versions × long markdown would otherwise bloat
+# the registry.db that every launcher download carries. 30 recent versions ×
+# 8k chars ≈ 240 KiB per hot project in the worst case; for a boutique 150-
+# item registry that caps near ~35 MiB, and in practice far less because most
+# versions have short or empty changelogs that are dropped. Truncation keeps a
+# useful preview while keeping distribution cheap (GitHub Release Assets, $0
+# infra). These caps are a starting point — tune from real registry.db size
+# if growth is measured.
+_CHANGELOG_MAX_CHARS = 8000
+_CHANGELOG_MAX_VERSIONS_PER_ITEM = 30
+
+# Simple in-memory cache so Modrinth version fetches done for
+# compatible_versions hydration can be reused for changelog hydration without
+# a second network round-trip per project.
+_MODRINTH_VERSION_CACHE: dict[str, list[dict[str, Any]]] = {}
+
 # Modrinth `project_type` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ canonical site URL path segment.
 _PROJECT_TYPE_URL_PATH = {
     "mod": "mod",
@@ -2642,6 +2679,34 @@ def _hydrate_modrinth_metadata(items: list[dict[str, Any]]) -> None:
                 item["_hydrated_categories"] = cats
 
 
+def _fetch_modrinth_versions_cached(mid: str) -> list[dict[str, Any]] | None:
+    """Fetch Modrinth versions for *mid*, memoised in ``_MODRINTH_VERSION_CACHE``.
+
+    Returns the raw JSON list on success, ``None`` on failure. The cache keeps
+    the nightly compile from hitting the same ``/v2/project/{id}/version``
+    endpoint twice — once for ``compatible_versions`` and once for changelogs —
+    without coupling the two hydrators' control flow.
+    """
+    if mid in _MODRINTH_VERSION_CACHE:
+        return _MODRINTH_VERSION_CACHE[mid]
+    try:
+        resp = requests.get(
+            f"https://api.modrinth.com/v2/project/{mid}/version",
+            headers={"User-Agent": _MODRINTH_USER_AGENT},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            _MODRINTH_VERSION_CACHE[mid] = data
+            return data
+        logger.warning("Modrinth version fetch for '%s' returned non-list", mid)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Modrinth version hydration failed for project '%s': %s", mid, exc)
+        return None
+
+
 def _hydrate_modrinth_versions(items: list[dict[str, Any]]) -> None:
     """Batch-query the Modrinth version API to populate compatible_versions.
 
@@ -2683,41 +2748,297 @@ def _hydrate_modrinth_versions(items: list[dict[str, Any]]) -> None:
             seen_ids.add(mid)
             unique_ids.append(mid)
 
-    # Batch-fetch versions per project.
+    # Batch-fetch versions per project (via cache).
     hydrated: dict[str, list[dict[str, str]]] = {}
     for mid in unique_ids:
-        try:
-            resp = requests.get(
-                f"https://api.modrinth.com/v2/project/{mid}/version",
-                headers={"User-Agent": _MODRINTH_USER_AGENT},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            versions = resp.json()
-            # Transform into compatible_versions format.
-            compatible: list[dict[str, str]] = []
-            for ver in versions:
-                game_versions = ver.get("game_versions") or []
-                loaders = ver.get("loaders") or []
-                version_number = ver.get("version_number", "")
-                for mc_ver in game_versions:
-                    for loader in loaders:
-                        compatible.append({
-                            "mc_version": mc_ver,
-                            "loader": loader,
-                            "mod_version": version_number,
-                        })
-            hydrated[mid] = compatible
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Modrinth version hydration failed for project '%s': %s",
-                mid, exc,
-            )
+        versions = _fetch_modrinth_versions_cached(mid)
+        if versions is None:
+            continue
+        # Transform into compatible_versions format.
+        compatible: list[dict[str, str]] = []
+        for ver in versions:
+            game_versions = ver.get("game_versions") or []
+            loaders = ver.get("loaders") or []
+            version_number = ver.get("version_number", "")
+            for mc_ver in game_versions:
+                for loader in loaders:
+                    compatible.append({
+                        "mc_version": mc_ver,
+                        "loader": loader,
+                        "mod_version": version_number,
+                    })
+        hydrated[mid] = compatible
 
     # Apply hydrated versions back to items.
     for _idx, item, mid in to_hydrate:
         if mid in hydrated:
             item["_hydrated_compatible_versions"] = hydrated[mid]
+
+
+# ---------------------------------------------------------------------------
+# Per-version changelogs (§ "show what changed on update")
+# ---------------------------------------------------------------------------
+
+def _sanitize_changelog(text: str) -> str:
+    """Normalize and bound a single changelog string.
+
+    - strips surrounding whitespace,
+    - removes NUL bytes (SQLite TEXT must not contain them),
+    - truncates to ``_CHANGELOG_MAX_CHARS`` with an ellipsis. The truncation
+      is by Unicode codepoint, not bytes, so the stored value stays valid
+      UTF-8.
+    """
+    cleaned = text.strip().replace("\x00", "")
+    if len(cleaned) > _CHANGELOG_MAX_CHARS:
+        cleaned = cleaned[:_CHANGELOG_MAX_CHARS].rstrip() + "\n\n…(truncated)"
+    return cleaned
+
+
+def _extract_github_repos(item: dict[str, Any]) -> list[str]:
+    """Return the ``owner/repo`` strings this item declares via ``github_release``.
+
+    Reads the already-normalized ``download_sources`` when present (curated
+    sources in preference order); falls back to the legacy
+    ``download_strategy``/``source_identifier`` pair. Each repo appears at
+    most once per item, preserving curator order.
+    """
+    repos: list[str] = []
+    seen: set[str] = set()
+    sources = item.get("download_sources")
+    if isinstance(sources, list) and sources:
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            if src.get("strategy") != "github_release":
+                continue
+            ident = str(src.get("identifier", "")).strip()
+            if not ident or "/" not in ident:
+                continue
+            repo = "/".join(ident.split("/")[:2])
+            key = repo.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            repos.append(repo)
+        if repos:
+            return repos
+    # Legacy single-source manifests.
+    if item.get("download_strategy") == "github_release":
+        ident = str(item.get("source_identifier", "")).strip()
+        if ident and "/" in ident:
+            repo = "/".join(ident.split("/")[:2])
+            if repo.lower() not in seen:
+                repos.append(repo)
+    return repos
+
+
+def _hydrate_version_changelogs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collect per-version changelog rows for Modrinth + GitHub items.
+
+    Returns a list of dicts ``{item_id, version, changelog, published_at, source}``
+    suitable for ``_insert_version_changelogs``. The caller is responsible for
+    inserting; this function only fetches and shapes.
+
+    Strategy
+    --------
+    * **Modrinth** – one ``GET /v2/project/{id}/version`` per unique
+      ``modrinth_id`` (reused via ``_MODRINTH_VERSION_CACHE`` so a project
+      already fetched by ``_hydrate_modrinth_versions`` costs no second
+      request). For each project, sort versions by ``date_published`` desc and
+      keep the most recent ``_CHANGELOG_MAX_VERSIONS_PER_ITEM`` non-empty
+      changelogs, sanitized and truncated.
+
+    * **GitHub** – one ``GET /repos/{owner}/{repo}/releases?per_page=30`` per
+      unique ``owner/repo`` (via ``_github_request`` when a token is present
+      so the 5000/hr limit applies, otherwise anonymous with a 60/hr budget).
+      Each release contributes its ``tag_name`` → changelog (release ``body``).
+      Only the most recent ``_CHANGELOG_MAX_VERSIONS_PER_ITEM`` non-empty
+      bodies are kept. The request is capped at 30 so even a repo with 400
+      releases does not bloat the nightly job.
+
+    Failures are soft: a per-project warning is logged and the remaining items
+    are still processed. An item whose source has no upstream (``direct_hash``,
+    ``curated_pack``, ``technic_pack``) naturally yields no rows — the table
+    simply has nothing for it, and the desktop shows a graceful fallback.
+    """
+    rows: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()  # (item_id.lower, version)
+
+    # ---- Modrinth ----
+    # All items that declare a Modrinth project, not just those that lacked
+    # compatible_versions — changelogs are wanted even when versions were
+    # already provided by the manifest.
+    mid_to_items: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        strategy = item.get("download_strategy", "")
+        if strategy == "modrinth_id":
+            mid = item.get("modrinth_id") or item.get("source_identifier", "")
+        else:
+            mid = item.get("modrinth_id", "")
+        if not mid:
+            continue
+        mid = str(mid).strip()
+        if not mid:
+            continue
+        mid_to_items.setdefault(mid, []).append(item)
+
+    for mid, item_list in mid_to_items.items():
+        versions = _fetch_modrinth_versions_cached(mid)
+        if versions is None:
+            continue
+        # Sort newest first by date_published; fallback to empty string so
+        # undated versions sort last but stay deterministic.
+        versions_sorted = sorted(
+            versions, key=lambda v: v.get("date_published") or "", reverse=True
+        )
+        for item in item_list:
+            kept = 0
+            item_id = str(item.get("id", "")).strip()
+            if not item_id:
+                continue
+            for ver in versions_sorted:
+                if kept >= _CHANGELOG_MAX_VERSIONS_PER_ITEM:
+                    break
+                version_number = str(ver.get("version_number", "")).strip()
+                if not version_number:
+                    continue
+                changelog = ver.get("changelog")
+                if not isinstance(changelog, str) or not changelog.strip():
+                    continue
+                key = (item_id.lower(), version_number)
+                if key in seen_keys:
+                    continue
+                cleaned = _sanitize_changelog(changelog)
+                if not cleaned:
+                    continue
+                rows.append({
+                    "item_id": item_id,
+                    "version": version_number,
+                    "changelog": cleaned,
+                    "published_at": ver.get("date_published"),
+                    "source": "modrinth_id",
+                })
+                seen_keys.add(key)
+                kept += 1
+
+    # ---- GitHub ----
+    repo_to_items: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        for repo in _extract_github_repos(item):
+            repo_to_items.setdefault(repo, []).append(item)
+
+    if repo_to_items:
+        token = _load_github_token()
+        for repo, item_list in repo_to_items.items():
+            owner, _, name = repo.partition("/")
+            if not owner or not name:
+                continue
+            releases: list[dict[str, Any]] | None = None
+            try:
+                if token:
+                    data = _github_request(
+                        "GET",
+                        f"/repos/{owner}/{name}/releases",
+                        token=token,
+                        params={"per_page": _CHANGELOG_MAX_VERSIONS_PER_ITEM},
+                    )
+                    if isinstance(data, list):
+                        releases = data
+                    else:
+                        logger.warning("GitHub releases for '%s' returned non-list", repo)
+                        continue
+                else:
+                    resp = requests.get(
+                        f"https://api.github.com/repos/{owner}/{name}/releases",
+                        params={"per_page": _CHANGELOG_MAX_VERSIONS_PER_ITEM},
+                        headers={
+                            "User-Agent": _MODRINTH_USER_AGENT,
+                            "Accept": "application/vnd.github+json",
+                        },
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if isinstance(data, list):
+                        releases = data
+                    else:
+                        logger.warning("GitHub releases for '%s' returned non-list", repo)
+                        continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("GitHub changelog hydration failed for '%s': %s", repo, exc)
+                continue
+            if not releases:
+                continue
+            # GitHub already returns newest first, but sort to be explicit.
+            releases_sorted = sorted(
+                releases, key=lambda r: r.get("published_at") or r.get("created_at") or "", reverse=True
+            )
+            for item in item_list:
+                kept = 0
+                item_id = str(item.get("id", "")).strip()
+                if not item_id:
+                    continue
+                # Track per-item seen versions so a repo shared by two items
+                # does not let the second item skip its slot due to cross-item seen.
+                # Global seen_keys already guards (item_id, version) uniqueness
+                # across both Modrinth and GitHub sources.
+                for rel in releases_sorted:
+                    if kept >= _CHANGELOG_MAX_VERSIONS_PER_ITEM:
+                        break
+                    tag = str(rel.get("tag_name", "")).strip()
+                    if not tag:
+                        continue
+                    key = (item_id.lower(), tag)
+                    if key in seen_keys:
+                        continue
+                    body = rel.get("body")
+                    if not isinstance(body, str) or not body.strip():
+                        continue
+                    cleaned = _sanitize_changelog(body)
+                    if not cleaned:
+                        continue
+                    rows.append({
+                        "item_id": item_id,
+                        "version": tag,
+                        "changelog": cleaned,
+                        "published_at": rel.get("published_at") or rel.get("created_at"),
+                        "source": "github_release",
+                    })
+                    seen_keys.add(key)
+                    kept += 1
+
+    return rows
+
+
+def _insert_version_changelogs(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
+    """Insert ``rows`` into ``item_version_changelogs``.
+
+    Uses ``INSERT OR IGNORE`` so the first source to claim a given
+    ``(item_id, version)`` wins. For an item with both a Modrinth and a GitHub
+    source that happen to publish the same version string, the Modrinth fetch
+    runs first, so its changelog is kept — deterministic and matches the
+    curator's download-source preference order where Modrinth usually comes
+    first for such items. Returns the number of rows attempted.
+    """
+    if not rows:
+        return 0
+    cursor = conn.cursor()
+    for row in rows:
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO item_version_changelogs
+                (item_id, version, changelog, published_at, source)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                row["item_id"],
+                row["version"],
+                row["changelog"],
+                row.get("published_at"),
+                row.get("source", "unknown"),
+            ),
+        )
+    return len(rows)
 
 
 def insert_pack_mods(conn: sqlite3.Connection, pack_id: str, mods: list[dict[str, Any]]) -> None:
@@ -3163,6 +3484,9 @@ def compile_registry(
             logger.error("Invalid download sources in %s", path)
             raise
 
+    # Clear the per-run version cache (tests may call compile twice in-process).
+    _MODRINTH_VERSION_CACHE.clear()
+
     # Hydrate Modrinth metadata (description, body, icon, gallery, page URL,
     # license, updated) for modrinth_id items (in-place, with override precedence).
     _hydrate_modrinth_metadata([item for _, item in all_items])
@@ -3170,6 +3494,16 @@ def compile_registry(
     # Hydrate compatible_versions from Modrinth version API for items that
     # lack it in the manifest (in-place, with manifest/override precedence).
     _hydrate_modrinth_versions([item for _, item in all_items])
+
+    # Collect per-version changelogs (Modrinth + GitHub) for the new
+    # item_version_changelogs table. Captured here so the same normalized
+    # item list is used; inserted after registry_items so FK is satisfied.
+    try:
+        _pending_changelog_rows = _hydrate_version_changelogs([item for _, item in all_items])
+        logger.info("Collected %d per-version changelogs", len(_pending_changelog_rows))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Version changelog hydration failed: %s", exc)
+        _pending_changelog_rows = []
 
     # Governance pipeline (replaces legacy Pass 1/2/3).
     # v1 safety: GitHub reads only; NEVER mutates GitHub in any mode.
@@ -3270,6 +3604,13 @@ def compile_registry(
             else:
                 other_count += 1
     logger.info("Inserted %d mod(s), %d pack(s), %d other item(s)", mod_count, pack_count, other_count)
+
+    # Per-version changelogs — must run after registry_items so FK is satisfied.
+    try:
+        inserted = _insert_version_changelogs(conn, _pending_changelog_rows)
+        logger.info("Inserted %d per-version changelogs", inserted)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to insert version changelogs: %s", exc)
 
     # Enrich governance_summary and governance_events tables.
     try:

@@ -18,6 +18,7 @@ import {
   type JavaRuntimeProgressEvent,
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
+  type RunningProcess,
 } from './tauri';
 import { activeHealthWarnings, loadHealthPreferences } from './healthPreferences';
 
@@ -63,6 +64,8 @@ export interface ProcessState {
 
 export interface ProcessController {
   state: ProcessState;
+  /** Every tracked session, not just the focused one. */
+  liveSessions: RunningProcess[];
   /** Bounded log buffer for the tracked instance. */
   logs: LogLine[];
   /** Start a health-gated launch. Shows the health dialog when warnings/blockers exist. */
@@ -162,6 +165,12 @@ interface GameLogBatchEvent {
 
 export function useProcessController(): ProcessController {
   const [state, setState] = useState<ProcessState>(INITIAL_STATE);
+  /**
+   * Every direct-launch session the backend is tracking. `state` describes the
+   * focused one; this is what answers "is instance X running?" when more than
+   * one game is up, including two of the same instance.
+   */
+  const [liveSessions, setLiveSessions] = useState<RunningProcess[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -171,8 +180,13 @@ export function useProcessController(): ProcessController {
     let cancelled = false;
     (async () => {
       try {
-        const running = await queryLaunchState();
-        if (!cancelled && running) {
+        const sessions = await queryLaunchState();
+        if (cancelled) return;
+        setLiveSessions(sessions);
+        // Focus the oldest session so the console and Stop button have a
+        // definite target; the rest are still reported via `liveSessions`.
+        const running = sessions[0];
+        if (running) {
           setState({
             phase: 'running',
             instanceId: running.instance_id,
@@ -746,6 +760,7 @@ export function useProcessController(): ProcessController {
   return {
     state,
     logs,
+    liveSessions,
     startLaunch,
     startLaunchDetailed,
     approveLaunch,

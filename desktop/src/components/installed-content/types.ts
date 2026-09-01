@@ -35,6 +35,19 @@ export interface SortState {
   direction: 'asc' | 'desc' | null;
 }
 
+/**
+ * How the installed list is grouped. Every mode is *derived* from data the row
+ * already carries, so grouping needs no stored state of its own.
+ */
+export type GroupMode = 'none' | 'pack' | 'category' | 'source';
+
+export interface ContentGroup {
+  /** Stable identity for collapse state; not shown to the user. */
+  key: string;
+  label: string;
+  rows: InstalledContentRow[];
+}
+
 export interface ContentFilters {
   categories: string[];
   curation: string;

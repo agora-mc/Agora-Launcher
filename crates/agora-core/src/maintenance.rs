@@ -8,7 +8,6 @@
 
 use crate::ctx::Ctx;
 use crate::lock_manager::LockResource;
-use crate::models::InstanceManifest;
 use crate::task_scheduler::BlockingPriority;
 use std::time::Duration;
 
@@ -86,10 +85,7 @@ fn prewarm_blocking(ctx: &Ctx) -> Result<WarmupSummary, String> {
         drop(lock);
 
         let manifest_path = instance_dir.join("instance_manifest.json");
-        let manifest = match std::fs::read_to_string(&manifest_path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<InstanceManifest>(&text).ok())
-        {
+        let manifest = match crate::helpers::read_manifest(&manifest_path).ok() {
             Some(manifest) => manifest,
             None => {
                 summary.skipped += 1;

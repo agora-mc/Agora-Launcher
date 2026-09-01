@@ -1231,6 +1231,7 @@ mod tests {
 
         // No mutation: manifest and DB still carry the old tuple.
         let manifest: InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
             &std::fs::read(ctx.paths.instance_manifest("plan-test").unwrap()).unwrap(),
         )
         .unwrap();

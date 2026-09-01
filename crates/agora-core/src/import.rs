@@ -1,6 +1,8 @@
 use crate::error::{LauncherError, LauncherResult};
 use crate::event_sink::{OperationId, ProgressEvent, ProgressPhase, ProgressSink};
-use crate::models::{InstalledMod, InstanceManifest};
+use crate::models::{
+    InstalledMod, InstanceManifest, PackOrigin, PackPlatform, CURRENT_MANIFEST_VERSION,
+};
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -32,6 +34,13 @@ pub struct DetectedLauncher {
 struct MrpackIndex {
     #[serde(default)]
     name: String,
+    /// Opaque version identifier from `modrinth.index.json#versionId`.
+    /// The spec describes it as a unique id for this version; in practice
+    /// authors and packwiz write a human string (e.g. "1.4.2") or leave it
+    /// absent. We treat it as opaque and store it as `version_id`; see
+    /// `import_mrpack_with_progress` for the judgement call.
+    #[serde(default, alias = "versionId")]
+    version_id: Option<String>,
     dependencies: Option<serde_json::Value>,
     files: Vec<MrpackFile>,
     #[serde(default)]
@@ -72,7 +81,7 @@ fn sanitize(name: &str) -> String {
 const MAX_MRPACK_FILE_BYTES: usize = 500 * 1024 * 1024;
 const MAX_MRPACK_OVERRIDE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_MRPACK_OVERRIDE_FILES: usize = 5000;
-const ALLOWED_OVERRIDE_PREFIXES: &[&str] = &[
+pub(crate) const ALLOWED_OVERRIDE_PREFIXES: &[&str] = &[
     "config/",
     "defaultconfigs/",
     "resourcepacks/",
@@ -499,13 +508,37 @@ fn copy_directory_excluding_top_level(
     Ok(())
 }
 
+/// Strip query and fragment from a URL so a manifest never carries a presigned token.
+fn strip_origin_url(url: &str) -> String {
+    if let Ok(mut parsed) = reqwest::Url::parse(url) {
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        parsed.to_string()
+    } else {
+        url.split('?')
+            .next()
+            .unwrap_or(url)
+            .split('#')
+            .next()
+            .unwrap_or(url)
+            .to_string()
+    }
+}
+
 /// Import an instance from a .mrpack file (Modrinth modpack format).
 pub fn import_mrpack(
     mrpack_path: &Path,
     instances_root: &Path,
     _symlink_saves: bool,
 ) -> LauncherResult<ImportResult> {
-    import_mrpack_with_progress(mrpack_path, instances_root, _symlink_saves, None, None)
+    import_mrpack_with_progress(
+        mrpack_path,
+        instances_root,
+        _symlink_saves,
+        None,
+        None,
+        None,
+    )
 }
 
 pub fn import_mrpack_with_progress(
@@ -514,6 +547,7 @@ pub fn import_mrpack_with_progress(
     _symlink_saves: bool,
     progress_sink: Option<std::sync::Arc<dyn ProgressSink>>,
     operation_id: Option<OperationId>,
+    origin_url: Option<String>,
 ) -> LauncherResult<ImportResult> {
     let file = fs::File::open(mrpack_path).map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_OPEN".into(),
@@ -700,9 +734,63 @@ pub fn import_mrpack_with_progress(
             inventory_pack_content(target_dir, "datapacks", "datapack", &modrinth_files)?;
         let worlds = inventory_pack_content(target_dir, "saves", "world", &modrinth_files)?;
         let imported_mods = mods.len();
+        // Build PackOrigin for the Modrinth pack. `versionId` from the index is
+        // treated as the opaque `version_id`; human `version_number` stays None.
+        // No `project_id` is present in the mrpack itself — that stays None and
+        // can be resolved later via the API if needed.
+        let version_id = index
+            .version_id
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let origin_url_stripped = origin_url
+            .as_deref()
+            .map(strip_origin_url)
+            .filter(|s| !s.trim().is_empty());
+        let mut pack_origin = PackOrigin {
+            platform: PackPlatform::Modrinth,
+            pack_name: name.clone(),
+            project_id: None,
+            version_id,
+            version_number: None,
+            origin_url: origin_url_stripped,
+            pack_content_hash: None,
+            pack_minecraft_version: if minecraft_version.is_empty() {
+                None
+            } else {
+                Some(minecraft_version.clone())
+            },
+            pack_loader: if loader.is_empty() {
+                None
+            } else {
+                Some(loader.clone())
+            },
+            pack_loader_version: if loader_version.is_empty() {
+                None
+            } else {
+                Some(loader_version.clone())
+            },
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        // Compute content hash from the just-written pack files (mods + overrides).
+        // Hash is order-independent and stored both in the manifest and (via
+        // the service) in the DB.
+        let pack_files =
+            crate::pack_inventory::collect_pack_inventory(target_dir).unwrap_or_default();
+        let pack_hash = if pack_files.is_empty() {
+            None
+        } else {
+            Some(crate::pack_inventory::pack_content_hash(&pack_files))
+        };
+        pack_origin.pack_content_hash = pack_hash;
         let manifest = InstanceManifest {
-            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
-            pack_origin: None,
+            manifest_version: CURRENT_MANIFEST_VERSION,
+            pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: name.clone(),
             minecraft_version: minecraft_version.clone(),
@@ -918,9 +1006,51 @@ pub fn import_prism_zip(
         }
 
         let identities = BTreeMap::new();
+        let mods = inventory_pack_content(target_dir, "mods", "mod", &identities)?;
+        let resourcepacks =
+            inventory_pack_content(target_dir, "resourcepacks", "resourcepack", &identities)?;
+        let shaders = inventory_pack_content(target_dir, "shaderpacks", "shader", &identities)?;
+        let datapacks = inventory_pack_content(target_dir, "datapacks", "datapack", &identities)?;
+        let worlds = inventory_pack_content(target_dir, "saves", "world", &identities)?;
+        let pack_files =
+            crate::pack_inventory::collect_pack_inventory(target_dir).unwrap_or_default();
+        let pack_hash = if pack_files.is_empty() {
+            None
+        } else {
+            Some(crate::pack_inventory::pack_content_hash(&pack_files))
+        };
+        let pack_origin = PackOrigin {
+            platform: PackPlatform::LocalFile,
+            pack_name: name.clone(),
+            project_id: None,
+            version_id: None,
+            version_number: None,
+            origin_url: None,
+            pack_content_hash: pack_hash,
+            pack_minecraft_version: if minecraft_version.is_empty() {
+                None
+            } else {
+                Some(minecraft_version.clone())
+            },
+            pack_loader: if loader.is_empty() {
+                None
+            } else {
+                Some(loader.clone())
+            },
+            pack_loader_version: if loader_version.is_empty() {
+                None
+            } else {
+                Some(loader_version.clone())
+            },
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
         let manifest = InstanceManifest {
-            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
-            pack_origin: None,
+            manifest_version: CURRENT_MANIFEST_VERSION,
+            pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: name.clone(),
             minecraft_version: minecraft_version.clone(),
@@ -928,16 +1058,11 @@ pub fn import_prism_zip(
             loader_version: loader_version.clone(),
             is_locked: false,
             created_from_pack: None,
-            mods: inventory_pack_content(target_dir, "mods", "mod", &identities)?,
-            resourcepacks: inventory_pack_content(
-                target_dir,
-                "resourcepacks",
-                "resourcepack",
-                &identities,
-            )?,
-            shaders: inventory_pack_content(target_dir, "shaderpacks", "shader", &identities)?,
-            datapacks: inventory_pack_content(target_dir, "datapacks", "datapack", &identities)?,
-            worlds: inventory_pack_content(target_dir, "saves", "world", &identities)?,
+            mods,
+            resourcepacks,
+            shaders,
+            datapacks,
+            worlds,
             user_preferences: serde_json::json!({}),
         };
         let manifest_path = target_dir.join("instance_manifest.json");
@@ -1102,10 +1227,35 @@ pub fn import_directory(
         }
 
         let manifest_path = target.staging_dir.join("instance_manifest.json");
+        // Pack inventory for directory imports — LocalFile is the honest platform.
+        let pack_files =
+            crate::pack_inventory::collect_pack_inventory(&target.staging_dir).unwrap_or_default();
+        let pack_hash = if pack_files.is_empty() {
+            None
+        } else {
+            Some(crate::pack_inventory::pack_content_hash(&pack_files))
+        };
         if !manifest_path.exists() {
+            let pack_origin = PackOrigin {
+                platform: PackPlatform::LocalFile,
+                pack_name: name.clone(),
+                project_id: None,
+                version_id: None,
+                version_number: None,
+                origin_url: None,
+                pack_content_hash: pack_hash,
+                pack_minecraft_version: None,
+                pack_loader: None,
+                pack_loader_version: None,
+                launcher_kind: None,
+                installation_key: None,
+                source_key: None,
+                cloned_from: None,
+                installed_at: chrono::Utc::now().to_rfc3339(),
+            };
             let manifest = InstanceManifest {
-                manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
-                pack_origin: None,
+                manifest_version: CURRENT_MANIFEST_VERSION,
+                pack_origin: Some(pack_origin),
                 instance_id: target.instance_id.clone(),
                 name: name.clone(),
                 minecraft_version: String::new(),
@@ -1129,6 +1279,46 @@ pub fn import_directory(
                 code: "ERR_IMPORT_WRITE".into(),
                 message: format!("Cannot write manifest: {e}"),
             })?;
+        } else {
+            // Existing manifest (e.g., importing an existing Agora instance directory) —
+            // ensure it has a pack_content_hash if it already carries a PackOrigin,
+            // but do not overwrite an existing honest provenance.
+            if let Ok(mut manifest) = crate::helpers::read_manifest(&manifest_path) {
+                let mut needs_write = false;
+                if let Some(origin) = manifest.pack_origin.as_mut() {
+                    if origin.pack_content_hash.is_none() && pack_hash.is_some() {
+                        origin.pack_content_hash = pack_hash.clone();
+                        needs_write = true;
+                    }
+                } else if pack_hash.is_some() {
+                    // No origin yet — create LocalFile provenance for this directory import.
+                    let pack_origin = PackOrigin {
+                        platform: PackPlatform::LocalFile,
+                        pack_name: name.clone(),
+                        project_id: None,
+                        version_id: None,
+                        version_number: None,
+                        origin_url: None,
+                        pack_content_hash: pack_hash.clone(),
+                        pack_minecraft_version: None,
+                        pack_loader: None,
+                        pack_loader_version: None,
+                        launcher_kind: None,
+                        installation_key: None,
+                        source_key: None,
+                        cloned_from: None,
+                        installed_at: chrono::Utc::now().to_rfc3339(),
+                    };
+                    manifest.pack_origin = Some(pack_origin);
+                    manifest.manifest_version = CURRENT_MANIFEST_VERSION;
+                    needs_write = true;
+                }
+                if needs_write {
+                    if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+                        let _ = fs::write(&manifest_path, json);
+                    }
+                }
+            }
         }
         Ok(())
     })();
@@ -1229,6 +1419,13 @@ pub struct TechnicSolderPack {
     pub loader: String,
     pub loader_version: String,
     pub mods: Vec<TechnicSolderMod>,
+    /// Solder identity — dropped before M1c, now plumbed for provenance.
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub solder_url: String,
+    #[serde(default)]
+    pub build: String,
 }
 
 /// A consented Technic zip archive ready to install (Tier Z, or Tier C when a
@@ -1322,13 +1519,89 @@ pub fn import_technic_solder_pack(
             })?;
             imported_mods += 1;
         }
-        write_import_manifest(
-            &target,
-            &pack.display_name,
-            pack.minecraft_version.clone(),
-            pack.loader.clone(),
-            pack.loader_version.clone(),
-        )?;
+        // Stamp PackOrigin for Solder — slug + solder + build are the honest identity.
+        let version_id = if pack.build.trim().is_empty() {
+            None
+        } else {
+            Some(pack.build.trim().to_string())
+        };
+        let project_id = if pack.slug.trim().is_empty() {
+            None
+        } else {
+            Some(pack.slug.trim().to_string())
+        };
+        let origin_url = if pack.solder_url.trim().is_empty() {
+            None
+        } else {
+            Some(strip_origin_url(pack.solder_url.trim()))
+        };
+        let mut pack_origin = PackOrigin {
+            platform: PackPlatform::TechnicSolder,
+            pack_name: pack.display_name.clone(),
+            project_id,
+            version_id,
+            version_number: None,
+            origin_url,
+            pack_content_hash: None,
+            pack_minecraft_version: if pack.minecraft_version.is_empty() {
+                None
+            } else {
+                Some(pack.minecraft_version.clone())
+            },
+            pack_loader: if pack.loader.is_empty() {
+                None
+            } else {
+                Some(pack.loader.clone())
+            },
+            pack_loader_version: if pack.loader_version.is_empty() {
+                None
+            } else {
+                Some(pack.loader_version.clone())
+            },
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let pack_files =
+            crate::pack_inventory::collect_pack_inventory(&target.staging_dir).unwrap_or_default();
+        let pack_hash = if pack_files.is_empty() {
+            None
+        } else {
+            Some(crate::pack_inventory::pack_content_hash(&pack_files))
+        };
+        pack_origin.pack_content_hash = pack_hash;
+        let manifest = InstanceManifest {
+            manifest_version: CURRENT_MANIFEST_VERSION,
+            pack_origin: Some(pack_origin),
+            instance_id: target.instance_id.clone(),
+            name: pack.display_name.clone(),
+            minecraft_version: pack.minecraft_version.clone(),
+            loader: pack.loader.clone(),
+            loader_version: pack.loader_version.clone(),
+            is_locked: false,
+            created_from_pack: Some(pack.display_name.clone()),
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        let manifest_json =
+            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
+                code: "ERR_IMPORT_SERIALIZE".into(),
+                message: format!("Cannot serialize manifest: {e}"),
+            })?;
+        fs::write(
+            target.staging_dir.join("instance_manifest.json"),
+            manifest_json,
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_IMPORT_WRITE".into(),
+            message: format!("Cannot write manifest: {e}"),
+        })?;
         finalize_import(&target)?;
         Ok(imported_mods)
     })();
@@ -1402,13 +1675,79 @@ pub fn import_technic_zip_pack(
 
     let result = (|| -> LauncherResult<usize> {
         let imported_mods = extract_technic_zip_entries(&mut archive, &mods_dir)?;
-        write_import_manifest(
-            &target,
-            &pack.display_name,
-            pack.minecraft_version.clone(),
-            pack.loader.clone(),
-            pack.loader_version.clone(),
-        )?;
+        // Stamp PackOrigin for Technic Zip — download_url (stripped) is the honest identity.
+        let origin_url = if pack.download_url.trim().is_empty() {
+            None
+        } else {
+            Some(strip_origin_url(pack.download_url.trim()))
+        };
+        let mut pack_origin = PackOrigin {
+            platform: PackPlatform::TechnicZip,
+            pack_name: pack.display_name.clone(),
+            project_id: None,
+            version_id: None,
+            version_number: None,
+            origin_url,
+            pack_content_hash: None,
+            pack_minecraft_version: if pack.minecraft_version.is_empty() {
+                None
+            } else {
+                Some(pack.minecraft_version.clone())
+            },
+            pack_loader: if pack.loader.is_empty() {
+                None
+            } else {
+                Some(pack.loader.clone())
+            },
+            pack_loader_version: if pack.loader_version.is_empty() {
+                None
+            } else {
+                Some(pack.loader_version.clone())
+            },
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let pack_files =
+            crate::pack_inventory::collect_pack_inventory(&target.staging_dir).unwrap_or_default();
+        let pack_hash = if pack_files.is_empty() {
+            None
+        } else {
+            Some(crate::pack_inventory::pack_content_hash(&pack_files))
+        };
+        pack_origin.pack_content_hash = pack_hash;
+        let manifest = InstanceManifest {
+            manifest_version: CURRENT_MANIFEST_VERSION,
+            pack_origin: Some(pack_origin),
+            instance_id: target.instance_id.clone(),
+            name: pack.display_name.clone(),
+            minecraft_version: pack.minecraft_version.clone(),
+            loader: pack.loader.clone(),
+            loader_version: pack.loader_version.clone(),
+            is_locked: false,
+            created_from_pack: Some(pack.display_name.clone()),
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        let manifest_json =
+            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
+                code: "ERR_IMPORT_SERIALIZE".into(),
+                message: format!("Cannot serialize manifest: {e}"),
+            })?;
+        fs::write(
+            target.staging_dir.join("instance_manifest.json"),
+            manifest_json,
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_IMPORT_WRITE".into(),
+            message: format!("Cannot write manifest: {e}"),
+        })?;
         finalize_import(&target)?;
         Ok(imported_mods)
     })();
@@ -1508,6 +1847,7 @@ fn extract_technic_zip_entries<R: Read + Seek>(
 }
 
 /// Write a fresh `instance_manifest.json` into a staged import target.
+#[allow(dead_code)]
 fn write_import_manifest(
     target: &ImportTarget,
     name: &str,
@@ -2117,10 +2457,9 @@ mod tests {
             .join("rt-pack")
             .join("instance_manifest.json");
         let manifest: InstanceManifest =
-            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap(); // allow-raw-instance-manifest
         let serialized = serde_json::to_string_pretty(&manifest).unwrap();
-        let deserialized: InstanceManifest = serde_json::from_str(&serialized).unwrap();
+        let deserialized: InstanceManifest = serde_json::from_str(&serialized).unwrap(); // allow-raw-instance-manifest
         assert_eq!(deserialized.instance_id, manifest.instance_id);
         assert_eq!(deserialized.name, manifest.name);
         assert_eq!(deserialized.minecraft_version, manifest.minecraft_version);
@@ -2135,6 +2474,185 @@ mod tests {
         assert_eq!(deserialized.shaders.len(), manifest.shaders.len());
         assert_eq!(deserialized.datapacks.len(), manifest.datapacks.len());
         assert_eq!(deserialized.worlds.len(), manifest.worlds.len());
+    }
+
+    #[test]
+    fn test_mrpack_version_id_populates_pack_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack_path = tmp.path().join("versioned.mrpack");
+        let file = fs::File::create(&mrpack_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .unwrap();
+        // versionId present — treated as opaque version_id, not version_number.
+        writer
+            .write_all(
+                br#"{"name":"Versioned Pack","versionId":"1.4.2","dependencies":{"minecraft":"1.20.1","fabric-loader":"0.15.0"},"files":[]}"#,
+            )
+            .unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        let result = import_mrpack(&mrpack_path, &instances_root, false).unwrap();
+        assert_eq!(result.name, "Versioned Pack");
+
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                // allow-raw-instance-manifest
+                instances_root
+                    .join("Versioned-Pack")
+                    .join("instance_manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.expect("mrpack must stamp PackOrigin");
+        assert_eq!(origin.platform, crate::models::PackPlatform::Modrinth);
+        assert_eq!(origin.pack_name, "Versioned Pack");
+        // Judgement call: versionId is opaque `version_id`; human `version_number` stays None.
+        // No fixture or packwiz output in the repo lets us distinguish, so we do
+        // not hedge by populating both. If Modrinth later proves these are human
+        // strings, move this to version_number in one place.
+        assert_eq!(origin.version_id.as_deref(), Some("1.4.2"));
+        assert!(origin.version_number.is_none());
+        assert!(origin.project_id.is_none());
+        assert_eq!(origin.pack_minecraft_version.as_deref(), Some("1.20.1"));
+        assert_eq!(origin.pack_loader.as_deref(), Some("fabric"));
+        assert_eq!(origin.pack_loader_version.as_deref(), Some("0.15.0"));
+        assert!(origin.origin_url.is_none());
+        assert_eq!(
+            manifest.manifest_version,
+            crate::models::CURRENT_MANIFEST_VERSION
+        );
+    }
+
+    #[test]
+    fn test_mrpack_without_version_id_leaves_version_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack_path = tmp.path().join("noversion.mrpack");
+        let file = fs::File::create(&mrpack_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .unwrap();
+        writer
+            .write_all(br#"{"name":"No Version","dependencies":{},"files":[]}"#)
+            .unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        import_mrpack(&mrpack_path, &instances_root, false).unwrap();
+
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                // allow-raw-instance-manifest
+                instances_root
+                    .join("No-Version")
+                    .join("instance_manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.unwrap();
+        assert!(origin.version_id.is_none());
+        assert!(origin.version_number.is_none());
+    }
+
+    #[test]
+    fn test_mrpack_origin_url_stripped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack_path = tmp.path().join("origin.mrpack");
+        let file = fs::File::create(&mrpack_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .unwrap();
+        writer
+            .write_all(br#"{"name":"Origin Pack","dependencies":{},"files":[]}"#)
+            .unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        let presigned = "https://cdn.modrinth.com/data/abc/versions/xyz/pack.mrpack?token=secret&expires=123#frag";
+        import_mrpack_with_progress(
+            &mrpack_path,
+            &instances_root,
+            false,
+            None,
+            None,
+            Some(presigned.to_string()),
+        )
+        .unwrap();
+
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                // allow-raw-instance-manifest
+                instances_root
+                    .join("Origin-Pack")
+                    .join("instance_manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.unwrap();
+        // Query and fragment must be stripped so the manifest never carries a presigned token.
+        assert_eq!(
+            origin.origin_url.as_deref(),
+            Some("https://cdn.modrinth.com/data/abc/versions/xyz/pack.mrpack")
+        );
+        assert!(!origin.origin_url.as_deref().unwrap().contains("token"));
+        assert!(!origin.origin_url.as_deref().unwrap().contains('#'));
+    }
+
+    #[test]
+    fn test_mrpack_pack_content_hash_matches_inventory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack_path = tmp.path().join("hash.mrpack");
+        let file = fs::File::create(&mrpack_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::FileOptions::default();
+        writer.start_file("modrinth.index.json", opts).unwrap();
+        writer
+            .write_all(br#"{"name":"Hash Pack","dependencies":{},"files":[]}"#)
+            .unwrap();
+        // Pack-contributable override: config/ is an allowed prefix.
+        writer
+            .start_file("overrides/config/test.toml", opts)
+            .unwrap();
+        writer.write_all(b"hello").unwrap();
+        // mods/ via overrides is not allowed, so use a file entry for mods
+        // Instead, add a mods file via the files array with an embedded entry.
+        // For simplicity, also test that the config file alone is enough for a hash.
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        import_mrpack(&mrpack_path, &instances_root, false).unwrap();
+
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                // allow-raw-instance-manifest
+                instances_root
+                    .join("Hash-Pack")
+                    .join("instance_manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.unwrap();
+        let hash = origin
+            .pack_content_hash
+            .expect("non-empty pack must have hash");
+        assert_eq!(hash.len(), 64);
+
+        let instance_dir = instances_root.join("Hash-Pack");
+        let inv = crate::pack_inventory::collect_pack_inventory(&instance_dir).unwrap();
+        assert!(!inv.is_empty(), "inventory must be non-empty for hash test");
+        assert_eq!(hash, crate::pack_inventory::pack_content_hash(&inv));
     }
 
     // ── Technic imports (Tier S / Tier Z) ────────────────────────────────
@@ -2233,6 +2751,131 @@ mod tests {
         assert_eq!(
             crate::download::md5_hex(b"abc"),
             "900150983cd24fb0d6963f7d28e17f72"
+        );
+    }
+
+    #[test]
+    fn test_technic_solder_pack_origin_with_empty_mods() {
+        let tmp = tempfile::tempdir().unwrap();
+        let instances_root = tmp.path().join("instances");
+        let pack = TechnicSolderPack {
+            display_name: "Solder Test".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "forge".into(),
+            loader_version: "47.1.0".into(),
+            mods: vec![],
+            slug: "solder-pack".into(),
+            solder_url: "https://solder.example.com/api?token=secret#frag".into(),
+            build: "1.2.3".into(),
+        };
+        let result = import_technic_solder_pack(&pack, &instances_root).unwrap();
+        assert_eq!(result.instance_id, "Solder-Test");
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                // allow-raw-instance-manifest
+                instances_root
+                    .join("Solder-Test")
+                    .join("instance_manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.expect("solder must stamp PackOrigin");
+        assert_eq!(origin.platform, crate::models::PackPlatform::TechnicSolder);
+        assert_eq!(origin.pack_name, "Solder Test");
+        assert_eq!(origin.project_id.as_deref(), Some("solder-pack"));
+        assert_eq!(origin.version_id.as_deref(), Some("1.2.3"));
+        assert!(origin.version_number.is_none());
+        assert_eq!(
+            origin.origin_url.as_deref(),
+            Some("https://solder.example.com/api")
+        );
+        assert!(!origin.origin_url.as_deref().unwrap().contains("token"));
+        assert_eq!(origin.pack_minecraft_version.as_deref(), Some("1.20.1"));
+        // No mods, so inventory empty and hash None — still honest.
+        assert!(origin.pack_content_hash.is_none());
+        // Inventory DB not written via direct import, but manifest hash must match
+        // what pack_inventory would compute (empty).
+        let inv =
+            crate::pack_inventory::collect_pack_inventory(&instances_root.join("Solder-Test"))
+                .unwrap();
+        assert!(inv.is_empty());
+    }
+
+    #[test]
+    fn test_prism_import_has_local_file_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip_path = tmp.path().join("prism.zip");
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::FileOptions::default();
+        writer.start_file("instance.cfg", opts).unwrap();
+        writer.write_all(b"name=Prism Local\n").unwrap();
+        writer.start_file("mmc-pack.json", opts).unwrap();
+        writer
+            .write_all(br#"{"components":[{"uid":"net.minecraft","version":"1.20.1"}]}"#)
+            .unwrap();
+        writer.start_file("minecraft/mods/mod.jar", opts).unwrap();
+        writer.write_all(b"jar").unwrap();
+        writer.finish().unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        import_prism_zip(&zip_path, &instances_root, false).unwrap();
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                instances_root
+                    .join("Prism-Local")
+                    .join("instance_manifest.json"), // allow-raw-instance-manifest
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.unwrap();
+        assert_eq!(origin.platform, crate::models::PackPlatform::LocalFile);
+        assert_eq!(origin.pack_name, "Prism Local");
+        assert!(origin.project_id.is_none());
+        assert!(origin.version_id.is_none());
+        assert!(origin.origin_url.is_none());
+        assert!(origin.pack_content_hash.is_some());
+    }
+
+    #[test]
+    fn test_directory_import_has_local_file_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("plain-dir");
+        fs::create_dir_all(src.join("mods")).unwrap();
+        fs::write(src.join("mods").join("a.jar"), b"a").unwrap();
+        fs::create_dir_all(src.join("config")).unwrap();
+        fs::write(src.join("config").join("cfg.toml"), b"cfg").unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        import_directory(&src, &instances_root, false).unwrap();
+        let manifest: InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
+            &fs::read_to_string(
+                instances_root
+                    .join("plain-dir")
+                    .join("instance_manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = manifest.pack_origin.unwrap();
+        assert_eq!(origin.platform, crate::models::PackPlatform::LocalFile);
+        assert_eq!(origin.pack_name, "plain-dir");
+        assert!(origin.project_id.is_none());
+        assert!(origin.version_id.is_none());
+        assert!(origin.version_number.is_none());
+        assert!(origin.pack_content_hash.is_some());
+        // Inventory must be non-empty and hash must match.
+        let inv = crate::pack_inventory::collect_pack_inventory(&instances_root.join("plain-dir"))
+            .unwrap();
+        assert!(!inv.is_empty());
+        assert_eq!(
+            origin.pack_content_hash.as_deref(),
+            Some(crate::pack_inventory::pack_content_hash(&inv).as_str())
         );
     }
 }

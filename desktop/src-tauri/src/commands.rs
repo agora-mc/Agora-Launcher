@@ -393,12 +393,6 @@ pub async fn launch_instance(
     }
     {
         let mut shared = state.lock().await;
-        if shared.running_process.is_some() {
-            return Err(LauncherError::Generic {
-                code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another launch is already running or starting.".into(),
-            });
-        }
         // SOL-2 §19.3: a target must never start a launch while its canonical
         // install transaction is applying. Delegated launches have no
         // launch_reservation, so an equivalent atomic start marker is
@@ -593,10 +587,13 @@ pub async fn launch_instance_with_recovery(
     }
     {
         let shared = state.lock().await;
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
     }
@@ -616,16 +613,17 @@ pub async fn launch_instance_with_recovery(
         // SOL-2 §19.3: the reservation is the atomic final transition. Re-check
         // running/reservation AND reject an active install under the same lock
         // (closes the preflight -> reservation race).
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
         ensure_launch_admitted(&shared, &sanitized)?;
-        shared.launch_reservation = Some(agora_core::state::LaunchReservation {
-            instance_id: sanitized.clone(),
-        });
+        shared.launch_reservations.insert(sanitized.clone());
     }
     let progress = TauriLaunchProgress::new(
         app.clone(),
@@ -633,6 +631,7 @@ pub async fn launch_instance_with_recovery(
         sanitized.clone(),
         started_tx,
     );
+    let reservation_id = sanitized.clone();
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized,
         mode: agora_core::launch_service::LaunchMode::Direct,
@@ -662,7 +661,7 @@ pub async fn launch_instance_with_recovery(
     };
     if result.is_err() {
         let mut shared = state.lock().await;
-        shared.launch_reservation = None;
+        shared.launch_reservations.remove(&reservation_id);
     }
     result
 }
@@ -688,10 +687,13 @@ pub async fn launch_instance_direct(
     }
     {
         let shared = state.lock().await;
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
     }
@@ -711,17 +713,21 @@ pub async fn launch_instance_direct(
         // SOL-2 §19.3: the reservation is the atomic final transition. Re-check
         // running/reservation AND reject an active install under the same lock
         // (closes the preflight -> reservation race).
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
         ensure_launch_admitted(&shared, &sanitized)?;
-        shared.launch_reservation = Some(agora_core::state::LaunchReservation {
-            instance_id: sanitized.clone(),
-        });
+        shared.launch_reservations.insert(sanitized.clone());
     }
+    // `sanitized` is moved into the progress reporter; keep a copy so the
+    // failure path can release this instance's reservation.
+    let reservation_id = sanitized.clone();
     let progress =
         TauriLaunchProgress::new(app.clone(), state.inner().clone(), sanitized, started_tx);
     let request = agora_core::launch_service::LaunchRequest {
@@ -753,7 +759,7 @@ pub async fn launch_instance_direct(
     };
     if result.is_err() {
         let mut shared = state.lock().await;
-        shared.launch_reservation = None;
+        shared.launch_reservations.remove(&reservation_id);
     }
     result
 }
@@ -923,19 +929,15 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         tokio::spawn(async move {
             let mut shared = state.lock().await;
             // Reservation matched by instance_id — core assigns session_id.
-            if shared
-                .launch_reservation
-                .as_ref()
-                .map(|r| r.instance_id.as_str())
-                == Some(instance_id.as_str())
-            {
-                shared.launch_reservation = None;
-                shared.running_process = Some(agora_core::state::RunningProcess {
-                    instance_id: instance_id.clone(),
-                    pid: started.pid,
-                    session_id: started.session_id,
-                });
-                shared.process_identity = Some(started.process_identity);
+            if shared.launch_reservations.remove(instance_id.as_str()) {
+                shared.running_processes.insert(
+                    started.session_id,
+                    agora_core::state::RunningProcess {
+                        instance_id: instance_id.clone(),
+                        pid: started.pid,
+                        session_id: started.session_id,
+                    },
+                );
             }
             let _ = app.emit(
                 "game-started",
@@ -969,10 +971,7 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         let result = result.clone();
         tokio::spawn(async move {
             let mut shared = state.lock().await;
-            if shared.running_process.as_ref().map(|p| p.session_id) == Some(result.session_id) {
-                shared.running_process = None;
-                shared.process_identity = None;
-            }
+            shared.running_processes.remove(&result.session_id);
             let _ = app.emit(
                 "game-exited",
                 serde_json::json!({
@@ -987,47 +986,50 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
     }
 }
 
-/// Returns the currently tracked direct-launch process, if any, after
-/// verifying the OS still owns the PID.  Verifies identity via the core
-/// session manager, falling back to AppState for frontend presentation.
-/// Returns `None` if no direct launch is active or the process has exited.
+/// Returns every currently tracked direct-launch process.
+///
+/// Several instances may run at once, and the same instance may be launched
+/// more than once, so this is a list. The core session manager is
+/// authoritative: any session it no longer holds has exited or been
+/// terminated, and is pruned from the presentation map here.
 #[tauri::command]
 pub async fn query_launch_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<Option<agora_core::state::RunningProcess>> {
+) -> LauncherResult<Vec<agora_core::state::RunningProcess>> {
     let ctx = crate::core_context(&app)?;
 
-    // Phase 1 — snapshot session under AppState lock.
-    let app_snapshot = {
+    // Phase 1 — snapshot the presentation map under the AppState lock.
+    let tracked: Vec<agora_core::state::RunningProcess> = {
         let s = state.lock().await;
-        (s.running_process.clone(), s.process_identity.clone())
+        s.running_processes.values().cloned().collect()
     };
 
-    let (running, _identity) = app_snapshot;
-    let running = match running {
-        Some(rp) => rp,
-        None => return Ok(None),
-    };
-
-    // Phase 2 — consult authoritative manager.  If the session still exists
-    // the process is alive and tracked; if the manager removed it (e.g. via
-    // terminate or stale detection) return None.
-    if ctx
-        .process_session_manager
-        .get(running.session_id)
-        .is_none()
-    {
-        // Stale — clear AppState presentation fields.
-        let mut s = state.lock().await;
-        if s.running_process.as_ref().map(|rp| rp.session_id) == Some(running.session_id) {
-            s.running_process = None;
-            s.process_identity = None;
+    // Phase 2 — consult the authoritative manager for each session.
+    let mut live = Vec::new();
+    let mut stale = Vec::new();
+    for running in tracked {
+        if ctx
+            .process_session_manager
+            .get(running.session_id)
+            .is_some()
+        {
+            live.push(running);
+        } else {
+            stale.push(running.session_id);
         }
-        return Ok(None);
     }
 
-    Ok(Some(running))
+    if !stale.is_empty() {
+        let mut s = state.lock().await;
+        for session_id in stale {
+            s.running_processes.remove(&session_id);
+        }
+    }
+
+    // Stable order so the frontend does not reshuffle rows between polls.
+    live.sort_by_key(|running| running.session_id);
+    Ok(live)
 }
 
 /// Kill the backend-owned direct-launch process, if any.
@@ -1046,20 +1048,17 @@ pub async fn kill_process(
     // Phase 1 — snapshot session_id from AppState.
     let session_id = {
         let s = state.lock().await;
-        let owned = s.running_process.as_ref().map(|rp| (rp.pid, rp.session_id));
-        let Some((owned_pid, session_id)) = owned else {
+        // A PID is unique among live processes, so this identifies at most one
+        // session. The authoritative OS-identity check still happens in
+        // ProcessSessionManager::terminate below — this only decides which
+        // session to ask about.
+        let Some(running) = s.running_processes.values().find(|rp| rp.pid == pid) else {
             return Err(LauncherError::Generic {
                 code: "ERR_NOT_OWNED".into(),
-                message: format!("PID {pid} is not owned by Agora (no process is tracked)"),
+                message: format!("PID {pid} is not owned by Agora (no such tracked process)"),
             });
         };
-        if owned_pid != pid {
-            return Err(LauncherError::Generic {
-                code: "ERR_NOT_OWNED".into(),
-                message: format!("PID {pid} is not owned by Agora (owned pid: {owned_pid})"),
-            });
-        }
-        session_id
+        running.session_id
     };
 
     // Phase 2 — delegate verify + kill to the authoritative manager.
@@ -1067,21 +1066,15 @@ pub async fn kill_process(
         Ok(()) => {
             // Phase 3 — clean up AppState presentation fields.
             let mut s = state.lock().await;
-            if s.running_process.as_ref().map(|rp| rp.session_id) == Some(session_id) {
-                s.running_process = None;
-                s.process_identity = None;
-                s.user_cancelled_launches.insert(session_id);
-            }
+            s.running_processes.remove(&session_id);
+            s.user_cancelled_launches.insert(session_id);
             Ok(())
         }
         Err(agora_core::error::LauncherError::ProcessStale { pid: stale_pid, .. }) => {
             // Stale — clear AppState fields so frontend does not show a
             // zombie process.
             let mut s = state.lock().await;
-            if s.running_process.as_ref().map(|rp| rp.session_id) == Some(session_id) {
-                s.running_process = None;
-                s.process_identity = None;
-            }
+            s.running_processes.remove(&session_id);
             Err(agora_core::error::LauncherError::ProcessStale {
                 pid: stale_pid,
                 detail: "Stale process detected during kill".into(),
@@ -1806,10 +1799,8 @@ pub async fn batch_check_compat(
     }
     let manifest_path = paths::instance_manifest_path(&app, &sanitized)
         .map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest: crate::models::InstanceManifest = serde_json::from_slice(
-        &std::fs::read(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)?,
-    )
-    .map_err(|_| LauncherError::LocalStateFailed)?;
+    let manifest = agora_core::helpers::read_manifest(&manifest_path)
+        .map_err(|_| LauncherError::LocalStateFailed)?;
     let ctx = crate::core_context(&app)?;
     let svc = agora_core::registry::RegistryService::new(ctx);
     svc.batch_compat_lookup(&item_ids, &manifest.minecraft_version, &manifest.loader)
@@ -3413,16 +3404,12 @@ pub async fn restore_snapshot(
 
     {
         let shared = state.lock().await;
+        // Any session of this instance blocks a restore, not just the first.
         let direct_active = shared
-            .running_process
-            .as_ref()
-            .map(|process| process.instance_id == sanitized)
-            .unwrap_or(false);
-        let launch_active = shared
-            .launch_reservation
-            .as_ref()
-            .map(|reservation| reservation.instance_id == sanitized)
-            .unwrap_or(false);
+            .running_processes
+            .values()
+            .any(|process| process.instance_id == sanitized);
+        let launch_active = shared.launch_reservations.contains(&sanitized);
         if direct_active || launch_active {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTANCE_RUNNING".into(),
@@ -3591,7 +3578,7 @@ pub async fn import_instance(
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase);
     let import_source = match extension.as_deref() {
-        Some("mrpack") => agora_core::import_service::ImportSource::Mrpack(source),
+        Some("mrpack") => agora_core::import_service::ImportSource::mrpack(source),
         Some("zip") => agora_core::import_service::ImportSource::PrismZip(source),
         _ => agora_core::import_service::ImportSource::Directory(source),
     };
@@ -4198,16 +4185,18 @@ fn ensure_install_apply_allowed(
     shared: &crate::state::AppState,
     instance_id: &str,
 ) -> LauncherResult<()> {
-    if let Some(running) = &shared.running_process {
-        if running.instance_id == instance_id {
-            return Err(LauncherError::Generic {
-                code: "ERR_INSTALL_PROCESS_ACTIVE".into(),
-                message: "This instance is running — stop it before installing.".into(),
-            });
-        }
+    if shared
+        .running_processes
+        .values()
+        .any(|running| running.instance_id == instance_id)
+    {
+        return Err(LauncherError::Generic {
+            code: "ERR_INSTALL_PROCESS_ACTIVE".into(),
+            message: "This instance is running — stop it before installing.".into(),
+        });
     }
-    if let Some(reservation) = &shared.launch_reservation {
-        if reservation.instance_id == instance_id {
+    {
+        if shared.launch_reservations.contains(instance_id) {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTALL_LAUNCH_RESERVED".into(),
                 message:
@@ -4465,7 +4454,7 @@ pub async fn repair_lockfile(
     let (_manifest, _live_index, operations) = tokio::task::spawn_blocking(move || {
         let manifest_text = std::fs::read_to_string(repair_dir.join("instance_manifest.json"))
             .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
-        let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&manifest_text)
+        let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&manifest_text) // allow-raw-instance-manifest
             .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
         if manifest.minecraft_version != repair_lockfile.instance.minecraft_version
             || manifest.loader != repair_lockfile.instance.loader
@@ -4706,8 +4695,9 @@ fn export_lockfile_sync(
         .map_err(|error| lockfile_error("ERR_INSTANCE_PATH", error.to_string()))?;
     let manifest_bytes = std::fs::read(&manifest_path)
         .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
-    let manifest: agora_core::models::InstanceManifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
+    let manifest: agora_core::models::InstanceManifest =
+        serde_json::from_slice(&manifest_bytes) // allow-raw-instance-manifest
+            .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
     let manifest_sha256 = hex::encode(Sha256::digest(&manifest_bytes));
 
     let loader = crate::loader_manifests::find_entry(
@@ -5128,9 +5118,7 @@ fn apply_lockfile_metadata(
     }
 
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("Could not read imported manifest: {error}"))?;
-    let mut manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)
+    let mut manifest = agora_core::helpers::read_manifest(&manifest_path)
         .map_err(|error| format!("Could not parse imported manifest: {error}"))?;
     manifest.is_locked = lockfile.instance.is_locked;
     manifest.user_preferences = lockfile.instance.user_preferences.clone();
@@ -5195,9 +5183,7 @@ fn lockfile_health_report(
     registry_db_path: Option<&std::path::Path>,
 ) -> LauncherResult<agora_core::health::HealthReport> {
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
-    let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)
+    let manifest = agora_core::helpers::read_manifest(&manifest_path)
         .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
     Ok(agora_core::health::cached_health(
         instance_dir,
@@ -6075,11 +6061,14 @@ mod command_helper_tests {
         let state = LauncherState::default();
         {
             let mut shared = state.blocking_lock();
-            shared.running_process = Some(crate::state::RunningProcess {
-                instance_id: "inst-a".into(),
-                pid: 42,
-                session_id: 1,
-            });
+            shared.running_processes.insert(
+                1,
+                crate::state::RunningProcess {
+                    instance_id: "inst-a".into(),
+                    pid: 42,
+                    session_id: 1,
+                },
+            );
         }
         let shared = state.blocking_lock();
         let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
@@ -6093,9 +6082,7 @@ mod command_helper_tests {
         let state = LauncherState::default();
         {
             let mut shared = state.blocking_lock();
-            shared.launch_reservation = Some(crate::state::LaunchReservation {
-                instance_id: "inst-a".into(),
-            });
+            shared.launch_reservations.insert("inst-a".into());
         }
         let shared = state.blocking_lock();
         let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
@@ -6133,11 +6120,14 @@ mod command_helper_tests {
         let state = LauncherState::default();
         {
             let mut shared = state.blocking_lock();
-            shared.running_process = Some(crate::state::RunningProcess {
-                instance_id: "inst-a".into(),
-                pid: 7,
-                session_id: 2,
-            });
+            shared.running_processes.insert(
+                2,
+                crate::state::RunningProcess {
+                    instance_id: "inst-a".into(),
+                    pid: 7,
+                    session_id: 2,
+                },
+            );
         }
         {
             let shared = state.blocking_lock();
@@ -6151,7 +6141,7 @@ mod command_helper_tests {
         // Process exits; apply is allowed and registers the marker.
         {
             let mut shared = state.blocking_lock();
-            shared.running_process = None;
+            shared.running_processes.clear();
             ensure_install_apply_allowed(&shared, "inst-a").unwrap();
             shared.active_install_instances.insert("inst-a".into());
         }
@@ -6364,6 +6354,7 @@ mod command_helper_tests {
         let directory = temp_instance_dir();
         std::fs::write(directory.join("mods/example.jar"), b"example").unwrap();
         let mut manifest: agora_core::models::InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
             &std::fs::read_to_string(directory.join("instance_manifest.json")).unwrap_or_default(),
         )
         .unwrap_or_else(|_| test_manifest());
@@ -6408,10 +6399,11 @@ mod command_helper_tests {
         assert!(!directory.join("mods/example.jar").exists());
         assert!(directory.join("mods/example.jar.disabled").is_file());
         let updated: agora_core::models::InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
             &std::fs::read(directory.join("instance_manifest.json")).unwrap(),
         )
         .unwrap();
-        assert!(!updated.mods[0].enabled);
+        assert!(!updated.mods[0].enabled); // allow-raw-instance-manifest
         std::fs::remove_dir_all(directory).unwrap();
     }
 

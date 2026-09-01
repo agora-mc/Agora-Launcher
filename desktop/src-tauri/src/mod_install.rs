@@ -353,7 +353,7 @@ async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherRes
     let ctx = crate::core_context(app)?;
     let svc = agora_core::import_service::ImportService::new(ctx);
     let request = agora_core::import_service::ImportRequest {
-        source: agora_core::import_service::ImportSource::Mrpack(
+        source: agora_core::import_service::ImportSource::mrpack(
             Path::new(source_path).to_path_buf(),
         ),
         symlink_saves: false,
@@ -481,6 +481,45 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
                             .await;
                 }
             }
+        }
+    }
+    // Stamp PackOrigin for LocalFile pack and persist inventory.
+    // Honest identity is display name only; every id stays None so
+    // pack-update can distinguish "unknown" from "known".
+    let instance_dir = ctx.paths.instance_dir(&instance_id)?;
+    let pack_files =
+        agora_core::pack_inventory::collect_pack_inventory(&instance_dir).unwrap_or_default();
+    let pack_hash = if pack_files.is_empty() {
+        None
+    } else {
+        Some(agora_core::pack_inventory::pack_content_hash(&pack_files))
+    };
+    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = agora_core::db::replace_instance_pack_files(&conn, &instance_id, &pack_files);
+    }
+    let manifest_path = ctx.paths.instance_manifest(&instance_id)?;
+    if let Ok(mut manifest) = agora_core::helpers::read_manifest(&manifest_path) {
+        let pack_origin = agora_core::models::PackOrigin {
+            platform: agora_core::models::PackPlatform::LocalFile,
+            pack_name: name.clone(),
+            project_id: None,
+            version_id: None,
+            version_number: None,
+            origin_url: None,
+            pack_content_hash: pack_hash,
+            pack_minecraft_version: Some(mc_version.to_string()),
+            pack_loader: Some(loader.to_string()),
+            pack_loader_version: Some(loader_version.to_string()),
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        manifest.pack_origin = Some(pack_origin);
+        manifest.manifest_version = agora_core::models::CURRENT_MANIFEST_VERSION;
+        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+            let _ = std::fs::write(&manifest_path, json);
         }
     }
     Ok(instance_id)

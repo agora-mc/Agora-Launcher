@@ -18,7 +18,14 @@ use std::sync::Arc;
 #[allow(clippy::large_enum_variant)]
 pub enum ImportSource {
     /// A `.mrpack` (Modrinth modpack) file.
-    Mrpack(PathBuf),
+    ///
+    /// `origin_url` is the presigned-aware URL the file was downloaded from
+    /// when the import came from `run_mrpack_url`. Query and fragment are
+    /// stripped before storage so manifests never carry tokens.
+    Mrpack {
+        path: PathBuf,
+        origin_url: Option<String>,
+    },
     /// A PrismLauncher / MultiMC instance `.zip`.
     PrismZip(PathBuf),
     /// An existing instance directory to copy.
@@ -35,6 +42,35 @@ pub enum ImportSource {
     TechnicSolder(crate::import::TechnicSolderPack),
     /// A consented Technic zip archive (Tier Z, or Tier C when SHA-256-pinned).
     TechnicZip(crate::import::TechnicZipPack),
+}
+
+impl ImportSource {
+    /// Convenience for a local `.mrpack` file with no remote origin.
+    pub fn mrpack(path: PathBuf) -> Self {
+        Self::Mrpack {
+            path,
+            origin_url: None,
+        }
+    }
+}
+
+/// Strip query and fragment from a URL so a manifest never carries a
+/// presigned token. Falls back to truncating at `?`/`#` if the URL does
+/// not parse.
+pub(crate) fn strip_url_query(url: &str) -> String {
+    if let Ok(mut parsed) = reqwest::Url::parse(url) {
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        parsed.to_string()
+    } else {
+        url.split('?')
+            .next()
+            .unwrap_or(url)
+            .split('#')
+            .next()
+            .unwrap_or(url)
+            .to_string()
+    }
 }
 
 /// Import configuration passed to [`ImportService::run_import`].
@@ -117,10 +153,14 @@ impl ImportService {
                 code: "ERR_FILE_WRITE".into(),
                 message: format!("Failed to write temporary pack archive: {e}"),
             })?;
+        let stripped = strip_url_query(download_url);
         let result = self
             .run_import_with_sink(
                 ImportRequest {
-                    source: ImportSource::Mrpack(temp_path.clone()),
+                    source: ImportSource::Mrpack {
+                        path: temp_path.clone(),
+                        origin_url: Some(stripped),
+                    },
                     symlink_saves: false,
                 },
                 sink,
@@ -155,7 +195,9 @@ impl ImportService {
         let op_id = op.id().clone();
         let is_modpack = matches!(
             request.source,
-            ImportSource::Mrpack(_) | ImportSource::TechnicSolder(_) | ImportSource::TechnicZip(_)
+            ImportSource::Mrpack { .. }
+                | ImportSource::TechnicSolder(_)
+                | ImportSource::TechnicZip(_)
         );
 
         // Check cancellation, keeping external and operation-manager tokens
@@ -186,7 +228,7 @@ impl ImportService {
 
         // ── Phase 2: Archive / filesystem extraction ─────────────────────
         let extracting_msg = match &request.source {
-            ImportSource::Mrpack(p) => format!("Extracting mrpack: {}", p.display()),
+            ImportSource::Mrpack { path, .. } => format!("Extracting mrpack: {}", path.display()),
             ImportSource::PrismZip(p) => format!("Extracting Prism zip: {}", p.display()),
             ImportSource::Directory(d) => format!("Copying directory: {}", d.display()),
             ImportSource::PackManifest { .. } => "Preparing pack manifest…".into(),
@@ -217,13 +259,16 @@ impl ImportService {
         let blocking_operation_id = op_id.clone();
 
         let result = match tokio::task::spawn_blocking(move || match blocking_source {
-            ImportSource::Mrpack(path) => crate::import::import_mrpack_with_progress(
-                &path,
-                &blocking_instances_root,
-                blocking_symlink,
-                Some(blocking_sink),
-                Some(blocking_operation_id),
-            ),
+            ImportSource::Mrpack { path, origin_url } => {
+                crate::import::import_mrpack_with_progress(
+                    &path,
+                    &blocking_instances_root,
+                    blocking_symlink,
+                    Some(blocking_sink),
+                    Some(blocking_operation_id),
+                    origin_url,
+                )
+            }
             ImportSource::PrismZip(path) => {
                 crate::import::import_prism_zip(&path, &blocking_instances_root, blocking_symlink)
             }
@@ -378,6 +423,56 @@ impl ImportService {
             return Err(error);
         }
 
+        // ── Pack file inventory for any pack-like import (M1c).
+        // Full per-file list lives in `instance_pack_files`; only the hash
+        // lives in the manifest. `import.rs` already stamped the hash for
+        // direct `import_mrpack` calls, but the service is the durable DB
+        // writer — collect from the promoted dir and persist.
+        if matches!(
+            request.source,
+            ImportSource::Mrpack { .. }
+                | ImportSource::PrismZip(_)
+                | ImportSource::Directory(_)
+                | ImportSource::TechnicSolder(_)
+                | ImportSource::TechnicZip(_)
+        ) {
+            if let Ok(instance_dir) = self.ctx.paths.instance_dir(&result.instance_id) {
+                if instance_dir.exists() {
+                    if let Ok(files) = crate::pack_inventory::collect_pack_inventory(&instance_dir)
+                    {
+                        let computed_hash = if files.is_empty() {
+                            None
+                        } else {
+                            Some(crate::pack_inventory::pack_content_hash(&files))
+                        };
+                        // Best-effort DB write; do not fail import on DB error.
+                        let _ = crate::db::replace_instance_pack_files(
+                            &conn,
+                            &result.instance_id,
+                            &files,
+                        );
+                        // Ensure manifest hash matches computed hash (defense in depth
+                        // for older import paths or empty inventory).
+                        let manifest_path = instance_dir.join("instance_manifest.json");
+                        if let Ok(mut manifest) = crate::helpers::read_manifest(&manifest_path) {
+                            let needs_patch = match &manifest.pack_origin {
+                                Some(o) => o.pack_content_hash != computed_hash,
+                                None => computed_hash.is_some(),
+                            };
+                            if needs_patch {
+                                if let Some(origin) = manifest.pack_origin.as_mut() {
+                                    origin.pack_content_hash = computed_hash;
+                                    if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+                                        let _ = std::fs::write(&manifest_path, json);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Phase 6: Health validation ──────────────────────────────────
         if let Ok(instance_dir) = self.ctx.paths.instance_dir(&result.instance_id) {
             if instance_dir.exists() {
@@ -393,10 +488,8 @@ impl ImportService {
                 }
 
                 let manifest_path = instance_dir.join("instance_manifest.json");
-                if let Ok(raw) = tokio::fs::read_to_string(&manifest_path).await {
-                    if let Ok(manifest) =
-                        serde_json::from_str::<crate::models::InstanceManifest>(&raw)
-                    {
+                {
+                    if let Ok(manifest) = crate::helpers::read_manifest(&manifest_path) {
                         // Use the cache-aware scan so the durable report is
                         // published here and the first launch of the imported
                         // instance does not repeat the full JAR parse (11s+
@@ -699,7 +792,7 @@ mod tests {
         writer.finish().unwrap();
 
         let request = ImportRequest {
-            source: ImportSource::Mrpack(mrpack_path),
+            source: ImportSource::mrpack(mrpack_path),
             symlink_saves: false,
         };
         let result = svc.run_import(request).await.unwrap();
@@ -810,7 +903,7 @@ mod tests {
         writer.finish().unwrap();
 
         let request = ImportRequest {
-            source: ImportSource::Mrpack(mrpack_path),
+            source: ImportSource::mrpack(mrpack_path),
             symlink_saves: false,
         };
         let result = svc.run_import(request).await.unwrap();
@@ -876,7 +969,7 @@ mod tests {
         writer.finish().unwrap();
 
         let request = ImportRequest {
-            source: ImportSource::Mrpack(mrpack_path),
+            source: ImportSource::mrpack(mrpack_path),
             symlink_saves: false,
         };
 
@@ -917,8 +1010,7 @@ mod tests {
             .unwrap()
             .join("instance_manifest.json");
         assert!(manifest_path.exists());
-        let raw = std::fs::read_to_string(&manifest_path).unwrap();
-        let manifest: crate::models::InstanceManifest = serde_json::from_str(&raw).unwrap();
+        let manifest = crate::helpers::read_manifest(&manifest_path).unwrap();
         assert_eq!(manifest.instance_id, "test-launchable");
         assert!(manifest.mods.is_empty());
         assert!(manifest.resourcepacks.is_empty());
@@ -945,7 +1037,7 @@ mod tests {
         writer.finish().unwrap();
 
         let request = ImportRequest {
-            source: ImportSource::Mrpack(mrpack_path),
+            source: ImportSource::mrpack(mrpack_path),
             symlink_saves: false,
         };
         let result = svc.run_import(request).await.unwrap();
@@ -1050,7 +1142,7 @@ mod tests {
         });
 
         let request = ImportRequest {
-            source: ImportSource::Mrpack(mrpack_path),
+            source: ImportSource::mrpack(mrpack_path),
             symlink_saves: false,
         };
 
@@ -1103,7 +1195,7 @@ mod tests {
         });
 
         let request = ImportRequest {
-            source: ImportSource::Mrpack(mrpack_path),
+            source: ImportSource::mrpack(mrpack_path),
             symlink_saves: false,
         };
 
@@ -1162,6 +1254,179 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_mrpack_import_stamps_pack_origin_and_inventory_via_service() {
+        let ctx = test_ctx();
+        let svc = ImportService::new(ctx.clone());
+
+        let tmp = test_tmp("mrpack-service-pack");
+        let _ = std::fs::create_dir_all(&tmp);
+        let mrpack_path = tmp.join("pack.mrpack");
+        {
+            let file = std::fs::File::create(&mrpack_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let opts = zip::write::FileOptions::default();
+            writer.start_file("modrinth.index.json", opts).unwrap();
+            // versionId present; dependencies for pack loader/mc
+            writer
+                .write_all(
+                    br#"{"name":"Service Pack","versionId":"2.0.1","dependencies":{"minecraft":"1.20.1","fabric-loader":"0.15.0"},"files":[]}"#,
+                )
+                .unwrap();
+            writer
+                .start_file("overrides/config/service.toml", opts)
+                .unwrap();
+            writer.write_all(b"service cfg").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let presigned = "https://cdn.modrinth.com/data/abc/versions/xyz/pack.mrpack?token=secret&expires=123#frag";
+        let request = ImportRequest {
+            source: ImportSource::Mrpack {
+                path: mrpack_path,
+                origin_url: Some(presigned.to_string()),
+            },
+            symlink_saves: false,
+        };
+        let result = svc.run_import(request).await.unwrap();
+        assert_eq!(result.instance_id, "Service-Pack");
+
+        // Check manifest PackOrigin
+        let manifest_path = svc
+            .ctx
+            .paths
+            .instance_dir("Service-Pack")
+            .unwrap()
+            .join("instance_manifest.json");
+        let manifest: crate::models::InstanceManifest =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let origin = manifest.pack_origin.expect("service must stamp PackOrigin");
+        assert_eq!(origin.platform, crate::models::PackPlatform::Modrinth);
+        assert_eq!(origin.pack_name, "Service Pack");
+        assert_eq!(origin.version_id.as_deref(), Some("2.0.1"));
+        assert!(origin.version_number.is_none());
+        assert!(origin.project_id.is_none(), "mrpack has no project_id");
+        assert_eq!(
+            origin.origin_url.as_deref(),
+            Some("https://cdn.modrinth.com/data/abc/versions/xyz/pack.mrpack")
+        );
+        assert!(!origin.origin_url.as_deref().unwrap().contains("token"));
+        assert!(origin.pack_content_hash.is_some());
+
+        // Check DB inventory is non-empty and hash matches manifest
+        let conn = crate::db::local_state_connection(&svc.ctx.paths.local_state_db()).unwrap();
+        let files = crate::db::list_instance_pack_files(&conn, "Service-Pack").unwrap();
+        assert!(!files.is_empty(), "stored inventory must be non-empty");
+        let computed = crate::pack_inventory::pack_content_hash(&files);
+        assert_eq!(origin.pack_content_hash.as_deref(), Some(computed.as_str()));
+
+        // Also verify that the inventory collected from the instance dir matches DB
+        let instance_dir = svc.ctx.paths.instance_dir("Service-Pack").unwrap();
+        let live = crate::pack_inventory::collect_pack_inventory(&instance_dir).unwrap();
+        assert_eq!(live, files);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_technic_solder_import_via_service_stamps_origin_and_inventory() {
+        let ctx = test_ctx();
+        let svc = ImportService::new(ctx.clone());
+
+        let tmp = test_tmp("technic-solder-service");
+        let _ = std::fs::create_dir_all(&tmp);
+        // Use empty mods to avoid network; still should stamp origin and produce
+        // an inventory that is empty (hash None) — honest for empty pack.
+        // For non-empty inventory, we rely on the file-system pack inventory
+        // after the import: the Solder import writes no files, so we manually
+        // seed a config file to simulate a pack that contributed a file,
+        // then verify the service's DB store would have captured it if it had
+        // been there at import time. Simpler: verify origin fields are correct
+        // and that an empty inventory still results in a valid PackOrigin.
+        let pack = crate::import::TechnicSolderPack {
+            display_name: "Solder Service Pack".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "".into(),
+            loader_version: "".into(),
+            mods: vec![],
+            slug: "solder-pack".into(),
+            solder_url: "https://solder.example.com/api?token=secret#frag".into(),
+            build: "1.5.2".into(),
+        };
+        let request = ImportRequest {
+            source: ImportSource::TechnicSolder(pack),
+            symlink_saves: false,
+        };
+        let result = svc.run_import(request).await.unwrap();
+        assert_eq!(result.instance_id, "Solder-Service-Pack");
+
+        let manifest_path = svc
+            .ctx
+            .paths
+            .instance_dir("Solder-Service-Pack")
+            .unwrap()
+            .join("instance_manifest.json");
+        let manifest: crate::models::InstanceManifest =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let origin = manifest.pack_origin.expect("solder must stamp PackOrigin");
+        assert_eq!(origin.platform, crate::models::PackPlatform::TechnicSolder);
+        assert_eq!(origin.pack_name, "Solder Service Pack");
+        assert_eq!(origin.project_id.as_deref(), Some("solder-pack"));
+        assert_eq!(origin.version_id.as_deref(), Some("1.5.2"));
+        assert!(origin.version_number.is_none());
+        assert_eq!(
+            origin.origin_url.as_deref(),
+            Some("https://solder.example.com/api")
+        );
+        assert!(!origin.origin_url.as_deref().unwrap().contains("token"));
+        // No files, so hash None is honest; DB inventory should be empty.
+        assert!(origin.pack_content_hash.is_none());
+        let conn = crate::db::local_state_connection(&svc.ctx.paths.local_state_db()).unwrap();
+        let files = crate::db::list_instance_pack_files(&conn, "Solder-Service-Pack").unwrap();
+        assert!(files.is_empty());
+
+        // Now test non-empty inventory via manual file + service DB write path:
+        // Simulate a pack that had written a config file by creating one
+        // and re-collecting.
+        let instance_dir = svc.ctx.paths.instance_dir("Solder-Service-Pack").unwrap();
+        std::fs::create_dir_all(instance_dir.join("config")).unwrap();
+        std::fs::write(
+            instance_dir.join("config").join("solder.toml"),
+            b"solder cfg",
+        )
+        .unwrap();
+        let files2 = crate::pack_inventory::collect_pack_inventory(&instance_dir).unwrap();
+        assert!(!files2.is_empty());
+        let hash2 = crate::pack_inventory::pack_content_hash(&files2);
+        // Store and verify round-trip
+        crate::db::replace_instance_pack_files(&conn, "Solder-Service-Pack", &files2).unwrap();
+        let listed = crate::db::list_instance_pack_files(&conn, "Solder-Service-Pack").unwrap();
+        assert_eq!(listed, files2);
+        assert_eq!(crate::pack_inventory::pack_content_hash(&listed), hash2);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_strip_url_query_removes_query_and_fragment() {
+        assert_eq!(
+            strip_url_query("https://cdn.modrinth.com/pack.mrpack?token=abc&x=1#frag"),
+            "https://cdn.modrinth.com/pack.mrpack"
+        );
+        assert_eq!(
+            strip_url_query("https://example.com/a?b=1"),
+            "https://example.com/a"
+        );
+        assert_eq!(
+            strip_url_query("https://example.com/a#frag"),
+            "https://example.com/a"
+        );
+        assert_eq!(
+            strip_url_query("https://example.com/a"),
+            "https://example.com/a"
+        );
     }
 
     /// Progress sink that cancels the given token when a specific phase is

@@ -93,10 +93,16 @@ async function safe<T>(run: () => Promise<T>): Promise<Fragment<T>> {
 
 /** Instance identity and process state — enough to paint the world. */
 export async function readEssentialData(instanceId: string): Promise<EssentialReads> {
-  const [detail, running] = await Promise.all([
+  const [detail, sessions] = await Promise.all([
     safe(() => getInstanceDetail(instanceId)),
     safe(() => queryLaunchState()),
   ]);
+  // The backend reports every live session; this scene only depicts one
+  // instance, so narrow to that instance's session. Another instance running
+  // must not make this one look busy.
+  const running: Fragment<RunningProcess | null> = sessions.status === 'ok'
+    ? ok(sessions.value.find((session) => session.instance_id === instanceId) ?? null)
+    : err<RunningProcess | null>();
   return { detail, running };
 }
 

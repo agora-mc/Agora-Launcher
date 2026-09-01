@@ -361,6 +361,85 @@ def check_single_update_check() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 10. Single InstanceManifest loader (lazy backfill)
+# ---------------------------------------------------------------------------
+
+# Only helpers.rs may deserialize an InstanceManifest from disk. Every other
+# site must go through helpers::read_manifest so that heal_pack_managed and
+# the Unknown-origin synthesis happen exactly once, lazily, and without a
+# startup mass-rewrite. See helpers.rs: read_manifest.
+INSTANCE_MANIFEST_OWNER = "helpers.rs"
+ALLOW_RAW_MANIFEST_FILES = {
+    # helpers.rs itself is the canonical loader
+    CORE_SRC / "helpers.rs",
+    # models.rs contains the struct definition and tests that deserialize
+    # legacy JSON fixtures (e.g., legacy_manifest_json) — not instance files
+    CORE_SRC / "models.rs",
+    # snapshot.rs reads SnapshotManifest, not InstanceManifest; allow to avoid
+    # false positives on similar names. If it ever reads InstanceManifest from
+    # an archive, that is intentionally exempt (archived manifest, not live).
+    CORE_SRC / "snapshot.rs",
+}
+# Pattern for raw deserialization of an InstanceManifest
+INSTANCE_MANIFEST_PATTERNS = [
+    re.compile(r"InstanceManifest"),
+]
+
+
+def check_instance_manifest_raw() -> None:
+    """Fail if anything outside helpers.rs deserializes an InstanceManifest raw.
+
+    The healed value (pack_managed, Unknown origin) must exist in memory after
+    any read, but the file on disk must not be rewritten until the next write.
+    That is only guaranteed if every live read goes through helpers::read_manifest.
+    """
+    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC]
+    hits: list[str] = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            if path in ALLOW_RAW_MANIFEST_FILES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            for lineno, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("//") or stripped.startswith("///"):
+                    continue
+                # Allow an explicit escape hatch for archived manifests. rustfmt
+                # moves a trailing comment onto its own line inside a multi-line
+                # call, so look at a small window rather than just this line —
+                # otherwise the hatch silently stops working after a reformat.
+                window = lines[max(0, lineno - 2) : lineno + 2]
+                if any("allow-raw-instance-manifest" in entry for entry in window):
+                    continue
+                # Any line that mentions InstanceManifest and does a serde_json
+                # deserialization is considered raw. This catches both turbofish
+                # `from_str::<InstanceManifest>` and inferred `let x: InstanceManifest = from_str`.
+                if "InstanceManifest" in line and (
+                    "from_str" in line or "from_slice" in line or "from_reader" in line
+                ):
+                    # Ensure it's actually a deserialization, not just a type reference
+                    if "serde_json" in line or "serde" in line or "from_str" in line:
+                        rel = path.relative_to(REPO_ROOT)
+                        hits.append(f"  {rel}:{lineno}: {stripped}")
+                        continue
+    if hits:
+        err(
+            "Raw InstanceManifest deserialization found outside "
+            f"{INSTANCE_MANIFEST_OWNER} — use helpers::read_manifest so that "
+            "heal_pack_managed and the Unknown-origin synthesis happen lazily. "
+            "If this is an archived manifest (e.g., snapshot restore), add "
+            "`// allow-raw-instance-manifest` to the line."
+        )
+        for h in hits:
+            print(h, file=sys.stderr)
+    else:
+        print(f"OK: InstanceManifest deserialization only in {INSTANCE_MANIFEST_OWNER} (and allowed tests)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -401,6 +480,10 @@ def main() -> int:
 
     print("--- 9. Single update-check implementation ---")
     check_single_update_check()
+    print()
+
+    print("--- 10. Single InstanceManifest loader (lazy backfill) ---")
+    check_instance_manifest_raw()
     print()
 
     if EXIT_CODE == 0:

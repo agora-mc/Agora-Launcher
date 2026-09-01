@@ -1,5 +1,5 @@
 import type { InstalledContentRow } from '../../lib/tauri';
-import type { ContentColumn, ContentFilters, SortColumn, SortState } from './types';
+import type { ContentColumn, ContentFilters, ContentGroup, GroupMode, SortColumn, SortState } from './types';
 
 export function normalizeSearchText(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
@@ -127,3 +127,51 @@ export function formatInstalledDate(value: string): string {
 }
 
 export const defaultColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions'];
+
+/**
+ * Split rows into display groups. Purely derived — every mode reads a field the
+ * row already carries, so nothing is persisted and a row never appears twice.
+ *
+ * Sort order within a group is whatever the caller already applied; only the
+ * *group* order is decided here.
+ */
+export function groupInstalledContent(rows: InstalledContentRow[], mode: GroupMode): ContentGroup[] {
+  if (mode === 'none') return [{ key: 'all', label: '', rows }];
+
+  const buckets = new Map<string, ContentGroup>();
+  const push = (key: string, label: string, row: InstalledContentRow) => {
+    const existing = buckets.get(key);
+    if (existing) existing.rows.push(row);
+    else buckets.set(key, { key, label, rows: [row] });
+  };
+
+  for (const row of rows) {
+    if (mode === 'pack') {
+      // Two buckets only, so an instance with no pack still reads sensibly.
+      if (row.pack_managed) push('pack', 'From the modpack', row);
+      else push('user', 'Added by you', row);
+    } else if (mode === 'source') {
+      push(`source:${row.source_label}`, row.source_label, row);
+    } else {
+      // A row can carry several categories; grouping on the first keeps every
+      // row in exactly one bucket. Duplicating rows across groups would break
+      // select-all and the counts.
+      const category = row.categories[0];
+      if (category) push(`category:${category}`, category, row);
+      else push('category:__none__', 'Uncategorized', row);
+    }
+  }
+
+  const groups = [...buckets.values()];
+  if (mode === 'pack') {
+    // Pack content first: it is the part the user did not choose and most
+    // wants to see distinguished.
+    return groups.sort((a, b) => (a.key === 'pack' ? -1 : b.key === 'pack' ? 1 : 0));
+  }
+  // "Uncategorized" sinks to the bottom; everything else is alphabetical.
+  return groups.sort((a, b) => {
+    if (a.key === 'category:__none__') return 1;
+    if (b.key === 'category:__none__') return -1;
+    return a.label.localeCompare(b.label);
+  });
+}

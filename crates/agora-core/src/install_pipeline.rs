@@ -828,10 +828,8 @@ impl InstallPipeline {
             message: "Resolving install plan…".into(),
         });
 
-        let manifest_text = std::fs::read_to_string(instance_dir.join("instance_manifest.json"))
+        let manifest = crate::helpers::read_manifest(&instance_dir.join("instance_manifest.json"))
             .map_err(|e| format!("failed to read instance manifest: {e}"))?;
-        let manifest: crate::models::InstanceManifest = serde_json::from_str(&manifest_text)
-            .map_err(|e| format!("failed to parse instance manifest: {e}"))?;
         let live_index = crate::snapshot::live_file_index(instance_dir)?;
         let instance_state_hash = hash_serializable(&live_index)?;
 
@@ -1464,7 +1462,7 @@ impl InstallPipeline {
                 instance_dir.join("instance_manifest.json"),
             )
             .ok()
-            .and_then(|text| serde_json::from_str::<crate::models::InstanceManifest>(&text).ok())
+            .and_then(|text| serde_json::from_str::<crate::models::InstanceManifest>(&text).ok()) // allow-raw-instance-manifest
             .map(|manifest| manifest.minecraft_version)
             {
                 Some(version) => version,
@@ -2034,10 +2032,8 @@ fn validate_staged_loader_compatibility(
     staging_dir: &Path,
 ) -> Result<(), String> {
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
+    let manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|error| format!("failed to read manifest for loader validation: {error}"))?;
-    let manifest: crate::models::InstanceManifest = serde_json::from_str(&manifest_text)
-        .map_err(|error| format!("failed to parse manifest for loader validation: {error}"))?;
     if matches!(manifest.loader.as_str(), "" | "vanilla") || manifest.loader_version.is_empty() {
         return Ok(());
     }
@@ -2588,10 +2584,8 @@ fn prepare_manifest(
     use std::io::Write;
 
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
+    let mut manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("failed to read manifest before apply: {e}"))?;
-    let mut manifest: crate::models::InstanceManifest = serde_json::from_str(&text)
-        .map_err(|e| format!("failed to parse manifest before apply: {e}"))?;
 
     if let Some(change) = &plan.loader_change {
         if !manifest.loader.eq_ignore_ascii_case(&change.loader) {
@@ -2710,7 +2704,7 @@ fn apply_transaction(
     let manifest_path = instance_dir.join("instance_manifest.json");
     let original_text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("failed to read current manifest during apply: {e}"))?;
-    let manifest: crate::models::InstanceManifest = serde_json::from_str(&original_text)
+    let manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("failed to parse current manifest during apply: {e}"))?;
     let manifest_backup = staging_dir.join("instance_manifest.original.json");
     std::fs::write(&manifest_backup, original_text.as_bytes())
@@ -3656,6 +3650,7 @@ mod tests {
             b"verified local artifact"
         );
         let manifest: crate::models::InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
             &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
         )
         .unwrap();

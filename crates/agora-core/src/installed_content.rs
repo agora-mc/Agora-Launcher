@@ -36,6 +36,10 @@ pub struct InstalledContentRow {
     pub installed_at: String,
     pub source: String,
     pub source_label: String,
+    /// Whether the pack contributed this entry, as opposed to the user adding
+    /// it. Distinct from `source`, which mixes origin with acquisition method
+    /// and is a display string.
+    pub pack_managed: bool,
     pub source_url: Option<String>,
     pub registry_id: Option<String>,
     pub modrinth_id: Option<String>,
@@ -186,6 +190,7 @@ fn build_row(
         installed_at: entry.installed_at.clone(),
         source: entry.source.clone(),
         source_label,
+        pack_managed: entry.pack_managed,
         source_url: entry.source_url.clone(),
         registry_id: entry.registry_id.clone(),
         modrinth_id: entry

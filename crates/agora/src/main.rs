@@ -1262,8 +1262,7 @@ async fn run_command(
                 if !manifest_path.exists() {
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
-                let text = std::fs::read_to_string(&manifest_path)?;
-                let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+                let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&manifest.mods)?);
                 } else {
@@ -1945,8 +1944,7 @@ async fn run_command(
             if !manifest_path.exists() {
                 anyhow::bail!("Instance manifest not found for '{}'", instance);
             }
-            let text = std::fs::read_to_string(&manifest_path)?;
-            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
             let reg_path = data_dir.join("registry.db");
             let reg_opt = if reg_path.exists() {
                 Some(reg_path)
@@ -1978,8 +1976,7 @@ async fn run_command(
                 anyhow::bail!("Instance '{}' not found", instance);
             }
             let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
-            let text = std::fs::read_to_string(&manifest_path)?;
-            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
             let inventory = agora_core::health::inventory(&instance_dir, &manifest);
             if json {
                 let artifacts: Vec<_> = inventory
@@ -2203,7 +2200,7 @@ async fn run_command(
             } else {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 match ext {
-                    "mrpack" => agora_core::import_service::ImportSource::Mrpack(path),
+                    "mrpack" => agora_core::import_service::ImportSource::mrpack(path),
                     "zip" => agora_core::import_service::ImportSource::PrismZip(path),
                     _ => anyhow::bail!(
                         "Unsupported file type '.{ext}'. Use .mrpack, .zip, or a directory"
@@ -2648,9 +2645,7 @@ async fn run_command(
                 anyhow::anyhow!("Cannot create destination '{}': {}", dest.display(), e)
             })?;
             let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
-            let text = std::fs::read_to_string(&manifest_path)
-                .map_err(|_| anyhow::anyhow!("Instance manifest not found for '{}'", instance))?;
-            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
             let result = agora_core::server_export::export_server_environment(
                 &instance_dir,
                 &dest,

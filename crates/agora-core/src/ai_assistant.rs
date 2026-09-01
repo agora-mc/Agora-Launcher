@@ -844,25 +844,22 @@ pub fn build_context_message_with_app(
 
     if let Some(ref manifest_path) = manifest_path {
         if manifest_path.exists() {
-            if let Ok(text) = std::fs::read_to_string(manifest_path) {
-                if let Ok(manifest) = serde_json::from_str::<crate::models::InstanceManifest>(&text)
-                {
-                    let mut mod_lines: Vec<String> = Vec::new();
-                    for mod_ in &manifest.mods {
-                        let ver = mod_.version.as_deref().unwrap_or("unknown");
-                        mod_lines.push(format!(
-                            "- {} v{} (source: {})",
-                            mod_.filename, ver, mod_.source
-                        ));
-                    }
-                    if !mod_lines.is_empty() {
-                        parts.push(format!(
-                            "## Instance Mods\n\n{}\n\n### {}\n\n{}",
-                            mod_lines.join("\n"),
-                            manifest.name,
-                            context.instance_id.as_deref().unwrap_or("unknown"),
-                        ));
-                    }
+            if let Ok(manifest) = crate::helpers::read_manifest(manifest_path) {
+                let mut mod_lines: Vec<String> = Vec::new();
+                for mod_ in &manifest.mods {
+                    let ver = mod_.version.as_deref().unwrap_or("unknown");
+                    mod_lines.push(format!(
+                        "- {} v{} (source: {})",
+                        mod_.filename, ver, mod_.source
+                    ));
+                }
+                if !mod_lines.is_empty() {
+                    parts.push(format!(
+                        "## Instance Mods\n\n{}\n\n### {}\n\n{}",
+                        mod_lines.join("\n"),
+                        manifest.name,
+                        context.instance_id.as_deref().unwrap_or("unknown"),
+                    ));
                 }
             }
         }

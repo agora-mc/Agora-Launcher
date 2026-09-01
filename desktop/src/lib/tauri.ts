@@ -357,6 +357,8 @@ export interface InstalledMod {
   mod_jar_id?: string | null;
   enabled: boolean;
   content_type: string;
+  /** True when the modpack contributed this entry rather than the user. */
+  pack_managed?: boolean;
 }
 
 export interface InstanceManifest {
@@ -395,6 +397,8 @@ export interface InstalledContentRow {
   installed_at: string;
   source: string;
   source_label: string;
+  /** True when the modpack contributed this entry rather than the user. */
+  pack_managed: boolean;
   source_url: string | null;
   registry_id: string | null;
   modrinth_id: string | null;
@@ -666,8 +670,12 @@ export interface RunningProcess {
   session_id: number;
 }
 
+/**
+ * Every tracked direct-launch process. Several instances can run at once, and
+ * the same instance can be launched more than once, so this is a list.
+ */
 export const queryLaunchState = () =>
-  invoke<RunningProcess | null>('query_launch_state');
+  invoke<RunningProcess[]>('query_launch_state');
 
 export const getLkgMarker = (instanceId: string) =>
   invoke<Record<string, unknown> | null>('get_lkg_marker', { instanceId });

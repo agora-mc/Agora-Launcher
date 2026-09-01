@@ -143,9 +143,8 @@ pub fn refresh_installed_jar_metadata<R: tauri::Runtime>(
         .map_err(|_| crate::error::LauncherError::InstanceCreateFailed)?;
     let mods_dir = instance_dir.join("mods");
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let loader = std::fs::read_to_string(&manifest_path)
+    let loader = agora_core::helpers::read_manifest(&manifest_path)
         .ok()
-        .and_then(|text| serde_json::from_str::<crate::models::InstanceManifest>(&text).ok())
         .map(|manifest| manifest.loader)
         .unwrap_or_default();
 

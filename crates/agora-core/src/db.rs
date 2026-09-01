@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 11;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 12;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -459,6 +459,30 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (11)",
+            [],
+        )?;
+    }
+
+    // Migration v12: inventory of files contributed by the instance's pack.
+    // Full list lives here in the DB; only the content hash is stored in the
+    // manifest so manifests stay small even for large packs, while drift can
+    // still be detected if the DB is lost. Follows instance_import_files
+    // (db.rs:334) for table shape and accessor placement.
+    if current < 12 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS instance_pack_files (
+                 instance_id TEXT NOT NULL,
+                 relative_path TEXT NOT NULL,
+                 sha256 TEXT NOT NULL,
+                 size INTEGER NOT NULL,
+                 PRIMARY KEY (instance_id, relative_path),
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_instance_pack_files_instance
+                 ON instance_pack_files (instance_id);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (12)",
             [],
         )?;
     }
@@ -1087,6 +1111,76 @@ pub fn replace_instance_import(
                 file.sha256,
                 file.size as i64,
                 file.source_modified_ns,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// A file contributed by the instance's pack, stored in `instance_pack_files`.
+///
+/// Full per-file list lives here in the DB; only [`crate::models::PackOrigin::pack_content_hash`]
+/// is stored in the manifest so manifests stay small while drift can still be
+/// detected if the DB is lost. Shape follows [`InstanceImportFileRecord`]
+/// but omits `source_modified_ns`, which matters only for launcher-import
+/// baseline tracking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstancePackFile {
+    pub relative_path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+pub fn list_instance_pack_files(
+    conn: &Connection,
+    instance_id: &str,
+) -> anyhow::Result<Vec<InstancePackFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT relative_path, sha256, size FROM instance_pack_files WHERE instance_id = ?1 ORDER BY relative_path",
+    )?;
+    let rows = stmt.query_map([instance_id], |row| {
+        Ok(InstancePackFile {
+            relative_path: row.get(0)?,
+            sha256: row.get(1)?,
+            size: row.get::<_, i64>(2)? as u64,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn delete_instance_pack_files(conn: &Connection, instance_id: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM instance_pack_files WHERE instance_id = ?1",
+        [instance_id],
+    )?;
+    Ok(())
+}
+
+/// Replace the entire pack file inventory for `instance_id`.
+///
+/// A pack install defines the whole set at once, so this is replace-all
+/// rather than incremental. Runs in a single transaction.
+pub fn replace_instance_pack_files(
+    conn: &Connection,
+    instance_id: &str,
+    files: &[InstancePackFile],
+) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM instance_pack_files WHERE instance_id = ?1",
+        [instance_id],
+    )?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO instance_pack_files (instance_id, relative_path, sha256, size) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for file in files {
+            stmt.execute(rusqlite::params![
+                instance_id,
+                file.relative_path,
+                file.sha256,
+                file.size as i64
             ])?;
         }
     }
@@ -1987,5 +2081,188 @@ mod tests {
         // Non-existent pair
         let count = get_pair_crash_count(&conn, "mod-a", "mod-z").unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_instance_pack_files_roundtrip_and_replace() {
+        let (_conn, path) = test_db();
+        // Use FK-enforcing connection for all operations, otherwise the cascade
+        // and FK checks prove nothing (foreign_keys defaults OFF on raw open).
+        let conn = local_state_connection(&path).unwrap();
+        let row = InstanceRow {
+            instance_id: "pack-inst-1".into(),
+            name: "Pack Inst".into(),
+            minecraft_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.9".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        upsert_instance(&conn, &row).unwrap();
+
+        let mut files = vec![
+            InstancePackFile {
+                relative_path: "mods/a.jar".into(),
+                sha256: "a".repeat(64),
+                size: 123,
+            },
+            InstancePackFile {
+                relative_path: "config/b.toml".into(),
+                sha256: "b".repeat(64),
+                size: 456,
+            },
+        ];
+        files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        replace_instance_pack_files(&conn, &row.instance_id, &files).unwrap();
+        let listed = list_instance_pack_files(&conn, &row.instance_id).unwrap();
+        assert_eq!(listed, files);
+
+        // Replace-all must replace, not append.
+        let replacement = vec![InstancePackFile {
+            relative_path: "mods/c.jar".into(),
+            sha256: "c".repeat(64),
+            size: 789,
+        }];
+        replace_instance_pack_files(&conn, &row.instance_id, &replacement).unwrap();
+        let listed2 = list_instance_pack_files(&conn, &row.instance_id).unwrap();
+        assert_eq!(listed2, replacement);
+    }
+
+    #[test]
+    fn test_instance_pack_files_delete() {
+        let (_conn, path) = test_db();
+        let conn = local_state_connection(&path).unwrap();
+        let row = InstanceRow {
+            instance_id: "pack-inst-del".into(),
+            name: "Del".into(),
+            minecraft_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.9".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        upsert_instance(&conn, &row).unwrap();
+        let files = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: "a".repeat(64),
+            size: 1,
+        }];
+        replace_instance_pack_files(&conn, &row.instance_id, &files).unwrap();
+        delete_instance_pack_files(&conn, &row.instance_id).unwrap();
+        assert!(list_instance_pack_files(&conn, &row.instance_id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_instance_pack_files_cascade_on_instance_delete() {
+        let (_conn, path) = test_db();
+        let conn = local_state_connection(&path).unwrap();
+        let row = InstanceRow {
+            instance_id: "pack-inst-cascade".into(),
+            name: "Cascade".into(),
+            minecraft_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.9".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        upsert_instance(&conn, &row).unwrap();
+        let files = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: "a".repeat(64),
+            size: 1,
+        }];
+        replace_instance_pack_files(&conn, &row.instance_id, &files).unwrap();
+        // Must be FK-enforced: deleting the instance must cascade.
+        delete_instance(&conn, &row.instance_id).unwrap();
+        // Re-open with FK ON to verify no orphan remains (raw open would hide the bug).
+        let conn2 = local_state_connection(&path).unwrap();
+        assert!(list_instance_pack_files(&conn2, &row.instance_id)
+            .unwrap()
+            .is_empty());
+        // Direct SQL check also: no rows for that instance_id
+        let count: i64 = conn2
+            .query_row(
+                "SELECT COUNT(*) FROM instance_pack_files WHERE instance_id = ?1",
+                [&row.instance_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_instance_pack_files_empty_replace_clears() {
+        let (_conn, path) = test_db();
+        let conn = local_state_connection(&path).unwrap();
+        let row = InstanceRow {
+            instance_id: "pack-inst-empty".into(),
+            name: "Empty".into(),
+            minecraft_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.9".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        upsert_instance(&conn, &row).unwrap();
+        let files = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: "a".repeat(64),
+            size: 1,
+        }];
+        replace_instance_pack_files(&conn, &row.instance_id, &files).unwrap();
+        replace_instance_pack_files(&conn, &row.instance_id, &[]).unwrap();
+        assert!(list_instance_pack_files(&conn, &row.instance_id)
+            .unwrap()
+            .is_empty());
     }
 }

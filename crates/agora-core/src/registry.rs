@@ -3,7 +3,6 @@ use crate::error::{LauncherError, LauncherResult};
 use crate::governance::{
     get_governance_summary, list_governance_events, GovernanceEvent, GovernanceSummary,
 };
-use crate::models::InstanceManifest;
 use crate::registry_sync::APP_REGISTRY_SCHEMA_VERSION;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -559,6 +558,58 @@ impl RegistryService {
     ) -> LauncherResult<Vec<GovernanceEvent>> {
         let conn = self.connection()?;
         list_governance_events(&conn, item_id, limit)
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-version changelogs (schema 9)
+    // -----------------------------------------------------------------------
+
+    /// List all known changelogs for a single item, newest first.
+    ///
+    /// Returns `vec![]` when the `item_version_changelogs` table does not
+    /// exist (schema < 9) or the item has no changelog rows. The table is
+    /// source-agnostic: Modrinth and GitHub rows share the same shape so a
+    /// `github_release` item and a `modrinth_id` item are queried the same way.
+    pub fn get_version_changelogs(
+        &self,
+        item_id: &str,
+    ) -> LauncherResult<Vec<crate::version_changelogs::VersionChangelog>> {
+        let conn = self.connection()?;
+        crate::version_changelogs::get_changelogs_for_item(&conn, item_id)
+    }
+
+    /// Fetch the changelog for a single `(item_id, version)` pair, if present.
+    ///
+    /// `version` must be the exact display string (`InstalledMod.version` /
+    /// `ModVersionCandidate.version`). Returns `Ok(None)` on older databases
+    /// or when the version has no stored changelog (e.g. empty upstream
+    /// changelog, `direct_hash` item, or version beyond the 30-row cap).
+    pub fn get_version_changelog(
+        &self,
+        item_id: &str,
+        version: &str,
+    ) -> LauncherResult<Option<crate::version_changelogs::VersionChangelog>> {
+        let conn = self.connection()?;
+        crate::version_changelogs::get_changelog_for_version(&conn, item_id, version)
+    }
+
+    /// What changed between `from_version` (installed) and `to_version`
+    /// (candidate), newest first.
+    ///
+    /// This is the offline answer to "should I update?". It returns every
+    /// stored changelog newer than `from_version` up to and including
+    /// `to_version`. See
+    /// [`crate::version_changelogs::get_changelogs_between`] for the full
+    /// interval semantics (unknown `from`, missing `to`, downgrade, etc.) and
+    /// why an empty vec is not an error.
+    pub fn get_changelogs_between(
+        &self,
+        item_id: &str,
+        from_version: &str,
+        to_version: &str,
+    ) -> LauncherResult<Vec<crate::version_changelogs::VersionChangelog>> {
+        let conn = self.connection()?;
+        crate::version_changelogs::get_changelogs_between(&conn, item_id, from_version, to_version)
     }
 }
 
@@ -1787,46 +1838,44 @@ fn collect_installed_registry_ids(
     };
     for entry in entries.flatten() {
         let manifest_path = entry.path().join("instance_manifest.json");
-        if let Ok(text) = std::fs::read_to_string(&manifest_path) {
-            if let Ok(manifest) = serde_json::from_str::<InstanceManifest>(&text) {
-                for m in &manifest.mods {
-                    if let Some(rid) = &m.registry_id {
-                        let rid = rid.trim();
-                        if !rid.is_empty() {
-                            ids.insert(rid.to_string());
-                        }
+        if let Ok(manifest) = crate::helpers::read_manifest(&manifest_path) {
+            for m in &manifest.mods {
+                if let Some(rid) = &m.registry_id {
+                    let rid = rid.trim();
+                    if !rid.is_empty() {
+                        ids.insert(rid.to_string());
                     }
                 }
-                for m in &manifest.resourcepacks {
-                    if let Some(rid) = &m.registry_id {
-                        let rid = rid.trim();
-                        if !rid.is_empty() {
-                            ids.insert(rid.to_string());
-                        }
+            }
+            for m in &manifest.resourcepacks {
+                if let Some(rid) = &m.registry_id {
+                    let rid = rid.trim();
+                    if !rid.is_empty() {
+                        ids.insert(rid.to_string());
                     }
                 }
-                for m in &manifest.shaders {
-                    if let Some(rid) = &m.registry_id {
-                        let rid = rid.trim();
-                        if !rid.is_empty() {
-                            ids.insert(rid.to_string());
-                        }
+            }
+            for m in &manifest.shaders {
+                if let Some(rid) = &m.registry_id {
+                    let rid = rid.trim();
+                    if !rid.is_empty() {
+                        ids.insert(rid.to_string());
                     }
                 }
-                for m in &manifest.datapacks {
-                    if let Some(rid) = &m.registry_id {
-                        let rid = rid.trim();
-                        if !rid.is_empty() {
-                            ids.insert(rid.to_string());
-                        }
+            }
+            for m in &manifest.datapacks {
+                if let Some(rid) = &m.registry_id {
+                    let rid = rid.trim();
+                    if !rid.is_empty() {
+                        ids.insert(rid.to_string());
                     }
                 }
-                for m in &manifest.worlds {
-                    if let Some(rid) = &m.registry_id {
-                        let rid = rid.trim();
-                        if !rid.is_empty() {
-                            ids.insert(rid.to_string());
-                        }
+            }
+            for m in &manifest.worlds {
+                if let Some(rid) = &m.registry_id {
+                    let rid = rid.trim();
+                    if !rid.is_empty() {
+                        ids.insert(rid.to_string());
                     }
                 }
             }

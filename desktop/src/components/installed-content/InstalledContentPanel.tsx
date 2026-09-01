@@ -3,11 +3,12 @@ import { ArrowUpCircle, ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, 
 import { Switch } from '../ui/switch';
 import { formatError } from '../../lib/tauri';
 import type { InstalledContentRow, UpdateInfo } from '../../lib/tauri';
-import type { ContentColumn, ContentFilters, InstalledContentPanelProps, SortColumn, SortState } from './types';
+import type { ContentColumn, ContentFilters, GroupMode, InstalledContentPanelProps, SortColumn, SortState } from './types';
 import {
   defaultColumns,
   deriveAvailableFilters,
   filterInstalledContent,
+  groupInstalledContent,
   formatBytes,
   formatCompactNumber,
   formatInstalledDate,
@@ -76,6 +77,8 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updatesByFilename, setUpdatesByFilename] = useState<Record<string, UpdateInfo>>({});
   const [updatesChecked, setUpdatesChecked] = useState(false);
+  const [groupBy, setGroupBy] = useState<GroupMode>('none');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setColumns(preferences.columns);
@@ -111,6 +114,13 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     filterInstalledContent(searchInstalledContent(rows, query), filters),
     sort,
   ), [rows, query, filters, sort]);
+  const groups = useMemo(() => groupInstalledContent(visibleRows, groupBy), [visibleRows, groupBy]);
+  const toggleGroupCollapsed = (key: string) => setCollapsedGroups((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const rowIndexByKey = useMemo(() => new Map(visibleRows.map((row, index) => [row.key, index])), [visibleRows]);
   const filterCount = filters.categories.length + (filters.curation === 'all' ? 0 : 1) + (filters.source === 'all' ? 0 : 1) + (filters.enabled === 'all' ? 0 : 1);
   const contentLabel = titleForType[props.contentType].replace('Installed ', '');
   const selectedRows = rows.filter((row) => selectedKeys.has(row.key));
@@ -171,6 +181,36 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
         });
       } else {
         setSelectedKeys(new Set());
+      }
+    } catch (error) {
+      setOptimisticEnabled((current) => {
+        const copy = { ...current };
+        targets.forEach((row) => delete copy[row.key]);
+        return copy;
+      });
+      props.onError?.(formatError(error));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  /** Enable/disable a whole derived group in one reviewed operation. */
+  const handleGroupToggle = async (groupRows: InstalledContentRow[], enabled: boolean) => {
+    const targets = groupRows.filter((row) => row.enabled !== enabled);
+    if (targets.length === 0 || props.locked || bulkBusy) return;
+    setBulkBusy(true);
+    setOptimisticEnabled((current) => ({
+      ...current,
+      ...Object.fromEntries(targets.map((row) => [row.key, enabled])),
+    }));
+    try {
+      const completed = await props.onBulkToggle(targets, enabled);
+      if (!completed) {
+        setOptimisticEnabled((current) => {
+          const copy = { ...current };
+          targets.forEach((row) => delete copy[row.key]);
+          return copy;
+        });
       }
     } catch (error) {
       setOptimisticEnabled((current) => {
@@ -288,7 +328,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
               <span className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
                 {row.curation_status !== 'unknown' ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-primary">{curationLabel(row.curation_status)}</span> : null}
                 {!row.file_present ? <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-destructive">Missing file</span> : null}
-                {updateForRow(row) ? <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">Update available</span> : null}
+                {row.pack_managed ? <span className="rounded-full bg-muted px-1.5 py-0.5 text-muted-foreground" title="Contributed by the modpack, not added by you">Pack</span> : null}{updateForRow(row) ? <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">Update available</span> : null}
               </span>
             </button>
           </div>
@@ -355,12 +395,31 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
         <details className="relative"><summary className="list-none cursor-pointer rounded-lg border border-input bg-background px-3 py-2 text-sm">Category ({filters.categories.length})</summary><div className="absolute right-0 z-20 mt-1 max-h-64 w-56 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">{available.categories.length === 0 ? <span className="px-2 text-xs text-muted-foreground">No categories</span> : available.categories.map((category) => <label key={category} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"><input type="checkbox" checked={filters.categories.includes(category)} onChange={() => toggleCategory(category)} />{category}</label>)}</div></details>
         <select value={filters.curation} onChange={(event) => setFilters((current) => ({ ...current, curation: event.target.value }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Curation filter"><option value="all">Curation: All</option><option value="curated">Curated</option><option value="under_review">Under review</option><option value="uncurated">Uncurated</option><option value="archived">Archived</option><option value="unknown">Unknown</option></select>
         <select value={filters.source} onChange={(event) => setFilters((current) => ({ ...current, source: event.target.value }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Source filter"><option value="all">Source: All</option>{available.sources.map((source) => <option key={source} value={source}>{source}</option>)}</select>
-        <select value={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.value as ContentFilters['enabled'] }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Enabled state filter"><option value="all">State: All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="missing">Missing file</option></select>
+        <select value={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.value as ContentFilters['enabled'] }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Enabled state filter"><option value="all">State: All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="missing">Missing file</option></select><select value={groupBy} onChange={(event) => setGroupBy(event.target.value as GroupMode)} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Group installed content"><option value="none">Group: None</option><option value="pack">Group: Pack vs you</option><option value="category">Group: Category</option><option value="source">Group: Source</option></select>
         <details className="relative"><summary className="list-none cursor-pointer rounded-lg border border-input bg-background px-3 py-2 text-sm">Columns</summary><div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-border bg-card p-2 shadow-lg">{allColumns.map((column) => <label key={column} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"><input type="checkbox" checked={columnVisible(column)} onChange={() => toggleColumn(column)} />{columnLabels[column]}</label>)}</div></details>
       </div>
     </div>
     {(filterCount > 0 || query) ? <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">{query ? <span className="rounded-full bg-muted px-2 py-1">Search: {normalizeSearchText(query)} <button type="button" onClick={() => setQuery('')} aria-label="Clear search">×</button></span> : null}{filters.categories.map((category) => <button type="button" key={category} onClick={() => toggleCategory(category)} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Category: {category} ×</button>)}{filters.source !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, source: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Source: {filters.source} ×</button> : null}{filters.curation !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, curation: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Curation: {curationLabel(filters.curation)} ×</button> : null}{filters.enabled !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, enabled: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">State: {filters.enabled} ×</button> : null}<button type="button" onClick={clearFilters} className="font-medium text-primary hover:underline">Clear filters</button></div> : null}
     <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground"><span>Showing {visibleRows.length} of {props.rows.length}</span>{filterCount > 0 && !query ? <button type="button" onClick={clearFilters} className="text-primary hover:underline">Clear filters</button> : null}</div>
-    {props.rows.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">No {contentLabel.toLowerCase()} installed.</p> : visibleRows.length === 0 ? <div className="mt-4 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No installed content matches your search and filters.<br /><button type="button" onClick={() => { setQuery(''); clearFilters(); }} className="mt-2 font-medium text-primary hover:underline">Clear filters</button></div> : <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[800px] border-collapse text-left"><thead><tr className="border-b border-border"><th scope="col" className="sticky top-0 z-10 w-10 bg-card px-3 py-2"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelection} disabled={props.locked || visibleRows.length === 0} aria-label={allVisibleSelected ? 'Deselect visible rows' : 'Select visible rows'} /></th>{columns.map(renderHeader)}</tr></thead><tbody>{visibleRows.map((row, rowIndex) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}><td className="w-10 px-3 py-2"><input type="checkbox" checked={selectedKeys.has(row.key)} onChange={() => toggleSelected(row.key)} disabled={props.locked} aria-label={`Select ${row.display_name}`} /></td>{columns.map((column) => renderCell(row, column, rowIndex))}</tr>)}</tbody></table></div>}
+    {props.rows.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">No {contentLabel.toLowerCase()} installed.</p> : visibleRows.length === 0 ? <div className="mt-4 rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No installed content matches your search and filters.<br /><button type="button" onClick={() => { setQuery(''); clearFilters(); }} className="mt-2 font-medium text-primary hover:underline">Clear filters</button></div> : <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[800px] border-collapse text-left"><thead><tr className="border-b border-border"><th scope="col" className="sticky top-0 z-10 w-10 bg-card px-3 py-2"><input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelection} disabled={props.locked || visibleRows.length === 0} aria-label={allVisibleSelected ? 'Deselect visible rows' : 'Select visible rows'} /></th>{columns.map(renderHeader)}</tr></thead>{groups.map((group) => {
+      const isCollapsed = collapsedGroups.has(group.key);
+      const anyDisabled = group.rows.some((row) => !row.enabled);
+      return <tbody key={group.key}>
+        {groupBy !== 'none' ? <tr className="border-b border-border bg-muted/40">
+          <td colSpan={columns.length + 1} className="px-3 py-1.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button type="button" onClick={() => toggleGroupCollapsed(group.key)} aria-expanded={!isCollapsed} className="inline-flex items-center gap-1 font-semibold hover:text-primary">
+                {isCollapsed ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />}
+                {group.label} <span className="font-normal text-muted-foreground">({group.rows.length})</span>
+              </button>
+              <button type="button" onClick={() => void handleGroupToggle(group.rows, anyDisabled)} disabled={props.locked || bulkBusy} className="rounded border border-input bg-background px-2 py-0.5 hover:bg-accent disabled:opacity-50">
+                {anyDisabled ? 'Enable all' : 'Disable all'}
+              </button>
+            </div>
+          </td>
+        </tr> : null}
+        {isCollapsed ? null : group.rows.map((row) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}><td className="w-10 px-3 py-2"><input type="checkbox" checked={selectedKeys.has(row.key)} onChange={() => toggleSelected(row.key)} disabled={props.locked} aria-label={`Select ${row.display_name}`} /></td>{columns.map((column) => renderCell(row, column, rowIndexByKey.get(row.key) ?? 0))}</tr>)}
+      </tbody>;
+    })}</table></div>}
   </section>;
 }
