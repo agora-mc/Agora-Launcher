@@ -78,6 +78,7 @@ pub mod pack_inventory;
 pub mod paths;
 pub mod process_identity;
 pub mod process_session_manager;
+pub mod prune_service;
 pub mod ranking;
 pub mod registry;
 pub mod registry_sync;

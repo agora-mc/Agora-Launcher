@@ -3480,6 +3480,58 @@ pub async fn restore_snapshot(
 }
 
 // ---------------------------------------------------------------------------
+// Shared-runtime disk reclaim
+// ---------------------------------------------------------------------------
+
+/// Dry-run scan of the shared `minecraft-runtime/` tree. Never deletes.
+#[tauri::command]
+pub async fn scan_runtime_prune(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<agora_core::prune_service::PruneReport> {
+    let ctx = crate::core_context(&app)?;
+    let paths = ctx.paths.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || agora_core::prune_service::scan(&paths),
+        )
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_PRUNE_TASK".into(),
+            message: format!("Reclaim scan task failed: {e}"),
+        })
+}
+
+/// Delete the chosen categories. Only ever reached from an explicit user
+/// confirmation of a scan the user has already seen.
+#[tauri::command]
+pub async fn run_runtime_prune(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    categories: Vec<agora_core::prune_service::PruneCategory>,
+) -> LauncherResult<agora_core::prune_service::PruneResult> {
+    if categories.is_empty() {
+        return Err(LauncherError::Generic {
+            code: "ERR_PRUNE_EMPTY".into(),
+            message: "Choose at least one category to reclaim.".into(),
+        });
+    }
+    let ctx = crate::core_context(&app)?;
+    let paths = ctx.paths.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || agora_core::prune_service::prune(&paths, &categories),
+        )
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_PRUNE_TASK".into(),
+            message: format!("Reclaim task failed: {e}"),
+        })
+}
+
+// ---------------------------------------------------------------------------
 // Instance templates
 // ---------------------------------------------------------------------------
 

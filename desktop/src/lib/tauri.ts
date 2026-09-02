@@ -2027,6 +2027,46 @@ export interface CapturableFile {
   too_large: boolean;
 }
 
+/** Serialized `prune_service::PruneCategory`. */
+export type PruneCategory =
+  | 'libraries'
+  | 'assets'
+  | 'natives'
+  | 'versions'
+  | 'java_runtimes'
+  | 'logging';
+
+/** Serialized `prune_service::PruneCategoryReport`. The file list is
+ *  deliberately not sent over IPC — only counts and totals. */
+export interface PruneCategoryReport {
+  category: PruneCategory;
+  file_count: number;
+  total_bytes: number;
+}
+
+/** Serialized `prune_service::PruneReport`. Nothing has been deleted. */
+export interface PruneReport {
+  categories: PruneCategoryReport[];
+  /** Why a category may be reporting nothing — an unreadable instance, a
+   *  malformed version JSON. Reclaim fails closed, so these explain a zero. */
+  warnings: string[];
+}
+
+/** Serialized `prune_service::PruneResult`. */
+export interface PruneResult {
+  categories: PruneCategoryReport[];
+  warnings: string[];
+  total_freed_files: number;
+  total_freed_bytes: number;
+}
+
+/** Dry run: what could be reclaimed from the shared runtime. Deletes nothing. */
+export const scanRuntimePrune = () => invoke<PruneReport>('scan_runtime_prune', {});
+
+/** Delete the chosen categories. */
+export const runRuntimePrune = (categories: PruneCategory[]) =>
+  invoke<PruneResult>('run_runtime_prune', { categories });
+
 export const listCapturableTemplateFiles = (instanceId: string) =>
   invoke<CapturableFile[]>('list_capturable_template_files', { instanceId });
 

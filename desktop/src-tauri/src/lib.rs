@@ -122,6 +122,8 @@ pub fn run() {
             commands::delete_snapshot,
             commands::list_capturable_template_files,
             commands::list_instance_templates,
+            commands::scan_runtime_prune,
+            commands::run_runtime_prune,
             commands::create_instance_template,
             commands::update_instance_template,
             commands::delete_instance_template,
