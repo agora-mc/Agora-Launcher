@@ -180,6 +180,70 @@ impl InstanceService {
         })
     }
 
+    /// Apply a template's JVM settings to an existing instance.
+    ///
+    /// This is what makes a JVM-only template a *named Java profile*: without
+    /// it, applying such a template to an instance you already have does
+    /// nothing at all, because file application is the only thing that runs.
+    ///
+    /// A `None` field means "leave the instance's own value alone", so a
+    /// profile that only pins heap size does not silently reset a GC choice
+    /// the user made per instance. Returns whether anything changed.
+    pub fn apply_template_jvm(
+        &self,
+        instance_id: &str,
+        jvm: &crate::template_service::TemplateJvm,
+    ) -> LauncherResult<bool> {
+        if jvm.is_empty() {
+            return Ok(false);
+        }
+        let instance_id = self.validate_id(instance_id)?;
+        let conn = self.connection()?;
+        let row = crate::db::get_instance(&conn, &instance_id)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found"),
+            })?;
+        drop(conn);
+
+        let memory_mb = jvm.jvm_memory_mb.unwrap_or(row.jvm_memory_mb);
+        let memory_mode = jvm
+            .jvm_memory_mode
+            .clone()
+            .unwrap_or_else(|| row.jvm_memory_mode.clone());
+        let gc = jvm.jvm_gc.clone().unwrap_or_else(|| row.jvm_gc.clone());
+        let custom_args = jvm
+            .jvm_custom_args
+            .clone()
+            .unwrap_or_else(|| row.jvm_custom_args.clone());
+        let always_pre_touch = jvm.jvm_always_pre_touch.unwrap_or(row.jvm_always_pre_touch);
+
+        self.update_jvm(
+            &instance_id,
+            memory_mb,
+            &gc,
+            always_pre_touch,
+            &custom_args,
+            &memory_mode,
+        )?;
+
+        // The Java binary lives on a different column and a different setter,
+        // and is only touched when the template actually names one.
+        if let Some(java_path) = jvm.java_path.as_deref() {
+            self.update_java(
+                &instance_id,
+                Some(java_path),
+                row.java_incompatible_override,
+                None,
+            )?;
+        }
+        Ok(true)
+    }
+
     pub fn update_jvm(
         &self,
         instance_id: &str,

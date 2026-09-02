@@ -105,4 +105,36 @@ describe('groupInstalledContent', () => {
       expect(new Set(flattened.map((r) => r.filename)).size).toBe(rows.length);
     }
   });
+  describe('custom groups', () => {
+    const rows = [
+      row({ filename: 'sodium.jar' }),
+      row({ filename: 'iris.jar' }),
+      row({ filename: 'jei.jar' }),
+    ];
+    const assignments = { Performance: ['sodium.jar'], Visual: ['iris.jar'] };
+
+    it('buckets by the user assignments and sinks the rest to the bottom', () => {
+      const groups = groupInstalledContent(rows, 'custom', assignments);
+      expect(groups.map((g) => g.label)).toEqual(['Performance', 'Visual', 'Ungrouped']);
+      expect(groups[2].rows.map((r) => r.filename)).toEqual(['jei.jar']);
+    });
+
+    it('keeps every row exactly once', () => {
+      const groups = groupInstalledContent(rows, 'custom', assignments);
+      const flattened = groups.flatMap((g) => g.rows);
+      expect(flattened).toHaveLength(rows.length);
+      expect(new Set(flattened.map((r) => r.filename)).size).toBe(rows.length);
+    });
+
+    it('puts everything in Ungrouped when there are no assignments', () => {
+      const groups = groupInstalledContent(rows, 'custom', {});
+      expect(groups).toHaveLength(1);
+      expect(groups[0].label).toBe('Ungrouped');
+    });
+
+    it('ignores assignments naming content that is not installed', () => {
+      const groups = groupInstalledContent(rows, 'custom', { Gone: ['deleted.jar'] });
+      expect(groups.map((g) => g.label)).toEqual(['Ungrouped']);
+    });
+  });
 });

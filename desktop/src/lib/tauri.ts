@@ -2027,6 +2027,47 @@ export interface CapturableFile {
   too_large: boolean;
 }
 
+/**
+ * Write a snapshot out to a folder the user chose, returning the artifact path.
+ * Point it at a folder Dropbox or OneDrive already syncs and backups go offsite
+ * with no service behind them.
+ */
+export const exportBackup = (instanceId: string, snapshotId: string, exportDir: string) =>
+  invoke<string>('export_backup', { instanceId, snapshotId, exportDir });
+
+/** Read a backup artifact back into an instance. Fully validated before it
+ *  touches the instance directory — the file is untrusted input. */
+export const importBackup = (instanceId: string, artifactPath: string) =>
+  invoke<Snapshot>('import_backup', { instanceId, artifactPath });
+
+/** Apply a retention policy; resolves to the snapshot ids that were removed. */
+export const applyBackupRetention = (
+  instanceId: string,
+  policy: { keepLast?: number | null; keepDays?: number | null },
+) =>
+  invoke<string[]>('apply_backup_retention', {
+    instanceId,
+    keepLast: policy.keepLast ?? null,
+    keepDays: policy.keepDays ?? null,
+  });
+
+/** Group name -> assigned filenames. An entry is in at most one group. */
+export type ModGroups = Record<string, string[]>;
+
+/** Groups recorded for an instance, with names of removed content dropped. */
+export const getModGroups = (instanceId: string) =>
+  invoke<ModGroups>('get_mod_groups', { instanceId });
+
+/** Assign content to a group, or pass `null` to clear the assignment. */
+export const setModGroup = (instanceId: string, filenames: string[], group: string | null) =>
+  invoke<ModGroups>('set_mod_group', { instanceId, filenames, group });
+
+export const renameModGroup = (instanceId: string, from: string, to: string) =>
+  invoke<ModGroups>('rename_mod_group', { instanceId, from, to });
+
+export const deleteModGroup = (instanceId: string, group: string) =>
+  invoke<ModGroups>('delete_mod_group', { instanceId, group });
+
 /** Serialized `prune_service::PruneCategory`. */
 export type PruneCategory =
   | 'libraries'

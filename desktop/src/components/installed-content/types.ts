@@ -39,7 +39,7 @@ export interface SortState {
  * How the installed list is grouped. Every mode is *derived* from data the row
  * already carries, so grouping needs no stored state of its own.
  */
-export type GroupMode = 'none' | 'pack' | 'category' | 'source';
+export type GroupMode = 'none' | 'pack' | 'category' | 'source' | 'custom';
 
 export interface ContentGroup {
   /** Stable identity for collapse state; not shown to the user. */
@@ -76,6 +76,11 @@ export interface InstalledContentPanelProps {
   onTogglePin?: (row: InstalledContentRow, pinned: boolean) => void;
   /** Open the "why is this mod here?" trace for a row. */
   onExplainPresence?: (row: InstalledContentRow) => void;
+  /** User-defined groups for this instance, as group name -> filenames. */
+  modGroups?: Record<string, string[]>;
+  /** Open the group picker for these rows. The panel never assigns directly —
+   *  choosing or creating a group is the editor's dialog to own. */
+  onChooseGroup?: (rows: InstalledContentRow[]) => void;
   /**
    * Last persisted update check, read from cache so results survive navigation
    * and restart. Must be a stable reference — a fresh array each render would

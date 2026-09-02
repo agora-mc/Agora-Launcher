@@ -3480,6 +3480,239 @@ pub async fn restore_snapshot(
 }
 
 // ---------------------------------------------------------------------------
+// Backup export / import
+// ---------------------------------------------------------------------------
+
+fn backup_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_BACKUP".into(),
+        message,
+    }
+}
+
+/// Write a snapshot out to a directory the user chose.
+///
+/// This is the $0 answer to cloud saves: the destination is any folder, so
+/// pointing it at one Dropbox or OneDrive already syncs gets offsite backups
+/// with no service behind them.
+#[tauri::command]
+pub async fn export_backup(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    snapshot_id: String,
+    export_dir: String,
+) -> LauncherResult<String> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                agora_core::backup::export_snapshot(
+                    &instance_dir,
+                    &snapshot_id,
+                    std::path::Path::new(&export_dir),
+                )
+                .map(|path| path.to_string_lossy().into_owned())
+            },
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup export task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// Read a backup artifact back into an instance.
+///
+/// The artifact is untrusted input — it may have come from another machine or
+/// another person — so core validates the whole thing before a single byte
+/// reaches the instance directory.
+#[tauri::command]
+pub async fn import_backup(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    artifact_path: String,
+) -> LauncherResult<agora_core::snapshot::Snapshot> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    let lock_manager = ctx.lock_manager.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let _lock = lock_manager
+                    .acquire(
+                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+                        "import-backup",
+                    )
+                    .map_err(|e| e.to_string())?;
+                agora_core::backup::import_backup(
+                    &instance_dir,
+                    std::path::Path::new(&artifact_path),
+                )
+            },
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup import task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// Apply a retention policy, returning the snapshot ids that were removed.
+#[tauri::command]
+pub async fn apply_backup_retention(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    keep_last: Option<u32>,
+    keep_days: Option<u32>,
+) -> LauncherResult<Vec<String>> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let policy = agora_core::backup::BackupRetentionPolicy {
+        keep_last,
+        keep_days,
+    };
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::Background,
+            move || agora_core::backup::run_backup_retention(&instance_dir, &policy),
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup retention task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+// ---------------------------------------------------------------------------
+// User-defined mod groups
+// ---------------------------------------------------------------------------
+
+fn group_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_MOD_GROUP".into(),
+        message,
+    }
+}
+
+/// Read an instance's user-defined groups, dropping names whose content is gone.
+#[tauri::command]
+pub async fn get_mod_groups(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = load_manifest(&app, &instance_id)?;
+        let mut groups = agora_core::mod_groups::read_groups(&manifest);
+        let installed: Vec<String> = manifest
+            .mods
+            .iter()
+            .chain(manifest.resourcepacks.iter())
+            .chain(manifest.shaders.iter())
+            .chain(manifest.datapacks.iter())
+            .chain(manifest.worlds.iter())
+            .map(|entry| entry.filename.clone())
+            .collect();
+        agora_core::mod_groups::prune_missing(&mut groups, &installed);
+        Ok(groups)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Assign content to a group, or clear the assignment when `group` is null.
+#[tauri::command]
+pub async fn set_mod_group(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filenames: Vec<String>,
+    group: Option<String>,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    mutate_mod_groups(app, instance_id, move |manifest| {
+        agora_core::mod_groups::assign(manifest, &filenames, group.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rename_mod_group(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    from: String,
+    to: String,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    mutate_mod_groups(app, instance_id, move |manifest| {
+        agora_core::mod_groups::rename(manifest, &from, &to)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_mod_group(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    group: String,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    mutate_mod_groups(app, instance_id, move |manifest| {
+        Ok(agora_core::mod_groups::delete(manifest, &group))
+    })
+    .await
+}
+
+/// Read-modify-write the manifest under the instance lock.
+///
+/// Grouping only ever touches `user_preferences`, but it still goes through the
+/// canonical loader and the atomic writer so it cannot race a content operation
+/// or drop a manifest heal.
+async fn mutate_mod_groups<F>(
+    app: tauri::AppHandle,
+    instance_id: String,
+    mutate: F,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>>
+where
+    F: FnOnce(
+            &mut agora_core::models::InstanceManifest,
+        ) -> Result<std::collections::BTreeMap<String, Vec<String>>, String>
+        + Send
+        + 'static,
+{
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
+    let lock_manager = ctx.lock_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "mod-groups",
+        )?;
+        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+        let groups = mutate(&mut manifest).map_err(group_error)?;
+        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        Ok::<_, LauncherError>(groups)
+    })
+    .await
+    .map_err(|e| group_error(format!("Mod group task failed: {e}")))?
+}
+
+// ---------------------------------------------------------------------------
 // Shared-runtime disk reclaim
 // ---------------------------------------------------------------------------
 
@@ -3721,6 +3954,15 @@ pub async fn apply_instance_template(
             code: "ERR_PATH".into(),
             message: e.to_string(),
         })?;
+    // JVM settings first: they are a database write, so a later filesystem
+    // failure cannot leave the instance with half a template applied to disk
+    // and no record of why.
+    let ctx = crate::core_context(&app)?;
+    let template =
+        agora_core::template_service::get_template(&root, &template_id).map_err(template_error)?;
+    agora_core::instance_service::InstanceService::new(ctx)
+        .apply_template_jvm(&sanitized, &template.jvm)?;
+
     tokio::task::spawn_blocking(move || {
         let applied =
             agora_core::template_service::apply_template_files(&root, &template_id, &instance_dir)?;

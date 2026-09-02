@@ -54,8 +54,14 @@ import {
   revertInstance,
   planLoaderChange,
   changeLoaderVersion,
+  applyBackupRetention,
+  exportBackup,
   getDependencyGraph,
+  getModGroups,
+  importBackup,
+  pickDirectory,
   getOrphanedDependencies,
+  setModGroup,
   listSnapshots,
   createSnapshot,
   restoreSnapshot,
@@ -71,6 +77,7 @@ import {
   clearCachedInstanceUpdates,
   type InstanceDetail,
   type InstanceManifest,
+  type ModGroups,
   type OrphanedDependency,
   type JavaRuntimeSummary,
   type GcProfile,
@@ -92,6 +99,7 @@ import {
 } from '../lib/tauri';
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
+import { ModGroupDialog } from '../components/ModGroupDialog';
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
@@ -592,6 +600,83 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const [orphans, setOrphans] = useState<OrphanedDependency[]>([]);
   const [explainTarget, setExplainTarget] = useState<InstalledContentRow | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [modGroups, setModGroups] = useState<ModGroups>({});
+  const [groupTarget, setGroupTarget] = useState<InstalledContentRow[] | null>(null);
+  const [groupBusy, setGroupBusy] = useState(false);
+
+  // Groups live in the manifest, so they are re-read whenever the installed set
+  // changes — a removal can empty a group out from under the picker.
+  useEffect(() => {
+    let cancelled = false;
+    getModGroups(instanceId)
+      .then((groups) => { if (!cancelled) setModGroups(groups); })
+      .catch(() => { if (!cancelled) setModGroups({}); });
+    return () => { cancelled = true; };
+  }, [instanceId, modMetadataKey]);
+
+  /** Write a snapshot out to a folder the user picks. */
+  const handleExportBackup = async (snapshotId: string) => {
+    setError(null);
+    const dir = await pickDirectory('Choose a folder for this backup');
+    if (!dir) return;
+    setBackupBusy(true);
+    try {
+      const path = await exportBackup(instanceId, snapshotId, dir);
+      setStatus(`Backup written to ${path}`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  /** Read a backup artifact back in. Core validates it before it touches
+   *  anything, so a file from another machine is safe to point at. */
+  const handleImportBackup = async () => {
+    setError(null);
+    const artifact = await pickOpenFile('Choose a backup file', ['zip']);
+    if (!artifact) return;
+    setBackupBusy(true);
+    try {
+      await importBackup(instanceId, artifact);
+      setSnapshots(await listSnapshots(instanceId));
+      setStatus('Backup imported as a restorable snapshot.');
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleApplyRetention = async (keepLast: number) => {
+    setError(null);
+    if (!confirm(`Keep only the ${keepLast} most recent snapshots? Older ones are deleted.`)) return;
+    setBackupBusy(true);
+    try {
+      const removed = await applyBackupRetention(instanceId, { keepLast });
+      setSnapshots(await listSnapshots(instanceId));
+      setStatus(removed.length === 0
+        ? 'Nothing to remove — every snapshot is within the policy or protected.'
+        : `Removed ${removed.length} old snapshot${removed.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleAssignGroup = async (rows: InstalledContentRow[], group: string | null) => {
+    setGroupBusy(true);
+    try {
+      setModGroups(await setModGroup(instanceId, rows.map((row) => row.filename), group));
+      setGroupTarget(null);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setGroupBusy(false);
+    }
+  };
 
   const beginCanonicalOperation = (action: InstallIntent['action']) => {
     setCanonicalOperation({
@@ -1767,7 +1852,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onRevealFile={handleRevealInstalledContent}
           onCheckUpdates={() => checkInstanceUpdates(instanceId)}
           onApplyUpdate={handleApplyUpdate}
-          onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget}
+          onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget}
           initialUpdates={cachedUpdates}
           onSetCustomIcon={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
@@ -1787,15 +1872,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -1955,6 +2040,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-sm">Snapshots</h3>
             <div className="flex gap-2">
+              <button
+                onClick={() => void handleImportBackup()}
+                disabled={backupBusy || snapshotOperationPending}
+                className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50 whitespace-nowrap"
+                title="Read a backup file back in as a restorable snapshot"
+              >
+                Import backup…
+              </button>
               <input
                 type="text"
                 value={snapshotLabelInput}
@@ -2049,6 +2142,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     >
                       {snapshotBusy === snap.id ? 'Restoring…' : 'Restore'}
                     </button>
+                    <button
+                      onClick={() => void handleExportBackup(snap.id)}
+                      disabled={backupBusy || snapshotBusy === snap.id}
+                      className="text-xs text-foreground hover:underline disabled:opacity-50"
+                      title="Write this snapshot to a folder — point it at one your cloud drive syncs"
+                    >
+                      Export…
+                    </button>
                     {confirmDeleteSnapshot === snap.id ? (
                       <div className="flex gap-1">
                         <button
@@ -2091,6 +2192,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   </div>
                 </div>
               ))}
+              {snapshots.length > 1 && (
+                <div className="flex items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground">
+                  <span>Snapshots accumulate. Trim to the most recent:</span>
+                  {[5, 10, 20].map((keep) => (
+                    <button
+                      key={keep}
+                      onClick={() => void handleApplyRetention(keep)}
+                      disabled={backupBusy || snapshotOperationPending}
+                      className="rounded border border-input px-2 py-1 hover:bg-accent disabled:opacity-50"
+                    >
+                      Keep {keep}
+                    </button>
+                  ))}
+                  <span className="ml-auto">Protected snapshots are never removed.</span>
+                </div>
+              )}
               {snapshotDiff && (
                 <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs space-y-2">
                   <div className="flex items-center justify-between gap-3">
@@ -2839,6 +2956,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             setOrphans([]);
             beginCanonicalOperation({ type: 'batch-remove', filenames });
           }}
+        />
+      )}
+
+      {groupTarget && (
+        <ModGroupDialog
+          rows={groupTarget}
+          groups={Object.keys(modGroups)}
+          busy={groupBusy}
+          onClose={() => setGroupTarget(null)}
+          onConfirm={(group) => void handleAssignGroup(groupTarget, group)}
         />
       )}
 

@@ -129,13 +129,22 @@ export function formatInstalledDate(value: string): string {
 export const defaultColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions'];
 
 /**
- * Split rows into display groups. Purely derived — every mode reads a field the
- * row already carries, so nothing is persisted and a row never appears twice.
+ * Split rows into display groups.
+ *
+ * Every mode but `custom` is purely derived — it reads a field the row already
+ * carries. `custom` reads the user's own assignments, which is the whole point
+ * of it: the other four answer questions about the mods, and this one answers a
+ * question about the user. A row still appears exactly once, because the store
+ * keeps each filename in at most one group.
  *
  * Sort order within a group is whatever the caller already applied; only the
  * *group* order is decided here.
  */
-export function groupInstalledContent(rows: InstalledContentRow[], mode: GroupMode): ContentGroup[] {
+export function groupInstalledContent(
+  rows: InstalledContentRow[],
+  mode: GroupMode,
+  modGroups: Record<string, string[]> = {},
+): ContentGroup[] {
   if (mode === 'none') return [{ key: 'all', label: '', rows }];
 
   const buckets = new Map<string, ContentGroup>();
@@ -145,8 +154,19 @@ export function groupInstalledContent(rows: InstalledContentRow[], mode: GroupMo
     else buckets.set(key, { key, label, rows: [row] });
   };
 
+  const groupByFilename = new Map<string, string>();
+  if (mode === 'custom') {
+    for (const [name, filenames] of Object.entries(modGroups)) {
+      for (const filename of filenames) groupByFilename.set(filename, name);
+    }
+  }
+
   for (const row of rows) {
-    if (mode === 'pack') {
+    if (mode === 'custom') {
+      const name = groupByFilename.get(row.filename);
+      if (name) push(`custom:${name}`, name, row);
+      else push('custom:__none__', 'Ungrouped', row);
+    } else if (mode === 'pack') {
       // Two buckets only, so an instance with no pack still reads sensibly.
       if (row.pack_managed) push('pack', 'From the modpack', row);
       else push('user', 'Added by you', row);
@@ -168,10 +188,11 @@ export function groupInstalledContent(rows: InstalledContentRow[], mode: GroupMo
     // wants to see distinguished.
     return groups.sort((a, b) => (a.key === 'pack' ? -1 : b.key === 'pack' ? 1 : 0));
   }
-  // "Uncategorized" sinks to the bottom; everything else is alphabetical.
+  // The catch-all bucket sinks to the bottom; everything else is alphabetical.
   return groups.sort((a, b) => {
-    if (a.key === 'category:__none__') return 1;
-    if (b.key === 'category:__none__') return -1;
+    const aRest = a.key === 'category:__none__' || a.key === 'custom:__none__';
+    const bRest = b.key === 'category:__none__' || b.key === 'custom:__none__';
+    if (aRest !== bRest) return aRest ? 1 : -1;
     return a.label.localeCompare(b.label);
   });
 }
