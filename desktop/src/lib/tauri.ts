@@ -2051,6 +2051,144 @@ export const applyBackupRetention = (
     keepDays: policy.keepDays ?? null,
   });
 
+/** Serialized `migration_report::MigrationStatus`. */
+export type MigrationStatus =
+  | 'ready'
+  | 'not_yet'
+  | 'abandoned'
+  | 'superseded'
+  /** Could not be checked — a network failure, never a claim that it is dead. */
+  | 'unknown'
+  /** No Modrinth identity to check against; needs a human. */
+  | 'unclassifiable';
+
+/** Serialized `migration_report::MigrationVerdict`. */
+export type MigrationVerdict = 'ready' | 'not_yet' | 'blocked' | 'unknown' | 'needs_review';
+
+/** Serialized `migration_report::SuccessorInfo`. */
+export interface SuccessorInfo {
+  replacement_id: string;
+  replacement_name: string | null;
+  reason: string | null;
+}
+
+/** Serialized `migration_report::UnclassifiableReason`. */
+export type UnclassifiableReason = 'manual' | 'curated_only' | 'other';
+
+/** Serialized `migration_report::MigrationSummary`. */
+export interface MigrationSummary {
+  total: number;
+  ready: number;
+  not_yet: number;
+  abandoned: number;
+  superseded: number;
+  unknown: number;
+  unclassifiable: number;
+}
+
+/** Serialized `migration_report::ModMigrationEntry`. */
+export interface ModMigrationEntry {
+  filename: string;
+  display_name: string;
+  modrinth_id: string | null;
+  registry_id: string | null;
+  content_type: string;
+  installed_version: string | null;
+  status: MigrationStatus;
+  /* The rest carry `skip_serializing_if` on the Rust side, so they are absent
+     rather than null when they do not apply. */
+  unclassifiable_reason?: UnclassifiableReason;
+  last_updated?: string;
+  has_target_build?: boolean;
+  successor?: SuccessorInfo;
+  /** Set only on `unknown` — why the check could not be made. */
+  error_code?: string;
+  error_message?: string;
+}
+
+/** Serialized `migration_report::MigrationReport`. */
+export interface MigrationReport {
+  instance_id: string;
+  source_version: string;
+  target_version: string;
+  loader: string;
+  summary: MigrationSummary;
+  verdict: MigrationVerdict;
+  mods: ModMigrationEntry[];
+  warnings: string[];
+}
+
+/** Can this instance move to a newer Minecraft version, and what breaks?
+ *  Read-only — running the migration is a separate, explicit step. */
+export const getMigrationReport = (instanceId: string, targetVersion: string) =>
+  invoke<MigrationReport>('get_migration_report', { instanceId, targetVersion });
+
+/** Serialized `bisect::TrialOutcome`. */
+export type BisectTrialOutcome = 'reproduced' | 'clean';
+
+/** Serialized `bisect::BisectStep`. */
+export interface BisectStep {
+  enabled_suspects: string[];
+  disabled_suspects: string[];
+  outcome: BisectTrialOutcome | null;
+}
+
+/** Serialized `bisect::BisectStatus`. Internally tagged on `type`. */
+export type BisectStatus =
+  | { type: 'awaiting_trial' }
+  | { type: 'culprit'; filename: string }
+  /** Narrowed as far as the dependency graph allows — these move together. */
+  | { type: 'culprit_group'; filenames: string[] }
+  | { type: 'inconclusive' };
+
+/** Serialized `bisect::BisectSession`. */
+export interface BisectSession {
+  schema_version: number;
+  started_at: string;
+  baseline_enabled: string[];
+  suspects: string[];
+  history: BisectStep[];
+  invert_next_split: boolean;
+}
+
+/** Serialized `bisect::BisectTrial`. */
+export interface BisectTrial {
+  status: BisectStatus;
+  enable: string[];
+  disable: string[];
+  completed_trials: number;
+  remaining_trials: number;
+}
+
+/** A session plus the trial it currently wants, in one read. */
+export interface BisectView {
+  session: BisectSession | null;
+  trial: BisectTrial | null;
+}
+
+export const getBisectSession = (instanceId: string) =>
+  invoke<BisectView>('get_bisect_session', { instanceId });
+
+/** Begin a bisect. `primeSuspects` are mods the crash log implicated; they are
+ *  tested first, which makes the opening split much more likely to be decisive. */
+export const startBisect = (instanceId: string, primeSuspects: string[] = []) =>
+  invoke<BisectView>('start_bisect', { instanceId, primeSuspects });
+
+/** Write the current trial's enable/disable set to disk, ready to launch. */
+export const applyBisectTrial = (instanceId: string) =>
+  invoke<BisectView>('apply_bisect_trial', { instanceId });
+
+export const recordBisectOutcome = (instanceId: string, reproduced: boolean) =>
+  invoke<BisectView>('record_bisect_outcome', { instanceId, reproduced });
+
+/** Undo the last trial and take the other half next time. */
+export const stepBackBisect = (instanceId: string) =>
+  invoke<BisectView>('step_back_bisect', { instanceId });
+
+/** End the bisect and put every mod back the way it was. */
+export const cancelBisect = (instanceId: string) =>
+  invoke<void>('cancel_bisect', { instanceId });
+
 /** Group name -> assigned filenames. An entry is in at most one group. */
 export type ModGroups = Record<string, string[]>;
 

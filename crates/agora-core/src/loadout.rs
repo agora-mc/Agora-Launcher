@@ -35,20 +35,18 @@ fn content_subdir(content_type: &str) -> &str {
     }
 }
 
+/// Read through the canonical loader so a profile application heals and
+/// re-stamps the manifest exactly like every other write path. A local reader
+/// here used to skip both, which meant toggling a loadout could quietly undo a
+/// manifest heal.
 fn read_manifest(instance_dir: &Path) -> Result<InstanceManifest, String> {
     let path = instance_dir.join("instance_manifest.json");
-    let text = fs::read_to_string(&path).map_err(|e| format!("Cannot read manifest: {e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("Cannot parse manifest: {e}"))
+    crate::helpers::read_manifest(&path).map_err(|e| e.to_string())
 }
 
 fn write_manifest(instance_dir: &Path, manifest: &InstanceManifest) -> Result<(), String> {
     let path = instance_dir.join("instance_manifest.json");
-    let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(manifest)
-        .map_err(|e| format!("Cannot serialize manifest: {e}"))?;
-    fs::write(&tmp, &json).map_err(|e| format!("Cannot write manifest: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("Cannot finalize manifest: {e}"))?;
-    Ok(())
+    crate::helpers::atomic_write_manifest(&path, manifest).map_err(|e| e.to_string())
 }
 
 fn all_content_entries(manifest: &InstanceManifest) -> impl Iterator<Item = &InstalledMod> {
@@ -141,9 +139,18 @@ pub fn apply_profile(instance_dir: &Path, profile_name: &str) -> Result<(), Stri
     let profile: LoadoutProfile =
         serde_json::from_str(&content).map_err(|e| format!("Invalid profile JSON: {e}"))?;
 
+    apply_enabled_set(instance_dir, &profile.enabled_mods)
+}
+
+/// Make exactly `enabled` the enabled set, renaming jars and updating the
+/// manifest to match.
+///
+/// Split out of [`apply_profile`] because a loadout profile is only one source
+/// of an enabled set — the guided bisect drives the same mechanism from a set
+/// it computes rather than one the user saved.
+pub fn apply_enabled_set(instance_dir: &Path, enabled: &[String]) -> Result<(), String> {
     let mut manifest = read_manifest(instance_dir)?;
-    let enabled_set: std::collections::HashSet<String> =
-        profile.enabled_mods.iter().cloned().collect();
+    let enabled_set: std::collections::HashSet<String> = enabled.iter().cloned().collect();
 
     for entry in all_content_entries_mut(&mut manifest) {
         let should_enable = enabled_set.contains(&entry.filename);

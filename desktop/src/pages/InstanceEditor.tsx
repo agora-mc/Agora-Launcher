@@ -100,6 +100,7 @@ import {
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
+import { MigrationReportPanel } from '../components/MigrationReportPanel';
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
@@ -261,7 +262,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
 
   // Sub-sidebar active tab
-  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'import' | 'export' | 'console' | 'java-args'>('mods');
+  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>('mods');
 
   // Snapshots state (Phase 6)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -1817,14 +1818,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
       {/* Sub-sidebar tabs */}
       <div className="agora-tabbar">
-        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'templates', 'import', 'export', 'console'] as const).map((tab) => (
+        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'templates', 'migrate', 'import', 'export', 'console'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             data-active={activeTab === tab}
             className="agora-tab text-sm"
           >
-            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
+            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
           </button>
         ))}
         <button
@@ -2366,6 +2367,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           )}
         </section>
+      )}
+
+      {activeTab === 'migrate' && (
+        <MigrationReportPanel
+          instanceId={instanceId}
+          currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
+        />
       )}
 
       {activeTab === 'import' && (
