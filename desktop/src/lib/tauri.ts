@@ -2123,6 +2123,96 @@ export interface MigrationReport {
 export const getMigrationReport = (instanceId: string, targetVersion: string) =>
   invoke<MigrationReport>('get_migration_report', { instanceId, targetVersion });
 
+/** Serialized `pack_merge::PlanActionKind`. */
+export type PlanActionKind =
+  | 'keep'
+  | 'keep_user_added'
+  | 'add'
+  | 'remove'
+  | 'update'
+  | 'update_keep_disabled'
+  | 'rename_update'
+  | 'rename_update_keep_disabled';
+
+/** Serialized `pack_merge::ConflictKind`. `no_baseline` means Agora has no
+ *  record of what the pack originally installed, so a user edit cannot be told
+ *  apart from a pack original — one question, not one per file. */
+export type PackConflictKind =
+  | 'both_modified'
+  | 'added_vs_added'
+  | 'modified_vs_removed'
+  | 'removed_vs_modified'
+  | 'ambiguous_disabled_pair'
+  | 'duplicate_mod_id'
+  | 'no_baseline';
+
+/** Serialized `pack_merge::PlanAction` (snake_case). */
+export interface PackPlanAction {
+  key: string;
+  logical_path: string;
+  target_path: string;
+  previous_path: string | null;
+  kind: PlanActionKind;
+  enabled: boolean;
+  mod_id: string | null;
+}
+
+/** Serialized `pack_merge::PlanConflict` (snake_case). */
+export interface PackPlanConflict {
+  key: string;
+  logical_path: string;
+  kind: PackConflictKind;
+  ours_path: string | null;
+  theirs_path: string | null;
+  message: string;
+  mod_id: string | null;
+}
+
+/** Serialized `pack_merge::PackMergePlan` (snake_case). */
+export interface PackMergePlan {
+  actions: PackPlanAction[];
+  conflicts: PackPlanConflict[];
+  all_keys: string[];
+  baseline_missing: boolean;
+}
+
+/** Serialized `pack_update::PackUpdatePreview` (camelCase). */
+export interface PackUpdatePreview {
+  plan: PackMergePlan;
+  /** Paths whose mod-content decision is an estimate — the jar was not fetched. */
+  unverified: string[];
+  /** Unverified paths already byte-identical locally, so no download is needed. */
+  converged: string[];
+  filesNeedingDownload: number;
+  downloadBytes: number;
+  sizeUnknownCount: number;
+  packName: string;
+  packVersionId: string | null;
+}
+
+/** Serialized `pack_update::ConflictResolution`. */
+export type ConflictResolution = 'keep_ours' | 'take_theirs';
+
+/** Serialized `pack_update::PackUpdateOutcome` — tagged on `type`. */
+export type PackUpdateOutcome =
+  | { type: 'updated'; snapshotId: string; changed: number; kept: number; health: HealthReport | null }
+  /** Kept, not rolled back — reverting would throw away the conflict answers
+   *  the user just gave, and the pack may simply be broken. */
+  | { type: 'health-blocked'; snapshotId: string; health: HealthReport }
+  | { type: 'failed'; phase: string; error: string; rolledBack: boolean; snapshotId: string | null };
+
+/** What updating to this pack file would do. Downloads nothing. */
+export const previewPackUpdate = (instanceId: string, mrpackPath: string) =>
+  invoke<PackUpdatePreview>('preview_pack_update', { instanceId, mrpackPath });
+
+/** Apply a pack update. Every conflict in the preview must have an answer —
+ *  core refuses otherwise rather than picking a side unasked. */
+export const applyPackUpdate = (
+  instanceId: string,
+  mrpackPath: string,
+  resolutions: Record<string, ConflictResolution>,
+) => invoke<PackUpdateOutcome>('apply_pack_update', { instanceId, mrpackPath, resolutions });
+
 /** Serialized `migration_report::TargetBuildInfo`. Snake_case — this type has
  *  no `rename_all`, unlike the version_migration types below. */
 export interface TargetBuildInfo {

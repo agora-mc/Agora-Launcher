@@ -449,7 +449,8 @@ fn sha2_256_hex(data: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 /// The honest, offline preview of what a pack update would do.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PackUpdatePreview {
     pub plan: PackMergePlan,
     /// Logical paths whose mod-content decision is an estimate (jar not fetched).
@@ -615,7 +616,8 @@ pub fn new_pack_baseline(theirs: &[InstancePackFile]) -> Vec<InstancePackFile> {
 // ---------------------------------------------------------------------------
 
 /// How a *conflict* (which the planner never auto-resolves) is settled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConflictResolution {
     /// Keep the user's current on-disk file (no change for this key).
     KeepOurs,
@@ -1478,6 +1480,179 @@ fn remove_file(path: &Path) -> Result<(), String> {
 
 /// Fetches the bytes for a pack download. Tests inject a fake; production uses
 /// [`NetworkFetcher`].
+/// What happened to a pack update, end to end.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum PackUpdateOutcome {
+    /// Files, baseline and manifest all moved to the new pack version.
+    Updated {
+        snapshot_id: String,
+        /// Paths the merge changed, for a summary line.
+        changed: usize,
+        /// Entries left exactly as the user had them.
+        kept: usize,
+        health: Option<crate::health::HealthReport>,
+    },
+    /// Post-apply health found blockers. The update is **kept** so the user can
+    /// read the report and decide — same posture as an ordinary install.
+    ///
+    /// Rolling back here would destroy conflict resolutions the user just made,
+    /// and the pre-update instance may well have been equally unhealthy.
+    HealthBlocked {
+        snapshot_id: String,
+        health: crate::health::HealthReport,
+    },
+    /// Refused before any mutation, or mutated and verifiably restored.
+    Failed {
+        phase: String,
+        error: String,
+        rolled_back: bool,
+        snapshot_id: Option<String>,
+    },
+}
+
+/// Plan, stage, apply and health-check a pack update in one call.
+///
+/// Ordering is the whole contract:
+/// 1. preview (offline) — decides what would change, and what conflicts
+/// 2. every conflict must carry a resolution, or nothing happens
+/// 3. stage and hash-verify the new pack
+/// 4. reconcile the manifest *from the plan*, before any mutation
+/// 5. apply — files, baseline, manifest and the mutation bump, all inside one
+///    snapshot-protected closure
+/// 6. health scan, read-only, after the commit
+///
+/// Health runs last and never rolls back. It is a report on a committed
+/// instance, and a red result usually means the new pack is broken rather than
+/// that the merge went wrong — reverting a correct merge would throw away the
+/// user's conflict resolutions and could loop forever if the instance was
+/// already unhealthy.
+#[allow(clippy::too_many_arguments)]
+pub fn update_pack<F: PackFileFetcher>(
+    conn: &rusqlite::Connection,
+    instance_id: &str,
+    instance_dir: &Path,
+    mrpack_path: &Path,
+    staged_dir: &Path,
+    resolutions: &BTreeMap<String, ConflictResolution>,
+    fetcher: &F,
+    skip_health_scan: bool,
+) -> PackUpdateOutcome {
+    let failed = |phase: &str, error: String| PackUpdateOutcome::Failed {
+        phase: phase.to_string(),
+        error,
+        rolled_back: false,
+        snapshot_id: None,
+    };
+
+    let preview = match preview_pack_update(conn, instance_id, instance_dir, mrpack_path) {
+        Ok(preview) => preview,
+        Err(error) => return failed("preview", error),
+    };
+    for conflict in &preview.plan.conflicts {
+        if !resolutions.contains_key(&conflict.key) {
+            return failed(
+                "conflicts",
+                format!(
+                    "'{}' is unresolved; every conflict needs an answer before applying",
+                    conflict.key
+                ),
+            );
+        }
+    }
+
+    if let Err(error) = stage_pack(mrpack_path, staged_dir, fetcher) {
+        return failed("stage", error);
+    }
+    let theirs = match theirs_from_mrpack(mrpack_path) {
+        Ok(theirs) => theirs,
+        Err(error) => return failed("stage", error),
+    };
+
+    let manifest_path = instance_dir.join("instance_manifest.json");
+    let old_manifest = match crate::helpers::read_manifest(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(error) => return failed("manifest", error.to_string()),
+    };
+    let reconciled = match reconcile_manifest(
+        &old_manifest,
+        &preview.plan,
+        resolutions,
+        &theirs,
+        staged_dir,
+    ) {
+        Ok(manifest) => manifest,
+        Err(error) => return failed("manifest", error),
+    };
+
+    let outcome = match apply_merge(
+        conn,
+        instance_id,
+        instance_dir,
+        staged_dir,
+        &preview.plan,
+        resolutions,
+        &reconciled,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // apply_merge restores the snapshot itself on failure and says so
+            // in the message; anything it could not restore is flagged there.
+            return PackUpdateOutcome::Failed {
+                phase: "apply".into(),
+                error,
+                rolled_back: true,
+                snapshot_id: None,
+            };
+        }
+    };
+
+    let changed = preview.plan.actions.len();
+    let kept = preview
+        .plan
+        .actions
+        .iter()
+        .filter(|action| {
+            matches!(
+                action.kind,
+                crate::pack_merge::PlanActionKind::Keep
+                    | crate::pack_merge::PlanActionKind::KeepUserAdded
+            )
+        })
+        .count();
+
+    if skip_health_scan {
+        return PackUpdateOutcome::Updated {
+            snapshot_id: outcome.snapshot_id,
+            changed,
+            kept,
+            health: None,
+        };
+    }
+
+    // Read-only, and deliberately after the commit. The manifest is already
+    // reconciled, so this cannot fire spurious drift warnings against the files
+    // the merge just installed.
+    let report = crate::health::cached_health(instance_dir, &reconciled, None, None);
+    if report.blockers.is_empty() {
+        PackUpdateOutcome::Updated {
+            snapshot_id: outcome.snapshot_id,
+            changed,
+            kept,
+            health: Some(report),
+        }
+    } else {
+        PackUpdateOutcome::HealthBlocked {
+            snapshot_id: outcome.snapshot_id,
+            health: report,
+        }
+    }
+}
+
 pub trait PackFileFetcher: Send + Sync {
     fn fetch(&self, url: &str) -> Result<Vec<u8>, String>;
 }
@@ -2908,6 +3083,59 @@ mod tests {
 
     fn empty_theirs() -> MrpackTheirs {
         MrpackTheirs::default()
+    }
+
+    #[test]
+    fn update_pack_refuses_before_touching_anything_when_a_conflict_is_unanswered() {
+        // Applying with an unresolved conflict would mean Agora silently
+        // picking a side on a file the user edited — the one thing this whole
+        // feature exists to avoid.
+        let tmp = TempDir::new().unwrap();
+        let inst = seed_instance(&tmp, "inst");
+        write(&inst, "config/foo.toml", b"user edited this");
+        let (conn, _dbtmp) = test_conn();
+        seed_instance_row(&conn, "inst");
+        crate::db::replace_instance_pack_files(
+            &conn,
+            "inst",
+            &[InstancePackFile {
+                relative_path: "config/foo.toml".into(),
+                sha256: sha2_256_hex(b"pack original"),
+                size: 13,
+            }],
+        )
+        .unwrap();
+
+        // Overrides only, so no jar has to be fetched.
+        let mrpack = build_mrpack(
+            tmp.path(),
+            "new",
+            vec![],
+            vec![("config/foo.toml", b"pack changed it too".as_slice())],
+        );
+
+        let before = crate::snapshot::live_file_index(&inst).unwrap();
+        let outcome = update_pack(
+            &conn,
+            "inst",
+            &inst,
+            &mrpack,
+            &tmp.path().join("staged"),
+            &BTreeMap::new(),
+            &FakeFetcher {
+                map: HashMap::new(),
+            },
+            true,
+        );
+        match outcome {
+            PackUpdateOutcome::Failed { phase, .. } => assert_eq!(phase, "conflicts"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(
+            crate::snapshot::live_file_index(&inst).unwrap(),
+            before,
+            "a refusal must not touch the instance"
+        );
     }
 
     #[test]

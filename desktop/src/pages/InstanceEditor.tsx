@@ -101,6 +101,7 @@ import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
 import { MigrationReportPanel } from '../components/MigrationReportPanel';
+import { PackUpdatePanel } from '../components/PackUpdatePanel';
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
@@ -2386,10 +2387,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'migrate' && (
-        <MigrationReportPanel
-          instanceId={instanceId}
-          currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
-        />
+        <div className="space-y-4">
+          {(!!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack) && (
+            <PackUpdatePanel instanceId={instanceId} locked={!!row?.is_locked} />
+          )}
+          <MigrationReportPanel
+            instanceId={instanceId}
+            currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
+          />
+        </div>
       )}
 
       {activeTab === 'import' && (

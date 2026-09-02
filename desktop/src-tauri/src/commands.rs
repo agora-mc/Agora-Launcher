@@ -3503,6 +3503,108 @@ pub async fn get_migration_report(
 }
 
 // ---------------------------------------------------------------------------
+// Surgical pack updates
+// ---------------------------------------------------------------------------
+
+fn pack_update_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_PACK_UPDATE".into(),
+        message,
+    }
+}
+
+/// Offline preview of what updating this instance to a new pack file would do.
+///
+/// Downloads nothing. Mod-content decisions for jars that are not already
+/// present locally are estimates, flagged in `unverified`.
+#[tauri::command]
+pub async fn preview_pack_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    mrpack_path: String,
+) -> LauncherResult<agora_core::pack_update::PackUpdatePreview> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+                    .map_err(|e| e.to_string())?;
+                agora_core::pack_update::preview_pack_update(
+                    &conn,
+                    &sanitized,
+                    &instance_dir,
+                    std::path::Path::new(&mrpack_path),
+                )
+            },
+        )
+        .await
+        .map_err(|e| pack_update_error(format!("Pack preview task failed: {e}")))?
+        .map_err(pack_update_error)
+}
+
+/// Apply a pack update.
+///
+/// `resolutions` must answer every conflict the preview reported — core refuses
+/// otherwise, because picking a side unasked is exactly what this feature
+/// exists to avoid.
+#[tauri::command]
+pub async fn apply_pack_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    mrpack_path: String,
+    resolutions: std::collections::BTreeMap<String, agora_core::pack_update::ConflictResolution>,
+) -> LauncherResult<agora_core::pack_update::PackUpdateOutcome> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    let staged_dir = ctx.paths.staging_dir(&format!("pack-update-{sanitized}"))?;
+    let lock_manager = ctx.lock_manager.clone();
+    let paths_for_db = ctx.paths.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let _lock = lock_manager
+                    .acquire(
+                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+                        "pack-update",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let conn = agora_core::db::local_state_connection(&paths_for_db.local_state_db())
+                    .map_err(|e| e.to_string())?;
+                let outcome = agora_core::pack_update::update_pack(
+                    &conn,
+                    &sanitized,
+                    &instance_dir,
+                    std::path::Path::new(&mrpack_path),
+                    &staged_dir,
+                    &resolutions,
+                    &agora_core::pack_update::NetworkFetcher,
+                    false,
+                );
+                let _ = std::fs::remove_dir_all(&staged_dir);
+                Ok::<_, String>(outcome)
+            },
+        )
+        .await
+        .map_err(|e| pack_update_error(format!("Pack update task failed: {e}")))?
+        .map_err(pack_update_error)
+}
+
+// ---------------------------------------------------------------------------
 // Minecraft version migration — execution
 // ---------------------------------------------------------------------------
 
