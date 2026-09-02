@@ -183,6 +183,14 @@ impl AppPaths {
         crate::template_service::templates_root(&self.root)
     }
 
+    /// Shared screenshot folder (`screenshots/`).
+    ///
+    /// Minecraft hardcodes `<gamedir>/screenshots`, so instances that opt in
+    /// are linked here rather than configured to point at it.
+    pub fn shared_screenshots(&self) -> PathBuf {
+        self.root.join("screenshots")
+    }
+
     // ------------------------------------------------------------------
     // Validated helpers (user-controlled input — may return Err)
     // ------------------------------------------------------------------

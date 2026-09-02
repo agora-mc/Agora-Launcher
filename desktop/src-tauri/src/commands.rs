@@ -3571,6 +3571,219 @@ pub async fn get_migration_report(
 }
 
 // ---------------------------------------------------------------------------
+// Desktop shortcuts
+// ---------------------------------------------------------------------------
+
+/// Create a desktop shortcut that launches one instance directly.
+///
+/// The shortcut targets this executable with `--launch <id>`; the
+/// single-instance plugin forwards that to an already-running Agora, so
+/// clicking it either starts the app on that instance or tells the open app to
+/// launch it. OS mechanism, so it lives in the adapter rather than core.
+#[tauri::command]
+pub async fn create_desktop_shortcut(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    display_name: String,
+) -> LauncherResult<String> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    if sanitized.is_empty() {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_INSTANCE".into(),
+            message: "Instance ID is empty or invalid.".into(),
+        });
+    }
+    let exe = std::env::current_exe().map_err(|e| LauncherError::Generic {
+        code: "ERR_SHORTCUT".into(),
+        message: format!("Cannot locate the Agora executable: {e}"),
+    })?;
+    let desktop = dirs::desktop_dir().ok_or_else(|| LauncherError::Generic {
+        code: "ERR_SHORTCUT".into(),
+        message: "Could not find your Desktop folder.".into(),
+    })?;
+    // The label is user-supplied and becomes a filename; keep it to characters
+    // that are safe on every platform rather than trusting it.
+    let label: String = display_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+        .collect();
+    let label = label.trim();
+    let label = if label.is_empty() { &sanitized } else { label };
+    let _ = &app;
+
+    let shortcut = create_shortcut_file(&desktop, label, &exe, &sanitized)?;
+    Ok(shortcut.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+fn create_shortcut_file(
+    desktop: &std::path::Path,
+    label: &str,
+    exe: &std::path::Path,
+    instance_id: &str,
+) -> LauncherResult<std::path::PathBuf> {
+    let target = desktop.join(format!("{label}.lnk"));
+    // A .lnk is a COM structure, not a text file. Rather than take a COM
+    // dependency for one feature, drive the shell's own scripting object.
+    let script = format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');\
+         $s.TargetPath='{}';$s.Arguments='--launch {}';\
+         $s.WorkingDirectory='{}';$s.Save()",
+        target.display(),
+        exe.display(),
+        instance_id,
+        exe.parent().unwrap_or(desktop).display(),
+    );
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_SHORTCUT".into(),
+            message: format!("Could not create the shortcut: {e}"),
+        })?;
+    if !output.status.success() {
+        return Err(LauncherError::Generic {
+            code: "ERR_SHORTCUT".into(),
+            message: format!(
+                "Could not create the shortcut: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
+    Ok(target)
+}
+
+#[cfg(not(windows))]
+fn create_shortcut_file(
+    desktop: &std::path::Path,
+    label: &str,
+    exe: &std::path::Path,
+    instance_id: &str,
+) -> LauncherResult<std::path::PathBuf> {
+    let target = desktop.join(format!("{label}.desktop"));
+    let contents = format!(
+        "[Desktop Entry]\nType=Application\nName={label}\nExec=\"{}\" --launch {instance_id}\nTerminal=false\nCategories=Game;\n",
+        exe.display()
+    );
+    std::fs::write(&target, contents).map_err(|e| LauncherError::Generic {
+        code: "ERR_SHORTCUT".into(),
+        message: format!("Could not write the shortcut: {e}"),
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // A .desktop launcher must be executable or the desktop refuses it.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(target)
+}
+
+// ---------------------------------------------------------------------------
+// Shared screenshot folder
+// ---------------------------------------------------------------------------
+
+/// Whether this instance's `screenshots/` is linked to the shared folder.
+#[derive(serde::Serialize)]
+pub struct SharedScreenshotStatus {
+    pub linked: bool,
+    /// Where the link points, when it is linked somewhere.
+    pub target: Option<String>,
+    /// The shared folder this instance would be linked to.
+    pub shared_root: String,
+}
+
+fn screenshots_dir(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+) -> LauncherResult<std::path::PathBuf> {
+    Ok(paths::instance_dir(app, instance_id)
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?
+        .join("screenshots"))
+}
+
+#[tauri::command]
+pub async fn get_shared_screenshot_status(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<SharedScreenshotStatus> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let dir = screenshots_dir(&app, &sanitized)?;
+    let shared = crate::core_context(&app)?.paths.shared_screenshots();
+    let linked = agora_core::shared_folder::is_link(&dir);
+    Ok(SharedScreenshotStatus {
+        linked,
+        target: if linked {
+            agora_core::shared_folder::link_target(&dir)
+                .map(|path| path.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+        shared_root: shared.to_string_lossy().into_owned(),
+    })
+}
+
+/// Point this instance's screenshots at the shared folder.
+///
+/// Existing screenshots are moved into the shared folder rather than discarded;
+/// a name collision refuses instead of overwriting.
+#[tauri::command]
+pub async fn link_shared_screenshots(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<String> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let dir = screenshots_dir(&app, &sanitized)?;
+    let shared = crate::core_context(&app)?.paths.shared_screenshots();
+    tokio::task::spawn_blocking(move || {
+        agora_core::shared_folder::link_shared_folder(&dir, &shared).map(|outcome| match outcome {
+            agora_core::shared_folder::LinkOutcome::Linked => "Screenshots are now shared.".into(),
+            agora_core::shared_folder::LinkOutcome::AlreadyLinked => {
+                "Screenshots were already shared.".into()
+            }
+            agora_core::shared_folder::LinkOutcome::MigratedThenLinked { moved } => {
+                format!("Screenshots are now shared. {moved} existing file(s) moved across.")
+            }
+        })
+    })
+    .await
+    .map_err(|e| LauncherError::Generic {
+        code: "ERR_SHARE_TASK".into(),
+        message: format!("Share task failed: {e}"),
+    })?
+    .map_err(|message| LauncherError::Generic {
+        code: "ERR_SHARE".into(),
+        message,
+    })
+}
+
+/// Stop sharing. The shared screenshots themselves are left alone.
+#[tauri::command]
+pub async fn unlink_shared_screenshots(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let dir = screenshots_dir(&app, &sanitized)?;
+    tokio::task::spawn_blocking(move || agora_core::shared_folder::unlink_shared_folder(&dir))
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_SHARE_TASK".into(),
+            message: format!("Unshare task failed: {e}"),
+        })?
+        .map_err(|message| LauncherError::Generic {
+            code: "ERR_SHARE".into(),
+            message,
+        })
+}
+
+// ---------------------------------------------------------------------------
 // Local launch history
 // ---------------------------------------------------------------------------
 

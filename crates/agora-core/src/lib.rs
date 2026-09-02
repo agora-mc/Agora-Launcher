@@ -95,6 +95,7 @@ pub mod runtime_manager;
 pub mod runtime_service;
 pub mod server_export;
 pub mod settings;
+pub mod shared_folder;
 pub mod snapshot;
 pub mod state;
 pub mod task_scheduler;

@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
 import { Home } from './pages/Home';
@@ -312,6 +313,20 @@ export default function App() {
 
     previousDestinationRef.current = destination;
   }, [destination]);
+
+  // A desktop shortcut carrying `--launch <id>` reaches an already-running app
+  // through the single-instance plugin, which forwards it as `cli-launch`.
+  // Navigating to the instance rather than launching outright is deliberate:
+  // starting a game from a background window with no confirmation would be a
+  // surprising thing for a click on a shortcut to do while the user is
+  // mid-something-else.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string>('cli-launch', (event) => {
+      if (event.payload) navigateToInstanceDetail(event.payload);
+    }).then((stop) => { unlisten = stop; });
+    return () => { unlisten?.(); };
+  }, [navigateToInstanceDetail]);
 
   // Legacy bridge: the CommandPalette still uses (tab, instanceId?) signature.
   const handleNavigate = (tab: Tab, instanceId?: string) => {

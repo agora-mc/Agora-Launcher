@@ -2794,3 +2794,28 @@ export interface LaunchHistoryView {
  *  the instance. */
 export const getLaunchHistory = (instanceId: string) =>
   invoke<LaunchHistoryView>('get_launch_history', { instanceId });
+
+/** Serialized `commands::SharedScreenshotStatus`. */
+export interface SharedScreenshotStatus {
+  linked: boolean;
+  target: string | null;
+  shared_root: string;
+}
+
+export const getSharedScreenshotStatus = (instanceId: string) =>
+  invoke<SharedScreenshotStatus>('get_shared_screenshot_status', { instanceId });
+
+/** Point this instance's screenshots at the shared folder. Existing files are
+ *  moved across, never discarded; a name collision refuses. */
+export const linkSharedScreenshots = (instanceId: string) =>
+  invoke<string>('link_shared_screenshots', { instanceId });
+
+/** Stop sharing. The shared screenshots themselves are left alone. */
+export const unlinkSharedScreenshots = (instanceId: string) =>
+  invoke<void>('unlink_shared_screenshots', { instanceId });
+
+/** Create a desktop shortcut that launches this instance directly. Returns the
+ *  shortcut's path. Clicking it starts Agora on that instance, or tells an
+ *  already-running Agora to launch it. */
+export const createDesktopShortcut = (instanceId: string, displayName: string) =>
+  invoke<string>('create_desktop_shortcut', { instanceId, displayName });

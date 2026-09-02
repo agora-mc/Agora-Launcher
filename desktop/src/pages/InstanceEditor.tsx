@@ -103,6 +103,7 @@ import { ModGroupDialog } from '../components/ModGroupDialog';
 import { MigrationReportPanel } from '../components/MigrationReportPanel';
 import { PackUpdatePanel } from '../components/PackUpdatePanel';
 import { LaunchHistoryPanel } from '../components/LaunchHistoryPanel';
+import { InstanceIntegrationPanel } from '../components/InstanceIntegrationPanel';
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
@@ -2625,7 +2626,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         </section>
       )}
 
-      {activeTab === 'console' && <LaunchHistoryPanel instanceId={instanceId} />}
+      {activeTab === 'console' && (
+        <div className="space-y-4">
+          <InstanceIntegrationPanel instanceId={instanceId} displayName={detail?.row.name ?? instanceId} />
+          <LaunchHistoryPanel instanceId={instanceId} />
+        </div>
+      )}
 
       {activeTab === 'console' && (
         <section className="rounded-xl border border-border bg-card p-4 space-y-3">

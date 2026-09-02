@@ -48,6 +48,31 @@ pub fn core_context<R: tauri::Runtime>(
     agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| ctx)
 }
 
+/// Pull the instance id out of a `--launch <id>` / `--launch=<id>` argv.
+///
+/// Sanitized here rather than trusted: argv reaches this from a desktop
+/// shortcut or a shell, so it is external input even though it looks internal.
+/// An id that does not survive sanitizing is not a real instance and is
+/// dropped rather than passed on.
+fn launch_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let candidate = if let Some(rest) = arg.strip_prefix("--launch=") {
+            rest.to_string()
+        } else if arg == "--launch" {
+            iter.next()?.to_string()
+        } else {
+            continue;
+        };
+        let sanitized = agora_core::paths::sanitize_id(&candidate);
+        if !sanitized.is_empty() && sanitized == candidate {
+            return Some(sanitized);
+        }
+        return None;
+    }
+    None
+}
+
 /// Run the Tauri application.
 pub fn run() {
     // Log startup so the user can verify from the log file that they are
@@ -71,12 +96,21 @@ pub fn run() {
         // tauri.conf.json; an unsigned or wrongly-signed bundle is rejected by
         // the plugin before anything is installed.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_cli::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second launch focuses the existing window instead of starting
             // a duplicate process (which previously could leave orphaned
             // windows such as the Microsoft sign-in webview behind).
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
+            }
+            // ...and if it carried `--launch <id>`, hand that to the running
+            // app. This is what makes a desktop shortcut work: the shortcut
+            // starts a second process, single-instance forwards its argv here,
+            // and the already-running window does the launching.
+            if let Some(instance_id) = launch_arg(&args) {
+                use tauri::Emitter;
+                let _ = app.emit("cli-launch", instance_id);
             }
         }))
         .invoke_handler(tauri::generate_handler![
@@ -125,6 +159,10 @@ pub fn run() {
             commands::scan_runtime_prune,
             commands::get_migration_report,
             commands::get_launch_history,
+            commands::create_desktop_shortcut,
+            commands::get_shared_screenshot_status,
+            commands::link_shared_screenshots,
+            commands::unlink_shared_screenshots,
             commands::preview_pack_update,
             commands::apply_pack_update,
             commands::plan_version_migration,
