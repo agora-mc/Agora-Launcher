@@ -80,6 +80,7 @@ pub mod override_sanitizer;
 pub mod pack_install;
 pub mod pack_inventory;
 pub mod pack_merge;
+pub mod pack_update;
 pub mod paths;
 pub mod process_identity;
 pub mod process_session_manager;
