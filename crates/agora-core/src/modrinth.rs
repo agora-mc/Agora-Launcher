@@ -217,7 +217,7 @@ pub struct ModrinthProjectFull {
 }
 
 /// Enforce the Modrinth-enabled gate; returns `Err(ModrinthDisabled)` when off.
-fn require_modrinth_enabled(conn: &rusqlite::Connection) -> LauncherResult<()> {
+pub(crate) fn require_modrinth_enabled(conn: &rusqlite::Connection) -> LauncherResult<()> {
     match db::get_setting(conn, "modrinth_enabled") {
         Ok(Some(v)) if v == true => Ok(()),
         _ => Err(LauncherError::ModrinthDisabled),

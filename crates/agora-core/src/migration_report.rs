@@ -673,11 +673,10 @@ impl ModrinthChecker for LiveModrinthChecker {
                     message: "Modrinth catalog API is disabled in Privacy settings.".into(),
                 });
             }
-            // `require_modrinth_enabled` is private, so replicate its check:
-            match crate::db::get_setting(&conn, "modrinth_enabled") {
-                Ok(Some(v)) if v == true => {}
-                _ => return Err(LauncherError::ModrinthDisabled),
-            }
+            // Call the real gate rather than a copy of it: a replicated
+            // opt-in check is one that silently diverges the day the original
+            // changes, and this one decides whether we talk to the network.
+            crate::modrinth::require_modrinth_enabled(&conn)?;
         }
 
         let project_type = modrinth_project_type(content_type);
