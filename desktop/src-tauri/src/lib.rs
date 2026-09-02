@@ -124,6 +124,7 @@ pub fn run() {
             commands::list_instance_templates,
             commands::scan_runtime_prune,
             commands::get_migration_report,
+            commands::get_launch_history,
             commands::preview_pack_update,
             commands::apply_pack_update,
             commands::plan_version_migration,

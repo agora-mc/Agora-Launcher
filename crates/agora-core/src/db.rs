@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 12;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 13;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -483,6 +483,33 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (12)",
+            [],
+        )?;
+    }
+
+    if current < 13 {
+        // Local-only launch history. Nothing here leaves the machine; it exists
+        // so the launcher can answer "did that change make startup worse?"
+        // without anyone running a service to collect it.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS launch_history (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 instance_id TEXT NOT NULL,
+                 started_at TEXT NOT NULL,
+                 prep_ms INTEGER,
+                 duration_ms INTEGER,
+                 outcome TEXT,
+                 enabled_mod_count INTEGER NOT NULL DEFAULT 0,
+                 minecraft_version TEXT NOT NULL DEFAULT '',
+                 loader TEXT NOT NULL DEFAULT '',
+                 peak_memory_mb INTEGER,
+                 FOREIGN KEY (instance_id) REFERENCES user_instances(instance_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_launch_history_instance
+                 ON launch_history (instance_id, started_at DESC);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (13)",
             [],
         )?;
     }

@@ -2753,3 +2753,44 @@ export interface JavaRuntimeDownloadDisabledDetails {
   component: string;
   suggested_actions: Array<'choose_java' | 'open_privacy' | 'cancel'>;
 }
+
+/** Serialized `launch_history::LaunchResult`. */
+export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'unknown';
+
+/** Serialized `launch_history::LaunchRecord`. */
+export interface LaunchRecord {
+  id: number;
+  instance_id: string;
+  started_at: string;
+  /** Agora's own preparation time before the process started. */
+  prep_ms: number | null;
+  /** Session length. `null` while still running. */
+  duration_ms: number | null;
+  outcome: LaunchHistoryOutcome | null;
+  enabled_mod_count: number;
+  minecraft_version: string;
+  loader: string;
+  peak_memory_mb: number | null;
+}
+
+/** Serialized `launch_history::LaunchStats`. The recent/earlier pair is what
+ *  lets the UI say "startup got slower" without over-reading one cold start. */
+export interface LaunchStats {
+  runs: number;
+  crashes: number;
+  median_prep_ms: number | null;
+  recent_median_prep_ms: number | null;
+  earlier_median_prep_ms: number | null;
+  latest_mod_count: number | null;
+  earliest_mod_count: number | null;
+}
+
+export interface LaunchHistoryView {
+  records: LaunchRecord[];
+  stats: LaunchStats;
+}
+
+/** Recorded launches for an instance. Local only — no endpoint, deleted with
+ *  the instance. */
+export const getLaunchHistory = (instanceId: string) =>
+  invoke<LaunchHistoryView>('get_launch_history', { instanceId });

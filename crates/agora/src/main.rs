@@ -754,8 +754,13 @@ async fn main() {
         None => OutputFormat::Human,
     };
     let json = output_fmt.is_json_output();
-    let paths =
-        agora_core::app_paths::AppPaths::platform_default_with_override(cli.data_dir.clone());
+    // `--data-dir` still wins outright. Without it, defer to the same resolver
+    // the desktop uses so a portable install's bundled CLI lands on the pack of
+    // instances sitting next to it, rather than in the platform app-data dir.
+    let paths = match cli.data_dir.clone() {
+        Some(root) => agora_core::app_paths::AppPaths::from_root(root),
+        None => agora_core::app_paths::AppPaths::platform_default(),
+    };
     let log_path = cli
         .log_file
         .clone()

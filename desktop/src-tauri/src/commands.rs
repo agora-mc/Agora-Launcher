@@ -770,6 +770,9 @@ struct TauriLaunchProgress {
     instance_id: String,
     started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<LauncherResult<u32>>>>,
     session_id: std::sync::Mutex<Option<u64>>,
+    /// Open `launch_history` row and the clock it started on, so `finished`
+    /// can close it out. Local-only history; see `agora_core::launch_history`.
+    history: std::sync::Mutex<Option<(i64, std::time::Instant)>>,
     log_sender: std::sync::mpsc::SyncSender<QueuedGameLogLine>,
     dropped_log_lines: Arc<AtomicU64>,
 }
@@ -806,6 +809,7 @@ impl TauriLaunchProgress {
             instance_id,
             started: Mutex::new(Some(started)),
             session_id: Mutex::new(None),
+            history: Mutex::new(None),
             log_sender,
             dropped_log_lines,
         }
@@ -922,6 +926,40 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         if let Ok(mut session_id) = self.session_id.lock() {
             *session_id = Some(started.session_id);
         }
+        // Open a local history row. Best-effort throughout: losing a history
+        // row must never interfere with actually launching the game.
+        if let Ok(ctx) = crate::core_context(&self.app) {
+            let opened = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+                .ok()
+                .and_then(|conn| {
+                    let manifest = ctx
+                        .paths
+                        .instance_manifest(&self.instance_id)
+                        .ok()
+                        .and_then(|path| agora_core::helpers::read_manifest(&path).ok());
+                    let (mods, mc, loader) = match manifest.as_ref() {
+                        Some(m) => (
+                            m.mods.iter().filter(|entry| entry.enabled).count() as i64,
+                            m.minecraft_version.clone(),
+                            m.loader.clone(),
+                        ),
+                        None => (0, String::new(), String::new()),
+                    };
+                    agora_core::launch_history::begin_launch(
+                        &conn,
+                        &self.instance_id,
+                        &chrono::Utc::now().to_rfc3339(),
+                        mods,
+                        &mc,
+                        &loader,
+                    )
+                    .ok()
+                });
+            if let (Some(id), Ok(mut slot)) = (opened, self.history.lock()) {
+                *slot = Some((id, std::time::Instant::now()));
+            }
+        }
+
         let app = self.app.clone();
         let state = self.state.clone();
         let instance_id = self.instance_id.clone();
@@ -965,6 +1003,36 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
 
     fn finished(&self, result: &agora_core::launch_service::LaunchResult) {
         use tauri::Emitter;
+
+        // Close out the local history row, then trim. Best-effort: a lost row
+        // is a lost row, not a failed launch.
+        let opened = self.history.lock().ok().and_then(|mut slot| slot.take());
+        if let (Some((id, since)), Ok(ctx)) = (opened, crate::core_context(&self.app)) {
+            if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+                use agora_core::lkg::LaunchOutcome;
+                let outcome = match result.outcome {
+                    // Abandoned is a clean exit that happened to be brief, so
+                    // it belongs with Ok rather than being counted as a crash.
+                    LaunchOutcome::Success | LaunchOutcome::Abandoned => {
+                        agora_core::launch_history::LaunchResult::Ok
+                    }
+                    LaunchOutcome::Crash => agora_core::launch_history::LaunchResult::Crashed,
+                    LaunchOutcome::Cancelled | LaunchOutcome::Unknown => {
+                        agora_core::launch_history::LaunchResult::Unknown
+                    }
+                };
+                let _ = agora_core::launch_history::finish_launch(
+                    &conn,
+                    id,
+                    None,
+                    i64::try_from(since.elapsed().as_millis()).ok(),
+                    outcome,
+                    None,
+                );
+                let _ = agora_core::launch_history::prune_history(&conn, &self.instance_id);
+            }
+        }
+
         let app = self.app.clone();
         let state = self.state.clone();
         let instance_id = self.instance_id.clone();
@@ -3500,6 +3568,51 @@ pub async fn get_migration_report(
     agora_core::migration_report::MigrationService::new(ctx)
         .report_for_instance(&sanitized, &target_version)
         .await
+}
+
+// ---------------------------------------------------------------------------
+// Local launch history
+// ---------------------------------------------------------------------------
+
+/// Recorded launches for an instance, newest first, plus a summary.
+///
+/// Local only — this data has no endpoint and is deleted with the instance.
+#[derive(serde::Serialize)]
+pub struct LaunchHistoryView {
+    pub records: Vec<agora_core::launch_history::LaunchRecord>,
+    pub stats: agora_core::launch_history::LaunchStats,
+}
+
+#[tauri::command]
+pub async fn get_launch_history(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<LaunchHistoryView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn =
+            agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: e.to_string(),
+                }
+            })?;
+        let records = agora_core::launch_history::list_history(
+            &conn,
+            &sanitized,
+            agora_core::launch_history::HISTORY_LIMIT,
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: e.to_string(),
+        })?;
+        let stats = agora_core::launch_history::summarize(&records);
+        Ok(LaunchHistoryView { records, stats })
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 // ---------------------------------------------------------------------------

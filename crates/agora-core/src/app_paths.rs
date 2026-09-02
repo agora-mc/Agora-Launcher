@@ -50,14 +50,58 @@ impl AppPaths {
         Self::from_root(base.join("agora"))
     }
 
-    /// Resolve the platform-default data directory (reads `AGORA_DATA_DIR` env var).
+    /// Resolve the portable data root for an executable directory, if this is a
+    /// portable install.
+    ///
+    /// A portable install is declared by a `portable.txt` file sitting beside
+    /// the executable. Empty (or whitespace-only) means "use `./data` next to
+    /// the exe"; otherwise its first non-empty line names the root, relative
+    /// paths being resolved against the executable's directory. That keeps a
+    /// USB-stick install self-describing — the marker travels with the binary,
+    /// so nothing depends on machine state.
+    ///
+    /// Pure: it takes the directory rather than calling `current_exe`, so it is
+    /// deterministic and testable.
+    pub fn portable_root_for(exe_dir: &Path) -> Option<PathBuf> {
+        let marker = exe_dir.join("portable.txt");
+        let contents = std::fs::read_to_string(&marker).ok()?;
+        let named = contents
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'));
+        Some(match named {
+            None => exe_dir.join("data"),
+            Some(path) => {
+                let candidate = Path::new(path);
+                if candidate.is_absolute() {
+                    candidate.to_path_buf()
+                } else {
+                    exe_dir.join(candidate)
+                }
+            }
+        })
+    }
+
+    /// Resolve the platform-default data directory (reads `AGORA_DATA_DIR` env
+    /// var and the portable marker).
     ///
     /// Precedence:
     /// 1. `AGORA_DATA_DIR` environment variable
-    /// 2. `dirs::data_local_dir() / "agora"` (platform convention)
+    /// 2. `portable.txt` beside the executable
+    /// 3. `dirs::data_local_dir() / "agora"` (platform convention)
+    ///
+    /// The env var deliberately outranks the marker: a portable build is a
+    /// deployment choice, but someone who exported `AGORA_DATA_DIR` is making a
+    /// specific request about this run and should not be silently overridden.
     pub fn platform_default() -> Self {
-        let env_root = std::env::var("AGORA_DATA_DIR").ok().map(PathBuf::from);
-        Self::platform_default_with_override(env_root)
+        if let Some(root) = std::env::var("AGORA_DATA_DIR").ok().map(PathBuf::from) {
+            return Self::from_root(root);
+        }
+        let portable = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .and_then(|dir| Self::portable_root_for(&dir));
+        Self::platform_default_with_override(portable)
     }
 
     // ------------------------------------------------------------------
@@ -648,5 +692,46 @@ mod tests {
     #[test]
     fn test_validate_accepts_hyphens_and_underscores() {
         assert!(validate_path_component("my-instance_42").is_ok());
+    }
+
+    #[test]
+    fn no_marker_means_not_a_portable_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(AppPaths::portable_root_for(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn an_empty_marker_uses_data_next_to_the_exe() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("portable.txt"), "   \n\n# a comment\n").unwrap();
+        assert_eq!(
+            AppPaths::portable_root_for(tmp.path()),
+            Some(tmp.path().join("data")),
+            "a marker with nothing to say still declares portability"
+        );
+    }
+
+    #[test]
+    fn a_relative_marker_path_resolves_against_the_exe_not_the_cwd() {
+        // The point of a portable install is that it does not depend on where
+        // it happens to be launched from.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("portable.txt"), "agora-data\n").unwrap();
+        assert_eq!(
+            AppPaths::portable_root_for(tmp.path()),
+            Some(tmp.path().join("agora-data"))
+        );
+    }
+
+    #[test]
+    fn an_absolute_marker_path_is_taken_as_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("elsewhere");
+        std::fs::write(
+            tmp.path().join("portable.txt"),
+            format!("{}\n", target.display()),
+        )
+        .unwrap();
+        assert_eq!(AppPaths::portable_root_for(tmp.path()), Some(target));
     }
 }

@@ -107,7 +107,9 @@ node scripts/check-interactive-boundaries.mjs --root scripts/boundary-fixtures/i
 Windows 11, PowerShell primary (a Bash tool is also available — each takes its own syntax).
 Rust 1.96, Node 25 (CI uses 24), Python 3.12, `gh` authenticated.
 
-- Use a disposable data root for experiments: `AGORA_DATA_DIR` for Tauri, `--data-dir` for CLI.
+- Use a disposable data root for experiments: `AGORA_DATA_DIR` for Tauri, `--data-dir` (or
+  `AGORA_DATA_DIR`) for the CLI — without `--data-dir` the CLI now resolves the root exactly as the
+  desktop does, so the env var and a `portable.txt` marker apply to both.
   Microsoft credentials use the OS credential store and are **not** isolated by `AGORA_DATA_DIR` —
   do not sign in or out with a real account during disposable-profile tests.
 - Never run destructive tests against a real instance or world.

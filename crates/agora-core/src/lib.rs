@@ -50,6 +50,7 @@ pub mod java;
 /// `build_launch_command`, `spawn_java`, `prepare_loader`, etc.) has been
 /// removed. Use [`crate::launch_planner`] for all production Java launches.
 pub mod launch;
+pub mod launch_history;
 pub mod launch_planner;
 pub mod launch_service;
 pub mod launcher_import;

@@ -102,6 +102,7 @@ import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
 import { MigrationReportPanel } from '../components/MigrationReportPanel';
 import { PackUpdatePanel } from '../components/PackUpdatePanel';
+import { LaunchHistoryPanel } from '../components/LaunchHistoryPanel';
 import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
 import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
 import { SETTINGS } from '../lib/useTypedSettings';
@@ -2623,6 +2624,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
         </section>
       )}
+
+      {activeTab === 'console' && <LaunchHistoryPanel instanceId={instanceId} />}
 
       {activeTab === 'console' && (
         <section className="rounded-xl border border-border bg-card p-4 space-y-3">
