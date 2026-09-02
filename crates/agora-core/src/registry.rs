@@ -1,9 +1,11 @@
 use crate::ctx::Ctx;
+use crate::dependency_ops::VersionGrammar;
 use crate::error::{LauncherError, LauncherResult};
 use crate::governance::{
     get_governance_summary, list_governance_events, GovernanceEvent, GovernanceSummary,
 };
 use crate::registry_sync::APP_REGISTRY_SCHEMA_VERSION;
+use crate::version_match::{evaluate_version_match, VersionMatch};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -1321,6 +1323,14 @@ pub fn list_mod_reviews(conn: &Connection, item_id: String) -> LauncherResult<Ve
 }
 
 /// A known conflict between two mods (§4.6).
+///
+/// A conflict may be *unconditional* (the two mods never get along) or
+/// *version-windowed* — "mod A together with mod B at 2.3 or later crashes".
+/// The windows are per-side range lists interpreted by
+/// [`crate::version_match`], the same matcher used for jar-declared
+/// incompatibilities, so curated facts and loader metadata never disagree
+/// about what `">=2.3"` means. An empty window is unconditional, which is what
+/// every pre-window curated fact and every older `registry.db` decays to.
 #[derive(Debug, Clone, Serialize)]
 pub struct KnownConflict {
     pub mod_a_id: String,
@@ -1328,6 +1338,62 @@ pub struct KnownConflict {
     pub severity: String,
     pub mitigated_by: Vec<String>,
     pub notes: Option<String>,
+    /// Version ranges for `mod_a_id`. Empty means "any version".
+    pub mod_a_versions: Vec<String>,
+    /// Version ranges for `mod_b_id`. Empty means "any version".
+    pub mod_b_versions: Vec<String>,
+    /// Grammar both windows are written in. Fabric predicate syntax unless the
+    /// curator says `"maven"`.
+    pub version_grammar: VersionGrammar,
+}
+
+impl KnownConflict {
+    /// True when this conflict is version-windowed on either side.
+    pub fn is_version_windowed(&self) -> bool {
+        !self.mod_a_versions.is_empty() || !self.mod_b_versions.is_empty()
+    }
+
+    /// Whether one side's window admits `installed_version`.
+    ///
+    /// An unconditional window admits anything, including an unknown version.
+    /// A *conditional* window with an unknown installed version does **not**
+    /// match: a curator said "only 2.3 and up", and we cannot tell whether
+    /// this jar is 2.3, so warning anyway would put a blocker in front of a
+    /// user who may well be fine. This mirrors how `health.rs` treats
+    /// jar-declared incompatibilities with unparseable versions.
+    fn side_applies(&self, ranges: &[String], installed_version: Option<&str>) -> bool {
+        if ranges.is_empty() {
+            return true;
+        }
+        let Some(version) = installed_version.map(str::trim).filter(|v| !v.is_empty()) else {
+            return matches!(
+                evaluate_version_match(ranges, "", self.version_grammar == VersionGrammar::Fabric),
+                VersionMatch::Unconditional
+            );
+        };
+        matches!(
+            evaluate_version_match(
+                ranges,
+                version,
+                self.version_grammar == VersionGrammar::Fabric
+            ),
+            VersionMatch::Matched | VersionMatch::Unconditional
+        )
+    }
+
+    /// Whether this conflict applies to the versions actually installed.
+    ///
+    /// Both sides must be admitted. Callers pass `None` for a version they do
+    /// not know; see [`KnownConflict::side_applies`] for why that is not the
+    /// same as a match.
+    pub fn applies_to_versions(
+        &self,
+        mod_a_version: Option<&str>,
+        mod_b_version: Option<&str>,
+    ) -> bool {
+        self.side_applies(&self.mod_a_versions, mod_a_version)
+            && self.side_applies(&self.mod_b_versions, mod_b_version)
+    }
 }
 
 /// A parsed mod dependency set from `mod_manual_dependencies`.
@@ -1719,6 +1785,40 @@ pub fn get_curated_annotation(
     }))
 }
 
+/// True when `table` exists and carries `column`.
+///
+/// Used to keep queries forward-compatible with registries signed by an older
+/// compiler: a missing column is a normal, expected state, not an error.
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+    let names: Vec<String> = rows.flatten().collect();
+    names.iter().any(|name| name == column)
+}
+
+/// Parse a `mod_a_versions_json` / `mod_b_versions_json` cell into ranges.
+///
+/// NULL, empty, malformed JSON and non-string members all decay to "no
+/// window", i.e. unconditional. A curated fact that fails to parse should warn
+/// about the pair rather than vanish — the pair is the part a curator vouched
+/// for, the window is the refinement.
+fn parse_version_ranges(raw: Option<String>) -> Vec<String> {
+    raw.filter(|s| !s.trim().is_empty())
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .map(|ranges| {
+            ranges
+                .into_iter()
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// List known conflicts from the `known_conflicts` table.
 ///
 /// Defensively returns an empty vec if the `known_conflicts` table does not
@@ -1737,15 +1837,24 @@ pub fn get_known_conflicts(conn: &Connection) -> LauncherResult<Vec<KnownConflic
         return Ok(Vec::new());
     }
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT mod_a_id, mod_b_id, severity, mitigated_by_json, notes \
-             FROM known_conflicts",
-        )
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_INVALID_QUERY".to_string(),
-            message: e.to_string(),
-        })?;
+    // Version windows arrived after the table did. A signed registry.db built
+    // by an older compiler has the rows but not the columns, so select them
+    // only when they exist; every fact then reads as unconditional, which is
+    // exactly what it meant before windows were expressible.
+    let has_windows = table_has_column(conn, "known_conflicts", "mod_a_versions_json");
+    let sql = if has_windows {
+        "SELECT mod_a_id, mod_b_id, severity, mitigated_by_json, notes, \
+         mod_a_versions_json, mod_b_versions_json, version_grammar \
+         FROM known_conflicts"
+    } else {
+        "SELECT mod_a_id, mod_b_id, severity, mitigated_by_json, notes, \
+         NULL, NULL, NULL \
+         FROM known_conflicts"
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| LauncherError::Generic {
+        code: "ERR_INVALID_QUERY".to_string(),
+        message: e.to_string(),
+    })?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -1754,12 +1863,19 @@ pub fn get_known_conflicts(conn: &Connection) -> LauncherResult<Vec<KnownConflic
                 .filter(|s| !s.is_empty())
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
+            let grammar: Option<String> = row.get(7)?;
             Ok(KnownConflict {
                 mod_a_id: row.get(0)?,
                 mod_b_id: row.get(1)?,
                 severity: row.get(2)?,
                 mitigated_by,
                 notes: row.get(4)?,
+                mod_a_versions: parse_version_ranges(row.get(5)?),
+                mod_b_versions: parse_version_ranges(row.get(6)?),
+                version_grammar: match grammar.as_deref().map(str::trim) {
+                    Some(g) if g.eq_ignore_ascii_case("maven") => VersionGrammar::Maven,
+                    _ => VersionGrammar::Fabric,
+                },
             })
         })
         .map_err(|e| LauncherError::Generic {
@@ -2332,6 +2448,81 @@ mod tests {
         assert_eq!(conflicts[0].mod_b_id, "mod-b");
         assert_eq!(conflicts[0].severity, "hard");
         assert_eq!(conflicts[0].mitigated_by, vec!["workaround".to_string()]);
+        // This fixture predates version windows, exercising the fallback
+        // SELECT: the row still loads and reads as unconditional.
+        assert!(conflicts[0].mod_a_versions.is_empty());
+        assert!(conflicts[0].mod_b_versions.is_empty());
+        assert!(!conflicts[0].is_version_windowed());
+    }
+
+    /// A registry.db carrying the version-window columns, for the tests below.
+    fn windowed_conflicts_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE known_conflicts (
+                 mod_a_id TEXT, mod_b_id TEXT, severity TEXT,
+                 mitigated_by_json TEXT, notes TEXT,
+                 mod_a_versions_json TEXT, mod_b_versions_json TEXT,
+                 version_grammar TEXT
+             );
+             INSERT INTO known_conflicts VALUES
+                 ('mod-a','mod-b','hard','[]',NULL,'[\">=2.3\"]',NULL,'fabric'),
+                 ('mvn-a','mvn-b','weak',NULL,NULL,'[\"[1.0,2.0)\"]',NULL,'maven'),
+                 ('bad-a','bad-b','hard',NULL,NULL,'not json',NULL,NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn known_conflicts_parse_version_windows() {
+        let conn = windowed_conflicts_conn();
+        let conflicts = get_known_conflicts(&conn).unwrap();
+        let a = conflicts.iter().find(|c| c.mod_a_id == "mod-a").unwrap();
+        assert_eq!(a.mod_a_versions, vec![">=2.3".to_string()]);
+        assert!(a.mod_b_versions.is_empty());
+        assert_eq!(a.version_grammar, VersionGrammar::Fabric);
+        assert!(a.is_version_windowed());
+
+        let m = conflicts.iter().find(|c| c.mod_a_id == "mvn-a").unwrap();
+        assert_eq!(m.version_grammar, VersionGrammar::Maven);
+    }
+
+    #[test]
+    fn malformed_version_window_widens_rather_than_hides_the_conflict() {
+        let conn = windowed_conflicts_conn();
+        let conflicts = get_known_conflicts(&conn).unwrap();
+        let bad = conflicts.iter().find(|c| c.mod_a_id == "bad-a").unwrap();
+        assert!(bad.mod_a_versions.is_empty());
+        // An unparseable window must not silently mute a curated pair.
+        assert!(bad.applies_to_versions(Some("9.9"), Some("1.0")));
+        assert!(bad.applies_to_versions(None, None));
+    }
+
+    #[test]
+    fn version_window_admits_and_excludes_installed_versions() {
+        let conn = windowed_conflicts_conn();
+        let conflicts = get_known_conflicts(&conn).unwrap();
+        let a = conflicts.iter().find(|c| c.mod_a_id == "mod-a").unwrap();
+        assert!(a.applies_to_versions(Some("2.4"), Some("1.0")));
+        assert!(!a.applies_to_versions(Some("2.2"), Some("1.0")));
+        // An unwindowed side accepts anything, including an unknown version.
+        assert!(a.applies_to_versions(Some("2.4"), None));
+
+        let m = conflicts.iter().find(|c| c.mod_a_id == "mvn-a").unwrap();
+        assert!(m.applies_to_versions(Some("1.5"), None));
+        assert!(!m.applies_to_versions(Some("2.0"), None));
+    }
+
+    #[test]
+    fn conditional_window_does_not_match_an_unreadable_version() {
+        let conn = windowed_conflicts_conn();
+        let conflicts = get_known_conflicts(&conn).unwrap();
+        let a = conflicts.iter().find(|c| c.mod_a_id == "mod-a").unwrap();
+        // The curator scoped this to >=2.3; we cannot read the installed
+        // version, so we do not put a blocker in front of the user.
+        assert!(!a.applies_to_versions(None, Some("1.0")));
+        assert!(!a.applies_to_versions(Some("   "), Some("1.0")));
     }
 
     #[test]

@@ -375,14 +375,44 @@ A JSON array of mod-pair conflicts. Used by the crash investigator (signal G in 
 ]
 ```
 
-> The current `registry/governance/known_conflicts.json` is `[]` -- the example above is illustrative only. Add real entries as mods enter the registry that genuinely conflict with each other.
-
 | Field | Type | Description |
 |---|---|---|
 | `a` | string | First mod ID (lexicographically smaller). |
 | `b` | string | Second mod ID (lexicographically larger). |
 | `severity` | string | `"hard"` (will crash) or `"weak"` (may work but not recommended). |
 | `mitigated_by` | string[] | Mod IDs that, when present, neutralize the conflict (e.g. `["indium"]` for Sodium+OptiFine). |
+| `a_versions` | string[] | *Optional.* Version ranges for `a`. Omitted or `[]` means every version. |
+| `b_versions` | string[] | *Optional.* Version ranges for `b`. Omitted or `[]` means every version. |
+| `version_grammar` | string | *Optional.* `"fabric"` (default) or `"maven"`. Applies to both windows. |
+
+#### Version windows
+
+Most conflicts are permanent, but some appear in a specific release and get fixed later. Rather than
+condemning every version of a pair forever, scope the fact to the releases it applies to:
+
+```json
+{
+  "a": "example-renderer-mod",
+  "b": "example-shader-mod",
+  "severity": "hard",
+  "a_versions": [">=2.3"],
+  "notes": "Introduced in 2.3 when the renderer moved to the new pipeline."
+}
+```
+
+- Ranges use the same grammar as loader dependency metadata: Fabric predicate syntax
+  (`">=2.3"`, `">=1.0 <2.0"`, `"1.x"`) by default, or Forge/NeoForge Maven ranges (`"[1.0,2.0)"`)
+  with `"version_grammar": "maven"`. Multiple entries in the list are OR'd.
+- A side you omit is unconstrained. The example above fires for *any* version of the shader mod
+  paired with renderer 2.3 or later.
+- **A window only ever narrows a fact.** If a window is malformed, or the launcher cannot read the
+  installed version of an *unwindowed* side, the pair still warns — the pair is what you vouched
+  for. The one case that stays silent is a windowed side whose installed version is unreadable:
+  you said "2.3 and up", and blocking a launch over a version nobody can confirm is worse than
+  missing one warning.
+- Windows are optional and additive. Entries written before this field existed keep working
+  unchanged, and an older launcher reading a newer registry simply treats every fact as
+  unconditional.
 | `notes` | string | Free-text explanation. |
 
 ### 6.2 Poll blacklist (`poll_blacklist.json`)

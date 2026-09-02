@@ -1480,20 +1480,29 @@ fn health_from_inventory(
         if reg_path.exists() {
             if let Ok(conn) = db::registry_connection(reg_path) {
                 if let Ok(conflicts) = registry::get_known_conflicts(&conn) {
-                    // Build reverse index: registry_id -> filename for cross-reference
-                    let installed_registry_ids: HashSet<&str> = manifest
-                        .mods
-                        .iter()
-                        .filter(|m| m.enabled)
-                        .filter_map(|m| m.registry_id.as_deref())
-                        .collect();
-
                     for conflict in &conflicts {
-                        let a_present = installed_registry_ids.contains(conflict.mod_a_id.as_str())
-                            || presence_id_to_files.contains_key(conflict.mod_a_id.as_str());
-                        let b_present = installed_registry_ids.contains(conflict.mod_b_id.as_str())
-                            || presence_id_to_files.contains_key(conflict.mod_b_id.as_str());
-                        if a_present && b_present {
+                        let a_versions = installed_versions_for_conflict_side(
+                            &conflict.mod_a_id,
+                            manifest,
+                            &presence_id_to_files,
+                            &capability_providers,
+                        );
+                        let b_versions = installed_versions_for_conflict_side(
+                            &conflict.mod_b_id,
+                            manifest,
+                            &presence_id_to_files,
+                            &capability_providers,
+                        );
+                        // A curated fact applies when both sides are installed
+                        // *and* some installed pair falls inside the declared
+                        // windows. An unwindowed fact behaves exactly as it did
+                        // before windows existed.
+                        let applies = a_versions.iter().any(|a| {
+                            b_versions
+                                .iter()
+                                .any(|b| conflict.applies_to_versions(a.as_deref(), b.as_deref()))
+                        });
+                        if applies {
                             let mitigation = if conflict.mitigated_by.is_empty() {
                                 "No known mitigation.".into()
                             } else {
@@ -1710,6 +1719,41 @@ fn incompatibility_version_detail(ranges: &[String], target_version: Option<&str
         ),
         None => format!(" Declared incompatible versions: {declared}."),
     }
+}
+
+/// Versions at which one side of a curated conflict is installed.
+///
+/// A side can be present through two independent channels: the manifest
+/// (`registry_id`, the identity a curator authors against) and loader metadata
+/// (`mod_jar_id` and `provides` aliases, already alias-resolved into
+/// `capability_providers`). Both are consulted, because a mod installed from
+/// the registry and the same mod dropped in by hand should trip the same fact.
+///
+/// Each element is that channel's idea of the installed version, `None` when
+/// the channel knows the mod is present but not which version. An empty vec
+/// means "not installed", which keeps an unmatched fact silently inert.
+fn installed_versions_for_conflict_side(
+    conflict_id: &str,
+    manifest: &InstanceManifest,
+    presence_id_to_files: &HashMap<String, Vec<String>>,
+    capability_providers: &HashMap<String, Vec<CapabilityProvider>>,
+) -> Vec<Option<String>> {
+    let mut versions: Vec<Option<String>> = manifest
+        .mods
+        .iter()
+        .filter(|m| m.enabled)
+        .filter(|m| m.registry_id.as_deref() == Some(conflict_id))
+        .map(|m| m.version.clone())
+        .collect();
+
+    if let Some(providers) = capability_providers.get(conflict_id) {
+        versions.extend(providers.iter().map(|p| p.version.clone()));
+    } else if presence_id_to_files.contains_key(conflict_id) {
+        // Present but with no version channel to read.
+        versions.push(None);
+    }
+
+    versions
 }
 
 /// True when a curated `known_conflicts.severity` string denotes a
@@ -1994,6 +2038,55 @@ mod tests {
 
     fn tracked_manifest(mods: &[(&str, &str)]) -> InstanceManifest {
         tracked_manifest_for_loader("fabric", mods)
+    }
+
+    #[test]
+    fn conflict_side_versions_come_from_the_manifest_and_loader_metadata() {
+        let mut manifest = tracked_manifest(&[("sodium.jar", "sodium")]);
+        manifest.mods[0].registry_id = Some("sodium".into());
+        manifest.mods[0].version = Some("0.5.3".into());
+
+        let mut providers: HashMap<String, Vec<CapabilityProvider>> = HashMap::new();
+        providers.insert(
+            "iris".into(),
+            vec![CapabilityProvider {
+                owner_filename: "iris.jar".into(),
+                version: Some("1.7.0".into()),
+                is_nested: false,
+            }],
+        );
+        let files = provider_files(&providers);
+
+        // Manifest channel supplies the curator-facing registry id.
+        assert_eq!(
+            installed_versions_for_conflict_side("sodium", &manifest, &files, &providers),
+            vec![Some("0.5.3".to_string())]
+        );
+        // Loader channel supplies ids the manifest never recorded.
+        assert_eq!(
+            installed_versions_for_conflict_side("iris", &manifest, &files, &providers),
+            vec![Some("1.7.0".to_string())]
+        );
+        // A fact naming something absent stays inert.
+        assert!(
+            installed_versions_for_conflict_side("optifine", &manifest, &files, &providers)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn conflict_side_present_without_a_version_channel_reports_unknown() {
+        let manifest = tracked_manifest(&[("mystery.jar", "mystery")]);
+        let providers: HashMap<String, Vec<CapabilityProvider>> = HashMap::new();
+        let mut files: HashMap<String, Vec<String>> = HashMap::new();
+        files.insert("mystery".into(), vec!["mystery.jar".into()]);
+
+        // Present, but nothing knows which version: `None`, not "absent".
+        // A conditional curated window must not fire on this.
+        assert_eq!(
+            installed_versions_for_conflict_side("mystery", &manifest, &files, &providers),
+            vec![None]
+        );
     }
 
     fn tracked_manifest_for_loader(loader: &str, mods: &[(&str, &str)]) -> InstanceManifest {

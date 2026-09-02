@@ -1768,6 +1768,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
     """)
 
     # Community-curated mod conflict feed.
+    #
+    # The *_versions_json columns hold an optional version window per side, so a
+    # curator can say "these two only conflict from 2.3 onward" instead of
+    # condemning every release of the pair. NULL/absent means "any version",
+    # which is what every entry authored before windows existed still means.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS known_conflicts (
             mod_a_id TEXT NOT NULL,
@@ -1775,6 +1780,9 @@ def create_tables(conn: sqlite3.Connection) -> None:
             severity TEXT NOT NULL,
             mitigated_by_json TEXT,
             notes TEXT,
+            mod_a_versions_json TEXT,
+            mod_b_versions_json TEXT,
+            version_grammar TEXT,
             PRIMARY KEY (mod_a_id, mod_b_id)
         )
     """)
@@ -3132,6 +3140,30 @@ def insert_crash_signature(
 # ---------------------------------------------------------------------------
 
 
+def _clean_version_window(raw) -> list:
+    """Normalize one side's version window into a list of range strings.
+
+    Anything that is not a list of non-empty strings collapses to ``[]``, which
+    the launcher reads as "any version". A malformed window must widen the
+    conflict rather than narrow it: the curator vouched for the *pair*, and the
+    window is only a refinement, so a typo should never make a real conflict
+    silently stop warning.
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip()
+        if not cleaned or cleaned == "*":
+            # A wildcard among the ranges means unconditional; the launcher
+            # treats it that way too, but storing [] says so unambiguously.
+            return []
+        out.append(cleaned)
+    return out
+
+
 def load_known_conflicts(conn: sqlite3.Connection) -> int:
     """Ingest community-curated known conflicts from known_conflicts.json.
 
@@ -3160,18 +3192,42 @@ def load_known_conflicts(conn: sqlite3.Connection) -> int:
             mitigated_by = []
         mitigated_by_json = json.dumps(mitigated_by, separators=(",", ":"))
         notes = entry.get("notes")
-        # Normalize pair: lexicographically smaller id is mod_a_id.
+        a_versions = _clean_version_window(entry.get("a_versions"))
+        b_versions = _clean_version_window(entry.get("b_versions"))
+        grammar = str(entry.get("version_grammar", "")).strip().lower()
+        if grammar not in ("fabric", "maven"):
+            if grammar:
+                logger.warning(
+                    "known_conflicts: unknown version_grammar %r for %s+%s; using fabric",
+                    grammar, a, b,
+                )
+            grammar = "fabric"
+        # Normalize pair: lexicographically smaller id is mod_a_id. The version
+        # windows are attached to the mods, not to the column names, so they
+        # swap with them -- getting this wrong would apply A's window to B.
         if a <= b:
             mod_a_id, mod_b_id = a, b
+            a_window, b_window = a_versions, b_versions
         else:
             mod_a_id, mod_b_id = b, a
+            a_window, b_window = b_versions, a_versions
         cursor.execute(
             """
             INSERT OR REPLACE INTO known_conflicts
-                (mod_a_id, mod_b_id, severity, mitigated_by_json, notes)
-            VALUES (?, ?, ?, ?, ?)
+                (mod_a_id, mod_b_id, severity, mitigated_by_json, notes,
+                 mod_a_versions_json, mod_b_versions_json, version_grammar)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (mod_a_id, mod_b_id, severity, mitigated_by_json, notes),
+            (
+                mod_a_id,
+                mod_b_id,
+                severity,
+                mitigated_by_json,
+                notes,
+                json.dumps(a_window, separators=(",", ":")) if a_window else None,
+                json.dumps(b_window, separators=(",", ":")) if b_window else None,
+                grammar,
+            ),
         )
         count += 1
 

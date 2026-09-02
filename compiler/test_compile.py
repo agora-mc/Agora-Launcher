@@ -17,6 +17,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -1195,6 +1196,98 @@ class TestNormalizeDownloadSources(unittest.TestCase):
             ],
         }
         self.assertEqual(len(_compile.normalize_download_sources(item)), 2)
+
+
+class TestCleanVersionWindow(unittest.TestCase):
+    """Tests for _clean_version_window.
+
+    A window narrows a curated conflict to the releases it actually applies to.
+    Getting this wrong in the narrowing direction is the dangerous one: the
+    launcher would stop warning about a pair a curator vouched for, so anything
+    unrecognizable has to collapse to "any version".
+    """
+
+    def test_ranges_are_trimmed_and_kept_in_order(self):
+        self.assertEqual(
+            _compile._clean_version_window(["  >=2.3 ", "<3.0"]),
+            [">=2.3", "<3.0"],
+        )
+
+    def test_missing_or_wrong_type_is_unconditional(self):
+        for raw in (None, "", ">=2.3", {}, 5):
+            self.assertEqual(_compile._clean_version_window(raw), [])
+
+    def test_wildcard_collapses_to_unconditional(self):
+        self.assertEqual(_compile._clean_version_window(["*"]), [])
+        self.assertEqual(_compile._clean_version_window([">=1.0", "*"]), [])
+
+    def test_non_string_members_are_dropped(self):
+        self.assertEqual(_compile._clean_version_window([">=1.0", 7, None]), [">=1.0"])
+
+
+class TestLoadKnownConflicts(unittest.TestCase):
+    """Tests for load_known_conflicts, focused on the pair-normalization swap.
+
+    Rows are stored with the lexicographically smaller id in mod_a_id. The
+    version windows belong to the mods, so they have to travel with them --
+    applying A's window to B would silently mis-scope every reversed entry.
+    """
+
+    def _load(self, entries):
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            """CREATE TABLE known_conflicts (
+                   mod_a_id TEXT, mod_b_id TEXT, severity TEXT,
+                   mitigated_by_json TEXT, notes TEXT,
+                   mod_a_versions_json TEXT, mod_b_versions_json TEXT,
+                   version_grammar TEXT,
+                   PRIMARY KEY (mod_a_id, mod_b_id))"""
+        )
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        gov = Path(tmp.name) / "governance"
+        gov.mkdir(parents=True)
+        (gov / "known_conflicts.json").write_text(json.dumps(entries), encoding="utf-8")
+        with mock.patch.object(_compile, "REGISTRY_DIR", Path(tmp.name)):
+            count = _compile.load_known_conflicts(conn)
+        rows = conn.execute(
+            "SELECT mod_a_id, mod_b_id, mod_a_versions_json,"
+            " mod_b_versions_json, version_grammar FROM known_conflicts"
+        ).fetchall()
+        return count, rows
+
+    def test_window_follows_its_mod_through_the_swap(self):
+        # "zebra" sorts after "alpha", so the pair is stored reversed.
+        _, rows = self._load([
+            {"a": "zebra", "b": "alpha", "severity": "hard",
+             "a_versions": [">=2.3"], "b_versions": ["<1.0"]},
+        ])
+        self.assertEqual(len(rows), 1)
+        mod_a, mod_b, a_json, b_json, _ = rows[0]
+        self.assertEqual((mod_a, mod_b), ("alpha", "zebra"))
+        self.assertEqual(json.loads(a_json), ["<1.0"])
+        self.assertEqual(json.loads(b_json), [">=2.3"])
+
+    def test_absent_windows_store_null(self):
+        _, rows = self._load([{"a": "alpha", "b": "zebra", "severity": "hard"}])
+        _, _, a_json, b_json, grammar = rows[0]
+        self.assertIsNone(a_json)
+        self.assertIsNone(b_json)
+        self.assertEqual(grammar, "fabric")
+
+    def test_unknown_grammar_falls_back_to_fabric(self):
+        _, rows = self._load([
+            {"a": "alpha", "b": "zebra", "severity": "hard",
+             "version_grammar": "gradle", "a_versions": [">=1"]},
+        ])
+        self.assertEqual(rows[0][4], "fabric")
+
+    def test_maven_grammar_is_preserved(self):
+        _, rows = self._load([
+            {"a": "alpha", "b": "zebra", "severity": "hard",
+             "version_grammar": "Maven", "a_versions": ["[1.0,2.0)"]},
+        ])
+        self.assertEqual(rows[0][4], "maven")
 
 
 if __name__ == "__main__":
