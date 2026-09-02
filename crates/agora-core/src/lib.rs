@@ -101,3 +101,4 @@ pub mod template_service;
 pub mod update_cache;
 pub mod version_changelogs;
 pub mod version_match;
+pub mod version_migration;

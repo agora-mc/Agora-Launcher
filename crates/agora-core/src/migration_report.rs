@@ -208,6 +208,11 @@ pub struct ModMigrationEntry {
     /// Successor for `superseded` entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub successor: Option<SuccessorInfo>,
+    /// The concrete build a migration would install for `ready` entries, when
+    /// the checker could name one. `None` on every non-`ready` entry, and on
+    /// `ready` entries whose checker only answered the boolean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_build: Option<TargetBuildInfo>,
     /// Launcher error code for `unknown` entries (e.g. `ERR_NETWORK`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
@@ -237,6 +242,40 @@ pub struct MigrationReport {
 // Seams
 // ---------------------------------------------------------------------------
 
+/// The concrete build selected for a target version — the answer to "which
+/// one", not just "is there one".
+///
+/// The [`ModrinthChecker`] already fetches the candidate list to decide
+/// `has_target_build`; choosing the best candidate from that same list costs
+/// zero additional API calls and guarantees the executor installs exactly the
+/// build the report judged ready. The readiness report itself ignores this
+/// field; it exists so [`crate::version_migration`] can execute without a
+/// second resolution pass whose filter policy could drift from the checker's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetBuildInfo {
+    /// Modrinth version id (UUID).
+    pub version_id: String,
+    /// Human-readable version number for the manifest entry.
+    pub version_number: String,
+    /// Published filename of the primary file.
+    pub filename: String,
+    /// Download URL of the primary file.
+    pub download_url: String,
+    /// Modrinth-published SHA-1, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha1: Option<String>,
+    /// Modrinth-published SHA-512, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha512: Option<String>,
+    /// Published file size in bytes, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Whether the selected version is an alpha/beta build. Migration warns
+    /// rather than silently swapping a release mod for a prerelease.
+    #[serde(default)]
+    pub is_prerelease: bool,
+}
+
 /// Outcome of checking whether a Modrinth project has a target build.
 #[derive(Debug, Clone)]
 pub struct SupportInfo {
@@ -247,6 +286,11 @@ pub struct SupportInfo {
     /// when the project has a target build (not needed) or when the timestamp
     /// could not be fetched.
     pub last_updated: Option<String>,
+    /// The specific build chosen for the target version. `Some` exactly when a
+    /// target build was found and the checker could name one; a checker that
+    /// only answers the boolean is still valid (the report ignores this field),
+    /// but such an entry cannot be *executed* by [`crate::version_migration`].
+    pub target_build: Option<TargetBuildInfo>,
 }
 
 /// Trait that answers "does this Modrinth project have a target build?"
@@ -413,6 +457,7 @@ async fn classify_one(
             last_updated: None,
             has_target_build: Some(false),
             successor: Some(successor),
+            target_build: None,
             error_code: None,
             error_message: None,
         };
@@ -438,6 +483,7 @@ async fn classify_one(
             last_updated: None,
             has_target_build: None,
             successor: None,
+            target_build: None,
             error_code: None,
             error_message: None,
         };
@@ -460,6 +506,7 @@ async fn classify_one(
             last_updated: None,
             has_target_build: None,
             successor: None,
+            target_build: None,
             error_code: Some(err.code()),
             error_message: Some(err.to_string()),
         },
@@ -477,6 +524,7 @@ async fn classify_one(
                     last_updated: info.last_updated,
                     has_target_build: Some(true),
                     successor: None,
+                    target_build: info.target_build,
                     error_code: None,
                     error_message: None,
                 }
@@ -493,6 +541,7 @@ async fn classify_one(
                     last_updated: info.last_updated,
                     has_target_build: Some(false),
                     successor: None,
+                    target_build: None,
                     error_code: None,
                     error_message: None,
                 }
@@ -509,6 +558,7 @@ async fn classify_one(
                     last_updated: info.last_updated,
                     has_target_build: Some(false),
                     successor: None,
+                    target_build: None,
                     error_code: None,
                     error_message: None,
                 }
@@ -714,6 +764,27 @@ impl ModrinthChecker for LiveModrinthChecker {
 
         let has_target_build = !candidates.is_empty();
 
+        let target_build = if has_target_build {
+            // Same selection the raw-install update path effectively makes:
+            // `list_raw_modrinth_versions_http` pre-sorts stable-first,
+            // newest-first, and `select_raw_modrinth_candidate` with no
+            // requested version takes the head. Naming the build here (rather
+            // than in a second lookup pass) guarantees "ready" and "which
+            // build" can never disagree.
+            candidates.first().map(|c| TargetBuildInfo {
+                version_id: c.version_id.clone(),
+                version_number: c.version.clone(),
+                filename: c.filename.clone(),
+                download_url: c.download_url.clone(),
+                sha1: c.sha1.clone(),
+                sha512: c.sha512.clone(),
+                size: c.size,
+                is_prerelease: c.is_prerelease,
+            })
+        } else {
+            None
+        };
+
         let last_updated = if has_target_build {
             None
         } else {
@@ -731,6 +802,7 @@ impl ModrinthChecker for LiveModrinthChecker {
         Ok(SupportInfo {
             has_target_build,
             last_updated,
+            target_build,
         })
     }
 }
@@ -839,7 +911,7 @@ impl MigrationService {
     }
 }
 
-fn enrich_with_registry(ctx: &Ctx, mods: &mut [InstalledMod]) {
+pub(crate) fn enrich_with_registry(ctx: &Ctx, mods: &mut [InstalledMod]) {
     let registry_ids: Vec<String> = mods
         .iter()
         .filter(|m| m.modrinth_id.is_none())
@@ -934,6 +1006,7 @@ mod tests {
                 Ok(SupportInfo {
                     has_target_build: true,
                     last_updated: None,
+                    target_build: None,
                 }),
             );
             self
@@ -945,6 +1018,7 @@ mod tests {
                 Ok(SupportInfo {
                     has_target_build: false,
                     last_updated: last_updated.map(str::to_string),
+                    target_build: None,
                 }),
             );
             self
@@ -958,6 +1032,7 @@ mod tests {
                 Ok(SupportInfo {
                     has_target_build: false,
                     last_updated: Some(old),
+                    target_build: None,
                 }),
             );
             self
@@ -1190,6 +1265,7 @@ mod tests {
             Ok(SupportInfo {
                 has_target_build: false,
                 last_updated: Some(recent),
+                target_build: None,
             }),
         );
         checker.map.insert(
@@ -1197,6 +1273,7 @@ mod tests {
             Ok(SupportInfo {
                 has_target_build: false,
                 last_updated: Some(old),
+                target_build: None,
             }),
         );
         checker.map.insert(
@@ -1204,6 +1281,7 @@ mod tests {
             Ok(SupportInfo {
                 has_target_build: false,
                 last_updated: None,
+                target_build: None,
             }),
         );
 

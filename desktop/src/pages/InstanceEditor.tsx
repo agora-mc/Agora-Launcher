@@ -966,6 +966,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const handleUnlock = async () => {
     setError(null);
+    // Unlocking is the single consent gate for every kind of deviation — a
+    // changed mod version, an edited config, a Minecraft version migration.
+    // Modpack instances ship locked precisely so this question gets asked once,
+    // here, rather than being re-litigated at each individual change.
+    const fromPack = !!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack;
+    if (fromPack && !confirm(
+      [
+        'Unlocking moves this instance away from the version the pack author published.',
+        '',
+        'Most pack authors do not support modified installs, and changes can cause instability. '
+        + 'If you later update the pack, some of your changes — mod versions, configuration files, '
+        + 'and other edits — may be overwritten.',
+        '',
+        'Unlock anyway?',
+      ].join('\n'),
+    )) return;
     try {
       await unlockInstance(instanceId);
       await refreshDetail();

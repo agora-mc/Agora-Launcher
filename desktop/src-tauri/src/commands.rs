@@ -3503,6 +3503,59 @@ pub async fn get_migration_report(
 }
 
 // ---------------------------------------------------------------------------
+// Minecraft version migration — execution
+// ---------------------------------------------------------------------------
+
+/// Plan a migration without performing it.
+///
+/// The plan's `blockers` list is what the user is being asked to accept: mods
+/// that will be left at their current version. Nothing is changed here.
+#[tauri::command]
+pub async fn plan_version_migration(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target_version: String,
+) -> LauncherResult<agora_core::version_migration::MigrationPlan> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    agora_core::version_migration::VersionMigrationService::new(ctx)
+        .plan(&sanitized, &target_version)
+        .await
+        .map_err(|rejection| LauncherError::Generic {
+            code: "ERR_MIGRATION_REJECTED".into(),
+            message: rejection
+                .reasons
+                .iter()
+                .map(|reason| reason.message.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })
+}
+
+/// Perform the migration.
+///
+/// `acceptBlockers` must be the user's actual answer to the planned blockers —
+/// passing it blindly would turn "leave these mods behind" into a silent
+/// default, which is the thing the plan exists to prevent.
+#[tauri::command]
+pub async fn run_version_migration(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target_version: String,
+    accept_blockers: bool,
+) -> LauncherResult<agora_core::version_migration::MigrationOutcome> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    Ok(
+        agora_core::version_migration::VersionMigrationService::new(ctx)
+            .migrate(&sanitized, &target_version, accept_blockers)
+            .await,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Guided mod bisect
 // ---------------------------------------------------------------------------
 

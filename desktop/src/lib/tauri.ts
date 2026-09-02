@@ -2123,6 +2123,87 @@ export interface MigrationReport {
 export const getMigrationReport = (instanceId: string, targetVersion: string) =>
   invoke<MigrationReport>('get_migration_report', { instanceId, targetVersion });
 
+/** Serialized `migration_report::TargetBuildInfo`. Snake_case — this type has
+ *  no `rename_all`, unlike the version_migration types below. */
+export interface TargetBuildInfo {
+  version_id: string;
+  version_number: string;
+  filename: string;
+  download_url: string;
+  sha1?: string;
+  sha512?: string;
+  size?: number;
+}
+
+/** Serialized `version_migration::RejectionReason` (camelCase). */
+export interface MigrationRejectionReason {
+  code: string;
+  message: string;
+  filename?: string;
+}
+
+/** Serialized `version_migration::PlannedSwap` (camelCase). */
+export interface PlannedSwap {
+  oldFilename: string;
+  contentType: string;
+  oldEnabled: boolean;
+  newFilename: string;
+  target: TargetBuildInfo;
+}
+
+/** Serialized `version_migration::MigrationPlan` (camelCase). Read-only —
+ *  building one mutates nothing. */
+export interface MigrationPlan {
+  instanceId: string;
+  sourceVersion: string;
+  targetVersion: string;
+  loader: string;
+  sourceLoaderVersion: string;
+  targetLoaderVersion?: string | null;
+  swaps: PlannedSwap[];
+  /** Entries that will be left at their current version. Proceeding past these
+   *  requires an explicit answer — see `runVersionMigration`. */
+  blockers: MigrationRejectionReason[];
+  warnings: string[];
+  fingerprint: string;
+  instanceStateHash: string;
+  report: MigrationReport;
+}
+
+/** Serialized `version_migration::MigrationOutcome` — tagged on `type` in
+ *  kebab-case, with camelCase fields. */
+export type MigrationOutcome =
+  | {
+      type: 'migrated';
+      instanceId: string;
+      fromVersion: string;
+      toVersion: string;
+      loaderVersion?: string;
+      replaced: string[];
+      snapshotId: string;
+      warnings: string[];
+    }
+  /** Refused before touching anything. */
+  | { type: 'blocked'; reasons: MigrationRejectionReason[] }
+  /** Mutated mid-way and verifiably restored. */
+  | { type: 'rolled-back'; phase: string; error: string; snapshotId?: string }
+  /** `rolledBack: false` means the instance may be mid-state and `snapshotId`
+   *  is the recovery point. */
+  | { type: 'failed'; phase: string; error: string; rolledBack: boolean; snapshotId?: string };
+
+/** Plan a migration without performing it. */
+export const planVersionMigration = (instanceId: string, targetVersion: string) =>
+  invoke<MigrationPlan>('plan_version_migration', { instanceId, targetVersion });
+
+/** Perform the migration. `acceptBlockers` must be the user's actual answer to
+ *  the plan's blockers — passing it blindly turns "leave these mods behind"
+ *  into a silent default. */
+export const runVersionMigration = (
+  instanceId: string,
+  targetVersion: string,
+  acceptBlockers: boolean,
+) => invoke<MigrationOutcome>('run_version_migration', { instanceId, targetVersion, acceptBlockers });
+
 /** Serialized `bisect::TrialOutcome`. */
 export type BisectTrialOutcome = 'reproduced' | 'clean';
 

@@ -2,6 +2,9 @@ import { useState } from 'react';
 import {
   formatError,
   getMigrationReport,
+  planVersionMigration,
+  runVersionMigration,
+  type MigrationPlan,
   type MigrationReport,
   type MigrationStatus,
   type ModMigrationEntry,
@@ -49,7 +52,9 @@ export function MigrationReportPanel({
 }) {
   const [target, setTarget] = useState('');
   const [report, setReport] = useState<MigrationReport | null>(null);
+  const [plan, setPlan] = useState<MigrationPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const run = async () => {
@@ -57,11 +62,60 @@ export function MigrationReportPanel({
     if (!version) return;
     setBusy(true);
     setError(null);
+    setStatus(null);
+    setPlan(null);
     try {
       setReport(await getMigrationReport(instanceId, version));
+      // A plan is the only thing that knows what will actually be left behind;
+      // the report alone cannot say. A rejection here is not an error worth
+      // shouting about — it usually just means the instance is still locked.
+      try {
+        setPlan(await planVersionMigration(instanceId, version));
+      } catch {
+        setPlan(null);
+      }
     } catch (e) {
       setError(formatError(e));
       setReport(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const migrate = async () => {
+    if (!plan) return;
+    const leaving = plan.blockers;
+    const prompt = leaving.length === 0
+      ? `Move this instance to ${plan.targetVersion}? A snapshot is taken first, and a failed migration rolls back.`
+      : `Move to ${plan.targetVersion} and leave ${leaving.length} item${leaving.length === 1 ? '' : 's'} at the current version?\n\n`
+        + leaving.map((reason) => `• ${reason.message}`).join('\n');
+    if (!confirm(prompt)) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await runVersionMigration(instanceId, plan.targetVersion, leaving.length > 0);
+      switch (outcome.type) {
+        case 'migrated':
+          setStatus(`Now on ${outcome.toVersion}. ${outcome.replaced.length} item(s) replaced. Recovery snapshot: ${outcome.snapshotId}`);
+          setReport(null);
+          setPlan(null);
+          break;
+        case 'blocked':
+          setError(outcome.reasons.map((reason) => reason.message).join('; '));
+          break;
+        case 'rolled-back':
+          setError(`Migration failed during ${outcome.phase} and was rolled back — the instance is as it was. ${outcome.error}`);
+          break;
+        case 'failed':
+          setError(outcome.rolledBack
+            ? `Migration failed during ${outcome.phase} and was undone. ${outcome.error}`
+            : `Migration failed during ${outcome.phase} and could NOT be undone automatically. ${outcome.error}`
+              + (outcome.snapshotId ? ` Restore snapshot ${outcome.snapshotId} from the Snapshots tab.` : ''));
+          break;
+      }
+    } catch (e) {
+      setError(formatError(e));
     } finally {
       setBusy(false);
     }
@@ -75,8 +129,8 @@ export function MigrationReportPanel({
       <div>
         <h3 className="font-semibold text-sm">Move to a newer Minecraft version</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Currently on {currentVersion}. Nothing is changed — this only checks whether every mod
-          has a build for the version you name.
+          Currently on {currentVersion}. Checking changes nothing — it reports whether every mod
+          has a build for the version you name. Moving is a separate, confirmed step.
         </p>
       </div>
 
@@ -101,6 +155,7 @@ export function MigrationReportPanel({
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {status && <p className="text-sm text-primary">{status}</p>}
 
       {report && (
         <div className="space-y-3">
@@ -118,6 +173,34 @@ export function MigrationReportPanel({
           {report.warnings.map((warning) => (
             <p key={warning} className="text-xs text-muted-foreground">{warning}</p>
           ))}
+
+          {plan && plan.warnings.map((warning) => (
+            <p key={warning} className="text-xs text-muted-foreground">{warning}</p>
+          ))}
+
+          {plan && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              <button
+                type="button"
+                onClick={() => void migrate()}
+                disabled={busy}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {busy ? 'Migrating…' : `Move to ${plan.targetVersion}`}
+              </button>
+              <span className="text-xs text-muted-foreground">
+                {plan.swaps.length} item{plan.swaps.length === 1 ? '' : 's'} will be replaced
+                {plan.blockers.length > 0 && `, ${plan.blockers.length} left as ${plan.blockers.length === 1 ? 'it is' : 'they are'}`}.
+                A snapshot is taken first.
+              </span>
+            </div>
+          )}
+
+          {!plan && report.verdict !== 'ready' && (
+            <p className="text-xs text-muted-foreground">
+              Unlock the instance to enable migrating it.
+            </p>
+          )}
 
           {STATUS_ORDER.map((status) => {
             const entries = byStatus(status);
