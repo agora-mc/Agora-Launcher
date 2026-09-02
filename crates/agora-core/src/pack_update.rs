@@ -715,6 +715,12 @@ pub fn apply_merge(
 
     let snapshot = crate::snapshot::create_snapshot(instance_dir, Some("pack-merge"))?;
 
+    // Everything that can leave the instance inconsistent belongs inside this
+    // closure, because everything inside it is undone by the snapshot restore
+    // below. The baseline write used to sit *after* it: a failure there left
+    // the files merged but `instance_pack_files` still describing the old pack,
+    // so the next update would diff against a baseline that never existed and
+    // read the whole previous update as the user's own edits.
     let apply_result = (|| -> Result<(), String> {
         for action in &plan.actions {
             apply_one_action(instance_dir, staged_dir, action)?;
@@ -725,6 +731,19 @@ pub fn apply_merge(
             }
             // KeepOurs: no change.
         }
+
+        // New baseline = THEIRS, read back from the staged tree so the hashes
+        // are of the bytes actually installed.
+        let baseline = crate::pack_inventory::collect_pack_inventory(staged_dir)?;
+        replace_instance_pack_files(conn, instance_id, &baseline)
+            .map_err(|e| format!("failed to record the new pack baseline: {e}"))?;
+
+        // Bump the mutation generation, exactly as the install pipeline does
+        // after its own apply. This is what tells the pre-launch snapshot logic
+        // that an existing recovery point no longer describes the instance;
+        // without it a merge is invisible to that check and a stale pre-launch
+        // snapshot stays eligible for reuse.
+        crate::snapshot::mark_instance_mutated(instance_dir)?;
         Ok(())
     })();
 
@@ -739,11 +758,6 @@ pub fn apply_merge(
             )),
         };
     }
-
-    // New baseline = THEIRS (real hashes from the staged tree). Transactional.
-    let baseline = crate::pack_inventory::collect_pack_inventory(staged_dir)?;
-    replace_instance_pack_files(conn, instance_id, &baseline)
-        .map_err(|e| format!("failed to record the new pack baseline: {e}"))?;
 
     Ok(MergeOutcome {
         snapshot_id: snapshot.id,
@@ -1441,6 +1455,79 @@ mod tests {
         assert!(error.contains("empty"), "{error}");
         let after = crate::db::list_instance_pack_files(&conn, "inst").unwrap();
         assert_eq!(after, base, "the recorded baseline must survive");
+    }
+
+    #[test]
+    fn a_merge_bumps_the_mutation_generation() {
+        // The pre-launch snapshot logic decides whether an existing recovery
+        // point still describes the instance by reading this generation. A
+        // merge that does not bump it is invisible to that check, so a snapshot
+        // taken before the merge stays eligible for reuse — the safety net
+        // silently stops describing the thing it is meant to protect.
+        let tmp = TempDir::new().unwrap();
+        let inst = seed_instance(&tmp, "inst");
+        write(&inst, "mods/a.jar", b"a-old");
+        let base = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: sha2_256_hex(b"a-old"),
+            size: 5,
+        }];
+        let theirs = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: sha2_256_hex(b"a-new"),
+            size: 5,
+        }];
+        let ours = crate::pack_inventory::collect_pack_inventory(&inst).unwrap();
+        let plan = crate::pack_merge::plan_pack_update(&base, &theirs, &ours);
+        let staged = tmp.path().join("staged");
+        write(&staged, "mods/a.jar", b"a-new");
+
+        let (conn, _dbtmp) = test_conn();
+        seed_instance_row(&conn, "inst");
+        let before = crate::snapshot::live_metadata_fingerprint(&inst).unwrap();
+        apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new()).unwrap();
+        let after = crate::snapshot::live_metadata_fingerprint(&inst).unwrap();
+        assert_ne!(
+            before, after,
+            "a merge must be visible to the pre-launch snapshot reuse check"
+        );
+    }
+
+    #[test]
+    fn a_baseline_write_failure_rolls_the_files_back_too() {
+        // The baseline used to be written outside the rollback closure, so a
+        // failure here left files merged against a baseline describing the
+        // *old* pack — and the next update would then read the whole previous
+        // update as the user's own edits.
+        let tmp = TempDir::new().unwrap();
+        let inst = seed_instance(&tmp, "inst");
+        write(&inst, "mods/a.jar", b"a-old");
+        let base = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: sha2_256_hex(b"a-old"),
+            size: 5,
+        }];
+        let theirs = vec![InstancePackFile {
+            relative_path: "mods/a.jar".into(),
+            sha256: sha2_256_hex(b"a-new"),
+            size: 5,
+        }];
+        let ours = crate::pack_inventory::collect_pack_inventory(&inst).unwrap();
+        let plan = crate::pack_merge::plan_pack_update(&base, &theirs, &ours);
+        let staged = tmp.path().join("staged");
+        write(&staged, "mods/a.jar", b"a-new");
+
+        // A connection with no `user_instances` row: the FK on
+        // instance_pack_files rejects the baseline write.
+        let (conn, _dbtmp) = test_conn();
+        let error = apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new())
+            .expect_err("a failed baseline write must fail the merge");
+        assert!(error.contains("restored"), "{error}");
+        assert_eq!(
+            std::fs::read(inst.join("mods/a.jar")).unwrap(),
+            b"a-old",
+            "the file must be back at its pre-merge content"
+        );
     }
 
     #[test]
