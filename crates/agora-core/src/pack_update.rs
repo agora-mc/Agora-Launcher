@@ -237,7 +237,7 @@ fn project_id_from_url(raw: &str) -> Option<String> {
 }
 
 /// A THEIRS inventory plus the metadata needed to state its limits honestly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MrpackTheirs {
     /// Full THEIRS inventory (`relative_path`, `sha256`, `size`). For verified
     /// entries `sha256` is a real file hash. For unverified mods it is a strong
@@ -633,6 +633,604 @@ pub struct MergeOutcome {
     pub rollback_performed: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Manifest reconciliation - projects the plan onto the old manifest without
+// scanning the live instance directory. See module docs for design.
+// ---------------------------------------------------------------------------
+
+fn content_type_for_logical(logical: &str) -> Option<&'static str> {
+    if logical.starts_with("mods/") {
+        Some("mod")
+    } else if logical.starts_with("resourcepacks/") {
+        Some("resourcepack")
+    } else if logical.starts_with("shaderpacks/") {
+        Some("shader")
+    } else if logical.starts_with("datapacks/") {
+        Some("datapack")
+    } else if logical.starts_with("saves/") {
+        Some("world")
+    } else {
+        None
+    }
+}
+
+fn filename_from_path(path: &str) -> String {
+    let stripped = path.strip_suffix(DISABLED_SUFFIX).unwrap_or(path);
+    stripped.rsplit('/').next().unwrap_or(stripped).to_string()
+}
+
+fn hash_staged_file(staged_dir: &Path, logical: &str) -> Result<String, String> {
+    let staged_path = safe_join(staged_dir, logical)?;
+    if !staged_path.is_file() {
+        return Err(format!(
+            "staged file missing for '{}': {}",
+            logical, logical
+        ));
+    }
+    let bytes = fs::read(&staged_path)
+        .map_err(|e| format!("cannot read staged {}: {e}", staged_path.display()))?;
+    Ok(sha2_256_hex(&bytes))
+}
+
+fn matches_mod_id(entry: &crate::models::InstalledMod, mod_id: &str) -> bool {
+    entry
+        .modrinth_id
+        .as_deref()
+        .map(|s| s.eq_ignore_ascii_case(mod_id))
+        .unwrap_or(false)
+        || entry
+            .mod_jar_id
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case(mod_id))
+            .unwrap_or(false)
+}
+
+/// Every manifest content entry, in one mutable pass.
+///
+/// Mirrors `loadout::all_content_entries_mut`. Chaining the arrays in a single
+/// expression is what makes the disjoint field borrows legal — an earlier
+/// version of these helpers reached for raw pointers to "avoid borrow checker
+/// disjoint field issues", which was both unnecessary and unsound: it handed
+/// out `&mut` derived from a pointer that was then re-borrowed while those
+/// references were still live.
+fn all_entries_mut(
+    manifest: &mut crate::models::InstanceManifest,
+) -> impl Iterator<Item = &mut crate::models::InstalledMod> {
+    manifest
+        .mods
+        .iter_mut()
+        .chain(manifest.resourcepacks.iter_mut())
+        .chain(manifest.shaders.iter_mut())
+        .chain(manifest.datapacks.iter_mut())
+        .chain(manifest.worlds.iter_mut())
+}
+
+/// Whether an entry belongs to the bucket named by `ct`.
+///
+/// `None` means "any bucket"; the caller only narrows when the plan told it
+/// which content type the path belongs to.
+fn entry_in_bucket(entry: &crate::models::InstalledMod, ct: Option<&str>) -> bool {
+    // `content_type_for_logical` yields exactly the strings the manifest stores
+    // in `InstalledMod.content_type`, so a direct comparison is the same test
+    // the array-per-bucket version made.
+    match ct {
+        None => true,
+        Some(want) => entry.content_type == want,
+    }
+}
+
+fn find_by_filename_mut<'a>(
+    manifest: &'a mut crate::models::InstanceManifest,
+    filename: &str,
+    ct: Option<&str>,
+) -> Option<&'a mut crate::models::InstalledMod> {
+    all_entries_mut(manifest).find(|entry| entry.filename == filename && entry_in_bucket(entry, ct))
+}
+
+/// Locate an entry by mod id, falling back to filename.
+///
+/// Resolved in one pass rather than two sequential `find`s, because two
+/// mutable searches over the same manifest cannot both be live — which is the
+/// borrow conflict the raw-pointer version was papering over.
+fn find_entry_mut<'a>(
+    manifest: &'a mut crate::models::InstanceManifest,
+    mod_id: Option<&str>,
+    filename: &str,
+    ct: Option<&str>,
+) -> Option<&'a mut crate::models::InstalledMod> {
+    // Decide *which* entry to return using immutable borrows, then take the
+    // single mutable borrow the caller asked for.
+    let by_mod_id = mod_id.and_then(|wanted| {
+        manifest
+            .mods
+            .iter()
+            .chain(manifest.resourcepacks.iter())
+            .chain(manifest.shaders.iter())
+            .chain(manifest.datapacks.iter())
+            .chain(manifest.worlds.iter())
+            .position(|entry| matches_mod_id(entry, wanted))
+    });
+    match by_mod_id {
+        Some(index) => all_entries_mut(manifest).nth(index),
+        None => find_by_filename_mut(manifest, filename, ct),
+    }
+}
+
+fn remove_by_mod_id(manifest: &mut crate::models::InstanceManifest, mod_id: &str) -> bool {
+    if let Some(pos) = manifest.mods.iter().position(|e| matches_mod_id(e, mod_id)) {
+        manifest.mods.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest
+        .resourcepacks
+        .iter()
+        .position(|e| matches_mod_id(e, mod_id))
+    {
+        manifest.resourcepacks.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest
+        .shaders
+        .iter()
+        .position(|e| matches_mod_id(e, mod_id))
+    {
+        manifest.shaders.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest
+        .datapacks
+        .iter()
+        .position(|e| matches_mod_id(e, mod_id))
+    {
+        manifest.datapacks.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest
+        .worlds
+        .iter()
+        .position(|e| matches_mod_id(e, mod_id))
+    {
+        manifest.worlds.remove(pos);
+        return true;
+    }
+    false
+}
+
+fn remove_by_filename(
+    manifest: &mut crate::models::InstanceManifest,
+    filename: &str,
+    ct: Option<&str>,
+) -> bool {
+    if let Some(ct_val) = ct {
+        let removed = match ct_val {
+            "resourcepack" => {
+                if let Some(pos) = manifest
+                    .resourcepacks
+                    .iter()
+                    .position(|e| e.filename == filename)
+                {
+                    manifest.resourcepacks.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            "shader" => {
+                if let Some(pos) = manifest.shaders.iter().position(|e| e.filename == filename) {
+                    manifest.shaders.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            "datapack" => {
+                if let Some(pos) = manifest
+                    .datapacks
+                    .iter()
+                    .position(|e| e.filename == filename)
+                {
+                    manifest.datapacks.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            "world" => {
+                if let Some(pos) = manifest.worlds.iter().position(|e| e.filename == filename) {
+                    manifest.worlds.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => {
+                if let Some(pos) = manifest.mods.iter().position(|e| e.filename == filename) {
+                    manifest.mods.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if removed {
+            return true;
+        }
+    }
+    if let Some(pos) = manifest.mods.iter().position(|e| e.filename == filename) {
+        manifest.mods.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest
+        .resourcepacks
+        .iter()
+        .position(|e| e.filename == filename)
+    {
+        manifest.resourcepacks.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest.shaders.iter().position(|e| e.filename == filename) {
+        manifest.shaders.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest
+        .datapacks
+        .iter()
+        .position(|e| e.filename == filename)
+    {
+        manifest.datapacks.remove(pos);
+        return true;
+    }
+    if let Some(pos) = manifest.worlds.iter().position(|e| e.filename == filename) {
+        manifest.worlds.remove(pos);
+        return true;
+    }
+    false
+}
+
+fn manifest_contains_filename(manifest: &crate::models::InstanceManifest, filename: &str) -> bool {
+    manifest.mods.iter().any(|e| e.filename == filename)
+        || manifest
+            .resourcepacks
+            .iter()
+            .any(|e| e.filename == filename)
+        || manifest.shaders.iter().any(|e| e.filename == filename)
+        || manifest.datapacks.iter().any(|e| e.filename == filename)
+        || manifest.worlds.iter().any(|e| e.filename == filename)
+}
+
+fn manifest_contains_mod_id(manifest: &crate::models::InstanceManifest, mod_id: &str) -> bool {
+    manifest.mods.iter().any(|e| matches_mod_id(e, mod_id))
+        || manifest
+            .resourcepacks
+            .iter()
+            .any(|e| matches_mod_id(e, mod_id))
+        || manifest.shaders.iter().any(|e| matches_mod_id(e, mod_id))
+        || manifest.datapacks.iter().any(|e| matches_mod_id(e, mod_id))
+        || manifest.worlds.iter().any(|e| matches_mod_id(e, mod_id))
+}
+
+/// Reconcile `instance_manifest.json` after a pack merge by projecting the
+/// `PackMergePlan` onto the `old` manifest. Pure: never scans the live
+/// instance directory, may read staged jars for metadata.
+///
+/// - `Keep` / `KeepUserAdded` -> carry old entry untouched
+/// - `Update` / `UpdateKeepDisabled` / `RenameUpdate` / `RenameUpdateKeepDisabled` -> update filename/sha256/enabled
+/// - `Add` -> new pack-managed entry, `modrinth_id` from `theirs.mod_ids`, jar metadata parsed from staged file
+/// - `Remove` -> drop entry
+/// - Conflicts: `KeepOurs` -> untouched, `TakeTheirs` -> as Update/Add
+///
+/// Config/override paths (non-tracked content types) are skipped entirely.
+/// Build the manifest entry for a file the pack ships.
+///
+/// `version` is deliberately `None`: an `.mrpack` index carries no per-file
+/// version string, and inferring one from the filename would be fabricating
+/// data the pack never stated.
+#[allow(clippy::too_many_arguments)]
+fn build_pack_entry(
+    old: &crate::models::InstanceManifest,
+    logical_path: &str,
+    filename: String,
+    sha256: String,
+    enabled: bool,
+    ct: &str,
+    theirs: &MrpackTheirs,
+    staged_dir: &Path,
+) -> Result<crate::models::InstalledMod, String> {
+    let modrinth_id = theirs.mod_ids.get(logical_path).cloned();
+    let source_url = theirs.download_urls.get(logical_path).cloned();
+    let staged_path = safe_join(staged_dir, logical_path)?;
+    let jar = if ct == "mod" && staged_path.is_file() {
+        crate::jar_metadata::parse_jar_metadata_for_loader(&staged_path, &old.loader)
+    } else {
+        crate::dependency_ops::JarDeps::default()
+    };
+    let mod_jar_id = jar.mod_jar_id.clone().or_else(|| modrinth_id.clone());
+    Ok(crate::models::InstalledMod {
+        filename,
+        registry_id: None,
+        modrinth_id,
+        source: "modrinth-pack".to_string(),
+        source_url,
+        version: None,
+        sha256,
+        installed_at: chrono::Utc::now().to_rfc3339(),
+        java_packages: jar.java_packages,
+        mod_jar_id,
+        provided_mod_ids: jar
+            .provided_mods
+            .iter()
+            .map(|pm| pm.mod_id.clone())
+            .collect(),
+        enabled,
+        content_type: ct.to_string(),
+        update_pinned: false,
+        pack_managed: true,
+        installed_as_dependency: false,
+        depends_on: jar.depends_on,
+        optional_deps: jar.optional_deps,
+        incompatible_deps: jar.incompatible_deps,
+    })
+}
+
+/// Insert a pack entry into the array its content type belongs to, replacing
+/// any entry that already claims the same filename.
+fn push_pack_entry(
+    manifest: &mut crate::models::InstanceManifest,
+    ct: &str,
+    installed: crate::models::InstalledMod,
+) {
+    let arr: &mut Vec<crate::models::InstalledMod> = match ct {
+        "resourcepack" => &mut manifest.resourcepacks,
+        "shader" => &mut manifest.shaders,
+        "datapack" => &mut manifest.datapacks,
+        "world" => &mut manifest.worlds,
+        _ => &mut manifest.mods,
+    };
+    if let Some(pos) = arr.iter().position(|e| e.filename == installed.filename) {
+        arr.remove(pos);
+    }
+    arr.push(installed);
+}
+
+pub fn reconcile_manifest(
+    old: &crate::models::InstanceManifest,
+    plan: &PackMergePlan,
+    resolutions: &BTreeMap<String, ConflictResolution>,
+    theirs: &MrpackTheirs,
+    staged_dir: &Path,
+) -> Result<crate::models::InstanceManifest, String> {
+    let mut new = old.clone();
+
+    // ---- Non-conflicting actions ----
+    for action in &plan.actions {
+        let ct_opt = content_type_for_logical(&action.logical_path);
+        if ct_opt.is_none() {
+            continue;
+        }
+        let ct = ct_opt.unwrap();
+        match action.kind {
+            crate::pack_merge::PlanActionKind::Keep
+            | crate::pack_merge::PlanActionKind::KeepUserAdded => {}
+            crate::pack_merge::PlanActionKind::Remove => {
+                if let Some(mod_id) = &action.mod_id {
+                    if !remove_by_mod_id(&mut new, mod_id) {
+                        let fname = filename_from_path(&action.target_path);
+                        remove_by_filename(&mut new, &fname, Some(ct));
+                    }
+                } else {
+                    let fname = filename_from_path(&action.target_path);
+                    remove_by_filename(&mut new, &fname, Some(ct));
+                }
+            }
+            crate::pack_merge::PlanActionKind::Update
+            | crate::pack_merge::PlanActionKind::UpdateKeepDisabled
+            | crate::pack_merge::PlanActionKind::RenameUpdate
+            | crate::pack_merge::PlanActionKind::RenameUpdateKeepDisabled => {
+                let lookup_fname = if let Some(prev) = &action.previous_path {
+                    filename_from_path(prev)
+                } else {
+                    filename_from_path(&action.logical_path)
+                };
+                let new_filename = filename_from_path(&action.target_path);
+                let new_sha256 = hash_staged_file(staged_dir, &action.logical_path)?;
+                match find_entry_mut(&mut new, action.mod_id.as_deref(), &lookup_fname, Some(ct)) {
+                    Some(entry) => {
+                        entry.filename = new_filename;
+                        entry.sha256 = new_sha256;
+                        entry.enabled = action.enabled;
+                        if entry.content_type != ct {
+                            entry.content_type = ct.to_string();
+                        }
+                    }
+                    None => {
+                        // The manifest has no entry for a file the pack
+                        // demonstrably manages — drift that predates this
+                        // merge. Treat it as an add rather than refusing:
+                        // erroring would make a recoverable inconsistency
+                        // permanently block every future pack update, and the
+                        // provenance we stamp (pack_managed, from THEIRS) is
+                        // exactly what the add path would have written anyway.
+                        let installed = build_pack_entry(
+                            old,
+                            action.logical_path.as_str(),
+                            new_filename,
+                            new_sha256,
+                            action.enabled,
+                            ct,
+                            theirs,
+                            staged_dir,
+                        )?;
+                        push_pack_entry(&mut new, ct, installed);
+                    }
+                }
+            }
+            crate::pack_merge::PlanActionKind::Add => {
+                let new_filename = filename_from_path(&action.target_path);
+                let new_sha256 = hash_staged_file(staged_dir, &action.logical_path)?;
+                let installed = build_pack_entry(
+                    old,
+                    action.logical_path.as_str(),
+                    new_filename,
+                    new_sha256,
+                    action.enabled,
+                    ct,
+                    theirs,
+                    staged_dir,
+                )?;
+                push_pack_entry(&mut new, ct, installed);
+            }
+        }
+    }
+
+    // ---- Conflicts ----
+    for conflict in &plan.conflicts {
+        let resolution = resolutions.get(&conflict.key);
+        let resolution = match resolution {
+            Some(r) => r,
+            None => {
+                return Err(format!(
+                    "conflict '{}' is unresolved; provide a resolution before reconciling",
+                    conflict.key
+                ))
+            }
+        };
+        match resolution {
+            ConflictResolution::KeepOurs => {
+                let logical = conflict.logical_path.as_str();
+                let theirs_opt = conflict.theirs_path.as_deref();
+                let is_tracked = content_type_for_logical(logical).is_some()
+                    || theirs_opt
+                        .map(|p| content_type_for_logical(p).is_some())
+                        .unwrap_or(false);
+                if !is_tracked {
+                    continue;
+                }
+            }
+            ConflictResolution::TakeTheirs => {
+                let theirs_path_str = conflict
+                    .theirs_path
+                    .as_deref()
+                    .unwrap_or(&conflict.logical_path);
+                let ct_opt = content_type_for_logical(theirs_path_str);
+                if ct_opt.is_none() {
+                    continue;
+                }
+                let ct = ct_opt.unwrap();
+                if conflict.theirs_path.is_none() {
+                    let fname = filename_from_path(&conflict.logical_path);
+                    if let Some(mod_id) = &conflict.mod_id {
+                        if !remove_by_mod_id(&mut new, mod_id) {
+                            remove_by_filename(&mut new, &fname, Some(ct));
+                        }
+                    } else {
+                        remove_by_filename(&mut new, &fname, Some(ct));
+                    }
+                    continue;
+                }
+
+                let lookup_fname = if let Some(ours) = &conflict.ours_path {
+                    filename_from_path(ours)
+                } else if let Some(base) = &conflict.base_path {
+                    filename_from_path(base)
+                } else {
+                    filename_from_path(&conflict.logical_path)
+                };
+
+                let exists = if let Some(mod_id) = &conflict.mod_id {
+                    manifest_contains_mod_id(&new, mod_id)
+                        || manifest_contains_filename(&new, &lookup_fname)
+                } else {
+                    manifest_contains_filename(&new, &lookup_fname)
+                };
+
+                if exists {
+                    let entry = find_entry_mut(
+                        &mut new,
+                        conflict.mod_id.as_deref(),
+                        &lookup_fname,
+                        Some(ct),
+                    )
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot find manifest entry for conflict TakeTheirs '{}'",
+                            conflict.key
+                        )
+                    })?;
+                    let new_filename = filename_from_path(theirs_path_str);
+                    let new_sha256 = hash_staged_file(staged_dir, theirs_path_str)?;
+                    entry.filename = new_filename;
+                    entry.sha256 = new_sha256;
+                    entry.enabled = !theirs_path_str.ends_with(DISABLED_SUFFIX);
+                    if entry.content_type != ct {
+                        entry.content_type = ct.to_string();
+                    }
+                } else {
+                    let new_filename = filename_from_path(theirs_path_str);
+                    let new_sha256 = hash_staged_file(staged_dir, theirs_path_str)?;
+                    let modrinth_id = theirs
+                        .mod_ids
+                        .get(theirs_path_str)
+                        .cloned()
+                        .or_else(|| conflict.mod_id.clone());
+                    let source_url = theirs.download_urls.get(theirs_path_str).cloned();
+                    let staged_path = safe_join(staged_dir, theirs_path_str)?;
+                    let jar = if ct == "mod" {
+                        if staged_path.is_file() {
+                            crate::jar_metadata::parse_jar_metadata_for_loader(
+                                &staged_path,
+                                &old.loader,
+                            )
+                        } else {
+                            crate::dependency_ops::JarDeps::default()
+                        }
+                    } else {
+                        crate::dependency_ops::JarDeps::default()
+                    };
+                    let mod_jar_id = jar.mod_jar_id.clone().or_else(|| modrinth_id.clone());
+                    let installed = crate::models::InstalledMod {
+                        filename: new_filename,
+                        registry_id: None,
+                        modrinth_id,
+                        source: "modrinth-pack".to_string(),
+                        source_url,
+                        version: None,
+                        sha256: new_sha256,
+                        installed_at: chrono::Utc::now().to_rfc3339(),
+                        java_packages: jar.java_packages,
+                        mod_jar_id,
+                        provided_mod_ids: jar
+                            .provided_mods
+                            .iter()
+                            .map(|pm| pm.mod_id.clone())
+                            .collect(),
+                        enabled: !theirs_path_str.ends_with(DISABLED_SUFFIX),
+                        content_type: ct.to_string(),
+                        update_pinned: false,
+                        pack_managed: true,
+                        installed_as_dependency: false,
+                        depends_on: jar.depends_on,
+                        optional_deps: jar.optional_deps,
+                        incompatible_deps: jar.incompatible_deps,
+                    };
+                    let arr: &mut Vec<crate::models::InstalledMod> = match ct {
+                        "resourcepack" => &mut new.resourcepacks,
+                        "shader" => &mut new.shaders,
+                        "datapack" => &mut new.datapacks,
+                        "world" => &mut new.worlds,
+                        _ => &mut new.mods,
+                    };
+                    if let Some(pos) = arr.iter().position(|e| e.filename == installed.filename) {
+                        arr.remove(pos);
+                    }
+                    arr.push(installed);
+                }
+            }
+        }
+    }
+
+    Ok(new)
+}
+
 /// Apply a merge plan against a fully staged THEIRS tree.
 ///
 /// `staged_dir` must already contain every file the plan references (jars and
@@ -650,6 +1248,7 @@ pub fn apply_merge(
     staged_dir: &Path,
     plan: &PackMergePlan,
     resolutions: &BTreeMap<String, ConflictResolution>,
+    reconciled_manifest: &crate::models::InstanceManifest,
 ) -> Result<MergeOutcome, String> {
     if !staged_dir.is_dir() {
         return Err(format!(
@@ -731,6 +1330,14 @@ pub fn apply_merge(
             }
             // KeepOurs: no change.
         }
+
+        // Reconciled manifest write is inside the protected region so the
+        // snapshot's `instance_manifest.json` coverage makes rollback free.
+        crate::helpers::atomic_write_manifest(
+            &instance_dir.join("instance_manifest.json"),
+            reconciled_manifest,
+        )
+        .map_err(|e| format!("failed to write reconciled manifest: {e:?}"))?;
 
         // New baseline = THEIRS, read back from the staged tree so the hashes
         // are of the bytes actually installed.
@@ -1359,7 +1966,39 @@ mod tests {
 
         let (conn, _dbtmp) = test_conn();
         seed_instance_row(&conn, "inst");
-        let outcome = apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new()).unwrap();
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let theirs_struct = MrpackTheirs {
+            files: theirs.clone(),
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+        let reconciled = reconcile_manifest(
+            &old_manifest,
+            &plan,
+            &BTreeMap::new(),
+            &theirs_struct,
+            &staged,
+        )
+        .unwrap();
+        let outcome = apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &reconciled,
+        )
+        .unwrap();
         assert!(!outcome.rollback_performed);
 
         // User-added mod still present.
@@ -1415,7 +2054,18 @@ mod tests {
         let before = crate::snapshot::live_file_index(&inst).unwrap();
         let (conn, _dbtmp) = test_conn();
         seed_instance_row(&conn, "inst");
-        let err = apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new()).unwrap_err();
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let err = apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &old_manifest,
+        )
+        .unwrap_err();
         assert!(err.contains("staged file missing"));
         assert_eq!(
             crate::snapshot::live_file_index(&inst).unwrap(),
@@ -1450,8 +2100,39 @@ mod tests {
         let staged = tmp.path().join("empty-stage");
         std::fs::create_dir_all(&staged).unwrap();
 
-        let error = apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new())
-            .expect_err("an empty stage is a staging failure, not a valid merge");
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let theirs_struct = MrpackTheirs {
+            files: base.clone(),
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+        let reconciled = reconcile_manifest(
+            &old_manifest,
+            &plan,
+            &BTreeMap::new(),
+            &theirs_struct,
+            &staged,
+        )
+        .unwrap();
+        let error = apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &reconciled,
+        )
+        .expect_err("an empty stage is a staging failure, not a valid merge");
         assert!(error.contains("empty"), "{error}");
         let after = crate::db::list_instance_pack_files(&conn, "inst").unwrap();
         assert_eq!(after, base, "the recorded baseline must survive");
@@ -1485,7 +2166,39 @@ mod tests {
         let (conn, _dbtmp) = test_conn();
         seed_instance_row(&conn, "inst");
         let before = crate::snapshot::live_metadata_fingerprint(&inst).unwrap();
-        apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new()).unwrap();
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let theirs_struct = MrpackTheirs {
+            files: theirs.clone(),
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+        let reconciled = reconcile_manifest(
+            &old_manifest,
+            &plan,
+            &BTreeMap::new(),
+            &theirs_struct,
+            &staged,
+        )
+        .unwrap();
+        apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &reconciled,
+        )
+        .unwrap();
         let after = crate::snapshot::live_metadata_fingerprint(&inst).unwrap();
         assert_ne!(
             before, after,
@@ -1520,8 +2233,39 @@ mod tests {
         // A connection with no `user_instances` row: the FK on
         // instance_pack_files rejects the baseline write.
         let (conn, _dbtmp) = test_conn();
-        let error = apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new())
-            .expect_err("a failed baseline write must fail the merge");
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let theirs_struct = MrpackTheirs {
+            files: theirs.clone(),
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+        let reconciled = reconcile_manifest(
+            &old_manifest,
+            &plan,
+            &BTreeMap::new(),
+            &theirs_struct,
+            &staged,
+        )
+        .unwrap();
+        let error = apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &reconciled,
+        )
+        .expect_err("a failed baseline write must fail the merge");
         assert!(error.contains("restored"), "{error}");
         assert_eq!(
             std::fs::read(inst.join("mods/a.jar")).unwrap(),
@@ -1561,7 +2305,39 @@ mod tests {
         PACK_UPDATE_TEST_FAILPOINT.with(|s| *s.borrow_mut() = Some("apply-one"));
         let (conn, _dbtmp) = test_conn();
         seed_instance_row(&conn, "inst");
-        let err = apply_merge(&conn, "inst", &inst, &staged, &plan, &BTreeMap::new()).unwrap_err();
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let theirs_struct = MrpackTheirs {
+            files: theirs.clone(),
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+        let reconciled = reconcile_manifest(
+            &old_manifest,
+            &plan,
+            &BTreeMap::new(),
+            &theirs_struct,
+            &staged,
+        )
+        .unwrap();
+        let err = apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &reconciled,
+        )
+        .unwrap_err();
         PACK_UPDATE_TEST_FAILPOINT.with(|s| *s.borrow_mut() = None);
 
         assert!(
@@ -1772,5 +2548,750 @@ mod tests {
         assert!(!preview.unverified.contains("mods/sodium-0.6.jar"));
         assert_eq!(preview.files_needing_download, 0);
         assert_eq!(preview.content_uncertain(), 0);
+    }
+
+    // ---- Reconcile ---------------------------------------------------------
+
+    #[test]
+    fn reconcile_keeps_user_added_mod_with_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir_all(staged.join("mods")).unwrap();
+        // New packmod content in staged
+        write(&staged, "mods/packmod.jar", b"new-pack-content");
+
+        let user_mod = crate::models::InstalledMod {
+            filename: "usermod.jar".into(),
+            registry_id: Some("my-reg".into()),
+            modrinth_id: Some("my-mr".into()),
+            source: "manual".into(),
+            source_url: Some("https://example.com/usermod.jar".into()),
+            version: Some("1.0.0".into()),
+            sha256: sha2_256_hex(b"old-user"),
+            installed_at: "2020-01-01T00:00:00Z".into(),
+            java_packages: vec!["com.example".into()],
+            mod_jar_id: Some("usermodid".into()),
+            provided_mod_ids: vec!["provided".into()],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: true,
+            pack_managed: false,
+            installed_as_dependency: false,
+            depends_on: vec!["dep".into()],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let pack_mod = crate::models::InstalledMod {
+            filename: "packmod.jar".into(),
+            registry_id: None,
+            modrinth_id: Some("pack-mr".into()),
+            source: "modrinth-pack".into(),
+            source_url: None,
+            version: None,
+            sha256: sha2_256_hex(b"old-pack"),
+            installed_at: "2021-06-01T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: Some("packmodid".into()),
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: true,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let old = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![user_mod.clone(), pack_mod.clone()],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+
+        // Plan: KeepUserAdded for usermod, Update for packmod
+        let plan = PackMergePlan {
+            actions: vec![
+                crate::pack_merge::PlanAction {
+                    key: "mods/usermod.jar".into(),
+                    logical_path: "mods/usermod.jar".into(),
+                    target_path: "mods/usermod.jar".into(),
+                    previous_path: None,
+                    kind: crate::pack_merge::PlanActionKind::KeepUserAdded,
+                    base_sha: None,
+                    ours_sha: Some(sha2_256_hex(b"old-user")),
+                    theirs_sha: None,
+                    enabled: true,
+                    mod_id: None,
+                },
+                crate::pack_merge::PlanAction {
+                    key: "mods/packmod.jar".into(),
+                    logical_path: "mods/packmod.jar".into(),
+                    target_path: "mods/packmod.jar".into(),
+                    previous_path: None,
+                    kind: crate::pack_merge::PlanActionKind::Update,
+                    base_sha: Some(sha2_256_hex(b"old-pack")),
+                    ours_sha: Some(sha2_256_hex(b"old-pack")),
+                    theirs_sha: Some(sha2_256_hex(b"new-pack-content")),
+                    enabled: true,
+                    mod_id: None,
+                },
+            ],
+            conflicts: vec![],
+            all_keys: vec!["mods/packmod.jar".into(), "mods/usermod.jar".into()],
+            baseline_missing: false,
+        };
+        let theirs = MrpackTheirs {
+            files: vec![],
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+
+        let reconciled =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        assert_eq!(reconciled.mods.len(), 2, "both entries should survive");
+        // User mod provenance intact
+        let kept = reconciled
+            .mods
+            .iter()
+            .find(|m| m.filename == "usermod.jar")
+            .expect("usermod preserved");
+        assert!(!kept.pack_managed);
+        assert_eq!(kept.source, "manual");
+        assert_eq!(kept.registry_id, Some("my-reg".into()));
+        assert_eq!(kept.modrinth_id, Some("my-mr".into()));
+        assert_eq!(kept.installed_at, "2020-01-01T00:00:00Z");
+        assert!(kept.update_pinned);
+        assert_eq!(kept.depends_on, vec!["dep"]);
+        assert_eq!(kept.java_packages, vec!["com.example"]);
+        assert_eq!(
+            kept.sha256,
+            sha2_256_hex(b"old-user"),
+            "user mod sha unchanged"
+        );
+        // Pack mod updated
+        let updated = reconciled
+            .mods
+            .iter()
+            .find(|m| m.filename == "packmod.jar")
+            .expect("packmod present");
+        assert_eq!(updated.sha256, sha2_256_hex(b"new-pack-content"));
+        assert!(updated.enabled);
+        assert!(updated.pack_managed, "pack_managed preserved");
+        assert_eq!(
+            updated.installed_at, "2021-06-01T00:00:00Z",
+            "installed_at preserved"
+        );
+    }
+
+    #[test]
+    fn reconcile_rename_updates_entry_not_recreate() {
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir_all(staged.join("mods")).unwrap();
+        write(&staged, "mods/newname.jar", b"new-bytes");
+
+        let old_entry = crate::models::InstalledMod {
+            filename: "oldname.jar".into(),
+            registry_id: None,
+            modrinth_id: Some("abc".into()),
+            source: "modrinth-pack".into(),
+            source_url: None,
+            version: Some("1.0".into()),
+            sha256: sha2_256_hex(b"old-bytes"),
+            installed_at: "2022-02-02T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: Some("testmod".into()),
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: true,
+            installed_as_dependency: false,
+            depends_on: vec!["dep-a".into()],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let old = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![old_entry.clone()],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+
+        let plan = PackMergePlan {
+            actions: vec![crate::pack_merge::PlanAction {
+                key: "mod:abc".into(),
+                logical_path: "mods/newname.jar".into(),
+                target_path: "mods/newname.jar".into(),
+                previous_path: Some("mods/oldname.jar".into()),
+                kind: crate::pack_merge::PlanActionKind::RenameUpdate,
+                base_sha: Some(sha2_256_hex(b"old-bytes")),
+                ours_sha: Some(sha2_256_hex(b"old-bytes")),
+                theirs_sha: Some(sha2_256_hex(b"new-bytes")),
+                enabled: true,
+                mod_id: Some("abc".into()),
+            }],
+            conflicts: vec![],
+            all_keys: vec!["mod:abc".into()],
+            baseline_missing: false,
+        };
+        let mut mod_ids = HashMap::new();
+        mod_ids.insert("mods/newname.jar".into(), "abc".into());
+        let theirs = MrpackTheirs {
+            files: vec![],
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids,
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+
+        let reconciled =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        assert_eq!(reconciled.mods.len(), 1, "rename should not duplicate");
+        let entry = &reconciled.mods[0];
+        assert_eq!(entry.filename, "newname.jar");
+        assert_eq!(entry.sha256, sha2_256_hex(b"new-bytes"));
+        assert_eq!(
+            entry.installed_at, "2022-02-02T00:00:00Z",
+            "provenance preserved, not recreated"
+        );
+        assert_eq!(entry.depends_on, vec!["dep-a"]);
+        assert!(entry.pack_managed);
+        assert_eq!(entry.version, Some("1.0".into()), "version preserved");
+    }
+
+    #[test]
+    fn reconcile_disabled_stays_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir_all(staged.join("mods")).unwrap();
+        write(&staged, "mods/disabled.jar", b"new-content");
+
+        let old_entry = crate::models::InstalledMod {
+            filename: "disabled.jar".into(),
+            registry_id: None,
+            modrinth_id: Some("dis".into()),
+            source: "modrinth-pack".into(),
+            source_url: None,
+            version: None,
+            sha256: sha2_256_hex(b"old-content"),
+            installed_at: "2023-03-03T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: Some("disid".into()),
+            provided_mod_ids: vec![],
+            enabled: false,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: true,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let old = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![old_entry],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+
+        let plan = PackMergePlan {
+            actions: vec![crate::pack_merge::PlanAction {
+                key: "mods/disabled.jar".into(),
+                logical_path: "mods/disabled.jar".into(),
+                target_path: "mods/disabled.jar.disabled".into(),
+                previous_path: None,
+                kind: crate::pack_merge::PlanActionKind::UpdateKeepDisabled,
+                base_sha: Some(sha2_256_hex(b"old-content")),
+                ours_sha: Some(sha2_256_hex(b"old-content")),
+                theirs_sha: Some(sha2_256_hex(b"new-content")),
+                enabled: false,
+                mod_id: None,
+            }],
+            conflicts: vec![],
+            all_keys: vec!["mods/disabled.jar".into()],
+            baseline_missing: false,
+        };
+        let theirs = MrpackTheirs {
+            files: vec![],
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+
+        let reconciled =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        let entry = reconciled
+            .mods
+            .iter()
+            .find(|m| m.filename == "disabled.jar")
+            .expect("disabled entry present");
+        assert!(!entry.enabled, "disabled pack mod stays disabled");
+        assert_eq!(entry.sha256, sha2_256_hex(b"new-content"));
+        assert!(entry.pack_managed);
+    }
+
+    fn bare_manifest(mods: Vec<crate::models::InstalledMod>) -> crate::models::InstanceManifest {
+        crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods,
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        }
+    }
+
+    fn empty_theirs() -> MrpackTheirs {
+        MrpackTheirs::default()
+    }
+
+    #[test]
+    fn reconcile_creates_an_entry_the_manifest_had_drifted_out_of() {
+        // A manifest missing an entry for a file the pack demonstrably manages
+        // is drift that predates this merge. Refusing would make a recoverable
+        // inconsistency permanently block every future pack update, so the
+        // update falls back to the add path and stamps the same provenance.
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        write(&staged, "mods/packmod.jar", b"new-bytes");
+
+        let old = bare_manifest(vec![]);
+        let plan = PackMergePlan {
+            actions: vec![crate::pack_merge::PlanAction {
+                key: "mods/packmod.jar".into(),
+                logical_path: "mods/packmod.jar".into(),
+                target_path: "mods/packmod.jar".into(),
+                previous_path: None,
+                kind: crate::pack_merge::PlanActionKind::Update,
+                base_sha: None,
+                ours_sha: None,
+                theirs_sha: None,
+                enabled: true,
+                mod_id: None,
+            }],
+            conflicts: vec![],
+            all_keys: vec!["mods/packmod.jar".into()],
+            baseline_missing: false,
+        };
+
+        let out =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &empty_theirs(), &staged).unwrap();
+        assert_eq!(out.mods.len(), 1, "the drifted file gets an entry");
+        assert_eq!(out.mods[0].filename, "packmod.jar");
+        assert!(out.mods[0].pack_managed, "the pack ships it, so it owns it");
+        assert!(
+            out.mods[0].version.is_none(),
+            "an mrpack index carries no per-file version; inventing one would be fabrication"
+        );
+    }
+
+    #[test]
+    fn reconcile_of_an_empty_plan_returns_the_manifest_unchanged() {
+        // The degenerate case: nothing to do must mean nothing changes, not a
+        // manifest rebuilt from whatever happens to be lying in the staged tree.
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        write(&staged, "mods/stray.jar", b"not in the plan");
+
+        let user_mod = crate::models::InstalledMod {
+            filename: "mine.jar".into(),
+            registry_id: None,
+            modrinth_id: None,
+            source: "manual".into(),
+            source_url: None,
+            version: Some("1.2.3".into()),
+            sha256: sha2_256_hex(b"mine"),
+            installed_at: "2020-01-01T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: None,
+            provided_mod_ids: vec![],
+            enabled: false,
+            content_type: "mod".into(),
+            update_pinned: true,
+            pack_managed: false,
+            installed_as_dependency: true,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let old = bare_manifest(vec![user_mod]);
+        let plan = PackMergePlan {
+            actions: vec![],
+            conflicts: vec![],
+            all_keys: vec![],
+            baseline_missing: false,
+        };
+
+        let out =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &empty_theirs(), &staged).unwrap();
+        assert_eq!(out.mods.len(), old.mods.len());
+        let (before, after) = (&old.mods[0], &out.mods[0]);
+        assert_eq!(after.filename, before.filename);
+        assert_eq!(after.version, before.version);
+        assert_eq!(after.installed_at, before.installed_at);
+        assert_eq!(after.enabled, before.enabled);
+        assert_eq!(after.update_pinned, before.update_pinned);
+        assert_eq!(after.pack_managed, before.pack_managed);
+        assert_eq!(
+            after.installed_as_dependency,
+            before.installed_as_dependency
+        );
+        assert_eq!(after.source, before.source);
+    }
+
+    #[test]
+    fn reconcile_remove_drops_entry() {
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir_all(&staged).unwrap();
+
+        let keep = crate::models::InstalledMod {
+            filename: "keep.jar".into(),
+            registry_id: None,
+            modrinth_id: None,
+            source: "manual".into(),
+            source_url: None,
+            version: None,
+            sha256: sha2_256_hex(b"keep"),
+            installed_at: "2020-01-01T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: None,
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let remove = crate::models::InstalledMod {
+            filename: "remove.jar".into(),
+            registry_id: None,
+            modrinth_id: Some("rem".into()),
+            source: "modrinth-pack".into(),
+            source_url: None,
+            version: None,
+            sha256: sha2_256_hex(b"remove-old"),
+            installed_at: "2020-01-01T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: None,
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: true,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let old = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![keep.clone(), remove.clone()],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+
+        let plan = PackMergePlan {
+            actions: vec![
+                crate::pack_merge::PlanAction {
+                    key: "mods/keep.jar".into(),
+                    logical_path: "mods/keep.jar".into(),
+                    target_path: "mods/keep.jar".into(),
+                    previous_path: None,
+                    kind: crate::pack_merge::PlanActionKind::Keep,
+                    base_sha: None,
+                    ours_sha: None,
+                    theirs_sha: None,
+                    enabled: true,
+                    mod_id: None,
+                },
+                crate::pack_merge::PlanAction {
+                    key: "mods/remove.jar".into(),
+                    logical_path: "mods/remove.jar".into(),
+                    target_path: "mods/remove.jar".into(),
+                    previous_path: None,
+                    kind: crate::pack_merge::PlanActionKind::Remove,
+                    base_sha: Some(sha2_256_hex(b"remove-old")),
+                    ours_sha: Some(sha2_256_hex(b"remove-old")),
+                    theirs_sha: None,
+                    enabled: true,
+                    mod_id: None,
+                },
+            ],
+            conflicts: vec![],
+            all_keys: vec!["mods/keep.jar".into(), "mods/remove.jar".into()],
+            baseline_missing: false,
+        };
+        let theirs = MrpackTheirs {
+            files: vec![],
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+
+        let reconciled =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        assert!(
+            reconciled.mods.iter().any(|m| m.filename == "keep.jar"),
+            "keep remains"
+        );
+        assert!(
+            !reconciled.mods.iter().any(|m| m.filename == "remove.jar"),
+            "Remove drops entry"
+        );
+        assert_eq!(reconciled.mods.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_config_paths_do_not_create_manifest_entries() {
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir_all(staged.join("config")).unwrap();
+        write(&staged, "config/foo.toml", b"new-config");
+
+        let old = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        let plan = PackMergePlan {
+            actions: vec![crate::pack_merge::PlanAction {
+                key: "config/foo.toml".into(),
+                logical_path: "config/foo.toml".into(),
+                target_path: "config/foo.toml".into(),
+                previous_path: None,
+                kind: crate::pack_merge::PlanActionKind::Update,
+                base_sha: Some(sha('a')),
+                ours_sha: Some(sha('a')),
+                theirs_sha: Some(sha('b')),
+                enabled: true,
+                mod_id: None,
+            }],
+            conflicts: vec![],
+            all_keys: vec!["config/foo.toml".into()],
+            baseline_missing: false,
+        };
+        let theirs = MrpackTheirs {
+            files: vec![],
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+        let reconciled =
+            reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        assert!(reconciled.mods.is_empty());
+        assert!(reconciled.resourcepacks.is_empty());
+        assert_eq!(reconciled.mods.len(), 0);
+    }
+
+    #[test]
+    fn reconcile_take_theirs_updates_and_keep_ours_preserves() {
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir_all(staged.join("mods")).unwrap();
+        write(&staged, "mods/conflict.jar", b"theirs-bytes");
+
+        let old_entry = crate::models::InstalledMod {
+            filename: "conflict.jar".into(),
+            registry_id: None,
+            modrinth_id: Some("conf".into()),
+            source: "modrinth-pack".into(),
+            source_url: None,
+            version: None,
+            sha256: sha2_256_hex(b"old-bytes"),
+            installed_at: "2024-01-01T00:00:00Z".into(),
+            java_packages: vec![],
+            mod_jar_id: Some("confid".into()),
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: true,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        let old = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![old_entry.clone()],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+
+        let conflict = crate::pack_merge::PlanConflict {
+            key: "mods/conflict.jar".into(),
+            logical_path: "mods/conflict.jar".into(),
+            kind: crate::pack_merge::ConflictKind::BothModified,
+            base_path: Some("mods/conflict.jar".into()),
+            ours_path: Some("mods/conflict.jar".into()),
+            theirs_path: Some("mods/conflict.jar".into()),
+            base_sha: Some(sha2_256_hex(b"old-bytes")),
+            ours_sha: Some(sha2_256_hex(b"ours-bytes")),
+            theirs_sha: Some(sha2_256_hex(b"theirs-bytes")),
+            message: "both modified".into(),
+            mod_id: None,
+        };
+        let plan = PackMergePlan {
+            actions: vec![],
+            conflicts: vec![conflict],
+            all_keys: vec!["mods/conflict.jar".into()],
+            baseline_missing: false,
+        };
+        let mod_ids: HashMap<String, String> = HashMap::new();
+        let download_urls: BTreeMap<String, String> = BTreeMap::new();
+        let theirs = MrpackTheirs {
+            files: vec![],
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: download_urls.clone(),
+            mod_ids: mod_ids.clone(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+        };
+
+        // KeepOurs preserves old sha and pack_managed
+        let mut keep_res = BTreeMap::new();
+        keep_res.insert("mods/conflict.jar".into(), ConflictResolution::KeepOurs);
+        let kept = reconcile_manifest(&old, &plan, &keep_res, &theirs, &staged).unwrap();
+        let kept_entry = kept
+            .mods
+            .iter()
+            .find(|m| m.filename == "conflict.jar")
+            .unwrap();
+        assert_eq!(kept_entry.sha256, sha2_256_hex(b"old-bytes"));
+        assert!(kept_entry.pack_managed, "KeepOurs preserves pack_managed");
+
+        // TakeTheirs updates to staged sha
+        let mut take_res = BTreeMap::new();
+        take_res.insert("mods/conflict.jar".into(), ConflictResolution::TakeTheirs);
+        let taken = reconcile_manifest(&old, &plan, &take_res, &theirs, &staged).unwrap();
+        let taken_entry = taken
+            .mods
+            .iter()
+            .find(|m| m.filename == "conflict.jar")
+            .unwrap();
+        assert_eq!(taken_entry.sha256, sha2_256_hex(b"theirs-bytes"));
+        assert!(taken_entry.enabled);
     }
 }
