@@ -644,6 +644,16 @@ impl LaunchService {
             extra_game_args: &request.extra_game_args,
         })?;
 
+        // Optional wrapper (`mangohud`, `gamescope …`) from the instance's own
+        // preferences. Applied here rather than inside `build_command` so the
+        // planner keeps producing the real command and the wrapper stays a
+        // separate, inspectable transform. A malformed wrapper string fails now,
+        // before the snapshot and before any process exists.
+        let prepared = match wrapper_command(&request.game_dir) {
+            Some(wrapper) => crate::launch_planner::apply_wrapper(prepared, &wrapper)?,
+            None => prepared,
+        };
+
         progress.phase("snapshot", "Creating the pre-launch snapshot");
         let snapshot_started = Instant::now();
         let snapshot_dir = request.game_dir.clone();
@@ -1058,6 +1068,24 @@ fn create_fresh_prelaunch_snapshot(instance_dir: &Path, scope: &[&str]) -> Launc
     // create_snapshot_scoped writes the scoped reuse receipt from the same
     // metadata traversal that created the snapshot.
     Ok(snapshot.id)
+}
+
+/// The instance's optional launch wrapper, from its manifest preferences.
+///
+/// Stored in `user_preferences.agora_wrapper_command` rather than a new column:
+/// it is per-instance user intent that should travel with an exported instance,
+/// and it needs no migration. An unreadable manifest simply means no wrapper —
+/// this must never be the thing that stops a launch.
+pub(crate) fn wrapper_command(game_dir: &std::path::Path) -> Option<String> {
+    let manifest = crate::helpers::read_manifest(&game_dir.join("instance_manifest.json")).ok()?;
+    let value = manifest
+        .user_preferences
+        .as_object()?
+        .get("agora_wrapper_command")?
+        .as_str()?
+        .trim()
+        .to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 #[cfg(test)]

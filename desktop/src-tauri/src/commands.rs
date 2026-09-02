@@ -3571,6 +3571,57 @@ pub async fn get_migration_report(
 }
 
 // ---------------------------------------------------------------------------
+// Launch wrapper command
+// ---------------------------------------------------------------------------
+
+/// Set (or clear, with an empty string) the command the game is launched under.
+///
+/// Stored in the manifest's `user_preferences` so it travels with an exported
+/// instance and needs no migration. Validated here by parsing it the same way
+/// the launcher will, so a malformed quote is rejected while the user is
+/// looking at the field rather than at a failed launch.
+#[tauri::command]
+pub async fn set_instance_wrapper_command(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    wrapper: String,
+) -> LauncherResult<()> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let trimmed = wrapper.trim().to_string();
+    if !trimmed.is_empty() {
+        agora_core::launch_planner::parse_argument_string(&trimmed)?;
+    }
+    let ctx = crate::core_context(&app)?;
+    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
+    let lock_manager = ctx.lock_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "wrapper-command",
+        )?;
+        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+        if !manifest.user_preferences.is_object() {
+            manifest.user_preferences = serde_json::json!({});
+        }
+        if let Some(preferences) = manifest.user_preferences.as_object_mut() {
+            if trimmed.is_empty() {
+                preferences.remove("agora_wrapper_command");
+            } else {
+                preferences.insert(
+                    "agora_wrapper_command".into(),
+                    serde_json::Value::String(trimmed),
+                );
+            }
+        }
+        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        Ok::<_, LauncherError>(())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+// ---------------------------------------------------------------------------
 // Desktop shortcuts
 // ---------------------------------------------------------------------------
 

@@ -159,6 +159,7 @@ pub fn run() {
             commands::scan_runtime_prune,
             commands::get_migration_report,
             commands::get_launch_history,
+            commands::set_instance_wrapper_command,
             commands::create_desktop_shortcut,
             commands::get_shared_screenshot_status,
             commands::link_shared_screenshots,

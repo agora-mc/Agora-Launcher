@@ -42,6 +42,7 @@ import {
   repairLockfile,
   importLockfile,
   updateInstanceJava,
+  setInstanceWrapperCommand,
   updateInstanceJvm,
   computeGcArgs,
   recommendInstanceMemory,
@@ -298,6 +299,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   // Java & Args state
   const [instanceJavaPath, setInstanceJavaPath] = useState('');
   const [instanceJavaArgs, setInstanceJavaArgs] = useState('');
+  const [wrapperCommand, setWrapperCommand] = useState('');
   const [instanceJvmMemory, setInstanceJvmMemory] = useState(4096);
   const [instanceMemoryMode, setInstanceMemoryMode] = useState<'auto' | 'manual'>('manual');
   const [memoryRecommendation, setMemoryRecommendation] = useState<MemoryRecommendation | null>(null);
@@ -373,6 +375,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }
           setInstanceJavaPath(result?.row?.java_path ?? '');
           setInstanceJavaArgs(result?.row?.jvm_custom_args ?? '');
+          setWrapperCommand(typeof result?.manifest?.user_preferences?.agora_wrapper_command === 'string'
+            ? (result.manifest.user_preferences.agora_wrapper_command as string)
+            : '');
           setInstanceJvmMemory(result?.row?.jvm_memory_mb ?? 4096);
           setInstanceMemoryMode(result?.row?.jvm_memory_mode ?? 'manual');
           setInstanceGcMode(storedGcMode(result?.row?.jvm_gc));
@@ -2852,6 +2857,23 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     placeholder="-Xss1M -Dsome.setting=true"
                     className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-mono resize-y"
                   />
+
+                  <label htmlFor="instance-wrapper" className="mt-4 block text-sm font-medium">
+                    Launch wrapper
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Runs the game through another program, such as <code>mangohud</code> or{' '}
+                    <code>gamescope -W 1920 -H 1080 --</code>. Leave empty for none.
+                  </p>
+                  <input
+                    id="instance-wrapper"
+                    type="text"
+                    value={wrapperCommand}
+                    disabled={recoveryBlocked}
+                    onChange={(e) => setWrapperCommand(e.target.value)}
+                    placeholder="mangohud"
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-mono"
+                  />
                 </div>
               )}
 
@@ -2907,6 +2929,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       instanceJavaArgs.trim(),
                       instanceMemoryMode,
                     );
+                    await setInstanceWrapperCommand(instanceId, wrapperCommand.trim());
                     setStatus('Java settings saved.');
                     // Refresh to update the displayed detail
                     const fresh = await getInstanceDetail(instanceId);

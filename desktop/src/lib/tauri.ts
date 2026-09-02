@@ -2819,3 +2819,9 @@ export const unlinkSharedScreenshots = (instanceId: string) =>
  *  already-running Agora to launch it. */
 export const createDesktopShortcut = (instanceId: string, displayName: string) =>
   invoke<string>('create_desktop_shortcut', { instanceId, displayName });
+
+/** Set (or clear, with an empty string) the command the game is launched under
+ *  — `mangohud`, `gamescope -W 1920 --`, and so on. Validated on the way in, so
+ *  a malformed quote is rejected here rather than at launch time. */
+export const setInstanceWrapperCommand = (instanceId: string, wrapper: string) =>
+  invoke<void>('set_instance_wrapper_command', { instanceId, wrapper });
