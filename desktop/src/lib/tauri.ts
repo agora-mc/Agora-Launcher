@@ -1035,6 +1035,28 @@ export const checkRegistryUpdate = (force?: boolean) =>
 export const getRegistryStatus = () => invoke<RegistryStatus>('get_registry_status');
 export const extractOverrides = (zipPath: string, instanceId: string) =>
   invoke<ExtractionResult>('extract_overrides', { zipPath, instanceId });
+
+export type ControlifyOfferDecision =
+  | 'offer'
+  | 'already_installed'
+  | 'unsupported_loader'
+  | 'declined'
+  | 'instance_locked';
+
+export interface ControlifyOffer {
+  instance_id: string;
+  decision: ControlifyOfferDecision;
+  modrinth_slug: string | null;
+  reason: string;
+}
+
+export const evaluateControlifyOffer = (instanceId: string) =>
+  invoke<ControlifyOffer>('evaluate_controlify_offer', { instanceId });
+export const declineControlifyOffer = (instanceId: string) =>
+  invoke<void>('decline_controlify_offer', { instanceId });
+export const resetControlifyOffer = (instanceId: string) =>
+  invoke<void>('reset_controlify_offer', { instanceId });
+
 export const getSetting = (key: string) =>
   invoke<unknown | null>('get_setting', { key });
 export const setSetting = (key: string, value: unknown) =>
