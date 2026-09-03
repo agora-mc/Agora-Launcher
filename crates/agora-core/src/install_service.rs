@@ -289,6 +289,11 @@ impl InstallService {
         }
         if changed {
             crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+            // The cached result was computed before this entry was pinned, so
+            // it still counts toward the instance card's update badge. Drop it
+            // and let the next check rebuild without the pinned entry. Failing
+            // to clear only leaves a stale badge, so it must not fail the pin.
+            let _ = crate::update_cache::delete_cached_instance_updates_ctx(&self.ctx, &sanitized);
         }
         Ok(changed)
     }

@@ -4745,34 +4745,20 @@ pub async fn apply_instance_template(
     _state: tauri::State<'_, LauncherState>,
     instance_id: String,
     template_id: String,
-) -> LauncherResult<usize> {
+) -> LauncherResult<agora_core::instance_service::TemplateApplyOutcome> {
     let root = templates_root(&app)?;
-    let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
-    // JVM settings first: they are a database write, so a later filesystem
-    // failure cannot leave the instance with half a template applied to disk
-    // and no record of why.
     let ctx = crate::core_context(&app)?;
-    let template =
-        agora_core::template_service::get_template(&root, &template_id).map_err(template_error)?;
-    agora_core::instance_service::InstanceService::new(ctx)
-        .apply_template_jvm(&sanitized, &template.jvm)?;
-
+    // Core owns the whole operation: the lock, the undo snapshot, the ordering
+    // of the file and database halves, and the rollback.
     tokio::task::spawn_blocking(move || {
-        let applied =
-            agora_core::template_service::apply_template_files(&root, &template_id, &instance_dir)?;
-        // Config changes are exactly the kind of drift the pre-launch snapshot
-        // reuse check must notice.
-        agora_core::snapshot::mark_instance_mutated(&instance_dir)?;
-        Ok::<_, String>(applied)
+        agora_core::instance_service::InstanceService::new(ctx).apply_template(
+            &instance_id,
+            &root,
+            &template_id,
+        )
     })
     .await
     .map_err(|e| template_error(format!("Template apply task failed: {e}")))?
-    .map_err(template_error)
 }
 
 #[tauri::command]

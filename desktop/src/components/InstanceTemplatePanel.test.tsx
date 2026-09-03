@@ -54,7 +54,12 @@ beforeEach(() => {
   ]);
   tauriMocks.listInstanceTemplates.mockResolvedValue([]);
   tauriMocks.createInstanceTemplate.mockResolvedValue(template('tpl-1', 'Saved', 1));
-  tauriMocks.applyInstanceTemplate.mockResolvedValue(2);
+  tauriMocks.applyInstanceTemplate.mockResolvedValue({
+    jvm_applied: false,
+    files_applied: 2,
+    files_missing: 0,
+    undo_snapshot_id: "snap-1",
+  });
 });
 
 describe('InstanceTemplatePanel', () => {
@@ -103,9 +108,41 @@ describe('InstanceTemplatePanel', () => {
     render(<InstanceTemplatePanel instanceId="alpha" onApplied={onApplied} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
     await waitFor(() => expect(
-      screen.getByText('Applied 2 files from "Perf".'),
+      screen.getByText(/Applied 2 files from "Perf"\./),
     ).toBeInTheDocument());
     expect(onApplied).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim a JVM-only template had nothing to apply', async () => {
+    // A file count of zero used to render as "has no config files to apply",
+    // which is what a successful named-Java-profile apply looked like.
+    tauriMocks.listInstanceTemplates.mockResolvedValue([template('tpl-jvm', 'Heap', 0)]);
+    tauriMocks.applyInstanceTemplate.mockResolvedValue({
+      jvm_applied: true,
+      files_applied: 0,
+      files_missing: 0,
+      undo_snapshot_id: null,
+    });
+    render(<InstanceTemplatePanel instanceId="alpha" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(
+      screen.getByText(/Applied Java settings from "Heap"\./),
+    ).toBeInTheDocument());
+  });
+
+  it('says so when a template lists files it no longer has', async () => {
+    tauriMocks.listInstanceTemplates.mockResolvedValue([template('tpl-bad', 'Broken', 3)]);
+    tauriMocks.applyInstanceTemplate.mockResolvedValue({
+      jvm_applied: false,
+      files_applied: 1,
+      files_missing: 2,
+      undo_snapshot_id: 'snap-2',
+    });
+    render(<InstanceTemplatePanel instanceId="alpha" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(
+      screen.getByText(/2 files were listed but missing from the template\./),
+    ).toBeInTheDocument());
   });
 
   it('surfaces a capture failure instead of silently doing nothing', async () => {

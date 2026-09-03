@@ -887,11 +887,16 @@ fn verify_zip_entries_hash<R: Read + std::io::Seek>(
 /// size checks are performed, then the zip's file set is checked for exact
 /// correspondence with the manifest, and every zip entry is hash-verified.
 /// Only after all checks pass does the function stage the files to a sibling
-/// directory on the same volume, repopulate the content-addressed object store
-/// and `SnapshotManifest`, and atomically promote the staged files into the
-/// live instance tree.  The caller may point `artifact_path` at any
+/// directory on the same volume and repopulate the content-addressed object
+/// store and `SnapshotManifest`.  The caller may point `artifact_path` at any
 /// user-chosen external directory (e.g. Dropbox), and `instance_dir` may not
 /// yet exist — it is created in that case.
+///
+/// **Importing does not change the live instance.** The artifact becomes a
+/// snapshot you can restore, and restoring is the separate, guarded step that
+/// refuses while the instance is running and takes an undo snapshot first.
+/// Returns the imported [`crate::snapshot::Snapshot`] so a caller can offer to
+/// restore it immediately.
 pub fn import_backup(
     instance_dir: &Path,
     artifact_path: &Path,
@@ -1108,115 +1113,21 @@ pub fn import_backup(
         crate::snapshot::atomic_write_pub(&dest_manifest_path, snapshot_manifest_json.as_bytes())?;
     }
 
-    // Phase 4: atomically promote the staged files into the live instance.
-    // Use the same marker-guarded, displacement-safe dance as
-    // `snapshot.rs:1293` restore, but simplified: we already validated the
-    // staged content, so the promotion is just moves of tracked roots.
-    let marker_path = instance_dir.join(crate::snapshot::RESTORE_MARKER);
-    let pre_dir = crate::snapshot::pre_restore_dir(instance_dir);
-    // Recover any interrupted prior restore before we start mutating.
-    // If this fails, the instance is in a half-restored state and import
-    // must not proceed.
-    if marker_path.exists() {
-        let _ = fs::remove_dir_all(&staging_dir);
-        return Err("previous restore was interrupted; resolve before importing".into());
-    }
-    if pre_dir.exists() {
-        fs::remove_dir_all(&pre_dir)
-            .map_err(|error| format!("failed to clear stale pre-restore: {error}"))?;
-    }
-
-    // Write the restore marker so a concurrent retention sweep sees it.
-    fs::write(&marker_path, b"import in progress")
-        .map_err(|error| format!("failed to write import marker: {error}"))?;
-
-    let promote_result: Result<(), String> = (|| {
-        // Stash current tracked entries into pre_dir.
-        fs::create_dir_all(&pre_dir)
-            .map_err(|error| format!("failed to create pre-restore dir: {error}"))?;
-        let mut moved_current = Vec::new();
-        for entry_name in crate::snapshot::TRACKED_ENTRIES {
-            let src = instance_dir.join(entry_name);
-            if src.exists() {
-                let dst = pre_dir.join(entry_name);
-                if let Some(parent) = dst.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|error| format!("failed to create pre-restore parent: {error}"))?;
-                }
-                fs::rename(&src, &dst)
-                    .map_err(|error| format!("failed to backup current {entry_name}: {error}"))?;
-                moved_current.push((*entry_name).to_string());
-            }
-        }
-
-        // Promote staged entries.  The staging dir contains only tracked
-        // files at their relative paths, so enumerate its top-level entries
-        // and move each one.
-        let staged_roots: HashSet<String> = manifest
-            .files
-            .iter()
-            .filter_map(|entry| entry.relative_path.split('/').next().map(str::to_string))
-            .collect();
-
-        let mut promoted: Vec<String> = Vec::new();
-        for entry_name in crate::snapshot::TRACKED_ENTRIES {
-            if !staged_roots.contains(*entry_name) {
-                continue;
-            }
-            let src = staging_dir.join(entry_name);
-            if !src.exists() {
-                continue;
-            }
-            let dst = instance_dir.join(entry_name);
-            // `src` may be a file (e.g. `options.txt`) or directory (e.g. `mods/`).
-            fs::rename(&src, &dst).map_err(|error| {
-                // Roll back on first promotion failure: displace any partially
-                // promoted entries, then restore the originals.
-                let rollback = rollback_import(
-                    instance_dir,
-                    &pre_dir,
-                    &promoted,
-                    &moved_current,
-                );
-                match rollback {
-                    Ok(()) => format!(
-                        "failed to promote imported {entry_name}: {error}; original state was restored"
-                    ),
-                    Err(rollback_error) => format!(
-                        "failed to promote imported {entry_name}: {error}; {rollback_error}"
-                    ),
-                }
-            })?;
-            promoted.push((*entry_name).to_string());
-        }
-        Ok(())
-    })();
-
-    if let Err(error) = promote_result {
-        let _ = fs::remove_dir_all(&staging_dir);
-        let _ = fs::remove_file(&marker_path);
-        // Attempt to roll back already-promoted entries is handled inside
-        // promote_result's closure; here we just surface the error.
-        return Err(error);
-    }
-
-    // Cleanup: remove marker, staging, and the now-empty pre-restore backup.
-    let _ = fs::remove_file(&marker_path);
+    // Import stops here, at the snapshot store. It deliberately does not
+    // promote anything into the live instance.
+    //
+    // It used to: it moved the current tracked roots aside, promoted the
+    // artifact over them, and then deleted what it had moved -- with no undo
+    // snapshot and no check for a running session, both of which
+    // `restore_snapshot` performs. Importing a file someone sent you would
+    // silently destroy the world you were playing. Restoring is a separate,
+    // guarded step, and it is the one that should be able to overwrite a live
+    // instance.
     let _ = fs::remove_dir_all(&staging_dir);
-    if pre_dir.exists() {
-        let _ = fs::remove_dir_all(&pre_dir);
-    }
 
-    // Record mutation so the next pre-launch snapshot is not incorrectly reused.
+    // Record mutation so the next pre-launch snapshot is not incorrectly
+    // reused: the snapshot store has changed even though the live tree has not.
     let _ = crate::snapshot::mark_instance_mutated(instance_dir);
-    // Ensure the imported snapshot's fingerprint receipt is fresh.
-    if let Ok(fingerprint) = crate::snapshot::live_metadata_fingerprint(instance_dir) {
-        let _ = crate::snapshot::write_snapshot_metadata_fingerprint(
-            instance_dir,
-            &snapshot_id,
-            &fingerprint,
-        );
-    }
 
     Ok(manifest.snapshot)
 }
@@ -1256,69 +1167,6 @@ fn build_snapshot_manifest_json(
     };
     serde_json::to_string_pretty(&manifest)
         .map_err(|error| format!("failed to serialize snapshot manifest: {error}"))
-}
-
-fn rollback_import(
-    instance_dir: &Path,
-    pre_dir: &Path,
-    promoted: &[String],
-    moved_current: &[String],
-) -> Result<(), String> {
-    // Displace any partially promoted staged entries to a failed-import dir
-    // so we can restore the originals without renaming over live destinations.
-    let failed_dir = instance_dir.join(format!(".agora_failed_import_{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&failed_dir)
-        .map_err(|error| format!("failed to create rollback displacement: {error}"))?;
-
-    let mut errors = Vec::new();
-    for entry_name in promoted.iter().rev() {
-        let live = instance_dir.join(entry_name);
-        if live.exists() {
-            let displaced = failed_dir.join(entry_name);
-            if let Some(parent) = displaced.parent() {
-                if let Err(error) = fs::create_dir_all(parent) {
-                    errors.push(format!(
-                        "could not prepare displacement for {entry_name}: {error}"
-                    ));
-                    continue;
-                }
-            }
-            if let Err(error) = fs::rename(&live, &displaced) {
-                errors.push(format!(
-                    "could not displace partial import {entry_name}: {error}"
-                ));
-            }
-        }
-    }
-    for entry_name in moved_current.iter().rev() {
-        let backup = pre_dir.join(entry_name);
-        let live = instance_dir.join(entry_name);
-        if !backup.exists() {
-            errors.push(format!("rollback backup is missing for {entry_name}"));
-            continue;
-        }
-        if live.exists() {
-            errors.push(format!(
-                "rollback destination still exists for {entry_name}"
-            ));
-            continue;
-        }
-        if let Err(error) = fs::rename(&backup, &live) {
-            errors.push(format!("could not restore original {entry_name}: {error}"));
-        }
-    }
-    if errors.is_empty() {
-        let _ = fs::remove_dir_all(&failed_dir);
-        let _ = fs::remove_file(instance_dir.join(crate::snapshot::RESTORE_MARKER));
-        Ok(())
-    } else {
-        Err(format!(
-            "rollback incomplete; original data remains in {} and partial data in {}: {}",
-            pre_dir.display(),
-            failed_dir.display(),
-            errors.join("; ")
-        ))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1557,7 +1405,16 @@ mod tests {
         // Import onto a path that does not yet exist.
         let imported = import_backup(&fresh_instance, &artifact).unwrap();
         assert_eq!(imported.id, snapshot.id);
-        // Live files must match the original snapshot content.
+        // Import populates the snapshot store and leaves the live tree alone.
+        assert!(
+            !fresh_instance.join("mods").join("mod-a.jar").exists(),
+            "import must not write into the live instance; restore does that"
+        );
+        // The imported snapshot must be listable via the normal snapshot API.
+        let listed = list_snapshots(&fresh_instance).unwrap();
+        assert!(listed.iter().any(|entry| entry.id == snapshot.id));
+        // And restoring it is what materialises the files.
+        crate::snapshot::restore_snapshot(&fresh_instance, &snapshot.id).unwrap();
         assert_eq!(
             std::fs::read(fresh_instance.join("mods").join("mod-a.jar")).unwrap(),
             b"mod a v1"
@@ -1566,15 +1423,41 @@ mod tests {
             std::fs::read(fresh_instance.join("config").join("settings.toml")).unwrap(),
             b"key=value"
         );
-        // The imported snapshot must be listable via the normal snapshot API.
-        let listed = list_snapshots(&fresh_instance).unwrap();
-        assert!(listed.iter().any(|entry| entry.id == snapshot.id));
-        // And restorable: modify then restore.
-        std::fs::write(fresh_instance.join("mods").join("mod-a.jar"), b"tampered").unwrap();
-        crate::snapshot::restore_snapshot(&fresh_instance, &snapshot.id).unwrap();
+    }
+
+    #[test]
+    fn import_never_touches_the_live_instance() {
+        // The regression this guards: import used to promote the artifact over
+        // the live tree and delete what it displaced, with no undo snapshot,
+        // so importing a file from another machine destroyed the world you
+        // were playing.
+        let tmp = TempDir::new().unwrap();
+        let instance = tmp.path().join("instance");
+        std::fs::create_dir_all(instance.join("mods")).unwrap();
+        std::fs::write(instance.join("mods").join("mod-a.jar"), b"mod a v1").unwrap();
+        let snapshot = crate::snapshot::create_snapshot(&instance, Some("exportable")).unwrap();
+        let export_dir = tmp.path().join("export");
+        std::fs::create_dir_all(&export_dir).unwrap();
+        let artifact = export_snapshot(&instance, &snapshot.id, &export_dir).unwrap();
+
+        // Now diverge the live tree, and add a file the artifact knows nothing
+        // about. Both must survive the import untouched.
+        std::fs::write(instance.join("mods").join("mod-a.jar"), b"my current work").unwrap();
+        std::fs::write(instance.join("mods").join("mod-b.jar"), b"added later").unwrap();
+
+        import_backup(&instance, &artifact).unwrap();
+
         assert_eq!(
-            std::fs::read(fresh_instance.join("mods").join("mod-a.jar")).unwrap(),
-            b"mod a v1"
+            std::fs::read(instance.join("mods").join("mod-a.jar")).unwrap(),
+            b"my current work"
+        );
+        assert_eq!(
+            std::fs::read(instance.join("mods").join("mod-b.jar")).unwrap(),
+            b"added later"
+        );
+        assert!(
+            !crate::snapshot::pre_restore_dir(&instance).exists(),
+            "nothing should have been displaced"
         );
     }
 
@@ -1813,7 +1696,8 @@ mod tests {
 
         let fresh = TempDir::new().unwrap();
         let fresh_instance = fresh.path().join("fresh-with-saves");
-        import_backup(&fresh_instance, &artifact).unwrap();
+        let imported = import_backup(&fresh_instance, &artifact).unwrap();
+        crate::snapshot::restore_snapshot(&fresh_instance, &imported.id).unwrap();
         assert_eq!(
             std::fs::read(fresh_instance.join("saves").join("world").join("level.dat")).unwrap(),
             b"world data"
@@ -1826,7 +1710,8 @@ mod tests {
         let pre_artifact = export_snapshot(&instance, &pre_snapshot.id, &export_dir).unwrap();
         let fresh2 = TempDir::new().unwrap();
         let fresh_instance2 = fresh2.path().join("fresh-prelaunch");
-        import_backup(&fresh_instance2, &pre_artifact).unwrap();
+        let imported2 = import_backup(&fresh_instance2, &pre_artifact).unwrap();
+        crate::snapshot::restore_snapshot(&fresh_instance2, &imported2.id).unwrap();
         assert!(
             !fresh_instance2.join("saves").exists(),
             "prelaunch snapshot should not contain saves"

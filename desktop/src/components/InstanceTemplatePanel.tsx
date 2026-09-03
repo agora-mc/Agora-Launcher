@@ -128,11 +128,24 @@ export function InstanceTemplatePanel({
     setError(null);
     setStatus(null);
     try {
-      const applied = await applyInstanceTemplate(instanceId, template.id);
+      const outcome = await applyInstanceTemplate(instanceId, template.id);
+      // A file count of zero has three different meanings, so report what
+      // actually happened rather than inferring from the number alone.
+      const parts: string[] = [];
+      if (outcome.files_applied > 0) {
+        parts.push(`${outcome.files_applied} file${outcome.files_applied === 1 ? '' : 's'}`);
+      }
+      if (outcome.jvm_applied) parts.push('Java settings');
+      const damaged = outcome.files_missing > 0
+        ? ` ${outcome.files_missing} file${outcome.files_missing === 1 ? ' was' : 's were'} listed but missing from the template.`
+        : '';
+      const undo = outcome.undo_snapshot_id
+        ? ' The previous state is saved as a snapshot you can restore.'
+        : '';
       setStatus(
-        applied === 0
-          ? `"${template.name}" has no config files to apply.`
-          : `Applied ${applied} file${applied === 1 ? '' : 's'} from "${template.name}".`,
+        parts.length === 0
+          ? `"${template.name}" had nothing to apply.${damaged}`
+          : `Applied ${parts.join(' and ')} from "${template.name}".${damaged}${undo}`,
       );
       onApplied?.();
     } catch (e) {

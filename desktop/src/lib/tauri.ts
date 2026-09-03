@@ -2482,8 +2482,17 @@ export const updateInstanceTemplate = (args: {
 export const deleteInstanceTemplate = (templateId: string) =>
   invoke<void>('delete_instance_template', { templateId });
 
+export interface TemplateApplyOutcome {
+  jvm_applied: boolean;
+  files_applied: number;
+  /** Files the template lists but no longer has on disk. */
+  files_missing: number;
+  /** Undo point taken before any file was written. */
+  undo_snapshot_id: string | null;
+}
+
 export const applyInstanceTemplate = (instanceId: string, templateId: string) =>
-  invoke<number>('apply_instance_template', { instanceId, templateId });
+  invoke<TemplateApplyOutcome>('apply_instance_template', { instanceId, templateId });
 
 export const listLoadoutProfiles = (instanceId: string) =>
   invoke<LoadoutProfile[]>('list_loadout_profiles', { instanceId });

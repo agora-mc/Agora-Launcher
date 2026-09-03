@@ -62,6 +62,24 @@ pub struct InstanceDetail {
     pub snapshot_error: Option<String>,
 }
 
+/// What applying a template to an existing instance actually did.
+///
+/// Structured rather than a file count, because a count of zero has three
+/// different meanings — a JVM-only profile that applied cleanly, a template
+/// with nothing in it, and a damaged template whose files are missing — and a
+/// UI reading only the number told the user "no config files to apply" after a
+/// successful apply.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TemplateApplyOutcome {
+    pub jvm_applied: bool,
+    pub files_applied: usize,
+    /// Files the template lists but no longer has on disk.
+    pub files_missing: usize,
+    /// The undo point taken before any file was written, when there were files
+    /// to write.
+    pub undo_snapshot_id: Option<String>,
+}
+
 /// Core-owned preparation result for an official-launcher handoff.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DelegatedLaunchPreparation {
@@ -242,6 +260,103 @@ impl InstanceService {
             )?;
         }
         Ok(true)
+    }
+
+    /// Apply a whole template — JVM settings *and* captured files — to an
+    /// existing instance, as one undoable operation.
+    ///
+    /// The two halves used to run unguarded and in the wrong order: JVM
+    /// settings were committed first, then files were copied over the instance
+    /// with no lock, no snapshot and no rollback, so a failure partway left
+    /// settings changed and configs half-replaced with nothing to undo.
+    ///
+    /// Here the files go first under an undo snapshot; the database write only
+    /// happens once they have all landed, and any failure restores the
+    /// snapshot so the instance is exactly as it was.
+    pub fn apply_template(
+        &self,
+        instance_id: &str,
+        templates_root: &std::path::Path,
+        template_id: &str,
+    ) -> LauncherResult<TemplateApplyOutcome> {
+        let instance_id = self.validate_id(instance_id)?;
+        let template = crate::template_service::get_template(templates_root, template_id).map_err(
+            |message| LauncherError::Generic {
+                code: "ERR_TEMPLATE".into(),
+                message,
+            },
+        )?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+
+        let _lock = self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(instance_id.clone()),
+            "apply_template",
+        )?;
+
+        // Nothing to do is not a failure, and must not cost a snapshot.
+        if template.jvm.is_empty() && template.files.is_empty() {
+            return Ok(TemplateApplyOutcome {
+                jvm_applied: false,
+                files_applied: 0,
+                files_missing: 0,
+                undo_snapshot_id: None,
+            });
+        }
+
+        let template_error = |message: String| LauncherError::Generic {
+            code: "ERR_TEMPLATE".into(),
+            message,
+        };
+
+        // Only the file half can leave the instance visibly half-changed, so
+        // that is what the snapshot has to cover.
+        let undo_snapshot_id = if template.files.is_empty() {
+            None
+        } else {
+            Some(
+                crate::snapshot::create_snapshot(&instance_dir, Some("pre-template"))
+                    .map_err(template_error)?
+                    .id,
+            )
+        };
+
+        let files_applied = match crate::template_service::apply_template_files(
+            templates_root,
+            template_id,
+            &instance_dir,
+        ) {
+            Ok(applied) => applied,
+            Err(message) => {
+                if let Some(snapshot_id) = undo_snapshot_id.as_deref() {
+                    let _ = crate::snapshot::restore_snapshot(&instance_dir, snapshot_id);
+                }
+                return Err(template_error(message));
+            }
+        };
+
+        let jvm_applied = match self.apply_template_jvm(&instance_id, &template.jvm) {
+            Ok(applied) => applied,
+            Err(error) => {
+                if let Some(snapshot_id) = undo_snapshot_id.as_deref() {
+                    let _ = crate::snapshot::restore_snapshot(&instance_dir, snapshot_id);
+                }
+                return Err(error);
+            }
+        };
+
+        // Config changes are exactly the kind of drift the pre-launch snapshot
+        // reuse check must notice.
+        let _ = crate::snapshot::mark_instance_mutated(&instance_dir);
+
+        Ok(TemplateApplyOutcome {
+            jvm_applied,
+            files_applied,
+            // A file recorded in the template but absent on disk is skipped by
+            // `apply_template_files`. Counting the difference is what lets the
+            // UI say the template is damaged instead of quietly under-applying.
+            files_missing: template.files.len().saturating_sub(files_applied),
+            undo_snapshot_id,
+        })
     }
 
     pub fn update_jvm(

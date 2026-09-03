@@ -340,6 +340,26 @@ fn is_network_available_for_updates(conn: &Connection) -> bool {
     modrinth || github
 }
 
+/// A cheap witness for "has this instance changed since I looked".
+///
+/// Hashes the manifest bytes rather than trusting mtime, whose resolution can
+/// be coarser than the window this is guarding. `None` on any read failure.
+fn instance_manifest_fingerprint(ctx: &Ctx, instance_id: &str) -> Option<String> {
+    let path = ctx.paths.instance_manifest(instance_id).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(crate::download::sha256_hex(&bytes))
+}
+
+/// Whether a sweep result computed against `before` is still safe to persist.
+///
+/// Requires a positive match: two failed reads compare equal but tell us
+/// nothing, and "I could not check" must not authorize overwriting a cache an
+/// install may have just cleared. Losing one background refresh is the cheap
+/// direction — the next sweep re-runs in minutes.
+fn sweep_result_still_current(before: &Option<String>, after: &Option<String>) -> bool {
+    matches!((before, after), (Some(a), Some(b)) if a == b)
+}
+
 /// Core-owned bounded background sweep that refreshes update caches for all
 /// instances.
 ///
@@ -437,9 +457,36 @@ pub async fn sweep_all_updates(ctx: Ctx) -> Result<SweepSummary, String> {
         // concurrent launch/install never waits behind the sweep.
         drop(lock);
 
+        // The check below does network work with no lock held, so an install
+        // can finish and clear the cache while it is in flight. Writing the
+        // result unconditionally would then resurrect a pre-install answer.
+        // Remember what the instance looked like going in; the manifest is the
+        // right witness because every operation that invalidates an update
+        // result -- install, remove, pin, enable/disable -- rewrites it.
+        let manifest_before = instance_manifest_fingerprint(&ctx, &row.instance_id);
+
         // Perform the check. Errors are per-instance, not sweep-wide.
         match check_single_instance_updates(&ctx, &row.instance_id).await {
             Ok(updates) => {
+                // Re-take the lock to write, so the comparison and the write
+                // cannot be split by the very operation being guarded against.
+                let write_lock = ctx.lock_manager.acquire_with_timeout(
+                    crate::lock_manager::LockResource::Instance(row.instance_id.clone()),
+                    "update-sweep-commit",
+                    Duration::from_millis(250),
+                    None,
+                );
+                if write_lock.is_err() {
+                    // Something is operating on this instance right now; its
+                    // own refresh will be newer than ours.
+                    summary.skipped += 1;
+                    continue;
+                }
+                let manifest_after = instance_manifest_fingerprint(&ctx, &row.instance_id);
+                if !sweep_result_still_current(&manifest_before, &manifest_after) {
+                    summary.skipped += 1;
+                    continue;
+                }
                 // Persist regardless of empty (empty means no updates, still valid).
                 if let Ok(conn) = db::local_state_connection(&ctx.paths.local_state_db()) {
                     let _ = set_cached_instance_updates(&conn, &row.instance_id, &updates);
@@ -740,6 +787,14 @@ pub async fn check_single_instance_updates_with(
         .chain(manifest.datapacks.iter())
         .chain(manifest.worlds.iter())
     {
+        // A pinned entry is excluded at the source rather than filtered by
+        // whichever view happens to remember to. The instance card counts the
+        // cached rows directly, so a pinned entry left in the cache became a
+        // badge promising updates the editor then refused to show. It also
+        // saves a network round trip per pinned item.
+        if installed.update_pinned {
+            continue;
+        }
         if let Some(project_id) = installed
             .modrinth_id
             .as_deref()
@@ -1236,6 +1291,18 @@ mod tests {
         ];
         let picked = pick_curated_candidate(&candidates).expect("candidate");
         assert_eq!(picked.version, "0.6.0");
+    }
+
+    #[test]
+    fn sweep_result_is_discarded_when_the_instance_changed_or_could_not_be_read() {
+        let a = Some("aaa".to_string());
+        let b = Some("bbb".to_string());
+        assert!(sweep_result_still_current(&a, &a.clone()));
+        assert!(!sweep_result_still_current(&a, &b), "an install landed");
+        assert!(!sweep_result_still_current(&a, &None), "manifest vanished");
+        // Two failed reads compare equal but prove nothing; refusing to write
+        // is what stops a pre-install result being resurrected.
+        assert!(!sweep_result_still_current(&None, &None));
     }
 
     #[test]

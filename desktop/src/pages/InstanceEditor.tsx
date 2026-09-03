@@ -641,16 +641,34 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   /** Read a backup artifact back in. Core validates it before it touches
-   *  anything, so a file from another machine is safe to point at. */
+   *  anything, so a file from another machine is safe to point at.
+   *
+   *  Importing only adds a snapshot; it never overwrites what is in the
+   *  instance right now. Restoring is the step that does, and it is offered
+   *  here as an explicit second choice so it goes through the guarded restore
+   *  path (which refuses while the instance is running and takes an undo
+   *  snapshot first). */
   const handleImportBackup = async () => {
     setError(null);
     const artifact = await pickOpenFile('Choose a backup file', ['zip']);
     if (!artifact) return;
     setBackupBusy(true);
     try {
-      await importBackup(instanceId, artifact);
+      const imported = await importBackup(instanceId, artifact);
       setSnapshots(await listSnapshots(instanceId));
-      setStatus('Backup imported as a restorable snapshot.');
+      const label = imported.label ? `"${imported.label}"` : imported.id;
+      if (confirm(
+        `Backup imported as a restorable snapshot.\n\n`
+        + `Restore ${label} into this instance now? This replaces the instance's `
+        + `current files. An undo snapshot is taken first, and you can also do `
+        + `this later from the snapshot list.`,
+      )) {
+        await restoreSnapshot(instanceId, imported.id);
+        setSnapshots(await listSnapshots(instanceId));
+        setStatus(`Backup imported and restored. The previous state is saved as an undo snapshot.`);
+      } else {
+        setStatus('Backup imported as a restorable snapshot. Nothing in the instance changed.');
+      }
     } catch (e) {
       setError(formatError(e));
     } finally {

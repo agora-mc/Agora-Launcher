@@ -1003,6 +1003,32 @@ pub fn reconcile_manifest(
 ) -> Result<crate::models::InstanceManifest, String> {
     let mut new = old.clone();
 
+    // ---- Pack provenance ----
+    //
+    // The instance now holds a different release of the pack, so the origin has
+    // to say so. Leaving the old `version_id` behind means "is there a newer
+    // version?" keeps comparing against the release the user already applied,
+    // and an export stamps the wrong version into the artifact.
+    //
+    // Only what the new pack actually told us is overwritten. `project_id`,
+    // `origin_url` and `platform` describe the pack itself rather than this
+    // release and are carried forward; a blank name from a malformed index is
+    // not an improvement on the name we already had.
+    if let Some(origin) = new.pack_origin.as_mut() {
+        if !theirs.pack_name.trim().is_empty() {
+            origin.pack_name = theirs.pack_name.trim().to_string();
+        }
+        if theirs.pack_version_id.is_some() {
+            origin.version_id = theirs.pack_version_id.clone();
+        }
+        // `pack_content_hash` is deliberately *not* set here. It must hash the
+        // baseline actually recorded, which is collected from the staged tree
+        // at apply time; `theirs.files` holds provisional placeholder hashes
+        // for jars that were never fetched. Cleared so a stale hash from the
+        // previous release cannot survive as if it described this one.
+        origin.pack_content_hash = None;
+    }
+
     // ---- Non-conflicting actions ----
     for action in &plan.actions {
         let ct_opt = content_type_for_logical(&action.logical_path);
@@ -1333,17 +1359,26 @@ pub fn apply_merge(
             // KeepOurs: no change.
         }
 
+        // New baseline = THEIRS, read back from the staged tree so the hashes
+        // are of the bytes actually installed. Collected before the manifest
+        // write because the manifest's `pack_content_hash` has to be a hash of
+        // *this* list -- `theirs.files` carries provisional placeholder hashes
+        // for jars that were never fetched, and stamping those would make the
+        // manifest disagree with the baseline it is supposed to summarize.
+        let baseline = crate::pack_inventory::collect_pack_inventory(staged_dir)?;
+
         // Reconciled manifest write is inside the protected region so the
         // snapshot's `instance_manifest.json` coverage makes rollback free.
+        let mut manifest_to_write = reconciled_manifest.clone();
+        if let Some(origin) = manifest_to_write.pack_origin.as_mut() {
+            origin.pack_content_hash = Some(crate::pack_inventory::pack_content_hash(&baseline));
+        }
         crate::helpers::atomic_write_manifest(
             &instance_dir.join("instance_manifest.json"),
-            reconciled_manifest,
+            &manifest_to_write,
         )
         .map_err(|e| format!("failed to write reconciled manifest: {e:?}"))?;
 
-        // New baseline = THEIRS, read back from the staged tree so the hashes
-        // are of the bytes actually installed.
-        let baseline = crate::pack_inventory::collect_pack_inventory(staged_dir)?;
         replace_instance_pack_files(conn, instance_id, &baseline)
             .map_err(|e| format!("failed to record the new pack baseline: {e}"))?;
 
@@ -3085,6 +3120,27 @@ mod tests {
         MrpackTheirs::default()
     }
 
+    /// A PackOrigin with every field populated, for provenance tests.
+    fn origin_fixture() -> crate::models::PackOrigin {
+        crate::models::PackOrigin {
+            platform: crate::models::PackPlatform::Modrinth,
+            pack_name: "Old Name".into(),
+            project_id: Some("proj-1".into()),
+            version_id: Some("old-version".into()),
+            version_number: Some("1.0.0".into()),
+            origin_url: Some("https://example.invalid/pack.mrpack".into()),
+            pack_content_hash: Some("stale-hash".into()),
+            pack_minecraft_version: Some("1.21".into()),
+            pack_loader: Some("fabric".into()),
+            pack_loader_version: Some("0.16.0".into()),
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
     #[test]
     fn update_pack_refuses_before_touching_anything_when_a_conflict_is_unanswered() {
         // Applying with an unresolved conflict would mean Agora silently
@@ -3230,6 +3286,74 @@ mod tests {
             before.installed_as_dependency
         );
         assert_eq!(after.source, before.source);
+    }
+
+    #[test]
+    fn reconcile_moves_pack_provenance_to_the_new_release() {
+        // Leaving the old version_id behind means "is there a newer version?"
+        // keeps comparing against the release the user already applied, and an
+        // export stamps the wrong version into the artifact.
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        write(&staged, "mods/a.jar", b"whatever");
+
+        let mut old = bare_manifest(vec![]);
+        old.pack_origin = Some(origin_fixture());
+
+        let mut theirs = empty_theirs();
+        theirs.pack_name = "New Name".into();
+        theirs.pack_version_id = Some("new-version".into());
+
+        let plan = PackMergePlan {
+            actions: vec![],
+            conflicts: vec![],
+            all_keys: vec![],
+            baseline_missing: false,
+        };
+        let out = reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        let origin = out.pack_origin.expect("origin survives");
+
+        assert_eq!(origin.version_id.as_deref(), Some("new-version"));
+        assert_eq!(origin.pack_name, "New Name");
+        // Identity of the pack itself is not a property of the release.
+        assert_eq!(origin.project_id.as_deref(), Some("proj-1"));
+        assert_eq!(
+            origin.origin_url.as_deref(),
+            Some("https://example.invalid/pack.mrpack")
+        );
+        // The stale hash must not survive as if it described the new release;
+        // the real one is stamped at apply time from the recorded baseline.
+        assert_eq!(origin.pack_content_hash, None);
+    }
+
+    #[test]
+    fn reconcile_keeps_the_old_pack_name_when_the_new_index_has_none() {
+        // A blank name from a malformed index is not an improvement on the one
+        // we already had.
+        let tmp = TempDir::new().unwrap();
+        let staged = tmp.path().join("staged");
+        write(&staged, "mods/a.jar", b"whatever");
+
+        let mut old = bare_manifest(vec![]);
+        old.pack_origin = Some(crate::models::PackOrigin {
+            pack_name: "Good Name".into(),
+            ..origin_fixture()
+        });
+
+        let mut theirs = empty_theirs();
+        theirs.pack_name = "   ".into();
+        theirs.pack_version_id = None;
+
+        let plan = PackMergePlan {
+            actions: vec![],
+            conflicts: vec![],
+            all_keys: vec![],
+            baseline_missing: false,
+        };
+        let out = reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
+        let origin = out.pack_origin.expect("origin survives");
+        assert_eq!(origin.pack_name, "Good Name");
+        assert_eq!(origin.version_id.as_deref(), Some("old-version"));
     }
 
     #[test]
