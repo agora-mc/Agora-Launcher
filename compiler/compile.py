@@ -89,6 +89,18 @@ def normalize_pack_identity(item: dict[str, Any]) -> dict[str, Any]:
 _REGEX_TEST_CORPUS = "a" * 100000
 
 
+#: Head-room for spawning a Python interpreter on Windows before the outer
+#: subprocess timeout fires.
+#:
+#: The real budget is enforced inside the child, so this only has to be larger
+#: than interpreter startup on a busy machine (tens of milliseconds cold,
+#: seconds under heavy load). It also bounds how long a genuinely catastrophic
+#: pattern takes to reject, since such a search never returns to check its own
+#: budget -- `re` holds the GIL while matching, so there is no way to interrupt
+#: it from inside the child.
+_WINDOWS_INTERPRETER_STARTUP_GRACE_SECS = 10.0
+
+
 def _test_regex_timeout(pattern: re.Pattern[str], timeout_secs: float = 1.0) -> bool:
     """Return True if the pattern matches the test corpus within *timeout_secs*.
 
@@ -112,15 +124,30 @@ def _test_regex_timeout(pattern: re.Pattern[str], timeout_secs: float = 1.0) -> 
     else:
         # Windows: no signal.alarm ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â use subprocess with timeout.
         # Embed the corpus in the code string to avoid CLI length limits.
+        #
+        # The child times the *search* itself and reports the verdict through
+        # its exit code. Timing the whole subprocess instead charged the regex
+        # for Python's interpreter startup, which on Windows is a few hundred
+        # milliseconds cold and far more on a loaded machine -- so a perfectly
+        # linear pattern was rejected as catastrophic backtracking whenever the
+        # build host happened to be busy. The Unix branch above has always
+        # measured only the search; this makes Windows agree.
+        #
+        # The outer timeout stays as a backstop for a search that genuinely
+        # never returns, and is generous because it now covers startup *plus*
+        # the budget rather than standing in for the budget.
         code = (
-            "import re, sys; "
+            "import re, sys, time; "
             "p = re.compile(sys.argv[1]); "
-            "p.search('a' * 100000)"
+            "budget = float(sys.argv[2]); "
+            "start = time.perf_counter(); "
+            "p.search('a' * 100000); "
+            "sys.exit(1 if time.perf_counter() - start > budget else 0)"
         )
         try:
             subprocess.run(
-                [sys.executable, "-c", code, pattern.pattern],
-                timeout=timeout_secs,
+                [sys.executable, "-c", code, pattern.pattern, str(timeout_secs)],
+                timeout=timeout_secs + _WINDOWS_INTERPRETER_STARTUP_GRACE_SECS,
                 check=True,
             )
             return True

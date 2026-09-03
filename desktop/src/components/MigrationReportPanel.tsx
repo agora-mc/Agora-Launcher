@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   formatError,
   getMigrationReport,
+  listManifestMcVersions,
   planVersionMigration,
   runVersionMigration,
   type MigrationPlan,
@@ -46,9 +47,13 @@ const VERDICT_TEXT: Record<MigrationReport['verdict'], string> = {
 export function MigrationReportPanel({
   instanceId,
   currentVersion,
+  loader,
 }: {
   instanceId: string;
   currentVersion: string;
+  /** The instance's loader, so the target list only offers versions it has a
+   *  build for. Omitted falls back to every known version. */
+  loader?: string;
 }) {
   const [target, setTarget] = useState('');
   const [report, setReport] = useState<MigrationReport | null>(null);
@@ -56,6 +61,23 @@ export function MigrationReportPanel({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [versions, setVersions] = useState<string[]>([]);
+
+  // The signed loader manifests already know every version, and which of them
+  // the instance's loader supports — so this is a list to pick from, not a
+  // string to spell correctly. Scoped by loader because offering a version
+  // Fabric has no build for would only produce a report saying so.
+  useEffect(() => {
+    let cancelled = false;
+    void listManifestMcVersions(loader)
+      .then((list) => {
+        if (cancelled) return;
+        // The version you are already on is not somewhere to move to.
+        setVersions(list.filter((version) => version !== currentVersion));
+      })
+      .catch(() => { if (!cancelled) setVersions([]); });
+    return () => { cancelled = true; };
+  }, [loader, currentVersion]);
 
   const run = async () => {
     const version = target.trim();
@@ -135,15 +157,21 @@ export function MigrationReportPanel({
       </div>
 
       <div className="flex gap-2">
-        <input
-          type="text"
+        <select
           value={target}
           onChange={(e) => setTarget(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void run(); }}
-          placeholder="Target version, e.g. 1.21.4"
           aria-label="Target Minecraft version"
-          className="rounded-lg border border-input bg-background px-3 py-2 text-sm w-56"
-        />
+          disabled={versions.length === 0}
+          className="rounded-lg border border-input bg-background px-3 py-2 text-sm w-56 disabled:opacity-50"
+        >
+          <option value="">
+            {versions.length === 0 ? 'No other versions available' : 'Choose a version…'}
+          </option>
+          {versions.map((version) => (
+            <option key={version} value={version}>{version}</option>
+          ))}
+        </select>
         <button
           type="button"
           onClick={() => void run()}
@@ -160,15 +188,21 @@ export function MigrationReportPanel({
       {report && (
         <div className="space-y-3">
           <p className="text-sm">{VERDICT_TEXT[report.verdict]}</p>
-          <p className="text-xs text-muted-foreground">
-            {report.summary.ready} ready
-            {report.summary.not_yet > 0 && `, ${report.summary.not_yet} with no build yet`}
-            {report.summary.abandoned > 0 && `, ${report.summary.abandoned} abandoned`}
-            {report.summary.superseded > 0 && `, ${report.summary.superseded} replaced`}
-            {report.summary.unknown > 0 && `, ${report.summary.unknown} unchecked`}
-            {report.summary.unclassifiable > 0 && `, ${report.summary.unclassifiable} needing review`}
-            {' '}of {report.summary.total}.
-          </p>
+          {/* Only worth printing when it is a genuine breakdown. When every mod
+              is ready the verdict above already says so, and the disclosure
+              below already carries the count — saying "3 ready of 3" between
+              them was the same number a third time. */}
+          {report.summary.ready !== report.summary.total && (
+            <p className="text-xs text-muted-foreground">
+              {report.summary.ready} ready
+              {report.summary.not_yet > 0 && `, ${report.summary.not_yet} with no build yet`}
+              {report.summary.abandoned > 0 && `, ${report.summary.abandoned} abandoned`}
+              {report.summary.superseded > 0 && `, ${report.summary.superseded} replaced`}
+              {report.summary.unknown > 0 && `, ${report.summary.unknown} unchecked`}
+              {report.summary.unclassifiable > 0 && `, ${report.summary.unclassifiable} needing review`}
+              {' '}of {report.summary.total}.
+            </p>
+          )}
 
           {report.warnings.map((warning) => (
             <p key={warning} className="text-xs text-muted-foreground">{warning}</p>

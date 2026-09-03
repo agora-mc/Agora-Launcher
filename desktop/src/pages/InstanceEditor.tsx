@@ -2419,6 +2419,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <MigrationReportPanel
             instanceId={instanceId}
             currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
+            loader={detail?.row.loader}
           />
         </div>
       )}

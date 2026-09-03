@@ -1198,6 +1198,29 @@ class TestNormalizeDownloadSources(unittest.TestCase):
         self.assertEqual(len(_compile.normalize_download_sources(item)), 2)
 
 
+class TestRegexTimeoutBudget(unittest.TestCase):
+    """Tests for _test_regex_timeout.
+
+    The budget is meant to measure the *regex*. On Windows it used to time the
+    whole subprocess, so Python's interpreter startup was charged to the
+    pattern and a linear regex got rejected as catastrophic backtracking
+    whenever the build host was busy -- silently dropping a valid crash
+    signature from the shipped registry.
+    """
+
+    def test_linear_pattern_is_accepted(self):
+        # Comfortably longer than the search, far shorter than interpreter
+        # startup on Windows: this fails if startup is being counted.
+        self.assertTrue(
+            _compile._test_regex_timeout(re.compile(r"Mixin apply failed"), timeout_secs=0.5)
+        )
+
+    def test_catastrophic_pattern_is_rejected(self):
+        # The corpus is 100k 'a' with no 'b', so the engine must try every
+        # partition of the run before failing: genuinely exponential.
+        self.assertFalse(_compile._test_regex_timeout(re.compile(r"(a+)+b")))
+
+
 class TestCleanVersionWindow(unittest.TestCase):
     """Tests for _clean_version_window.
 
