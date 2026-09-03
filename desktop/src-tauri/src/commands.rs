@@ -7418,6 +7418,87 @@ fn reveal_in_explorer(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Controller / handheld mode
+// ---------------------------------------------------------------------------
+
+/// Resolve an instance id to its manifest, rejecting ids that do not survive
+/// sanitization.
+fn manifest_for_instance(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+) -> LauncherResult<agora_core::models::InstanceManifest> {
+    let sanitized = paths::sanitize_id(instance_id);
+    if sanitized.is_empty() || sanitized != instance_id {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_INSTANCE".into(),
+            message: "The instance ID is invalid.".into(),
+        });
+    }
+    let manifest_path = paths::instance_manifest_path(app, &sanitized)
+        .map_err(|_| LauncherError::LocalStateFailed)?;
+    agora_core::helpers::read_manifest(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)
+}
+
+/// Decide whether to offer Controlify for an instance.
+///
+/// Called when a launch is about to start with a gamepad connected. Always
+/// returns a decision rather than an option, so the UI can explain *why* it is
+/// staying quiet instead of the offer silently never appearing.
+#[tauri::command]
+pub async fn evaluate_controlify_offer(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<agora_core::controller_service::ControlifyOffer> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = manifest_for_instance(&app, &instance_id)?;
+        let ctx = crate::core_context(&app)?;
+        let settings = agora_core::settings::SettingsService::new(ctx);
+        let declined = agora_core::controller_service::controlify_declined_instances(&settings)
+            .contains(&manifest.instance_id);
+        Ok(agora_core::controller_service::evaluate_controlify_offer(
+            &manifest, declined,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Remember that the user declined the Controlify offer for an instance.
+#[tauri::command]
+pub async fn decline_controlify_offer(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = manifest_for_instance(&app, &instance_id)?;
+        let ctx = crate::core_context(&app)?;
+        let settings = agora_core::settings::SettingsService::new(ctx);
+        agora_core::controller_service::decline_controlify_for(&settings, &manifest.instance_id)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Forget a previous decline so the offer can be made again.
+#[tauri::command]
+pub async fn reset_controlify_offer(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = manifest_for_instance(&app, &instance_id)?;
+        let ctx = crate::core_context(&app)?;
+        let settings = agora_core::settings::SettingsService::new(ctx);
+        agora_core::controller_service::reset_controlify_decline(&settings, &manifest.instance_id)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 #[cfg(test)]
 mod command_helper_tests {
     use super::{
