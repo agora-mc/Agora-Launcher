@@ -4522,17 +4522,17 @@ pub async fn scan_runtime_prune(
     _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<agora_core::prune_service::PruneReport> {
     let ctx = crate::core_context(&app)?;
-    let paths = ctx.paths.clone();
+    let scan_ctx = ctx.clone();
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
-            move || agora_core::prune_service::scan(&paths),
+            move || agora_core::prune_service::scan_locked(&scan_ctx),
         )
         .await
         .map_err(|e| LauncherError::Generic {
             code: "ERR_PRUNE_TASK".into(),
             message: format!("Reclaim scan task failed: {e}"),
-        })
+        })?
 }
 
 /// Delete the chosen categories. Only ever reached from an explicit user
@@ -4550,17 +4550,17 @@ pub async fn run_runtime_prune(
         });
     }
     let ctx = crate::core_context(&app)?;
-    let paths = ctx.paths.clone();
+    let prune_ctx = ctx.clone();
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
-            move || agora_core::prune_service::prune(&paths, &categories),
+            move || agora_core::prune_service::prune_locked(&prune_ctx, &categories),
         )
         .await
         .map_err(|e| LauncherError::Generic {
             code: "ERR_PRUNE_TASK".into(),
             message: format!("Reclaim task failed: {e}"),
-        })
+        })?
 }
 
 // ---------------------------------------------------------------------------

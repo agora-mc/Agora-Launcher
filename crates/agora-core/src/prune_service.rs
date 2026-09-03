@@ -18,7 +18,10 @@
 //! deletes; deletion only happens via [`prune`].
 
 use crate::app_paths::AppPaths;
+use crate::ctx::Ctx;
+use crate::error::LauncherResult;
 use crate::launch::{Library, VersionInfo};
+use crate::lock_manager::LockResource;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -121,6 +124,31 @@ pub struct PruneResult {
 /// `minecraft-runtime/versions/<id>/<id>.json`.
 pub fn scan(paths: &AppPaths) -> PruneReport {
     scan_inner(paths)
+}
+
+/// [`scan`], serialized against launch materialization.
+///
+/// A launch materializes verified artifacts under the same runtime tree this
+/// walks. Surveying mid-materialization can observe a half-built version and
+/// call its libraries unreferenced, and the user then confirms a deletion of
+/// files a running launch is about to need. Taking the same lock the launch
+/// path takes is what makes the answer mean something.
+pub fn scan_locked(ctx: &Ctx) -> LauncherResult<PruneReport> {
+    let _guard = ctx
+        .lock_manager
+        .acquire(LockResource::Materialization, "prune-scan")?;
+    Ok(scan_inner(&ctx.paths))
+}
+
+/// [`prune`], serialized against launch materialization.
+///
+/// The deletion needs the lock more than the scan does: without it a launch
+/// could be writing the very files this is removing.
+pub fn prune_locked(ctx: &Ctx, selected: &[PruneCategory]) -> LauncherResult<PruneResult> {
+    let _guard = ctx
+        .lock_manager
+        .acquire(LockResource::Materialization, "prune-delete")?;
+    Ok(prune(&ctx.paths, selected))
 }
 
 /// Delete the selected categories and return what was actually freed.
@@ -326,16 +354,51 @@ fn collect_reachable_version_ids(
         return (HashSet::new(), false);
     };
 
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
-            continue;
+    for entry in entries {
+        // A directory iterator yields per-entry errors, and dropping them
+        // silently is the same fail-open as an unreadable root: the instance
+        // we could not read is one whose libraries then look unreferenced.
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                warnings.push(format!(
+                    "instances: cannot read an entry in {}: {e}",
+                    instances_root.display()
+                ));
+                complete = false;
+                continue;
+            }
+        };
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                warnings.push(format!(
+                    "instances: cannot stat {}: {e}",
+                    entry.path().display()
+                ));
+                complete = false;
+                continue;
+            }
         };
         if !ft.is_dir() {
             continue;
         }
         let manifest_path = entry.path().join("instance_manifest.json");
-        if !manifest_path.is_file() {
-            continue;
+        // `is_file()` answers false for "absent" and for "cannot stat" alike,
+        // and those mean opposite things here: the first is a stray directory
+        // that is not an instance, the second is an instance we are about to
+        // ignore. Ask the question that distinguishes them.
+        match manifest_path.try_exists() {
+            Ok(true) => {}
+            Ok(false) => continue, // not an instance directory
+            Err(e) => {
+                warnings.push(format!(
+                    "instance manifest unreadable {}: {e}",
+                    manifest_path.display()
+                ));
+                complete = false;
+                continue;
+            }
         }
         let data = match std::fs::read_to_string(&manifest_path) {
             Ok(d) => d,
@@ -400,8 +463,20 @@ fn collect_reachable_version_ids(
 
         let loader_lc = loader.to_ascii_lowercase();
         let is_vanilla = loader.is_empty() || loader_lc == "vanilla";
-        if !is_vanilla && !loader_version.is_empty() {
-            if let Some(profile_id) = try_derive_profile_id(&loader, &mc_version, &loader_version) {
+        if !is_vanilla {
+            if loader_version.is_empty() {
+                // A modded instance whose loader version we cannot read still
+                // has a loader profile on disk; we just cannot name it. Saying
+                // nothing here would leave that profile's libraries looking
+                // unreferenced.
+                warnings.push(format!(
+                    "instance manifest {} declares loader '{loader}' with no version; cannot resolve its profile",
+                    manifest_path.display()
+                ));
+                complete = false;
+            } else if let Some(profile_id) =
+                try_derive_profile_id(&loader, &mc_version, &loader_version)
+            {
                 initial.insert(profile_id);
             } else {
                 // The base version alone is not enough: the loader profile
@@ -1751,6 +1826,60 @@ mod tests {
             total_reclaimable_files(&report),
             0,
             "a manifest we cannot read may name the very version that keeps this library alive"
+        );
+    }
+
+    #[test]
+    fn a_modded_instance_with_no_loader_version_reclaims_nothing() {
+        // The loader profile is on disk either way; we just cannot name it.
+        // Treating that as a complete survey would make its libraries look
+        // unreferenced.
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        write_version_json(&paths, "1.21", None, vec![], None, None, None);
+        write_library(&paths, "com/example/lib/1.0/lib-1.0.jar", b"library bytes");
+        let dir = paths.instance_dir("modded").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("instance_manifest.json"),
+            br#"{"minecraft_version":"1.21","loader":"fabric","loader_version":""}"#,
+        )
+        .unwrap();
+
+        let report = scan(&paths);
+        assert_eq!(
+            total_reclaimable_files(&report),
+            0,
+            "a loader we cannot resolve leaves its profile's libraries looking unused"
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.contains("no version")),
+            "the user should be told why nothing is reclaimable: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn a_vanilla_instance_with_no_loader_version_is_still_a_complete_survey() {
+        // The mirror of the test above: vanilla genuinely has no loader
+        // profile, so an empty loader version is not a gap and must not
+        // suppress reclaiming.
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        write_version_json(&paths, "1.21", None, vec![], None, None, None);
+        write_library(&paths, "com/example/lib/1.0/lib-1.0.jar", b"library bytes");
+        let dir = paths.instance_dir("vanilla").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("instance_manifest.json"),
+            br#"{"minecraft_version":"1.21","loader":"vanilla","loader_version":""}"#,
+        )
+        .unwrap();
+
+        let report = scan(&paths);
+        assert!(
+            total_reclaimable_files(&report) > 0,
+            "an unreferenced library should still be reclaimable for a vanilla instance"
         );
     }
 

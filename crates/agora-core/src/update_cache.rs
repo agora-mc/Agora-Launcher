@@ -550,13 +550,28 @@ fn raw_modrinth_update(
     })
 }
 
-/// Pick the candidate an update check compares against: the newest compatible
-/// one, falling back to the newest overall when none is marked compatible.
+/// Pick the candidate an update check compares against.
+///
+/// The resolver grades every candidate into one of three tiers:
+/// `"compatible"` (exact Minecraft version, right loader), `"major_match"`
+/// (same Minecraft line, right loader) and `""` (wrong loader, or a different
+/// line entirely). `is_compatible` is only the first of those.
+///
+/// Newest exact match wins; failing that, the newest same-line build, which is
+/// the tier a user would still call an update. Nothing below that is offered.
+/// This used to fall back to the newest candidate of *any* grade, which turned
+/// a badge into an invitation to install a Forge build over a Fabric instance:
+/// the badge said "update available", the UI passed the version as an exact
+/// target, and exact resolution does not re-check compatibility.
 fn pick_curated_candidate(candidates: &[ModVersionCandidate]) -> Option<&ModVersionCandidate> {
     candidates
         .iter()
         .find(|candidate| candidate.is_compatible)
-        .or_else(|| candidates.first())
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.version_compat == "major_match")
+        })
 }
 
 /// Decide whether a curated item has an update available.
@@ -1068,6 +1083,22 @@ mod tests {
         sha256: Option<&str>,
         is_compatible: bool,
     ) -> ModVersionCandidate {
+        graded_fixture(
+            version,
+            filename,
+            sha256,
+            if is_compatible { "compatible" } else { "" },
+        )
+    }
+
+    /// A candidate at an explicit compatibility grade, as the resolver assigns
+    /// them: `"compatible"`, `"major_match"` or `""`.
+    fn graded_fixture(
+        version: &str,
+        filename: &str,
+        sha256: Option<&str>,
+        version_compat: &str,
+    ) -> ModVersionCandidate {
         serde_json::from_value(serde_json::json!({
             "version": version,
             "filename": filename,
@@ -1075,7 +1106,8 @@ mod tests {
             "mc_version": "1.21",
             "loader": "fabric",
             "release_date": null,
-            "is_compatible": is_compatible,
+            "is_compatible": version_compat == "compatible",
+            "version_compat": version_compat,
             "sha256": sha256,
         }))
         .expect("curated candidate fixture")
@@ -1207,13 +1239,25 @@ mod tests {
     }
 
     #[test]
-    fn curated_candidate_falls_back_to_first_when_none_compatible() {
+    fn curated_candidate_offers_a_same_line_build_when_none_is_exact() {
         let candidates = vec![
-            curated_fixture("0.7.0", "sodium-0.7.0.jar", None, false),
-            curated_fixture("0.6.0", "sodium-0.6.0.jar", None, false),
+            graded_fixture("0.7.0", "sodium-0.7.0.jar", None, ""),
+            graded_fixture("0.6.0", "sodium-0.6.0.jar", None, "major_match"),
         ];
         let picked = pick_curated_candidate(&candidates).expect("candidate");
-        assert_eq!(picked.version, "0.7.0");
+        assert_eq!(picked.version, "0.6.0");
+    }
+
+    #[test]
+    fn curated_candidate_offers_nothing_when_every_build_is_incompatible() {
+        // Previously this returned the newest candidate regardless of grade,
+        // so an instance could be shown an update badge for a build made for
+        // another loader — and exact resolution does not re-check.
+        let candidates = vec![
+            graded_fixture("0.7.0", "sodium-0.7.0.jar", None, ""),
+            graded_fixture("0.6.0", "sodium-0.6.0.jar", None, ""),
+        ];
+        assert!(pick_curated_candidate(&candidates).is_none());
     }
 
     #[test]
