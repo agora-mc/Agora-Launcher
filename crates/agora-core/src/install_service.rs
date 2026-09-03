@@ -151,13 +151,15 @@ impl InstallService {
             resolver = resolver.with_stored_github_token(token);
         }
         let prepared = resolver.resolve(&intent, &load.manifest).await?;
-        InstallPipeline
+        let mut plan = InstallPipeline
             .resolve_plan(intent, &load.instance_dir, prepared, reporter)
             .await
             .map_err(|e| LauncherError::Generic {
                 code: "ERR_RESOLVE".into(),
                 message: e,
-            })
+            })?;
+        self.append_curated_conflict_warnings(&mut plan, &load.manifest);
+        Ok(plan)
     }
 
     /// Execute a fully-resolved plan with freshness checks.
@@ -216,13 +218,35 @@ impl InstallService {
     ) -> LauncherResult<ResolvedInstallPlan> {
         let load = self.load_instance(&intent.target_instance)?;
         prepared.registry_revision = load.registry_revision;
-        InstallPipeline
+        let mut plan = InstallPipeline
             .resolve_plan(intent, &load.instance_dir, prepared, reporter)
             .await
             .map_err(|e| LauncherError::Generic {
                 code: "ERR_RESOLVE".into(),
                 message: e,
-            })
+            })?;
+        self.append_curated_conflict_warnings(&mut plan, &load.manifest);
+        Ok(plan)
+    }
+
+    /// Warn when this plan would create a curator-flagged bad pairing.
+    ///
+    /// Best-effort by design: a missing or unreadable `registry.db` yields no
+    /// warnings rather than an error. The registry is optional, and failing an
+    /// install because the advisory data could not be read would be worse than
+    /// the advice being absent.
+    fn append_curated_conflict_warnings(
+        &self,
+        plan: &mut ResolvedInstallPlan,
+        manifest: &InstanceManifest,
+    ) {
+        let conflicts =
+            match crate::registry::RegistryService::new(self.ctx.clone()).known_conflicts() {
+                Ok(conflicts) if !conflicts.is_empty() => conflicts,
+                _ => return,
+            };
+        plan.warnings
+            .extend(curated_conflict_warnings(plan, manifest, &conflicts));
     }
 
     /// Check that the instance is not locked.
@@ -582,5 +606,321 @@ fn effective_filename(item: &InstalledMod) -> String {
         item.filename.clone()
     } else {
         format!("{}.disabled", item.filename)
+    }
+}
+
+/// Curated-conflict warnings for the content set `plan` would leave behind.
+///
+/// Only pairs that this plan *creates* are reported: at least one side has to
+/// be something the plan is adding. A conflict already sitting in the instance
+/// is pre-launch health's job — repeating it on an unrelated install would be
+/// noise attached to the wrong action.
+///
+/// Version-windowed facts are evaluated against the versions that will actually
+/// be present, so installing 0.4 of a mod flagged from 0.5 stays quiet.
+fn curated_conflict_warnings(
+    plan: &ResolvedInstallPlan,
+    manifest: &InstanceManifest,
+    conflicts: &[crate::registry::KnownConflict],
+) -> Vec<crate::install_pipeline::PlanWarning> {
+    use crate::install_pipeline::{PlanWarning, ResolvedArtifact};
+    use std::collections::HashMap;
+
+    let removed: std::collections::HashSet<&str> = plan
+        .files_to_remove
+        .iter()
+        .map(|f| f.filename.as_str())
+        .collect();
+
+    // id -> (version, is_incoming). An id that is both installed and being
+    // updated counts as incoming: the plan is what put the new version there.
+    let mut present: HashMap<String, (Option<String>, bool)> = HashMap::new();
+    for item in all_installed(manifest) {
+        if removed.contains(item.filename.as_str()) {
+            continue;
+        }
+        for id in [item.registry_id.as_deref(), item.modrinth_id.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            present.insert(id.to_ascii_lowercase(), (item.version.clone(), false));
+        }
+    }
+    for add in &plan.files_to_add {
+        let metadata = match &add.artifact {
+            ResolvedArtifact::Download(download) => &download.metadata,
+            ResolvedArtifact::LocalFile(local) => &local.metadata,
+        };
+        for id in [
+            metadata.registry_id.as_deref(),
+            metadata.modrinth_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            present.insert(id.to_ascii_lowercase(), (metadata.version.clone(), true));
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for conflict in conflicts {
+        let Some((a_version, a_incoming)) = present.get(&conflict.mod_a_id.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        let Some((b_version, b_incoming)) = present.get(&conflict.mod_b_id.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        if !a_incoming && !b_incoming {
+            continue;
+        }
+        if !conflict.applies_to_versions(a_version.as_deref(), b_version.as_deref()) {
+            continue;
+        }
+        let mitigation = if conflict.mitigated_by.is_empty() {
+            String::new()
+        } else {
+            format!(" Known mitigation: {}.", conflict.mitigated_by.join(", "))
+        };
+        warnings.push(PlanWarning {
+            code: "WARN_KNOWN_CONFLICT".into(),
+            message: format!(
+                "'{}' and '{}' are a known conflict (severity: {}).{}{}",
+                conflict.mod_a_id,
+                conflict.mod_b_id,
+                conflict.severity,
+                conflict
+                    .notes
+                    .as_deref()
+                    .map(|n| format!(" {n}"))
+                    .unwrap_or_default(),
+                mitigation
+            ),
+        });
+    }
+    warnings
+}
+
+#[cfg(test)]
+mod curated_conflict_tests {
+    use super::*;
+    use crate::dependency_ops::VersionGrammar;
+    use crate::install_pipeline::{
+        ArtifactMetadata, ArtifactSource, DiskSpaceEstimate, FileAdd, FileRemove, HashSpec,
+        InstallAction, OptionalDepsPolicy, PlanOverrides, RequestSource, ResolvedArtifact,
+        ResolvedDownload, ResolvedOperation, SnapshotPlan, SourceType,
+    };
+    use crate::registry::KnownConflict;
+
+    fn conflict(a: &str, b: &str, a_versions: &[&str]) -> KnownConflict {
+        KnownConflict {
+            mod_a_id: a.into(),
+            mod_b_id: b.into(),
+            severity: "hard".into(),
+            mitigated_by: vec![],
+            notes: None,
+            mod_a_versions: a_versions.iter().map(|s| s.to_string()).collect(),
+            mod_b_versions: vec![],
+            version_grammar: VersionGrammar::Fabric,
+        }
+    }
+
+    fn installed(registry_id: &str, filename: &str, version: Option<&str>) -> InstalledMod {
+        InstalledMod {
+            filename: filename.into(),
+            registry_id: Some(registry_id.into()),
+            modrinth_id: None,
+            source: "registry".into(),
+            source_url: None,
+            version: version.map(str::to_string),
+            sha256: String::new(),
+            installed_at: String::new(),
+            java_packages: vec![],
+            mod_jar_id: Some(registry_id.into()),
+            provided_mod_ids: vec![],
+            enabled: true,
+            content_type: "mod".into(),
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        }
+    }
+
+    fn manifest_with(mods: Vec<InstalledMod>) -> InstanceManifest {
+        InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "inst".into(),
+            name: "Inst".into(),
+            created_from_pack: None,
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.16.0".into(),
+            is_locked: false,
+            mods,
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        }
+    }
+
+    fn adding(registry_id: &str, version: Option<&str>) -> FileAdd {
+        FileAdd {
+            target_filename: format!("{registry_id}.jar"),
+            staging_filename: format!("{registry_id}.jar.part"),
+            artifact: ResolvedArtifact::Download(ResolvedDownload {
+                item_id: registry_id.into(),
+                version_id: "v".into(),
+                source: ArtifactSource::Download {
+                    url: "https://example.com/x.jar".into(),
+                },
+                hashes: HashSpec { values: vec![] },
+                size: 0,
+                filename: format!("{registry_id}.jar"),
+                metadata: ArtifactMetadata {
+                    source_type: SourceType::Curated,
+                    registry_id: Some(registry_id.into()),
+                    modrinth_id: None,
+                    content_type: "mod".into(),
+                    version: version.map(str::to_string),
+                    download_strategy: None,
+                    pinned_host: None,
+                },
+            }),
+            hashes: HashSpec { values: vec![] },
+            size: 0,
+            installed_as_dependency: false,
+        }
+    }
+
+    fn plan_adding(adds: Vec<FileAdd>, removes: Vec<FileRemove>) -> ResolvedInstallPlan {
+        ResolvedInstallPlan {
+            fingerprint: String::new(),
+            intent: InstallIntent {
+                action: InstallAction::Install {
+                    source_type: SourceType::Curated,
+                    item_id: "x".into(),
+                    candidate_version: None,
+                },
+                target_instance: "inst".into(),
+                optional_deps: OptionalDepsPolicy::ExcludeAll,
+                requested_by: RequestSource::Interactive,
+                overrides: PlanOverrides::default(),
+            },
+            operation: ResolvedOperation::Remove {
+                target_filename: "noop.jar".into(),
+                reverse_dependents: vec![],
+                content_type: None,
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            files_to_add: adds,
+            files_to_remove: removes,
+            files_to_disable: vec![],
+            files_to_promote: vec![],
+            snapshot: SnapshotPlan {
+                label: String::new(),
+                estimated_bytes: 0,
+            },
+            disk_estimate: DiskSpaceEstimate::zero(),
+            warnings: vec![],
+            blocking_errors: vec![],
+            pending_choices: vec![],
+            loader_change: None,
+            created_at: String::new(),
+            instance_state_hash: String::new(),
+            registry_revision: String::new(),
+        }
+    }
+
+    #[test]
+    fn installing_the_second_half_of_a_known_pair_warns() {
+        let manifest = manifest_with(vec![installed("sodium", "sodium.jar", Some("0.5.3"))]);
+        let plan = plan_adding(vec![adding("optifine", Some("1.0"))], vec![]);
+        let warnings =
+            curated_conflict_warnings(&plan, &manifest, &[conflict("optifine", "sodium", &[])]);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "WARN_KNOWN_CONFLICT");
+    }
+
+    #[test]
+    fn a_conflict_already_present_is_not_re_reported_on_an_unrelated_install() {
+        // Pre-launch health owns this one. Attaching it to an unrelated
+        // install would blame the wrong action.
+        let manifest = manifest_with(vec![
+            installed("sodium", "sodium.jar", Some("0.5.3")),
+            installed("optifine", "optifine.jar", Some("1.0")),
+        ]);
+        let plan = plan_adding(vec![adding("lithium", Some("0.12"))], vec![]);
+        assert!(curated_conflict_warnings(
+            &plan,
+            &manifest,
+            &[conflict("optifine", "sodium", &[])]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_version_window_that_excludes_the_incoming_version_stays_quiet() {
+        let manifest = manifest_with(vec![installed("sodium", "sodium.jar", Some("0.5.3"))]);
+        let plan = plan_adding(vec![adding("optifine", Some("0.9"))], vec![]);
+        // Flagged only from 1.0 onward; 0.9 is going in.
+        let facts = [conflict("optifine", "sodium", &[">=1.0"])];
+        assert!(curated_conflict_warnings(&plan, &manifest, &facts).is_empty());
+
+        let newer = plan_adding(vec![adding("optifine", Some("1.2"))], vec![]);
+        assert_eq!(
+            curated_conflict_warnings(&newer, &manifest, &facts).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn removing_the_other_half_in_the_same_plan_clears_the_warning() {
+        let manifest = manifest_with(vec![installed("sodium", "sodium.jar", Some("0.5.3"))]);
+        let plan = plan_adding(
+            vec![adding("optifine", Some("1.0"))],
+            vec![FileRemove {
+                filename: "sodium.jar".into(),
+                content_type: Some("mod".into()),
+            }],
+        );
+        assert!(curated_conflict_warnings(
+            &plan,
+            &manifest,
+            &[conflict("optifine", "sodium", &[])]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn an_empty_plan_and_an_empty_fact_set_produce_nothing() {
+        let manifest = manifest_with(vec![installed("sodium", "sodium.jar", Some("0.5.3"))]);
+        let empty_plan = plan_adding(vec![], vec![]);
+        assert!(curated_conflict_warnings(
+            &empty_plan,
+            &manifest,
+            &[conflict("optifine", "sodium", &[])]
+        )
+        .is_empty());
+        let plan = plan_adding(vec![adding("optifine", Some("1.0"))], vec![]);
+        assert!(curated_conflict_warnings(&plan, &manifest_with(vec![]), &[]).is_empty());
+    }
+
+    #[test]
+    fn ids_match_case_insensitively() {
+        let manifest = manifest_with(vec![installed("Sodium", "sodium.jar", Some("0.5.3"))]);
+        let plan = plan_adding(vec![adding("OptiFine", Some("1.0"))], vec![]);
+        assert_eq!(
+            curated_conflict_warnings(&plan, &manifest, &[conflict("optifine", "sodium", &[])])
+                .len(),
+            1
+        );
     }
 }

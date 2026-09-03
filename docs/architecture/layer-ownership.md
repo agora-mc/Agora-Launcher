@@ -30,6 +30,7 @@ Canonical reference for which code belongs where.
 | MCP dispatcher | `agora-core` | Tool routing, argument deserialization, approval policy, system context generation. Adapter provides only transport framing |
 | Locks / operation state | `agora-core` | Per-instance mutex, registry read-writer lock, operation state machine |
 | Process identity verification | `agora-core` | PID → executable path → start-time verification; os-identifier abstraction behind a core trait |
+| Controller support policy | `agora-core` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
 
 ### Adapter Layer — Tauri / CLI / MCP transport
 
