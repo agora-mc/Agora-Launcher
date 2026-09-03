@@ -56,4 +56,3 @@ describe('ControlifyOfferDialog', () => {
     expect(screen.queryByRole('button', { name: 'Install Controlify' })).not.toBeInTheDocument();
   });
 });
-
