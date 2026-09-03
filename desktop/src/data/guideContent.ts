@@ -507,7 +507,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'See what changed, and pin what should not',
-          body: 'Where the author publishes one, the changelog for a version is shown before the update applies, so you can decide with the release notes in front of you. If a mod is at a version you want to keep, pin it: pinned mods are skipped by Update All, stop counting toward the badge, and can still be updated deliberately whenever you choose.',
+          body: 'Where the author publishes one, the changelog for a version is shown before the update applies, so you can decide with the release notes in front of you. If a mod is at a version you want to keep, pin it from the three-dot menu at the end of its row: Pin updates. Pinned mods are skipped by Update All, stop counting toward the instance badge, and can still be updated deliberately whenever you choose. The same menu item unpins.',
         },
       ],
     },
@@ -591,11 +591,26 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Group a long list',
-          body: 'A large instance is easier to read grouped than alphabetical. Group by category, by source, or by whether a mod came from the pack or from you, and collapse the groups you are not working on. Each group can be enabled or disabled as a set.',
+          body: 'A large instance is easier to read grouped than alphabetical. In the content toolbar, next to the search and filter controls, the Group dropdown re-sorts the list into sections. Each group header has its own enable and disable button, so you can switch a whole set at once.',
+          steps: [
+            'Open My Instances, select Edit, then a content tab such as Mods.',
+            'Use the Group dropdown in the toolbar above the list.',
+            'Choose Pack vs you, Category, or Source.',
+            'Collapse the sections you are not working on.',
+          ],
           callout: {
             tone: 'tip',
             title: 'Pack content is marked',
-            text: 'In an instance created from a modpack, mods the pack brought are distinguished from ones you added yourself. That distinction is what lets a pack update leave your additions alone.',
+            text: 'In an instance created from a modpack, Group: Pack vs you separates what the pack brought from what you added. That same distinction is what lets a pack update leave your additions alone.',
+          },
+        },
+        {
+          title: 'Make your own groups',
+          body: 'The built-in groupings are derived from what Agora already knows. To sort mods your own way, open the three-dot menu at the end of a row and choose Set group. Name a new group or pick an existing one. Once at least one group exists, Group: My groups appears in the dropdown alongside the built-in options.',
+          callout: {
+            tone: 'note',
+            title: 'One mod at a time',
+            text: 'Group assignment is per row from its own menu. The bulk selection bar covers enabling, disabling, and removing, but not grouping.',
           },
         },
       ],
@@ -614,15 +629,20 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Ask why a mod is here',
-          body: 'For any installed mod, Agora can explain its presence: whether you asked for it or it arrived as somebody else\'s dependency, and which installed mods currently require it. That is the question worth answering before removing a library you do not recognise.',
+          body: 'Open the three-dot menu at the end of a row and choose Why is this here. Agora traces that file back and answers with one of four things: you installed it directly, it came from the instance\'s modpack, another mod needs it, or it was a dependency and nothing needs it any more. It then lists the installed mods that currently require it. Most launchers show what a mod depends on; this is the opposite direction, which is the one you are looking in when you find a JAR you do not recognise.',
+          callout: {
+            tone: 'tip',
+            title: 'Ask before you remove',
+            text: 'An unfamiliar library is usually something another mod asked for. Checking takes one click and is more reliable than judging by filename.',
+          },
         },
         {
           title: 'Clean up orphaned dependencies',
-          body: 'A library installed only to satisfy a mod you have since removed is an orphan. Agora lists them so you can remove them deliberately, having recorded at install time which entries were dependencies rather than choices.',
+          body: 'A library installed only to satisfy a mod you have since removed is an orphan. There is no separate cleanup screen to visit: after a removal, if it stranded anything, Agora asks whether to remove those as well. It can tell because it recorded at install time which entries were dependencies rather than choices.',
           callout: {
             tone: 'note',
             title: 'Orphan detection is deliberately cautious',
-            text: 'A mod that anything still points at, even optionally, is not reported as an orphan. Leaving a library you no longer need is harmless; removing one that something still wants is not.',
+            text: 'A mod that anything still points at, even optionally, is not offered for removal. Leaving a library you no longer need is harmless; removing one that something still wants is not. Anything missed this way still shows as an orphan under Why is this here.',
           },
         },
         {
