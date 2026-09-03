@@ -24,11 +24,15 @@ export function ModBisectPanel({
   instanceId,
   primeSuspects = [],
   locked = false,
+  onLaunch,
 }: {
   instanceId: string;
   /** Mods the crash log implicated — tested first. */
   primeSuspects?: string[];
   locked?: boolean;
+  /** Start the game after a trial is applied. Without it the button would only
+   *  toggle files and the user would have to launch by hand. */
+  onLaunch?: () => Promise<unknown>;
 }) {
   const [view, setView] = useState<BisectView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,13 +48,30 @@ export function ModBisectPanel({
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const run = async (action: () => Promise<BisectView | void>) => {
+  /**
+   * `changesContent` covers every action that renames JARs on disk.
+   *
+   * Crash Doctor is a global overlay, so the instance editor underneath it has
+   * no idea a trial just toggled half the mod list and keeps rendering the
+   * pre-trial arrangement — which reads as "restore my mods did nothing" even
+   * when the files on disk are correct. A window event is the cheapest way to
+   * reach across that boundary; the editor listens and refetches.
+   */
+  const run = async (
+    action: () => Promise<BisectView | void>,
+    changesContent = false,
+  ) => {
     setBusy(true);
     setError(null);
     try {
       const next = await action();
       if (next) setView(next);
       else await refresh();
+      if (changesContent) {
+        window.dispatchEvent(new CustomEvent('agora-instance-content-changed', {
+          detail: { instanceId },
+        }));
+      }
     } catch (e) {
       setError(formatError(e));
     } finally {
@@ -103,11 +124,18 @@ export function ModBisectPanel({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => void run(() => applyBisectTrial(instanceId))}
+              onClick={() => void run(async () => {
+                const next = await applyBisectTrial(instanceId);
+                // Applying without launching leaves the user staring at a
+                // button that appears to have done nothing, since the change
+                // is a set of file renames they cannot see.
+                await onLaunch?.();
+                return next;
+              }, true)}
               disabled={busy || locked}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              Apply and launch
+              {busy ? 'Applying…' : onLaunch ? 'Apply and launch' : 'Apply this trial'}
             </button>
             <span className="self-center text-xs text-muted-foreground">then tell us what happened:</span>
             <button
@@ -157,7 +185,7 @@ export function ModBisectPanel({
         <div className="flex gap-3 border-t border-border pt-3 text-xs">
           <button
             type="button"
-            onClick={() => void run(() => stepBackBisect(instanceId))}
+            onClick={() => void run(() => stepBackBisect(instanceId), true)}
             disabled={busy || session.history.length === 0}
             className="text-foreground hover:underline disabled:opacity-40"
             title="Undo the last answer and try the other half instead"
@@ -168,7 +196,7 @@ export function ModBisectPanel({
             type="button"
             onClick={() => {
               if (!confirm('Stop the bisect and turn every mod back on as it was?')) return;
-              void run(async () => { await cancelBisect(instanceId); });
+              void run(async () => { await cancelBisect(instanceId); }, true);
             }}
             disabled={busy}
             className="ml-auto text-destructive hover:underline disabled:opacity-40"

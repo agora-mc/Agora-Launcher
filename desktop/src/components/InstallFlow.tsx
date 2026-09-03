@@ -426,17 +426,24 @@ export function InstallFlow({
   // success state so a later install in the same mount still signals. Callers
   // pass an inline closure, so a plain dependency on `onSuccess` would re-fire
   // on every render — and if the handler sets state, that is an infinite loop.
+  //
+  // The trigger is "did the instance change", not "did it go perfectly".
+  // `health-rollback` *keeps* the install so the user can inspect and repair,
+  // so the new files are on disk and the cached updates describe versions that
+  // are no longer installed. Firing only on `success` left the badge showing
+  // updates the user had already applied, with no way to clear it.
   const signalledSuccessRef = useRef(false);
-  const installSucceeded = state.phase === 'result' && state.outcome.type === 'success';
+  const instanceChanged = state.phase === 'result'
+    && (state.outcome.type === 'success' || state.outcome.type === 'health-rollback');
   useEffect(() => {
-    if (!installSucceeded) {
+    if (!instanceChanged) {
       signalledSuccessRef.current = false;
       return;
     }
     if (signalledSuccessRef.current) return;
     signalledSuccessRef.current = true;
     onSuccess?.(intent.targetInstance);
-  }, [installSucceeded, intent.targetInstance, onSuccess]);
+  }, [instanceChanged, intent.targetInstance, onSuccess]);
 
   /**
    * Approve switching the instance loader to a signed-catalog compatible

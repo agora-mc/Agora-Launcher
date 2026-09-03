@@ -372,11 +372,18 @@ pub fn record_outcome(
 
 /// Apply a trial's enabled set to the instance on disk.
 ///
-/// Delegates to [`crate::loadout::apply_enabled_set`], which already owns the
-/// `.jar` / `.jar.disabled` rename and the matching manifest update. Bisect
-/// decides *what* should be enabled; it does not reimplement *how*.
+/// Delegates to [`crate::loadout::apply_enabled_set_scoped`], which already
+/// owns the `.jar` / `.jar.disabled` rename and the matching manifest update.
+/// Bisect decides *what* should be enabled; it does not reimplement *how*.
+///
+/// Scoped to mods, because that is all a bisect ever reasons about:
+/// `start_session` collects enabled entries with `content_type == "mod"`, so an
+/// unscoped call would read the absence of every resource pack, shader, data
+/// pack and world from the list as "turn these off" and disable the lot — and
+/// the cancel path, restoring the same mod-only baseline, would never put them
+/// back.
 pub fn apply_enabled_set(instance_dir: &Path, enabled: &[String]) -> Result<(), String> {
-    crate::loadout::apply_enabled_set(instance_dir, enabled)
+    crate::loadout::apply_enabled_set_scoped(instance_dir, enabled, Some("mod"))
 }
 
 /// Undo the last trial and take the other half next time.

@@ -160,6 +160,45 @@ describe('InstallFlow onSuccess loop guard (InstallFlow.tsx:429)', () => {
     expect(Number(screen.getByTestId('tick').textContent)).toBe(tickBefore);
   });
 
+  it('fires onSuccess for health-rollback, because that install is kept', async () => {
+    // health-rollback does not undo the install; it keeps the new files so the
+    // user can inspect the report and repair. The cached updates therefore
+    // describe versions that are no longer installed, and firing only on
+    // `success` left the instance card advertising updates already applied,
+    // with nothing the user could do to clear it.
+    installFlowMocks.applyInstallPlan.mockResolvedValue({
+      type: 'health-rollback',
+      healthReport: { score: 'red', warnings: [], blockers: [], recommendations: [], scan_token: 't' },
+      snapshotId: 'snap-1',
+      warnings: [],
+    } as unknown as InstallOutcome);
+    const onCall = vi.fn();
+
+    render(<InlineSuccessHarness onCall={onCall} />);
+    await screen.findByText(/Review Instance Changes/i);
+    fireEvent.click(await screen.findByRole('button', { name: /Apply Updates/i }));
+
+    await waitFor(() => expect(onCall).toHaveBeenCalledTimes(1));
+    expect(onCall).toHaveBeenCalledWith('test-inst');
+  });
+
+  it('does not fire onSuccess when the install was cancelled or failed', async () => {
+    installFlowMocks.applyInstallPlan.mockResolvedValue({
+      type: 'failed',
+      error: 'download failed',
+      rollbackPerformed: true,
+      snapshotId: 'snap-1',
+    } as unknown as InstallOutcome);
+    const onCall = vi.fn();
+
+    render(<InlineSuccessHarness onCall={onCall} />);
+    await screen.findByText(/Review Instance Changes/i);
+    fireEvent.click(await screen.findByRole('button', { name: /Apply Updates/i }));
+
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(onCall).not.toHaveBeenCalled();
+  });
+
   it('still fires again for a second successful install in the same mount (ref resets)', async () => {
     const onCall = vi.fn();
     // First install

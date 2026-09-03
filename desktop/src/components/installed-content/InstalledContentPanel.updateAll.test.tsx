@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { InstalledContentPanel } from './InstalledContentPanel';
 import type { InstalledContentRow, UpdateInfo } from '../../lib/tauri';
 
@@ -196,7 +197,7 @@ describe('per-mod update pin', () => {
     expect(onUpdateAll.mock.calls[0][0].map((entry: UpdateInfo) => entry.filename)).toEqual(['sodium.jar']);
   });
 
-  it('offers to unpin a pinned row and to pin an unpinned one', () => {
+  it('offers to unpin a pinned row and to pin an unpinned one', async () => {
     const onTogglePin = vi.fn();
     render(
       <InstalledContentPanel
@@ -205,7 +206,28 @@ describe('per-mod update pin', () => {
         onTogglePin={onTogglePin}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Unpin updates/i }));
+    // The row menu is a real dropdown now, so its items exist only while it is
+    // open. That is the point: the previous <details> kept them in the DOM
+    // permanently, which is how several menus could be open at once.
+    // Radix opens on pointerdown, which fireEvent.click alone does not send.
+    await userEvent.click(screen.getByRole('button', { name: /More actions for/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /Unpin updates/i }));
     expect(onTogglePin).toHaveBeenCalledWith(expect.objectContaining({ filename: 'iris.jar' }), false);
+  });
+
+  it('renders the row menu outside the scrolling table', async () => {
+    // The menu used to live in the table cell, so the table's overflow
+    // container clipped it and the sticky header's stacking context drew over
+    // the top of it. Portalling it out is what fixes both.
+    render(
+      <InstalledContentPanel
+        {...baseProps}
+        rows={[row({ filename: 'iris.jar' })]}
+        onTogglePin={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /More actions for/i }));
+    const menu = await screen.findByRole('menu');
+    expect(menu.closest('table')).toBeNull();
   });
 });

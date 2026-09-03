@@ -473,6 +473,25 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       .catch((cause) => setError(formatError(cause)));
   }, [instanceId, packInstallRevision]);
 
+  // Crash Doctor's guided bisect renames JARs from a global overlay, outside
+  // this page's knowledge. Without this the mod list keeps showing the state
+  // from before the trial — so both applying a trial and restoring afterwards
+  // look like they did nothing.
+  useEffect(() => {
+    const onContentChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ instanceId?: string }>).detail;
+      if (detail?.instanceId && detail.instanceId !== instanceId) return;
+      void getInstanceDetail(instanceId)
+        .then((result) => {
+          setDetail(result);
+          return refreshContent();
+        })
+        .catch((cause) => setError(formatError(cause)));
+    };
+    window.addEventListener('agora-instance-content-changed', onContentChanged);
+    return () => window.removeEventListener('agora-instance-content-changed', onContentChanged);
+  }, [instanceId, refreshContent]);
+
   useEffect(() => {
     if (detail?.snapshot_readiness !== 'pending') return undefined;
     const timer = window.setInterval(() => {

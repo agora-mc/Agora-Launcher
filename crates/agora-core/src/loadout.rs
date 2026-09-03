@@ -149,10 +149,31 @@ pub fn apply_profile(instance_dir: &Path, profile_name: &str) -> Result<(), Stri
 /// of an enabled set — the guided bisect drives the same mechanism from a set
 /// it computes rather than one the user saved.
 pub fn apply_enabled_set(instance_dir: &Path, enabled: &[String]) -> Result<(), String> {
+    apply_enabled_set_scoped(instance_dir, enabled, None)
+}
+
+/// [`apply_enabled_set`] restricted to a single content type.
+///
+/// The unscoped form treats `enabled` as the complete picture of what should be
+/// on, across mods, resource packs, shaders, data packs and worlds — so
+/// anything absent from the list is turned *off*. That is right for a loadout
+/// profile, which is captured from every content type at once, and wrong for
+/// any caller that only knows about one of them: a mod-only list would silently
+/// disable every resource pack in the instance.
+///
+/// Pass `Some("mod")` to leave the other content types exactly as they are.
+pub fn apply_enabled_set_scoped(
+    instance_dir: &Path,
+    enabled: &[String],
+    only_content_type: Option<&str>,
+) -> Result<(), String> {
     let mut manifest = read_manifest(instance_dir)?;
     let enabled_set: std::collections::HashSet<String> = enabled.iter().cloned().collect();
 
     for entry in all_content_entries_mut(&mut manifest) {
+        if only_content_type.is_some_and(|wanted| entry.content_type != wanted) {
+            continue;
+        }
         let should_enable = enabled_set.contains(&entry.filename);
         if entry.enabled == should_enable {
             continue;
@@ -403,6 +424,54 @@ mod tests {
 
         let manifest = read_manifest(&dir).unwrap();
         assert!(manifest.mods.iter().all(|m| m.enabled));
+    }
+
+    #[test]
+    fn scoped_apply_leaves_other_content_types_alone() {
+        // A bisect only ever knows about mods, so its enabled list says nothing
+        // about shaders. Unscoped, the absence of "bsl.zip" reads as "turn it
+        // off" and the shader is disabled as collateral — and the cancel path,
+        // restoring the same mod-only baseline, never puts it back.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("test-instance");
+        fs::create_dir_all(dir.join("mods")).unwrap();
+        fs::create_dir_all(dir.join("shaderpacks")).unwrap();
+        fs::write(dir.join("mods").join("sodium.jar"), b"sodium").unwrap();
+        fs::write(dir.join("mods").join("iris.jar"), b"iris").unwrap();
+        fs::write(dir.join("shaderpacks").join("bsl.zip"), b"bsl").unwrap();
+
+        let mut manifest = make_manifest(&dir, &["sodium.jar", "iris.jar"]);
+        let mut shader = manifest.mods[0].clone();
+        shader.filename = "bsl.zip".to_string();
+        shader.content_type = "shader".to_string();
+        manifest.shaders.push(shader);
+        write_manifest(&dir, &manifest).unwrap();
+
+        // Disable iris, the way a bisect trial would.
+        apply_enabled_set_scoped(&dir, &["sodium.jar".to_string()], Some("mod")).unwrap();
+
+        let after = read_manifest(&dir).unwrap();
+        assert!(
+            !after
+                .mods
+                .iter()
+                .find(|m| m.filename == "iris.jar")
+                .unwrap()
+                .enabled
+        );
+        assert!(
+            after.shaders[0].enabled,
+            "the shader was not the bisect's business"
+        );
+        assert!(
+            dir.join("shaderpacks").join("bsl.zip").exists(),
+            "shader file must not have been renamed to .disabled"
+        );
+
+        // And the unscoped form still behaves as a loadout needs it to.
+        apply_enabled_set(&dir, &["sodium.jar".to_string()]).unwrap();
+        let after_unscoped = read_manifest(&dir).unwrap();
+        assert!(!after_unscoped.shaders[0].enabled);
     }
 
     #[test]

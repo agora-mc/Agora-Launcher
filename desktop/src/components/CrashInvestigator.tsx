@@ -1194,6 +1194,9 @@ export function CrashInvestigator({
               <ModBisectPanel
                 instanceId={instanceId}
                 primeSuspects={suspects.map((suspect) => suspect.filename)}
+                // The same launch path the single-suspect test uses, so a
+                // trial gets the health checks and launch mode of a real run.
+                onLaunch={() => onLaunch(() => { stackedHealthDialogRef.current = true; })}
               />
 
               {/* Success */}

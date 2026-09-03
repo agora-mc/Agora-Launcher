@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpCircle, ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, Search, Trash2 } from 'lucide-react';
 import { Switch } from '../ui/switch';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { formatError } from '../../lib/tauri';
 import type { InstalledContentRow, UpdateInfo } from '../../lib/tauri';
 import type { ContentColumn, ContentFilters, GroupMode, InstalledContentPanelProps, SortColumn, SortState } from './types';
@@ -120,7 +126,6 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
-  const rowIndexByKey = useMemo(() => new Map(visibleRows.map((row, index) => [row.key, index])), [visibleRows]);
   const filterCount = filters.categories.length + (filters.curation === 'all' ? 0 : 1) + (filters.source === 'all' ? 0 : 1) + (filters.enabled === 'all' ? 0 : 1);
   const contentLabel = titleForType[props.contentType].replace('Installed ', '');
   const selectedRows = rows.filter((row) => selectedKeys.has(row.key));
@@ -317,7 +322,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     );
   };
 
-  const renderCell = (row: InstalledContentRow, column: ContentColumn, rowIndex: number) => {
+  const renderCell = (row: InstalledContentRow, column: ContentColumn) => {
     switch (column) {
       case 'name': {
         const icon = props.iconForRow?.(row) ?? row.icon_url;
@@ -363,7 +368,28 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
           </button>
         ) : null}
         <button type="button" onClick={() => props.onRemove(row)} disabled={props.locked} className="rounded p-1.5 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50" title={props.locked ? 'Unlock the instance to remove content.' : `Remove ${row.display_name}`} aria-label={`Remove ${row.display_name}`}><Trash2 className="h-4 w-4" aria-hidden="true" /></button>
-        <details className="relative"><summary className="list-none rounded p-1.5 text-muted-foreground hover:bg-accent cursor-pointer" title="More actions" aria-label={`More actions for ${row.display_name}`}><MoreHorizontal className="h-4 w-4" aria-hidden="true" /></summary><div className={`absolute right-0 z-20 w-40 rounded-lg border border-border bg-card p-1 shadow-lg ${rowIndex >= visibleRows.length - 2 ? 'bottom-full mb-1' : 'top-full mt-1'}`}><button type="button" disabled={!row.resolved_path} onClick={() => props.onRevealFile?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Reveal file</button><button type="button" onClick={() => void navigator.clipboard.writeText(row.filename)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">Copy filename</button>{props.onTogglePin ? <button type="button" disabled={props.locked} onClick={() => props.onTogglePin?.(row, !row.update_pinned)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50" title={row.update_pinned ? 'Include this again in Update All' : 'Keep this version; skip it in Update All'}>{row.update_pinned ? 'Unpin updates' : 'Pin updates'}</button> : null}{props.onExplainPresence ? <button type="button" onClick={() => props.onExplainPresence?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent" title="Trace this back to the mod that needs it">Why is this here?</button> : null}{props.onChooseGroup ? <button type="button" disabled={props.locked} onClick={() => props.onChooseGroup?.([row])} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50" title="Put this in one of your own groups">Set group…</button> : null}{props.onSetCustomIcon ? <button type="button" disabled={props.locked} onClick={() => props.onSetCustomIcon?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50">Set custom image</button> : null}{row.registry_id || row.modrinth_id || row.mod_jar_id ? <button type="button" onClick={() => props.onOpenDetails?.(row)} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent">View details</button> : null}</div></details>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className="rounded p-1.5 text-muted-foreground hover:bg-accent"
+            title="More actions"
+            aria-label={`More actions for ${row.display_name}`}
+          >
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+          </DropdownMenuTrigger>
+          {/* Radix portals this to the body, which is what keeps it clear of
+              the table's overflow container and the sticky header's stacking
+              context. It also closes on outside click and Escape, which a bare
+              <details> does not — several could be open at once before. */}
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem disabled={!row.resolved_path} onSelect={() => props.onRevealFile?.(row)}>Reveal file</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(row.filename)}>Copy filename</DropdownMenuItem>
+            {props.onTogglePin ? <DropdownMenuItem disabled={props.locked} onSelect={() => props.onTogglePin?.(row, !row.update_pinned)}>{row.update_pinned ? 'Unpin updates' : 'Pin updates'}</DropdownMenuItem> : null}
+            {props.onExplainPresence ? <DropdownMenuItem onSelect={() => props.onExplainPresence?.(row)}>Why is this here?</DropdownMenuItem> : null}
+            {props.onChooseGroup ? <DropdownMenuItem disabled={props.locked} onSelect={() => props.onChooseGroup?.([row])}>Set group…</DropdownMenuItem> : null}
+            {props.onSetCustomIcon ? <DropdownMenuItem disabled={props.locked} onSelect={() => props.onSetCustomIcon?.(row)}>Set custom image</DropdownMenuItem> : null}
+            {row.registry_id || row.modrinth_id || row.mod_jar_id ? <DropdownMenuItem onSelect={() => props.onOpenDetails?.(row)}>View details</DropdownMenuItem> : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div></td>;
       }
       case 'version': return <td key={column} className="px-3 py-2 text-sm">{row.version ?? 'Unknown'}</td>;
@@ -422,7 +448,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
             </div>
           </td>
         </tr> : null}
-        {isCollapsed ? null : group.rows.map((row) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}><td className="w-10 px-3 py-2"><input type="checkbox" checked={selectedKeys.has(row.key)} onChange={() => toggleSelected(row.key)} disabled={props.locked} aria-label={`Select ${row.display_name}`} /></td>{columns.map((column) => renderCell(row, column, rowIndexByKey.get(row.key) ?? 0))}</tr>)}
+        {isCollapsed ? null : group.rows.map((row) => <tr key={row.key} className={`border-b border-border last:border-0 ${!row.enabled ? 'opacity-65' : ''}`}><td className="w-10 px-3 py-2"><input type="checkbox" checked={selectedKeys.has(row.key)} onChange={() => toggleSelected(row.key)} disabled={props.locked} aria-label={`Select ${row.display_name}`} /></td>{columns.map((column) => renderCell(row, column))}</tr>)}
       </tbody>;
     })}</table></div>}
   </section>;
