@@ -3667,6 +3667,16 @@ pub async fn create_desktop_shortcut(
     Ok(shortcut.to_string_lossy().into_owned())
 }
 
+/// Escape a value for interpolation into a PowerShell single-quoted string.
+///
+/// PowerShell escapes a literal `'` by doubling it. Nothing else is special
+/// inside single quotes — `$`, backticks and backslashes are all literal —
+/// so this is the whole rule.
+#[cfg(windows)]
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
 #[cfg(windows)]
 fn create_shortcut_file(
     desktop: &std::path::Path,
@@ -3677,14 +3687,19 @@ fn create_shortcut_file(
     let target = desktop.join(format!("{label}.lnk"));
     // A .lnk is a COM structure, not a text file. Rather than take a COM
     // dependency for one feature, drive the shell's own scripting object.
+    //
+    // Every interpolated value is escaped for a PowerShell single-quoted
+    // string. These are real paths, not constants: a user named O'Brien has an
+    // apostrophe in their desktop path, which would otherwise close the quote
+    // and leave the rest of their folder name parsed as code.
     let script = format!(
         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');\
          $s.TargetPath='{}';$s.Arguments='--launch {}';\
          $s.WorkingDirectory='{}';$s.Save()",
-        target.display(),
-        exe.display(),
-        instance_id,
-        exe.parent().unwrap_or(desktop).display(),
+        ps_single_quote(&target.display().to_string()),
+        ps_single_quote(&exe.display().to_string()),
+        ps_single_quote(instance_id),
+        ps_single_quote(&exe.parent().unwrap_or(desktop).display().to_string()),
     );
     let output = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -7416,6 +7431,16 @@ fn reveal_in_explorer(path: &std::path::Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Take the `--launch <id>` this process was started with, if any.
+///
+/// Consuming rather than reading: a shortcut click is a one-time instruction,
+/// and a webview reload should not re-navigate the user somewhere they have
+/// since navigated away from.
+#[tauri::command]
+pub fn take_pending_cli_launch(state: tauri::State<'_, crate::PendingCliLaunch>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut slot| slot.take())
 }
 
 // ---------------------------------------------------------------------------

@@ -66,8 +66,10 @@ export function InstanceIntegrationPanel({
           Create desktop shortcut
         </button>
         <p className="text-xs text-muted-foreground">
-          Launches this instance directly. If Agora is already open, the shortcut tells it to launch
-          rather than opening a second window.
+          Opens Agora on this instance, ready to play. It stops at the instance rather than starting
+          the game outright — one click should not put a window on screen you did not ask for. If
+          Agora is already running, the shortcut brings it to this instance instead of opening a
+          second window.
         </p>
       </div>
 

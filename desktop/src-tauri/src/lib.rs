@@ -73,6 +73,15 @@ fn launch_arg(args: &[String]) -> Option<String> {
     None
 }
 
+/// A `--launch <id>` seen in this process's own argv at startup.
+///
+/// The single-instance path can emit an event because the frontend is already
+/// listening. A cold start cannot: `setup` runs before any listener is
+/// attached, so an event there goes nowhere. The id is parked here instead and
+/// the frontend collects it once, on mount.
+#[derive(Default)]
+pub struct PendingCliLaunch(pub std::sync::Mutex<Option<String>>);
+
 /// Run the Tauri application.
 pub fn run() {
     // Log startup so the user can verify from the log file that they are
@@ -86,9 +95,17 @@ pub fn run() {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     ));
+    // Read this process's own argv before Tauri takes over. A shortcut clicked
+    // while Agora is closed lands here; one clicked while it is running lands
+    // in the single-instance callback below.
+    let pending_cli_launch = PendingCliLaunch(std::sync::Mutex::new(launch_arg(
+        &std::env::args().collect::<Vec<_>>(),
+    )));
+
     tauri::Builder::default()
         .manage(LauncherState::default())
         .manage(mcp::McpServerManager::default())
+        .manage(pending_cli_launch)
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_sql::Builder::new().build())
@@ -96,7 +113,13 @@ pub fn run() {
         // tauri.conf.json; an unsigned or wrongly-signed bundle is rejected by
         // the plugin before anything is installed.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_cli::init())
+        // Deliberately no `tauri_plugin_cli`. It requires a `plugins.cli`
+        // block in tauri.conf.json and panics at startup without one, and
+        // nothing here reads its parse results: `launch_arg` reads argv
+        // directly, which is all a single `--launch <id>` flag needs. A
+        // registered plugin whose output is never consumed is a second source
+        // of truth for the argument list and a startup failure waiting to
+        // happen.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second launch focuses the existing window instead of starting
             // a duplicate process (which previously could leave orphaned
@@ -114,6 +137,7 @@ pub fn run() {
             }
         }))
         .invoke_handler(tauri::generate_handler![
+            commands::take_pending_cli_launch,
             commands::browse_items,
             commands::for_you_items,
             commands::get_registry_item,

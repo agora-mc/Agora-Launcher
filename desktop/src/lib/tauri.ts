@@ -1050,6 +1050,10 @@ export interface ControlifyOffer {
   reason: string;
 }
 
+/** The `--launch <id>` this process started with, consumed on first read. */
+export const takePendingCliLaunch = () =>
+  invoke<string | null>('take_pending_cli_launch');
+
 export const evaluateControlifyOffer = (instanceId: string) =>
   invoke<ControlifyOffer>('evaluate_controlify_offer', { instanceId });
 export const declineControlifyOffer = (instanceId: string) =>

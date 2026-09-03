@@ -19,6 +19,7 @@ import {
   changeLoaderVersion,
   declineControlifyOffer,
   evaluateControlifyOffer,
+  takePendingCliLaunch,
   getInstanceDetail,
   getSetting,
   type ControlifyOffer,
@@ -359,6 +360,15 @@ export default function App() {
       if (event.payload) navigateToInstanceDetail(event.payload);
     }).then((stop) => { unlisten = stop; });
     return () => { unlisten?.(); };
+  }, [navigateToInstanceDetail]);
+
+  // The cold-start half of the same feature. A shortcut clicked while Agora is
+  // closed cannot arrive as an event — the backend parses argv before this
+  // listener exists — so the id is collected once here instead.
+  useEffect(() => {
+    void takePendingCliLaunch()
+      .then((instanceId) => { if (instanceId) navigateToInstanceDetail(instanceId); })
+      .catch(() => { /* No shortcut argument is the normal case. */ });
   }, [navigateToInstanceDetail]);
 
   // Legacy bridge: the CommandPalette still uses (tab, instanceId?) signature.
