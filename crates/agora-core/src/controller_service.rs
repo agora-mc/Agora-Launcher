@@ -31,13 +31,12 @@ pub const CONTROLIFY_MOD_ID: &str = "controlify";
 pub const CONTROLIFY_MODRINTH_SLUG: &str = "controlify";
 
 /// Settings key holding the instances the user declined the offer for.
+///
+/// The only controller-related preference there is. Handheld mode itself has
+/// no setting: picking a controller up is the request, and the Web Gamepad API
+/// only reports a pad once the user has pressed something on it, so there is a
+/// deliberate act to key off rather than a preference to configure.
 pub const CONTROLIFY_DECLINED_KEY: &str = "controlify_offer_declined";
-
-/// Settings key for whether handheld/big-picture mode may be entered at all.
-pub const CONTROLLER_MODE_ENABLED_KEY: &str = "controller_mode_enabled";
-
-/// Settings key for entering handheld mode automatically on gamepad connect.
-pub const CONTROLLER_MODE_AUTO_KEY: &str = "controller_mode_auto_enter";
 
 /// Loaders Controlify is published for.
 ///

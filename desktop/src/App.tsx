@@ -278,8 +278,6 @@ export default function App() {
     instanceName: string;
     report: HealthReport;
   } | null>(null);
-  const [controllerModeEnabled, setControllerModeEnabled] = useState(false);
-  const [controllerModeAutoEnter, setControllerModeAutoEnter] = useState(false);
   const [gamepadConnected, setGamepadConnected] = useState(false);
   const [handheldActive, setHandheldActive] = useState(false);
   const [controlifyOffer, setControlifyOffer] = useState<ControlifyOffer | null>(null);
@@ -402,22 +400,14 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const [ai, controllerMode, controllerModeAuto] = await Promise.all([
-          getSetting('ai_chat_enabled'),
-          getSetting('controller_mode_enabled'),
-          getSetting('controller_mode_auto_enter'),
-        ]);
+        const ai = await getSetting('ai_chat_enabled');
         if (!cancelled) {
           const asBool = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1';
           setAiChatEnabled(asBool(ai));
-          setControllerModeEnabled(asBool(controllerMode));
-          setControllerModeAutoEnter(asBool(controllerModeAuto));
         }
       } catch {
         if (!cancelled) {
           setAiChatEnabled(false);
-          setControllerModeEnabled(false);
-          setControllerModeAutoEnter(false);
         }
       }
     })();
@@ -426,14 +416,19 @@ export default function App() {
     };
   }, [destination]);
 
-  // Auto-enter only when a controller is newly observed under the enabled
-  // settings. The effect intentionally does not depend on `handheldActive`,
-  // so Start/Escape can still turn the mode off while the pad remains paired.
+  // Picking up a controller *is* the request for handheld mode, so there is
+  // nothing to switch on first. The browser only reports a gamepad once the
+  // user has actually pressed something on it, so this fires on a deliberate
+  // act rather than on a pad merely being plugged in.
+  //
+  // Deliberately not dependent on `handheldActive`: leaving with B or Escape
+  // must stick while the pad stays connected, or there would be no way out.
+  // Unplugging and reconnecting is a fresh request and does re-enter.
   useEffect(() => {
-    if (onboardingComplete === true && controllerModeEnabled && controllerModeAutoEnter && gamepadConnected) {
+    if (onboardingComplete === true && gamepadConnected) {
       setHandheldActive(true);
     }
-  }, [controllerModeAutoEnter, controllerModeEnabled, gamepadConnected, onboardingComplete]);
+  }, [gamepadConnected, onboardingComplete]);
 
   // React to the agora-navigate custom event (used by external code).
   useEffect(() => {
@@ -780,7 +775,6 @@ export default function App() {
   return (
     <PackInstallProvider>
       <HandheldShell
-        enabled={controllerModeEnabled}
         active={handheldActive}
         onActiveChange={setHandheldActive}
         onGamepadConnectionChange={setGamepadConnected}

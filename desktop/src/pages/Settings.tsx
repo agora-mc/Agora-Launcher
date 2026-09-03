@@ -184,8 +184,6 @@ export function Settings({
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
   const [aiMcp, setAiMcp] = useState(false);
   const [aiChatEnabled, setAiChatEnabled] = useState(false);
-  const [controllerModeEnabled, setControllerModeEnabled] = useState(false);
-  const [controllerModeAutoEnter, setControllerModeAutoEnter] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
   const [alwaysPreTouch, setAlwaysPreTouch] = useState(true);
   const [autoConfirmCleanInstalls, setAutoConfirmCleanInstalls] = useState(false);
@@ -281,8 +279,6 @@ export function Settings({
     setModrinth(ts.values.modrinthEnabled as boolean ?? false);
     setAiMcp(ts.values.aiMcpEnabled as boolean ?? false);
     setAiChatEnabled(ts.values.aiChatEnabled as boolean ?? false);
-    setControllerModeEnabled(ts.values.controllerModeEnabled as boolean ?? false);
-    setControllerModeAutoEnter(ts.values.controllerModeAutoEnter as boolean ?? false);
     setLauncherPath(ts.values.launcherPath as string ?? '');
     setAlwaysPreTouch(ts.values.alwaysPreTouch as boolean ?? true);
     setAutoConfirmCleanInstalls(ts.values.autoConfirmCleanInstalls as boolean ?? false);
@@ -624,26 +620,6 @@ export function Settings({
       await ts.update(SETTINGS.aiChatEnabled, value);
     } catch (e) {
       setAiChatEnabled(!value);
-      showToast(formatError(e), 'error');
-    }
-  };
-
-  const toggleControllerMode = async (value: boolean) => {
-    setControllerModeEnabled(value);
-    try {
-      await ts.update(SETTINGS.controllerModeEnabled, value);
-    } catch (e) {
-      setControllerModeEnabled(!value);
-      showToast(formatError(e), 'error');
-    }
-  };
-
-  const toggleControllerModeAutoEnter = async (value: boolean) => {
-    setControllerModeAutoEnter(value);
-    try {
-      await ts.update(SETTINGS.controllerModeAutoEnter, value);
-    } catch (e) {
-      setControllerModeAutoEnter(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -1189,43 +1165,6 @@ export function Settings({
       {ts.statuses['launch_mode']?.status === 'error' && (
         <p className="text-xs text-destructive">{ts.statuses['launch_mode']?.error}</p>
       )}
-      <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
-        <div>
-          <h3 className="text-sm font-medium">Handheld / big-picture mode</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Show a full-screen controller-friendly instance picker. Minecraft itself still needs a controller mod for gamepad input.
-          </p>
-        </div>
-        <label className="flex items-center justify-between gap-4">
-          <span className="text-sm">Enable handheld mode</span>
-          <input
-            type="checkbox"
-            aria-label="Enable handheld mode"
-            checked={controllerModeEnabled}
-            onChange={(e) => toggleControllerMode(e.target.checked)}
-            className="h-5 w-5 accent-primary"
-          />
-        </label>
-        <label className="flex items-center justify-between gap-4">
-          <span>
-            <span className="block text-sm">Enter automatically on controller connect</span>
-            <span className="mt-0.5 block text-xs text-muted-foreground">Keep this off if you only want to enter with Start.</span>
-          </span>
-          <input
-            type="checkbox"
-            aria-label="Enter handheld mode automatically on controller connect"
-            checked={controllerModeAutoEnter}
-            onChange={(e) => toggleControllerModeAutoEnter(e.target.checked)}
-            className="h-5 w-5 accent-primary"
-          />
-        </label>
-        {ts.statuses['controller_mode_enabled']?.status === 'error' && (
-          <p className="text-xs text-destructive">{ts.statuses['controller_mode_enabled']?.error}</p>
-        )}
-        {ts.statuses['controller_mode_auto_enter']?.status === 'error' && (
-          <p className="text-xs text-destructive">{ts.statuses['controller_mode_auto_enter']?.error}</p>
-        )}
-      </div>
     </SettingsSection>
   );
 

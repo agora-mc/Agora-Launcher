@@ -70,7 +70,6 @@ describe('HandheldShell', () => {
 
     render(
       <HandheldShell
-        enabled
         active
         onActiveChange={onActiveChange}
         onGamepadConnectionChange={vi.fn()}
@@ -90,7 +89,6 @@ describe('HandheldShell', () => {
 
     render(
       <HandheldShell
-        enabled
         active
         onActiveChange={vi.fn()}
         onGamepadConnectionChange={vi.fn()}
@@ -112,7 +110,6 @@ describe('HandheldShell', () => {
 
     const view = render(
       <HandheldShell
-        enabled
         active
         onActiveChange={vi.fn()}
         onGamepadConnectionChange={onGamepadConnectionChange}
@@ -127,7 +124,6 @@ describe('HandheldShell', () => {
     // The shell itself remains mounted and therefore remains keyboard-exitable.
     view.rerender(
       <HandheldShell
-        enabled
         active
         onActiveChange={vi.fn()}
         onGamepadConnectionChange={onGamepadConnectionChange}

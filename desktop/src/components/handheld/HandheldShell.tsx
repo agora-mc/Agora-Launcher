@@ -8,7 +8,6 @@ import {
 import { useGamepad, type GamepadDirection, type GamepadIntent } from '../../lib/useGamepad';
 
 export interface HandheldShellProps {
-  enabled: boolean;
   active: boolean;
   onActiveChange: (active: boolean) => void;
   onGamepadConnectionChange: (connected: boolean) => void;
@@ -60,7 +59,6 @@ function formatLoader(instance: InstanceRow): string {
 }
 
 export function HandheldShell({
-  enabled,
   active,
   onActiveChange,
   onGamepadConnectionChange,
@@ -76,15 +74,13 @@ export function HandheldShell({
   const cardRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const { connected } = useGamepad({
-    // Poll for input only while the shell is open, or while the mode is armed
-    // and waiting for Start. Connection tracking stays live either way, so the
-    // Controlify offer still knows about a controller with handheld mode off.
-    enabled: enabled || active,
     onConnectionChange: onGamepadConnectionChange,
     onIntent: useCallback((intent: GamepadIntent) => {
       if (intent.type === 'button') {
         if (intent.button === 'start') {
-          if (enabled && inputEnabled) onActiveChange(!active);
+          // Start is the way back in after leaving with B or Escape, so it
+          // toggles whenever a pad is being used.
+          if (inputEnabled) onActiveChange(!active);
           return;
         }
         if (!active || !inputEnabled) return;
@@ -106,7 +102,7 @@ export function HandheldShell({
         instances.length,
         handheldGridColumns(typeof window === 'undefined' ? 1024 : window.innerWidth),
       ));
-    }, [active, enabled, inputEnabled, instances, launchBusy, onActiveChange, onLaunch, selectedIndex]),
+    }, [active, inputEnabled, instances, launchBusy, onActiveChange, onLaunch, selectedIndex]),
   });
 
   const loadInstances = useCallback(async () => {
@@ -127,10 +123,6 @@ export function HandheldShell({
   useEffect(() => {
     if (active) void loadInstances();
   }, [active, loadInstances]);
-
-  useEffect(() => {
-    if (active && !enabled) onActiveChange(false);
-  }, [active, enabled, onActiveChange]);
 
   // Escape is deliberately global: focus can be on a card, a browser-managed
   // control, or the shell itself, and none of those should trap the user.

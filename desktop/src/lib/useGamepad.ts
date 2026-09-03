@@ -11,14 +11,6 @@ export interface UseGamepadOptions {
   onIntent?: (intent: GamepadIntent) => void;
   /** Called only when the presence of at least one gamepad changes. */
   onConnectionChange?: (connected: boolean) => void;
-  /**
-   * Whether to poll for button and axis input.
-   *
-   * Connection tracking is unaffected — it is event-driven and always live, so
-   * a caller that only wants to know "is a controller plugged in" costs
-   * nothing while this stays false.
-   */
-  enabled?: boolean;
   initialRepeatDelayMs?: number;
   repeatIntervalMs?: number;
 }
@@ -97,11 +89,12 @@ function buttonIntents(gamepad: Gamepad, previous: boolean[]): GamepadIntent[] {
  *
  * Presence is event-driven (`gamepadconnected` / `gamepaddisconnected`) and
  * always live. Input is not: the API fires no events for axes, so buttons and
- * sticks have to be polled on requestAnimationFrame, and that polling runs
- * only while `enabled`. Keeping the two apart matters — the launcher wants to
- * know a pad is plugged in at all times, but a permanent animation-frame loop
- * would keep the renderer awake for every user forever, which is a poor trade
- * on the battery-powered handhelds this feature exists for.
+ * sticks have to be polled on requestAnimationFrame — and that polling starts
+ * only once a pad is actually present, because there is nothing to read
+ * before then. That is why this needs no on/off switch. A user who never
+ * touches a controller never starts an animation-frame loop, which would
+ * otherwise keep the renderer awake forever for everyone — a poor trade on
+ * the battery-powered handhelds this feature exists for.
  *
  * Directional input fires immediately, then repeats after a key-like delay
  * while the D-pad or left stick remains held.
@@ -109,7 +102,6 @@ function buttonIntents(gamepad: Gamepad, previous: boolean[]): GamepadIntent[] {
 export function useGamepad({
   onIntent,
   onConnectionChange,
-  enabled = true,
   initialRepeatDelayMs = DEFAULT_INITIAL_REPEAT_DELAY_MS,
   repeatIntervalMs = DEFAULT_REPEAT_INTERVAL_MS,
 }: UseGamepadOptions = {}): UseGamepadResult {
@@ -149,8 +141,12 @@ export function useGamepad({
     connectionRef.current?.(connected);
   }, [connected]);
 
+  // Input polling, which only runs while a pad is actually present. There is
+  // nothing to read otherwise, so this needs no switch: a user who has never
+  // touched a controller never starts an animation-frame loop, and one who
+  // picks a controller up gets input without having turned anything on.
   useEffect(() => {
-    if (!enabled) return;
+    if (!connected) return;
 
     let frame = 0;
     let previousButtons: boolean[] = [];
@@ -193,7 +189,7 @@ export function useGamepad({
 
     frame = requestAnimationFrame(poll);
     return () => cancelAnimationFrame(frame);
-  }, [enabled, initialRepeatDelayMs, repeatIntervalMs]);
+  }, [connected, initialRepeatDelayMs, repeatIntervalMs]);
 
   return { connected, gamepadCount };
 }

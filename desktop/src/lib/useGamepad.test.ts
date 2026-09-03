@@ -67,11 +67,11 @@ describe('useGamepad', () => {
     const onIntent = vi.fn<(intent: GamepadIntent) => void>();
     const { result } = renderHook(() => useGamepad({ onIntent }));
 
-    tick(0);
-
     expect(result.current.connected).toBe(false);
     expect(result.current.gamepadCount).toBe(0);
     expect(onIntent).not.toHaveBeenCalled();
+    // No API means no pad, and no pad means nothing to poll for.
+    expect(frames).toHaveLength(0);
   });
 
   it('ignores sparse null entries and reports a real connected pad', () => {
@@ -120,48 +120,42 @@ describe('useGamepad', () => {
     expect(onIntent).toHaveBeenCalledWith({ type: 'direction', direction: 'right' });
   });
 
-  it('tracks connection without polling when input is disabled', () => {
+  it('does not poll at all until a controller shows up', () => {
     // A permanent animation-frame loop for every user would be a poor trade on
-    // the battery-powered handhelds this exists for, so presence has to work
-    // off the browser's own events.
+    // the battery-powered handhelds this exists for, and there is nothing to
+    // read from an absent pad anyway. Presence rides on the browser's events.
     const onConnectionChange = vi.fn();
     const onIntent = vi.fn<(intent: GamepadIntent) => void>();
-    const { result } = renderHook(() =>
-      useGamepad({ enabled: false, onConnectionChange, onIntent }));
+    const { result } = renderHook(() => useGamepad({ onConnectionChange, onIntent }));
 
     expect(frames).toHaveLength(0);
     expect(result.current.connected).toBe(false);
+    expect(onIntent).not.toHaveBeenCalled();
 
     current = [makeGamepad({ buttons: [0], axes: [1, 0] })];
     act(() => { window.dispatchEvent(new Event('gamepadconnected')); });
 
     expect(result.current.connected).toBe(true);
     expect(onConnectionChange).toHaveBeenLastCalledWith(true);
-    // Still no polling, so a held button produces no intent.
-    expect(frames).toHaveLength(0);
-    expect(onIntent).not.toHaveBeenCalled();
-
-    current = [];
-    act(() => { window.dispatchEvent(new Event('gamepaddisconnected')); });
-    expect(result.current.connected).toBe(false);
-    expect(onConnectionChange).toHaveBeenLastCalledWith(false);
+    // Picking the pad up is what starts polling — no switch to flip first.
+    expect(frames.length).toBeGreaterThan(0);
   });
 
-  it('stops polling when input is turned off but keeps reporting presence', () => {
+  it('stops polling again when the last controller goes away', () => {
     current = [makeGamepad({ axes: [1, 0] })];
     const onIntent = vi.fn<(intent: GamepadIntent) => void>();
-    const { rerender, result } = renderHook(
-      ({ enabled }) => useGamepad({ enabled, onIntent }),
-      { initialProps: { enabled: true } },
-    );
+    const { result } = renderHook(() => useGamepad({ onIntent }));
 
     tick(0);
     expect(onIntent).toHaveBeenCalledTimes(1);
 
+    current = [];
+    act(() => { window.dispatchEvent(new Event('gamepaddisconnected')); });
+    expect(result.current.connected).toBe(false);
+
     frames = [];
-    rerender({ enabled: false });
+    // Nothing reschedules a frame once the pad is gone.
     expect(frames).toHaveLength(0);
-    expect(result.current.connected).toBe(true);
   });
 
   it('clears connection state and held input when the controller disconnects', () => {
