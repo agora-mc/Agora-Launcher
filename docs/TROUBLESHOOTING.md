@@ -72,6 +72,29 @@ Review:
 
 Do not combine `--replace-conflicts` with an unreviewed large update batch.
 
+### A controller works in Agora but does nothing in Minecraft
+
+This is expected. Minecraft has no built-in gamepad support, so a controller that
+navigates Agora will not move your character.
+
+- Install Controlify into the instance. Agora offers this when you launch with a
+  controller in use, and you can also install it yourself from Browse.
+- Controlify is published for Fabric, Quilt, and NeoForge. On any other loader
+  there is no build to install, and Agora will say so rather than offering one.
+- If you declined the offer earlier, it is remembered for that instance and will
+  not be shown again; install it from Browse instead.
+
+### A controller does not put Agora into handheld mode
+
+- Press a button on the pad while the Agora window is focused. Agora is only told
+  a controller exists once you use it, so one sitting connected and idle is not
+  enough.
+- If you left handheld mode with **B** or **Escape**, Agora deliberately does not
+  pull you back in while the pad stays connected. Press **Start**, or unplug and
+  reconnect.
+- There is no setting to enable. If pressing buttons does nothing at all, confirm
+  the controller works elsewhere on the system first.
+
 ### Minecraft crashes after launch
 
 - Open Crash Doctor or run:

@@ -74,6 +74,7 @@ const COMMON_QUESTIONS = [
   { href: '/docs/guides/privacy-offline', label: 'What does Agora send, and how do I play offline?' },
   { href: '/docs/guides/packs-sharing', label: 'How do I move a setup to another machine?' },
   { href: '/docs/guides/java-performance', label: 'How much memory should I give Minecraft?' },
+  { href: '/docs/guides/controller-handheld', label: 'Can I use Agora with a controller?' },
 ];
 
 // Troubleshooting is already a primary route card on this page, so it is

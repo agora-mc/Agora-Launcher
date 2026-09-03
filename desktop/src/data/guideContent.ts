@@ -330,6 +330,15 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Lock a stable setup',
           body: 'Locking prevents content changes while still allowing launch. Use it after a pack or personal setup is working well. Unlock only when you intend to install, remove, enable, disable, or update content.',
         },
+        {
+          title: 'Reuse a setup with templates',
+          body: 'Once an instance is set up the way you like, save it as a template: the memory and Java arguments, plus whichever configuration files you choose to include. Applying it to a new instance saves redoing the same work, and named Java profiles let you keep several memory setups without editing arguments each time.',
+          callout: {
+            tone: 'note',
+            title: 'Templates carry settings, not mods',
+            text: 'A template captures how an instance is configured, not what is installed in it. Use a pack export when you want to reproduce the content as well.',
+          },
+        },
       ],
     },
     advanced: {
@@ -480,12 +489,25 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Check for updates',
-          body: 'From My Instances, select Check for Updates. Review the updates per unlocked instance, deselect anything you want to postpone, then review and apply the batch plan.',
+          body: 'From My Instances, select Check for Updates. Review the updates per unlocked instance, deselect anything you want to postpone, then review and apply the batch plan. Update All applies every remaining update in one reviewed batch.',
           bullets: [
             'Locked instances are skipped.',
             'A newer version is not automatically compatible with every other mod.',
             'The result screen reports success, cancellation, failure, or automatic health rollback.',
           ],
+        },
+        {
+          title: 'Results are remembered, and badges count them',
+          body: 'Once checked, results are stored, so they survive navigating away and restarting Agora. Each instance card shows how many updates are waiting, and Agora re-checks quietly in the background on an interval you can change in Settings.',
+          callout: {
+            tone: 'note',
+            title: 'Only offered when a build actually fits',
+            text: 'Agora prefers a build for your exact Minecraft version, and will otherwise offer one for the same version line with the right loader. A release that matches neither is not an update you can take, so it is not offered as one.',
+          },
+        },
+        {
+          title: 'See what changed, and pin what should not',
+          body: 'Where the author publishes one, the changelog for a version is shown before the update applies, so you can decide with the release notes in front of you. If a mod is at a version you want to keep, pin it: pinned mods are skipped by Update All, stop counting toward the badge, and can still be updated deliberately whenever you choose.',
         },
       ],
     },
@@ -567,6 +589,15 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             text: 'A manually supplied file may lack source metadata and curated compatibility information. Create a snapshot first and never run untrusted JAR files.',
           },
         },
+        {
+          title: 'Group a long list',
+          body: 'A large instance is easier to read grouped than alphabetical. Group by category, by source, or by whether a mod came from the pack or from you, and collapse the groups you are not working on. Each group can be enabled or disabled as a set.',
+          callout: {
+            tone: 'tip',
+            title: 'Pack content is marked',
+            text: 'In an instance created from a modpack, mods the pack brought are distinguished from ones you added yourself. That distinction is what lets a pack update leave your additions alone.',
+          },
+        },
       ],
     },
     advanced: {
@@ -580,6 +611,19 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         {
           title: 'Read the installed inventory',
           body: 'The Mods list distinguishes the resolved project name from the physical filename and records source and install time when available. A missing registry or provider identity is a signal that future automated updates may require manual attention.',
+        },
+        {
+          title: 'Ask why a mod is here',
+          body: 'For any installed mod, Agora can explain its presence: whether you asked for it or it arrived as somebody else\'s dependency, and which installed mods currently require it. That is the question worth answering before removing a library you do not recognise.',
+        },
+        {
+          title: 'Clean up orphaned dependencies',
+          body: 'A library installed only to satisfy a mod you have since removed is an orphan. Agora lists them so you can remove them deliberately, having recorded at install time which entries were dependencies rather than choices.',
+          callout: {
+            tone: 'note',
+            title: 'Orphan detection is deliberately cautious',
+            text: 'A mod that anything still points at, even optionally, is not reported as an orphan. Leaving a library you no longer need is harmless; removing one that something still wants is not.',
+          },
         },
         {
           title: 'Design controlled mod groups',
@@ -631,6 +675,15 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Disable a suspect only if you understand the dependent impact.',
             'Use Launch Anyway only for a deliberate, recoverable test.',
           ],
+        },
+        {
+          title: 'Known bad combinations',
+          body: 'Some pairs of mods are fine alone and break together. Alongside what each mod declares about itself, Agora ships a curated list of combinations reviewers have confirmed cause problems, and checks your instance against it before launch and when you install something new.',
+          callout: {
+            tone: 'note',
+            title: 'A conflict can be scoped to particular versions',
+            text: 'Where a conflict only appeared in certain releases, the curated entry says so, and Agora stays quiet on versions it does not apply to instead of condemning the pair forever.',
+          },
         },
         {
           title: 'Repair a loader mismatch',
@@ -715,6 +768,15 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           ],
         },
         {
+          title: 'When no single mod looks guilty',
+          body: 'If the evidence does not point anywhere, use guided bisect. Agora disables half your mods, you launch and report whether it still crashes, and it halves the remaining candidates each round until one is left. A handful of launches will find a culprit that no crash log named.',
+          callout: {
+            tone: 'note',
+            title: 'Each half is kept loadable',
+            text: 'Bisect never splits a mod away from something it depends on. A trial that crashed on a missing dependency would tell you about the split rather than the bug, so the halves are chosen to stay launchable. If you answer a round wrongly, you can step back and take the other half.',
+          },
+        },
+        {
           title: 'Recover instead of investigate',
           body: 'If you need to play immediately, restore the Last Known Good state from Home or the Snapshots tab. Use Restore All & Close in Crash Doctor to undo its test changes.',
           callout: {
@@ -785,6 +847,15 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Create a loadout profile',
           body: 'Open Loadout Profiles, name the current enabled-mod arrangement, and save it. Apply another profile to switch enabled states without removing files. Relaunch Minecraft after applying a profile.',
         },
+        {
+          title: 'Export and import a backup',
+          body: 'A snapshot can be exported to a single file you can keep elsewhere or send to another machine. Importing one validates it completely before anything is written, then adds it to that instance\'s snapshot list.',
+          callout: {
+            tone: 'note',
+            title: 'Importing never overwrites what you have',
+            text: 'Import adds a restorable snapshot and changes nothing in the instance. Agora then offers to restore it, and that step is the guarded one: it refuses while the instance is running and takes an undo snapshot first.',
+          },
+        },
       ],
     },
     advanced: {
@@ -840,6 +911,21 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Wait for preparation and health validation to finish.',
             'Launch once and verify the pack before adding more content.',
           ],
+        },
+        {
+          title: 'Update a pack without losing your changes',
+          body: 'When the pack author publishes a new version, Agora compares three things: what the old pack shipped, what you have now, and what the new pack ships. Files the pack changed and you did not are simply updated. Mods you added yourself are kept. Where the pack changed something you also edited, Agora stops and asks rather than choosing for you.',
+          steps: [
+            'Point Agora at the new pack file to see a preview before anything changes.',
+            'Review the files it will add, update, and remove.',
+            'Answer every conflict — there is no default for a file you both edited.',
+            'Apply. A snapshot is taken first and the whole update rolls back if it fails.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'Your edits are the ones that need a decision',
+            text: 'A conflict means the author changed a file you had also changed. Keeping yours means missing their fix; taking theirs means losing your edit. Only you know which matters, so Agora refuses to guess.',
+          },
         },
         {
           title: 'Choose an export',
@@ -1213,6 +1299,250 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             tone: 'warning',
             title: 'Governance is not a support shortcut',
             text: 'Use project support or Crash Doctor for ordinary compatibility bugs. Use governance for curation, conduct, integrity, or community-policy concerns.',
+          },
+        },
+      ],
+    },
+  },
+  {
+    id: 'version-migration',
+    title: 'Moving an instance to a new Minecraft version',
+    shortTitle: 'Version migration',
+    category: 'Manage',
+    description: 'Check whether every mod has a build for a newer version, then move across in one confirmed step.',
+    keywords: ['migration', 'minecraft version', 'upgrade', 'move version', 'abandoned mod', 'successor'],
+    basic: {
+      summary: 'Moving to a new Minecraft version usually fails on one or two mods rather than all of them. Agora checks first, tells you which, and only moves when you say so.',
+      outcomes: [
+        'Check an instance against a target version.',
+        'Read the verdict and per-mod statuses.',
+        'Move across, with a snapshot taken first.',
+      ],
+      sections: [
+        {
+          title: 'Check before you commit',
+          body: 'Open an instance, choose a target version from the list, and check. Checking changes nothing at all — it reports whether every installed mod has a build for that version. The list only offers versions your loader actually supports, so a version you cannot reach is never presented as an option.',
+        },
+        {
+          title: 'Read the statuses honestly',
+          body: 'Each mod lands in one of a few groups, and the difference between them matters more than the total.',
+          bullets: [
+            'Ready: a build exists for the target version.',
+            'No build yet: nothing published so far. Waiting is often enough.',
+            'Looks abandoned: no activity for a long time.',
+            'Has a replacement: the author points at a successor.',
+            'Could not check: the lookup failed. This is not the same as bad news.',
+            'Needs a look: no online identity to check against, such as a hand-added JAR.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'One unknown makes the whole report provisional',
+            text: 'A mod Agora could not check is reported as unchecked, never as dead, and its presence stops the report claiming to be complete.',
+          },
+        },
+        {
+          title: 'Make the move',
+          body: 'When you move, Agora takes a snapshot first, swaps every mod it can for its build on the target version, and updates the instance. If anything fails partway, the instance is returned to how it was rather than left half-migrated.',
+        },
+      ],
+    },
+    advanced: {
+      summary: 'Migration is a transaction with an explicit gate on the things it cannot solve for you. Understanding what it refuses to decide is most of understanding it.',
+      outcomes: [
+        'Know which conditions block a migration outright.',
+        'Decide what to do about mods with no target build.',
+        'Understand what migration deliberately leaves alone.',
+      ],
+      sections: [
+        {
+          title: 'Locking is the only hard gate',
+          body: 'A locked instance cannot be migrated; unlock it first. Everything else is a warning you can accept, including moving an instance that came from a modpack.',
+          callout: {
+            tone: 'warning',
+            title: 'Migrating a modpack deviates from the pack',
+            text: 'Most pack authors do not support running their pack on a different Minecraft version, and doing so can be unstable. A later pack update may overwrite mod versions, configuration, and other changes. Agora warns rather than refuses, because it is your instance.',
+          },
+        },
+        {
+          title: 'Mods with no target build',
+          body: 'Migration does not silently drop them. You either leave them behind at their current version, accepting that they will not load, or you stop and wait for builds to appear. Either way it is an explicit answer, not a default.',
+        },
+        {
+          title: 'What migration does not do',
+          body: 'It moves mod versions. It does not migrate your worlds, rewrite configuration files for a new format, or guarantee that a mod behaves the same on the new version. Back up saves you care about before moving, and expect to revisit configuration afterwards.',
+          callout: {
+            tone: 'tip',
+            title: 'If something breaks after the move',
+            text: 'The pre-migration snapshot is a restore point, and Crash Doctor\'s guided bisect will narrow down which mod is responsible if the game starts crashing.',
+          },
+        },
+      ],
+    },
+  },
+  {
+    id: 'disk-and-desktop',
+    title: 'Disk space, shortcuts, and portable installs',
+    shortTitle: 'Disk & desktop',
+    category: 'Customize',
+    description: 'Reclaim space, put an instance on your desktop, share screenshots, and run Agora from a USB stick.',
+    keywords: ['disk space', 'reclaim', 'prune', 'shortcut', 'portable', 'screenshots', 'wrapper', 'launch history', 'storage'],
+    basic: {
+      summary: 'Several small features deal with where things live on disk and how you reach them. None of them are needed to play, and all of them are reversible.',
+      outcomes: [
+        'Reclaim runtime files no instance is using.',
+        'Create a desktop shortcut for an instance.',
+        'Share one screenshots folder across instances.',
+      ],
+      sections: [
+        {
+          title: 'Reclaim disk space',
+          body: 'Minecraft versions, libraries, native files, and asset objects accumulate as you create instances and move between game versions. The reclaim scan lists what no instance can currently reach, grouped by category, and changes nothing until you choose categories and confirm.',
+          callout: {
+            tone: 'note',
+            title: 'The scan refuses rather than guesses',
+            text: 'If any instance cannot be read, the scan reports nothing as reclaimable instead of assuming that instance needs nothing. An incomplete survey is treated as unsafe, because a file that only looks unused is exactly the file that breaks a launch.',
+          },
+        },
+        {
+          title: 'Put an instance on your desktop',
+          body: 'Instance integration can create a desktop shortcut. Opening it brings Agora to that instance, ready to play. It stops there rather than starting the game outright, because one click should not put a window on screen you did not ask for. If Agora is already running, the shortcut moves the existing window rather than opening a second one.',
+        },
+        {
+          title: 'Share a screenshots folder',
+          body: 'Minecraft always writes to a screenshots folder inside the instance, with no setting to change it. Agora can link each instance to one shared folder so every screenshot lands in the same place. Existing screenshots are moved into the share rather than left behind, and unlinking stops sharing without deleting anything.',
+          callout: {
+            tone: 'warning',
+            title: 'Linking refuses on a name collision',
+            text: 'If two instances hold screenshots with the same filename, Agora stops rather than overwriting one. Rename or move the duplicate, then link again.',
+          },
+        },
+      ],
+    },
+    advanced: {
+      summary: 'The same group of features covers portable installs, wrapper commands, and per-instance launch history. Each is a small, local mechanism with no service behind it.',
+      outcomes: [
+        'Run Agora from removable media.',
+        'Wrap the launch command with a tool such as a frame-rate overlay.',
+        'Read launch history without over-reading it.',
+      ],
+      sections: [
+        {
+          title: 'Portable installs',
+          body: 'A file named portable.txt beside the executable makes Agora keep its data next to itself instead of in your user profile. Empty means a data folder alongside the executable; otherwise its first line names the folder, resolved relative to the executable rather than wherever you happened to run it from.',
+          callout: {
+            tone: 'note',
+            title: 'The environment variable still wins',
+            text: 'AGORA_DATA_DIR outranks the marker file. A portable build is a property of the copy; an exported variable is a request about this particular run.',
+          },
+        },
+        {
+          title: 'Wrapper commands',
+          body: 'A wrapper command runs in front of the real launch command, which is how tools like performance overlays and compositors attach themselves. Agora still builds the true command and then applies the wrapper as a visible transform, so what actually runs stays inspectable. A malformed quote is rejected in the settings field rather than at launch time.',
+        },
+        {
+          title: 'Launch history',
+          body: 'Agora records preparation time, session length, outcome, and enabled mod count for each launch, keeps the most recent entries, and deletes them with the instance. It is local, with nothing sent anywhere.',
+          callout: {
+            tone: 'note',
+            title: 'It does not claim to measure startup time',
+            text: 'Minecraft emits no reliable signal for "the game is ready", so that number would be invented. History compares recent runs against earlier ones and stays silent about trends until there are enough runs to mean anything.',
+          },
+        },
+      ],
+    },
+  },
+  {
+    id: 'controller-handheld',
+    title: 'Playing with a controller',
+    shortTitle: 'Controller & handheld',
+    category: 'Play',
+    description: 'Use Agora from the couch with a gamepad, and add controller support to Minecraft itself.',
+    keywords: ['controller', 'gamepad', 'handheld', 'big picture', 'couch', 'Steam Deck', 'Controlify', 'joystick'],
+    basic: {
+      summary: 'Press a button on a connected controller and Agora switches to a full-screen picker you can drive entirely with the gamepad. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
+      outcomes: [
+        'Enter and leave handheld mode.',
+        'Choose and launch an instance without a keyboard or mouse.',
+        'Understand why Agora offers to add Controlify.',
+      ],
+      sections: [
+        {
+          title: 'Enter handheld mode',
+          body: 'Connect a controller and press any button on it while Agora is focused. The window switches to handheld mode: large instance cards, one highlighted, sized for reading at a distance. There is no setting to enable first, because picking the controller up is the request.',
+          callout: {
+            tone: 'note',
+            title: 'A plugged-in controller is not enough',
+            text: 'Agora is only told a controller exists once you press something on it. A gamepad left connected for another game will not pull Agora into handheld mode on its own.',
+          },
+        },
+        {
+          title: 'Move around and play',
+          body: 'The D-pad and the left stick both move the highlight, and it wraps at the edges of the grid. A launches the highlighted instance. B leaves handheld mode. Start toggles it, so it is also how you come back after leaving.',
+          bullets: [
+            'D-pad or left stick: move between instances.',
+            'A: launch the highlighted instance.',
+            'B: leave handheld mode.',
+            'Start: toggle handheld mode on or off.',
+          ],
+        },
+        {
+          title: 'Leave without a controller',
+          body: 'Escape always exits handheld mode, and there is an Exit button in the top-right corner. Both work regardless of what the controller is doing, so a flat battery or a disconnected pad can never leave you stuck in a view you cannot drive.',
+          callout: {
+            tone: 'tip',
+            title: 'Leaving sticks',
+            text: 'Once you leave, Agora stays in the normal view while the controller remains connected. It does not pull you back in. Unplugging and reconnecting counts as a fresh request.',
+          },
+        },
+        {
+          title: 'Add controller support to Minecraft',
+          body: 'Minecraft has no built-in gamepad support, so a controller that drives Agora will do nothing in the game itself. When you launch with a controller in use, Agora offers to install Controlify, the mod that adds it. Accepting opens the normal install flow, so you see and confirm exactly what is being added before anything changes.',
+          callout: {
+            tone: 'note',
+            title: 'Declining is remembered',
+            text: 'Choose Not now and Agora stops asking for that instance. The launch continues either way; the offer never blocks playing.',
+          },
+        },
+      ],
+    },
+    advanced: {
+      summary: 'Handheld mode is a separate shell rather than gamepad navigation bolted onto every page. Knowing what it deliberately does not cover, and when the Controlify offer stays silent, explains most of its behaviour.',
+      outcomes: [
+        'Know the scope of handheld mode and what to do outside it.',
+        'Predict when the Controlify offer appears and when it does not.',
+        'Understand what the mode costs when you never use a controller.',
+      ],
+      sections: [
+        {
+          title: 'Deliberately narrow scope',
+          body: 'Handheld mode covers seeing your instances and launching one. Browsing the registry, editing mods, and changing settings stay in the normal view with keyboard and mouse. Someone reaching for a controller wants to pick something and play, and a launcher that pretended a whole mod catalogue was gamepad-navigable would be worse at both jobs.',
+        },
+        {
+          title: 'Launching behaves identically',
+          body: 'A launch from handheld mode resolves direct or delegated the same way the Play button does for that instance, and it runs the same pre-launch health checks. Handheld mode is a different way to reach the same action, not a different action.',
+        },
+        {
+          title: 'When the Controlify offer stays quiet',
+          body: 'The offer only appears when there is something to accept. Agora stays silent when Controlify is already installed, when the instance is locked, when you have declined for that instance before, or when the loader has no Controlify build.',
+          bullets: [
+            'Already installed, including installed but disabled — disabling it was deliberate, and installing again would not enable it.',
+            'A locked instance, which accepts no new mods until you unlock it.',
+            'Previously declined for that instance.',
+            'Loaders without a Controlify build. Fabric, Quilt, and NeoForge are supported.',
+          ],
+          callout: {
+            tone: 'note',
+            title: 'A hand-dropped JAR still counts',
+            text: 'Agora checks the loader id, the registry id, and the filename, so a copy of Controlify you added yourself is recognised and you are not asked again.',
+          },
+        },
+        {
+          title: 'Cost when you have no controller',
+          body: 'Reading gamepad input requires polling every animation frame, so Agora only starts polling once a controller is actually present. Connection is reported by the browser rather than discovered by searching. If you never touch a gamepad, none of this runs.',
+          callout: {
+            tone: 'tip',
+            title: 'Undoing a decline',
+            text: 'Declining is stored per instance rather than permanently disabling the feature, so it can be reset. Installing Controlify yourself from Browse has the same effect.',
           },
         },
       ],
