@@ -62,6 +62,8 @@ async function installMock(page: Page, options: { variant: 'invalid-mod' | 'inva
         if (command === 'get_github_profile') return Promise.resolve(null);
         if (command === 'get_flag_rate_limit') return Promise.resolve({ remaining: 10, reset_at: null });
         if (command === 'list_mod_reviews') return Promise.resolve([]);
+        // Multi-session launch state is a list; the backend never returns null.
+        if (command === 'query_launch_state') return Promise.resolve([]);
         if (command === 'list_instances') return Promise.resolve(instances);
         if (command === 'is_modrinth_enabled') return Promise.resolve(false);
         if (command === 'list_manifest_loaders') return Promise.resolve(['fabric', 'forge']);

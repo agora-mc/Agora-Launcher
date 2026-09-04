@@ -1490,6 +1490,16 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   </div>
                 )}
                 <p className="text-xs font-medium mb-2">Available versions</p>
+                {(selectedCandidate || selectedModrinthCandidate) && (
+                  <button
+                    onClick={handleConfirmInstall}
+                    disabled={!!(isModrinthInstall && selectedModrinthCandidate && !selectedModrinthCandidate.sha1)}
+                    data-tour="install-confirm"
+                    className="mb-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
+                  </button>
+                )}
                 {phase === 'loadingVersions' ? (
                   <div className="text-center py-4">
                     <svg className="animate-spin h-5 w-5 mx-auto text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1670,16 +1680,6 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   <div ref={versionSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
                     {loadingMoreVersions ? 'Loading more versions…' : ''}
                   </div>
-                )}
-                {(selectedCandidate || selectedModrinthCandidate) && (
-                  <button
-                    onClick={handleConfirmInstall}
-                    disabled={!!(isModrinthInstall && selectedModrinthCandidate && !selectedModrinthCandidate.sha1)}
-                    data-tour="install-confirm"
-                    className="mt-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
-                  </button>
                 )}
               </div>
             )}

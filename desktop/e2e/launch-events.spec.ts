@@ -91,6 +91,8 @@ async function installLaunchEventMock(page: Page, options: LaunchEventMockOption
         if (command === 'plugin:event|unlisten') return Promise.resolve(1);
         if (command.startsWith('plugin:event|')) return Promise.resolve(1);
 
+        // Multi-session launch state is a list; the backend never returns null.
+        if (command === 'query_launch_state') return Promise.resolve([]);
         if (command === 'list_instances') return Promise.resolve([row]);
 
         if (command === 'check_instance_crash') return Promise.resolve(null);

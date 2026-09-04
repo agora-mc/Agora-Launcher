@@ -30,6 +30,10 @@ const PILLARS = [
     title: 'Autonomous and decentralized',
     body: 'Agora does not depend on a corporate backend. Data ships through GitHub Release Assets and static files, so the platform keeps working on your terms.',
   },
+  {
+    title: 'Controller support',
+    body: 'Unlike other launchers, Agora is designed to be fully navigable with a controller. Browse, vote, launch Minecraft,and install mods without ever touching a keyboard or mouse.',
+  },
 ];
 
 export const metadata = {

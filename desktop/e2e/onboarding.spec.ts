@@ -96,6 +96,11 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
   await expect(switches.nth(4)).toHaveAttribute('aria-checked', 'true');
 
   await switches.nth(1).click();
+  // Turning Technic on asks for confirmation in an in-app dialog first.
+  const technicConfirm = page.getByRole('dialog');
+  await expect(technicConfirm.getByText('Enable Technic browsing?')).toBeVisible();
+  await technicConfirm.getByRole('button', { name: 'Confirm' }).click();
+  await expect(switches.nth(1)).toHaveAttribute('aria-checked', 'true');
   // Go to Launch step
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { name: 'Choose How to Launch' })).toBeVisible({ timeout: 3000 });

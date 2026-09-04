@@ -26,7 +26,7 @@ interface UpdateInfo {
 
 const VANILLA_UPDATES: UpdateInfo[] = [
   {
-    filename: 'sodium-0.6.0.jar',
+    filename: 'sodium-0.5.11.jar',
     mod_jar_id: 'sodium',
     current_version: '0.5.11',
     latest_version: '0.6.0',
@@ -34,13 +34,18 @@ const VANILLA_UPDATES: UpdateInfo[] = [
     source: 'curated',
   },
   {
-    filename: 'lithium-0.12.1.jar',
+    filename: 'lithium-0.12.0.jar',
     mod_jar_id: 'lithium',
     current_version: '0.12.0',
     latest_version: '0.12.1',
     target_version: '0.12.1',
     source: 'curated',
   },
+];
+
+const INSTALLED_MODS = [
+  { filename: 'sodium-0.5.11.jar', display_name: 'Sodium', mod_jar_id: 'sodium', version: '0.5.11', sha256: 'a'.repeat(64) },
+  { filename: 'lithium-0.12.0.jar', display_name: 'Lithium', mod_jar_id: 'lithium', version: '0.12.0', sha256: 'b'.repeat(64) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -86,6 +91,18 @@ function makeSuccessOutcome(snapshotId = 'snap-success-001') {
   };
 }
 
+function makeHealthRollbackOutcome(snapshotId = 'snap-health-001') {
+  return {
+    type: 'health-rollback' as const,
+    snapshotId,
+    healthReport: {
+      blockers: [{ message: 'sodium 0.6.0 requires fabric 0.17', suggested_action: null, filename: null }],
+      warnings: [],
+      recommendations: [],
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Shared mock installer for UpdatesSection tests
 // ---------------------------------------------------------------------------
@@ -93,11 +110,14 @@ function makeSuccessOutcome(snapshotId = 'snap-success-001') {
 async function updatesSectionMock(page: Page) {
   const updatesByInstance: Record<string, UpdateInfo[]> = {
     'vanilla-instance': VANILLA_UPDATES,
+    // The locked instance has updates too — the point of the locked-instance
+    // test is that Agora refuses to act on them, not that there are none.
+    'locked-instance': VANILLA_UPDATES,
   };
 
   await page.addInitScript(
-    (params: { updates: Record<string, UpdateInfo[]> }) => {
-      const { updates } = params;
+    (params: { updates: Record<string, UpdateInfo[]>; mods: typeof INSTALLED_MODS }) => {
+      const { updates, mods: installedMods } = params;
 
       const installCalls: InstallCall[] = [];
 
@@ -153,13 +173,75 @@ async function updatesSectionMock(page: Page) {
           if (command === 'get_curated_annotation') return Promise.resolve(null);
 
           // Instances
+          // Multi-session launch state is a list; the backend never returns null.
+          if (command === 'query_launch_state') return Promise.resolve([]);
           if (command === 'list_instances') {
             return Promise.resolve([
               { instance_id: 'vanilla-instance', name: 'Vanilla', minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16.0', is_modpack: false, is_locked: false, last_launched_at: null, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-01-01T00:00:00Z' },
               { instance_id: 'locked-instance', name: 'Locked Modded', minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', is_modpack: false, is_locked: true, last_launched_at: null, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-01-01T00:00:00Z' },
             ]);
           }
-          if (command === 'get_instance_detail') return Promise.resolve(null);
+          if (command === 'get_instance_detail') {
+            const instanceId = args.instanceId as string;
+            const locked = instanceId === 'locked-instance';
+            const row = {
+              instance_id: instanceId,
+              name: locked ? 'Locked Modded' : 'Vanilla',
+              minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16.0',
+              is_modpack: false, is_locked: locked, last_launched_at: null,
+              jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '',
+              created_at: '2026-01-01T00:00:00Z',
+            };
+            return Promise.resolve({
+              row,
+              manifest: {
+                instance_id: instanceId, name: row.name, created_from_pack: null,
+                minecraft_version: '1.21', loader: 'fabric', loader_version: '0.16.0',
+                mods: installedMods.map((mod) => ({
+                  filename: mod.filename, registry_id: null, modrinth_id: null,
+                  mod_jar_id: mod.mod_jar_id, source: 'curated', version: mod.version,
+                  sha256: mod.sha256, installed_at: '2026-07-01T00:00:00Z',
+                  enabled: true, content_type: 'mod',
+                })),
+                resourcepacks: [], shaders: [], datapacks: [], worlds: [],
+                user_preferences: {},
+              },
+            });
+          }
+          if (command === 'list_instance_content') {
+            return Promise.resolve(installedMods.map((mod) => ({
+              key: `mod:${mod.filename}:${mod.sha256}`,
+              filename: mod.filename,
+              display_name: mod.display_name,
+              version: mod.version,
+              content_type: 'mod',
+              enabled: true,
+              installed_at: '2026-07-01T00:00:00Z',
+              source: 'curated',
+              source_label: 'Agora',
+              source_url: null,
+              registry_id: mod.mod_jar_id,
+              modrinth_id: null,
+              mod_jar_id: mod.mod_jar_id,
+              loader_mod_id: mod.mod_jar_id,
+              size_bytes: 1234,
+              file_present: true,
+              resolved_path: `C:/instances/x/mods/${mod.filename}`,
+              author: null,
+              categories: ['Uncategorized'],
+              icon_url: null,
+              curation_status: 'curated',
+              agora_score: null,
+              modrinth_downloads: null,
+              metadata_status: 'unavailable',
+            })));
+          }
+          // No sweep has run, so the panel starts from an unchecked state.
+          if (command === 'get_cached_instance_updates') return Promise.resolve([]);
+          if (command === 'get_update_changelogs') return Promise.resolve([]);
+          if (command === 'get_dependency_graph') return Promise.resolve(null);
+          if (command === 'list_mod_groups') return Promise.resolve([]);
+          if (command === 'batch_check_compat') return Promise.resolve({});
           if (command === 'list_snapshots') return Promise.resolve([]);
           if (command === 'list_loadout_profiles') return Promise.resolve([]);
           if (command === 'restore_snapshot') return Promise.resolve(null);
@@ -200,7 +282,7 @@ async function updatesSectionMock(page: Page) {
         __installCalls: installCalls,
       });
     },
-    { updates: updatesByInstance } as any,
+    { updates: updatesByInstance, mods: INSTALLED_MODS } as any,
   );
 }
 
@@ -253,281 +335,149 @@ async function rejectInstallCall(page: Page, index: number, error: unknown) {
 async function expectReviewView(page: Page) {
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByText('Review Instance Changes')).toBeVisible();
-  await expect(page.getByText(/Before batch update/)).toBeVisible();
+  // The snapshot label moved under "Technical details"; the promise it carries
+  // is stated in the body.
+  await expect(page.getByText(/Agora saves a restore point/)).toBeVisible();
   await expect(page.getByRole('button', { name: /Apply Updates/ })).toBeVisible();
 }
 
-async function expectResultView(page: Page) {
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByText('All verified changes were applied successfully.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Close' }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Open Instance' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Roll Back' })).toBeVisible();
-}
-
-async function expectErrorView(page: Page, message: string) {
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByText(message)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Close' }).first()).toBeVisible();
-}
-
 // ---------------------------------------------------------------------------
-// Tests — Release C4 UpdatesSection
+// Tests — updating installed content
+//
+// The old standalone "Updates" panel on the Instances tab is gone: the
+// background sweep caches results and the instance editor's installed-content
+// panel owns the update actions. These tests follow that surface — check,
+// review the changelog, then the one canonical InstallFlow plan.
 // ---------------------------------------------------------------------------
 
-test.describe('Release C4 — UpdatesSection', () => {
+/** Open the instance editor for one instance and check for updates. */
+async function checkUpdates(page: Page, instanceId: string) {
+  await page.addInitScript((id) => {
+    window.history.replaceState({ __agora: { type: 'instance-detail', instanceId: id } }, '');
+  }, instanceId);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: /Installed Mods/ })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Check for updates' }).click();
+}
+
+/** Check, then walk the changelog review that precedes the install plan. */
+async function startUpdateAll(page: Page) {
+  await checkUpdates(page, 'vanilla-instance');
+  await page.getByRole('button', { name: 'Update all 2 mods' }).click();
+
+  const changelog = page.getByRole('dialog');
+  await expect(changelog.getByText('Review 2 updates')).toBeVisible();
+  await changelog.getByRole('button', { name: 'Update all 2' }).click();
+}
+
+test.describe('Release C4 — updating installed content', () => {
 
   test('checking shows compatible updates for the unlocked instance', async ({ page }) => {
     await updatesSectionMock(page);
-    await page.addInitScript(() => {
-      window.history.replaceState({ __agora: { type: 'tab', tab: 'instances' } }, '');
-    });
-    await page.goto('/');
+    await checkUpdates(page, 'vanilla-instance');
 
-    // Wait for instances to render
-    await expect(page.getByText('Vanilla')).toBeVisible();
-    await expect(page.getByText('Locked Modded')).toBeVisible();
-
-    // Initially only the "Check for Updates" button is shown
-    const checkBtn = page.getByRole('button', { name: 'Check for Updates' });
-    await expect(checkBtn).toBeVisible();
-
-    // Click to check for updates
-    await checkBtn.click();
-
-    // Wait for the updates section to appear with the heading
-    await expect(page.getByText('Updates Available (2)')).toBeVisible({ timeout: 10_000 });
-
-    // Verify the update entries for the unlocked instance
-    await expect(page.getByText('sodium-0.6.0.jar')).toBeVisible();
-    await expect(page.getByText('lithium-0.12.1.jar')).toBeVisible();
-
-    // Verify the version transition labels
-    await expect(page.getByText('0.5.11 →')).toBeVisible();
-    await expect(page.getByText('0.12.0 →')).toBeVisible();
-    await expect(page.getByText('0.6.0').first()).toBeVisible();
-    await expect(page.getByText('0.12.1').first()).toBeVisible();
-
-    // Verify each update row has a checkbox for selection
-    const checkboxes = page.locator('input[type="checkbox"]');
-    await expect(checkboxes).toHaveCount(2);
-
-    // Verify the "Update All" button shows the correct count
-    await expect(page.getByRole('button', { name: 'Update All (2)' })).toBeVisible();
+    // Both installed mods report an update, and one action covers them.
+    await expect(page.getByRole('button', { name: 'Update all 2 mods' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Update Sodium to 0.6.0' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Update Lithium to 0.12.1' })).toBeVisible();
   });
 
-  test('locked instance has no update action in the updates section', async ({ page }) => {
+  test('locked instance has no usable update action', async ({ page }) => {
     await updatesSectionMock(page);
-    await page.addInitScript(() => {
-      window.history.replaceState({ __agora: { type: 'tab', tab: 'instances' } }, '');
-    });
-    await page.goto('/');
+    await checkUpdates(page, 'locked-instance');
 
-    // Wait for instances to render
-    await expect(page.getByText('Vanilla')).toBeVisible();
-    await expect(page.getByText('Locked Modded')).toBeVisible();
-
-    // The locked instance card shows the lock badge visible on the InstanceCard
-    await expect(page.getByText('Locked Modded').locator('..').getByText('Locked')).toBeVisible();
-
-    // Click "Check for Updates"
-    await page.getByRole('button', { name: 'Check for Updates' }).click();
-
-    // After checkAll completes, only the unlocked instance's updates appear.
-    // The locked instance is skipped entirely because is_locked === true.
-    await expect(page.getByText('Updates Available (2)')).toBeVisible({ timeout: 10_000 });
-
-    // The unlocked instance update card shows with controls
-    // ("Vanilla" appears both in the InstanceCard heading and the UpdatesSection card — .first() disambiguates)
-    await expect(page.getByText('Vanilla').first()).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Update All (2)' })).toBeVisible();
-
-    // No update card exists for the locked instance — locked instances are
-    // skipped during checkAll and never added to updatesByInstance.
-    // Only the unlocked instance's "Update All" button is rendered.
-    await expect(page.getByRole('button', { name: /Update All \(\d+\)/ })).toHaveCount(1);
+    // The updates exist, but a locked instance must not act on them.
+    await expect(page.getByRole('button', { name: 'Update all 2 mods' })).toBeDisabled();
   });
 
-  test('select and update all opens confirmation dialog then canonical InstallFlow', async ({ page }) => {
+  test('update all reviews the changelog before opening the canonical InstallFlow', async ({ page }) => {
     await updatesSectionMock(page);
-    await page.addInitScript(() => {
-      window.history.replaceState({ __agora: { type: 'tab', tab: 'instances' } }, '');
-    });
-    await page.goto('/');
+    await startUpdateAll(page);
 
-    // Wait for instances
-    await expect(page.getByText('Vanilla')).toBeVisible();
-
-    // Check for updates
-    await page.getByRole('button', { name: 'Check for Updates' }).click();
-    await expect(page.getByText('Updates Available (2)')).toBeVisible({ timeout: 10_000 });
-
-    // Click "Update All (2)" — this selects all and opens the confirmation dialog
-    await page.getByRole('button', { name: 'Update All (2)' }).click();
-
-    // Confirmation dialog appears
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByText('Review 2 updates')).toBeVisible();
-    await expect(dialog.getByText('sodium-0.6.0.jar')).toBeVisible();
-    await expect(dialog.getByText('lithium-0.12.1.jar')).toBeVisible();
-    await expect(dialog.getByText('0.5.11 →')).toBeVisible();
-    await expect(dialog.getByText('0.12.0 →')).toBeVisible();
-
-    // Click "Review Plan" — this triggers the batch-update flow
-    await dialog.getByRole('button', { name: 'Review Plan' }).click();
-
-    // The InstallFlow dialog should now open (may be the same dialog slot)
-    // Wait for resolve_install_plan to be called
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
     const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
-
-    // Resolve the plan
     await resolveInstallCall(page, resolveIdx, makeBatchPlan());
 
-    // Verify the InstallFlow review view appears
     await expectReviewView(page);
   });
 
   test('batch intent contains every selected exact target version', async ({ page }) => {
     await updatesSectionMock(page);
-    await page.addInitScript(() => {
-      window.history.replaceState({ __agora: { type: 'tab', tab: 'instances' } }, '');
-    });
-    await page.goto('/');
+    await startUpdateAll(page);
 
-    // Wait for instances
-    await expect(page.getByText('Vanilla')).toBeVisible();
-
-    // Check for updates
-    await page.getByRole('button', { name: 'Check for Updates' }).click();
-    await expect(page.getByText('Updates Available (2)')).toBeVisible({ timeout: 10_000 });
-
-    // Click "Update All (2)"
-    await page.getByRole('button', { name: 'Update All (2)' }).click();
-
-    // Confirm dialog
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-
-    // Click "Review Plan"
-    await dialog.getByRole('button', { name: 'Review Plan' }).click();
-
-    // Wait for resolve_install_plan to be called
-    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
     const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
+    const args = await page.evaluate(
+      (idx) => (window as any).__installCalls[idx]?.args,
+      resolveIdx,
+    );
 
-    // Inspect the intent args to verify batch items
-    const callArgs = await page.evaluate((idx: number) => {
-      const calls = (window as any).__installCalls as InstallCall[];
-      return calls[idx]?.args;
-    }, resolveIdx);
-    expect(callArgs).toBeTruthy();
-
-    const intent = (callArgs as any).intent as Record<string, unknown>;
-    expect(intent).toBeTruthy();
-    expect(intent.requestedBy).toBe('auto-update');
-    expect(intent.targetInstance).toBe('vanilla-instance');
-
-    const action = intent.action as Record<string, unknown>;
-    expect(action.type).toBe('batch-update');
-    expect(action.items).toBeTruthy();
-    const items = action.items as Array<Record<string, string>>;
-
-    // Verify every selected update is in the batch with its target version
+    expect(args.intent.action.type).toBe('batch-update');
+    const items = args.intent.action.items as { itemId: string; targetVersion: string }[];
     expect(items).toHaveLength(2);
+    expect(items.find((i) => i.itemId === 'sodium')?.targetVersion).toBe('0.6.0');
+    expect(items.find((i) => i.itemId === 'lithium')?.targetVersion).toBe('0.12.1');
 
-    const sodiumItem = items.find((i) => i.itemId === 'sodium');
-    expect(sodiumItem).toBeTruthy();
-    expect(sodiumItem!.targetVersion).toBe('0.6.0');
-
-    const lithiumItem = items.find((i) => i.itemId === 'lithium');
-    expect(lithiumItem).toBeTruthy();
-    expect(lithiumItem!.targetVersion).toBe('0.12.1');
-
-    // Resolve the plan to clean up the dialog
+    // Resolve the plan to clean up the dialog.
     await resolveInstallCall(page, resolveIdx, makeBatchPlan());
-
-    // Wait for review view
     await expectReviewView(page);
   });
 
   test('failed artifact outcome leaves recovery messaging', async ({ page }) => {
     await updatesSectionMock(page);
-    await page.addInitScript(() => {
-      window.history.replaceState({ __agora: { type: 'tab', tab: 'instances' } }, '');
-    });
-    await page.goto('/');
+    await startUpdateAll(page);
 
-    // Wait for instances
-    await expect(page.getByText('Vanilla')).toBeVisible();
-
-    // Check for updates → Update All → Review Plan
-    await page.getByRole('button', { name: 'Check for Updates' }).click();
-    await expect(page.getByText('Updates Available (2)')).toBeVisible({ timeout: 10_000 });
-    await page.getByRole('button', { name: 'Update All (2)' }).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: 'Review Plan' }).click();
-
-    // Resolve the plan
-    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
     const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
     await resolveInstallCall(page, resolveIdx, makeBatchPlan());
 
-    // Wait for review view and confirm
     await expect(page.getByRole('button', { name: /Apply Updates/ })).toBeVisible();
     await page.getByRole('button', { name: /Apply Updates/ }).click();
 
-    // Apply fails
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
     const applyIdx = await lastInstallCall(page, 'apply_install_plan');
     await rejectInstallCall(page, applyIdx, new Error('Corrupt download: SHA-256 mismatch for sodium-0.6.0.jar'));
 
-    // Error view shows the failure message
-    await expectErrorView(page, 'Corrupt download: SHA-256 mismatch for sodium-0.6.0.jar');
-
-    // The error view should also show recovery messaging because the outcome
-    // would have a snapshotId when it's a failed outcome with rollback not performed.
-    // The apply rejection error comes through InstallFlow's catch block which
-    // dispatches a 'fail' action — the error message is shown but there is no
-    // Roll Back button because the apply never completed (no outcome snapshot).
-    // This matches the expected behavior for transport-level failures.
+    // The editor runs the approved plan as a background task, so the failure
+    // is reported there — with the backend's message, not a generic one.
+    await expect(page.getByText('Installation failed', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Corrupt download: SHA-256 mismatch for sodium-0.6.0.jar').first()).toBeVisible();
   });
 
-  test('successful batch shows rollback option', async ({ page }) => {
+  test('successful batch reports completion', async ({ page }) => {
     await updatesSectionMock(page);
-    await page.addInitScript(() => {
-      window.history.replaceState({ __agora: { type: 'tab', tab: 'instances' } }, '');
-    });
-    await page.goto('/');
+    await startUpdateAll(page);
 
-    // Wait for instances
-    await expect(page.getByText('Vanilla')).toBeVisible();
-
-    // Check for updates → Update All → Review Plan
-    await page.getByRole('button', { name: 'Check for Updates' }).click();
-    await expect(page.getByText('Updates Available (2)')).toBeVisible({ timeout: 10_000 });
-    await page.getByRole('button', { name: 'Update All (2)' }).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: 'Review Plan' }).click();
-
-    // Resolve the plan
-    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(1);
     const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
     await resolveInstallCall(page, resolveIdx, makeBatchPlan());
 
-    // Wait for review view and confirm
     await expect(page.getByRole('button', { name: /Apply Updates/ })).toBeVisible();
     await page.getByRole('button', { name: /Apply Updates/ }).click();
 
-    // Apply succeeds
     await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
     const applyIdx = await lastInstallCall(page, 'apply_install_plan');
     await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
 
-    // Result view shows success with Roll Back option
-    await expectResultView(page);
+    await expect(page.getByText('Installation complete', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Installation completed successfully.').first()).toBeVisible();
+  });
+
+  test('health-blocked batch keeps the install and offers a rollback', async ({ page }) => {
+    await updatesSectionMock(page);
+    await startUpdateAll(page);
+
+    const resolveIdx = await lastInstallCall(page, 'resolve_install_plan');
+    await resolveInstallCall(page, resolveIdx, makeBatchPlan());
+
+    await expect(page.getByRole('button', { name: /Apply Updates/ })).toBeVisible();
+    await page.getByRole('button', { name: /Apply Updates/ }).click();
+
+    await expect.poll(() => totalInstallCalls(page)).toBeGreaterThanOrEqual(2);
+    const applyIdx = await lastInstallCall(page, 'apply_install_plan');
+    await resolveInstallCall(page, applyIdx, makeHealthRollbackOutcome());
+
+    // The files stay on disk so the user can look, and the recovery snapshot
+    // stays one click away.
+    await expect(page.getByText(/Health check found 1 blocker/).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Roll back' }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Keep & review' }).first()).toBeVisible();
   });
 });

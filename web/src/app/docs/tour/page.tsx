@@ -28,9 +28,9 @@ const SHOTS = [
   },
   {
     src: '/screenshots/install-plan-review.png',
-    alt: 'Review Instance Changes dialog showing dependencies, a warning, added files, and snapshot details.',
+    alt: 'Review Instance Changes dialog showing a summary of what changes, optional extras, dependencies, and a restore-point note.',
     title: 'Reviewing changes before they happen',
-    body: 'Agora plans a content change before touching the instance, then shows you the dependencies it pulled in, the conflicts it found, the files it will write, and the snapshot protecting the operation.',
+    body: 'Agora plans a content change before touching the instance, then shows you what will change, the dependencies it pulled in, the conflicts it found, and the restore point protecting the operation. The exact filenames stay one click away under Technical details.',
     caption: 'Agora 0.1.0, captured 2026-08-05 with synthetic dependencies.',
     href: '/docs/guides/install-update',
     hrefLabel: 'Installing and updating guide',

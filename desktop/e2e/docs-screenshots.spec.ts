@@ -49,6 +49,8 @@ test('docs screenshot: onboarding welcome', async ({ page }) => {
       },
       unregisterCallback(id: number) { callbacks.delete(id); },
       invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'query_launch_state') return Promise.resolve([]);
+        if (command === 'list_instance_templates') return Promise.resolve([]);
         if (command === 'get_setting') {
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(true);
@@ -110,6 +112,8 @@ test('docs screenshot: create instance', async ({ page }) => {
       },
       unregisterCallback(id: number) { callbacks.delete(id); },
       invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'query_launch_state') return Promise.resolve([]);
+        if (command === 'list_instance_templates') return Promise.resolve([]);
         if (command === 'get_setting') {
           const key = args.key as string;
           if (key === 'onboarding_complete') return Promise.resolve(true);
@@ -355,6 +359,8 @@ async function installFlowMock(page: Page) {
       },
       unregisterCallback(id: number) { callbacks.delete(id); },
       invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'query_launch_state') return Promise.resolve([]);
+        if (command === 'list_instance_templates') return Promise.resolve([]);
         if (command === 'resolve_install_plan') {
           return new Promise((resolve, reject) => installCalls.push({ command, args, resolve, reject }));
         }
@@ -536,7 +542,7 @@ test('docs screenshot: install plan review', async ({ page }) => {
   await resolveInstallCall(page, resolveIdx, docsPlan());
 
   await expect(page.getByText('Review Instance Changes')).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText('+1 to add')).toBeVisible();
+  await expect(page.getByText('1 file added')).toBeVisible();
   await expect(page.getByText('Fabric API')).toBeVisible();
   await page.waitForTimeout(300);
   await shoot(page, 'install-plan-review');
@@ -581,6 +587,8 @@ test('docs screenshot: loader compatibility repair', async ({ page }) => {
       },
       unregisterCallback(id: number) { callbacks.delete(id); },
       invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'query_launch_state') return Promise.resolve([]);
+        if (command === 'list_instance_templates') return Promise.resolve([]);
         if (command === 'get_setting') {
           if (args.key === 'onboarding_complete') return Promise.resolve(true);
           if (args.key === 'launch_mode') return Promise.resolve('direct');
@@ -726,7 +734,9 @@ test('docs screenshot: crash doctor', async ({ page }) => {
         if (command === 'list_manifest_mc_versions') return Promise.resolve([]);
         if (command === 'for_you_items') return Promise.resolve([]);
         if (command === 'browse_search') return Promise.resolve({ items: [], total: 0, page: 0, hasMore: false });
-        if (command === 'query_launch_state') return Promise.resolve(null);
+        // Optional instance templates; the picker hides itself on an empty list.
+        if (command === 'list_instance_templates') return Promise.resolve([]);
+        if (command === 'query_launch_state') return Promise.resolve([]);
 
         if (command === 'plugin:event|listen') { eventListeners.set(args.event as string, args.handler as number); return Promise.resolve(1); }
         if (command === 'plugin:event|unlisten') return Promise.resolve(1);
@@ -822,6 +832,8 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
       },
       unregisterCallback(id: number) { callbacks.delete(id); },
       invoke(command: string, args: Record<string, unknown> = {}) {
+        if (command === 'query_launch_state') return Promise.resolve([]);
+        if (command === 'list_instance_templates') return Promise.resolve([]);
         if (command === 'get_setting') {
           const key = args.key as string;
           if (key === 'onboarding_complete') return Promise.resolve(true);

@@ -51,6 +51,8 @@ async function installHealthMock(page: Page, options: {
         }
         if (command === 'plugin:event|unlisten') return Promise.resolve(1);
         if (command.startsWith('plugin:event|')) return Promise.resolve(1);
+        // Multi-session launch state is a list; the backend never returns null.
+        if (command === 'query_launch_state') return Promise.resolve([]);
         if (command === 'list_instances') return Promise.resolve([row]);
         if (command === 'get_instance_detail') {
           return Promise.resolve({
