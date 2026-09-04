@@ -20,6 +20,7 @@ import { adaptAccept, adaptNavigate } from './elementAdapters';
 import { isEditableField, type EditableField } from './textEditing';
 import { OnScreenKeyboard } from './OnScreenKeyboard';
 import { SelectOverlay } from './SelectOverlay';
+import { ColorOverlay } from './ColorOverlay';
 
 export interface ControllerLayerRegistration {
   rootRef: RefObject<HTMLElement | null>;
@@ -202,6 +203,7 @@ function defaultAccept(
   root: HTMLElement,
   onOpenKeyboard: (field: EditableField) => void,
   onOpenSelect: (select: HTMLSelectElement) => void,
+  onOpenColor: (input: HTMLInputElement) => void,
 ) {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement) || !root.contains(active)) return;
@@ -214,6 +216,11 @@ function defaultAccept(
   // in-app overlay the controller can actually steer instead.
   if (active instanceof HTMLSelectElement) {
     onOpenSelect(active);
+    return;
+  }
+  // Same reasoning: a colour input would otherwise open an OS colour dialog.
+  if (active instanceof HTMLInputElement && active.type === 'color') {
+    onOpenColor(active);
     return;
   }
   // Clicking a select or a colour swatch opens the operating-system widget the
@@ -241,13 +248,14 @@ function dispatchDefault(
   onCancel: (() => void) | undefined,
   onOpenKeyboard: (field: EditableField) => void,
   onOpenSelect: (select: HTMLSelectElement) => void,
+  onOpenColor: (input: HTMLInputElement) => void,
 ) {
   if (intent.type === 'cancel') {
     onCancel?.();
   } else if (root && intent.type === 'navigate') {
     defaultNavigate(root, intent.direction);
   } else if (root && intent.type === 'accept') {
-    defaultAccept(root, onOpenKeyboard, onOpenSelect);
+    defaultAccept(root, onOpenKeyboard, onOpenSelect, onOpenColor);
   } else if (root && intent.type === 'scroll') {
     defaultScroll(root, intent.direction);
   }
@@ -301,6 +309,8 @@ export function ControllerProvider({ children }: PropsWithChildren) {
   const [keyboardField, setKeyboardField] = useState<EditableField | null>(null);
   const selectRef = useRef<HTMLSelectElement | null>(null);
   const [openSelectElement, setOpenSelectElement] = useState<HTMLSelectElement | null>(null);
+  const colorRef = useRef<HTMLInputElement | null>(null);
+  const [openColorElement, setOpenColorElement] = useState<HTMLInputElement | null>(null);
 
   const registerLayer = useCallback((layer: ControllerLayerRegistration) => {
     layersRef.current.push(layer);
@@ -328,6 +338,18 @@ export function ControllerProvider({ children }: PropsWithChildren) {
     selectRef.current = null;
     setOpenSelectElement(null);
     if (select?.isConnected) select.focus({ preventScroll: true });
+  }, []);
+
+  const openColor = useCallback((input: HTMLInputElement) => {
+    colorRef.current = input;
+    setOpenColorElement(input);
+  }, []);
+
+  const closeColor = useCallback(() => {
+    const input = colorRef.current;
+    colorRef.current = null;
+    setOpenColorElement(null);
+    if (input?.isConnected) input.focus({ preventScroll: true });
   }, []);
 
   const closeKeyboard = useCallback(() => {
@@ -361,11 +383,11 @@ export function ControllerProvider({ children }: PropsWithChildren) {
       // that is what keeps input off the page behind a dialog. A transparent
       // one wanted a specific binding and nothing more, so keep walking down.
       if (!layer.transparent) {
-        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current, openKeyboard, openSelect);
+        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current, openKeyboard, openSelect, openColor);
         return;
       }
     }
-  }, [openKeyboard, openSelect]);
+  }, [openKeyboard, openSelect, openColor]);
 
   const { connected, gamepadCount } = useGamepad({ onIntent: dispatch });
   // Size the whole app for couch distance while a pad is in play, and put it
@@ -383,6 +405,7 @@ export function ControllerProvider({ children }: PropsWithChildren) {
         {children}
         {keyboardField && <OnScreenKeyboard field={keyboardField} onClose={closeKeyboard} />}
         {openSelectElement && <SelectOverlay select={openSelectElement} onClose={closeSelect} />}
+        {openColorElement && <ColorOverlay input={openColorElement} onClose={closeColor} />}
       </ControllerLayerContext.Provider>
     </ControllerStateContext.Provider>
   );

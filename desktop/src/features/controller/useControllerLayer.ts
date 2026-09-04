@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { ControllerIntent, ControllerIntentResult } from './intents';
 import {
   type ControllerLayerRegistration,
@@ -15,6 +15,8 @@ import {
  */
 export const CONTROLLER_LAYER_ROOT = -1;
 export const CONTROLLER_LAYER_DEFAULT = 0;
+/** Radix popovers: above a dialog, since a select opened inside one owns input. */
+export const CONTROLLER_LAYER_POPOVER = 8;
 export const CONTROLLER_LAYER_OVERLAY = 10;
 
 export interface UseControllerLayerOptions {
@@ -63,4 +65,45 @@ export function useControllerLayer({
     if (!active || !registry) return undefined;
     return registry.registerLayer(layer);
   }, [active, layer, registry]);
+}
+
+/**
+ * Controller ownership for a Radix popover — a select menu, a dropdown menu.
+ *
+ * These are the same trap the dialogs were. They render into a portal with
+ * their own roving focus, they are *not* dialogs so the shared `DialogContent`
+ * fix does not reach them, and without a layer the page behind them keeps
+ * control while the popup itself cannot be driven.
+ *
+ * Presence comes from the ref callback rather than from mounting, because Radix
+ * leaves these components mounted and returns null from the portal when closed
+ * — so keying off mounting would leave every closed menu in the app claiming
+ * input with a root ref pointing at nothing.
+ *
+ * Returns a ref callback to attach to the content element.
+ */
+export function useControllerPopoverLayer(): (node: HTMLElement | null) => void {
+  const contentRef = useRef<HTMLElement | null>(null);
+  const [present, setPresent] = useState(false);
+
+  const register = useCallback((node: HTMLElement | null) => {
+    contentRef.current = node;
+    setPresent(node !== null);
+  }, []);
+
+  useControllerLayer({
+    active: present,
+    rootRef: contentRef,
+    priority: CONTROLLER_LAYER_POPOVER,
+    // Radix owns dismissal and listens for Escape on the document. Only
+    // *default* actions are withheld from untrusted events, so a synthesised
+    // key still reaches a listener.
+    onCancel: useCallback(() => {
+      contentRef.current?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    }, []),
+  });
+
+  return register;
 }

@@ -161,14 +161,17 @@ export function adaptNavigate(element: Element | null, direction: ControllerDire
 /**
  * Whether Accept should be swallowed rather than turned into a click.
  *
- * Clicking a select or a colour swatch is precisely what opens the OS widget
- * this module exists to avoid, so those absorb it. Everything else — buttons,
+ * A range has nothing to activate and a file input opens an OS window nothing
+ * can steer, so those absorb it. Selects and colour swatches do not: the
+ * provider opens an in-app overlay for each. Everything else — buttons,
  * checkboxes, switches — still activates normally.
  */
 export function adaptAccept(element: Element | null): boolean {
   if (!(element instanceof HTMLElement)) return false;
   if (element instanceof HTMLInputElement) {
-    return element.type === 'color' || element.type === 'range' || element.type === 'file';
+    // `color` is absent on purpose: the provider opens a controller-operable
+    // picker for it. Absorbing Accept here would make colour settings inert.
+    return element.type === 'range' || element.type === 'file';
   }
   return false;
 }

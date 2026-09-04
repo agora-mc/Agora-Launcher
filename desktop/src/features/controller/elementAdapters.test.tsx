@@ -149,24 +149,32 @@ describe('range slider', () => {
 });
 
 describe('accept', () => {
-  it('is swallowed by controls that would open an OS widget', () => {
+  it('is swallowed by controls with no in-app alternative', () => {
     render(
       <>
-        <input aria-label="c" type="color" defaultValue="#ffffff" />
         <input aria-label="f" type="file" />
+        <input aria-label="r" type="range" />
       </>,
     );
 
-    expect(adaptAccept(screen.getByLabelText('c'))).toBe(true);
+    // A file input opens an OS window nothing can steer, and a range has
+    // nothing to activate — its adjustment is on the direction axis.
     expect(adaptAccept(screen.getByLabelText('f'))).toBe(true);
+    expect(adaptAccept(screen.getByLabelText('r'))).toBe(true);
   });
 
-  /** The provider opens the select overlay for these, so Accept must not be
-   *  absorbed here — absorbing it would make dropdowns do nothing at all. */
-  it('is not swallowed for a select, which opens the overlay instead', () => {
-    render(<select aria-label="s"><option value="a">A</option></select>);
+  /** The provider opens an in-app overlay for these, so Accept must reach it.
+   *  Absorbing it here would make dropdowns and colour settings inert. */
+  it('is not swallowed where an in-app overlay takes over', () => {
+    render(
+      <>
+        <select aria-label="s"><option value="a">A</option></select>
+        <input aria-label="c" type="color" defaultValue="#ffffff" />
+      </>,
+    );
 
     expect(adaptAccept(screen.getByLabelText('s'))).toBe(false);
+    expect(adaptAccept(screen.getByLabelText('c'))).toBe(false);
   });
 
   it('still activates ordinary controls', () => {
