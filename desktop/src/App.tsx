@@ -49,6 +49,8 @@ import { PresentationMotionCoordinator } from './components/presentation-motion-
 import type { InstallIntent } from './lib/installFlow';
 import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
 import { useController } from './features/controller/ControllerProvider';
+import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
+import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -256,6 +258,11 @@ export default function App() {
   const processController = useProcessController();
   const { connected: gamepadConnected } = useController();
   const mainRef = useRef<HTMLElement>(null);
+  const appShellRef = useRef<HTMLDivElement>(null);
+
+  // Put focus back where the user left it on each destination. Above the
+  // onboarding early return so the hook count stays constant.
+  useFocusMemory(focusMemoryKey(destination));
   const previousDestinationRef = useRef<Destination>(destination);
   const browseScrollTopRef = useRef(0);
   const instanceEditorScrollTopRef = useRef(0);
@@ -804,7 +811,17 @@ export default function App() {
       <AmbienceProvider>
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
       <QueuedTourStarter />
-      <div className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
+      <div ref={appShellRef} className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
+        <ControllerRootBindings
+          rootRef={appShellRef}
+          onOpenPalette={() => setCommandPaletteOpen(true)}
+          onCyclePage={(direction) => navigateToTab(
+            cycleTab(tabs.map((tab) => tab.id), effectiveTab, direction),
+          )}
+          // Already guarded against stepping off the app's own history, so a
+          // Cancel at the root is a no-op rather than an exit.
+          onBack={goBack}
+        />
         <OfflineBanner />
         <SandboxBanner />
         <Sidebar

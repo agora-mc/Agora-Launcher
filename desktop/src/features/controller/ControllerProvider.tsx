@@ -12,11 +12,15 @@ import {
 import { useGamepad, type GamepadIntent } from '../../lib/useGamepad';
 import { setGamepadModality, watchForDirectInput } from './inputModality';
 import type { ControllerIntent, ControllerIntentResult } from './intents';
+import { hasUsableGeometry, chooseCandidate, type NavRect } from './spatialNavigation';
+import { scrollNearestScrollport } from './scrollport';
 
 export interface ControllerLayerRegistration {
   rootRef: RefObject<HTMLElement | null>;
   onIntentRef: MutableRefObject<((intent: ControllerIntent) => ControllerIntentResult) | undefined>;
   onCancelRef: MutableRefObject<(() => void) | undefined>;
+  priority: number;
+  transparent: boolean;
 }
 
 interface ControllerLayerRegistry {
@@ -75,17 +79,86 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
   });
 }
 
-function defaultNavigate(root: HTMLElement, direction: Extract<ControllerIntent, { type: 'navigate' }>['direction']) {
+function readRect(element: HTMLElement): NavRect {
+  const rect = element.getBoundingClientRect();
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  };
+}
+
+function focusControllerTarget(element: HTMLElement): void {
+  element.focus({ preventScroll: true });
+  element.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+}
+
+function documentOrderTarget(
+  elements: HTMLElement[],
+  current: number,
+  direction: Extract<ControllerIntent, { type: 'navigate' }>['direction'],
+): HTMLElement | undefined {
+  const step = direction === 'up' || direction === 'left' ? -1 : 1;
+  const next = current < 0
+    ? (step < 0 ? elements.length - 1 : 0)
+    : (current + step + elements.length) % elements.length;
+  return elements[next];
+}
+
+function defaultNavigate(
+  root: HTMLElement,
+  direction: Extract<ControllerIntent, { type: 'navigate' }>['direction'],
+) {
   const elements = focusableElements(root);
   if (elements.length === 0) return;
 
   const active = document.activeElement;
   const current = active instanceof HTMLElement ? elements.indexOf(active) : -1;
-  const step = direction === 'up' || direction === 'left' ? -1 : 1;
-  const next = current < 0
-    ? (step < 0 ? elements.length - 1 : 0)
-    : (current + step + elements.length) % elements.length;
-  elements[next]?.focus();
+  const nextInOrder = () => {
+    const target = documentOrderTarget(elements, current, direction);
+    if (target) focusControllerTarget(target);
+  };
+
+  // There is no meaningful origin before the layer has focus. Preserve the
+  // initial document-order entry, which also handles focus in another layer.
+  if (current < 0) {
+    nextInOrder();
+    return;
+  }
+
+  const rects = elements.map(readRect);
+  const origin = rects[current];
+  if (!origin || !hasUsableGeometry(rects) || !hasUsableGeometry([origin])) {
+    nextInOrder();
+    return;
+  }
+
+  const candidates = elements
+    .map((item, index) => ({ item, rect: rects[index] }))
+    .filter(({ item }) => item !== active);
+  let target = chooseCandidate(origin, candidates, direction);
+  if (target) {
+    focusControllerTarget(target);
+    return;
+  }
+
+  if (!(active instanceof HTMLElement)) return;
+  if (!scrollNearestScrollport(active, direction)) return;
+
+  // Scrolling changes viewport-relative rectangles, so every retry gets a
+  // fresh snapshot instead of using geometry from before the scroll.
+  const retryRects = elements.map(readRect);
+  const retryOrigin = retryRects[current];
+  if (!retryOrigin || !hasUsableGeometry(retryRects) || !hasUsableGeometry([retryOrigin])) return;
+  target = chooseCandidate(
+    retryOrigin,
+    elements
+      .map((item, index) => ({ item, rect: retryRects[index] }))
+      .filter(({ item }) => item !== active),
+    direction,
+  );
+  if (target) focusControllerTarget(target);
 }
 
 function defaultAccept(root: HTMLElement) {
@@ -95,13 +168,18 @@ function defaultAccept(root: HTMLElement) {
   active.click();
 }
 
+function defaultScroll(root: HTMLElement, direction: Extract<ControllerIntent, { type: 'scroll' }>['direction']) {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !root.contains(active)) return;
+  scrollNearestScrollport(active, direction);
+}
+
 /**
  * What an owning layer gets for free when it does not claim an intent.
  *
- * `menu`, `page` and `scroll` are deliberately absent: they have no sensible
- * layer-local default and belong to app-level bindings and scrollport handling,
- * which land with spatial navigation. Until then they fall through to nothing
- * rather than being given a guessed meaning that would have to be unpicked.
+ * `menu` and `page` are deliberately absent: they have app-level meanings.
+ * Navigation and right-stick scrolling stay layer-local because their target
+ * is the focused element and its owning scrollport.
  */
 function dispatchDefault(root: HTMLElement | null, intent: ControllerIntent, onCancel?: () => void) {
   if (intent.type === 'cancel') {
@@ -110,6 +188,8 @@ function dispatchDefault(root: HTMLElement | null, intent: ControllerIntent, onC
     defaultNavigate(root, intent.direction);
   } else if (root && intent.type === 'accept') {
     defaultAccept(root);
+  } else if (root && intent.type === 'scroll') {
+    defaultScroll(root, intent.direction);
   }
 }
 
@@ -135,12 +215,23 @@ export function ControllerProvider({ children }: PropsWithChildren) {
     // has to be right on the very first press rather than the second.
     setGamepadModality();
 
-    const layer = layersRef.current[layersRef.current.length - 1];
-    if (!layer) return;
-
     const intent = toControllerIntent(rawIntent);
-    if (layer.onIntentRef.current?.(intent) === true) return;
-    dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current);
+
+    // Highest priority first, and within one priority the most recently
+    // registered first. `sort` is stable, so registration order survives.
+    const ordered = [...layersRef.current].sort((a, b) => a.priority - b.priority);
+
+    for (let index = ordered.length - 1; index >= 0; index -= 1) {
+      const layer = ordered[index];
+      if (layer.onIntentRef.current?.(intent) === true) return;
+      // An opaque layer stops here even when it did nothing with the intent:
+      // that is what keeps input off the page behind a dialog. A transparent
+      // one wanted a specific binding and nothing more, so keep walking down.
+      if (!layer.transparent) {
+        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current);
+        return;
+      }
+    }
   }, []);
 
   const { connected, gamepadCount } = useGamepad({ onIntent: dispatch });

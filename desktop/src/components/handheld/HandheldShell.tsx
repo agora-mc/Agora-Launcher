@@ -118,6 +118,11 @@ export function HandheldShell({
     active: !active,
     rootRef: shellRef,
     onIntent: handleInactiveControllerIntent,
+    // Listening for one button is all a closed shell wants. Left opaque, it
+    // would sit on top of the whole app for as long as handheld mode is shut —
+    // which is nearly always — and silently absorb every other intent before
+    // the application shell beneath could act on it.
+    transparent: true,
   });
   useControllerLayer({
     active,
