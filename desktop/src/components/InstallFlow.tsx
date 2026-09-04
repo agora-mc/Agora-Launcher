@@ -16,6 +16,8 @@ import {
 import { formatError, getSetting, parseLauncherError, restoreSnapshot } from '../lib/tauri';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
+import { useControllerLayer } from '@/features/controller/useControllerLayer';
+import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // User choices model
@@ -235,6 +237,7 @@ export function InstallFlow({
   alwaysAutoConfirm = false,
 }: InstallFlowProps) {
   const [state, dispatch] = useReducer(flowReducer, { phase: 'closed' } as FlowState);
+  const panelRef = useRef<HTMLElement>(null);
   const [resolutionIntent, setResolutionIntent] = useState(intent);
   const [settingAutoConfirmClean, setSettingAutoConfirmClean] = useState(false);
   const [settingAlwaysAutoConfirm, setSettingAlwaysAutoConfirm] = useState(false);
@@ -362,6 +365,10 @@ export function InstallFlow({
       unsubscribe?.();
     };
   }, [state.phase]);
+
+  const awaitingUser = state.phase === 'review'
+    || state.phase === 'error'
+    || state.phase === 'result';
 
   const handleCancel = useCallback(() => {
     if (state.phase === 'executing') {
@@ -491,6 +498,15 @@ export function InstallFlow({
     }
   }, [resolutionIntent, state.phase, onClose]);
 
+  // Only claims controller input while it is actually asking something. The
+  // corner progress panel must not, or an install running in the background
+  // would quietly take over navigation for the whole app.
+  useControllerLayer({
+    active: awaitingUser,
+    rootRef: panelRef,
+    onCancel: handleCancel,
+  });
+
   const renderContent = () => {
     switch (state.phase) {
       case 'resolving':
@@ -577,12 +593,59 @@ export function InstallFlow({
   // Non-blocking corner panel — lets the user keep browsing, running health
   // checks, or opening other instances while resolving, reviewing, or
   // installing. The card expands in place instead of covering the app.
-  // z-50 keeps it above the pack-indicator stacking context when both are
-  // visible, so the review remains actionable; pack progress remains
-  // readable alongside via vertical stacking.
-  // It is still a dialog — a task the user is asked to act on — so it keeps
-  // the role and an accessible name; aria-modal="false" is what states that
-  // the rest of the app stays live behind it.
+  // Where this renders depends on whether it is *asking* the user something.
+  //
+  // Waiting on a decision — reviewing changes, answering an error, dismissing
+  // an outcome — takes the screen, because that is the task now. Everything
+  // else is progress reporting: resolving a plan and running an install do not
+  // need the user, and stealing focus for them interrupts whatever they were
+  // doing. Those stay in the corner, out of the way and out of the tab order's
+  // path, exactly as before.
+  //
+  // It also makes the review reachable with a controller. In the corner it was
+  // one small target among everything else on the page; as an overlay it owns
+  // input, so the stick goes straight to it.
+  const header = (
+    <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
+      <div className="min-w-0">
+        <h2 id="install-review-title" className={cn('truncate font-semibold', awaitingUser ? 'text-base' : 'text-sm')}>
+          Review Instance Changes
+        </h2>
+        <p className="truncate text-xs text-muted-foreground">{instanceName}</p>
+      </div>
+      <button
+        onClick={handleCancel}
+        className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+        aria-label="Close install panel"
+      >
+        Close
+      </button>
+    </div>
+  );
+
+  if (awaitingUser) {
+    return (
+      <div className="fixed inset-0 z-[61] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+        <section
+          ref={panelRef}
+          className="flex max-h-[85vh] w-[min(44rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+          data-tour="install-review-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="install-review-title"
+        >
+          {header}
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {renderContent()}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  // z-[61] keeps it above the pack-indicator stacking context when both are
+  // visible; pack progress remains readable alongside via vertical stacking.
+  // `aria-modal="false"` states that the rest of the app stays live behind it.
   return (
     <aside
       className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
@@ -592,19 +655,7 @@ export function InstallFlow({
       aria-labelledby="install-review-title"
       aria-live="polite"
     >
-      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
-        <div className="min-w-0">
-          <h2 id="install-review-title" className="truncate text-sm font-semibold">Review Instance Changes</h2>
-          <p className="truncate text-xs text-muted-foreground">{instanceName}</p>
-        </div>
-        <button
-          onClick={handleCancel}
-          className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
-          aria-label="Close install panel"
-        >
-          Close
-        </button>
-      </div>
+      {header}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {renderContent()}
       </div>

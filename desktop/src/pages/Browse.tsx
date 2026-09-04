@@ -27,6 +27,7 @@ import { RegistryStatusView } from '../components/registry-status-view';
 import { BrowseListResults } from '../components/browse/BrowseListResults';
 import { BrowseTileResults } from '../components/browse/BrowseTileResults';
 import { BrowseBazaar } from '../components/browse/BrowseBazaar';
+import { useControllerLayer } from '../features/controller/useControllerLayer';
 import { presentationCapabilities } from '../components/presentation-capabilities';
 import type { BazaarItem } from '../components/browse/bazaar-model';
 import { InstallFlow } from '../components/InstallFlow';
@@ -533,6 +534,7 @@ function BrowseContent({
   // survives list refreshes (load-more, retries) between toggling and install.
   const [selectedItems, setSelectedItems] = useState<Map<string, BrowseItem>>(new Map());
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLElement>(null);
   const [pickerInstanceId, setPickerInstanceId] = useState('');
   const [installTarget, setInstallTarget] = useState<{
     intent: InstallIntent;
@@ -673,6 +675,14 @@ function BrowseContent({
       setPickerOpen(true);
     }
   };
+
+  // The picker owns controller input while it is up, so Cancel closes it
+  // rather than navigating the page behind it.
+  useControllerLayer({
+    active: pickerOpen,
+    rootRef: pickerRef,
+    onCancel: () => setPickerOpen(false),
+  });
 
   const confirmPickerInstall = () => {
     if (!pickerInstanceId) return;
@@ -1117,12 +1127,23 @@ function BrowseContent({
   // open on the Bazaar rather than bouncing to the normal Browse view.
   const bulkInstallDialogs = (
     <>
-      {/* Instance picker for bulk install — corner card so browsing stays usable */}
+      {/* Choosing a target instance is a decision the flow waits on, so it takes
+          the screen rather than sitting in the corner. Corner panels are for
+          progress that needs nothing from the user; a picker there is a small
+          target competing with the whole page behind it, which a controller in
+          particular has no good way to reach. */}
       {pickerOpen && (
+        <div
+          className="fixed inset-0 z-[62] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+          // controller-exempt: backdrop, not a control; the picker has Close and
+          // Cancel, and a controller dismisses it with the layer's cancel intent.
+          onClick={(event) => { if (event.target === event.currentTarget) setPickerOpen(false); }}
+        >
         <aside
-          className="fixed bottom-4 right-4 z-[62] w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-border bg-card p-4 shadow-2xl"
+          ref={pickerRef}
+          className="w-[min(28rem,calc(100vw-2rem))] rounded-2xl border border-border bg-card p-5 shadow-2xl"
           role="dialog"
-          aria-modal="false"
+          aria-modal="true"
           aria-labelledby="bulk-install-picker-title"
         >
           <div className="flex items-start justify-between gap-3">
@@ -1181,6 +1202,7 @@ function BrowseContent({
             </>
           )}
         </aside>
+        </div>
       )}
 
       {/* Canonical install pipeline for the selected batch */}
