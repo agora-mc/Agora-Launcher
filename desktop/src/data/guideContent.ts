@@ -1528,14 +1528,18 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     advanced: {
       summary: 'Handheld mode is a separate shell rather than gamepad navigation bolted onto every page. Knowing what it deliberately does not cover, and when the Controlify offer stays silent, explains most of its behaviour.',
       outcomes: [
-        'Know the scope of handheld mode and what to do outside it.',
+        'Know how far controller support reaches, and where it does not.',
         'Predict when the Controlify offer appears and when it does not.',
         'Understand what the mode costs when you never use a controller.',
       ],
       sections: [
         {
-          title: 'Deliberately narrow scope',
-          body: 'Handheld mode covers seeing your instances and launching one. Browsing the registry, editing mods, and changing settings stay in the normal view with keyboard and mouse. Someone reaching for a controller wants to pick something and play, and a launcher that pretended a whole mod catalogue was gamepad-navigable would be worse at both jobs.',
+          title: 'The whole app, not a separate mode',
+          body: 'A controller drives Agora itself rather than a cut-down copy of it. Focus moves by geometry, so the stick and D-pad go where you are looking; A activates, B goes back, the shoulder buttons move between sections, and Y opens the command palette to jump anywhere. Dropdowns and sliders change in place instead of opening a system menu a controller cannot enter, and selecting a text box raises an on-screen keyboard. Handheld mode is still the quickest way from a controller to a running game, but it is no longer the only part of Agora a controller can use.'
+        },
+        {
+          title: 'Where coverage still stops',
+          body: 'Text entry is a basic-Latin keyboard: enough for a search term or a folder name, not for languages that need an input method or accented text, so a physical keyboard is still the better tool there. Colour pickers and file pickers open system windows that no controller can reach. The living background is mouse-and-keyboard only by design.',
         },
         {
           title: 'Launching behaves identically',
