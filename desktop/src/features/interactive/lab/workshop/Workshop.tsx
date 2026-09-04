@@ -1432,7 +1432,16 @@ export function Workshop({ onOpenGuide, onNavigateStandard, onAmbienceChange, re
 
       {/* bench modal */}
       {/* controller-exempt: click-outside backdrop; the card has its own Close button. */}
-      <div className={`ws-bench ${bench ? 'show' : ''}`} role="dialog" aria-modal="true" aria-label={bench?.title} onClick={(e) => { if (e.target === e.currentTarget) closeBench(); }}>
+      <div
+        className={`ws-bench ${bench ? 'show' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={bench?.title}
+        // Claims controller input while open. An attribute rather than an
+        // import: this area may not depend on app-level modules.
+        data-controller-dialog={bench ? '' : undefined}
+        onClick={(e) => { if (e.target === e.currentTarget) closeBench(); }}
+      >
         {bench ? (
           <div className="ws-card">
             <button type="button" className="ws-close" onClick={closeBench}>Close</button>

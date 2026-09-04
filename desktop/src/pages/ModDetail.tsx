@@ -2477,7 +2477,7 @@ function BackButton({ onBack }: { onBack: () => void }) {
   return (
     <button
       onClick={onBack}
-      className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+      className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent bg-card"
     >
       ← Back
     </button>

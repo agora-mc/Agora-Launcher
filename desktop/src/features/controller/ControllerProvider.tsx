@@ -253,6 +253,48 @@ function dispatchDefault(
   }
 }
 
+
+/**
+ * Attribute a hand-rolled dialog sets to claim controller input.
+ *
+ * Not every modal in this app is a Radix dialog. The High Interaction surfaces
+ * build their own — a scrim div with `role="dialog"` inside it — and they live
+ * behind an enforced import boundary that (correctly) forbids them from
+ * importing app-level modules like this one. So instead of an import, they set
+ * an attribute, and the provider picks them up.
+ *
+ * Set it only while the dialog is actually open. These scrims stay mounted and
+ * hide themselves with opacity, so presence in the DOM is not the same question
+ * as being on screen.
+ *
+ * Cancel dispatches a click on the element itself, which is the dismiss gesture
+ * these scrims already implement for clicking outside the dialog body.
+ */
+export const CONTROLLER_DIALOG_ATTRIBUTE = 'data-controller-dialog';
+
+/** Priority for an attribute-declared dialog: above ordinary layers, below the
+ *  keyboard and select overlays which must sit on top of everything. */
+const IMPLICIT_DIALOG_PRIORITY = 5;
+
+function implicitDialogLayer(): ControllerLayerRegistration | null {
+  if (typeof document === 'undefined') return null;
+  const dialogs = document.querySelectorAll<HTMLElement>(`[${CONTROLLER_DIALOG_ATTRIBUTE}]`);
+  const element = dialogs[dialogs.length - 1];
+  if (!element) return null;
+
+  return {
+    rootRef: { current: element },
+    onIntentRef: { current: undefined },
+    onCancelRef: {
+      current: () => {
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      },
+    },
+    priority: IMPLICIT_DIALOG_PRIORITY,
+    transparent: false,
+  };
+}
+
 export function ControllerProvider({ children }: PropsWithChildren) {
   const layersRef = useRef<ControllerLayerRegistration[]>([]);
   const keyboardFieldRef = useRef<EditableField | null>(null);
@@ -308,7 +350,9 @@ export function ControllerProvider({ children }: PropsWithChildren) {
 
     // Highest priority first, and within one priority the most recently
     // registered first. `sort` is stable, so registration order survives.
-    const ordered = [...layersRef.current].sort((a, b) => a.priority - b.priority);
+    const implicit = implicitDialogLayer();
+    const candidates = implicit ? [...layersRef.current, implicit] : layersRef.current;
+    const ordered = [...candidates].sort((a, b) => a.priority - b.priority);
 
     for (let index = ordered.length - 1; index >= 0; index -= 1) {
       const layer = ordered[index];

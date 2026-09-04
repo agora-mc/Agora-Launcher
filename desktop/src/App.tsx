@@ -19,6 +19,7 @@ import {
   changeLoaderVersion,
   declineControlifyOffer,
   evaluateControlifyOffer,
+  resetControlifyOffer,
   takePendingCliLaunch,
   getInstanceDetail,
   getSetting,
@@ -291,6 +292,10 @@ export default function App() {
   const pendingControlifyLaunchRef = useRef<PendingControlifyLaunch | null>(null);
   const controlifyGateBusyRef = useRef(false);
   const controlifyInstallBusyRef = useRef(false);
+  // Instances already asked about this sitting. A launch with a pad in hand
+  // should raise the offer rather than stay silent, but not on every single
+  // launch of the same instance in one session.
+  const controlifyAskedRef = useRef<Set<string>>(new Set());
   const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
   const registry = useRegistryState();
 
@@ -584,6 +589,7 @@ export default function App() {
     if (!gamepadConnected) return false;
     if (pendingControlifyLaunchRef.current) return true;
     if (controlifyGateBusyRef.current) return true;
+    if (controlifyAskedRef.current.has(request.instanceId)) return false;
 
     controlifyGateBusyRef.current = true;
     try {
@@ -594,13 +600,36 @@ export default function App() {
         return false;
       }
 
-      // Keep both guards here and in the dialog. This makes the install path
-      // fail closed even if a future caller ignores the decision enum.
+      // A decline used to silence the offer permanently, with no way back: the
+      // reset command existed but nothing ever called it. Someone launching
+      // with a controller in hand is asking for controller support, so an old
+      // "not now" gets cleared and the question asked properly again. The
+      // session guard above is what stops that becoming a nag.
+      if (offer.decision === 'declined') {
+        try {
+          await resetControlifyOffer(request.instanceId);
+          offer = await evaluateControlifyOffer(request.instanceId);
+        } catch {
+          // Leave the stale decision alone; the branch below still explains it.
+        }
+      }
+
+      if (offer.instance_id !== request.instanceId) return false;
+
+      // Nothing to say when the mod is already there. Every other decision gets
+      // shown, because the backend deliberately returns a reason rather than an
+      // option so the UI can explain why controller support is unavailable
+      // instead of the offer silently never appearing.
+      if (offer.decision === 'already_installed') return false;
+
+      controlifyAskedRef.current.add(request.instanceId);
+
+      // Keep both guards here and in the dialog. This makes the *install* path
+      // fail closed even if a future caller ignores the decision enum; the
+      // dialog renders a read-only explanation when it cannot install.
       if (
-        offer.instance_id !== request.instanceId
-        || offer.decision !== 'offer'
-        || typeof offer.modrinth_slug !== 'string'
-        || offer.modrinth_slug.trim().length === 0
+        offer.decision === 'offer'
+        && (typeof offer.modrinth_slug !== 'string' || offer.modrinth_slug.trim().length === 0)
       ) {
         return false;
       }

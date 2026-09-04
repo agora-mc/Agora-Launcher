@@ -988,6 +988,9 @@ export function WorldEditor({
       {createPortal(
       <div
         className={`we-scrim ${optionalOpen ? 'show' : ''}`}
+        // Claims controller input while open. An attribute rather than an
+        // import: this area may not depend on app-level modules.
+        data-controller-dialog={optionalOpen ? '' : undefined}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setOptionalOpen(false); }}
@@ -1037,6 +1040,7 @@ export function WorldEditor({
       {/* ── preflight ── */}
       <div
         className={`we-scrim ${preflightOpen ? 'show' : ''}`}
+        data-controller-dialog={preflightOpen ? '' : undefined}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setPreflightOpen(false); }}
@@ -1068,6 +1072,7 @@ export function WorldEditor({
       {/* ── crash doctor ── */}
       <div
         className={`we-scrim ${doctorOpen ? 'show' : ''}`}
+        data-controller-dialog={doctorOpen ? '' : undefined}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}
