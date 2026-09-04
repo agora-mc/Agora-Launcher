@@ -53,6 +53,7 @@ export function Instances({
   onStartCrashInvestigation,
   onRepairAndRetry,
   onUseDelegatedLaunch,
+  onRestartMojangLauncher,
   onClearError,
   healthReports,
   healthErrors,
@@ -73,6 +74,7 @@ export function Instances({
   }) => void;
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
+  onRestartMojangLauncher: () => Promise<void>;
   onClearError: () => void;
   healthReports: Record<string, HealthReport>;
   healthErrors: Record<string, string>;
@@ -338,6 +340,7 @@ export function Instances({
                 onDismissError={onClearError}
                 onRepairAndRetry={onRepairAndRetry}
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
+                onRestartMojangLauncher={onRestartMojangLauncher}
                 repairBusy={isCurrentLaunchBusy}
                 packInstall={packInstall}
                 recoveryPending={recoveryPending}
@@ -428,6 +431,7 @@ function InstanceCard({
   onDismissError,
   onRepairAndRetry,
   onUseDelegatedLaunch,
+  onRestartMojangLauncher,
   repairBusy,
   packInstall,
   recoveryPending,
@@ -459,6 +463,7 @@ function InstanceCard({
   onDismissError: () => void;
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
+  onRestartMojangLauncher: () => Promise<void>;
   repairBusy: boolean;
   packInstall: PackInstallTask | null;
   recoveryPending: boolean;
@@ -548,6 +553,33 @@ function InstanceCard({
     setRepairing(true);
     try {
       await onUseDelegatedLaunch();
+    } catch {
+      // Error state is already managed by the controller.
+    } finally {
+      setRepairing(false);
+    }
+  };
+
+  const handleRestartMojangLauncher = async () => {
+    // Agora is about to terminate another application, so this never happens
+    // without an explicit yes — and the cost is stated plainly.
+    if (!await confirm({
+      title: 'Close the Minecraft Launcher and reopen it?',
+      body: (
+        <>
+          The Minecraft Launcher only reads its installation list when it starts,
+          so while it is open it cannot switch to <strong>{instance.name}</strong>.
+          Agora will close it, select this pack, and open it again.
+          <br />
+          Any download in progress there will be interrupted.
+        </>
+      ),
+      confirmLabel: 'Close and reopen',
+      tone: 'danger',
+    })) return;
+    setRepairing(true);
+    try {
+      await onRestartMojangLauncher();
     } catch {
       // Error state is already managed by the controller.
     } finally {
@@ -838,8 +870,45 @@ function InstanceCard({
         </div>
       )}
 
+      {/* ── Official launcher already open ── */}
+      {controllerAvailableActions.includes('restart_mojang_launcher') && (
+        <div
+          className="mt-3 rounded-lg border border-amber-500 bg-amber-500/10 p-3 space-y-2"
+          role="alert"
+          aria-label="Minecraft Launcher is already open"
+          data-testid="mojang-launcher-running-warning"
+        >
+          <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+            The Minecraft Launcher is already open
+          </p>
+          <p className="text-xs text-muted-foreground">
+            It only reads its installation list when it starts, so it will stay on
+            whatever pack it already had selected. Reopen it to launch {instance.name}.
+          </p>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <button
+              onClick={handleRestartMojangLauncher}
+              disabled={effectiveBusy}
+              aria-label="Close and reopen the Minecraft Launcher"
+              className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {repairing ? 'Reopening launcher…' : 'Close and reopen launcher'}
+            </button>
+            <button
+              onClick={onDismissError}
+              disabled={effectiveBusy}
+              aria-label="Dismiss this error"
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Plain error display (fallback, non-recoverable) ── */}
-      {displayError && !controllerRecoverableIssue && !controllerRecoverableJavaIssue && (
+      {displayError && !controllerRecoverableIssue && !controllerRecoverableJavaIssue
+        && !controllerAvailableActions.includes('restart_mojang_launcher') && (
         <div className="mt-2 flex items-center gap-2">
           <p className="text-xs text-destructive flex-1">{displayError}</p>
           {controllerError && (

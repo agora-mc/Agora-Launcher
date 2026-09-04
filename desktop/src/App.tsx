@@ -555,6 +555,7 @@ export default function App() {
     repairAndRetry,
     switchLoaderAndRetry,
     useDelegatedLaunch,
+    restartMojangLauncherAndRetry,
   } = processController;
 
   const resolveDirectLaunch = async (instanceId: string) => {
@@ -935,6 +936,7 @@ export default function App() {
                     onStartCrashInvestigation={setCrashInvestigation}
                     onRepairAndRetry={repairAndRetry}
                     onUseDelegatedLaunch={useDelegatedLaunch}
+                    onRestartMojangLauncher={restartMojangLauncherAndRetry}
                     onClearError={clearError}
                     healthReports={healthMonitor.reports}
                     healthErrors={healthMonitor.errors}

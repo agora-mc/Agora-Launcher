@@ -383,6 +383,7 @@ pub async fn launch_instance(
     instance_id: String,
     allow_health_blockers: Option<bool>,
     health_scan_token: Option<String>,
+    restart_launcher: Option<bool>,
 ) -> LauncherResult<()> {
     let sanitized = paths::sanitize_id(&instance_id);
     if sanitized.is_empty() {
@@ -411,6 +412,7 @@ pub async fn launch_instance(
     let progress = DelegatedLaunchProgress {
         app: app.clone(),
         instance_id: sanitized.clone(),
+        restart_launcher: restart_launcher.unwrap_or(false),
     };
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized.clone(),
@@ -498,6 +500,9 @@ pub async fn launch_instance(
 struct DelegatedLaunchProgress {
     app: tauri::AppHandle,
     instance_id: String,
+    /// The user confirmed that Agora may close an already-running official
+    /// launcher so the handoff can select this pack.
+    restart_launcher: bool,
 }
 
 impl agora_core::launch_service::LaunchProgress for DelegatedLaunchProgress {
@@ -552,7 +557,7 @@ impl agora_core::launch_service::LaunchProgress for DelegatedLaunchProgress {
         &self,
         _identity: &agora_core::launch_planner::LaunchIdentity,
     ) -> LauncherResult<()> {
-        instances::launch_instance(&self.app, &self.instance_id)
+        instances::launch_instance(&self.app, &self.instance_id, self.restart_launcher)
     }
 }
 

@@ -86,6 +86,17 @@ pub struct DelegatedLaunchPreparation {
     pub profile_id: String,
     pub launcher_path: Option<String>,
     pub mod_ids: Vec<String>,
+    /// The official launcher was already running when this handoff was
+    /// prepared. It reads `launcher_profiles.json` and its saved installation
+    /// selection once, at startup, so a handoff into a running launcher only
+    /// focuses its window — whatever it already had selected stays selected.
+    /// Adapters should offer to restart it rather than pretend the handoff
+    /// picked the pack.
+    pub launcher_running: bool,
+    /// Agora managed to point the launcher's saved selection at this profile.
+    /// False when the launcher was running, or when its UI-state file was
+    /// absent or in a shape Agora declines to rewrite.
+    pub selection_applied: bool,
 }
 
 /// Narrow adapter type: a synchronous callback that moves a quarantined
@@ -506,7 +517,7 @@ impl InstanceService {
             custom_args: row.jvm_custom_args.clone(),
             always_pre_touch: row.jvm_always_pre_touch && user_override.unwrap_or(true),
         };
-        let profile_id = format!("agora-{}", row.instance_id);
+        let profile_id = crate::launcher_profiles::profile_id_for(&row.instance_id);
         let profile = crate::launcher_profiles::LauncherProfileEntry {
             profile_id: profile_id.clone(),
             name: format!("{} (Agora)", row.name),
@@ -515,7 +526,15 @@ impl InstanceService {
             java_args: jvm.to_args_for_java(crate::models::recommended_java_version_for_minecraft(
                 &row.minecraft_version,
             )),
+            select: true,
         };
+        let launcher_path = crate::db::get_setting(&conn, "mojang_launcher_path")
+            .ok()
+            .flatten()
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let launcher_running =
+            crate::official_launcher::is_running(launcher_path.as_ref().map(Path::new));
+        let mut selection_applied = false;
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
             let official_root = profiles_path
                 .parent()
@@ -536,7 +555,23 @@ impl InstanceService {
                     true,
                 )?;
             }
+            // Sweep first: the launcher lists every profile in this file, so a
+            // handoff is the right moment to drop the ones whose instance is
+            // gone. Failure here must never block a launch.
+            let _ = self.prune_launcher_profiles(&conn, profiles_path);
             crate::launcher_profiles::upsert_profile(&profile, profiles_path)?;
+            if !launcher_running {
+                // Writing while the launcher is open is pointless — it reloads
+                // nothing and rewrites this file from memory on its next
+                // startup, undoing the selection.
+                selection_applied = !crate::launcher_ui_state::select_installation(
+                    official_root,
+                    &profile,
+                    &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                )
+                .unwrap_or_default()
+                .is_empty();
+            }
         }
         let mod_ids = manifest
             .map(|manifest| {
@@ -547,15 +582,45 @@ impl InstanceService {
                     .collect()
             })
             .unwrap_or_default();
-        let launcher_path = crate::db::get_setting(&conn, "mojang_launcher_path")
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_str().map(str::to_owned));
         Ok(DelegatedLaunchPreparation {
             profile_id,
             launcher_path,
             mod_ids,
+            launcher_running,
+            selection_applied,
         })
+    }
+
+    /// Drop `agora-*` launcher profiles whose instance no longer exists.
+    ///
+    /// Returns the removed profile ids. Called on delete and before every
+    /// delegated handoff; safe to call when no launcher is installed.
+    pub fn reconcile_launcher_profiles(&self) -> LauncherResult<Vec<String>> {
+        let Some(profiles_path) = &self.ctx.launcher_profiles_path else {
+            return Ok(Vec::new());
+        };
+        let conn = self.connection()?;
+        self.prune_launcher_profiles(&conn, profiles_path)
+    }
+
+    fn prune_launcher_profiles(
+        &self,
+        conn: &rusqlite::Connection,
+        profiles_path: &Path,
+    ) -> LauncherResult<Vec<String>> {
+        let live: std::collections::HashSet<String> = crate::db::list_instances(conn)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .into_iter()
+            .map(|row| row.instance_id)
+            .collect();
+        crate::launcher_profiles::prune_orphan_profiles(
+            profiles_path,
+            &self.ctx.paths.instances_root(),
+            &|instance_id| live.contains(instance_id),
+        )
     }
 
     /// Delete an instance with a filesystem quarantine so a database failure
@@ -660,10 +725,29 @@ impl InstanceService {
             let _ = crate::snapshot::prune_unreferenced_objects(&dir);
         }
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
-            let _ = crate::launcher_profiles::remove_profile(
-                &format!("agora-{instance_id}"),
-                profiles_path,
-            );
+            let profile_id = crate::launcher_profiles::profile_id_for(&instance_id);
+            let _ = crate::launcher_profiles::remove_profile(&profile_id, profiles_path);
+            // The launcher restores its installation selection from its own
+            // UI state, so removing the profile is not enough: without this it
+            // reopens on a pack that no longer exists.
+            if let Some(official_root) = profiles_path.parent() {
+                if crate::launcher_ui_state::selected_profile_id(official_root).as_deref()
+                    == Some(profile_id.as_str())
+                {
+                    let replacement = crate::launcher_profiles::most_recent_profile_except(
+                        profiles_path,
+                        &profile_id,
+                    );
+                    let _ = crate::launcher_ui_state::clear_selection_for(
+                        official_root,
+                        &profile_id,
+                        replacement
+                            .as_ref()
+                            .map(|(entry, last_used)| (entry, last_used.as_str())),
+                    );
+                }
+            }
+            let _ = self.prune_launcher_profiles(&conn, profiles_path);
         }
         op.complete();
         Ok(())
@@ -982,6 +1066,7 @@ impl InstanceService {
                         &new_row.minecraft_version,
                     ),
                 ),
+                select: false,
             };
             if let Err(error) = crate::launcher_profiles::upsert_profile(&profile, profiles_path) {
                 let _ = crate::db::delete_instance(&conn, &new_row.instance_id);
@@ -1212,6 +1297,7 @@ impl InstanceService {
                 last_version_id: loader_version_id(&row),
                 game_dir: dir.clone(),
                 java_args: jvm.to_args(),
+                select: false,
             };
             if let Err(error) = crate::launcher_profiles::upsert_profile(&profile, profiles_path) {
                 let _ = crate::db::delete_instance(&conn, &row.instance_id);
@@ -1659,6 +1745,115 @@ mod tests {
         assert!(!cloned_manifest.is_locked);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The reported symptom: deleting a pack left its entry in the official
+    /// launcher's installation list, and the launcher kept it as the selected
+    /// installation even though nothing was left to launch.
+    #[test]
+    fn delete_removes_the_official_launcher_profile_and_selection() {
+        let (ctx, root) = context();
+        let profiles_path = ctx.launcher_profiles_path.clone().unwrap();
+        let official_root = profiles_path.parent().unwrap().to_path_buf();
+        let request = CreateInstanceRequest {
+            name: "Doomed".into(),
+            instance_id: "doomed".into(),
+            minecraft_version: "1.21".into(),
+            loader: "vanilla".into(),
+            loader_version: "".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let row = prepare_row("doomed", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        // A survivor, so the deleted pack is not the only thing to select.
+        let survivor_request = CreateInstanceRequest {
+            name: "Keeper".into(),
+            instance_id: "keeper".into(),
+            ..request.clone()
+        };
+        crate::db::upsert_instance(&conn, &prepare_row("keeper", &survivor_request)).unwrap();
+        drop(conn);
+        for id in ["doomed", "keeper"] {
+            let dir = ctx.paths.instance_dir(id).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                ctx.paths.instance_manifest(id).unwrap(),
+                serde_json::to_vec(&manifest_from_request(id, &request)).unwrap(),
+            )
+            .unwrap();
+            crate::launcher_profiles::upsert_profile(
+                &crate::launcher_profiles::LauncherProfileEntry {
+                    profile_id: crate::launcher_profiles::profile_id_for(id),
+                    name: format!("{id} (Agora)"),
+                    last_version_id: "1.21".into(),
+                    game_dir: dir,
+                    java_args: String::new(),
+                    select: false,
+                },
+                &profiles_path,
+            )
+            .unwrap();
+        }
+        write_ui_state_selecting(&official_root, "agora-doomed");
+
+        InstanceService::new(ctx).delete("doomed", None).unwrap();
+
+        let profiles: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&profiles_path).unwrap()).unwrap();
+        assert!(
+            profiles["profiles"].get("agora-doomed").is_none(),
+            "the deleted pack must not stay in the launcher's installation list"
+        );
+        assert!(profiles["profiles"].get("agora-keeper").is_some());
+        assert_eq!(
+            crate::launcher_ui_state::selected_profile_id(&official_root).as_deref(),
+            Some("agora-keeper"),
+            "the launcher must not reopen on the pack that was just deleted"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Minimal stand-in for the launcher's UI-state file: a banner, then a
+    /// document whose `UiSettings` is itself a JSON string.
+    fn write_ui_state_selecting(official_root: &std::path::Path, profile_id: &str) {
+        let settings = serde_json::json!({
+            "homePageLastSelected": {
+                "productId": "java",
+                "javaConfiguration": {
+                    "id": profile_id,
+                    "name": "doomed (Agora)",
+                    "versionId": "1.21",
+                    "gameDir": "C:/gone",
+                    "javaArgs": "",
+                    "type": "custom",
+                    "icon": "Furnace"
+                }
+            }
+        });
+        let root = serde_json::json!({
+            "data": { "UiSettings": serde_json::to_string(&settings).unwrap() }
+        });
+        std::fs::create_dir_all(official_root).unwrap();
+        std::fs::write(
+            official_root.join("launcher_ui_state_microsoft_store.json"),
+            format!(
+                "#$
+DO NOT EDIT
+$#
+{}",
+                serde_json::to_string(&root).unwrap()
+            ),
+        )
+        .unwrap();
     }
 
     #[test]

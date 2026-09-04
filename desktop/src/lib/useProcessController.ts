@@ -101,6 +101,13 @@ export interface ProcessController {
    */
   switchLoaderAndRetry: (targetVersion: string) => Promise<void>;
   /**
+   * Close the already-running official launcher and hand off again.
+   *
+   * Only offered after `ERR_MOJANG_LAUNCHER_RUNNING`, and only ever called
+   * from a confirmed user action: it terminates another application.
+   */
+  restartMojangLauncherAndRetry: () => Promise<void>;
+  /**
    * Explicitly switch to delegated launch for the current instance,
    * bypassing only the Direct profile adoption (health checks already completed).
    * Calls executeLaunch(..., false) and transitions to 'delegated'.
@@ -757,6 +764,42 @@ export function useProcessController(): ProcessController {
     }
   }, []);
 
+  const restartMojangLauncherAndRetry = useCallback(async () => {
+    const current = stateRef.current;
+    if (!current.instanceId) throw new Error('No instance selected');
+    if (current.phase === 'launching') return;
+
+    setState((prev) => ({
+      ...prev,
+      phase: 'launching',
+      error: null,
+      recoverableIssue: null,
+      recoverableJavaIssue: null,
+      runtimeProgress: null,
+      availableActions: [],
+    }));
+
+    try {
+      await launchInstance(
+        current.instanceId,
+        current.healthReport !== null,
+        current.healthReport?.scan_token,
+        true,
+      );
+      setState(launchedState(current.instanceId, false, null));
+    } catch (e) {
+      const parsed = parseLauncherError(e);
+      setState((prev) => ({
+        ...prev,
+        phase: 'failed',
+        error: parsed.message,
+        recoverableIssue: parsed.recoverableIssue,
+        recoverableJavaIssue: parsed.recoverableJavaIssue,
+        availableActions: parsed.availableActions,
+      }));
+    }
+  }, []);
+
   return {
     state,
     logs,
@@ -770,6 +813,7 @@ export function useProcessController(): ProcessController {
     repairAndRetry,
     switchLoaderAndRetry,
     useDelegatedLaunch,
+    restartMojangLauncherAndRetry,
     downloadRuntimeAndRetry,
     chooseJavaAndRetry,
     cancelJavaRecovery,

@@ -85,7 +85,8 @@ export type LauncherAction =
   | 'download_runtime'
   | 'choose_java'
   | 'cancel'
-  | 'open_privacy';
+  | 'open_privacy'
+  | 'restart_mojang_launcher';
 
 /**
  * Structured recoverable Java issue extracted from a LauncherError details
@@ -267,6 +268,13 @@ export function parseLauncherError(e: unknown): ParsedLauncherError {
             }
           }
         }
+      }
+
+      // The official launcher was already open, so the handoff could not
+      // select this pack. Offer the restart that makes it possible; the
+      // backend never closes it without that confirmation.
+      if (code === 'ERR_MOJANG_LAUNCHER_RUNNING') {
+        availableActions = ['restart_mojang_launcher', 'dismiss'];
       }
 
       return { code, message, recoverableIssue, recoverableJavaIssue, availableActions };
@@ -613,8 +621,25 @@ export const revealPath = (path: string) =>
 /** Open an external https link in the user's real browser. */
 export const openExternalUrl = (url: string) =>
   invoke<void>('open_external_url', { url });
-export const launchInstance = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
-  invoke<void>('launch_instance', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
+/**
+ * Delegated launch. Fails with `ERR_MOJANG_LAUNCHER_RUNNING` when the official
+ * launcher is already open, because it only reads Agora's profile and its saved
+ * installation selection at startup — handing off to a running launcher would
+ * silently leave the previous pack selected. Pass `restartLauncher` after the
+ * user confirms closing it.
+ */
+export const launchInstance = (
+  instanceId: string,
+  allowHealthBlockers = false,
+  healthScanToken?: string,
+  restartLauncher = false,
+) =>
+  invoke<void>('launch_instance', {
+    instanceId,
+    allowHealthBlockers,
+    healthScanToken: healthScanToken ?? null,
+    restartLauncher,
+  });
 
 export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
   invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
