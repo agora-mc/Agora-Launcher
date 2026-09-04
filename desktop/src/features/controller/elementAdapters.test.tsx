@@ -11,7 +11,13 @@
 import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { adaptAccept, adaptNavigate } from './elementAdapters';
+import {
+  adaptAccept,
+  adaptNavigate,
+  commitSelectValue,
+  selectChoices,
+  selectedChoiceIndex,
+} from './elementAdapters';
 
 function ControlledSelect({ initial = 'b' }: { initial?: string }) {
   const [value, setValue] = useState(initial);
@@ -46,86 +52,67 @@ function ControlledRange({ initial = 50 }: { initial?: number }) {
 }
 
 describe('native select', () => {
-  it('moves a controlled value down the list', () => {
+  /**
+   * Selects deliberately own no direction. An earlier version cycled their
+   * options with up and down, which read well in isolation and was miserable in
+   * a column of settings: every dropdown became a trap vertical movement could
+   * not get past. Choosing happens in an overlay on Accept instead.
+   */
+  it('does not consume any direction, so focus can move past it', () => {
     render(<ControlledSelect />);
     const select = screen.getByLabelText('pick');
 
-    expect(adaptNavigate(select, 'down')).toBe(true);
-
-    expect(screen.getByRole('status', { hidden: true }).textContent).toBe('c');
-  });
-
-  it('moves back up the list', () => {
-    render(<ControlledSelect />);
-
-    adaptNavigate(screen.getByLabelText('pick'), 'up');
-
-    expect(screen.getByRole('status', { hidden: true }).textContent).toBe('a');
-  });
-
-  it('clamps at the ends instead of wrapping', () => {
-    render(<ControlledSelect initial="c" />);
-    const select = screen.getByLabelText('pick');
-
-    expect(adaptNavigate(select, 'down')).toBe(true);
-    expect(screen.getByRole('status', { hidden: true }).textContent).toBe('c');
-  });
-
-  it('gives left and right back to the page so focus can leave', () => {
-    render(<ControlledSelect />);
-    const select = screen.getByLabelText('pick');
-
-    expect(adaptNavigate(select, 'left')).toBe(false);
-    expect(adaptNavigate(select, 'right')).toBe(false);
-  });
-
-  it('skips disabled options', () => {
-    function WithDisabled() {
-      const [value, setValue] = useState('a');
-      return (
-        <>
-          <select aria-label="pick" value={value} onChange={(e) => setValue(e.target.value)}>
-            <option value="a">A</option>
-            <option value="b" disabled>B</option>
-            <option value="c">C</option>
-          </select>
-          <output>{value}</output>
-        </>
-      );
+    for (const direction of ['up', 'down', 'left', 'right'] as const) {
+      expect(adaptNavigate(select, direction)).toBe(false);
     }
-    render(<WithDisabled />);
+    expect(screen.getByRole('status', { hidden: true }).textContent).toBe('b');
+  });
 
-    adaptNavigate(screen.getByLabelText('pick'), 'down');
+  it('lists the choices a controller may pick between', () => {
+    render(<ControlledSelect />);
+    const select = screen.getByLabelText('pick') as HTMLSelectElement;
 
+    expect(selectChoices(select).map((choice) => choice.value)).toEqual(['a', 'b', 'c']);
+    expect(selectedChoiceIndex(select)).toBe(1);
+  });
+
+  it('omits disabled options from the choices', () => {
+    render(
+      <select aria-label="pick" defaultValue="a">
+        <option value="a">A</option>
+        <option value="b" disabled>B</option>
+        <option value="c">C</option>
+      </select>,
+    );
+    const select = screen.getByLabelText('pick') as HTMLSelectElement;
+
+    expect(selectChoices(select).map((choice) => choice.value)).toEqual(['a', 'c']);
+  });
+
+  it('reports an empty select without throwing', () => {
+    render(<select aria-label="empty" />);
+    const select = screen.getByLabelText('empty') as HTMLSelectElement;
+
+    expect(selectChoices(select)).toEqual([]);
+    expect(selectedChoiceIndex(select)).toBe(0);
+  });
+
+  it('commits a chosen value through React rather than only the DOM', () => {
+    render(<ControlledSelect />);
+    const select = screen.getByLabelText('pick') as HTMLSelectElement;
+
+    expect(commitSelectValue(select, 'c')).toBe(true);
+
+    expect(select.value).toBe('c');
     expect(screen.getByRole('status', { hidden: true }).textContent).toBe('c');
   });
 
-  it('leaves a multi-select to ordinary focus movement', () => {
-    render(
-      <select aria-label="many" multiple defaultValue={['a']}>
-        <option value="a">A</option>
-        <option value="b">B</option>
-      </select>,
-    );
+  it('treats committing the current value as a no-op', () => {
+    render(<ControlledSelect />);
+    const select = screen.getByLabelText('pick') as HTMLSelectElement;
 
-    expect(adaptNavigate(screen.getByLabelText('many'), 'down')).toBe(false);
-  });
-
-  it('does nothing to a disabled select', () => {
-    render(
-      <select aria-label="off" disabled defaultValue="a">
-        <option value="a">A</option>
-        <option value="b">B</option>
-      </select>,
-    );
-
-    expect(adaptNavigate(screen.getByLabelText('off'), 'down')).toBe(false);
-  });
-
-  it('survives a select with no options at all', () => {
-    render(<select aria-label="empty" />);
-
-    expect(adaptNavigate(screen.getByLabelText('empty'), 'down')).toBe(false);
+    expect(commitSelectValue(select, 'b')).toBe(true);
+    expect(screen.getByRole('status', { hidden: true }).textContent).toBe('b');
   });
 });
 
@@ -165,15 +152,21 @@ describe('accept', () => {
   it('is swallowed by controls that would open an OS widget', () => {
     render(
       <>
-        <select aria-label="s"><option value="a">A</option></select>
         <input aria-label="c" type="color" defaultValue="#ffffff" />
         <input aria-label="f" type="file" />
       </>,
     );
 
-    expect(adaptAccept(screen.getByLabelText('s'))).toBe(true);
     expect(adaptAccept(screen.getByLabelText('c'))).toBe(true);
     expect(adaptAccept(screen.getByLabelText('f'))).toBe(true);
+  });
+
+  /** The provider opens the select overlay for these, so Accept must not be
+   *  absorbed here — absorbing it would make dropdowns do nothing at all. */
+  it('is not swallowed for a select, which opens the overlay instead', () => {
+    render(<select aria-label="s"><option value="a">A</option></select>);
+
+    expect(adaptAccept(screen.getByLabelText('s'))).toBe(false);
   });
 
   it('still activates ordinary controls', () => {
@@ -200,26 +193,28 @@ describe('React value tracking', () => {
   /**
    * The regression guard. Setting `.value` directly leaves React's tracker
    * believing nothing changed, so `onChange` never fires and a controlled
-   * component re-renders its old value. If this test fails, the adapter has
-   * stopped going through the prototype's native setter.
+   * component re-renders its old value. If this fails, a write has stopped
+   * going through the prototype's native setter.
    */
-  it('fires onChange on a controlled select rather than only moving the DOM', () => {
+  it('keeps a controlled select on its new value after a re-render', () => {
     render(<ControlledSelect />);
     const select = screen.getByLabelText('pick') as HTMLSelectElement;
 
-    adaptNavigate(select, 'down');
+    commitSelectValue(select, 'c');
+    fireEvent.blur(select);
 
     expect(select.value).toBe('c');
     expect(screen.getByRole('status', { hidden: true }).textContent).toBe('c');
   });
 
-  it('keeps a controlled select from snapping back after a re-render', () => {
-    render(<ControlledSelect />);
-    const select = screen.getByLabelText('pick') as HTMLSelectElement;
+  it('keeps a controlled slider on its new value after a re-render', () => {
+    render(<ControlledRange />);
+    const slider = screen.getByLabelText('level') as HTMLInputElement;
 
-    adaptNavigate(select, 'down');
-    fireEvent.blur(select);
+    adaptNavigate(slider, 'right');
+    fireEvent.blur(slider);
 
-    expect(select.value).toBe('c');
+    expect(slider.value).toBe('60');
+    expect(screen.getByRole('status', { hidden: true }).textContent).toBe('60');
   });
 });

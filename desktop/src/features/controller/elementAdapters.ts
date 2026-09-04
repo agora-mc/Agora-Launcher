@@ -8,11 +8,15 @@
  * controller can use the app": this codebase has 39 native selects and 13
  * sliders, most of them in Settings and the instance editor.
  *
- * The fix is to never open the OS widget at all. A focused select cycles its
- * options in place, a slider steps by its own increment, and neither ever hands
- * off to a popup the controller would be locked out of. That also avoids
- * rewriting eleven files of markup to a custom listbox, which would have been
- * the same behaviour with far more surface area.
+ * The fix is to never open the OS widget at all. A slider steps by its own
+ * increment, and a select hands its options to an in-app overlay instead of the
+ * system popup — see `SelectOverlay`. Neither ever opens something the
+ * controller would be locked out of, and no page markup had to change.
+ *
+ * Selects deliberately own no direction. An earlier version cycled their
+ * options with up and down, which read well in isolation and was miserable in
+ * practice: in a column of settings every dropdown became a trap that vertical
+ * movement could not get past.
  *
  * React is the wrinkle. It installs its own value tracker on form elements and
  * skips `onChange` when a value changes without going through it, so assigning
@@ -63,26 +67,34 @@ function stepFor(direction: ControllerDirection): -1 | 1 {
   return direction === 'up' || direction === 'left' ? -1 : 1;
 }
 
-function selectableOptions(select: HTMLSelectElement): HTMLOptionElement[] {
-  return Array.from(select.options).filter((option) => !option.disabled);
+/** The options a controller may choose between, in order. */
+export interface SelectChoice {
+  value: string;
+  label: string;
+  index: number;
 }
 
-function adaptSelect(select: HTMLSelectElement, direction: ControllerDirection): boolean {
-  // A multi-select is a list, not a single value; leave it to normal focus
-  // movement rather than inventing a selection model for it.
-  if (select.multiple) return false;
+export function selectChoices(select: HTMLSelectElement): SelectChoice[] {
+  return Array.from(select.options)
+    .map((option, index) => ({ option, index }))
+    .filter(({ option }) => !option.disabled)
+    .map(({ option, index }) => ({
+      value: option.value,
+      label: option.label || option.text || option.value,
+      index,
+    }));
+}
 
-  const options = selectableOptions(select);
-  if (options.length === 0) return false;
+export function selectedChoiceIndex(select: HTMLSelectElement): number {
+  const choices = selectChoices(select);
+  const found = choices.findIndex((choice) => choice.index === select.selectedIndex);
+  return found >= 0 ? found : 0;
+}
 
-  const current = options.findIndex((option) => option.selected);
-  const next = current + stepFor(direction);
-  // Clamped, not wrapping. A wrap would let a held stick cycle a setting past
-  // its end and back round without the user noticing it had moved at all.
-  if (next < 0 || next >= options.length) return true;
-  if (next === current) return true;
-
-  return commit(select, HTMLSelectElement.prototype, options[next].value, ['input', 'change']);
+/** Commit a chosen option the way a user would, so React's tracker notices. */
+export function commitSelectValue(select: HTMLSelectElement, value: string): boolean {
+  if (select.value === value) return true;
+  return commit(select, HTMLSelectElement.prototype, value, ['input', 'change']);
 }
 
 function adaptRange(input: HTMLInputElement, direction: ControllerDirection): boolean {
@@ -120,7 +132,6 @@ function adaptNumber(input: HTMLInputElement, direction: ControllerDirection): b
  */
 function ownsDirection(element: HTMLElement, direction: ControllerDirection): boolean {
   const horizontal = direction === 'left' || direction === 'right';
-  if (element instanceof HTMLSelectElement) return !horizontal;
   if (element instanceof HTMLInputElement) {
     if (element.type === 'range') return horizontal;
     if (element.type === 'number') return !horizontal;
@@ -140,7 +151,6 @@ export function adaptNavigate(element: Element | null, direction: ControllerDire
   if (element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true') return false;
   if (!ownsDirection(element, direction)) return false;
 
-  if (element instanceof HTMLSelectElement) return adaptSelect(element, direction);
   if (element instanceof HTMLInputElement) {
     if (element.type === 'range') return adaptRange(element, direction);
     if (element.type === 'number') return adaptNumber(element, direction);
@@ -157,7 +167,6 @@ export function adaptNavigate(element: Element | null, direction: ControllerDire
  */
 export function adaptAccept(element: Element | null): boolean {
   if (!(element instanceof HTMLElement)) return false;
-  if (element instanceof HTMLSelectElement) return true;
   if (element instanceof HTMLInputElement) {
     return element.type === 'color' || element.type === 'range' || element.type === 'file';
   }

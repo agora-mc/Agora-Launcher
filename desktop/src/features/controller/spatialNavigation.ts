@@ -90,16 +90,30 @@ const AXES: Record<ControllerDirection, Axis> = {
   },
 };
 
+/** Candidate sits entirely inside the origin — a control within a bigger one. */
+function isInside(origin: NavRect, candidate: NavRect): boolean {
+  return candidate.left >= origin.left - 1
+    && candidate.right <= origin.right + 1
+    && candidate.top >= origin.top - 1
+    && candidate.bottom <= origin.bottom + 1;
+}
+
 /**
  * Whether the candidate genuinely lies in the requested direction.
  *
  * Edge advance alone is too strict for real layouts, where neighbours abut or
  * overlap by a pixel of border. Requiring the *centre* to have moved as well
  * keeps a taller neighbour that merely overlaps from counting as "below".
+ *
+ * A candidate nested *inside* the origin is exempt from the advance test
+ * entirely. Browse cards are focusable and contain their own "View Details"
+ * button, so by edge distance that button is behind the card on every axis at
+ * once and could never be reached — the card swallowed its own contents. Its
+ * centre still says which way it lies, which is enough.
  */
 function isAhead(origin: NavRect, candidate: NavRect, direction: ControllerDirection): boolean {
   const axis = AXES[direction];
-  if (axis.advance(origin, candidate) < -1) return false;
+  if (!isInside(origin, candidate) && axis.advance(origin, candidate) < -1) return false;
 
   if (direction === 'down') return centre(candidate.top, candidate.bottom) > centre(origin.top, origin.bottom);
   if (direction === 'up') return centre(candidate.top, candidate.bottom) < centre(origin.top, origin.bottom);

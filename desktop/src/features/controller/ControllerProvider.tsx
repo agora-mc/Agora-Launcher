@@ -19,6 +19,7 @@ import { scrollNearestScrollport } from './scrollport';
 import { adaptAccept, adaptNavigate } from './elementAdapters';
 import { isEditableField, type EditableField } from './textEditing';
 import { OnScreenKeyboard } from './OnScreenKeyboard';
+import { SelectOverlay } from './SelectOverlay';
 
 export interface ControllerLayerRegistration {
   rootRef: RefObject<HTMLElement | null>;
@@ -63,6 +64,25 @@ function toControllerIntent(intent: GamepadIntent): ControllerIntent {
   }
 }
 
+/**
+ * Items of a composite widget that manages its own tab stop.
+ *
+ * A tablist, listbox or radiogroup keeps exactly one child at `tabIndex` 0 and
+ * parks the rest at -1. For the keyboard that is correct — Tab enters the group
+ * once and the arrows move within it. Controller navigation has no separate
+ * "enter the group" step, so those parked children have to stay candidates or
+ * the group becomes a dead end.
+ */
+const ROVING_ITEM_ROLES = new Set([
+  'tab', 'option', 'radio', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+  'treeitem', 'gridcell',
+]);
+
+function isRovingItem(element: HTMLElement): boolean {
+  const role = element.getAttribute('role');
+  return role !== null && ROVING_ITEM_ROLES.has(role);
+}
+
 function focusableElements(root: HTMLElement): HTMLElement[] {
   const candidates = root.querySelectorAll<HTMLElement>(
     'button, a[href], input, select, textarea, [tabindex], [contenteditable="true"]',
@@ -72,10 +92,16 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
     if (element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
     if ('disabled' in element && Boolean((element as HTMLElement & { disabled?: boolean }).disabled)) return false;
     if (element.getAttribute('aria-disabled') === 'true') return false;
-    // `tabindex="-1"` means "focusable by script, not part of the sequence".
-    // Roving-tabindex widgets park -1 on every unselected item, so including
-    // them would make one logical control into N navigation stops.
-    if (element.getAttribute('tabindex') === '-1') return false;
+    // Anything that opts out explicitly. The sidebar's resize grip is keyboard-
+    // operable but has no controller meaning, and it sits between the sidebar
+    // and the content where a stick runs straight into it.
+    if (element.closest('[data-controller-skip]')) return false;
+    // `tabindex="-1"` normally means "focusable by script, not part of the
+    // sequence" — except in a composite widget, where roving tabindex parks -1
+    // on every *unselected* item. Excluding those outright made the Settings
+    // section tabs unreachable: only the one you were already on was a
+    // candidate, so there was no way to move off it.
+    if (element.getAttribute('tabindex') === '-1' && !isRovingItem(element)) return false;
     // Conditional rendering and collapsed panels leave real elements in the
     // tree that no pointer could ever reach. jsdom has no layout and no
     // `checkVisibility`, so this is a browser-only refinement by design.
@@ -172,12 +198,22 @@ function defaultNavigate(
   if (target) focusControllerTarget(target);
 }
 
-function defaultAccept(root: HTMLElement, onOpenKeyboard: (field: EditableField) => void) {
+function defaultAccept(
+  root: HTMLElement,
+  onOpenKeyboard: (field: EditableField) => void,
+  onOpenSelect: (select: HTMLSelectElement) => void,
+) {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement) || !root.contains(active)) return;
   if (!focusableElements(root).includes(active)) return;
   if (isEditableField(active)) {
     onOpenKeyboard(active);
+    return;
+  }
+  // A native dropdown would open a system popup here. Hand its options to an
+  // in-app overlay the controller can actually steer instead.
+  if (active instanceof HTMLSelectElement) {
+    onOpenSelect(active);
     return;
   }
   // Clicking a select or a colour swatch opens the operating-system widget the
@@ -204,13 +240,14 @@ function dispatchDefault(
   intent: ControllerIntent,
   onCancel: (() => void) | undefined,
   onOpenKeyboard: (field: EditableField) => void,
+  onOpenSelect: (select: HTMLSelectElement) => void,
 ) {
   if (intent.type === 'cancel') {
     onCancel?.();
   } else if (root && intent.type === 'navigate') {
     defaultNavigate(root, intent.direction);
   } else if (root && intent.type === 'accept') {
-    defaultAccept(root, onOpenKeyboard);
+    defaultAccept(root, onOpenKeyboard, onOpenSelect);
   } else if (root && intent.type === 'scroll') {
     defaultScroll(root, intent.direction);
   }
@@ -220,6 +257,8 @@ export function ControllerProvider({ children }: PropsWithChildren) {
   const layersRef = useRef<ControllerLayerRegistration[]>([]);
   const keyboardFieldRef = useRef<EditableField | null>(null);
   const [keyboardField, setKeyboardField] = useState<EditableField | null>(null);
+  const selectRef = useRef<HTMLSelectElement | null>(null);
+  const [openSelectElement, setOpenSelectElement] = useState<HTMLSelectElement | null>(null);
 
   const registerLayer = useCallback((layer: ControllerLayerRegistration) => {
     layersRef.current.push(layer);
@@ -235,6 +274,18 @@ export function ControllerProvider({ children }: PropsWithChildren) {
   const openKeyboard = useCallback((field: EditableField) => {
     keyboardFieldRef.current = field;
     setKeyboardField(field);
+  }, []);
+
+  const openSelect = useCallback((select: HTMLSelectElement) => {
+    selectRef.current = select;
+    setOpenSelectElement(select);
+  }, []);
+
+  const closeSelect = useCallback(() => {
+    const select = selectRef.current;
+    selectRef.current = null;
+    setOpenSelectElement(null);
+    if (select?.isConnected) select.focus({ preventScroll: true });
   }, []);
 
   const closeKeyboard = useCallback(() => {
@@ -266,11 +317,11 @@ export function ControllerProvider({ children }: PropsWithChildren) {
       // that is what keeps input off the page behind a dialog. A transparent
       // one wanted a specific binding and nothing more, so keep walking down.
       if (!layer.transparent) {
-        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current, openKeyboard);
+        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current, openKeyboard, openSelect);
         return;
       }
     }
-  }, [openKeyboard]);
+  }, [openKeyboard, openSelect]);
 
   const { connected, gamepadCount } = useGamepad({ onIntent: dispatch });
   // Size the whole app for couch distance while a pad is in play, and put it
@@ -287,6 +338,7 @@ export function ControllerProvider({ children }: PropsWithChildren) {
       <ControllerLayerContext.Provider value={registry}>
         {children}
         {keyboardField && <OnScreenKeyboard field={keyboardField} onClose={closeKeyboard} />}
+        {openSelectElement && <SelectOverlay select={openSelectElement} onClose={closeSelect} />}
       </ControllerLayerContext.Provider>
     </ControllerStateContext.Provider>
   );

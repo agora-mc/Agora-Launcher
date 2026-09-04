@@ -175,6 +175,11 @@ export function Sidebar({
       {!collapsed && (
         <div
           role="separator"
+          // controller-skip: this grip resizes the sidebar with the arrow keys,
+          // which has no controller equivalent, and it sits directly between the
+          // sidebar and the content — exactly where a stick moving right runs
+          // into it. Keyboard users keep it.
+          data-controller-skip=""
           aria-label="Resize sidebar"
           aria-orientation="vertical"
           aria-valuemin={MIN_WIDTH}

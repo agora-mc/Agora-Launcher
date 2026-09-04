@@ -6,13 +6,16 @@ import './index.css';
 import { ThemeProvider } from '@/components/theme/theme-provider';
 import { AdvancedModeProvider } from '@/components/AdvancedModeContext';
 import { ControllerProvider } from './features/controller/ControllerProvider';
+import { ConfirmProvider } from '@/components/ui/confirm';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ControllerProvider>
       <ThemeProvider>
         <AdvancedModeProvider>
+          <ConfirmProvider>
           <App />
+        </ConfirmProvider>
         </AdvancedModeProvider>
       </ThemeProvider>
     </ControllerProvider>

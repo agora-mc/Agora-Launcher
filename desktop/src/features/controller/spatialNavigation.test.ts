@@ -112,3 +112,37 @@ describe('degenerate geometry', () => {
     expect(chooseCandidate(rect(0, 0), [], 'down')).toBeNull();
   });
 });
+
+describe('controls nested inside a focusable container', () => {
+  /**
+   * Browse cards are focusable *and* contain a "View Details" button. By edge
+   * distance that button is behind the card on every axis at once, so the card
+   * used to swallow its own contents and the button was unreachable.
+   */
+  it('reaches a button inside the focused card', () => {
+    const card = rect(0, 0, 300, 200);
+    const details = { left: 180, top: 150, right: 280, bottom: 185 };
+    const candidates: SpatialCandidate<string>[] = [{ item: 'details', rect: details }];
+
+    expect(chooseCandidate(card, candidates, 'down')).toBe('details');
+    expect(chooseCandidate(card, candidates, 'right')).toBe('details');
+  });
+
+  it('still leaves the card for a neighbour in the other direction', () => {
+    const card = rect(0, 0, 300, 200);
+    const candidates: SpatialCandidate<string>[] = [
+      { item: 'details', rect: { left: 180, top: 150, right: 280, bottom: 185 } },
+      { item: 'neighbour', rect: rect(320, 0, 300, 200) },
+    ];
+
+    expect(chooseCandidate(card, candidates, 'right')).toBe('details');
+    expect(chooseCandidate(card, candidates, 'up')).toBeNull();
+  });
+
+  it('escapes outwards from the nested control', () => {
+    const details = { left: 180, top: 150, right: 280, bottom: 185 };
+    const candidates: SpatialCandidate<string>[] = [{ item: 'neighbour', rect: rect(320, 0, 300, 200) }];
+
+    expect(chooseCandidate(details, candidates, 'right')).toBe('neighbour');
+  });
+});
