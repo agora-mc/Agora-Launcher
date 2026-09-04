@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/check-interactive-boundaries.mjs && node scripts/check-ambience-boundaries.mjs && tsc && vite build",
+    "build": "node scripts/check-interactive-boundaries.mjs && node scripts/check-ambience-boundaries.mjs && node scripts/check-controller-reachability.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "check:boundaries": "node scripts/check-interactive-boundaries.mjs && node scripts/check-ambience-boundaries.mjs",
+    "check:boundaries": "node scripts/check-interactive-boundaries.mjs && node scripts/check-ambience-boundaries.mjs && node scripts/check-controller-reachability.mjs",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:e2e": "playwright test",

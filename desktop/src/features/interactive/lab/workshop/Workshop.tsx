@@ -1431,6 +1431,7 @@ export function Workshop({ onOpenGuide, onNavigateStandard, onAmbienceChange, re
       </p>
 
       {/* bench modal */}
+      {/* controller-exempt: click-outside backdrop; the card has its own Close button. */}
       <div className={`ws-bench ${bench ? 'show' : ''}`} role="dialog" aria-modal="true" aria-label={bench?.title} onClick={(e) => { if (e.target === e.currentTarget) closeBench(); }}>
         {bench ? (
           <div className="ws-card">

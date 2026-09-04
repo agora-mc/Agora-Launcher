@@ -31,7 +31,23 @@ function nativeValueSetter(element: HTMLElement, prototype: object): ValueSetter
   return (value: string) => setter.call(element, value);
 }
 
-/** Write a value the way a user would, so React's tracker notices. */
+/**
+ * Write a value the way a user would, so React's tracker notices.
+ *
+ * Exported because every controller-driven write to a form control has to go
+ * through this, including the on-screen keyboard. Assigning `.value` directly
+ * is the silent-failure path: the DOM updates, `onChange` never fires, and a
+ * controlled component renders the old value straight back.
+ */
+export function setNativeValue(
+  element: HTMLElement,
+  prototype: object,
+  value: string,
+  events: string[] = ['input', 'change'],
+): boolean {
+  return commit(element, prototype, value, events);
+}
+
 function commit(element: HTMLElement, prototype: object, value: string, events: string[]): boolean {
   const setter = nativeValueSetter(element, prototype);
   if (!setter) return false;

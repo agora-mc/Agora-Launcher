@@ -986,7 +986,12 @@ export function WorldEditor({
           Portalled for the same reason as the drawer: a fixed overlay inside a
           backdrop-filtered scroll container is not actually fixed. */}
       {createPortal(
-      <div className={`we-scrim ${optionalOpen ? 'show' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) setOptionalOpen(false); }}>
+      <div
+        className={`we-scrim ${optionalOpen ? 'show' : ''}`}
+        // controller-exempt: click-outside backdrop, not a control; the dialog
+        // carries its own dismiss control.
+        onClick={(e) => { if (e.target === e.currentTarget) setOptionalOpen(false); }}
+      >
         <div className="we-doc we-optional" role="dialog" aria-modal="true" aria-label="Optional dependencies">
           <h3>Optional dependencies</h3>
           <p className="sub">A few things in here can use extra add-ons. They're never required — add the ones you want.</p>
@@ -1030,7 +1035,12 @@ export function WorldEditor({
       )}
 
       {/* ── preflight ── */}
-      <div className={`we-scrim ${preflightOpen ? 'show' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) setPreflightOpen(false); }}>
+      <div
+        className={`we-scrim ${preflightOpen ? 'show' : ''}`}
+        // controller-exempt: click-outside backdrop, not a control; the dialog
+        // carries its own dismiss control.
+        onClick={(e) => { if (e.target === e.currentTarget) setPreflightOpen(false); }}
+      >
         <div className="we-preflight" role="dialog" aria-modal="true" aria-label="Getting ready">
           <h3>{preflightResult.ok ? 'Ready to play!' : 'Getting ready…'}</h3>
           <p className="sub">A quick look before you play.</p>
@@ -1056,7 +1066,12 @@ export function WorldEditor({
       </div>
 
       {/* ── crash doctor ── */}
-      <div className={`we-scrim ${doctorOpen ? 'show' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}>
+      <div
+        className={`we-scrim ${doctorOpen ? 'show' : ''}`}
+        // controller-exempt: click-outside backdrop, not a control; the dialog
+        // carries its own dismiss control.
+        onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}
+      >
         <div className="we-doc" role="dialog" aria-modal="true" aria-label="Crash Doctor">
           <h3>Your game stopped</h3>
           <p className="sub">

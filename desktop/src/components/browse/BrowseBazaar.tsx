@@ -546,10 +546,9 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
       {open && (
         <div
           className="bazaar-detail-scrim"
-          // A backdrop is a click-outside affordance, not a control. Making it
-          // focusable would put a tab stop behind the dialog and duplicate the
-          // close button already inside it; a controller closes this through
-          // the layer's cancel intent instead.
+          // controller-exempt: backdrop, not a control. A tab stop here would sit
+          // behind the dialog and duplicate its own close button; a controller
+          // closes this through the layer's cancel intent instead.
           onClick={(event) => {
             if (event.target === event.currentTarget) setOpen(null);
           }}
