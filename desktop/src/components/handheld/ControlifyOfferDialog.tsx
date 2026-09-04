@@ -1,6 +1,8 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, type KeyboardEvent } from 'react';
 import { Gamepad2, X } from 'lucide-react';
 import type { ControlifyOffer } from '../../lib/tauri';
+import type { ControllerIntent } from '../../features/controller/intents';
+import { useControllerLayer } from '../../features/controller/useControllerLayer';
 
 export function canInstallControlify(offer: ControlifyOffer): offer is ControlifyOffer & { decision: 'offer'; modrinth_slug: string } {
   return offer.decision === 'offer'
@@ -18,6 +20,7 @@ export function ControlifyOfferDialog({ offer, onAccept, onDecline }: Controlify
   const acceptRef = useRef<HTMLButtonElement>(null);
   const declineRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const installable = canInstallControlify(offer);
 
   useEffect(() => {
@@ -31,8 +34,22 @@ export function ControlifyOfferDialog({ offer, onAccept, onDecline }: Controlify
     }
   };
 
+  const handleControllerIntent = useCallback((intent: ControllerIntent) => {
+    if (intent.type !== 'accept') return undefined;
+    if (!canInstallControlify(offer)) return true;
+    onAccept(offer.modrinth_slug);
+    return true;
+  }, [offer, onAccept]);
+
+  useControllerLayer({
+    rootRef: dialogRef,
+    onIntent: handleControllerIntent,
+    onCancel: onDecline,
+  });
+
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       role="presentation"
       onKeyDown={handleKeyDown}

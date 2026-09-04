@@ -86,7 +86,7 @@ describe('useGamepad', () => {
     expect(onConnectionChange).toHaveBeenCalledWith(true);
   });
 
-  it('emits A on a rising edge and repeats held direction after a delay', () => {
+  it('emits the south face button on a rising edge and repeats held direction after a delay', () => {
     const onIntent = vi.fn<(intent: GamepadIntent) => void>();
     current = [makeGamepad({ axes: [1, 0] })];
     const { result } = renderHook(() => useGamepad({ onIntent }));
@@ -104,7 +104,7 @@ describe('useGamepad', () => {
 
     current[0] = makeGamepad({ buttons: [0] });
     tick(601);
-    expect(onIntent).toHaveBeenLastCalledWith({ type: 'button', button: 'a' });
+    expect(onIntent).toHaveBeenLastCalledWith({ type: 'button', button: 'south' });
     tick(602);
     expect(onIntent).toHaveBeenCalledTimes(4);
     expect(result.current.connected).toBe(true);

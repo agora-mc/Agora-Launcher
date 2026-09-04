@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 
 export type GamepadDirection = 'up' | 'down' | 'left' | 'right';
-export type GamepadButton = 'a' | 'b' | 'start';
+export type GamepadButton = 'south' | 'east' | 'west' | 'north' | 'l1' | 'r1' | 'start';
 export type GamepadIntent =
   | { type: 'direction'; direction: GamepadDirection }
+  | { type: 'stick'; direction: GamepadDirection }
   | { type: 'button'; button: GamepadButton };
 
 export interface UseGamepadOptions {
@@ -53,6 +54,14 @@ function axisDirection(gamepad: Gamepad): GamepadDirection | null {
   return y < 0 ? 'up' : 'down';
 }
 
+function stickDirection(gamepad: Gamepad): GamepadDirection | null {
+  const x = gamepad.axes[2] ?? 0;
+  const y = gamepad.axes[3] ?? 0;
+  if (Math.max(Math.abs(x), Math.abs(y)) < AXIS_DEADZONE) return null;
+  if (Math.abs(x) >= Math.abs(y)) return x < 0 ? 'left' : 'right';
+  return y < 0 ? 'up' : 'down';
+}
+
 function dpadDirection(gamepad: Gamepad): GamepadDirection | null {
   if (pressed(gamepad, 12)) return 'up';
   if (pressed(gamepad, 13)) return 'down';
@@ -69,8 +78,12 @@ function directionFor(gamepad: Gamepad): GamepadDirection | null {
 
 function buttonIntents(gamepad: Gamepad, previous: boolean[]): GamepadIntent[] {
   const buttons: Array<[number, GamepadButton]> = [
-    [0, 'a'],
-    [1, 'b'],
+    [0, 'south'],
+    [1, 'east'],
+    [2, 'west'],
+    [3, 'north'],
+    [4, 'l1'],
+    [5, 'r1'],
     [9, 'start'],
   ];
   const intents: GamepadIntent[] = [];
@@ -151,7 +164,9 @@ export function useGamepad({
     let frame = 0;
     let previousButtons: boolean[] = [];
     let heldDirection: GamepadDirection | null = null;
-    let nextRepeatAt = 0;
+    let heldStickDirection: GamepadDirection | null = null;
+    let nextDirectionRepeatAt = 0;
+    let nextStickRepeatAt = 0;
 
     const poll = (timestamp: number) => {
       const gamepads = connectedGamepads();
@@ -164,7 +179,9 @@ export function useGamepad({
       if (!gamepad) {
         previousButtons = [];
         heldDirection = null;
-        nextRepeatAt = 0;
+        heldStickDirection = null;
+        nextDirectionRepeatAt = 0;
+        nextStickRepeatAt = 0;
       } else {
         const intents = buttonIntents(gamepad, previousButtons);
         for (const intent of intents) intentRef.current?.(intent);
@@ -174,13 +191,27 @@ export function useGamepad({
           heldDirection = direction;
           if (direction) {
             intentRef.current?.({ type: 'direction', direction });
-            nextRepeatAt = timestamp + Math.max(0, initialRepeatDelayMs);
+            nextDirectionRepeatAt = timestamp + Math.max(0, initialRepeatDelayMs);
           } else {
-            nextRepeatAt = 0;
+            nextDirectionRepeatAt = 0;
           }
-        } else if (direction && timestamp >= nextRepeatAt) {
+        } else if (direction && timestamp >= nextDirectionRepeatAt) {
           intentRef.current?.({ type: 'direction', direction });
-          nextRepeatAt = timestamp + Math.max(1, repeatIntervalMs);
+          nextDirectionRepeatAt = timestamp + Math.max(1, repeatIntervalMs);
+        }
+
+        const stick = stickDirection(gamepad);
+        if (stick !== heldStickDirection) {
+          heldStickDirection = stick;
+          if (stick) {
+            intentRef.current?.({ type: 'stick', direction: stick });
+            nextStickRepeatAt = timestamp + Math.max(0, initialRepeatDelayMs);
+          } else {
+            nextStickRepeatAt = 0;
+          }
+        } else if (stick && timestamp >= nextStickRepeatAt) {
+          intentRef.current?.({ type: 'stick', direction: stick });
+          nextStickRepeatAt = timestamp + Math.max(1, repeatIntervalMs);
         }
       }
 

@@ -48,6 +48,7 @@ import { AmbienceCoordinator } from './components/ambience-coordinator';
 import { PresentationMotionCoordinator } from './components/presentation-motion-coordinator';
 import type { InstallIntent } from './lib/installFlow';
 import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
+import { useController } from './features/controller/ControllerProvider';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -253,6 +254,7 @@ export default function App() {
   } = useDestination();
 
   const processController = useProcessController();
+  const { connected: gamepadConnected } = useController();
   const mainRef = useRef<HTMLElement>(null);
   const previousDestinationRef = useRef<Destination>(destination);
   const browseScrollTopRef = useRef(0);
@@ -278,7 +280,6 @@ export default function App() {
     instanceName: string;
     report: HealthReport;
   } | null>(null);
-  const [gamepadConnected, setGamepadConnected] = useState(false);
   const [handheldActive, setHandheldActive] = useState(false);
   const [controlifyOffer, setControlifyOffer] = useState<ControlifyOffer | null>(null);
   const [controlifyInstall, setControlifyInstall] = useState<ControlifyInstallRequest | null>(null);
@@ -777,13 +778,11 @@ export default function App() {
       <HandheldShell
         active={handheldActive}
         onActiveChange={setHandheldActive}
-        onGamepadConnectionChange={setGamepadConnected}
         // Resolve direct-vs-delegated the same way every other entry point
         // does. Handheld mode must not quietly launch under a different mode
         // than the Play button on the same instance.
         onLaunch={handleInstanceEditorLaunch}
         launchBusy={processState.phase === 'launching' || controlifyOffer !== null || controlifyInstall !== null}
-        inputEnabled={controlifyOffer === null && controlifyInstall === null}
       />
       {controlifyOffer && (
         <ControlifyOfferDialog

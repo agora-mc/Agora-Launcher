@@ -2659,6 +2659,60 @@ from the first. The migration folds the intent forward before dropping the key:
 a stored `true` forces `modrinth_enabled` and `technic_enabled` off, so removing
 the switch never silently re-enables a source the user had opted out of.
 
+### 19.22 Controller Support Is App-Wide, Not a Second Application
+
+Handheld mode originally shipped as a separate full-screen shell that could list
+instances and launch one. That was the whole feature. The failure was structural
+rather than a matter of missing screens: a parallel controller UI is a second
+place every future feature must be built, so it is built once and then stops
+being maintained. The offer dialog that exists *because* the user is holding a
+controller could not be answered with that controller, which is what the pattern
+produces at its logical end.
+
+**The pivot: one application, navigable by any input device.** Controller support
+is an input layer over the same pages, not a rendering of a chosen few. Handheld
+becomes a *presentation preference* — larger targets, reduced density, controller
+legends — over the same destinations, never a separate destination tree. A
+component-level presentation variant is fine; a duplicated workflow is not.
+
+**Input ownership is explicit and exclusive.** A global enable/disable flag can
+only say "everything off", never "the dialog owns input now", which is why the
+Controlify offer was unreachable and why overlays such as HealthDialog left the
+shell live behind them. Instead, a layer stack: components claim ownership while
+mounted, the topmost layer receives every intent, and it either handles an intent
+or lets it fall through to that layer's default navigation. Nothing infers
+ownership from `defaultPrevented`, because a handler that silently swallows an
+intent is indistinguishable from a controller that stopped working.
+
+**Intents are semantic, never button labels.** Nothing above the sampler sees
+`a`/`b`: those are Xbox names, physically swapped on Nintendo layouts and
+different again on a DualSense. The physical mapping is sealed inside
+`lib/useGamepad`; everything above reasons about `accept`, `cancel`, `secondary`,
+`context`, `menu`, `page` and `scroll`.
+
+**The provider mounts above `App`.** `App` early-returns during onboarding, so a
+provider mounted inside it would leave first run with no controller support while
+claiming whole-app coverage. Whole-app has to mean whole-app, including the parts
+that run before the shell exists.
+
+**Geometry is a fallback, not the architecture.** Element counts say the DOM is
+mostly focusable already; they do not say who owns the arrows at a given moment.
+Spatial navigation, scrollport awareness and navigation groups sit *inside* the
+ownership model rather than replacing it.
+
+**Text entry goes through a service boundary.** A home-grown on-screen keyboard
+is a basic-Latin fallback, not the answer: it does not solve composition/IME,
+caret and selection editing, dead keys, RTL or clipboard behaviour. Platform
+adapters (Steam's overlay where genuinely available, a narrow native helper where
+supported) sit behind one `TextInputService` seam in the desktop backend, reached
+through `invoke()`. That seam never justifies a general `shell:allow-execute`
+capability; a fixed, argument-free command is the most that may be added.
+
+Coverage expands by *interaction class* — native `select`, `range`, `color`,
+tables, text entry — fixed once each at the primitive level, rather than page by
+page. Until every class is covered, the honest description is limited coverage,
+not controller support.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

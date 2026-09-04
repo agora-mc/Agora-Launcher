@@ -5,16 +5,15 @@ import {
   listInstances,
   type InstanceRow,
 } from '../../lib/tauri';
-import { useGamepad, type GamepadDirection, type GamepadIntent } from '../../lib/useGamepad';
+import { useController } from '../../features/controller/ControllerProvider';
+import type { ControllerDirection, ControllerIntent } from '../../features/controller/intents';
+import { useControllerLayer } from '../../features/controller/useControllerLayer';
 
 export interface HandheldShellProps {
   active: boolean;
   onActiveChange: (active: boolean) => void;
-  onGamepadConnectionChange: (connected: boolean) => void;
   onLaunch: (instanceId: string) => Promise<boolean>;
   launchBusy?: boolean;
-  /** Temporarily suspend gamepad actions while an App-level dialog is open. */
-  inputEnabled?: boolean;
 }
 
 export function handheldGridColumns(width: number): number {
@@ -26,7 +25,7 @@ export function handheldGridColumns(width: number): number {
 /** Move within the visible card grid, wrapping at the edge of each axis. */
 export function moveHandheldSelection(
   index: number,
-  direction: GamepadDirection,
+  direction: ControllerDirection,
   count: number,
   columns: number,
 ): number {
@@ -61,10 +60,8 @@ function formatLoader(instance: InstanceRow): string {
 export function HandheldShell({
   active,
   onActiveChange,
-  onGamepadConnectionChange,
   onLaunch,
   launchBusy = false,
-  inputEnabled = true,
 }: HandheldShellProps) {
   const [instances, setInstances] = useState<InstanceRow[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -72,37 +69,61 @@ export function HandheldShell({
   const [error, setError] = useState<string | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const { connected } = useController();
 
-  const { connected } = useGamepad({
-    onConnectionChange: onGamepadConnectionChange,
-    onIntent: useCallback((intent: GamepadIntent) => {
-      if (intent.type === 'button') {
-        if (intent.button === 'start') {
-          // Start is the way back in after leaving with B or Escape, so it
-          // toggles whenever a pad is being used.
-          if (inputEnabled) onActiveChange(!active);
-          return;
-        }
-        if (!active || !inputEnabled) return;
-        if (intent.button === 'b') {
-          onActiveChange(false);
-          return;
-        }
-        if (intent.button === 'a') {
-          const instance = instances[selectedIndex];
-          if (instance && !launchBusy) void onLaunch(instance.instance_id);
-        }
-        return;
-      }
+  const handleInactiveControllerIntent = useCallback((intent: ControllerIntent) => {
+    // The shell stays registered while hidden so Start can re-enter after B or
+    // Escape closed handheld mode without requiring a second connection event.
+    //
+    // Claim *only* that intent. Returning true unconditionally would make a
+    // closed handheld shell swallow every input in the app, which costs nothing
+    // today because nothing else is controller-aware yet, and would silently
+    // break every page the moment one is.
+    if (intent.type !== 'menu') return undefined;
+    onActiveChange(true);
+    return true;
+  }, [onActiveChange]);
 
-      if (!active || !inputEnabled) return;
+  const handleControllerIntent = useCallback((intent: ControllerIntent) => {
+    if (intent.type === 'menu') {
+      // Start is the way back in after leaving with B or Escape, so it toggles
+      // whenever a pad is being used.
+      onActiveChange(!active);
+      return true;
+    }
+    if (!active) return true;
+
+    if (intent.type === 'navigate') {
       setSelectedIndex((current) => moveHandheldSelection(
         current,
         intent.direction,
         instances.length,
         handheldGridColumns(typeof window === 'undefined' ? 1024 : window.innerWidth),
       ));
-    }, [active, inputEnabled, instances, launchBusy, onActiveChange, onLaunch, selectedIndex]),
+      return true;
+    }
+    if (intent.type === 'accept') {
+      const instance = instances[selectedIndex];
+      if (instance && !launchBusy) void onLaunch(instance.instance_id);
+      return true;
+    }
+    return undefined;
+  }, [active, instances, launchBusy, onActiveChange, onLaunch, selectedIndex]);
+
+  const handleControllerCancel = useCallback(() => {
+    if (active) onActiveChange(false);
+  }, [active, onActiveChange]);
+
+  useControllerLayer({
+    active: !active,
+    rootRef: shellRef,
+    onIntent: handleInactiveControllerIntent,
+  });
+  useControllerLayer({
+    active,
+    rootRef: shellRef,
+    onIntent: handleControllerIntent,
+    onCancel: handleControllerCancel,
   });
 
   const loadInstances = useCallback(async () => {
@@ -148,8 +169,7 @@ export function HandheldShell({
   }, [active, selectedIndex, instances.length, loading]);
 
   const handleKeyboardNavigation = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!inputEnabled) return;
-    const direction: GamepadDirection | null =
+    const direction: ControllerDirection | null =
       event.key === 'ArrowUp' ? 'up'
         : event.key === 'ArrowDown' ? 'down'
           : event.key === 'ArrowLeft' ? 'left'
