@@ -14,6 +14,7 @@ import { setGamepadModality, watchForDirectInput } from './inputModality';
 import type { ControllerIntent, ControllerIntentResult } from './intents';
 import { hasUsableGeometry, chooseCandidate, type NavRect } from './spatialNavigation';
 import { scrollNearestScrollport } from './scrollport';
+import { adaptAccept, adaptNavigate } from './elementAdapters';
 
 export interface ControllerLayerRegistration {
   rootRef: RefObject<HTMLElement | null>;
@@ -110,10 +111,16 @@ function defaultNavigate(
   root: HTMLElement,
   direction: Extract<ControllerIntent, { type: 'navigate' }>['direction'],
 ) {
+  const active = document.activeElement;
+
+  // A focused native control gets first refusal along its own axis. Otherwise
+  // navigation would move focus off a select rather than changing it, and the
+  // only other way to operate one is the OS popup a controller cannot reach.
+  if (adaptNavigate(active, direction)) return;
+
   const elements = focusableElements(root);
   if (elements.length === 0) return;
 
-  const active = document.activeElement;
   const current = active instanceof HTMLElement ? elements.indexOf(active) : -1;
   const nextInOrder = () => {
     const target = documentOrderTarget(elements, current, direction);
@@ -165,6 +172,9 @@ function defaultAccept(root: HTMLElement) {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement) || !root.contains(active)) return;
   if (!focusableElements(root).includes(active)) return;
+  // Clicking a select or a colour swatch opens the operating-system widget the
+  // adapters exist to keep the user out of, so those absorb Accept instead.
+  if (adaptAccept(active)) return;
   active.click();
 }
 
