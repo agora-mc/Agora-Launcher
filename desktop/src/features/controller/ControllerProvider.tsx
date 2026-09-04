@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   type MutableRefObject,
@@ -9,6 +10,7 @@ import {
   type RefObject,
 } from 'react';
 import { useGamepad, type GamepadIntent } from '../../lib/useGamepad';
+import { setGamepadModality, watchForDirectInput } from './inputModality';
 import type { ControllerIntent, ControllerIntentResult } from './intents';
 
 export interface ControllerLayerRegistration {
@@ -125,7 +127,14 @@ export function ControllerProvider({ children }: PropsWithChildren) {
     };
   }, []);
 
+  useEffect(() => watchForDirectInput(), []);
+
   const dispatch = useCallback((rawIntent: GamepadIntent) => {
+    // Mark modality before anything else, including when no layer claims the
+    // intent: the user is demonstrably on a controller either way, and the ring
+    // has to be right on the very first press rather than the second.
+    setGamepadModality();
+
     const layer = layersRef.current[layersRef.current.length - 1];
     if (!layer) return;
 

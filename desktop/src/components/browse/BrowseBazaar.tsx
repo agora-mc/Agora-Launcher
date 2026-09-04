@@ -52,6 +52,7 @@ import {
   type Vibe,
   type VoteDirection,
 } from './bazaar-model';
+import { useControllerLayer } from '../../features/controller/useControllerLayer';
 import './bazaar.css';
 
 export interface BrowseBazaarProps {
@@ -348,6 +349,15 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
   const stall = stallProp ?? stallLocal;
   const setStall = (id: string) => { setStallLocal(id); onStallChange?.(id); };
   const [open, setOpen] = useState<BazaarItem | null>(null);
+  const detailRef = useRef<HTMLDivElement>(null);
+
+  // The detail modal owns controller input while it is up, so Cancel closes it
+  // rather than falling through to whatever is behind the scrim.
+  useControllerLayer({
+    active: open !== null,
+    rootRef: detailRef,
+    onCancel: () => setOpen(null),
+  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -534,8 +544,17 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
 
       {/* detail modal */}
       {open && (
-        <div className="bazaar-detail-scrim" onClick={() => setOpen(null)}>
-          <div className="bazaar-detail" role="dialog" aria-modal="true" aria-label={open.name} onClick={(e) => e.stopPropagation()}>
+        <div
+          className="bazaar-detail-scrim"
+          // A backdrop is a click-outside affordance, not a control. Making it
+          // focusable would put a tab stop behind the dialog and duplicate the
+          // close button already inside it; a controller closes this through
+          // the layer's cancel intent instead.
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setOpen(null);
+          }}
+        >
+          <div ref={detailRef} className="bazaar-detail" role="dialog" aria-modal="true" aria-label={open.name}>
             <button type="button" className="bazaar-close" onClick={() => setOpen(null)} aria-label="Close">×</button>
             <div className="bazaar-detail-art">
               {open.iconUrl ? <img src={open.iconUrl} alt="" /> : <CritterArt name={open.name} size={120} />}

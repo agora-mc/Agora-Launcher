@@ -328,6 +328,52 @@
   .border-8 { border-radius: calc(var(--radius) * 0.7); }
 }
 
+/* --- Focus visibility -----------------------------------------------------
+
+   Two rules, doing deliberately different jobs.
+
+   The first is a keyboard safety net. Most of this app's ~400 buttons never got
+   a focus style of their own, so tabbing through it was largely invisible. It
+   sits in `:where()`, which has zero specificity, so any component that *does*
+   style its own focus still wins outright — this only fills the gaps.
+
+   The second is the controller ring, and it is intentionally the opposite: it
+   out-specifies component styles so a controller user gets one consistent
+   indicator everywhere rather than whatever each screen happened to define. It
+   keys on `[data-input-modality="gamepad"]` rather than `:focus-visible`
+   because the browser decides that pseudo-class from pointer and keyboard
+   heuristics that a polled gamepad never triggers (see
+   `features/controller/inputModality.ts`).
+
+   `--controller-focus-offset` is the escape hatch: a container that clips its
+   children with `overflow: hidden` can set it negative to pull the ring inside
+   the box, without anyone having to audit every card layout up front. */
+
+:where(
+  a[href], button, input, select, textarea, summary,
+  [tabindex]:not([tabindex="-1"]), [contenteditable="true"]
+):focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+html[data-input-modality="gamepad"] :is(
+  a[href], button, input, select, textarea, summary,
+  [tabindex]:not([tabindex="-1"]), [contenteditable="true"]
+):focus {
+  outline: 3px solid hsl(var(--ring));
+  outline-offset: var(--controller-focus-offset, 2px);
+  /* A controller user is typically further from the screen than a mouse user,
+     so the ring gets a halo as well as more weight. */
+  box-shadow: 0 0 0 6px hsl(var(--ring) / 0.25);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html[data-input-modality="gamepad"] :is(a[href], button, [tabindex]:not([tabindex="-1"])):focus {
+    transition: outline-offset 120ms ease-out, box-shadow 120ms ease-out;
+  }
+}
+
 :root[data-density="compact"] .p-3 { padding: 0.5rem; }
 :root[data-density="compact"] .p-4 { padding: 0.7rem; }
 :root[data-density="compact"] .p-5 { padding: 0.85rem; }

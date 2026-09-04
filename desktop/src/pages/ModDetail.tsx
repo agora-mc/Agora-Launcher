@@ -1510,12 +1510,21 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             <li
                               key={cand.version_id}
                               data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={selectedModrinthCandidate?.version_id === cand.version_id}
                               className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
                                 selectedModrinthCandidate?.version_id === cand.version_id
                                   ? 'border-primary bg-card/50 dark:bg-card/20'
                                   : 'border-border hover:bg-accent'
                               }`}
                               onClick={() => setSelectedModrinthCandidate(cand)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  setSelectedModrinthCandidate(cand);
+                                }
+                              }}
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium truncate flex items-center gap-2">
@@ -1588,12 +1597,21 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             <li
                               key={`${cand.version}-${cand.filename}`}
                               data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={selectedCandidate?.filename === cand.filename && selectedCandidate?.version === cand.version}
                               className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
                                 selectedCandidate?.filename === cand.filename && selectedCandidate?.version === cand.version
                                   ? 'border-primary bg-card/50 dark:bg-card/20'
                                   : 'border-border hover:bg-accent'
                               }`}
                               onClick={() => setSelectedCandidate(cand)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  setSelectedCandidate(cand);
+                                }
+                              }}
                             >
                               <div className="flex items-center justify-between">
                                 <span className="font-medium flex items-center gap-2">
@@ -1859,9 +1877,19 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                         return (
                           <tr
                             key={v.version_id}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
                             onClick={() => {
                               setSelectedVersion(v);
                               setSelectedCuratedTabVersion(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedVersion(v);
+                                setSelectedCuratedTabVersion(null);
+                              }
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${
                               isSelected ? 'bg-accent' : 'hover:bg-accent'
@@ -2023,9 +2051,19 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                         return (
                           <tr
                             key={`${v.version}-${v.filename}-${idx}`}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
                             onClick={() => {
                               setSelectedCuratedTabVersion(v);
                               setSelectedVersion(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedCuratedTabVersion(v);
+                                setSelectedVersion(null);
+                              }
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${isSelected ? 'bg-accent' : 'hover:bg-accent'}`}
                           >
