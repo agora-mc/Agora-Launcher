@@ -75,6 +75,7 @@ import { SettingsSection } from './settings/SettingsSection';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
+import { useConfirm } from '@/components/ui/confirm';
 
 /** One sub-page of a settings section. */
 interface SettingsPage {
@@ -169,6 +170,7 @@ export function Settings({
   onNavigateTab?: (tab: Tab) => void;
 }) {
   const ts = useTypedSettings();
+  const { confirm } = useConfirm();
 
   const [activeTabId, setActiveTabId] = useState<string>(() => readStoredSettingsTab() ?? 'general');
   const [activePageId, setActivePageId] = useState<string | null>(null);
@@ -556,28 +558,37 @@ export function Settings({
   // Turning either of these ON widens what Agora will fetch and execute, so
   // each needs an explicit acknowledgement of what is being accepted. Turning
   // them OFF is always safe and never prompts.
-  const TECHNIC_ENABLE_WARNING = [
-    'Enable Technic browsing?',
-    '',
-    'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
-    '',
-    'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
-    '',
-    'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
-  ].join('\n');
+  const TECHNIC_ENABLE_WARNING = {
+    title: 'Enable Technic browsing?',
+    // Each point is a separate thing the user is agreeing to.
+    // Kept as a list so that editing one cannot silently drop
+    // another, which parsing a joined blob apart at the call
+    // site could.
+    body: [
+      'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
+      'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
+      'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
+    ].join('\n\n'),
+  };
 
-  const UNVERIFIED_PACKS_ENABLE_WARNING = [
-    'Allow unverified zip packs?',
-    '',
-    'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
-    '',
-    'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
-    '',
-    'Only enable this if you already trust the specific pack you are installing.',
-  ].join('\n');
+  const UNVERIFIED_PACKS_ENABLE_WARNING = {
+    title: 'Allow unverified zip packs?',
+    // Each point is a separate thing the user is agreeing to.
+    // Kept as a list so that editing one cannot silently drop
+    // another, which parsing a joined blob apart at the call
+    // site could.
+    body: [
+      'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+      'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
+      'Only enable this if you already trust the specific pack you are installing.',
+    ].join('\n\n'),
+  };
 
   const toggleTechnic = async (value: boolean) => {
-    if (value && !window.confirm(TECHNIC_ENABLE_WARNING)) return;
+    if (value && !await confirm({
+      title: TECHNIC_ENABLE_WARNING.title,
+      body: TECHNIC_ENABLE_WARNING.body,
+    })) return;
     setTechnic(value);
     try {
       await setSetting('technic_enabled', value);
@@ -594,7 +605,10 @@ export function Settings({
   };
 
   const toggleAllowUnverifiedPacks = async (value: boolean) => {
-    if (value && !window.confirm(UNVERIFIED_PACKS_ENABLE_WARNING)) return;
+    if (value && !await confirm({
+      title: UNVERIFIED_PACKS_ENABLE_WARNING.title,
+      body: UNVERIFIED_PACKS_ENABLE_WARNING.body,
+    })) return;
     setAllowUnverifiedPacks(value);
     try {
       await setSetting('allow_unverified_packs', value);
@@ -751,7 +765,12 @@ export function Settings({
   };
 
   const handleRemoveUnusedJava = async () => {
-    if (!window.confirm('Remove unused managed Java runtimes? Only the newest runtime per major version will be kept.')) return;
+    if (!await confirm({
+      title: 'Remove unused managed Java runtimes?',
+      body: 'Only the newest runtime per major version will be kept.',
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    })) return;
     setJavaRemoveBusy(true);
     try {
       const removed = await removeUnusedJavaRuntimes();
@@ -1043,9 +1062,11 @@ export function Settings({
             try {
               const update = await check();
               if (update?.available) {
-                const ok = await window.confirm(
-                  `Update available: ${update.version}\n\n${update.body ?? ''}\n\nDownload and install now?`
-                );
+                const ok = await confirm({
+                  title: 'Download and install now?',
+                  body: `Update available: ${update.version}\n\n${update.body ?? ''}`,
+                  confirmLabel: 'Install update',
+                });
                 if (ok) {
                   await update.downloadAndInstall();
                   // `plugin:process|restart` was invoked here previously, but
@@ -1900,7 +1921,12 @@ export function Settings({
                   <CopyButton text={mcpToken.config_snippet} label="Copy MCP config" />
                   <button
                     onClick={async () => {
-                      if (!window.confirm('Regenerate token? This invalidates the current token. All AI clients must be updated.')) return;
+                      if (!await confirm({
+                        title: 'Regenerate token?',
+                        body: 'This invalidates the current token. All AI clients must be updated.',
+                        confirmLabel: 'Regenerate',
+                        tone: 'danger',
+                      })) return;
                       try {
                         const data = await regenerateMCPToken();
                         setMcpToken(data);

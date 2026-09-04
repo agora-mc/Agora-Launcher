@@ -36,6 +36,7 @@ import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
+import { useConfirm } from '@/components/ui/confirm';
 import {
   Dialog,
   DialogContent,
@@ -470,6 +471,7 @@ function InstanceCard({
   onRetryRecovery: () => Promise<void>;
   updateCount?: number;
 }) {
+  const { confirm } = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
   const [cancellingJava, setCancellingJava] = useState(false);
@@ -516,7 +518,12 @@ function InstanceCard({
   };
 
   const remove = async () => {
-    if (!confirm(`Delete instance "${instance.name}"? This moves the folder to trash.`)) return;
+    if (!await confirm({
+      title: `Delete instance "${instance.name}"?`,
+      body: 'This moves the folder to trash.',
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    })) return;
     setError(null);
     try {
       await deleteInstance(instance.instance_id);

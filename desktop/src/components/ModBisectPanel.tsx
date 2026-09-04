@@ -10,6 +10,7 @@ import {
   stepBackBisect,
   type BisectView,
 } from '@/lib/tauri';
+import { useConfirm } from '@/components/ui/confirm';
 
 /**
  * Drive a guided mod bisect.
@@ -34,6 +35,7 @@ export function ModBisectPanel({
    *  toggle files and the user would have to launch by hand. */
   onLaunch?: () => Promise<unknown>;
 }) {
+  const { confirm } = useConfirm();
   const [view, setView] = useState<BisectView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -194,10 +196,13 @@ export function ModBisectPanel({
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (!confirm('Stop the bisect and turn every mod back on as it was?')) return;
-              void run(async () => { await cancelBisect(instanceId); }, true);
-            }}
+            onClick={() => void (async () => {
+              if (!await confirm({
+                title: 'Stop the bisect and turn every mod back on as it was?',
+                confirmLabel: 'Stop and restore',
+              })) return;
+              await run(async () => { await cancelBisect(instanceId); }, true);
+            })()}
             disabled={busy}
             className="ml-auto text-destructive hover:underline disabled:opacity-40"
           >

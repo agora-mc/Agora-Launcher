@@ -63,7 +63,12 @@ export interface InstalledContentPanelProps {
   addLabel: string;
   onToggle: (row: InstalledContentRow) => Promise<boolean | void>;
   onBulkToggle: (rows: InstalledContentRow[], enabled: boolean) => Promise<boolean>;
-  onBulkRemove: (rows: InstalledContentRow[]) => boolean;
+  /**
+   * Returns whether the removal was accepted, so the panel knows to clear its
+   * selection. Async because confirming now happens in an in-app dialog rather
+   * than a blocking `window.confirm`.
+   */
+  onBulkRemove: (rows: InstalledContentRow[]) => boolean | Promise<boolean>;
   onRemove: (row: InstalledContentRow) => void;
   onOpenDetails?: (row: InstalledContentRow) => void;
   onRevealFile?: (row: InstalledContentRow) => void;

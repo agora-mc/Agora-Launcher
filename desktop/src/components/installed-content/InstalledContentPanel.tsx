@@ -229,9 +229,9 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     }
   };
 
-  const handleBulkRemove = () => {
+  const handleBulkRemove = async () => {
     if (selectedRows.length === 0 || props.locked || bulkBusy) return;
-    if (props.onBulkRemove(selectedRows)) setSelectedKeys(new Set());
+    if (await props.onBulkRemove(selectedRows)) setSelectedKeys(new Set());
   };
 
   const toggleSelected = (key: string) => {

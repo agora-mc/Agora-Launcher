@@ -7,6 +7,7 @@ import {
   type ConflictResolution,
   type PackUpdatePreview,
 } from '@/lib/tauri';
+import { useConfirm } from '@/components/ui/confirm';
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B';
@@ -25,6 +26,7 @@ function formatBytes(bytes: number): string {
  * it asks rather than guessing.
  */
 export function PackUpdatePanel({ instanceId, locked }: { instanceId: string; locked: boolean }) {
+  const { confirm } = useConfirm();
   const [mrpackPath, setMrpackPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<PackUpdatePreview | null>(null);
   const [resolutions, setResolutions] = useState<Record<string, ConflictResolution>>({});
@@ -54,9 +56,11 @@ export function PackUpdatePanel({ instanceId, locked }: { instanceId: string; lo
 
   const apply = async () => {
     if (!preview || !mrpackPath) return;
-    if (!confirm(
-      `Update to ${preview.packName}? A snapshot is taken first, and a failed update rolls back.`,
-    )) return;
+    if (!await confirm({
+      title: `Update to ${preview.packName}?`,
+      body: 'A snapshot is taken first, and a failed update rolls back.',
+      confirmLabel: 'Update pack',
+    })) return;
     setBusy(true);
     setError(null);
     try {

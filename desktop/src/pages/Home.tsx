@@ -21,6 +21,7 @@ import type { ProcessState } from '../lib/useProcessController';
 import { TourStartButton } from '../features/tour';
 import { ArrowRight, BookOpen, GraduationCap, HeartHandshake } from 'lucide-react';
 import { agoraSponsorsUrl } from '../lib/brandConfig';
+import { useConfirm } from '@/components/ui/confirm';
 
 // ---------------------------------------------------------------------------
 // D1: Action-oriented Home
@@ -42,6 +43,7 @@ export function Home({
   processState: ProcessState;
   onKillProcess: () => Promise<void>;
 }) {
+  const { confirm } = useConfirm();
   const { state, status, error, hasCachedDb, actions } = useRegistryState();
 
   const [instances, setInstances] = useState<InstanceRow[]>([]);
@@ -243,9 +245,12 @@ export function Home({
     id: string;
     label: string;
   }) => {
-    const confirmed = window.confirm(
-      `Restore "${snapshot.instanceName}" to snapshot "${snapshot.label || snapshot.id}"? Agora will create an undo snapshot first.`,
-    );
+    const confirmed = await confirm({
+      title: `Restore "${snapshot.instanceName}" to snapshot "${snapshot.label || snapshot.id}"?`,
+      body: 'Agora will create an undo snapshot first.',
+      confirmLabel: 'Restore snapshot',
+      tone: 'danger',
+    });
     if (!confirmed) return;
     setActionError(null);
     setRestoringSnapshotId(snapshot.id);
@@ -257,7 +262,7 @@ export function Home({
     } finally {
       setRestoringSnapshotId(null);
     }
-  }, [loadData]);
+  }, [confirm, loadData]);
 
   return (
     <div className="space-y-6" data-tour="page-home">

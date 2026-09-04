@@ -8,6 +8,7 @@ import {
   type PruneCategory,
   type PruneReport,
 } from '@/lib/tauri';
+import { useConfirm } from '@/components/ui/confirm';
 
 const CATEGORY_LABELS: Record<PruneCategory, string> = {
   libraries: 'Libraries',
@@ -37,6 +38,7 @@ function formatBytes(bytes: number): string {
  * bug.
  */
 export function RuntimeReclaim() {
+  const { confirm } = useConfirm();
   const [report, setReport] = useState<PruneReport | null>(null);
   const [selected, setSelected] = useState<Set<PruneCategory>>(new Set());
   const [busy, setBusy] = useState<'scan' | 'prune' | null>(null);
@@ -71,7 +73,11 @@ export function RuntimeReclaim() {
   const reclaim = async () => {
     const categories = [...selected];
     if (categories.length === 0) return;
-    if (!confirm(`Permanently delete ${formatBytes(selectedBytes)} of unused runtime files?`)) return;
+    if (!await confirm({
+      title: `Permanently delete ${formatBytes(selectedBytes)} of unused runtime files?`,
+      confirmLabel: 'Delete files',
+      tone: 'danger',
+    })) return;
     setBusy('prune');
     setError(null);
     try {

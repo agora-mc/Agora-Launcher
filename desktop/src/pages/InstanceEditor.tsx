@@ -99,6 +99,7 @@ import {
   type LoaderChangePlan,
 } from '../lib/tauri';
 import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
+import { useConfirm } from '@/components/ui/confirm';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
 import { MigrationReportPanel } from '../components/MigrationReportPanel';
@@ -264,6 +265,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const { advancedMode } = useAdvancedMode();
   const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
+  const { confirm, prompt } = useConfirm();
 
   // Sub-sidebar active tab
   const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>('mods');
@@ -676,12 +678,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       const imported = await importBackup(instanceId, artifact);
       setSnapshots(await listSnapshots(instanceId));
       const label = imported.label ? `"${imported.label}"` : imported.id;
-      if (confirm(
-        `Backup imported as a restorable snapshot.\n\n`
-        + `Restore ${label} into this instance now? This replaces the instance's `
-        + `current files. An undo snapshot is taken first, and you can also do `
-        + `this later from the snapshot list.`,
-      )) {
+      if (await confirm({
+        title: `Restore ${label} into this instance now?`,
+        body: `Backup imported as a restorable snapshot.\n\n`
+          + `This replaces the instance's current files. An undo snapshot is taken first, and you can also do `
+          + `this later from the snapshot list.`,
+        confirmLabel: 'Restore',
+        tone: 'danger',
+      })) {
         await restoreSnapshot(instanceId, imported.id);
         setSnapshots(await listSnapshots(instanceId));
         setStatus(`Backup imported and restored. The previous state is saved as an undo snapshot.`);
@@ -697,7 +701,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const handleApplyRetention = async (keepLast: number) => {
     setError(null);
-    if (!confirm(`Keep only the ${keepLast} most recent snapshots? Older ones are deleted.`)) return;
+    if (!await confirm({
+      title: `Keep only the ${keepLast} most recent snapshots?`,
+      body: 'Older ones are deleted.',
+      confirmLabel: 'Delete older snapshots',
+      tone: 'danger',
+    })) return;
     setBackupBusy(true);
     try {
       const removed = await applyBackupRetention(instanceId, { keepLast });
@@ -759,19 +768,23 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     });
   };
 
-  const handleRemove = (filename: string) => {
-    if (!confirm(`Review a safe removal plan for "${filename}"?`)) return;
+  const handleRemove = async (filename: string) => {
+    if (!await confirm({
+      title: `Review a safe removal plan for "${filename}"?`,
+    })) return;
     setError(null);
     beginCanonicalOperation({ type: 'remove', filename });
   };
 
-  const handleBulkRemove = (rows: InstalledContentRow[]): boolean => {
+  const handleBulkRemove = async (rows: InstalledContentRow[]): Promise<boolean> => {
     const filenames = Array.from(new Set(rows.map((content) => content.filename)));
     if (filenames.length === 0) return false;
     const preview = filenames.length <= 3
       ? filenames.join(', ')
       : `${filenames.slice(0, 3).join(', ')} and ${filenames.length - 3} more`;
-    if (!confirm(`Review one safe removal plan for ${filenames.length} selected item${filenames.length === 1 ? '' : 's'} (${preview})?`)) return false;
+    if (!await confirm({
+      title: `Review one safe removal plan for ${filenames.length} selected item${filenames.length === 1 ? '' : 's'} (${preview})?`,
+    })) return false;
     setError(null);
     beginCanonicalOperation({ type: 'batch-remove', filenames });
     return true;
@@ -1016,17 +1029,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     // Modpack instances ship locked precisely so this question gets asked once,
     // here, rather than being re-litigated at each individual change.
     const fromPack = !!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack;
-    if (fromPack && !confirm(
-      [
+    if (fromPack && !await confirm({
+      title: 'Unlock anyway?',
+      body: [
         'Unlocking moves this instance away from the version the pack author published.',
         '',
         'Most pack authors do not support modified installs, and changes can cause instability. '
         + 'If you later update the pack, some of your changes — mod versions, configuration files, '
         + 'and other edits — may be overwritten.',
-        '',
-        'Unlock anyway?',
       ].join('\n'),
-    )) return;
+      confirmLabel: 'Unlock anyway',
+    })) return;
     try {
       await unlockInstance(instanceId);
       await refreshDetail();
@@ -1046,7 +1059,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleRename = async () => {
-    const newName = window.prompt('Rename instance', row?.name ?? '');
+    const newName = await prompt({
+      title: 'Rename instance',
+      initialValue: row?.name ?? '',
+      confirmLabel: 'Rename',
+    });
     if (!newName || newName.trim() === '' || newName.trim() === row?.name) return;
     setError(null);
     try {
@@ -1059,7 +1076,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleRevert = async () => {
-    if (!confirm('Revert to the snapshot taken when this instance was unlocked? This removes any mods you added since then.')) {
+    if (!await confirm({
+      title: 'Revert to the snapshot taken when this instance was unlocked?',
+      body: 'This removes any mods you added since then.',
+      confirmLabel: 'Revert',
+      tone: 'danger',
+    })) {
       return;
     }
     setError(null);
@@ -1246,9 +1268,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const handleRepairLockfile = async () => {
     const text = requireLockfileText();
     if (!text) return;
-    if (!window.confirm(
-      'Repair this instance to the pasted lockfile? Agora will create one recovery snapshot, download exact hashes, and remove managed artifacts that are not in the lockfile. Private config contents cannot be repaired because lockfiles never contain them.',
-    )) return;
+    if (!await confirm({
+      title: 'Repair this instance to the pasted lockfile?',
+      body: 'Agora will create one recovery snapshot, download exact hashes, and remove managed artifacts that are not in the lockfile. Private config contents cannot be repaired because lockfiles never contain them.',
+      confirmLabel: 'Repair',
+      tone: 'danger',
+    })) return;
 
     setLockfileBusy('repair');
     setError(null);

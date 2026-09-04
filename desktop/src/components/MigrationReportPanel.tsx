@@ -10,6 +10,7 @@ import {
   type MigrationStatus,
   type ModMigrationEntry,
 } from '@/lib/tauri';
+import { useConfirm } from '@/components/ui/confirm';
 
 const STATUS_LABEL: Record<MigrationStatus, string> = {
   ready: 'Ready',
@@ -55,6 +56,7 @@ export function MigrationReportPanel({
    *  build for. Omitted falls back to every known version. */
   loader?: string;
 }) {
+  const { confirm } = useConfirm();
   const [target, setTarget] = useState('');
   const [report, setReport] = useState<MigrationReport | null>(null);
   const [plan, setPlan] = useState<MigrationPlan | null>(null);
@@ -107,11 +109,18 @@ export function MigrationReportPanel({
   const migrate = async () => {
     if (!plan) return;
     const leaving = plan.blockers;
-    const prompt = leaving.length === 0
-      ? `Move this instance to ${plan.targetVersion}? A snapshot is taken first, and a failed migration rolls back.`
-      : `Move to ${plan.targetVersion} and leave ${leaving.length} item${leaving.length === 1 ? '' : 's'} at the current version?\n\n`
-        + leaving.map((reason) => `• ${reason.message}`).join('\n');
-    if (!confirm(prompt)) return;
+    const confirmed = leaving.length === 0
+      ? await confirm({
+        title: `Move this instance to ${plan.targetVersion}?`,
+        body: 'A snapshot is taken first, and a failed migration rolls back.',
+        confirmLabel: 'Migrate',
+      })
+      : await confirm({
+        title: `Move to ${plan.targetVersion} and leave ${leaving.length} item${leaving.length === 1 ? '' : 's'} at the current version?`,
+        body: leaving.map((reason) => `• ${reason.message}`).join('\n'),
+        confirmLabel: 'Migrate',
+      });
+    if (!confirmed) return;
 
     setBusy(true);
     setError(null);
