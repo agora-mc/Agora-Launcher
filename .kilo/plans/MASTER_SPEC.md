@@ -2670,10 +2670,20 @@ controller could not be answered with that controller, which is what the pattern
 produces at its logical end.
 
 **The pivot: one application, navigable by any input device.** Controller support
-is an input layer over the same pages, not a rendering of a chosen few. Handheld
-becomes a *presentation preference* — larger targets, reduced density, controller
-legends — over the same destinations, never a separate destination tree. A
-component-level presentation variant is fine; a duplicated workflow is not.
+is an input layer over the same pages, not a rendering of a chosen few. The
+separate handheld shell is retired: what remains is a *presentation* of the
+ordinary app — larger hit targets, bigger type, opened-up spacing — applied to
+the same destinations, never a separate destination tree. A component-level
+presentation variant is fine; a duplicated workflow is not.
+
+**Presentation follows controller presence, not a setting.** This keeps the
+decision the old handheld mode was built on: picking the pad up *is* the
+request, and the Web Gamepad API only reports a pad once a button has actually
+been pressed, so it follows a deliberate act rather than a device left plugged
+in. Note this is a different signal from the input-modality marker that drives
+the focus ring: modality flips the instant a mouse is touched, which is right
+for a ring and wrong for layout, because resizing the interface every time a
+hand moves between pad and mouse would be unusable.
 
 **Input ownership is explicit and exclusive.** A global enable/disable flag can
 only say "everything off", never "the dialog owns input now", which is why the

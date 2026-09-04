@@ -28,8 +28,7 @@ import {
 import { OfflineBanner } from './components/offline-banner';
 import { SandboxBanner } from './components/sandbox-banner';
 import { HealthDialog } from './components/HealthDialog';
-import { ControlifyOfferDialog } from './components/handheld/ControlifyOfferDialog';
-import { HandheldShell } from './components/handheld/HandheldShell';
+import { ControlifyOfferDialog } from './components/controller/ControlifyOfferDialog';
 import { InstallFlow } from './components/InstallFlow';
 import { CrashInvestigator } from './components/CrashInvestigator';
 import { showToast, ToastContainer } from './components/Toast';
@@ -287,7 +286,6 @@ export default function App() {
     instanceName: string;
     report: HealthReport;
   } | null>(null);
-  const [handheldActive, setHandheldActive] = useState(false);
   const [controlifyOffer, setControlifyOffer] = useState<ControlifyOffer | null>(null);
   const [controlifyInstall, setControlifyInstall] = useState<ControlifyInstallRequest | null>(null);
   const pendingControlifyLaunchRef = useRef<PendingControlifyLaunch | null>(null);
@@ -424,19 +422,6 @@ export default function App() {
     };
   }, [destination]);
 
-  // Picking up a controller *is* the request for handheld mode, so there is
-  // nothing to switch on first. The browser only reports a gamepad once the
-  // user has actually pressed something on it, so this fires on a deliberate
-  // act rather than on a pad merely being plugged in.
-  //
-  // Deliberately not dependent on `handheldActive`: leaving with B or Escape
-  // must stick while the pad stays connected, or there would be no way out.
-  // Unplugging and reconnecting is a fresh request and does re-enter.
-  useEffect(() => {
-    if (onboardingComplete === true && gamepadConnected) {
-      setHandheldActive(true);
-    }
-  }, [gamepadConnected, onboardingComplete]);
 
   // React to the agora-navigate custom event (used by external code).
   useEffect(() => {
@@ -782,15 +767,6 @@ export default function App() {
 
   return (
     <PackInstallProvider>
-      <HandheldShell
-        active={handheldActive}
-        onActiveChange={setHandheldActive}
-        // Resolve direct-vs-delegated the same way every other entry point
-        // does. Handheld mode must not quietly launch under a different mode
-        // than the Play button on the same instance.
-        onLaunch={handleInstanceEditorLaunch}
-        launchBusy={processState.phase === 'launching' || controlifyOffer !== null || controlifyInstall !== null}
-      />
       {controlifyOffer && (
         <ControlifyOfferDialog
           offer={controlifyOffer}

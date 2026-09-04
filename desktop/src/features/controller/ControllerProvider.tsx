@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { useGamepad, type GamepadIntent } from '../../lib/useGamepad';
 import { setGamepadModality, watchForDirectInput } from './inputModality';
+import { setCouchPresentation } from './presentation';
 import type { ControllerIntent, ControllerIntentResult } from './intents';
 import { hasUsableGeometry, chooseCandidate, type NavRect } from './spatialNavigation';
 import { scrollNearestScrollport } from './scrollport';
@@ -245,6 +246,7 @@ export function ControllerProvider({ children }: PropsWithChildren) {
 
   useEffect(() => watchForDirectInput(), []);
 
+
   const dispatch = useCallback((rawIntent: GamepadIntent) => {
     // Mark modality before anything else, including when no layer claims the
     // intent: the user is demonstrably on a controller either way, and the ring
@@ -271,6 +273,12 @@ export function ControllerProvider({ children }: PropsWithChildren) {
   }, [openKeyboard]);
 
   const { connected, gamepadCount } = useGamepad({ onIntent: dispatch });
+  // Size the whole app for couch distance while a pad is in play, and put it
+  // back when the pad goes away.
+  useEffect(() => {
+    setCouchPresentation(connected);
+    return () => setCouchPresentation(false);
+  }, [connected]);
   const registry = useMemo(() => ({ registerLayer }), [registerLayer]);
   const state = useMemo(() => ({ connected, gamepadCount }), [connected, gamepadCount]);
 

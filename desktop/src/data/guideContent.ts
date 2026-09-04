@@ -1474,44 +1474,46 @@ export const GUIDE_TOPICS: GuideTopic[] = [
   {
     id: 'controller-handheld',
     title: 'Playing with a controller',
-    shortTitle: 'Controller & handheld',
+    shortTitle: 'Controller support',
     category: 'Play',
     description: 'Use Agora from the couch with a gamepad, and add controller support to Minecraft itself.',
     keywords: ['controller', 'gamepad', 'handheld', 'big picture', 'couch', 'Steam Deck', 'Controlify', 'joystick'],
     basic: {
-      summary: 'Press a button on a connected controller and Agora switches to a full-screen picker you can drive entirely with the gamepad. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
+      summary: 'Press a button on a connected controller and Agora becomes controller-driven throughout: the same pages you already use, sized for reading at a distance and navigable with the stick. There is nothing to turn on first. Minecraft itself still needs a mod for controller input, and Agora offers to install it when you launch.',
       outcomes: [
-        'Enter and leave handheld mode.',
-        'Choose and launch an instance without a keyboard or mouse.',
+        'Drive Agora with a gamepad, without a keyboard or mouse.',
+        'Know every button and what it does.',
         'Understand why Agora offers to add Controlify.',
       ],
       sections: [
         {
-          title: 'Enter handheld mode',
-          body: 'Connect a controller and press any button on it while Agora is focused. The window switches to handheld mode: large instance cards, one highlighted, sized for reading at a distance. There is no setting to enable first, because picking the controller up is the request.',
+          title: 'Pick the controller up',
+          body: 'Connect a controller and press any button on it while Agora is focused. Text and hit targets grow, spacing opens up, and a highlight appears around whatever is selected. Nothing else changes — these are the same pages, not a separate mode with its own set of screens. There is no setting to enable first, because picking the controller up is the request.',
           callout: {
             tone: 'note',
             title: 'A plugged-in controller is not enough',
-            text: 'Agora is only told a controller exists once you press something on it. A gamepad left connected for another game will not pull Agora into handheld mode on its own.',
+            text: 'Agora is only told a controller exists once you press something on it. A gamepad left connected for another game will not resize anything on its own.',
           },
         },
         {
-          title: 'Move around and play',
-          body: 'The D-pad and the left stick both move the highlight, and it wraps at the edges of the grid. A launches the highlighted instance. B leaves handheld mode. Start toggles it, so it is also how you come back after leaving.',
+          title: 'Move around',
+          body: 'The highlight moves by where things actually are on screen rather than by the order they appear in the markup, so pressing down goes to what is below. When you reach the edge of a list, the page scrolls to bring more into view. The right stick scrolls whatever panel you are in without moving the highlight.',
           bullets: [
-            'D-pad or left stick: move between instances.',
-            'A: launch the highlighted instance.',
-            'B: leave handheld mode.',
-            'Start: toggle handheld mode on or off.',
+            'D-pad or left stick: move the highlight.',
+            'A: activate what is highlighted.',
+            'B: go back.',
+            'LB / RB: move between sections.',
+            'Start: open the command palette to jump anywhere.',
+            'Right stick: scroll.',
           ],
         },
         {
-          title: 'Leave without a controller',
-          body: 'Escape always exits handheld mode, and there is an Exit button in the top-right corner. Both work regardless of what the controller is doing, so a flat battery or a disconnected pad can never leave you stuck in a view you cannot drive.',
+          title: 'Dropdowns, sliders and typing',
+          body: 'A dropdown changes in place when you press up or down on it rather than opening a system menu a controller cannot get inside, and a slider moves with left and right. Selecting a text box raises an on-screen keyboard you can drive with the stick; B closes it and puts you back on the field.',
           callout: {
             tone: 'tip',
-            title: 'Leaving sticks',
-            text: 'Once you leave, Agora stays in the normal view while the controller remains connected. It does not pull you back in. Unplugging and reconnecting counts as a fresh request.',
+            title: 'A keyboard and mouse never stop working',
+            text: 'Nothing here takes anything away. Put the pad down and the interface goes back to its normal size, and a physical keyboard keeps working even while the on-screen one is open.',
           },
         },
         {

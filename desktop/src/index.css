@@ -374,6 +374,54 @@ html[data-input-modality="gamepad"] :is(
   }
 }
 
+/* --- Couch presentation -------------------------------------------------
+
+   Handheld mode used to be a separate screen that could list instances and
+   launch one. It is now a *presentation* of the ordinary app: the same pages,
+   sized for a hand-held screen or a television across a room. That is the whole
+   difference between this and the thing it replaced — there is no second set of
+   destinations to keep in step, because there is no second set of screens.
+
+   Applied while a controller is in use rather than behind a setting, matching
+   how the mode was always entered: picking the pad up is the request. The Web
+   Gamepad API only reports a pad once a button has actually been pressed, so
+   this follows a deliberate act rather than a device being plugged in.
+
+   Scaled through the existing type and radius variables where possible, so it
+   composes with the user's own density and corner-style choices instead of
+   fighting them. The hit-target floor is the part that matters most: geometric
+   navigation is only as good as the targets it can land on. */
+
+:root[data-presentation="couch"] {
+  font-size: 112.5%;
+}
+
+:root[data-presentation="couch"] body {
+  line-height: 1.6;
+}
+
+/* A comfortable floor for anything you aim at with a stick. `min-height` rather
+   than padding so it never fights a component's own vertical rhythm. */
+:root[data-presentation="couch"] :is(button, a[href], select, [role="button"]):not(.agora-tab):not([data-compact-target]) {
+  min-height: 2.75rem;
+}
+
+:root[data-presentation="couch"] :is(input, textarea) {
+  min-height: 2.75rem;
+}
+
+/* Breathing room between targets, so a near-miss lands on nothing rather than
+   on the wrong control. */
+:root[data-presentation="couch"] .gap-1 { gap: 0.4rem; }
+:root[data-presentation="couch"] .gap-2 { gap: 0.65rem; }
+:root[data-presentation="couch"] .gap-3 { gap: 1rem; }
+
+/* The focus ring earns more weight here: at couch distance a 3px outline on a
+   large screen is thinner than it sounds. */
+:root[data-presentation="couch"] {
+  --controller-focus-offset: 3px;
+}
+
 :root[data-density="compact"] .p-3 { padding: 0.5rem; }
 :root[data-density="compact"] .p-4 { padding: 0.7rem; }
 :root[data-density="compact"] .p-5 { padding: 0.85rem; }

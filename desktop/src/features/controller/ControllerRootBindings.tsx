@@ -23,11 +23,10 @@ export interface ControllerRootBindingsProps {
  * unconditional hooks, and `CONTROLLER_LAYER_ROOT` keeps it underneath every
  * dialog regardless of the order effects happen to run in.
  *
- * `menu` is deliberately not bound here. The handheld shell claims that button
- * to reopen itself, and it is registered above this layer; binding it here as
- * well would be dead code that looks live. When handheld mode stops being a
- * separate destination, Start becomes the palette and `context` can go back to
- * meaning nothing globally.
+ * Start opens the command palette, which is the "go anywhere" affordance: it
+ * already searches destinations and instances, so it saves a controller user
+ * from walking the sidebar to reach anything. It used to belong to the handheld
+ * shell, which no longer exists as a separate destination.
  */
 export function ControllerRootBindings({
   rootRef,
@@ -36,7 +35,7 @@ export function ControllerRootBindings({
   onBack,
 }: ControllerRootBindingsProps) {
   const onIntent = useCallback((intent: ControllerIntent) => {
-    if (intent.type === 'context') {
+    if (intent.type === 'menu') {
       onOpenPalette();
       return true;
     }
