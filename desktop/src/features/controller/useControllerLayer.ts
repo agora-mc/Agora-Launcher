@@ -15,6 +15,7 @@ import {
  */
 export const CONTROLLER_LAYER_ROOT = -1;
 export const CONTROLLER_LAYER_DEFAULT = 0;
+export const CONTROLLER_LAYER_OVERLAY = 10;
 
 export interface UseControllerLayerOptions {
   /** Register only while true. */

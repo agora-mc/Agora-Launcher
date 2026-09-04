@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type MutableRefObject,
   type PropsWithChildren,
   type RefObject,
@@ -15,6 +16,8 @@ import type { ControllerIntent, ControllerIntentResult } from './intents';
 import { hasUsableGeometry, chooseCandidate, type NavRect } from './spatialNavigation';
 import { scrollNearestScrollport } from './scrollport';
 import { adaptAccept, adaptNavigate } from './elementAdapters';
+import { isEditableField, type EditableField } from './textEditing';
+import { OnScreenKeyboard } from './OnScreenKeyboard';
 
 export interface ControllerLayerRegistration {
   rootRef: RefObject<HTMLElement | null>;
@@ -168,10 +171,14 @@ function defaultNavigate(
   if (target) focusControllerTarget(target);
 }
 
-function defaultAccept(root: HTMLElement) {
+function defaultAccept(root: HTMLElement, onOpenKeyboard: (field: EditableField) => void) {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement) || !root.contains(active)) return;
   if (!focusableElements(root).includes(active)) return;
+  if (isEditableField(active)) {
+    onOpenKeyboard(active);
+    return;
+  }
   // Clicking a select or a colour swatch opens the operating-system widget the
   // adapters exist to keep the user out of, so those absorb Accept instead.
   if (adaptAccept(active)) return;
@@ -191,13 +198,18 @@ function defaultScroll(root: HTMLElement, direction: Extract<ControllerIntent, {
  * Navigation and right-stick scrolling stay layer-local because their target
  * is the focused element and its owning scrollport.
  */
-function dispatchDefault(root: HTMLElement | null, intent: ControllerIntent, onCancel?: () => void) {
+function dispatchDefault(
+  root: HTMLElement | null,
+  intent: ControllerIntent,
+  onCancel: (() => void) | undefined,
+  onOpenKeyboard: (field: EditableField) => void,
+) {
   if (intent.type === 'cancel') {
     onCancel?.();
   } else if (root && intent.type === 'navigate') {
     defaultNavigate(root, intent.direction);
   } else if (root && intent.type === 'accept') {
-    defaultAccept(root);
+    defaultAccept(root, onOpenKeyboard);
   } else if (root && intent.type === 'scroll') {
     defaultScroll(root, intent.direction);
   }
@@ -205,6 +217,8 @@ function dispatchDefault(root: HTMLElement | null, intent: ControllerIntent, onC
 
 export function ControllerProvider({ children }: PropsWithChildren) {
   const layersRef = useRef<ControllerLayerRegistration[]>([]);
+  const keyboardFieldRef = useRef<EditableField | null>(null);
+  const [keyboardField, setKeyboardField] = useState<EditableField | null>(null);
 
   const registerLayer = useCallback((layer: ControllerLayerRegistration) => {
     layersRef.current.push(layer);
@@ -215,6 +229,18 @@ export function ControllerProvider({ children }: PropsWithChildren) {
       const index = layersRef.current.indexOf(layer);
       if (index >= 0) layersRef.current.splice(index, 1);
     };
+  }, []);
+
+  const openKeyboard = useCallback((field: EditableField) => {
+    keyboardFieldRef.current = field;
+    setKeyboardField(field);
+  }, []);
+
+  const closeKeyboard = useCallback(() => {
+    const field = keyboardFieldRef.current;
+    keyboardFieldRef.current = null;
+    setKeyboardField(null);
+    if (field?.isConnected) field.focus({ preventScroll: true });
   }, []);
 
   useEffect(() => watchForDirectInput(), []);
@@ -238,11 +264,11 @@ export function ControllerProvider({ children }: PropsWithChildren) {
       // that is what keeps input off the page behind a dialog. A transparent
       // one wanted a specific binding and nothing more, so keep walking down.
       if (!layer.transparent) {
-        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current);
+        dispatchDefault(layer.rootRef.current, intent, layer.onCancelRef.current, openKeyboard);
         return;
       }
     }
-  }, []);
+  }, [openKeyboard]);
 
   const { connected, gamepadCount } = useGamepad({ onIntent: dispatch });
   const registry = useMemo(() => ({ registerLayer }), [registerLayer]);
@@ -252,6 +278,7 @@ export function ControllerProvider({ children }: PropsWithChildren) {
     <ControllerStateContext.Provider value={state}>
       <ControllerLayerContext.Provider value={registry}>
         {children}
+        {keyboardField && <OnScreenKeyboard field={keyboardField} onClose={closeKeyboard} />}
       </ControllerLayerContext.Provider>
     </ControllerStateContext.Provider>
   );
