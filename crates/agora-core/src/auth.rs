@@ -934,6 +934,17 @@ static DEVICE_KEY_LOCK: LazyLock<std::sync::Mutex<()>> =
     LazyLock::new(|| std::sync::Mutex::new(()));
 
 /// Directory holding the encrypted fallback files and the device key.
+///
+/// Resolves through [`crate::app_paths::AppPaths`] rather than reconstructing
+/// `dirs::data_local_dir()/agora`, so `AGORA_DATA_DIR` and a portable install
+/// move these files along with everything else. The platform default is
+/// identical to what the hand-rolled path produced, so an ordinary install sees
+/// no change; only configured roots move, which is the point.
+///
+/// Note this governs the *fallback* only. Credentials that reach the OS keyring
+/// are held per-user by the OS and are not relocated by a data-root setting --
+/// a portable install on a machine with a working keyring still leaves them
+/// behind.
 fn fallback_data_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = real_fallback_dir() {
         return Some(dir);
@@ -947,7 +958,11 @@ fn fallback_data_dir() -> Option<std::path::PathBuf> {
             return Some(std::path::PathBuf::from(dir));
         }
     }
-    dirs::data_local_dir().map(|d| d.join("agora"))
+    Some(
+        crate::app_paths::AppPaths::platform_default()
+            .root()
+            .to_path_buf(),
+    )
 }
 
 fn device_key_path() -> Option<std::path::PathBuf> {
@@ -1202,25 +1217,17 @@ fn decrypt_token(data: &[u8], key: &[u8]) -> Option<String> {
 /// In tests, the `AGORA_TEST_TOKEN_DIR` environment variable can be set to an
 /// isolated directory so parallel tests do not share the same fallback file.
 fn fallback_token_path() -> Option<std::path::PathBuf> {
-    if let Some(dir) = real_fallback_dir() {
-        return Some(dir.join(TOKEN_FALLBACK_FILE));
-    }
     #[cfg(any(test, feature = "test-support"))]
-    if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
-        return Some(std::path::PathBuf::from(dir).join(TOKEN_FALLBACK_FILE));
+    if real_fallback_dir().is_none() {
+        if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
+            return Some(std::path::PathBuf::from(dir).join(TOKEN_FALLBACK_FILE));
+        }
     }
-    dirs::data_local_dir().map(|d| d.join("agora").join(TOKEN_FALLBACK_FILE))
+    Some(fallback_data_dir()?.join(TOKEN_FALLBACK_FILE))
 }
 
 fn fallback_secret_path(file_name: &str) -> Option<std::path::PathBuf> {
-    if let Some(dir) = real_fallback_dir() {
-        return Some(dir.join(file_name));
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    if let Ok(dir) = std::env::var("AGORA_TEST_SECRET_DIR") {
-        return Some(std::path::PathBuf::from(dir).join(file_name));
-    }
-    dirs::data_local_dir().map(|d| d.join("agora").join(file_name))
+    Some(fallback_data_dir()?.join(file_name))
 }
 
 fn using_test_token_store() -> bool {
@@ -2504,6 +2511,28 @@ mod tests {
         assert_eq!(
             github_credential_backend(),
             CredentialBackend::EncryptedFile
+        );
+    }
+
+    /// Routing the credential files through `AppPaths` is meant to make a
+    /// configured root move them -- not to move anyone's existing files. With no
+    /// override set the resolved root must still be exactly what auth used to
+    /// hardcode, so an ordinary install has nothing to migrate.
+    ///
+    /// (Skipped when a data root is configured, which is a developer's own
+    /// setting rather than a property of the code.)
+    #[test]
+    fn default_credential_root_matches_the_previously_hardcoded_path() {
+        if std::env::var_os("AGORA_DATA_DIR").is_some() {
+            return;
+        }
+        let expected = dirs::data_local_dir()
+            .expect("platform data dir")
+            .join("agora");
+        assert_eq!(
+            crate::app_paths::AppPaths::platform_default().root(),
+            expected,
+            "the default credential location must not shift under existing users"
         );
     }
 

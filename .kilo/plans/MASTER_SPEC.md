@@ -2786,11 +2786,22 @@ an unknown or failed lookup shows nothing rather than inventing a warning.
 credential. The string is English-only for now: translations are deferred rather than
 guessed, since an unverifiable translation of a security warning is its own hazard.
 
-**Still open:** one device key serves both the GitHub and MSA credentials, and sign-out leaves it in place,
-so there is no rotation story; rotating it needs an explicit "reset encrypted credential
-storage" operation rather than being attached to either individual sign-out. The auth paths
-also resolve `dirs::data_local_dir()/agora` directly instead of going through `AppPaths`,
-so `AGORA_DATA_DIR` and portable roots do not move them.
+**The fallback files follow the configured data root.** They resolve through `AppPaths`
+rather than reconstructing `dirs::data_local_dir()/agora`, so `AGORA_DATA_DIR` and a
+portable install move them along with everything else. The platform default is byte-identical
+to the old hardcoded path, so an ordinary install has nothing to migrate; a test pins that.
+
+Be aware of the limit: this governs the *fallback* only. Credentials that reach the OS
+keyring are held per-user by the OS, and no data-root setting relocates them -- a portable
+install on a machine with a working keyring still leaves them on that machine. Making
+portable mode genuinely self-contained for credentials would mean preferring the encrypted
+file over the keyring when running portable, which trades the OS's protection for
+portability. That is a product decision and has not been made.
+
+**Still open:** one device key serves both the GitHub and MSA credentials, and sign-out
+leaves it in place, so there is no rotation story; rotating it needs an explicit "reset
+encrypted credential storage" operation rather than being attached to either individual
+sign-out.
 
 ---
 

@@ -680,6 +680,34 @@ enum ArchiveCacheOutcome {
 /// and if the extracted runtime still passes full validation
 /// (inspect_java + java_sha256), it is returned as `RuntimeRecovered`.
 /// Otherwise the stale runtime directory is removed and `DownloadNeeded` is
+/// Whether the cached archive is present.
+///
+/// `Path::is_file` collapses every metadata error into `false`. That is wrong
+/// here: on Windows a file another process has momentarily open -- a scanner,
+/// the indexer -- reports an access error rather than "missing", and treating
+/// that as a cache miss silently re-downloads an entire JRE. Worse, in tests it
+/// turns a hermetic run into a live network fetch.
+///
+/// Only a genuine `NotFound` counts as absent. Anything else is retried, then
+/// surfaced.
+fn cache_file_present(path: &Path) -> std::io::Result<bool> {
+    const MAX_ATTEMPTS: u32 = 5;
+    const BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let mut attempt: u32 = 1;
+    loop {
+        match std::fs::metadata(path) {
+            Ok(metadata) => return Ok(metadata.is_file()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if attempt < MAX_ATTEMPTS && is_transient_fs_error(&error) => {
+                std::thread::sleep(BACKOFF_STEP * attempt);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// returned so the caller proceeds with a fresh download and extraction.
 fn resolve_archive_cache(
     cache_path: &Path,
@@ -689,7 +717,11 @@ fn resolve_archive_cache(
     major: u32,
     progress: &dyn RuntimeProgress,
 ) -> LauncherResult<ArchiveCacheOutcome> {
-    if !cache_path.is_file() {
+    let cached = cache_file_present(cache_path).map_err(|e| LauncherError::Generic {
+        code: "ERR_ARCHIVE_CACHE_STAT".into(),
+        message: format!("Failed to inspect cached archive: {e}"),
+    })?;
+    if !cached {
         return Ok(ArchiveCacheOutcome::DownloadNeeded);
     }
 
@@ -2180,12 +2212,15 @@ mod tests {
             image_type: "jre".into(),
             jvm_impl: "hotspot".into(),
             archive_type: test_archive_extension().into(),
-            url: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jre_x64_windows_hotspot_21.0.2_13.zip".into(),
+            // Unreachable on purpose -- see the note on make_java25_entry.
+            url: "https://tests.invalid/adoptium/must-not-be-fetched.zip".into(),
             sha256: sha256.into(),
             size,
             java_relative_path: test_java_rel().into(),
             license: "GPL-2.0-only WITH Classpath-exception-2.0".into(),
-            source_api_url: "https://api.adoptium.net/v3/assets/latest/21/hotspot?image_type=jre&vendor=eclipse".into(),
+            source_api_url:
+                "https://api.adoptium.net/v3/assets/latest/21/hotspot?image_type=jre&vendor=eclipse"
+                    .into(),
             version_major: Some(21),
             version_minor: Some(0),
             version_security: Some(2),
@@ -3280,16 +3315,25 @@ mod tests {
             full_version: "25.0.1+9".into(),
             openjdk_version: "25.0.1".into(),
             os: normalize_os(std::env::consts::OS).unwrap_or("linux").into(),
-            arch: normalize_arch(std::env::consts::ARCH).unwrap_or("x64").into(),
+            arch: normalize_arch(std::env::consts::ARCH)
+                .unwrap_or("x64")
+                .into(),
             image_type: "jre".into(),
             jvm_impl: "hotspot".into(),
             archive_type: test_archive_extension().into(),
-            url: "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.1%2B9/OpenJDK25U-jre_x64_linux_hotspot_25.0.1_9.tar.gz".into(),
+            // Deliberately unreachable and deliberately not allowlisted. Every
+            // runtime fixture seeds its archive into the cache, so a test that
+            // reaches the downloader has already failed; this makes that failure
+            // instant and offline rather than a live fetch of a real JRE whose
+            // hash cannot match the fixture. URL *validation* is covered
+            // separately by the validate_runtime_url tests, which use real URLs.
+            url: "https://tests.invalid/adoptium/must-not-be-fetched.tar.gz".into(),
             sha256: sha256.into(),
             size,
             java_relative_path: test_java_rel().into(),
             license: "GPL-2.0-only WITH Classpath-exception-2.0".into(),
-            source_api_url: "https://api.adoptium.net/v3/assets/latest/25/hotspot?image_type=jre".into(),
+            source_api_url: "https://api.adoptium.net/v3/assets/latest/25/hotspot?image_type=jre"
+                .into(),
             version_major: Some(25),
             version_minor: Some(0),
             version_security: Some(1),
@@ -3354,6 +3398,26 @@ mod tests {
         let receipt = RuntimeReceipt::read_from(&receipt_path).unwrap();
         assert_eq!(receipt.major, 25);
         assert_eq!(receipt.archive_sha256, entry.sha256);
+    }
+
+    #[test]
+    fn cache_file_present_detects_a_seeded_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.zip");
+        assert!(!cache_file_present(&path).unwrap(), "absent before writing");
+
+        std::fs::write(&path, b"data").unwrap();
+        assert!(cache_file_present(&path).unwrap(), "present after writing");
+    }
+
+    /// A directory sitting where the archive should be is not a usable cache
+    /// entry, but it is also not an error.
+    #[test]
+    fn cache_file_present_rejects_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.zip");
+        std::fs::create_dir(&path).unwrap();
+        assert!(!cache_file_present(&path).unwrap());
     }
 
     #[test]
