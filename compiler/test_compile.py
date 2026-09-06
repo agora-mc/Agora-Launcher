@@ -1217,8 +1217,12 @@ class TestRegexTimeoutBudget(unittest.TestCase):
 
     def test_catastrophic_pattern_is_rejected(self):
         # The corpus is 100k 'a' with no 'b', so the engine must try every
-        # partition of the run before failing: genuinely exponential.
-        self.assertFalse(_compile._test_regex_timeout(re.compile(r"(a+)+b")))
+        # partition of the run before failing: genuinely exponential. The
+        # backtracking is the point -- this pattern is the fixture that proves
+        # the timeout guard keeps such a signature out of the shipped registry.
+        self.assertFalse(
+            _compile._test_regex_timeout(re.compile(r"(a+)+b"))  # codeql[py/redos]
+        )
 
 
 class TestCleanVersionWindow(unittest.TestCase):

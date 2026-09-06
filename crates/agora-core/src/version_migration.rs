@@ -310,6 +310,10 @@ pub enum MigrationOutcome {
 /// Fails closed: every migratable entry must classify `ready` *and* carry a
 /// concrete [`TargetBuildInfo`], the loader target must exist in the signed
 /// catalog, and the instance must not be locked/pack-managed/busy-with-pins.
+// The `Err` is a rich user-facing rejection (reasons plus the classification
+// report), not a hot-path error: it is produced at most once per user-initiated
+// plan, so its size does not justify boxing a serialized public type.
+#[allow(clippy::result_large_err)]
 pub async fn plan_migration(
     ctx: &Ctx,
     instance_id: &str,
@@ -1000,6 +1004,7 @@ impl VersionMigrationService {
         self
     }
 
+    #[allow(clippy::result_large_err)]
     pub async fn plan(
         &self,
         instance_id: &str,
