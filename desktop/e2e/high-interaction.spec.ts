@@ -115,7 +115,7 @@ async function installHighInteractionMock(page: Page) {
             snapshot_error: null,
           });
         }
-        if (command === 'query_launch_state') return Promise.resolve(null);
+        if (command === 'query_launch_state') return Promise.resolve([]);
         if (command === 'check_instance_health') {
           return Promise.resolve({
             score: 'yellow',
@@ -236,6 +236,8 @@ test('approved remove through InstallFlow: Stage remove re-resolves and opens th
   // InstallFlow review view appears with the planned removal.
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByText('Review Instance Changes')).toBeVisible();
-  await expect(page.getByText('example.jar')).toBeVisible();
-  await expect(page.getByText(/Before removing/)).toBeVisible();
+  // The file being removed is named in the summary; the snapshot label that
+  // used to carry it now lives under "Technical details".
+  await expect(page.getByText('1 file removed')).toBeVisible();
+  await expect(page.getByText('example.jar').first()).toBeVisible();
 });

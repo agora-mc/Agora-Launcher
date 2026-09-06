@@ -1490,6 +1490,16 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   </div>
                 )}
                 <p className="text-xs font-medium mb-2">Available versions</p>
+                {(selectedCandidate || selectedModrinthCandidate) && (
+                  <button
+                    onClick={handleConfirmInstall}
+                    disabled={!!(isModrinthInstall && selectedModrinthCandidate && !selectedModrinthCandidate.sha1)}
+                    data-tour="install-confirm"
+                    className="mb-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
+                  </button>
+                )}
                 {phase === 'loadingVersions' ? (
                   <div className="text-center py-4">
                     <svg className="animate-spin h-5 w-5 mx-auto text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1510,12 +1520,21 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             <li
                               key={cand.version_id}
                               data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={selectedModrinthCandidate?.version_id === cand.version_id}
                               className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
                                 selectedModrinthCandidate?.version_id === cand.version_id
                                   ? 'border-primary bg-card/50 dark:bg-card/20'
                                   : 'border-border hover:bg-accent'
                               }`}
                               onClick={() => setSelectedModrinthCandidate(cand)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  setSelectedModrinthCandidate(cand);
+                                }
+                              }}
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium truncate flex items-center gap-2">
@@ -1588,12 +1607,21 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                             <li
                               key={`${cand.version}-${cand.filename}`}
                               data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={selectedCandidate?.filename === cand.filename && selectedCandidate?.version === cand.version}
                               className={`rounded-lg border px-3 py-2 text-sm cursor-pointer transition-colors ${
                                 selectedCandidate?.filename === cand.filename && selectedCandidate?.version === cand.version
                                   ? 'border-primary bg-card/50 dark:bg-card/20'
                                   : 'border-border hover:bg-accent'
                               }`}
                               onClick={() => setSelectedCandidate(cand)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  setSelectedCandidate(cand);
+                                }
+                              }}
                             >
                               <div className="flex items-center justify-between">
                                 <span className="font-medium flex items-center gap-2">
@@ -1652,16 +1680,6 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                   <div ref={versionSentinelRef} className="py-3 text-center text-xs text-muted-foreground">
                     {loadingMoreVersions ? 'Loading more versions…' : ''}
                   </div>
-                )}
-                {(selectedCandidate || selectedModrinthCandidate) && (
-                  <button
-                    onClick={handleConfirmInstall}
-                    disabled={!!(isModrinthInstall && selectedModrinthCandidate && !selectedModrinthCandidate.sha1)}
-                    data-tour="install-confirm"
-                    className="mt-3 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {flowInstalledEntry ? 'Replace with' : 'Install'} {(selectedCandidate ?? selectedModrinthCandidate)!.filename}
-                  </button>
                 )}
               </div>
             )}
@@ -1859,9 +1877,19 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                         return (
                           <tr
                             key={v.version_id}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
                             onClick={() => {
                               setSelectedVersion(v);
                               setSelectedCuratedTabVersion(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedVersion(v);
+                                setSelectedCuratedTabVersion(null);
+                              }
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${
                               isSelected ? 'bg-accent' : 'hover:bg-accent'
@@ -2023,9 +2051,19 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                         return (
                           <tr
                             key={`${v.version}-${v.filename}-${idx}`}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={isSelected}
                             onClick={() => {
                               setSelectedCuratedTabVersion(v);
                               setSelectedVersion(null);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedCuratedTabVersion(v);
+                                setSelectedVersion(null);
+                              }
                             }}
                             className={`cursor-pointer border-b border-border/50 transition-colors ${isSelected ? 'bg-accent' : 'hover:bg-accent'}`}
                           >
@@ -2439,7 +2477,7 @@ function BackButton({ onBack }: { onBack: () => void }) {
   return (
     <button
       onClick={onBack}
-      className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+      className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent bg-card"
     >
       ← Back
     </button>

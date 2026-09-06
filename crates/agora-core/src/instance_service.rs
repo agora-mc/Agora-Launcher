@@ -31,7 +31,18 @@ pub struct CreateInstanceRequest {
     pub is_modpack: Option<bool>,
     #[serde(default)]
     pub pack_icon_url: Option<String>,
+    /// Optional instance template to seed this instance from.
+    ///
+    /// The template supplies config files and JVM settings; anything the
+    /// request states explicitly wins, so a user who typed a heap size in the
+    /// create dialog keeps it even when the template also carries one.
+    #[serde(default)]
+    pub template_id: Option<String>,
 }
+
+/// Settings key holding the id of the template applied when a create request
+/// names none.
+pub const DEFAULT_TEMPLATE_SETTING_KEY: &str = "default_instance_template";
 
 /// Request used to clone an existing instance.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -51,12 +62,41 @@ pub struct InstanceDetail {
     pub snapshot_error: Option<String>,
 }
 
+/// What applying a template to an existing instance actually did.
+///
+/// Structured rather than a file count, because a count of zero has three
+/// different meanings — a JVM-only profile that applied cleanly, a template
+/// with nothing in it, and a damaged template whose files are missing — and a
+/// UI reading only the number told the user "no config files to apply" after a
+/// successful apply.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TemplateApplyOutcome {
+    pub jvm_applied: bool,
+    pub files_applied: usize,
+    /// Files the template lists but no longer has on disk.
+    pub files_missing: usize,
+    /// The undo point taken before any file was written, when there were files
+    /// to write.
+    pub undo_snapshot_id: Option<String>,
+}
+
 /// Core-owned preparation result for an official-launcher handoff.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DelegatedLaunchPreparation {
     pub profile_id: String,
     pub launcher_path: Option<String>,
     pub mod_ids: Vec<String>,
+    /// The official launcher was already running when this handoff was
+    /// prepared. It reads `launcher_profiles.json` and its saved installation
+    /// selection once, at startup, so a handoff into a running launcher only
+    /// focuses its window — whatever it already had selected stays selected.
+    /// Adapters should offer to restart it rather than pretend the handoff
+    /// picked the pack.
+    pub launcher_running: bool,
+    /// Agora managed to point the launcher's saved selection at this profile.
+    /// False when the launcher was running, or when its UI-state file was
+    /// absent or in a shape Agora declines to rewrite.
+    pub selection_applied: bool,
 }
 
 /// Narrow adapter type: a synchronous callback that moves a quarantined
@@ -166,6 +206,167 @@ impl InstanceService {
         .map_err(|error| LauncherError::Generic {
             code: "ERR_LOCAL_STATE_FAILED".into(),
             message: error.to_string(),
+        })
+    }
+
+    /// Apply a template's JVM settings to an existing instance.
+    ///
+    /// This is what makes a JVM-only template a *named Java profile*: without
+    /// it, applying such a template to an instance you already have does
+    /// nothing at all, because file application is the only thing that runs.
+    ///
+    /// A `None` field means "leave the instance's own value alone", so a
+    /// profile that only pins heap size does not silently reset a GC choice
+    /// the user made per instance. Returns whether anything changed.
+    pub fn apply_template_jvm(
+        &self,
+        instance_id: &str,
+        jvm: &crate::template_service::TemplateJvm,
+    ) -> LauncherResult<bool> {
+        if jvm.is_empty() {
+            return Ok(false);
+        }
+        let instance_id = self.validate_id(instance_id)?;
+        let conn = self.connection()?;
+        let row = crate::db::get_instance(&conn, &instance_id)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_INSTANCE_NOT_FOUND".into(),
+                message: format!("Instance '{instance_id}' not found"),
+            })?;
+        drop(conn);
+
+        let memory_mb = jvm.jvm_memory_mb.unwrap_or(row.jvm_memory_mb);
+        let memory_mode = jvm
+            .jvm_memory_mode
+            .clone()
+            .unwrap_or_else(|| row.jvm_memory_mode.clone());
+        let gc = jvm.jvm_gc.clone().unwrap_or_else(|| row.jvm_gc.clone());
+        let custom_args = jvm
+            .jvm_custom_args
+            .clone()
+            .unwrap_or_else(|| row.jvm_custom_args.clone());
+        let always_pre_touch = jvm.jvm_always_pre_touch.unwrap_or(row.jvm_always_pre_touch);
+
+        self.update_jvm(
+            &instance_id,
+            memory_mb,
+            &gc,
+            always_pre_touch,
+            &custom_args,
+            &memory_mode,
+        )?;
+
+        // The Java binary lives on a different column and a different setter,
+        // and is only touched when the template actually names one.
+        if let Some(java_path) = jvm.java_path.as_deref() {
+            self.update_java(
+                &instance_id,
+                Some(java_path),
+                row.java_incompatible_override,
+                None,
+            )?;
+        }
+        Ok(true)
+    }
+
+    /// Apply a whole template — JVM settings *and* captured files — to an
+    /// existing instance, as one undoable operation.
+    ///
+    /// The two halves used to run unguarded and in the wrong order: JVM
+    /// settings were committed first, then files were copied over the instance
+    /// with no lock, no snapshot and no rollback, so a failure partway left
+    /// settings changed and configs half-replaced with nothing to undo.
+    ///
+    /// Here the files go first under an undo snapshot; the database write only
+    /// happens once they have all landed, and any failure restores the
+    /// snapshot so the instance is exactly as it was.
+    pub fn apply_template(
+        &self,
+        instance_id: &str,
+        templates_root: &std::path::Path,
+        template_id: &str,
+    ) -> LauncherResult<TemplateApplyOutcome> {
+        let instance_id = self.validate_id(instance_id)?;
+        let template = crate::template_service::get_template(templates_root, template_id).map_err(
+            |message| LauncherError::Generic {
+                code: "ERR_TEMPLATE".into(),
+                message,
+            },
+        )?;
+        let instance_dir = self.ctx.paths.instance_dir(&instance_id)?;
+
+        let _lock = self.ctx.lock_manager.acquire(
+            crate::lock_manager::LockResource::Instance(instance_id.clone()),
+            "apply_template",
+        )?;
+
+        // Nothing to do is not a failure, and must not cost a snapshot.
+        if template.jvm.is_empty() && template.files.is_empty() {
+            return Ok(TemplateApplyOutcome {
+                jvm_applied: false,
+                files_applied: 0,
+                files_missing: 0,
+                undo_snapshot_id: None,
+            });
+        }
+
+        let template_error = |message: String| LauncherError::Generic {
+            code: "ERR_TEMPLATE".into(),
+            message,
+        };
+
+        // Only the file half can leave the instance visibly half-changed, so
+        // that is what the snapshot has to cover.
+        let undo_snapshot_id = if template.files.is_empty() {
+            None
+        } else {
+            Some(
+                crate::snapshot::create_snapshot(&instance_dir, Some("pre-template"))
+                    .map_err(template_error)?
+                    .id,
+            )
+        };
+
+        let files_applied = match crate::template_service::apply_template_files(
+            templates_root,
+            template_id,
+            &instance_dir,
+        ) {
+            Ok(applied) => applied,
+            Err(message) => {
+                if let Some(snapshot_id) = undo_snapshot_id.as_deref() {
+                    let _ = crate::snapshot::restore_snapshot(&instance_dir, snapshot_id);
+                }
+                return Err(template_error(message));
+            }
+        };
+
+        let jvm_applied = match self.apply_template_jvm(&instance_id, &template.jvm) {
+            Ok(applied) => applied,
+            Err(error) => {
+                if let Some(snapshot_id) = undo_snapshot_id.as_deref() {
+                    let _ = crate::snapshot::restore_snapshot(&instance_dir, snapshot_id);
+                }
+                return Err(error);
+            }
+        };
+
+        // Config changes are exactly the kind of drift the pre-launch snapshot
+        // reuse check must notice.
+        let _ = crate::snapshot::mark_instance_mutated(&instance_dir);
+
+        Ok(TemplateApplyOutcome {
+            jvm_applied,
+            files_applied,
+            // A file recorded in the template but absent on disk is skipped by
+            // `apply_template_files`. Counting the difference is what lets the
+            // UI say the template is damaged instead of quietly under-applying.
+            files_missing: template.files.len().saturating_sub(files_applied),
+            undo_snapshot_id,
         })
     }
 
@@ -316,7 +517,7 @@ impl InstanceService {
             custom_args: row.jvm_custom_args.clone(),
             always_pre_touch: row.jvm_always_pre_touch && user_override.unwrap_or(true),
         };
-        let profile_id = format!("agora-{}", row.instance_id);
+        let profile_id = crate::launcher_profiles::profile_id_for(&row.instance_id);
         let profile = crate::launcher_profiles::LauncherProfileEntry {
             profile_id: profile_id.clone(),
             name: format!("{} (Agora)", row.name),
@@ -325,7 +526,15 @@ impl InstanceService {
             java_args: jvm.to_args_for_java(crate::models::recommended_java_version_for_minecraft(
                 &row.minecraft_version,
             )),
+            select: true,
         };
+        let launcher_path = crate::db::get_setting(&conn, "mojang_launcher_path")
+            .ok()
+            .flatten()
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let launcher_running =
+            crate::official_launcher::is_running(launcher_path.as_ref().map(Path::new));
+        let mut selection_applied = false;
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
             let official_root = profiles_path
                 .parent()
@@ -346,7 +555,23 @@ impl InstanceService {
                     true,
                 )?;
             }
+            // Sweep first: the launcher lists every profile in this file, so a
+            // handoff is the right moment to drop the ones whose instance is
+            // gone. Failure here must never block a launch.
+            let _ = self.prune_launcher_profiles(&conn, profiles_path);
             crate::launcher_profiles::upsert_profile(&profile, profiles_path)?;
+            if !launcher_running {
+                // Writing while the launcher is open is pointless — it reloads
+                // nothing and rewrites this file from memory on its next
+                // startup, undoing the selection.
+                selection_applied = !crate::launcher_ui_state::select_installation(
+                    official_root,
+                    &profile,
+                    &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                )
+                .unwrap_or_default()
+                .is_empty();
+            }
         }
         let mod_ids = manifest
             .map(|manifest| {
@@ -357,15 +582,45 @@ impl InstanceService {
                     .collect()
             })
             .unwrap_or_default();
-        let launcher_path = crate::db::get_setting(&conn, "mojang_launcher_path")
-            .ok()
-            .flatten()
-            .and_then(|value| value.as_str().map(str::to_owned));
         Ok(DelegatedLaunchPreparation {
             profile_id,
             launcher_path,
             mod_ids,
+            launcher_running,
+            selection_applied,
         })
+    }
+
+    /// Drop `agora-*` launcher profiles whose instance no longer exists.
+    ///
+    /// Returns the removed profile ids. Called on delete and before every
+    /// delegated handoff; safe to call when no launcher is installed.
+    pub fn reconcile_launcher_profiles(&self) -> LauncherResult<Vec<String>> {
+        let Some(profiles_path) = &self.ctx.launcher_profiles_path else {
+            return Ok(Vec::new());
+        };
+        let conn = self.connection()?;
+        self.prune_launcher_profiles(&conn, profiles_path)
+    }
+
+    fn prune_launcher_profiles(
+        &self,
+        conn: &rusqlite::Connection,
+        profiles_path: &Path,
+    ) -> LauncherResult<Vec<String>> {
+        let live: std::collections::HashSet<String> = crate::db::list_instances(conn)
+            .map_err(|error| LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: error.to_string(),
+            })?
+            .into_iter()
+            .map(|row| row.instance_id)
+            .collect();
+        crate::launcher_profiles::prune_orphan_profiles(
+            profiles_path,
+            &self.ctx.paths.instances_root(),
+            &|instance_id| live.contains(instance_id),
+        )
     }
 
     /// Delete an instance with a filesystem quarantine so a database failure
@@ -470,10 +725,29 @@ impl InstanceService {
             let _ = crate::snapshot::prune_unreferenced_objects(&dir);
         }
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
-            let _ = crate::launcher_profiles::remove_profile(
-                &format!("agora-{instance_id}"),
-                profiles_path,
-            );
+            let profile_id = crate::launcher_profiles::profile_id_for(&instance_id);
+            let _ = crate::launcher_profiles::remove_profile(&profile_id, profiles_path);
+            // The launcher restores its installation selection from its own
+            // UI state, so removing the profile is not enough: without this it
+            // reopens on a pack that no longer exists.
+            if let Some(official_root) = profiles_path.parent() {
+                if crate::launcher_ui_state::selected_profile_id(official_root).as_deref()
+                    == Some(profile_id.as_str())
+                {
+                    let replacement = crate::launcher_profiles::most_recent_profile_except(
+                        profiles_path,
+                        &profile_id,
+                    );
+                    let _ = crate::launcher_ui_state::clear_selection_for(
+                        official_root,
+                        &profile_id,
+                        replacement
+                            .as_ref()
+                            .map(|(entry, last_used)| (entry, last_used.as_str())),
+                    );
+                }
+            }
+            let _ = self.prune_launcher_profiles(&conn, profiles_path);
         }
         op.complete();
         Ok(())
@@ -595,21 +869,19 @@ impl InstanceService {
         }
         drop(conn);
 
-        // Read source manifest
+        // Read source manifest via canonical loader — heals pack_managed and
+        // synthesizes a name-only PackOrigin for legacy instances.
         let manifest_path = self.ctx.paths.instance_manifest(&source_id)?;
         let source_manifest: InstanceManifest = if manifest_path.exists() {
-            let text =
-                std::fs::read_to_string(&manifest_path).map_err(|e| LauncherError::Generic {
-                    code: "ERR_CLONE".into(),
-                    message: format!("Cannot read source manifest: {e}"),
-                })?;
-            serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
+            crate::helpers::read_manifest(&manifest_path).map_err(|e| LauncherError::Generic {
                 code: "ERR_CLONE".into(),
-                message: format!("Cannot parse source manifest: {e}"),
+                message: format!("Cannot read source manifest: {e}"),
             })?
         } else {
             // Synthesise a minimal manifest from the DB row.
             InstanceManifest {
+                manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+                pack_origin: None,
                 instance_id: new_id.clone(),
                 name: request.new_name.trim().to_owned(),
                 created_from_pack: None,
@@ -649,14 +921,24 @@ impl InstanceService {
             launch_mode_override: "auto".into(),
             import_source: None,
         };
-        let new_manifest = InstanceManifest {
+        let mut new_manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
             instance_id: new_id.clone(),
             name: request.new_name.trim().to_owned(),
             // A clone is always a fresh, unlocked working copy — never inherit
             // the source's locked flag (the DB row and manifest must agree).
             is_locked: false,
-            ..source_manifest
+            ..source_manifest.clone()
         };
+        // Clone keeps pack identity so it can still be updated, but records
+        // where it came from and refreshes installed_at. pack_content_hash
+        // is recomputed after the directory is cloned, so clear it here.
+        if let Some(mut origin) = new_manifest.pack_origin.take() {
+            origin.cloned_from = Some(source_id.clone());
+            origin.installed_at = chrono::Utc::now().to_rfc3339();
+            origin.pack_content_hash = None;
+            new_manifest.pack_origin = Some(origin);
+        }
 
         let operation_id = op.id().clone();
         self.ctx.progress_sink.report(ProgressEvent::new(
@@ -679,6 +961,20 @@ impl InstanceService {
                 code: "ERR_CLONE".into(),
                 message: error,
             });
+        }
+
+        // Recompute pack content hash from the cloned directory (respecting
+        // ClonePrefs; symlinks/hardlinks are hashed via file contents, so
+        // recomputing is more accurate than copying DB rows).
+        if let Some(origin) = new_manifest.pack_origin.as_mut() {
+            let pack_files =
+                crate::pack_inventory::collect_pack_inventory(&staging).unwrap_or_default();
+            let pack_hash = if pack_files.is_empty() {
+                None
+            } else {
+                Some(crate::pack_inventory::pack_content_hash(&pack_files))
+            };
+            origin.pack_content_hash = pack_hash;
         }
 
         // Write updated manifest
@@ -739,6 +1035,15 @@ impl InstanceService {
             });
         }
 
+        // Persist pack file inventory for the clone — recomputed from the
+        // cloned directory so ClonePrefs filtering and symlink/hardlink
+        // handling are reflected, not just copied DB rows.
+        if new_manifest.pack_origin.is_some() {
+            if let Ok(pack_files) = crate::pack_inventory::collect_pack_inventory(&dest_dir) {
+                let _ = crate::db::replace_instance_pack_files(&conn, &new_id, &pack_files);
+            }
+        }
+
         // Launcher profile
         if let Some(profiles_path) = &self.ctx.launcher_profiles_path {
             let user_override = crate::db::get_setting(&conn, "jvm_always_pre_touch")
@@ -761,6 +1066,7 @@ impl InstanceService {
                         &new_row.minecraft_version,
                     ),
                 ),
+                select: false,
             };
             if let Err(error) = crate::launcher_profiles::upsert_profile(&profile, profiles_path) {
                 let _ = crate::db::delete_instance(&conn, &new_row.instance_id);
@@ -783,6 +1089,37 @@ impl InstanceService {
     /// Create the instance directory, bootstrap shared metadata, install its
     /// loader, and persist the row. All partial instance state is removed on
     /// failure; shared loader artifacts are retained.
+    /// Resolve which template a create request should use.
+    ///
+    /// An explicit id must exist — a typo should surface, not silently create a
+    /// bare instance. The stored default is best-effort: if the user deleted the
+    /// template their setting still points at, creating an instance must still
+    /// work.
+    fn resolve_template(
+        &self,
+        requested: Option<&str>,
+    ) -> LauncherResult<Option<crate::template_service::InstanceTemplate>> {
+        let root = self.ctx.paths.templates_root();
+        if let Some(id) = requested.map(str::trim).filter(|id| !id.is_empty()) {
+            return crate::template_service::get_template(&root, id)
+                .map(Some)
+                .map_err(|message| LauncherError::Generic {
+                    code: "ERR_TEMPLATE_NOT_FOUND".into(),
+                    message,
+                });
+        }
+        let conn = self.connection()?;
+        let default_id = crate::db::get_setting(&conn, DEFAULT_TEMPLATE_SETTING_KEY)
+            .ok()
+            .flatten()
+            .and_then(|value| value.as_str().map(str::to_string));
+        drop(conn);
+        let Some(default_id) = default_id.filter(|id| !id.trim().is_empty()) else {
+            return Ok(None);
+        };
+        Ok(crate::template_service::get_template(&root, &default_id).ok())
+    }
+
     pub async fn create(&self, request: CreateInstanceRequest) -> LauncherResult<InstanceRow> {
         let instance_id = self.validate_id(&request.instance_id)?;
         if request.name.trim().is_empty() || request.minecraft_version.trim().is_empty() {
@@ -814,12 +1151,48 @@ impl InstanceService {
             ProgressPhase::Staging,
             "Preparing instance directory",
         ));
-        let row = prepare_row(&instance_id, &request);
+        // Resolve the template before anything is written: a bad template id
+        // should fail the create, not leave a half-configured instance.
+        let template = match self.resolve_template(request.template_id.as_deref()) {
+            Ok(template) => template,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&staging_dir);
+                op.fail(error.to_string());
+                return Err(error);
+            }
+        };
+        let mut request = request;
+        if let Some(template) = template.as_ref() {
+            apply_template_jvm_to_request(&mut request, &template.jvm);
+        }
+        let request = request;
+
+        let mut row = prepare_row(&instance_id, &request);
+        if let Some(template) = template.as_ref() {
+            if row.java_path.is_none() {
+                row.java_path = template.jvm.java_path.clone();
+            }
+        }
+        let row = row;
         let manifest = manifest_from_request(&instance_id, &request);
         if let Err(error) = self.prepare_files(&staging_dir, &manifest) {
             let _ = std::fs::remove_dir_all(&staging_dir);
             op.fail(error.to_string());
             return Err(error);
+        }
+        if let Some(template) = template.as_ref() {
+            if let Err(error) = crate::template_service::apply_template_files(
+                &self.ctx.paths.templates_root(),
+                &template.id,
+                &staging_dir,
+            ) {
+                let _ = std::fs::remove_dir_all(&staging_dir);
+                op.fail(error.clone());
+                return Err(LauncherError::Generic {
+                    code: "ERR_TEMPLATE_APPLY".into(),
+                    message: error,
+                });
+            }
         }
         if let Err(error) = std::fs::write(staging_dir.join("staging-complete"), b"complete") {
             let _ = std::fs::remove_dir_all(&staging_dir);
@@ -924,6 +1297,7 @@ impl InstanceService {
                 last_version_id: loader_version_id(&row),
                 game_dir: dir.clone(),
                 java_args: jvm.to_args(),
+                select: false,
             };
             if let Err(error) = crate::launcher_profiles::upsert_profile(&profile, profiles_path) {
                 let _ = crate::db::delete_instance(&conn, &row.instance_id);
@@ -1007,6 +1381,30 @@ impl InstanceService {
     }
 }
 
+/// Fill unset JVM fields on a create request from a template.
+///
+/// One-directional on purpose: the template is a default, never an override.
+fn apply_template_jvm_to_request(
+    request: &mut CreateInstanceRequest,
+    jvm: &crate::template_service::TemplateJvm,
+) {
+    if request.jvm_memory_mb.is_none() {
+        request.jvm_memory_mb = jvm.jvm_memory_mb;
+    }
+    if request.jvm_memory_mode.is_none() {
+        request.jvm_memory_mode = jvm.jvm_memory_mode.clone();
+    }
+    if request.jvm_gc.is_none() {
+        request.jvm_gc = jvm.jvm_gc.clone();
+    }
+    if request.jvm_custom_args.is_none() {
+        request.jvm_custom_args = jvm.jvm_custom_args.clone();
+    }
+    if request.jvm_always_pre_touch.is_none() {
+        request.jvm_always_pre_touch = jvm.jvm_always_pre_touch;
+    }
+}
+
 fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRow {
     InstanceRow {
         instance_id: instance_id.into(),
@@ -1051,6 +1449,8 @@ fn manifest_from_request(instance_id: &str, request: &CreateInstanceRequest) -> 
         );
     }
     InstanceManifest {
+        manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+        pack_origin: None,
         instance_id: instance_id.into(),
         name: request.name.clone(),
         created_from_pack: None,
@@ -1126,6 +1526,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("test", &request);
         assert_eq!(row.jvm_memory_mode, "auto");
@@ -1177,6 +1578,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("delegated", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1240,6 +1642,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("original", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1300,6 +1703,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("locked", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1343,6 +1747,115 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// The reported symptom: deleting a pack left its entry in the official
+    /// launcher's installation list, and the launcher kept it as the selected
+    /// installation even though nothing was left to launch.
+    #[test]
+    fn delete_removes_the_official_launcher_profile_and_selection() {
+        let (ctx, root) = context();
+        let profiles_path = ctx.launcher_profiles_path.clone().unwrap();
+        let official_root = profiles_path.parent().unwrap().to_path_buf();
+        let request = CreateInstanceRequest {
+            name: "Doomed".into(),
+            instance_id: "doomed".into(),
+            minecraft_version: "1.21".into(),
+            loader: "vanilla".into(),
+            loader_version: "".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let row = prepare_row("doomed", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        // A survivor, so the deleted pack is not the only thing to select.
+        let survivor_request = CreateInstanceRequest {
+            name: "Keeper".into(),
+            instance_id: "keeper".into(),
+            ..request.clone()
+        };
+        crate::db::upsert_instance(&conn, &prepare_row("keeper", &survivor_request)).unwrap();
+        drop(conn);
+        for id in ["doomed", "keeper"] {
+            let dir = ctx.paths.instance_dir(id).unwrap();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                ctx.paths.instance_manifest(id).unwrap(),
+                serde_json::to_vec(&manifest_from_request(id, &request)).unwrap(),
+            )
+            .unwrap();
+            crate::launcher_profiles::upsert_profile(
+                &crate::launcher_profiles::LauncherProfileEntry {
+                    profile_id: crate::launcher_profiles::profile_id_for(id),
+                    name: format!("{id} (Agora)"),
+                    last_version_id: "1.21".into(),
+                    game_dir: dir,
+                    java_args: String::new(),
+                    select: false,
+                },
+                &profiles_path,
+            )
+            .unwrap();
+        }
+        write_ui_state_selecting(&official_root, "agora-doomed");
+
+        InstanceService::new(ctx).delete("doomed", None).unwrap();
+
+        let profiles: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&profiles_path).unwrap()).unwrap();
+        assert!(
+            profiles["profiles"].get("agora-doomed").is_none(),
+            "the deleted pack must not stay in the launcher's installation list"
+        );
+        assert!(profiles["profiles"].get("agora-keeper").is_some());
+        assert_eq!(
+            crate::launcher_ui_state::selected_profile_id(&official_root).as_deref(),
+            Some("agora-keeper"),
+            "the launcher must not reopen on the pack that was just deleted"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Minimal stand-in for the launcher's UI-state file: a banner, then a
+    /// document whose `UiSettings` is itself a JSON string.
+    fn write_ui_state_selecting(official_root: &std::path::Path, profile_id: &str) {
+        let settings = serde_json::json!({
+            "homePageLastSelected": {
+                "productId": "java",
+                "javaConfiguration": {
+                    "id": profile_id,
+                    "name": "doomed (Agora)",
+                    "versionId": "1.21",
+                    "gameDir": "C:/gone",
+                    "javaArgs": "",
+                    "type": "custom",
+                    "icon": "Furnace"
+                }
+            }
+        });
+        let root = serde_json::json!({
+            "data": { "UiSettings": serde_json::to_string(&settings).unwrap() }
+        });
+        std::fs::create_dir_all(official_root).unwrap();
+        std::fs::write(
+            official_root.join("launcher_ui_state_microsoft_store.json"),
+            format!(
+                "#$
+DO NOT EDIT
+$#
+{}",
+                serde_json::to_string(&root).unwrap()
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn delete_registers_and_completes_operation() {
         let (ctx, root) = context();
@@ -1360,6 +1873,7 @@ mod tests {
             jvm_always_pre_touch: None,
             is_modpack: None,
             pack_icon_url: None,
+            template_id: None,
         };
         let row = prepare_row("delop", &request);
         let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1413,6 +1927,7 @@ mod tests {
                 jvm_always_pre_touch: None,
                 is_modpack: None,
                 pack_icon_url: None,
+                template_id: None,
             };
             let row = prepare_row("src", &request);
             let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
@@ -1470,6 +1985,105 @@ mod tests {
         let clone_ops: Vec<_> = all.iter().filter(|o| o.label == "Clone instance").collect();
         assert_eq!(clone_ops.len(), 1);
         assert!(matches!(clone_ops[0].status, OpStatus::Failed(_)));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clone_keeps_pack_identity_with_cloned_from_and_fresh_hash() {
+        let (ctx, root) = context();
+        // Create source instance with a real PackOrigin and a file to hash
+        let request = CreateInstanceRequest {
+            name: "SourcePack".into(),
+            instance_id: "source-pack".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let row = prepare_row("source-pack", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        drop(conn);
+        let src_dir = ctx.paths.instance_dir("source-pack").unwrap();
+        std::fs::create_dir_all(src_dir.join("mods")).unwrap();
+        std::fs::write(src_dir.join("mods").join("a.jar"), b"pack mod").unwrap();
+        std::fs::create_dir_all(src_dir.join("config")).unwrap();
+        std::fs::write(src_dir.join("config").join("pack.toml"), b"cfg").unwrap();
+
+        let mut manifest = manifest_from_request("source-pack", &request);
+        let pack_files = crate::pack_inventory::collect_pack_inventory(&src_dir).unwrap();
+        let pack_hash = crate::pack_inventory::pack_content_hash(&pack_files);
+        manifest.pack_origin = Some(crate::models::PackOrigin {
+            platform: crate::models::PackPlatform::Modrinth,
+            pack_name: "SourcePack".into(),
+            project_id: Some("proj-123".into()),
+            version_id: Some("v1".into()),
+            version_number: None,
+            origin_url: Some("https://cdn.modrinth.com/pack.mrpack".into()),
+            pack_content_hash: Some(pack_hash.clone()),
+            pack_minecraft_version: Some("1.20.1".into()),
+            pack_loader: Some("fabric".into()),
+            pack_loader_version: Some("0.15.0".into()),
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: "2024-01-01T00:00:00Z".into(),
+        });
+        std::fs::write(
+            ctx.paths.instance_manifest("source-pack").unwrap(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        // Persist pack inventory for source
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::replace_instance_pack_files(&conn, "source-pack", &pack_files).unwrap();
+        drop(conn);
+
+        let service = InstanceService::new(ctx.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let clone_row = rt
+            .block_on(service.clone(CloneRequest {
+                source_instance_id: "source-pack".into(),
+                new_name: "ClonedPack".into(),
+                prefs: ClonePrefs::default(),
+            }))
+            .unwrap();
+        assert_eq!(clone_row.instance_id, "ClonedPack");
+
+        // Manifest should keep pack identity but set cloned_from and fresh installed_at
+        let clone_manifest =
+            crate::helpers::read_manifest(&ctx.paths.instance_manifest("ClonedPack").unwrap())
+                .unwrap();
+        let origin = clone_manifest
+            .pack_origin
+            .expect("clone must keep PackOrigin");
+        assert_eq!(origin.platform, crate::models::PackPlatform::Modrinth);
+        assert_eq!(origin.pack_name, "SourcePack");
+        assert_eq!(origin.project_id.as_deref(), Some("proj-123"));
+        assert_eq!(origin.cloned_from.as_deref(), Some("source-pack"));
+        assert_ne!(origin.installed_at, "2024-01-01T00:00:00Z");
+        assert!(origin.pack_content_hash.is_some());
+        // Hash must match the cloned directory's actual inventory (recomputed, not copied stale)
+        let clone_dir = ctx.paths.instance_dir("ClonedPack").unwrap();
+        let live_files = crate::pack_inventory::collect_pack_inventory(&clone_dir).unwrap();
+        assert_eq!(
+            origin.pack_content_hash.as_deref(),
+            Some(crate::pack_inventory::pack_content_hash(&live_files).as_str())
+        );
+        // DB inventory for clone must exist and match live files (recomputed, not empty)
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let db_files = crate::db::list_instance_pack_files(&conn, "ClonedPack").unwrap();
+        assert!(!db_files.is_empty());
+        assert_eq!(db_files, live_files);
 
         let _ = std::fs::remove_dir_all(root);
     }

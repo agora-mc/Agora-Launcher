@@ -328,6 +328,100 @@
   .border-8 { border-radius: calc(var(--radius) * 0.7); }
 }
 
+/* --- Focus visibility -----------------------------------------------------
+
+   Two rules, doing deliberately different jobs.
+
+   The first is a keyboard safety net. Most of this app's ~400 buttons never got
+   a focus style of their own, so tabbing through it was largely invisible. It
+   sits in `:where()`, which has zero specificity, so any component that *does*
+   style its own focus still wins outright — this only fills the gaps.
+
+   The second is the controller ring, and it is intentionally the opposite: it
+   out-specifies component styles so a controller user gets one consistent
+   indicator everywhere rather than whatever each screen happened to define. It
+   keys on `[data-input-modality="gamepad"]` rather than `:focus-visible`
+   because the browser decides that pseudo-class from pointer and keyboard
+   heuristics that a polled gamepad never triggers (see
+   `features/controller/inputModality.ts`).
+
+   `--controller-focus-offset` is the escape hatch: a container that clips its
+   children with `overflow: hidden` can set it negative to pull the ring inside
+   the box, without anyone having to audit every card layout up front. */
+
+:where(
+  a[href], button, input, select, textarea, summary,
+  [tabindex]:not([tabindex="-1"]), [contenteditable="true"]
+):focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+html[data-input-modality="gamepad"] :is(
+  a[href], button, input, select, textarea, summary,
+  [tabindex]:not([tabindex="-1"]), [contenteditable="true"]
+):focus {
+  outline: 3px solid hsl(var(--ring));
+  outline-offset: var(--controller-focus-offset, 2px);
+  /* A controller user is typically further from the screen than a mouse user,
+     so the ring gets a halo as well as more weight. */
+  box-shadow: 0 0 0 6px hsl(var(--ring) / 0.25);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html[data-input-modality="gamepad"] :is(a[href], button, [tabindex]:not([tabindex="-1"])):focus {
+    transition: outline-offset 120ms ease-out, box-shadow 120ms ease-out;
+  }
+}
+
+/* --- Couch presentation -------------------------------------------------
+
+   Handheld mode used to be a separate screen that could list instances and
+   launch one. It is now a *presentation* of the ordinary app: the same pages,
+   sized for a hand-held screen or a television across a room. That is the whole
+   difference between this and the thing it replaced — there is no second set of
+   destinations to keep in step, because there is no second set of screens.
+
+   Applied while a controller is in use rather than behind a setting, matching
+   how the mode was always entered: picking the pad up is the request. The Web
+   Gamepad API only reports a pad once a button has actually been pressed, so
+   this follows a deliberate act rather than a device being plugged in.
+
+   Scaled through the existing type and radius variables where possible, so it
+   composes with the user's own density and corner-style choices instead of
+   fighting them. The hit-target floor is the part that matters most: geometric
+   navigation is only as good as the targets it can land on. */
+
+:root[data-presentation="couch"] {
+  font-size: 112.5%;
+}
+
+:root[data-presentation="couch"] body {
+  line-height: 1.6;
+}
+
+/* A comfortable floor for anything you aim at with a stick. `min-height` rather
+   than padding so it never fights a component's own vertical rhythm. */
+:root[data-presentation="couch"] :is(button, a[href], select, [role="button"]):not(.agora-tab):not([data-compact-target]) {
+  min-height: 2.75rem;
+}
+
+:root[data-presentation="couch"] :is(input, textarea) {
+  min-height: 2.75rem;
+}
+
+/* Breathing room between targets, so a near-miss lands on nothing rather than
+   on the wrong control. */
+:root[data-presentation="couch"] .gap-1 { gap: 0.4rem; }
+:root[data-presentation="couch"] .gap-2 { gap: 0.65rem; }
+:root[data-presentation="couch"] .gap-3 { gap: 1rem; }
+
+/* The focus ring earns more weight here: at couch distance a 3px outline on a
+   large screen is thinner than it sounds. */
+:root[data-presentation="couch"] {
+  --controller-focus-offset: 3px;
+}
+
 :root[data-density="compact"] .p-3 { padding: 0.5rem; }
 :root[data-density="compact"] .p-4 { padding: 0.7rem; }
 :root[data-density="compact"] .p-5 { padding: 0.85rem; }

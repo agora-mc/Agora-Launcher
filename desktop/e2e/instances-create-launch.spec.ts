@@ -165,7 +165,9 @@ async function installCreateLaunchMock(page: Page, options: CreateLaunchMockOpti
           return Promise.resolve(null);
         }
         if (command === 'kill_process') return Promise.resolve(null);
-        if (command === 'query_launch_state') return Promise.resolve(null);
+        // Optional instance templates; the picker hides itself on an empty list.
+        if (command === 'list_instance_templates') return Promise.resolve([]);
+        if (command === 'query_launch_state') return Promise.resolve([]);
 
         // ---- Events ----
         if (command === 'plugin:event|listen') {

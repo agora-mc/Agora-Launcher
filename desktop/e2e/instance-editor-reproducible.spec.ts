@@ -145,7 +145,6 @@ interface ReproducibleMockOptions {
   /** If true, `import_lockfile` rejects. */
   cloneReject?: boolean;
   /** Whether window.confirm returns true (default true). */
-  confirmResult?: boolean;
 }
 
 async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions = {}) {
@@ -159,7 +158,6 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
     repairReject = false,
     cloneInstanceId = 'new-cloned-instance',
     cloneReject = false,
-    confirmResult = true,
   } = opts;
 
   const detail = makeInstanceDetail(isLocked);
@@ -175,9 +173,8 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
       repairReject: boolean;
       cloneInstanceId: string;
       cloneReject: boolean;
-      confirmResult: boolean;
     }) => {
-      const { detail, lockfileObject, exportReject, verifyReport, verifyReject, repairOutcome, repairReject, cloneInstanceId, cloneReject, confirmResult } = params;
+      const { detail, lockfileObject, exportReject, verifyReport, verifyReject, repairOutcome, repairReject, cloneInstanceId, cloneReject } = params;
 
       // Mutable copy of manifest mods for tracking toggle state across invocations
       const mutableMods: Record<string, unknown>[] = (
@@ -206,7 +203,8 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
       });
 
       // Mock confirm
-      window.confirm = () => confirmResult;
+      // Repair confirmation is an in-app dialog now (see `answerRepairConfirm`),
+      // so nothing stubs `window.confirm` here.
 
       const internals = {
         transformCallback(callback: (...args: unknown[]) => void) {
@@ -295,6 +293,8 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
             });
           }
           if (command === 'list_categories') return Promise.resolve([]);
+          // Multi-session launch state is a list; the backend never returns null.
+          if (command === 'query_launch_state') return Promise.resolve([]);
           if (command === 'list_instances') return Promise.resolve([]);
           if (command === 'check_registry_update') return Promise.resolve(null);
           if (command === 'list_manifest_loaders') return Promise.resolve([]);
@@ -348,7 +348,7 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
         __clipboardWrite: () => clipboardText,
       });
     },
-    { detail, lockfileObject, exportReject, verifyReport, verifyReject, repairOutcome, repairReject, cloneInstanceId, cloneReject, confirmResult },
+    { detail, lockfileObject, exportReject, verifyReport, verifyReject, repairOutcome, repairReject, cloneInstanceId, cloneReject },
   );
 }
 
@@ -705,6 +705,16 @@ test.describe('InstanceEditor — Reproducible tab: verify', () => {
   });
 });
 
+/**
+ * Repair asks for confirmation through Agora's in-app dialog rather than
+ * `window.confirm`, so a controller can reach it. Answer it explicitly.
+ */
+async function answerRepairConfirm(page: Page, accept: boolean) {
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Repair this instance to the pasted lockfile?')).toBeVisible();
+  await dialog.getByRole('button', { name: accept ? 'Repair' : 'Cancel', exact: true }).click();
+}
+
 // ---------------------------------------------------------------------------
 // Tests — Repair
 // ---------------------------------------------------------------------------
@@ -713,7 +723,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
 
   test('repair shows confirmation dialog before proceeding', async ({ page }) => {
     // Mock confirm to return false so we can verify it was called
-    await installReproducibleMock(page, { confirmResult: false });
+    await installReproducibleMock(page);
     await navigateToInstanceEditor(page);
     await openReproducibleTab(page);
 
@@ -721,6 +731,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, false);
 
     // Since confirm returned false, repair_lockfile should NOT have been called
     const repairCalled = await page.evaluate(() => {
@@ -740,7 +751,6 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
 
   test('repair success shows completion and re-verifies', async ({ page }) => {
     await installReproducibleMock(page, {
-      confirmResult: true,
       repairOutcome: SUCCESSFUL_REPAIR,
       verifyReport: IN_SYNC_REPORT,
     });
@@ -751,6 +761,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, true);
 
     // After successful repair, it re-verifies and shows the verify result
     await expect(page.getByText('Repair completed and the instance now matches the lockfile.')).toBeVisible();
@@ -784,7 +795,6 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     };
 
     await installReproducibleMock(page, {
-      confirmResult: true,
       repairOutcome: partialRepairOutcome,
       verifyReport: DRIFT_REPORT,
     });
@@ -795,6 +805,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, true);
 
     // Shows partial repair message
     await expect(page.getByText('Artifact repair completed. Remaining differences cannot be reproduced')).toBeVisible();
@@ -803,7 +814,6 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
 
   test('repair failure with rollback shows error message', async ({ page }) => {
     await installReproducibleMock(page, {
-      confirmResult: true,
       repairOutcome: FAILED_REPAIR,
     });
     await navigateToInstanceEditor(page);
@@ -813,6 +823,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, true);
 
     // Error is shown (with rollback note)
     await expect(page.getByText('Download failed for Sodium: Checksum mismatch')).toBeVisible();
@@ -851,7 +862,6 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     };
 
     await installReproducibleMock(page, {
-      confirmResult: true,
       repairOutcome: healthRollbackOutcome,
     });
     await navigateToInstanceEditor(page);
@@ -861,6 +871,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, true);
 
     // Error shown about health blocker
     await expect(page.getByText('Repair introduced a health blocker, so Agora restored the recovery snapshot.')).toBeVisible();
@@ -874,7 +885,6 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     };
 
     await installReproducibleMock(page, {
-      confirmResult: true,
       repairOutcome: cancelledOutcome,
     });
     await navigateToInstanceEditor(page);
@@ -884,6 +894,7 @@ test.describe('InstanceEditor — Reproducible tab: repair', () => {
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, true);
 
     // Notice shown about cancellation
     await expect(page.getByText('Repair was cancelled and the recovery snapshot was restored.')).toBeVisible();
@@ -1025,7 +1036,6 @@ test.describe('InstanceEditor — Reproducible tab: tampered and future-schema e
 
   test('repair error from backend leaves UI interactive and textarea intact', async ({ page }) => {
     await installReproducibleMock(page, {
-      confirmResult: true,
       repairReject: true,
     });
     await navigateToInstanceEditor(page);
@@ -1035,6 +1045,7 @@ test.describe('InstanceEditor — Reproducible tab: tampered and future-schema e
     await textarea.fill(LOCKFILE_JSON);
 
     await page.getByRole('button', { name: 'Repair' }).click();
+    await answerRepairConfirm(page, true);
 
     // Error from the rejected promise
     await expect(page.getByText('Repair failed: network timeout')).toBeVisible();

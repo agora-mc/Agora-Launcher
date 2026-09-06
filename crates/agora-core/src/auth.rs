@@ -146,90 +146,123 @@ static TEST_SECRET_STORE: LazyLock<
     std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
 > = LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+#[cfg(test)]
+thread_local! {
+    /// When set, this thread skips both the OS keyring and the in-memory test
+    /// stores and exercises the real encrypted-file fallback under this
+    /// directory.
+    ///
+    /// Everything below defaults to an in-memory store under `cfg(test)`, which
+    /// meant the tests named after the fallback never wrote a single encrypted
+    /// byte -- a device-key race and a delete-on-read both shipped through that
+    /// gap. This is thread-local rather than an environment variable so a test
+    /// can opt into real files without changing what any other test sees.
+    static REAL_FALLBACK_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn real_fallback_dir() -> Option<std::path::PathBuf> {
+    REAL_FALLBACK_DIR.with(|dir| dir.borrow().clone())
+}
+
+#[cfg(not(test))]
+fn real_fallback_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Route this thread's credential storage to real encrypted files under `dir`,
+/// as if the OS keyring were unavailable. Restores the previous setting on drop.
+#[cfg(test)]
+fn use_real_fallback_dir(dir: &std::path::Path) -> RealFallbackGuard {
+    let previous = REAL_FALLBACK_DIR.with(|cell| cell.replace(Some(dir.to_path_buf())));
+    RealFallbackGuard(previous)
+}
+
+#[cfg(test)]
+struct RealFallbackGuard(Option<std::path::PathBuf>);
+
+#[cfg(test)]
+impl Drop for RealFallbackGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        REAL_FALLBACK_DIR.with(|cell| *cell.borrow_mut() = previous);
+    }
+}
+
 fn store_test_token(value: &str) -> bool {
     #[cfg(test)]
-    {
+    if real_fallback_dir().is_none() {
         *TEST_TOKEN_STORE.lock().unwrap() = Some(value.to_string());
-        true
+        return true;
     }
-    #[cfg(not(test))]
-    {
-        let _ = value;
-        false
-    }
+    let _ = value;
+    false
 }
 
 fn load_test_token() -> Option<Option<String>> {
     #[cfg(test)]
-    {
-        Some(TEST_TOKEN_STORE.lock().unwrap().clone())
+    if real_fallback_dir().is_none() {
+        return Some(TEST_TOKEN_STORE.lock().unwrap().clone());
     }
-    #[cfg(not(test))]
     None
 }
 
 fn clear_test_token() -> bool {
     #[cfg(test)]
-    {
+    if real_fallback_dir().is_none() {
         *TEST_TOKEN_STORE.lock().unwrap() = None;
-        true
+        return true;
     }
-    #[cfg(not(test))]
     false
 }
 
 fn store_test_secret(service: &str, account: &str, value: &str) -> bool {
     #[cfg(test)]
-    {
+    if real_fallback_dir().is_none() {
         TEST_SECRET_STORE.lock().unwrap().insert(
             (service.to_string(), account.to_string()),
             value.to_string(),
         );
-        true
+        return true;
     }
-    #[cfg(not(test))]
-    {
-        let _ = (service, account, value);
-        false
-    }
+    let _ = (service, account, value);
+    false
 }
 
 fn load_test_secret(service: &str, account: &str) -> Option<Option<String>> {
     #[cfg(test)]
-    {
-        Some(
+    if real_fallback_dir().is_none() {
+        return Some(
             TEST_SECRET_STORE
                 .lock()
                 .unwrap()
                 .get(&(service.to_string(), account.to_string()))
                 .cloned(),
-        )
+        );
     }
-    #[cfg(not(test))]
-    {
-        let _ = (service, account);
-        None
-    }
+    let _ = (service, account);
+    None
 }
 
 fn clear_test_secret(service: &str, account: &str) -> bool {
     #[cfg(test)]
-    {
+    if real_fallback_dir().is_none() {
         TEST_SECRET_STORE
             .lock()
             .unwrap()
             .remove(&(service.to_string(), account.to_string()));
-        true
+        return true;
     }
-    #[cfg(not(test))]
-    {
-        let _ = (service, account);
-        false
-    }
+    let _ = (service, account);
+    false
 }
 
 /// PBKDF2 iterations for key derivation in the keyring fallback.
 const PBKDF2_ITERATIONS: u32 = 200_000;
+
+/// Disambiguates concurrent credential temp files within a process.
+static CREDENTIAL_TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// If the access token has fewer than this many seconds remaining, refresh it.
 const ACCESS_TOKEN_BUFFER_SECS: i64 = 300;
@@ -593,12 +626,14 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
         })?;
     }
 
-    let key = derive_fallback_key();
+    let key = derive_fallback_key()?;
     let encrypted = encrypt_token(&json, &key)?;
-    std::fs::write(&path, encrypted).map_err(|_| LauncherError::Generic {
-        code: "ERR_AUTH_FALLBACK_WRITE".into(),
-        message: "Failed to write fallback token file.".into(),
-    })?;
+    atomic_write_private(
+        &path,
+        &encrypted,
+        "ERR_AUTH_FALLBACK_WRITE",
+        "Failed to write fallback token file.",
+    )?;
 
     Ok(())
 }
@@ -624,8 +659,11 @@ pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
             return None;
         }
         let data = std::fs::read(&path).ok()?;
-        let key = derive_fallback_key();
-        decrypt_token(&data, &key)
+        // Deliberately no cleanup on failure. A missing device key and a device
+        // key we merely failed to read are the same `None` here, so deleting
+        // would turn a transient read error into permanent credential loss. An
+        // undecryptable file is inert, and the next store overwrites it.
+        existing_fallback_key_for(TOKEN_KEY_CONTEXT).and_then(|key| decrypt_token(&data, &key))
     });
 
     let raw = raw?;
@@ -662,9 +700,15 @@ pub fn clear_token_bundle() -> Result<(), String> {
         }
     }
 
+    // A failure here leaves a decryptable token on disk, so it cannot be
+    // swallowed: reporting a successful sign-out while the credential survives
+    // is the one outcome a user cannot detect or act on. The MSA path already
+    // propagates this; GitHub did not.
     if let Some(path) = fallback_token_path() {
         if path.exists() {
-            let _ = std::fs::remove_file(&path);
+            if let Err(error) = std::fs::remove_file(&path) {
+                return Err(format!("Failed to delete the stored GitHub token: {error}"));
+            }
         }
     }
 
@@ -869,27 +913,263 @@ pub fn get_token() -> Option<String> {
     load_token_bundle().map(|b| b.access_token)
 }
 
-/// Derive a 256-bit key using PBKDF2-HMAC-SHA256.
-/// Salt is derived from the OS username and a stable machine identifier.
-fn derive_fallback_key_for(context: &[u8]) -> Vec<u8> {
+/// Random per-profile secret that keys the encrypted keyring fallback.
+///
+/// This file is the only thing that makes the fallback ciphertext readable.
+/// The derivation used to run PBKDF2 over a constant compiled into the binary,
+/// so anyone holding an encrypted file could rederive the key from public
+/// information; now they would need this file too.
+///
+/// Be precise about what that buys: the key lives in the same directory as the
+/// ciphertext it protects, so its file permissions -- not AES -- are the
+/// boundary. It defeats an attacker who obtains only an encrypted file. It does
+/// nothing against one who copies the whole profile directory or runs as the
+/// user. Real machine binding needs DPAPI, a TPM, or an OS credential service,
+/// which is the thing whose absence puts us on this path in the first place.
+const DEVICE_KEY_FILE: &str = "device-key.bin";
+const DEVICE_KEY_LEN: usize = 32;
+
+/// How long a caller that loses the creation race waits for the winner to
+/// publish its key before treating the file as residue from an interrupted run.
+const DEVICE_KEY_PUBLISH_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Serializes device-key creation within the process. The GitHub and MSA
+/// stores share one device key, so without this they can race each other on
+/// first use.
+static DEVICE_KEY_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
+
+/// Directory holding the encrypted fallback files and the device key.
+///
+/// Resolves through [`crate::app_paths::AppPaths`] rather than reconstructing
+/// `dirs::data_local_dir()/agora`, so `AGORA_DATA_DIR` and a portable install
+/// move these files along with everything else. The platform default is
+/// identical to what the hand-rolled path produced, so an ordinary install sees
+/// no change; only configured roots move, which is the point.
+///
+/// Note this governs the *fallback* only. Credentials that reach the OS keyring
+/// are held per-user by the OS and are not relocated by a data-root setting --
+/// a portable install on a machine with a working keyring still leaves them
+/// behind.
+fn fallback_data_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = real_fallback_dir() {
+        return Some(dir);
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Ok(dir) = std::env::var("AGORA_TEST_SECRET_DIR") {
+            return Some(std::path::PathBuf::from(dir));
+        }
+        if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
+            return Some(std::path::PathBuf::from(dir));
+        }
+    }
+    Some(
+        crate::app_paths::AppPaths::platform_default()
+            .root()
+            .to_path_buf(),
+    )
+}
+
+fn device_key_path() -> Option<std::path::PathBuf> {
+    fallback_data_dir().map(|d| d.join(DEVICE_KEY_FILE))
+}
+
+fn read_device_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(path).ok()?;
+    (bytes.len() == DEVICE_KEY_LEN).then_some(bytes)
+}
+
+/// Replace `path` with `bytes` atomically and owner-only.
+///
+/// The bytes land in a sibling temp file that is created private, filled and
+/// synced before anything replaces the target, so a crash or a full disk
+/// partway through cannot truncate a credential that was still good --
+/// `std::fs::write` would leave exactly that. Mirrors
+/// [`crate::installed_artifact::atomic_write`], plus the permission handling
+/// that credential material needs.
+fn atomic_write_private(
+    path: &std::path::Path,
+    bytes: &[u8],
+    error_code: &str,
+    error_message: &str,
+) -> LauncherResult<()> {
+    let failed = || LauncherError::Generic {
+        code: error_code.to_string(),
+        message: error_message.to_string(),
+    };
+
+    let parent = path.parent().ok_or_else(failed)?;
+    let temp = parent.join(format!(
+        ".{}.agtmp_{}_{}",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id(),
+        CREDENTIAL_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+
+    let write_result = (|| -> LauncherResult<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp).map_err(|_| failed())?;
+        use std::io::Write;
+        file.write_all(bytes).map_err(|_| failed())?;
+        file.sync_all().map_err(|_| failed())?;
+        Ok(())
+    })();
+
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+
+    if std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(failed());
+    }
+
+    #[cfg(unix)]
+    {
+        // The rename carries the temp file's 0600 across, but an inherited
+        // mode from a pre-existing target is not something to assume.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| failed())?;
+    }
+    Ok(())
+}
+
+/// Write `secret` with owner-only permissions where the platform has them.
+fn write_device_secret_at(path: &std::path::Path, secret: &[u8]) -> LauncherResult<()> {
+    atomic_write_private(
+        path,
+        secret,
+        "ERR_AUTH_DEVICE_KEY_WRITE",
+        "Failed to write the device key for encrypted credential storage.",
+    )
+}
+
+/// Read the device secret, generating one on first use.
+///
+/// Never returns a key that is not durably on disk: a caller that encrypted
+/// under a key some other writer then replaced would produce ciphertext nobody
+/// can read, so every path here ends by reading back what was published.
+fn load_or_create_device_secret_at(path: &std::path::Path) -> LauncherResult<Vec<u8>> {
+    let _guard = DEVICE_KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    if let Some(existing) = read_device_secret_at(path) {
+        return Ok(existing);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| LauncherError::Generic {
+            code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+            message: "Failed to create the encrypted credential directory.".into(),
+        })?;
+    }
+
+    use rand::Rng;
+    let secret: [u8; DEVICE_KEY_LEN] = rand::thread_rng().gen();
+
+    let write_failed = || LauncherError::Generic {
+        code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+        message: "Failed to write the device key for encrypted credential storage.".into(),
+    };
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&secret).map_err(|_| write_failed())?;
+            // Durable before anything encrypts under it: a key lost to a crash
+            // takes every credential written under it with it.
+            file.sync_all().map_err(|_| write_failed())?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // `create_new` reserves the name atomically but publishes nothing.
+            // The winner may still be between create and write, and its file
+            // reads as zero-length until then -- so wait for it rather than
+            // mistake an in-flight key for residue and overwrite a key another
+            // caller is already encrypting under.
+            let deadline = std::time::Instant::now() + DEVICE_KEY_PUBLISH_WAIT;
+            loop {
+                if let Some(existing) = read_device_secret_at(path) {
+                    return Ok(existing);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            // Still not a valid key: an earlier run was interrupted between
+            // create and write. It cannot decrypt anything, so replacing it
+            // loses nothing that was still recoverable.
+            write_device_secret_at(path, &secret)?;
+        }
+        Err(_) => return Err(write_failed()),
+    }
+
+    read_device_secret_at(path).ok_or_else(|| LauncherError::Generic {
+        code: "ERR_AUTH_DEVICE_KEY_READ".into(),
+        message: "Wrote the device key but could not read it back.".into(),
+    })
+}
+
+/// Derive a 256-bit key from the device secret, which is the PBKDF2 password.
+/// The key therefore cannot be reconstructed from the source or from anything
+/// the encrypted file itself reveals.
+///
+/// `context` is public domain separation -- it keeps the GitHub and MSA keys
+/// distinct -- not a secret, which is why it belongs in the salt. The home
+/// directory name and platform used to be mixed in here too; they were public,
+/// added no confidentiality once the password is 256 random bits, and meant a
+/// renamed home directory silently produced a different key.
+///
+/// PBKDF2 is stretching an input that is already full-entropy, so the iteration
+/// count buys nothing here. It stays because the stored files are keyed on it.
+fn derive_key_from_device_secret(device_secret: &[u8], context: &[u8]) -> Vec<u8> {
     use pbkdf2::pbkdf2_hmac;
     use sha2::Sha256;
 
-    let username = dirs::home_dir()
-        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "unknown".to_string());
-
-    // TODO: use a stronger machine identifier (e.g. machine-id on Linux,
-    // MachineGuid on Windows) when available.
-    let salt = format!("agora-fallback:{}:{}", username, std::env::consts::OS);
+    let salt = format!("agora-fallback:v2:{}", String::from_utf8_lossy(context));
 
     let mut key = vec![0u8; 32];
-    pbkdf2_hmac::<Sha256>(context, salt.as_bytes(), PBKDF2_ITERATIONS, &mut key);
+    pbkdf2_hmac::<Sha256>(device_secret, salt.as_bytes(), PBKDF2_ITERATIONS, &mut key);
     key
 }
 
-fn derive_fallback_key() -> Vec<u8> {
-    derive_fallback_key_for(b"agora-mcp-keyring-fallback")
+/// Key for writing: generates the device secret if this is the first store.
+fn derive_fallback_key_for(context: &[u8]) -> LauncherResult<Vec<u8>> {
+    let path = device_key_path().ok_or_else(|| LauncherError::Generic {
+        code: "ERR_AUTH_FALLBACK_PATH".into(),
+        message: "Could not determine data directory for encrypted credential storage.".into(),
+    })?;
+    Ok(derive_key_from_device_secret(
+        &load_or_create_device_secret_at(&path)?,
+        context,
+    ))
+}
+
+/// Key for reading: no device secret means nothing on disk is decryptable, so
+/// this never creates one.
+fn existing_fallback_key_for(context: &[u8]) -> Option<Vec<u8>> {
+    let secret = read_device_secret_at(&device_key_path()?)?;
+    Some(derive_key_from_device_secret(&secret, context))
+}
+
+const TOKEN_KEY_CONTEXT: &[u8] = b"agora-mcp-keyring-fallback";
+
+fn derive_fallback_key() -> LauncherResult<Vec<u8>> {
+    derive_fallback_key_for(TOKEN_KEY_CONTEXT)
 }
 
 /// Encrypt the token using AES-256-GCM with a random 12-byte nonce.
@@ -944,26 +1224,28 @@ fn decrypt_token(data: &[u8], key: &[u8]) -> Option<String> {
 /// isolated directory so parallel tests do not share the same fallback file.
 fn fallback_token_path() -> Option<std::path::PathBuf> {
     #[cfg(any(test, feature = "test-support"))]
-    if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
-        return Some(std::path::PathBuf::from(dir).join(TOKEN_FALLBACK_FILE));
+    if real_fallback_dir().is_none() {
+        if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
+            return Some(std::path::PathBuf::from(dir).join(TOKEN_FALLBACK_FILE));
+        }
     }
-    dirs::data_local_dir().map(|d| d.join("agora").join(TOKEN_FALLBACK_FILE))
+    Some(fallback_data_dir()?.join(TOKEN_FALLBACK_FILE))
 }
 
 fn fallback_secret_path(file_name: &str) -> Option<std::path::PathBuf> {
-    #[cfg(any(test, feature = "test-support"))]
-    if let Ok(dir) = std::env::var("AGORA_TEST_SECRET_DIR") {
-        return Some(std::path::PathBuf::from(dir).join(file_name));
-    }
-    dirs::data_local_dir().map(|d| d.join("agora").join(file_name))
+    Some(fallback_data_dir()?.join(file_name))
 }
 
 fn using_test_token_store() -> bool {
-    cfg!(any(test, feature = "test-support")) && std::env::var_os("AGORA_TEST_TOKEN_DIR").is_some()
+    real_fallback_dir().is_some()
+        || (cfg!(any(test, feature = "test-support"))
+            && std::env::var_os("AGORA_TEST_TOKEN_DIR").is_some())
 }
 
 fn using_test_secret_store() -> bool {
-    cfg!(any(test, feature = "test-support")) && std::env::var_os("AGORA_TEST_SECRET_DIR").is_some()
+    real_fallback_dir().is_some()
+        || (cfg!(any(test, feature = "test-support"))
+            && std::env::var_os("AGORA_TEST_SECRET_DIR").is_some())
 }
 
 fn keyring_backend_unavailable(error: &keyring::Error) -> bool {
@@ -1001,11 +1283,13 @@ pub(crate) fn store_secret(
             message: "Failed to create encrypted credential directory.".into(),
         })?;
     }
-    let encrypted = encrypt_token(value, &derive_fallback_key_for(key_context))?;
-    std::fs::write(path, encrypted).map_err(|_| LauncherError::Generic {
-        code: "ERR_AUTH_FALLBACK_WRITE".into(),
-        message: "Failed to write encrypted credentials.".into(),
-    })
+    let encrypted = encrypt_token(value, &derive_fallback_key_for(key_context)?)?;
+    atomic_write_private(
+        &path,
+        &encrypted,
+        "ERR_AUTH_FALLBACK_WRITE",
+        "Failed to write encrypted credentials.",
+    )
 }
 
 pub(crate) fn load_secret(
@@ -1033,16 +1317,20 @@ pub(crate) fn load_secret(
 
     if let Some(path) = fallback_secret_path(fallback_file) {
         if path.exists() {
-            let encrypted = std::fs::read(path).map_err(|_| LauncherError::Generic {
+            let encrypted = std::fs::read(&path).map_err(|_| LauncherError::Generic {
                 code: "ERR_AUTH_FALLBACK_READ".into(),
                 message: "Failed to read encrypted credentials.".into(),
             })?;
-            return decrypt_token(&encrypted, &derive_fallback_key_for(key_context))
-                .map(Some)
-                .ok_or_else(|| LauncherError::Generic {
-                    code: "ERR_AUTH_FALLBACK_DECRYPT".into(),
-                    message: "Failed to decrypt stored credentials.".into(),
-                });
+            // Report "nothing stored" rather than an error so the caller asks
+            // for a fresh sign-in instead of failing on every launch -- but
+            // leave the file alone. A missing device key and a device key we
+            // merely failed to read are indistinguishable here, so deleting
+            // would turn a transient read error into permanent credential loss.
+            if let Some(value) = existing_fallback_key_for(key_context)
+                .and_then(|key| decrypt_token(&encrypted, &key))
+            {
+                return Ok(Some(value));
+            }
         }
     }
 
@@ -1090,10 +1378,57 @@ pub(crate) fn clear_secret(
     }
 }
 
-/// Returns true — the fallback is always available on all platforms.
-/// This signal is used by Settings to show the spec-mandated "less secure" warning.
-pub fn keyring_fallback_available() -> bool {
-    true
+/// Where a stored credential actually lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialBackend {
+    /// Nothing is stored.
+    None,
+    /// The OS keyring: Credential Manager, Keychain, or Secret Service.
+    Keyring,
+    /// The degraded encrypted-file fallback, used when the keyring is
+    /// unavailable. Protected by file permissions rather than by the OS.
+    EncryptedFile,
+}
+
+/// Report which backend currently holds this credential.
+///
+/// Replaces an older `keyring_fallback_available()` that answered a question
+/// nobody needed: the fallback is *available* on every platform, always, so it
+/// returned an unconditional `true` and never told a caller whether the
+/// degraded path was actually in use. MASTER_SPEC 7.5.2 requires warning the
+/// user when their credential is stored this way, which needs this signal.
+pub(crate) fn credential_backend(
+    service: &str,
+    account: &str,
+    fallback_file: &str,
+) -> CredentialBackend {
+    if !using_test_secret_store() {
+        if let Ok(entry) = keyring::Entry::new(service, account) {
+            if entry.get_password().is_ok() {
+                return CredentialBackend::Keyring;
+            }
+        }
+    }
+    match fallback_secret_path(fallback_file) {
+        Some(path) if path.is_file() => CredentialBackend::EncryptedFile,
+        _ => CredentialBackend::None,
+    }
+}
+
+/// Which backend holds the GitHub token.
+pub fn github_credential_backend() -> CredentialBackend {
+    if !using_test_token_store() {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+            if entry.get_password().is_ok() {
+                return CredentialBackend::Keyring;
+            }
+        }
+    }
+    match fallback_token_path() {
+        Some(path) if path.is_file() => CredentialBackend::EncryptedFile,
+        _ => CredentialBackend::None,
+    }
 }
 
 pub fn clear_token() -> Result<(), String> {
@@ -1150,10 +1485,14 @@ pub async fn get_github_user(token: &str) -> LauncherResult<GithubProfile> {
 mod tests {
     use super::*;
 
+    /// Stand-in for the per-install device key so derivation tests stay pure.
+    const TEST_DEVICE_SECRET: &[u8] = &[0x11; DEVICE_KEY_LEN];
+
     #[test]
     fn encrypted_fallback_roundtrips_large_credentials() {
         let credentials = "x".repeat(8_192);
-        let key = derive_fallback_key_for(b"agora-msa-credentials-fallback");
+        let key =
+            derive_key_from_device_secret(TEST_DEVICE_SECRET, b"agora-msa-credentials-fallback");
         let encrypted = encrypt_token(&credentials, &key).unwrap();
         assert_ne!(encrypted, credentials.as_bytes());
         assert_eq!(
@@ -1403,7 +1742,7 @@ mod tests {
     #[test]
     fn fallback_encrypt_decrypt_preserves_token() {
         let token = "gho_real_looking_token_12345abcde";
-        let key = derive_fallback_key_for(b"agora-test-fallback");
+        let key = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"agora-test-fallback");
         let encrypted = encrypt_token(token, &key).expect("encrypt must succeed");
         assert_ne!(
             encrypted.as_slice(),
@@ -1421,8 +1760,8 @@ mod tests {
     #[test]
     fn fallback_decrypt_wrong_key_returns_none() {
         let token = "gho_secret";
-        let k1 = derive_fallback_key_for(b"context-1");
-        let k2 = derive_fallback_key_for(b"context-2");
+        let k1 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-1");
+        let k2 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-2");
         let encrypted = encrypt_token(token, &k1).expect("encrypt must succeed");
         let decrypted = decrypt_token(&encrypted, &k2);
         assert!(decrypted.is_none(), "wrong key must not decrypt");
@@ -1430,7 +1769,7 @@ mod tests {
 
     #[test]
     fn fallback_decrypt_truncated_data_returns_none() {
-        let key = derive_fallback_key_for(b"test");
+        let key = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test");
         assert!(decrypt_token(&[], &key).is_none());
         assert!(decrypt_token(&[0u8; 4], &key).is_none());
         assert!(decrypt_token(&[0u8; 11], &key).is_none());
@@ -1913,7 +2252,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_roundtrip() {
-        let key = derive_fallback_key_for(b"test-context");
+        let key = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test-context");
         let data = "sensitive-token-value";
         let encrypted = encrypt_token(data, &key).unwrap();
         assert_ne!(encrypted.as_slice(), data.as_bytes());
@@ -1928,16 +2267,405 @@ mod tests {
 
     #[test]
     fn derive_fallback_key_is_deterministic_for_same_context() {
-        let key1 = derive_fallback_key_for(b"test-context");
-        let key2 = derive_fallback_key_for(b"test-context");
+        let key1 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test-context");
+        let key2 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test-context");
         assert_eq!(key1, key2);
     }
 
     #[test]
     fn derive_fallback_key_differs_for_different_contexts() {
-        let key1 = derive_fallback_key_for(b"context-a");
-        let key2 = derive_fallback_key_for(b"context-b");
+        let key1 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-a");
+        let key2 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-b");
         assert_ne!(key1, key2);
+    }
+
+    /// The property the old derivation lacked: two profiles that share a
+    /// binary, a username and a platform still get different keys. Note what
+    /// this does *not* claim -- copying `device-key.bin` along with the
+    /// ciphertext still yields a readable credential.
+    #[test]
+    fn derive_fallback_key_differs_for_different_device_secrets() {
+        let key1 = derive_key_from_device_secret(&[0x01; DEVICE_KEY_LEN], b"same-context");
+        let key2 = derive_key_from_device_secret(&[0x02; DEVICE_KEY_LEN], b"same-context");
+        assert_ne!(key1, key2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Encrypted-file fallback, for real
+    //
+    // Everything else in this module runs against an in-memory stand-in, so
+    // these are the only tests that write an actual encrypted file. Both bugs
+    // found in review -- a device-key race and a delete-on-read -- lived in
+    // code that no test had ever executed.
+    // -----------------------------------------------------------------------
+
+    const MSA_CONTEXT: &[u8] = b"agora-msa-credentials-fallback";
+
+    #[test]
+    fn fallback_store_writes_ciphertext_that_load_reads_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        let secret = r#"{"access_token":"gho_supersecret","refresh_token":"ghr_rt"}"#;
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, secret).expect("store");
+
+        let path = dir.path().join("creds.enc");
+        assert!(path.is_file(), "an encrypted file must exist on disk");
+        assert!(
+            dir.path().join(DEVICE_KEY_FILE).is_file(),
+            "storing must have created the device key"
+        );
+
+        let on_disk = std::fs::read(&path).expect("read ciphertext");
+        let needle: &[u8] = b"gho_supersecret";
+        assert!(
+            !on_disk.windows(needle.len()).any(|w| w == needle),
+            "the token must not be readable in the stored bytes"
+        );
+
+        let loaded = load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load");
+        assert_eq!(loaded.as_deref(), Some(secret));
+    }
+
+    #[test]
+    fn fallback_store_overwrites_previous_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "first").expect("store first");
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "second").expect("store second");
+
+        let loaded = load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load");
+        assert_eq!(loaded.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn fallback_clear_removes_the_encrypted_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        clear_secret("svc", "acct", "creds.enc").expect("clear");
+
+        assert!(!dir.path().join("creds.enc").exists(), "file must be gone");
+        let loaded = load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load");
+        assert_eq!(loaded, None);
+    }
+
+    /// The delete-on-read regression: a credential that cannot be decrypted is
+    /// reported as absent, but must never be destroyed. A device key that is
+    /// merely unreadable right now is indistinguishable from one that is gone,
+    /// so deleting here would turn a transient error into permanent loss.
+    #[test]
+    fn undecryptable_credential_is_reported_absent_but_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        let path = dir.path().join("creds.enc");
+        let before = std::fs::read(&path).expect("read ciphertext");
+
+        // Rotate the device key out from under it.
+        std::fs::remove_file(dir.path().join(DEVICE_KEY_FILE)).expect("remove device key");
+
+        let loaded =
+            load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load must not error");
+        assert_eq!(loaded, None, "an unreadable credential reads as absent");
+        assert!(
+            path.is_file(),
+            "the ciphertext must survive the failed read"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("re-read"),
+            before,
+            "the ciphertext must be untouched"
+        );
+    }
+
+    #[test]
+    fn corrupt_ciphertext_is_reported_absent_but_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        let path = dir.path().join("creds.enc");
+        std::fs::write(&path, b"not a valid envelope").expect("corrupt it");
+
+        let loaded =
+            load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load must not error");
+        assert_eq!(loaded, None);
+        assert!(path.is_file(), "corrupt input is not grounds for deletion");
+    }
+
+    /// A store after an unreadable one must recover on its own: the stale file
+    /// is inert and simply gets overwritten.
+    #[test]
+    fn storing_again_recovers_after_the_device_key_is_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "old").expect("store old");
+        std::fs::remove_file(dir.path().join(DEVICE_KEY_FILE)).expect("remove device key");
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "new").expect("store new");
+        let loaded = load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load");
+        assert_eq!(loaded.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn token_bundle_round_trips_through_the_encrypted_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_filetest".into(),
+            refresh_token: Some("ghr_filetest".into()),
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: Some("bearer".into()),
+            scope: Some("repo".into()),
+        };
+        store_token_bundle(&bundle).expect("store");
+
+        assert!(
+            dir.path().join(TOKEN_FALLBACK_FILE).is_file(),
+            "tokens.enc must exist"
+        );
+        let loaded = load_token_bundle().expect("load");
+        assert_eq!(loaded.access_token, "gho_filetest");
+        assert_eq!(loaded.refresh_token.as_deref(), Some("ghr_filetest"));
+    }
+
+    /// Atomic replacement leaves no debris and no half-written file behind.
+    #[test]
+    fn fallback_store_leaves_no_temp_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value2").expect("store again");
+
+        let stray: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains("agtmp"))
+            .collect();
+        assert!(stray.is_empty(), "temp files left behind: {stray:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_ciphertext_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        let mode = std::fs::metadata(dir.path().join("creds.enc"))
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "credentials must not be readable by others"
+        );
+    }
+
+    #[test]
+    fn credential_backend_reports_the_encrypted_file_when_it_is_in_use() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::None,
+            "nothing stored yet"
+        );
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::EncryptedFile,
+            "the degraded path is in use and must be reported as such"
+        );
+
+        clear_secret("svc", "acct", "creds.enc").expect("clear");
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::None
+        );
+    }
+
+    #[test]
+    fn github_credential_backend_reports_the_encrypted_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        assert_eq!(github_credential_backend(), CredentialBackend::None);
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_backendtest".into(),
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        store_token_bundle(&bundle).expect("store");
+        assert_eq!(
+            github_credential_backend(),
+            CredentialBackend::EncryptedFile
+        );
+    }
+
+    /// Routing the credential files through `AppPaths` is meant to make a
+    /// configured root move them -- not to move anyone's existing files. With no
+    /// override set the resolved root must still be exactly what auth used to
+    /// hardcode, so an ordinary install has nothing to migrate.
+    ///
+    /// (Skipped when a data root is configured, which is a developer's own
+    /// setting rather than a property of the code.)
+    #[test]
+    fn default_credential_root_matches_the_previously_hardcoded_path() {
+        if std::env::var_os("AGORA_DATA_DIR").is_some() {
+            return;
+        }
+        let expected = dirs::data_local_dir()
+            .expect("platform data dir")
+            .join("agora");
+        assert_eq!(
+            crate::app_paths::AppPaths::platform_default().root(),
+            expected,
+            "the default credential location must not shift under existing users"
+        );
+    }
+
+    #[test]
+    fn github_sign_out_removes_the_encrypted_token_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_signout".into(),
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        store_token_bundle(&bundle).expect("store");
+        let path = dir.path().join(TOKEN_FALLBACK_FILE);
+        assert!(path.is_file(), "precondition: the token is on disk");
+
+        clear_token_bundle().expect("sign out");
+        assert!(
+            !path.exists(),
+            "sign-out must not leave a decryptable token behind"
+        );
+        assert!(load_token_bundle().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Device key file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn device_secret_is_created_once_and_then_reused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+
+        assert!(
+            read_device_secret_at(&path).is_none(),
+            "none before first use"
+        );
+        let first = load_or_create_device_secret_at(&path).expect("first create");
+        assert_eq!(first.len(), DEVICE_KEY_LEN);
+        let second = load_or_create_device_secret_at(&path).expect("second read");
+        assert_eq!(first, second, "an existing device key must be reused");
+    }
+
+    #[test]
+    fn device_secret_is_created_in_a_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join(DEVICE_KEY_FILE);
+        let secret = load_or_create_device_secret_at(&path).expect("create");
+        assert_eq!(secret.len(), DEVICE_KEY_LEN);
+        assert_eq!(
+            read_device_secret_at(&path).as_deref(),
+            Some(secret.as_slice())
+        );
+    }
+
+    /// A key file that never got its contents is residue from an interrupted
+    /// first run, and is replaced -- but only after the publish wait, so an
+    /// in-flight writer is not overwritten.
+    #[test]
+    fn truncated_device_secret_is_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+        std::fs::write(&path, b"too-short").expect("write stub");
+
+        assert!(
+            read_device_secret_at(&path).is_none(),
+            "wrong length is unusable"
+        );
+        let secret = load_or_create_device_secret_at(&path).expect("replace");
+        assert_eq!(secret.len(), DEVICE_KEY_LEN);
+        assert_eq!(
+            read_device_secret_at(&path).as_deref(),
+            Some(secret.as_slice())
+        );
+    }
+
+    /// The race Sol caught: `create_new` reserves the name before any bytes
+    /// land, so a concurrent caller could see a zero-length file, call it
+    /// residue, and overwrite a key the winner was already encrypting under.
+    /// Every thread must come away with the one key that is actually on disk.
+    #[test]
+    fn concurrent_first_use_agrees_on_one_device_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+
+        let secrets: Vec<Vec<u8>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let path = path.clone();
+                    scope.spawn(move || load_or_create_device_secret_at(&path).expect("create"))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("join"))
+                .collect()
+        });
+
+        let published = read_device_secret_at(&path).expect("a key must be published");
+        for secret in &secrets {
+            assert_eq!(
+                secret, &published,
+                "every caller must get the key that is on disk"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_secret_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+        load_or_create_device_secret_at(&path).expect("create");
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "device key must not be group/world readable"
+        );
     }
 
     // -----------------------------------------------------------------------

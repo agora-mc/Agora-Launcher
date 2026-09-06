@@ -2,22 +2,14 @@
 
 import { useState, useEffect } from 'react';
 import { GITHUB_API_RELEASES_URL, GITHUB_RELEASES_URL } from '@/lib/site';
-
-interface ReleaseAsset {
-  name: string;
-  browser_download_url: string;
-  size: number;
-}
-
-interface GitHubRelease {
-  tag_name: string;
-  assets?: ReleaseAsset[];
-  draft?: boolean;
-  prerelease?: boolean;
-  published_at?: string | null;
-}
-
-type DetectedOS = 'windows' | 'macos' | 'linux' | 'unknown';
+import {
+  pickAsset,
+  selectLatestDesktopRelease,
+  toDesktopRelease,
+  type DesktopRelease,
+  type DetectedOS,
+  type ReleaseAsset,
+} from '@/lib/releases';
 
 function detectOS(): DetectedOS {
   if (typeof navigator === 'undefined') return 'unknown';
@@ -28,44 +20,6 @@ function detectOS(): DetectedOS {
   return 'unknown';
 }
 
-function pickAsset(os: DetectedOS, assets: ReleaseAsset[]): ReleaseAsset | null {
-  if (assets.length === 0) return null;
-  const findMatch = (pred: (name: string) => boolean) =>
-    assets.find((a) => pred(a.name.toLowerCase()));
-
-  if (os === 'windows') {
-    return findMatch((n) => n.endsWith('.msi')) || findMatch((n) => n.endsWith('.exe')) || null;
-  }
-  if (os === 'macos') {
-    return findMatch((n) => n.endsWith('.dmg')) || null;
-  }
-  if (os === 'linux') {
-    return findMatch((n) => n.endsWith('.appimage')) || findMatch((n) => n.endsWith('.deb')) || null;
-  }
-  return null;
-}
-
-export function selectLatestDesktopRelease(releases: unknown): GitHubRelease | null {
-  if (!Array.isArray(releases)) return null;
-
-  const desktopReleases = releases.filter(
-    (release): release is GitHubRelease =>
-      typeof release === 'object' &&
-      release !== null &&
-      typeof (release as GitHubRelease).tag_name === 'string' &&
-      (release as GitHubRelease).tag_name.startsWith('v') &&
-      !(release as GitHubRelease).draft &&
-      !(release as GitHubRelease).prerelease &&
-      Array.isArray((release as GitHubRelease).assets)
-  );
-
-  return desktopReleases.sort((a, b) => {
-    const aPublished = Date.parse(a.published_at ?? '');
-    const bPublished = Date.parse(b.published_at ?? '');
-    return (Number.isNaN(bPublished) ? 0 : bPublished) - (Number.isNaN(aPublished) ? 0 : aPublished);
-  })[0] ?? null;
-}
-
 const OS_INFO: Record<DetectedOS, { label: string; icon: string }> = {
   windows: { label: 'Windows', icon: '🪟' },
   macos: { label: 'macOS', icon: '🍎' },
@@ -73,10 +27,21 @@ const OS_INFO: Record<DetectedOS, { label: string; icon: string }> = {
   unknown: { label: '', icon: '⬇' },
 };
 
-export function DownloadButton() {
+interface DownloadButtonProps {
+  /**
+   * The newest desktop release as of `next build`. The browser re-checks on
+   * mount so a release cut after the last site build still wins, but this is
+   * what the button offers when that check cannot happen — a rate-limited or
+   * blocked GitHub API used to degrade to a bare "all releases" link.
+   */
+  initialRelease?: DesktopRelease | null;
+}
+
+export function DownloadButton({ initialRelease = null }: DownloadButtonProps) {
   const [os, setOs] = useState<DetectedOS>('unknown');
-  const [asset, setAsset] = useState<ReleaseAsset | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [release, setRelease] = useState<DesktopRelease | null>(initialRelease);
+  // Nothing to wait for when the release was resolved at build time.
+  const [loading, setLoading] = useState(initialRelease === null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -87,22 +52,23 @@ export function DownloadButton() {
         return res.json();
       })
       .then((data: unknown) => {
-        const release = selectLatestDesktopRelease(data);
-        setAsset(pickAsset(detectOS(), release?.assets ?? []));
+        const latest = toDesktopRelease(selectLatestDesktopRelease(data));
+        if (latest) setRelease(latest);
         setLoading(false);
       })
       .catch(() => {
-        setFailed(true);
+        // Keep whatever the build baked in; only report a failure if that
+        // left us with nothing to offer.
+        setFailed(initialRelease === null);
         setLoading(false);
       });
-  }, []);
+  }, [initialRelease]);
 
+  const asset: ReleaseAsset | null = pickAsset(os, release?.assets ?? []);
   const osInfo = OS_INFO[os];
   const label = loading
     ? 'Download Agora'
-    : asset
-    ? `Download for ${osInfo.label}`
-    : os !== 'unknown'
+    : osInfo.label
     ? `Download for ${osInfo.label}`
     : 'Download Agora';
   const href = asset?.browser_download_url || GITHUB_RELEASES_URL;
@@ -119,6 +85,11 @@ export function DownloadButton() {
         {asset?.size ? ` · ${(asset.size / 1048576).toFixed(1)} MB` : ''}
       </a>
       <div className="flex flex-col items-center gap-1">
+        {release?.tag && (
+          <p className="text-xs text-indigo-100/70">
+            Latest release <span className="font-semibold text-indigo-100">{release.tag}</span>
+          </p>
+        )}
         <a
           href={GITHUB_RELEASES_URL}
           className="text-sm text-indigo-100 hover:text-white hover:underline"
@@ -138,7 +109,7 @@ export function DownloadButton() {
       )}
       {!failed && !asset && !loading && (
         <p className="text-center text-xs text-indigo-100/70">
-          ⚠️ We couldn't find a download for your platform. On the releases page, download the file for your platform (`.msi`, `.dmg`, or `.AppImage`). Ignore releases tagged `registry-*` — those are database updates, not the app itself.
+          ⚠️ We couldn&apos;t find a download for your platform. On the releases page, download the file for your platform (<code>.msi</code>, <code>.dmg</code>, or <code>.AppImage</code>). Ignore releases tagged <code>registry-*</code> — those are database updates, not the app itself.
         </p>
       )}
     </div>

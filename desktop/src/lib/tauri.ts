@@ -85,7 +85,8 @@ export type LauncherAction =
   | 'download_runtime'
   | 'choose_java'
   | 'cancel'
-  | 'open_privacy';
+  | 'open_privacy'
+  | 'restart_mojang_launcher';
 
 /**
  * Structured recoverable Java issue extracted from a LauncherError details
@@ -269,6 +270,13 @@ export function parseLauncherError(e: unknown): ParsedLauncherError {
         }
       }
 
+      // The official launcher was already open, so the handoff could not
+      // select this pack. Offer the restart that makes it possible; the
+      // backend never closes it without that confirmation.
+      if (code === 'ERR_MOJANG_LAUNCHER_RUNNING') {
+        availableActions = ['restart_mojang_launcher', 'dismiss'];
+      }
+
       return { code, message, recoverableIssue, recoverableJavaIssue, availableActions };
     }
 
@@ -357,6 +365,11 @@ export interface InstalledMod {
   mod_jar_id?: string | null;
   enabled: boolean;
   content_type: string;
+  /** True when the modpack contributed this entry rather than the user. */
+  pack_managed?: boolean;
+  update_pinned?: boolean;
+  /** True when Agora installed this only to satisfy another mod's dependency. */
+  installed_as_dependency?: boolean;
 }
 
 export interface InstanceManifest {
@@ -395,6 +408,12 @@ export interface InstalledContentRow {
   installed_at: string;
   source: string;
   source_label: string;
+  /** True when the modpack contributed this entry rather than the user. */
+  pack_managed: boolean;
+  /** True when Agora installed this only to satisfy another mod's dependency. */
+  installed_as_dependency: boolean;
+  /** True when the user pinned this entry against updates. */
+  update_pinned: boolean;
   source_url: string | null;
   registry_id: string | null;
   modrinth_id: string | null;
@@ -552,6 +571,9 @@ export interface CreateInstanceRequest {
   jvm_custom_args?: string;
   is_modpack?: boolean;
   pack_icon_url?: string | null;
+  /** Instance template to seed configs and JVM settings from. Omit to use the
+   *  stored default template (if any); explicit request fields always win. */
+  template_id?: string | null;
 }
 
 export interface PackModRow {
@@ -599,8 +621,25 @@ export const revealPath = (path: string) =>
 /** Open an external https link in the user's real browser. */
 export const openExternalUrl = (url: string) =>
   invoke<void>('open_external_url', { url });
-export const launchInstance = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
-  invoke<void>('launch_instance', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
+/**
+ * Delegated launch. Fails with `ERR_MOJANG_LAUNCHER_RUNNING` when the official
+ * launcher is already open, because it only reads Agora's profile and its saved
+ * installation selection at startup — handing off to a running launcher would
+ * silently leave the previous pack selected. Pass `restartLauncher` after the
+ * user confirms closing it.
+ */
+export const launchInstance = (
+  instanceId: string,
+  allowHealthBlockers = false,
+  healthScanToken?: string,
+  restartLauncher = false,
+) =>
+  invoke<void>('launch_instance', {
+    instanceId,
+    allowHealthBlockers,
+    healthScanToken: healthScanToken ?? null,
+    restartLauncher,
+  });
 
 export const launchInstanceDirect = (instanceId: string, allowHealthBlockers = false, healthScanToken?: string) =>
   invoke<number>('launch_instance_direct', { instanceId, allowHealthBlockers, healthScanToken: healthScanToken ?? null });
@@ -642,14 +681,57 @@ export interface UpdateInfo {
 export const checkInstanceUpdates = (instanceId: string) =>
   invoke<UpdateInfo[]>('check_instance_updates', { instanceId });
 
+export interface VersionChangelog {
+  item_id: string;
+  version: string;
+  /** Markdown. Render with react-markdown; never dangerouslySetInnerHTML. */
+  changelog: string;
+  published_at: string | null;
+  source: string;
+}
+
+/**
+ * Changelogs for every release between the installed version and the update.
+ * Read from the signed registry — offline, and empty when the item simply has
+ * no upstream changelogs rather than on error.
+ */
+export const getUpdateChangelogs = (itemId: string, fromVersion: string, toVersion: string) =>
+  invoke<VersionChangelog[]>('get_update_changelogs', { itemId, fromVersion, toVersion });
+
+/** Pin or unpin an installed entry against updates. Resolves false if nothing matched. */
+export const setModUpdatePinned = (instanceId: string, filename: string, pinned: boolean) =>
+  invoke<boolean>('set_mod_update_pinned', { instanceId, filename, pinned });
+
+/** Instant, offline read of the last persisted update check (no network). */
+export const getCachedInstanceUpdates = (instanceId: string) =>
+  invoke<UpdateInfo[] | null>('get_cached_instance_updates', { instanceId });
+
+export interface CachedInstanceUpdates {
+  instance_id: string;
+  updates: UpdateInfo[];
+  checked_at: string;
+}
+
+/** Instant hydration of all cached update rows (no network). */
+export const getCachedAllUpdates = () =>
+  invoke<CachedInstanceUpdates[]>('get_cached_all_updates');
+
+/** Invalidate the cached row after a successful install (view invalidation). */
+export const clearCachedInstanceUpdates = (instanceId: string) =>
+  invoke<void>('clear_cached_instance_updates', { instanceId });
+
 export interface RunningProcess {
   instance_id: string;
   pid: number;
   session_id: number;
 }
 
+/**
+ * Every tracked direct-launch process. Several instances can run at once, and
+ * the same instance can be launched more than once, so this is a list.
+ */
 export const queryLaunchState = () =>
-  invoke<RunningProcess | null>('query_launch_state');
+  invoke<RunningProcess[]>('query_launch_state');
 
 export const getLkgMarker = (instanceId: string) =>
   invoke<Record<string, unknown> | null>('get_lkg_marker', { instanceId });
@@ -978,6 +1060,32 @@ export const checkRegistryUpdate = (force?: boolean) =>
 export const getRegistryStatus = () => invoke<RegistryStatus>('get_registry_status');
 export const extractOverrides = (zipPath: string, instanceId: string) =>
   invoke<ExtractionResult>('extract_overrides', { zipPath, instanceId });
+
+export type ControlifyOfferDecision =
+  | 'offer'
+  | 'already_installed'
+  | 'unsupported_loader'
+  | 'declined'
+  | 'instance_locked';
+
+export interface ControlifyOffer {
+  instance_id: string;
+  decision: ControlifyOfferDecision;
+  modrinth_slug: string | null;
+  reason: string;
+}
+
+/** The `--launch <id>` this process started with, consumed on first read. */
+export const takePendingCliLaunch = () =>
+  invoke<string | null>('take_pending_cli_launch');
+
+export const evaluateControlifyOffer = (instanceId: string) =>
+  invoke<ControlifyOffer>('evaluate_controlify_offer', { instanceId });
+export const declineControlifyOffer = (instanceId: string) =>
+  invoke<void>('decline_controlify_offer', { instanceId });
+export const resetControlifyOffer = (instanceId: string) =>
+  invoke<void>('reset_controlify_offer', { instanceId });
+
 export const getSetting = (key: string) =>
   invoke<unknown | null>('get_setting', { key });
 export const setSetting = (key: string, value: unknown) =>
@@ -1665,6 +1773,36 @@ export interface DependencyEdge {
   requirement: Requirement;
 }
 
+/** Serialized `dependency_ops::OrphanedDependency`. */
+export interface OrphanedDependency {
+  filename: string;
+  mod_jar_id: string | null;
+  content_type: string;
+}
+
+/** Serialized `dependency_ops::PresenceExplanation`. */
+export interface PresenceExplanation {
+  filename: string;
+  installed_as_dependency: boolean;
+  pack_managed: boolean;
+  dependents: DependentInfo[];
+  /** Shortest chains from a user-installed mod down to this item, root first. */
+  root_paths: string[][];
+  orphaned: boolean;
+}
+
+/**
+ * Mods that were installed only as dependencies and that nothing needs any
+ * more. Read this after a removal — the answer is always about the manifest as
+ * it stands right now.
+ */
+export const getOrphanedDependencies = (instanceId: string) =>
+  invoke<OrphanedDependency[]>('get_orphaned_dependencies', { instanceId });
+
+/** "Why is this mod here?" — traces one item back to the mods that need it. */
+export const explainModPresence = (instanceId: string, filename: string) =>
+  invoke<PresenceExplanation | null>('explain_mod_presence', { instanceId, filename });
+
 /** Every dependency edge between installed content, in one read. */
 export const getDependencyGraph = (instanceId: string) =>
   invoke<DependencyEdge[]>('get_dependency_graph', { instanceId });
@@ -1794,6 +1932,15 @@ export interface MsaAccountStatus {
   expires: string;
 }
 
+/// Where a stored credential actually lives. `encrypted-file` is the degraded
+/// fallback used when no OS keyring was available.
+export type CredentialBackend = 'none' | 'keyring' | 'encrypted-file';
+
+export interface CredentialStorageStatus {
+  microsoft: CredentialBackend;
+  github: CredentialBackend;
+}
+
 export type GcProfile = 'low_latency' | 'high_efficiency' | 'manual';
 
 export interface GcResult {
@@ -1813,6 +1960,9 @@ export const msaGetStatus = () =>
 
 export const msaRefresh = () =>
   invoke<MsaAccountStatus>('msa_refresh');
+
+export const credentialStorageStatus = () =>
+  invoke<CredentialStorageStatus>('credential_storage_status');
 
 export const msaLogout = () =>
   invoke<void>('msa_logout');
@@ -1901,6 +2051,485 @@ export const restoreSnapshot = (instanceId: string, snapshotId: string) =>
 
 export const deleteSnapshot = (instanceId: string, snapshotId: string) =>
   invoke<void>('delete_snapshot', { instanceId, snapshotId });
+
+/** Serialized `template_service::TemplateJvm`. Every field is optional; `null`
+ *  means "leave the instance's own value alone". */
+export interface TemplateJvm {
+  java_path?: string | null;
+  jvm_memory_mb?: number | null;
+  jvm_memory_mode?: string | null;
+  jvm_gc?: string | null;
+  jvm_custom_args?: string | null;
+  jvm_always_pre_touch?: boolean | null;
+}
+
+/** Serialized `template_service::TemplateFile`. */
+export interface TemplateFile {
+  relative_path: string;
+  sha256: string;
+  size: number;
+}
+
+/** Serialized `template_service::InstanceTemplate`. */
+export interface InstanceTemplate {
+  template_version: number;
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  jvm: TemplateJvm;
+  files: TemplateFile[];
+}
+
+/** Serialized `template_service::CapturableFile`. */
+export interface CapturableFile {
+  relative_path: string;
+  size: number;
+  category: string;
+  too_large: boolean;
+}
+
+/**
+ * Write a snapshot out to a folder the user chose, returning the artifact path.
+ * Point it at a folder Dropbox or OneDrive already syncs and backups go offsite
+ * with no service behind them.
+ */
+export const exportBackup = (instanceId: string, snapshotId: string, exportDir: string) =>
+  invoke<string>('export_backup', { instanceId, snapshotId, exportDir });
+
+/** Read a backup artifact back into an instance. Fully validated before it
+ *  touches the instance directory — the file is untrusted input. */
+export const importBackup = (instanceId: string, artifactPath: string) =>
+  invoke<Snapshot>('import_backup', { instanceId, artifactPath });
+
+/** Apply a retention policy; resolves to the snapshot ids that were removed. */
+export const applyBackupRetention = (
+  instanceId: string,
+  policy: { keepLast?: number | null; keepDays?: number | null },
+) =>
+  invoke<string[]>('apply_backup_retention', {
+    instanceId,
+    keepLast: policy.keepLast ?? null,
+    keepDays: policy.keepDays ?? null,
+  });
+
+/** Serialized `migration_report::MigrationStatus`. */
+export type MigrationStatus =
+  | 'ready'
+  | 'not_yet'
+  | 'abandoned'
+  | 'superseded'
+  /** Could not be checked — a network failure, never a claim that it is dead. */
+  | 'unknown'
+  /** No Modrinth identity to check against; needs a human. */
+  | 'unclassifiable';
+
+/** Serialized `migration_report::MigrationVerdict`. */
+export type MigrationVerdict = 'ready' | 'not_yet' | 'blocked' | 'unknown' | 'needs_review';
+
+/** Serialized `migration_report::SuccessorInfo`. */
+export interface SuccessorInfo {
+  replacement_id: string;
+  replacement_name: string | null;
+  reason: string | null;
+}
+
+/** Serialized `migration_report::UnclassifiableReason`. */
+export type UnclassifiableReason = 'manual' | 'curated_only' | 'other';
+
+/** Serialized `migration_report::MigrationSummary`. */
+export interface MigrationSummary {
+  total: number;
+  ready: number;
+  not_yet: number;
+  abandoned: number;
+  superseded: number;
+  unknown: number;
+  unclassifiable: number;
+}
+
+/** Serialized `migration_report::ModMigrationEntry`. */
+export interface ModMigrationEntry {
+  filename: string;
+  display_name: string;
+  modrinth_id: string | null;
+  registry_id: string | null;
+  content_type: string;
+  installed_version: string | null;
+  status: MigrationStatus;
+  /* The rest carry `skip_serializing_if` on the Rust side, so they are absent
+     rather than null when they do not apply. */
+  unclassifiable_reason?: UnclassifiableReason;
+  last_updated?: string;
+  has_target_build?: boolean;
+  successor?: SuccessorInfo;
+  /** Set only on `unknown` — why the check could not be made. */
+  error_code?: string;
+  error_message?: string;
+}
+
+/** Serialized `migration_report::MigrationReport`. */
+export interface MigrationReport {
+  instance_id: string;
+  source_version: string;
+  target_version: string;
+  loader: string;
+  summary: MigrationSummary;
+  verdict: MigrationVerdict;
+  mods: ModMigrationEntry[];
+  warnings: string[];
+}
+
+/** Can this instance move to a newer Minecraft version, and what breaks?
+ *  Read-only — running the migration is a separate, explicit step. */
+export const getMigrationReport = (instanceId: string, targetVersion: string) =>
+  invoke<MigrationReport>('get_migration_report', { instanceId, targetVersion });
+
+/** Serialized `pack_merge::PlanActionKind`. */
+export type PlanActionKind =
+  | 'keep'
+  | 'keep_user_added'
+  | 'add'
+  | 'remove'
+  | 'update'
+  | 'update_keep_disabled'
+  | 'rename_update'
+  | 'rename_update_keep_disabled';
+
+/** Serialized `pack_merge::ConflictKind`. `no_baseline` means Agora has no
+ *  record of what the pack originally installed, so a user edit cannot be told
+ *  apart from a pack original — one question, not one per file. */
+export type PackConflictKind =
+  | 'both_modified'
+  | 'added_vs_added'
+  | 'modified_vs_removed'
+  | 'removed_vs_modified'
+  | 'ambiguous_disabled_pair'
+  | 'duplicate_mod_id'
+  | 'no_baseline';
+
+/** Serialized `pack_merge::PlanAction` (snake_case). */
+export interface PackPlanAction {
+  key: string;
+  logical_path: string;
+  target_path: string;
+  previous_path: string | null;
+  kind: PlanActionKind;
+  enabled: boolean;
+  mod_id: string | null;
+}
+
+/** Serialized `pack_merge::PlanConflict` (snake_case). */
+export interface PackPlanConflict {
+  key: string;
+  logical_path: string;
+  kind: PackConflictKind;
+  ours_path: string | null;
+  theirs_path: string | null;
+  message: string;
+  mod_id: string | null;
+}
+
+/** Serialized `pack_merge::PackMergePlan` (snake_case). */
+export interface PackMergePlan {
+  actions: PackPlanAction[];
+  conflicts: PackPlanConflict[];
+  all_keys: string[];
+  baseline_missing: boolean;
+}
+
+/** Serialized `pack_update::PackUpdatePreview` (camelCase). */
+export interface PackUpdatePreview {
+  plan: PackMergePlan;
+  /** Paths whose mod-content decision is an estimate — the jar was not fetched. */
+  unverified: string[];
+  /** Unverified paths already byte-identical locally, so no download is needed. */
+  converged: string[];
+  filesNeedingDownload: number;
+  downloadBytes: number;
+  sizeUnknownCount: number;
+  packName: string;
+  packVersionId: string | null;
+}
+
+/** Serialized `pack_update::ConflictResolution`. */
+export type ConflictResolution = 'keep_ours' | 'take_theirs';
+
+/** Serialized `pack_update::PackUpdateOutcome` — tagged on `type`. */
+export type PackUpdateOutcome =
+  | { type: 'updated'; snapshotId: string; changed: number; kept: number; health: HealthReport | null }
+  /** Kept, not rolled back — reverting would throw away the conflict answers
+   *  the user just gave, and the pack may simply be broken. */
+  | { type: 'health-blocked'; snapshotId: string; health: HealthReport }
+  | { type: 'failed'; phase: string; error: string; rolledBack: boolean; snapshotId: string | null };
+
+/** What updating to this pack file would do. Downloads nothing. */
+export const previewPackUpdate = (instanceId: string, mrpackPath: string) =>
+  invoke<PackUpdatePreview>('preview_pack_update', { instanceId, mrpackPath });
+
+/** Apply a pack update. Every conflict in the preview must have an answer —
+ *  core refuses otherwise rather than picking a side unasked. */
+export const applyPackUpdate = (
+  instanceId: string,
+  mrpackPath: string,
+  resolutions: Record<string, ConflictResolution>,
+) => invoke<PackUpdateOutcome>('apply_pack_update', { instanceId, mrpackPath, resolutions });
+
+/** Serialized `migration_report::TargetBuildInfo`. Snake_case — this type has
+ *  no `rename_all`, unlike the version_migration types below. */
+export interface TargetBuildInfo {
+  version_id: string;
+  version_number: string;
+  filename: string;
+  download_url: string;
+  sha1?: string;
+  sha512?: string;
+  size?: number;
+}
+
+/** Serialized `version_migration::RejectionReason` (camelCase). */
+export interface MigrationRejectionReason {
+  code: string;
+  message: string;
+  filename?: string;
+}
+
+/** Serialized `version_migration::PlannedSwap` (camelCase). */
+export interface PlannedSwap {
+  oldFilename: string;
+  contentType: string;
+  oldEnabled: boolean;
+  newFilename: string;
+  target: TargetBuildInfo;
+}
+
+/** Serialized `version_migration::MigrationPlan` (camelCase). Read-only —
+ *  building one mutates nothing. */
+export interface MigrationPlan {
+  instanceId: string;
+  sourceVersion: string;
+  targetVersion: string;
+  loader: string;
+  sourceLoaderVersion: string;
+  targetLoaderVersion?: string | null;
+  swaps: PlannedSwap[];
+  /** Entries that will be left at their current version. Proceeding past these
+   *  requires an explicit answer — see `runVersionMigration`. */
+  blockers: MigrationRejectionReason[];
+  warnings: string[];
+  fingerprint: string;
+  instanceStateHash: string;
+  report: MigrationReport;
+}
+
+/** Serialized `version_migration::MigrationOutcome` — tagged on `type` in
+ *  kebab-case, with camelCase fields. */
+export type MigrationOutcome =
+  | {
+      type: 'migrated';
+      instanceId: string;
+      fromVersion: string;
+      toVersion: string;
+      loaderVersion?: string;
+      replaced: string[];
+      snapshotId: string;
+      warnings: string[];
+    }
+  /** Refused before touching anything. */
+  | { type: 'blocked'; reasons: MigrationRejectionReason[] }
+  /** Mutated mid-way and verifiably restored. */
+  | { type: 'rolled-back'; phase: string; error: string; snapshotId?: string }
+  /** `rolledBack: false` means the instance may be mid-state and `snapshotId`
+   *  is the recovery point. */
+  | { type: 'failed'; phase: string; error: string; rolledBack: boolean; snapshotId?: string };
+
+/** Plan a migration without performing it. */
+export const planVersionMigration = (instanceId: string, targetVersion: string) =>
+  invoke<MigrationPlan>('plan_version_migration', { instanceId, targetVersion });
+
+/** Perform the migration. `acceptBlockers` must be the user's actual answer to
+ *  the plan's blockers — passing it blindly turns "leave these mods behind"
+ *  into a silent default. */
+export const runVersionMigration = (
+  instanceId: string,
+  targetVersion: string,
+  acceptBlockers: boolean,
+) => invoke<MigrationOutcome>('run_version_migration', { instanceId, targetVersion, acceptBlockers });
+
+/** Serialized `bisect::TrialOutcome`. */
+export type BisectTrialOutcome = 'reproduced' | 'clean';
+
+/** Serialized `bisect::BisectStep`. */
+export interface BisectStep {
+  enabled_suspects: string[];
+  disabled_suspects: string[];
+  outcome: BisectTrialOutcome | null;
+}
+
+/** Serialized `bisect::BisectStatus`. Internally tagged on `type`. */
+export type BisectStatus =
+  | { type: 'awaiting_trial' }
+  | { type: 'culprit'; filename: string }
+  /** Narrowed as far as the dependency graph allows — these move together. */
+  | { type: 'culprit_group'; filenames: string[] }
+  | { type: 'inconclusive' };
+
+/** Serialized `bisect::BisectSession`. */
+export interface BisectSession {
+  schema_version: number;
+  started_at: string;
+  baseline_enabled: string[];
+  suspects: string[];
+  history: BisectStep[];
+  invert_next_split: boolean;
+}
+
+/** Serialized `bisect::BisectTrial`. */
+export interface BisectTrial {
+  status: BisectStatus;
+  enable: string[];
+  disable: string[];
+  completed_trials: number;
+  remaining_trials: number;
+}
+
+/** A session plus the trial it currently wants, in one read. */
+export interface BisectView {
+  session: BisectSession | null;
+  trial: BisectTrial | null;
+}
+
+export const getBisectSession = (instanceId: string) =>
+  invoke<BisectView>('get_bisect_session', { instanceId });
+
+/** Begin a bisect. `primeSuspects` are mods the crash log implicated; they are
+ *  tested first, which makes the opening split much more likely to be decisive. */
+export const startBisect = (instanceId: string, primeSuspects: string[] = []) =>
+  invoke<BisectView>('start_bisect', { instanceId, primeSuspects });
+
+/** Write the current trial's enable/disable set to disk, ready to launch. */
+export const applyBisectTrial = (instanceId: string) =>
+  invoke<BisectView>('apply_bisect_trial', { instanceId });
+
+export const recordBisectOutcome = (instanceId: string, reproduced: boolean) =>
+  invoke<BisectView>('record_bisect_outcome', { instanceId, reproduced });
+
+/** Undo the last trial and take the other half next time. */
+export const stepBackBisect = (instanceId: string) =>
+  invoke<BisectView>('step_back_bisect', { instanceId });
+
+/** End the bisect and put every mod back the way it was. */
+export const cancelBisect = (instanceId: string) =>
+  invoke<void>('cancel_bisect', { instanceId });
+
+/** Group name -> assigned filenames. An entry is in at most one group. */
+export type ModGroups = Record<string, string[]>;
+
+/** Groups recorded for an instance, with names of removed content dropped. */
+export const getModGroups = (instanceId: string) =>
+  invoke<ModGroups>('get_mod_groups', { instanceId });
+
+/** Assign content to a group, or pass `null` to clear the assignment. */
+export const setModGroup = (instanceId: string, filenames: string[], group: string | null) =>
+  invoke<ModGroups>('set_mod_group', { instanceId, filenames, group });
+
+export const renameModGroup = (instanceId: string, from: string, to: string) =>
+  invoke<ModGroups>('rename_mod_group', { instanceId, from, to });
+
+export const deleteModGroup = (instanceId: string, group: string) =>
+  invoke<ModGroups>('delete_mod_group', { instanceId, group });
+
+/** Serialized `prune_service::PruneCategory`. */
+export type PruneCategory =
+  | 'libraries'
+  | 'assets'
+  | 'natives'
+  | 'versions'
+  | 'java_runtimes'
+  | 'logging';
+
+/** Serialized `prune_service::PruneCategoryReport`. The file list is
+ *  deliberately not sent over IPC — only counts and totals. */
+export interface PruneCategoryReport {
+  category: PruneCategory;
+  file_count: number;
+  total_bytes: number;
+}
+
+/** Serialized `prune_service::PruneReport`. Nothing has been deleted. */
+export interface PruneReport {
+  categories: PruneCategoryReport[];
+  /** Why a category may be reporting nothing — an unreadable instance, a
+   *  malformed version JSON. Reclaim fails closed, so these explain a zero. */
+  warnings: string[];
+}
+
+/** Serialized `prune_service::PruneResult`. */
+export interface PruneResult {
+  categories: PruneCategoryReport[];
+  warnings: string[];
+  total_freed_files: number;
+  total_freed_bytes: number;
+}
+
+/** Dry run: what could be reclaimed from the shared runtime. Deletes nothing. */
+export const scanRuntimePrune = () => invoke<PruneReport>('scan_runtime_prune', {});
+
+/** Delete the chosen categories. */
+export const runRuntimePrune = (categories: PruneCategory[]) =>
+  invoke<PruneResult>('run_runtime_prune', { categories });
+
+export const listCapturableTemplateFiles = (instanceId: string) =>
+  invoke<CapturableFile[]>('list_capturable_template_files', { instanceId });
+
+export const listInstanceTemplates = () =>
+  invoke<InstanceTemplate[]>('list_instance_templates', {});
+
+export const createInstanceTemplate = (args: {
+  name: string;
+  description?: string | null;
+  jvm?: TemplateJvm | null;
+  sourceInstanceId?: string | null;
+  selectedPaths?: string[];
+}) =>
+  invoke<InstanceTemplate>('create_instance_template', {
+    name: args.name,
+    description: args.description ?? null,
+    jvm: args.jvm ?? null,
+    sourceInstanceId: args.sourceInstanceId ?? null,
+    selectedPaths: args.selectedPaths ?? [],
+  });
+
+export const updateInstanceTemplate = (args: {
+  templateId: string;
+  name?: string | null;
+  /** Nested option: omit to leave the description alone, pass `[value]` to set
+   *  it (including `[null]` to clear). Mirrors the Rust `Option<Option<_>>`. */
+  description?: [string | null] | null;
+  jvm?: TemplateJvm | null;
+}) =>
+  invoke<InstanceTemplate>('update_instance_template', {
+    templateId: args.templateId,
+    name: args.name ?? null,
+    description: args.description ? args.description[0] : null,
+    jvm: args.jvm ?? null,
+  });
+
+export const deleteInstanceTemplate = (templateId: string) =>
+  invoke<void>('delete_instance_template', { templateId });
+
+export interface TemplateApplyOutcome {
+  jvm_applied: boolean;
+  files_applied: number;
+  /** Files the template lists but no longer has on disk. */
+  files_missing: number;
+  /** Undo point taken before any file was written. */
+  undo_snapshot_id: string | null;
+}
+
+export const applyInstanceTemplate = (instanceId: string, templateId: string) =>
+  invoke<TemplateApplyOutcome>('apply_instance_template', { instanceId, templateId });
 
 export const listLoadoutProfiles = (instanceId: string) =>
   invoke<LoadoutProfile[]>('list_loadout_profiles', { instanceId });
@@ -2196,3 +2825,75 @@ export interface JavaRuntimeDownloadDisabledDetails {
   component: string;
   suggested_actions: Array<'choose_java' | 'open_privacy' | 'cancel'>;
 }
+
+/** Serialized `launch_history::LaunchResult`. */
+export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'unknown';
+
+/** Serialized `launch_history::LaunchRecord`. */
+export interface LaunchRecord {
+  id: number;
+  instance_id: string;
+  started_at: string;
+  /** Agora's own preparation time before the process started. */
+  prep_ms: number | null;
+  /** Session length. `null` while still running. */
+  duration_ms: number | null;
+  outcome: LaunchHistoryOutcome | null;
+  enabled_mod_count: number;
+  minecraft_version: string;
+  loader: string;
+  peak_memory_mb: number | null;
+}
+
+/** Serialized `launch_history::LaunchStats`. The recent/earlier pair is what
+ *  lets the UI say "startup got slower" without over-reading one cold start. */
+export interface LaunchStats {
+  runs: number;
+  crashes: number;
+  median_prep_ms: number | null;
+  recent_median_prep_ms: number | null;
+  earlier_median_prep_ms: number | null;
+  latest_mod_count: number | null;
+  earliest_mod_count: number | null;
+}
+
+export interface LaunchHistoryView {
+  records: LaunchRecord[];
+  stats: LaunchStats;
+}
+
+/** Recorded launches for an instance. Local only — no endpoint, deleted with
+ *  the instance. */
+export const getLaunchHistory = (instanceId: string) =>
+  invoke<LaunchHistoryView>('get_launch_history', { instanceId });
+
+/** Serialized `commands::SharedScreenshotStatus`. */
+export interface SharedScreenshotStatus {
+  linked: boolean;
+  target: string | null;
+  shared_root: string;
+}
+
+export const getSharedScreenshotStatus = (instanceId: string) =>
+  invoke<SharedScreenshotStatus>('get_shared_screenshot_status', { instanceId });
+
+/** Point this instance's screenshots at the shared folder. Existing files are
+ *  moved across, never discarded; a name collision refuses. */
+export const linkSharedScreenshots = (instanceId: string) =>
+  invoke<string>('link_shared_screenshots', { instanceId });
+
+/** Stop sharing. The shared screenshots themselves are left alone. */
+export const unlinkSharedScreenshots = (instanceId: string) =>
+  invoke<void>('unlink_shared_screenshots', { instanceId });
+
+/** Create a desktop shortcut that launches this instance directly. Returns the
+ *  shortcut's path. Clicking it starts Agora on that instance, or tells an
+ *  already-running Agora to launch it. */
+export const createDesktopShortcut = (instanceId: string, displayName: string) =>
+  invoke<string>('create_desktop_shortcut', { instanceId, displayName });
+
+/** Set (or clear, with an empty string) the command the game is launched under
+ *  — `mangohud`, `gamescope -W 1920 --`, and so on. Validated on the way in, so
+ *  a malformed quote is rejected here rather than at launch time. */
+export const setInstanceWrapperCommand = (instanceId: string, wrapper: string) =>
+  invoke<void>('set_instance_wrapper_command', { instanceId, wrapper });

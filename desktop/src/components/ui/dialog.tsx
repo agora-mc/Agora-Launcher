@@ -5,6 +5,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useControllerLayer } from "@/features/controller/useControllerLayer"
 
 const Dialog = DialogPrimitive.Root
 
@@ -29,11 +30,54 @@ const DialogOverlay = React.forwardRef<
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
+
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
 >(({ className, children, onPointerDownOutside, ...props }, ref) => {
   const openedAtRef = React.useRef(0);
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
+  // Whether the content is actually in the document.
+  //
+  // `DialogContent` stays mounted while the dialog is closed — Radix returns
+  // null from the portal rather than unmounting this component — so keying the
+  // controller layer off mounting alone left every closed dialog in the app
+  // still claiming controller input, with a root ref pointing at nothing. The
+  // ref callback is the honest signal: it fires with the node when Radix puts
+  // the content in the document and with null when it takes it away.
+  const [present, setPresent] = React.useState(false);
+
+  // Radix needs its own ref, the caller may have passed one, and the controller
+  // layer needs a ref it can read — so all three are fed from one callback.
+  const setContentNode = React.useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node;
+    setPresent(node !== null);
+    if (typeof ref === "function") ref(node);
+    else if (ref && typeof ref === "object") {
+      (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
+    }
+  }, [ref]);
+
+  // Every dialog claims controller input for as long as it is open.
+  //
+  // Doing this in the shared primitive rather than per dialog is the whole
+  // point: a dialog that forgets to claim input does not merely go
+  // undriveable, it leaves the *page behind it* driveable, so the stick moves
+  // a highlight the user cannot see under a dialog they cannot answer. That
+  // was true of the command palette and every other dialog in the app.
+  useControllerLayer({
+    active: present,
+    rootRef: contentRef,
+    // Radix owns dismissal, and it listens for Escape on the document. A
+    // synthesised key event is enough to reach a listener — only *default*
+    // actions are withheld from untrusted events — and it keeps this from
+    // having to reach into Radix's open state.
+    onCancel: React.useCallback(() => {
+      contentRef.current?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    }, []),
+  });
 
   // Record the mount time so a rapid second click from a double-click on the
   // trigger button (which lands on the backdrop) cannot dismiss the dialog
@@ -46,7 +90,7 @@ const DialogContent = React.forwardRef<
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
-        ref={ref}
+        ref={setContentNode}
         className={cn(
           "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-lg",
           className

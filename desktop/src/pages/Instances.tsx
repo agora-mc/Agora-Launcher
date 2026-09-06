@@ -3,18 +3,19 @@ import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } f
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
-  checkInstanceUpdates,
   cloneInstance,
   createInstance,
   createSnapshot,
   deleteInstance,
-  getSetting,
+  getCachedAllUpdates,
   getCustomIcon,
   getInstanceDetail,
+  getSetting,
   listInstances,
   listLoaderVersions,
   listManifestLoaders,
   listManifestMcVersions,
+  listInstanceTemplates,
   formatError,
   type ClonePrefs,
   type CreateInstanceRequest,
@@ -23,19 +24,19 @@ import {
   type LauncherAction,
   type LoaderVersionSummary,
   type HealthReport,
+  type InstanceTemplate,
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
-  type UpdateInfo,
 } from '../lib/tauri';
-import type { InstallIntent } from '../lib/installFlow';
 import { sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { type ProcessState } from '../lib/useProcessController';
-import { InstallFlow } from '../components/InstallFlow';
+import { type RunningProcess } from '../lib/tauri';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
+import { useConfirm } from '@/components/ui/confirm';
 import {
   Dialog,
   DialogContent,
@@ -46,11 +47,13 @@ import {
 export function Instances({
   onEditInstance,
   processState,
+  liveSessions,
   onStartLaunch,
   onKillProcess,
   onStartCrashInvestigation,
   onRepairAndRetry,
   onUseDelegatedLaunch,
+  onRestartMojangLauncher,
   onClearError,
   healthReports,
   healthErrors,
@@ -59,6 +62,8 @@ export function Instances({
 }: {
   onEditInstance: (id: string) => void;
   processState: ProcessState;
+  /** Every tracked session. More than one instance can run at once. */
+  liveSessions: RunningProcess[];
   onStartLaunch: (instanceId: string, directLaunch: boolean) => Promise<boolean>;
   onKillProcess: () => Promise<void>;
   onStartCrashInvestigation: (investigation: {
@@ -69,6 +74,7 @@ export function Instances({
   }) => void;
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
+  onRestartMojangLauncher: () => Promise<void>;
   onClearError: () => void;
   healthReports: Record<string, HealthReport>;
   healthErrors: Record<string, string>;
@@ -81,6 +87,7 @@ export function Instances({
   const [instanceIcons, setInstanceIcons] = useState<Record<string, string>>({});
   const [snapshotReadiness, setSnapshotReadiness] = useState<Record<string, 'ready' | 'pending' | 'failed'>>({});
   const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
+  const [updateCounts, setUpdateCounts] = useState<Record<string, number>>({});
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [cloneTarget, setCloneTarget] = useState<InstanceRow | null>(null);
@@ -158,6 +165,29 @@ export function Instances({
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Update badge counts from the persisted cache (sweep-populated). No
+  // network call here; the editor and startup sweep own freshness.
+  useEffect(() => {
+    if (instances.length === 0) {
+      setUpdateCounts({});
+      return;
+    }
+    let cancelled = false;
+    void getCachedAllUpdates()
+      .then((rows) => {
+        if (cancelled) return;
+        const counts: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.updates.length > 0) counts[row.instance_id] = row.updates.length;
+        }
+        setUpdateCounts(counts);
+      })
+      .catch(() => {
+        if (!cancelled) setUpdateCounts({});
+      });
+    return () => { cancelled = true; };
+  }, [instances]);
 
   // Surfaced in the hero so "is anything running?" is answerable without
   // scanning the grid.
@@ -272,7 +302,9 @@ export function Instances({
       ) : (
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {instances.map((instance) => {
-            const isRunning = processState.instanceId === instance.instance_id && processState.phase === 'running';
+            const sessionCount = liveSessions.filter((session) => session.instance_id === instance.instance_id).length;
+            const isRunning = sessionCount > 0
+              || (processState.instanceId === instance.instance_id && processState.phase === 'running');
             const isCurrentFailed = processState.instanceId === instance.instance_id && processState.phase === 'failed';
             const isLaunchBusy = processState.phase === 'launching';
             const isCurrentLaunchBusy = isLaunchBusy && processState.instanceId === instance.instance_id;
@@ -308,6 +340,7 @@ export function Instances({
                 onDismissError={onClearError}
                 onRepairAndRetry={onRepairAndRetry}
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
+                onRestartMojangLauncher={onRestartMojangLauncher}
                 repairBusy={isCurrentLaunchBusy}
                 packInstall={packInstall}
                 recoveryPending={recoveryPending}
@@ -321,14 +354,11 @@ export function Instances({
                   await createSnapshot(instance.instance_id, 'Initial import retry');
                   await refresh();
                 }}
+                updateCount={updateCounts[instance.instance_id] ?? 0}
               />
             );
           })}
         </ul>
-      )}
-
-      {instances.length > 0 && (
-        <UpdatesSection instances={instances} />
       )}
 
       {showCreate && (
@@ -401,6 +431,7 @@ function InstanceCard({
   onDismissError,
   onRepairAndRetry,
   onUseDelegatedLaunch,
+  onRestartMojangLauncher,
   repairBusy,
   packInstall,
   recoveryPending,
@@ -411,6 +442,7 @@ function InstanceCard({
   onReviewHealth,
   onRefreshHealth,
   onRetryRecovery,
+  updateCount,
 }: {
   instance: InstanceRow;
   iconSrc: string | null;
@@ -431,6 +463,7 @@ function InstanceCard({
   onDismissError: () => void;
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
+  onRestartMojangLauncher: () => Promise<void>;
   repairBusy: boolean;
   packInstall: PackInstallTask | null;
   recoveryPending: boolean;
@@ -441,7 +474,9 @@ function InstanceCard({
   onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
   onRefreshHealth: () => Promise<void>;
   onRetryRecovery: () => Promise<void>;
+  updateCount?: number;
 }) {
+  const { confirm } = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [repairing, setRepairing] = useState(false);
   const [cancellingJava, setCancellingJava] = useState(false);
@@ -488,7 +523,12 @@ function InstanceCard({
   };
 
   const remove = async () => {
-    if (!confirm(`Delete instance "${instance.name}"? This moves the folder to trash.`)) return;
+    if (!await confirm({
+      title: `Delete instance "${instance.name}"?`,
+      body: 'This moves the folder to trash.',
+      confirmLabel: 'Delete',
+      tone: 'danger',
+    })) return;
     setError(null);
     try {
       await deleteInstance(instance.instance_id);
@@ -513,6 +553,33 @@ function InstanceCard({
     setRepairing(true);
     try {
       await onUseDelegatedLaunch();
+    } catch {
+      // Error state is already managed by the controller.
+    } finally {
+      setRepairing(false);
+    }
+  };
+
+  const handleRestartMojangLauncher = async () => {
+    // Agora is about to terminate another application, so this never happens
+    // without an explicit yes — and the cost is stated plainly.
+    if (!await confirm({
+      title: 'Close the Minecraft Launcher and reopen it?',
+      body: (
+        <>
+          The Minecraft Launcher only reads its installation list when it starts,
+          so while it is open it cannot switch to <strong>{instance.name}</strong>.
+          Agora will close it, select this pack, and open it again.
+          <br />
+          Any download in progress there will be interrupted.
+        </>
+      ),
+      confirmLabel: 'Close and reopen',
+      tone: 'danger',
+    })) return;
+    setRepairing(true);
+    try {
+      await onRestartMojangLauncher();
     } catch {
       // Error state is already managed by the controller.
     } finally {
@@ -546,6 +613,17 @@ function InstanceCard({
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <LoaderChip loader={instance.loader} loaderVersion={instance.loader_version} />
               <MetaChip>MC {instance.minecraft_version}</MetaChip>
+              {typeof updateCount === 'number' && updateCount > 0 && !instance.is_locked && (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+                  aria-label={`${updateCount} update${updateCount === 1 ? '' : 's'} available for ${instance.name}`}
+                  title={`${updateCount} update${updateCount === 1 ? '' : 's'} available — click to manage`}
+                >
+                  <span aria-hidden="true">↻</span> {updateCount} update{updateCount === 1 ? '' : 's'}
+                </button>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mt-1.5">
               {isRunning ? (
@@ -792,8 +870,45 @@ function InstanceCard({
         </div>
       )}
 
+      {/* ── Official launcher already open ── */}
+      {controllerAvailableActions.includes('restart_mojang_launcher') && (
+        <div
+          className="mt-3 rounded-lg border border-amber-500 bg-amber-500/10 p-3 space-y-2"
+          role="alert"
+          aria-label="Minecraft Launcher is already open"
+          data-testid="mojang-launcher-running-warning"
+        >
+          <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+            The Minecraft Launcher is already open
+          </p>
+          <p className="text-xs text-muted-foreground">
+            It only reads its installation list when it starts, so it will stay on
+            whatever pack it already had selected. Reopen it to launch {instance.name}.
+          </p>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <button
+              onClick={handleRestartMojangLauncher}
+              disabled={effectiveBusy}
+              aria-label="Close and reopen the Minecraft Launcher"
+              className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {repairing ? 'Reopening launcher…' : 'Close and reopen launcher'}
+            </button>
+            <button
+              onClick={onDismissError}
+              disabled={effectiveBusy}
+              aria-label="Dismiss this error"
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Plain error display (fallback, non-recoverable) ── */}
-      {displayError && !controllerRecoverableIssue && !controllerRecoverableJavaIssue && (
+      {displayError && !controllerRecoverableIssue && !controllerRecoverableJavaIssue
+        && !controllerAvailableActions.includes('restart_mojang_launcher') && (
         <div className="mt-2 flex items-center gap-2">
           <p className="text-xs text-destructive flex-1">{displayError}</p>
           {controllerError && (
@@ -863,269 +978,6 @@ function InstanceCard({
   );
 }
 
-/** A section that checks for updates, batches them, and applies them safely. */
-
-function UpdatesSection({
-  instances,
-}: {
-  instances: InstanceRow[];
-}) {
-  const [updatesByInstance, setUpdatesByInstance] = useState<Record<string, UpdateInfo[]>>({});
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [checking, setChecking] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [batchFlow, setBatchFlow] = useState<{
-    intent: InstallIntent;
-    instanceName: string;
-  } | null>(null);
-  const [showConfirm, setShowConfirm] = useState<{
-    instanceId: string;
-    instanceName: string;
-    updates: UpdateInfo[];
-  } | null>(null);
-
-  const checkAll = async () => {
-    setChecking(true);
-    setUpdateError(null);
-    const results: Record<string, UpdateInfo[]> = {};
-    let failedChecks = 0;
-    for (const inst of instances) {
-      if (inst.is_locked) continue; // skip locked instances
-      try {
-        const updates = await checkInstanceUpdates(inst.instance_id);
-        if (updates.length > 0) results[inst.instance_id] = updates;
-      } catch {
-        failedChecks += 1;
-      }
-    }
-    setUpdatesByInstance(results);
-    setSelected(new Set());
-    if (failedChecks > 0) {
-      setUpdateError(`Could not check ${failedChecks} instance${failedChecks === 1 ? '' : 's'} for updates.`);
-    }
-    setChecking(false);
-  };
-
-  const totalUpdates = Object.values(updatesByInstance).reduce((sum, u) => sum + u.length, 0);
-
-  /** Toggle per-mod selection. */
-  const toggleSelected = (key: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-
-  const applyUpdates = () => {
-    if (!showConfirm) return;
-
-    const { instanceId, instanceName, updates } = showConfirm;
-    const toUpdate = selected.size > 0
-      ? updates.filter((update) => selected.has(`${instanceId}:${update.mod_jar_id}`))
-      : updates;
-    if (toUpdate.length === 0) return;
-
-    setShowConfirm(null);
-    setUpdateError(null);
-    setBatchFlow({
-      instanceName,
-      intent: {
-        action: {
-          type: 'batch-update',
-          items: toUpdate.map((update) => ({
-            itemId: update.mod_jar_id,
-            targetVersion: update.target_version,
-          })),
-        },
-        targetInstance: instanceId,
-        optionalDeps: { type: 'prompt' },
-        requestedBy: 'auto-update',
-        overrides: {
-          allowReplace: false,
-          skipHealthScan: false,
-          forceConflictResolution: {},
-        },
-      },
-    });
-  };
-
-  if (totalUpdates === 0 && !checking) {
-    return (
-      <div className="mt-6">
-        <button
-          onClick={checkAll}
-          disabled={checking}
-          className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
-        >
-          {checking ? 'Checking…' : 'Check for Updates'}
-        </button>
-      </div>
-    );
-  }
-
-  const allSelected = (updates: UpdateInfo[], instId: string) =>
-    updates.every((u) => selected.has(`${instId}:${u.mod_jar_id}`));
-
-  return (
-    <div className="mt-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Updates Available ({totalUpdates})</h3>
-        <button
-          onClick={checkAll}
-          disabled={checking}
-          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
-        >
-          {checking ? 'Checking…' : 'Refresh'}
-        </button>
-      </div>
-      {updateError && (
-        <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
-          {updateError}
-        </div>
-      )}
-      {Object.entries(updatesByInstance).map(([instId, updates]) => {
-        const inst = instances.find((i) => i.instance_id === instId);
-        const locked = inst?.is_locked ?? false;
-        const selectedCount = updates.filter((u) => selected.has(`${instId}:${u.mod_jar_id}`)).length;
-        return (
-          <div key={instId} className="rounded-xl border border-border bg-card p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium">{inst?.name ?? instId}</p>
-              {locked && <span className="text-xs text-muted-foreground">🔒 Locked — updates disabled</span>}
-            </div>
-            <div className="space-y-1">
-              {updates.map((u) => {
-                const key = `${instId}:${u.mod_jar_id}`;
-                return (
-                  <div key={u.mod_jar_id} className="flex items-center gap-2 text-xs">
-                    {!locked && (
-                      <input
-                        type="checkbox"
-                        checked={selected.has(key)}
-                        onChange={() => toggleSelected(key)}
-                        className="rounded"
-                      />
-                    )}
-                    <span className="flex-1">{u.filename}</span>
-                    <span className="text-muted-foreground">{u.current_version} → <span className="text-primary">{u.latest_version}</span></span>
-                  </div>
-                );
-              })}
-            </div>
-            {!locked && (
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    // Select/deselect all for this instance
-                    setSelected((previous) => {
-                      const next = new Set(previous);
-                      if (updates.every((update) => next.has(`${instId}:${update.mod_jar_id}`))) {
-                        updates.forEach((update) => next.delete(`${instId}:${update.mod_jar_id}`));
-                      } else {
-                        updates.forEach((update) => next.add(`${instId}:${update.mod_jar_id}`));
-                      }
-                      return next;
-                    });
-                  }}
-                  className="text-xs text-primary hover:underline"
-                >
-                  {allSelected(updates, instId) ? 'Deselect all' : 'Select all'}
-                </button>
-                {selectedCount > 0 && (
-                  <button
-                    onClick={() => setShowConfirm({ instanceId: instId, instanceName: inst?.name ?? instId, updates })}
-                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    Update Selected ({selectedCount})
-                  </button>
-                )}
-                {selectedCount === 0 && (
-                  <button
-                    onClick={() => {
-                      setSelected((previous) => {
-                        const next = new Set(previous);
-                        updates.forEach((update) => next.add(`${instId}:${update.mod_jar_id}`));
-                        return next;
-                      });
-                      setShowConfirm({ instanceId: instId, instanceName: inst?.name ?? instId, updates });
-                    }}
-                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    Update All ({updates.length})
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {showConfirm && (
-        <aside
-          className="fixed bottom-4 right-4 z-[62] w-[min(28rem,calc(100vw-2rem))] max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card p-4 shadow-2xl flex flex-col gap-3"
-          role="dialog"
-          aria-modal="false"
-          aria-labelledby="update-confirm-title"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 id="update-confirm-title" className="text-sm font-semibold">
-                Review {showConfirm.updates.filter((update) => selected.has(`${showConfirm.instanceId}:${update.mod_jar_id}`) || selected.size === 0).length} updates
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Agora will resolve dependencies and conflicts for {showConfirm.instanceName} before anything changes.
-              </p>
-            </div>
-            <button onClick={() => setShowConfirm(null)} className="shrink-0 rounded border border-input px-2 py-1 text-xs hover:bg-accent">Close</button>
-          </div>
-          <ul className="max-h-48 space-y-1 overflow-y-auto text-xs pr-1">
-            {showConfirm.updates
-              .filter((update) => selected.has(`${showConfirm.instanceId}:${update.mod_jar_id}`) || selected.size === 0)
-              .map((update) => (
-                <li key={update.mod_jar_id} className="flex justify-between gap-4">
-                  <span className="truncate">{update.filename}</span>
-                  <span className="shrink-0 text-muted-foreground">
-                    {update.current_version} → <span className="text-primary">{update.latest_version}</span>
-                  </span>
-                </li>
-              ))}
-          </ul>
-          <p className="text-xs text-muted-foreground">
-            The complete batch is staged and verified first, then applied atomically behind one recovery snapshot.
-          </p>
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setShowConfirm(null)}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={applyUpdates}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              Review Plan
-            </button>
-          </div>
-        </aside>
-      )}
-
-      {batchFlow && (
-        <InstallFlow
-          open
-          intent={batchFlow.intent}
-          instanceName={batchFlow.instanceName}
-          onClose={() => {
-            setBatchFlow(null);
-            void checkAll();
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
 function CreateInstanceDialog({
   onClose,
   onCreated,
@@ -1140,6 +992,8 @@ function CreateInstanceDialog({
   const [loaderVersion, setLoaderVersion] = useState('');
   const [memoryMb, setMemoryMb] = useState(4096);
   const [memoryMode, setMemoryMode] = useState<'auto' | 'manual'>('auto');
+  const [templates, setTemplates] = useState<InstanceTemplate[]>([]);
+  const [templateId, setTemplateId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
@@ -1216,6 +1070,31 @@ function CreateInstanceDialog({
     if (loader === 'vanilla') setLoaderVersion('');
   }, [loader]);
 
+  // Templates are optional; a failed load must not block instance creation, so
+  // the picker simply stays hidden.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listInstanceTemplates(), getSetting('default_instance_template')])
+      .then(([available, storedDefault]) => {
+        if (cancelled) return;
+        setTemplates(available);
+        const defaultId = typeof storedDefault === 'string' ? storedDefault : '';
+        const preselected = available.find((template) => template.id === defaultId);
+        if (preselected) {
+          setTemplateId(preselected.id);
+          if (typeof preselected.jvm?.jvm_memory_mb === 'number') {
+            setMemoryMb(preselected.jvm.jvm_memory_mb);
+          }
+          const mode = preselected.jvm?.jvm_memory_mode;
+          if (mode === 'auto' || mode === 'manual') setMemoryMode(mode);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   // Progress event listener during creation
   useEffect(() => {
     if (!busy) return;
@@ -1225,6 +1104,19 @@ function CreateInstanceDialog({
     });
     return () => { unlisten.then(fn => fn()); };
   }, [busy]);
+
+  // The memory controls always submit a value, so a template's memory settings
+  // would otherwise never take effect. Reflecting them into the visible fields
+  // keeps "what the request says wins" true while still honouring the template
+  // — and the user can see and override what they picked.
+  const applyTemplateChoice = (nextId: string) => {
+    setTemplateId(nextId);
+    const chosen = templates.find((template) => template.id === nextId);
+    const memory = chosen?.jvm?.jvm_memory_mb;
+    const mode = chosen?.jvm?.jvm_memory_mode;
+    if (typeof memory === 'number') setMemoryMb(memory);
+    if (mode === 'auto' || mode === 'manual') setMemoryMode(mode);
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -1246,6 +1138,10 @@ function CreateInstanceDialog({
         loader_version: loaderVersion,
         jvm_memory_mb: memoryMb,
         jvm_memory_mode: memoryMode,
+        // '' is "no template" and must be sent as null rather than omitted:
+        // omitting it would fall back to the stored default, overriding the
+        // user's explicit choice in this dialog.
+        template_id: templateId || null,
       };
       await createInstance(request);
       // A closing dialog alone cannot tell the walkthrough whether the user
@@ -1326,6 +1222,27 @@ function CreateInstanceDialog({
                   </option>
                 ))}
               </select>
+            </label>
+          )}
+
+          {templates.length > 0 && (
+            <label className="block">
+              <span className="text-sm font-medium">Template</span>
+              <select
+                value={templateId}
+                onChange={(e) => applyTemplateChoice(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">None</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Seeds the new instance with saved config files and JVM settings.
+              </span>
             </label>
           )}
 

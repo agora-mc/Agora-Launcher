@@ -1911,6 +1911,40 @@ pub fn build_command(request: BuildCommandRequest<'_>) -> LauncherResult<Prepare
 
 /// Spawn the prepared command while leaving ownership and lifecycle handling
 /// with the desktop or CLI caller.
+/// Run the game under a wrapper command such as `mangohud` or
+/// `gamescope -W 1920 -H 1080 --`.
+///
+/// The wrapper becomes the program and the original command becomes its
+/// trailing arguments, which is the convention every one of these tools
+/// expects. Environment and working directory are untouched — a wrapper
+/// changes *how* the process is started, not what it is.
+///
+/// Pure and separate from [`spawn`] so it can be tested without launching
+/// anything, and so a malformed wrapper string fails before any process exists.
+pub fn apply_wrapper(prepared: PreparedCommand, wrapper: &str) -> LauncherResult<PreparedCommand> {
+    let wrapper = wrapper.trim();
+    if wrapper.is_empty() {
+        return Ok(prepared);
+    }
+    let mut tokens = parse_argument_string(wrapper)?;
+    if tokens.is_empty() {
+        return Ok(prepared);
+    }
+    let program = PathBuf::from(tokens.remove(0));
+
+    // wrapper args, then the real program, then its args.
+    let mut args = tokens;
+    args.push(prepared.program.to_string_lossy().into_owned());
+    args.extend(prepared.args);
+
+    Ok(PreparedCommand {
+        program,
+        args,
+        cwd: prepared.cwd,
+        env: prepared.env,
+    })
+}
+
 pub fn spawn(prepared: &PreparedCommand) -> LauncherResult<tokio::process::Child> {
     let mut command = tokio::process::Command::new(&prepared.program);
     command
@@ -4280,6 +4314,58 @@ mod tests {
         // Must report program and cwd
         assert!(debug_str.contains("java"), "program must be visible");
         assert!(debug_str.contains("/game/dir"), "cwd must be visible");
+    }
+
+    #[test]
+    fn a_wrapper_becomes_the_program_and_the_game_becomes_its_arguments() {
+        let prepared = PreparedCommand {
+            program: PathBuf::from("/usr/bin/java"),
+            args: vec!["-Xmx4G".into(), "net.minecraft.Main".into()],
+            cwd: PathBuf::from("/instances/test"),
+            env: BTreeMap::from([("A".to_string(), "b".to_string())]),
+        };
+        let wrapped = apply_wrapper(prepared, "gamescope -W 1920 --").unwrap();
+        assert_eq!(wrapped.program, PathBuf::from("gamescope"));
+        assert_eq!(
+            wrapped.args,
+            vec![
+                "-W",
+                "1920",
+                "--",
+                "/usr/bin/java",
+                "-Xmx4G",
+                "net.minecraft.Main"
+            ]
+        );
+        // A wrapper changes how the process starts, not what it runs in.
+        assert_eq!(wrapped.cwd, PathBuf::from("/instances/test"));
+        assert_eq!(wrapped.env.get("A").map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn an_empty_wrapper_leaves_the_command_alone() {
+        let prepared = PreparedCommand {
+            program: PathBuf::from("/usr/bin/java"),
+            args: vec!["-Xmx4G".into()],
+            cwd: PathBuf::from("/instances/test"),
+            env: BTreeMap::new(),
+        };
+        for wrapper in ["", "   "] {
+            let out = apply_wrapper(prepared.clone(), wrapper).unwrap();
+            assert_eq!(out.program, PathBuf::from("/usr/bin/java"));
+            assert_eq!(out.args, vec!["-Xmx4G"]);
+        }
+    }
+
+    #[test]
+    fn a_malformed_wrapper_fails_before_anything_is_spawned() {
+        let prepared = PreparedCommand {
+            program: PathBuf::from("/usr/bin/java"),
+            args: vec![],
+            cwd: PathBuf::from("/instances/test"),
+            env: BTreeMap::new(),
+        };
+        assert!(apply_wrapper(prepared, "mangohud --opt 'unclosed").is_err());
     }
 
     #[test]

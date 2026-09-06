@@ -1125,6 +1125,8 @@ mod tests {
             std::fs::write(dir.join("mods").join(filename), content).unwrap();
         }
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: instance_id.into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -1135,6 +1137,9 @@ mod tests {
             mods: mods
                 .iter()
                 .map(|(filename, _)| InstalledMod {
+                    update_pinned: false,
+                    pack_managed: false,
+                    installed_as_dependency: false,
                     filename: filename.to_string(),
                     registry_id: None,
                     modrinth_id: None,
@@ -1228,6 +1233,7 @@ mod tests {
 
         // No mutation: manifest and DB still carry the old tuple.
         let manifest: InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
             &std::fs::read(ctx.paths.instance_manifest("plan-test").unwrap()).unwrap(),
         )
         .unwrap();
@@ -1300,6 +1306,8 @@ mod tests {
             "0.19.0",
         )
         .unwrap();
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let updated: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(updated.loader_version, "0.19.0");
@@ -1316,6 +1324,8 @@ mod tests {
         let manifest_path = ctx.paths.instance_manifest("ghost").unwrap();
         std::fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
         let manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "ghost".into(),
             name: "Ghost".into(),
             created_from_pack: None,
@@ -1344,6 +1354,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "ERR_LOADER_CHANGE_CONFLICT");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let restored: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(restored.loader_version, "0.18.6");
@@ -1380,6 +1392,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "ERR_LOADER_CHANGE_CONFLICT");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let restored: InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(restored.loader_version, "0.18.6");

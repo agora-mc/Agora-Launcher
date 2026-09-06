@@ -228,6 +228,8 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
           if (command === 'get_curated_annotation') return Promise.resolve(null);
 
           // Instances
+          // Multi-session launch state is a list; the backend never returns null.
+          if (command === 'query_launch_state') return Promise.resolve([]);
           if (command === 'list_instances') {
             return Promise.resolve([
               { instance_id: 'test-instance', name: 'Test Instance', minecraft_version: '1.20.1', loader: 'fabric', loader_version: '0.15.11', is_modpack: false, is_locked: false, last_launched_at: null, jvm_memory_mb: 4096, jvm_gc: 'G1GC', jvm_custom_args: '', created_at: '2026-01-01T00:00:00Z' },
@@ -401,8 +403,10 @@ async function expectReviewView(page: Page) {
   const panel = page.getByRole('dialog');
   await expect(panel).toBeVisible();
   await expect(panel.getByText('Review Instance Changes')).toBeVisible();
-  await expect(panel.getByText(/\+1 to add/)).toBeVisible();
-  await expect(panel.getByText(/Before installing/)).toBeVisible();
+  await expect(panel.getByText(/1 file added/)).toBeVisible();
+  // The snapshot label now lives under "Technical details" rather than in the
+  // main body; the reassurance it used to carry is stated in plain language.
+  await expect(panel.getByText(/Agora saves a restore point/)).toBeVisible();
   await expect(panel.getByRole('button', { name: /Install|Review Selected Changes/ })).toBeVisible();
 }
 
@@ -712,8 +716,11 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await expect(page.getByRole('heading', { name: /Installed Mods/ })).toBeVisible();
     await page.getByRole('checkbox', { name: 'Select Test Mod' }).check();
-    page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Remove selected' }).click();
+    // Bulk removal confirms in an in-app dialog before planning anything.
+    const bulkConfirm = page.getByRole('dialog');
+    await expect(bulkConfirm.getByText(/Review one safe removal plan/)).toBeVisible();
+    await bulkConfirm.getByRole('button', { name: 'Confirm' }).click();
 
     const index = await lastInstallCall(page, 'resolve_install_plan');
     const args = await page.evaluate((idx) => (window as any).__installCalls[idx]?.args, index);
@@ -739,7 +746,8 @@ test.describe('Release C3 — Install flow entry points', () => {
     // The versions tab preselects the browse instance, marks the installed
     // version, and labels the action as a replacement.
     await page.getByRole('button', { name: 'Versions' }).click();
-    await page.getByRole('row', { name: /1\.0\.0/ }).first().click();
+    // Version rows are `role="button"` so a controller can reach them.
+    await page.getByRole('button', { name: /^1\.0\.0/ }).first().click();
     await expect(page.getByText('installed', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Review replace plan' })).toBeVisible();
 

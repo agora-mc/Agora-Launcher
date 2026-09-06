@@ -293,6 +293,156 @@ def check_tauri_bindings_manifest() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 9. Single update-check implementation
+# ---------------------------------------------------------------------------
+
+# The one module allowed to decide "does this installed item have an update?".
+UPDATE_CHECK_OWNER = "update_cache.rs"
+
+# Entry points that answer that question. An adapter reaching for either is
+# building a second implementation.
+UPDATE_CHECK_PATTERNS = [
+    # Only core constructs the IPC payload; adapters pass it through.
+    (re.compile(r"\bUpdateInfo\s*\{"), "constructs UpdateInfo"),
+    # The bounded resolver call the duplicate used to make directly. Matches
+    # the call, not resolver.rs's definition of the method.
+    (
+        re.compile(r"\.list_curated_versions_for_update\s*\("),
+        "calls Resolver::list_curated_versions_for_update",
+    ),
+]
+
+
+def check_single_update_check() -> None:
+    """Fail if anything outside agora-core's update_cache.rs re-implements the
+    update-check matching rules.
+
+    The rules once existed twice: in core's background sweep (which drives the
+    instance update badge) and again in the desktop `check_instance_updates`
+    command (which drives the update panel). They were identical when written
+    and nothing enforced it, so a fix to one would have silently drifted from
+    the other and shown up to the user as the badge disagreeing with the panel.
+    Both now route through
+    `agora_core::update_cache::check_single_instance_updates_with`.
+    """
+    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC]
+    hits: list[str] = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            if path.parent == CORE_SRC and path.name == UPDATE_CHECK_OWNER:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("//") or stripped.startswith("///"):
+                    continue
+                for pat, what in UPDATE_CHECK_PATTERNS:
+                    if pat.search(stripped):
+                        rel = path.relative_to(REPO_ROOT)
+                        hits.append(f"  {rel}:{lineno}: {what}: {stripped}")
+                        break
+    if hits:
+        err(
+            "Update-check logic found outside crates/agora-core/src/"
+            f"{UPDATE_CHECK_OWNER} — there must be exactly one implementation, "
+            "or the update badge and the update panel can disagree. Call "
+            "agora_core::update_cache::check_single_instance_updates_with "
+            "instead"
+        )
+        for h in hits:
+            print(h, file=sys.stderr)
+    else:
+        print(
+            "OK: update-check matching rules live only in "
+            f"agora-core/src/{UPDATE_CHECK_OWNER}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. Single InstanceManifest loader (lazy backfill)
+# ---------------------------------------------------------------------------
+
+# Only helpers.rs may deserialize an InstanceManifest from disk. Every other
+# site must go through helpers::read_manifest so that heal_pack_managed and
+# the Unknown-origin synthesis happen exactly once, lazily, and without a
+# startup mass-rewrite. See helpers.rs: read_manifest.
+INSTANCE_MANIFEST_OWNER = "helpers.rs"
+ALLOW_RAW_MANIFEST_FILES = {
+    # helpers.rs itself is the canonical loader
+    CORE_SRC / "helpers.rs",
+    # models.rs contains the struct definition and tests that deserialize
+    # legacy JSON fixtures (e.g., legacy_manifest_json) — not instance files
+    CORE_SRC / "models.rs",
+    # snapshot.rs reads SnapshotManifest, not InstanceManifest; allow to avoid
+    # false positives on similar names. If it ever reads InstanceManifest from
+    # an archive, that is intentionally exempt (archived manifest, not live).
+    CORE_SRC / "snapshot.rs",
+}
+# Pattern for raw deserialization of an InstanceManifest
+INSTANCE_MANIFEST_PATTERNS = [
+    re.compile(r"InstanceManifest"),
+]
+
+
+def check_instance_manifest_raw() -> None:
+    """Fail if anything outside helpers.rs deserializes an InstanceManifest raw.
+
+    The healed value (pack_managed, Unknown origin) must exist in memory after
+    any read, but the file on disk must not be rewritten until the next write.
+    That is only guaranteed if every live read goes through helpers::read_manifest.
+    """
+    search_roots = [DESKTOP_SRC, CLI_SRC, CORE_SRC]
+    hits: list[str] = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            if path in ALLOW_RAW_MANIFEST_FILES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            for lineno, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("//") or stripped.startswith("///"):
+                    continue
+                # Allow an explicit escape hatch for archived manifests. rustfmt
+                # moves a trailing comment onto its own line inside a multi-line
+                # call, so look at a small window rather than just this line —
+                # otherwise the hatch silently stops working after a reformat.
+                window = lines[max(0, lineno - 2) : lineno + 2]
+                if any("allow-raw-instance-manifest" in entry for entry in window):
+                    continue
+                # Any mention of InstanceManifest near a serde_json
+                # deserialization is raw. The deserialization is frequently on
+                # the *next* line, because rustfmt breaks
+                #   let mut manifest: InstanceManifest =
+                #       serde_json::from_str(&text)...
+                # across two lines. Matching only the annotation's own line
+                # missed 28 real sites, so scan a small window.
+                if "InstanceManifest" not in line:
+                    continue
+                window = chr(10).join(lines[lineno - 1 : lineno + 2])
+                if "from_str" in window or "from_slice" in window or "from_reader" in window:
+                    rel = path.relative_to(REPO_ROOT)
+                    hits.append(f"  {rel}:{lineno}: {stripped}")
+                    continue
+    if hits:
+        err(
+            "Raw InstanceManifest deserialization found outside "
+            f"{INSTANCE_MANIFEST_OWNER} — use helpers::read_manifest so that "
+            "heal_pack_managed and the Unknown-origin synthesis happen lazily. "
+            "If this is an archived manifest (e.g., snapshot restore), add "
+            "`// allow-raw-instance-manifest` to the line."
+        )
+        for h in hits:
+            print(h, file=sys.stderr)
+    else:
+        print(f"OK: InstanceManifest deserialization only in {INSTANCE_MANIFEST_OWNER} (and allowed tests)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -329,6 +479,14 @@ def main() -> int:
 
     print("--- 8. Tauri binding name manifest ---")
     check_tauri_bindings_manifest()
+    print()
+
+    print("--- 9. Single update-check implementation ---")
+    check_single_update_check()
+    print()
+
+    print("--- 10. Single InstanceManifest loader (lazy backfill) ---")
+    check_instance_manifest_raw()
     print()
 
     if EXIT_CODE == 0:

@@ -9,9 +9,11 @@ use tokio::sync::Mutex;
 
 /// Information about the current directly-launched Minecraft process.
 ///
-/// This is the public representation sent to the frontend.  Internal OS-level
-/// identity (start time, executable path) is kept in [`AppState::process_identity`]
-/// and verified before any process-management operation.
+/// This is the public representation sent to the frontend. The internal
+/// OS-level identity (start time, executable path) that guards against a
+/// recycled PID lives on the session in
+/// [`crate::process_session_manager::ProcessSessionManager`], which verifies it
+/// before any process-management operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RunningProcess {
     pub instance_id: String,
@@ -19,14 +21,6 @@ pub struct RunningProcess {
     /// Monotonically increasing launch session ID, used to disambiguate
     /// late events from a previous launch of the same instance.
     pub session_id: u64,
-}
-
-/// Reservation held while a direct launch is preparing network assets and the
-/// Java command.  It closes the check-then-spawn race without keeping the
-/// application-state mutex locked across asynchronous work.
-#[derive(Debug, Clone)]
-pub struct LaunchReservation {
-    pub instance_id: String,
 }
 
 /// A short-lived release-resolution result shared by explicit update scans.
@@ -45,21 +39,29 @@ pub struct AppState {
     pub login_flow: Option<LoginFlow>,
     /// Shared browse cache for paginated Modrinth + registry results.
     pub browse_cache: SharedBrowseCache,
-    /// Tracked directly-launched process, stored so the frontend can recover
-    /// running state after navigation or reload.
-    pub running_process: Option<RunningProcess>,
-    /// Internal OS-level identity of the tracked process (start time,
-    /// executable path).  This is **not** serialised to the frontend and is
-    /// verified before any process-management operation (kill, state query).
+    /// Tracked directly-launched processes, keyed by session id, stored so the
+    /// frontend can recover running state after navigation or reload.
     ///
-    /// **Backend-restart semantics**: `AppState::new()` starts with no process
-    /// identity, and persisted PIDs from a previous launcher session are never
-    /// adopted.  If the launcher restarts while a game is running, the game
-    /// process is considered detached (non-actionable) — the frontend will
-    /// report phase = 'idle' until the user launches again.
-    pub process_identity: Option<ProcessIdentity>,
-    /// A launch that has exclusive ownership but has not spawned Java yet.
-    pub launch_reservation: Option<LaunchReservation>,
+    /// Presentation only. [`crate::process_session_manager::ProcessSessionManager`]
+    /// is the authoritative record and owns the OS identity check performed
+    /// before any kill; this map exists so the UI can render without consulting
+    /// it. Keyed by session rather than instance because the same instance may
+    /// be launched more than once.
+    ///
+    /// **Backend-restart semantics**: `AppState::new()` starts empty, and
+    /// persisted PIDs from a previous launcher session are never adopted. If
+    /// the launcher restarts while a game is running, that process is
+    /// considered detached (non-actionable).
+    pub running_processes: HashMap<u64, RunningProcess>,
+    /// Instances with a launch that has exclusive ownership but has not spawned
+    /// Java yet.
+    ///
+    /// Keyed by instance id: two launches of the *same* instance must not
+    /// materialize its directory concurrently, but launches of different
+    /// instances are independent. The reservation is released once the process
+    /// spawns, so a second launch of the same instance is only blocked during
+    /// the brief preparation window.
+    pub launch_reservations: HashSet<String>,
     /// Sessions for which the user explicitly requested termination.  The exit
     /// classifier consumes these so a user stop is never reported as a crash.
     pub user_cancelled_launches: HashSet<u64>,
@@ -101,9 +103,8 @@ impl AppState {
             client,
             login_flow: None,
             browse_cache: crate::browse_cache::new_cache(),
-            running_process: None,
-            process_identity: None,
-            launch_reservation: None,
+            running_processes: HashMap::new(),
+            launch_reservations: HashSet::new(),
             user_cancelled_launches: HashSet::new(),
             active_install_instances: HashSet::new(),
             active_launches: HashSet::new(),

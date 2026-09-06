@@ -1,0 +1,30 @@
+{
+  "id": "controlify",
+  "name": "Controlify",
+  "content_type": "mod",
+  "author": "isXander",
+  "license": "LGPL-3.0-or-later",
+  "download_sources": [
+    { "strategy": "modrinth_id", "identifier": "DOUdJVEm" }
+  ],
+  "modrinth_id": "DOUdJVEm",
+  "sha256": "710a7a8cc21ebfaddd29f6a15da1b6cf3d8de4098269a2534d06ac65ba8fa186",
+  "package_signatures": [
+    "dev.isxander.controlify"
+  ],
+  "base_categories": [
+    "utility",
+    "input"
+  ],
+  "community_categories": [
+    "client-only",
+    "controller",
+    "accessibility"
+  ],
+  "curator_note": "Full controller support for Minecraft, which ships with none: gamepad-driven menus, radial item wheels, rumble, gyro aiming, and per-controller binds. Agora offers this mod by name when it sees a controller in use, so the same jar the launcher suggests is the one curated here. Needs YetAnotherConfigLib (installed automatically as a dependency); Fabric and NeoForge ship from one universal jar.",
+  "governance": {
+    "immune": false,
+    "override_justification": null,
+    "allow_comments": true
+  }
+}

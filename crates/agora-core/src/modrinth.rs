@@ -217,7 +217,7 @@ pub struct ModrinthProjectFull {
 }
 
 /// Enforce the Modrinth-enabled gate; returns `Err(ModrinthDisabled)` when off.
-fn require_modrinth_enabled(conn: &rusqlite::Connection) -> LauncherResult<()> {
+pub(crate) fn require_modrinth_enabled(conn: &rusqlite::Connection) -> LauncherResult<()> {
     match db::get_setting(conn, "modrinth_enabled") {
         Ok(Some(v)) if v == true => Ok(()),
         _ => Err(LauncherError::ModrinthDisabled),
@@ -1050,6 +1050,9 @@ pub async fn install_raw_modrinth(
     let sha256 = crate::download::sha256_hex(&bytes);
     let metadata = parse_jar_metadata(&mod_path);
     let installed_mod = InstalledMod {
+        update_pinned: false,
+        pack_managed: false,
+        installed_as_dependency: false,
         filename: candidate.filename.clone(),
         registry_id: None,
         modrinth_id: Some(project_id.to_string()),

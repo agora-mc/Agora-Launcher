@@ -35,6 +35,19 @@ export interface SortState {
   direction: 'asc' | 'desc' | null;
 }
 
+/**
+ * How the installed list is grouped. Every mode is *derived* from data the row
+ * already carries, so grouping needs no stored state of its own.
+ */
+export type GroupMode = 'none' | 'pack' | 'category' | 'source' | 'custom';
+
+export interface ContentGroup {
+  /** Stable identity for collapse state; not shown to the user. */
+  key: string;
+  label: string;
+  rows: InstalledContentRow[];
+}
+
 export interface ContentFilters {
   categories: string[];
   curation: string;
@@ -50,13 +63,35 @@ export interface InstalledContentPanelProps {
   addLabel: string;
   onToggle: (row: InstalledContentRow) => Promise<boolean | void>;
   onBulkToggle: (rows: InstalledContentRow[], enabled: boolean) => Promise<boolean>;
-  onBulkRemove: (rows: InstalledContentRow[]) => boolean;
+  /**
+   * Returns whether the removal was accepted, so the panel knows to clear its
+   * selection. Async because confirming now happens in an in-app dialog rather
+   * than a blocking `window.confirm`.
+   */
+  onBulkRemove: (rows: InstalledContentRow[]) => boolean | Promise<boolean>;
   onRemove: (row: InstalledContentRow) => void;
   onOpenDetails?: (row: InstalledContentRow) => void;
   onRevealFile?: (row: InstalledContentRow) => void;
   onSetCustomIcon?: (row: InstalledContentRow) => void;
   onCheckUpdates?: () => Promise<UpdateInfo[]>;
   onApplyUpdate?: (row: InstalledContentRow, update: UpdateInfo) => void;
+  /** Apply every available update for this panel as one reviewed transaction. */
+  onUpdateAll?: (updates: UpdateInfo[]) => void;
+  /** Pin or unpin a row against updates. */
+  onTogglePin?: (row: InstalledContentRow, pinned: boolean) => void;
+  /** Open the "why is this mod here?" trace for a row. */
+  onExplainPresence?: (row: InstalledContentRow) => void;
+  /** User-defined groups for this instance, as group name -> filenames. */
+  modGroups?: Record<string, string[]>;
+  /** Open the group picker for these rows. The panel never assigns directly —
+   *  choosing or creating a group is the editor's dialog to own. */
+  onChooseGroup?: (rows: InstalledContentRow[]) => void;
+  /**
+   * Last persisted update check, read from cache so results survive navigation
+   * and restart. Must be a stable reference — a fresh array each render would
+   * re-seed on every parent render.
+   */
+  initialUpdates?: UpdateInfo[] | null;
   onError?: (message: string) => void;
   onDrop?: React.DragEventHandler<HTMLElement>;
   extraActions?: React.ReactNode;

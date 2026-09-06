@@ -1087,6 +1087,15 @@ pub async fn refresh_credentials(
 }
 
 /// Get stored credentials from the OS keyring, or None if not authenticated.
+/// Which backend holds the Microsoft credentials.
+///
+/// `CredentialBackend::EncryptedFile` means the OS keyring was unavailable and
+/// the credentials sit in a file guarded only by its permissions -- the state
+/// MASTER_SPEC 7.5.2 requires Settings to warn about.
+pub fn credentials_backend() -> crate::auth::CredentialBackend {
+    crate::auth::credential_backend(KEYRING_SERVICE, KEYRING_ACCOUNT, CREDENTIALS_FALLBACK_FILE)
+}
+
 pub fn load_credentials() -> LauncherResult<Option<MsaCredentials>> {
     #[cfg(all(feature = "test-support", debug_assertions))]
     if let Some(json) = std::env::var_os("AGORA_TEST_MSA_CREDENTIALS_JSON") {

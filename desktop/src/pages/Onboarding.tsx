@@ -34,6 +34,7 @@ import {
   type InteractionPreference,
 } from '../features/interactive/live/presentationPreference';
 import { pinnedMotion } from '../components/presentation-capabilities';
+import { useConfirm } from '@/components/ui/confirm';
 
 type Step = 'welcome' | 'appearance' | 'services' | 'launch' | 'java' | 'github' | 'registry' | 'import';
 
@@ -488,6 +489,7 @@ function ServicesStep({
   onContinue: () => void;
   onBack: () => void;
 }) {
+  const { confirm } = useConfirm();
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -523,25 +525,31 @@ function ServicesStep({
     void setSetting(key, value).catch(() => {});
   };
 
-  const TECHNIC_ENABLE_WARNING = [
-    'Enable Technic browsing?',
-    '',
-    'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
-    '',
-    'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
-    '',
-    'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
-  ].join('\n');
+  const TECHNIC_ENABLE_WARNING = {
+    title: 'Enable Technic browsing?',
+    // Each point is a separate thing the user is agreeing to.
+    // Kept as a list so that editing one cannot silently drop
+    // another, which parsing a joined blob apart at the call
+    // site could.
+    body: [
+      'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
+      'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
+      'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
+    ].join('\n\n'),
+  };
 
-  const UNVERIFIED_PACKS_ENABLE_WARNING = [
-    'Allow unverified zip packs?',
-    '',
-    'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
-    '',
-    'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
-    '',
-    'Only enable this if you already trust the specific pack you are installing.',
-  ].join('\n');
+  const UNVERIFIED_PACKS_ENABLE_WARNING = {
+    title: 'Allow unverified zip packs?',
+    // Each point is a separate thing the user is agreeing to.
+    // Kept as a list so that editing one cannot silently drop
+    // another, which parsing a joined blob apart at the call
+    // site could.
+    body: [
+      'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+      'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
+      'Only enable this if you already trust the specific pack you are installing.',
+    ].join('\n\n'),
+  };
 
   return (
     <div>
@@ -566,8 +574,11 @@ function ServicesStep({
             title="Technic modpacks"
             description="Browse and install modpacks from Technic. Solder-backed and zip packs are downloaded from third-party hosts with the integrity the pack's author provides. You are trading high security for extra options — only recommended if you trust the developer."
             checked={values.technic}
-            onChange={(technic) => {
-              if (technic && !window.confirm(TECHNIC_ENABLE_WARNING)) return;
+            onChange={async (technic) => {
+              if (technic && !await confirm({
+                title: TECHNIC_ENABLE_WARNING.title,
+                body: TECHNIC_ENABLE_WARNING.body,
+              })) return;
               if (!technic && values.allowUnverifiedPacks) {
                 const next = { ...values, technic, allowUnverifiedPacks: false };
                 onChange(next);
@@ -590,8 +601,11 @@ function ServicesStep({
             title="Unverified zip packs"
             description="More packs become available, but Agora cannot verify these files: no hash, no curator review, no per-file audit. You are accepting files on the pack author's word. Only enable if you trust the developer — this is the weakest security tier."
             checked={values.allowUnverifiedPacks}
-            onChange={(allowUnverifiedPacks) => {
-              if (allowUnverifiedPacks && !window.confirm(UNVERIFIED_PACKS_ENABLE_WARNING)) return;
+            onChange={async (allowUnverifiedPacks) => {
+              if (allowUnverifiedPacks && !await confirm({
+                title: UNVERIFIED_PACKS_ENABLE_WARNING.title,
+                body: UNVERIFIED_PACKS_ENABLE_WARNING.body,
+              })) return;
               onChange({ ...values, allowUnverifiedPacks });
               handleToggle('allow_unverified_packs', allowUnverifiedPacks);
             }}

@@ -2659,6 +2659,172 @@ from the first. The migration folds the intent forward before dropping the key:
 a stored `true` forces `modrinth_enabled` and `technic_enabled` off, so removing
 the switch never silently re-enables a source the user had opted out of.
 
+### 19.22 Controller Support Is App-Wide, Not a Second Application
+
+Handheld mode originally shipped as a separate full-screen shell that could list
+instances and launch one. That was the whole feature. The failure was structural
+rather than a matter of missing screens: a parallel controller UI is a second
+place every future feature must be built, so it is built once and then stops
+being maintained. The offer dialog that exists *because* the user is holding a
+controller could not be answered with that controller, which is what the pattern
+produces at its logical end.
+
+**The pivot: one application, navigable by any input device.** Controller support
+is an input layer over the same pages, not a rendering of a chosen few. The
+separate handheld shell is retired: what remains is a *presentation* of the
+ordinary app — larger hit targets, bigger type, opened-up spacing — applied to
+the same destinations, never a separate destination tree. A component-level
+presentation variant is fine; a duplicated workflow is not.
+
+**Presentation follows controller presence, not a setting.** This keeps the
+decision the old handheld mode was built on: picking the pad up *is* the
+request, and the Web Gamepad API only reports a pad once a button has actually
+been pressed, so it follows a deliberate act rather than a device left plugged
+in. Note this is a different signal from the input-modality marker that drives
+the focus ring: modality flips the instant a mouse is touched, which is right
+for a ring and wrong for layout, because resizing the interface every time a
+hand moves between pad and mouse would be unusable.
+
+**Input ownership is explicit and exclusive.** A global enable/disable flag can
+only say "everything off", never "the dialog owns input now", which is why the
+Controlify offer was unreachable and why overlays such as HealthDialog left the
+shell live behind them. Instead, a layer stack: components claim ownership while
+mounted, the topmost layer receives every intent, and it either handles an intent
+or lets it fall through to that layer's default navigation. Nothing infers
+ownership from `defaultPrevented`, because a handler that silently swallows an
+intent is indistinguishable from a controller that stopped working.
+
+**Intents are semantic, never button labels.** Nothing above the sampler sees
+`a`/`b`: those are Xbox names, physically swapped on Nintendo layouts and
+different again on a DualSense. The physical mapping is sealed inside
+`lib/useGamepad`; everything above reasons about `accept`, `cancel`, `secondary`,
+`context`, `menu`, `page` and `scroll`.
+
+**The provider mounts above `App`.** `App` early-returns during onboarding, so a
+provider mounted inside it would leave first run with no controller support while
+claiming whole-app coverage. Whole-app has to mean whole-app, including the parts
+that run before the shell exists.
+
+**Geometry is a fallback, not the architecture.** Element counts say the DOM is
+mostly focusable already; they do not say who owns the arrows at a given moment.
+Spatial navigation, scrollport awareness and navigation groups sit *inside* the
+ownership model rather than replacing it.
+
+**Text entry goes through a service boundary.** A home-grown on-screen keyboard
+is a basic-Latin fallback, not the answer: it does not solve composition/IME,
+caret and selection editing, dead keys, RTL or clipboard behaviour. Platform
+adapters (Steam's overlay where genuinely available, a narrow native helper where
+supported) sit behind one `TextInputService` seam in the desktop backend, reached
+through `invoke()`. That seam never justifies a general `shell:allow-execute`
+capability; a fixed, argument-free command is the most that may be added.
+
+Coverage expands by *interaction class* — native `select`, `range`, `color`,
+tables, text entry — fixed once each at the primitive level, rather than page by
+page. Until every class is covered, the honest description is limited coverage,
+not controller support.
+
+### 19.23 Keyring Fallback Keys Come From a Random Secret, Not Public Inputs (supersedes 7.5.2)
+
+Section 7.5.2 specifies deriving the fallback encryption key from "the OS username +
+machine ID ... using PBKDF2". That construction shipped, and every input to it was
+public: the PBKDF2 *password* was a constant compiled into the binary, and the salt was
+the home-directory name plus the platform string. Anyone holding an encrypted file could
+rederive the key from the open source, and the ciphertext was portable between machines.
+CodeQL flagged it as `rust/hard-coded-cryptographic-value`.
+
+**The key material is now a 32-byte random per-profile secret.** It is generated on first
+store from the CSPRNG, written owner-only to `device-key.bin` beside the encrypted files,
+and used as the PBKDF2 password. The context constants (`agora-msa-credentials-fallback`,
+`agora-mcp-keyring-fallback`) remain, but as domain separation in the salt -- keeping the
+MSA and GitHub keys distinct -- which is what they were always doing. The home-directory
+name and platform are gone from the derivation: public, contributing nothing once the
+password is full-entropy, and a renamed home directory silently produced a different key.
+
+**Adding a machine ID would not have fixed the actual weakness.** A machine ID is public
+too; it defeats copying one file, not copying the profile. Be precise about what the
+current design buys, because 7.5.2's "machine-bound key" wording overstates it:
+
+| Attacker capability | Old | Current |
+|---|---|---|
+| Obtains only `tokens.enc` / `msa-credentials.enc` | Key rederivable from source | Cannot recover the 256-bit secret |
+| Copies the whole profile directory | Recoverable | Recoverable -- the key travels with the ciphertext |
+| Runs as the logged-in user | Recoverable | Recoverable |
+
+The key sits in the same directory as what it protects, so **its file permissions, not
+AES, are the boundary**. This defeats an attacker who obtains a single encrypted file and
+nothing else. Real machine binding needs DPAPI, a TPM, or an OS credential service --
+whose absence is the reason this path exists at all. Meaningful protection against
+whole-profile theft requires a user-held passphrase, hardware-protected key material, or
+not persisting these credentials; there is no portable trick that lets an unattended
+application decrypt a local file while denying the same to an attacker holding the same
+files and privileges.
+
+**Consequences that are deliberate, not oversights:**
+
+- **No legacy migration.** Files written under the old derivation cannot be read. Keeping
+  the old key for decrypt-only migration would have preserved a genuine hard-coded-key
+  finding in the permanent read path. Affected users -- only those whose OS keyring was
+  unavailable at sign-in -- sign in once more. 7.5.2 already anticipated re-authentication
+  when the key input changes.
+- **Load paths never delete.** An undecryptable credential is reported absent, not removed.
+  A missing device key and one that merely failed to read are indistinguishable, so
+  deleting would turn a transient I/O error into permanent credential loss. A stale file is
+  inert and the next store overwrites it.
+- **Deleting the local ciphertext is not revocation.** No provider request is made. If old
+  storage is treated as evidence of exposure rather than a design flaw, server-side token
+  revocation is a separate decision.
+
+**The Settings warning is implemented, with corrected wording.** 7.5.2's string says the
+token is "encrypted with a machine-bound key", which was never true and is certainly not
+true now; a warning that overstates the protection is worse than none, because it is read
+at exactly the moment a user decides whether to trust the state. The shipped text is:
+*"Credential store unavailable. Your sign-in is encrypted in a file in Agora's data folder
+instead. This is less secure than OS keychain storage -- anyone who can read that folder can
+read your sign-in."* It deliberately does not promise that only the user's own account can
+read the file: owner-only permissions are set explicitly on Unix, but elsewhere the file
+inherits whatever the data directory grants -- and that directory now follows
+`AGORA_DATA_DIR` and portable roots, which can be a removable drive with no per-user
+permissions at all. It renders only when the backend positively reports the fallback, so
+an unknown or failed lookup shows nothing rather than inventing a warning.
+`keyring_fallback_available()` is gone; `CredentialBackend` reports what actually holds each
+credential. The string is English-only for now: translations are deferred rather than
+guessed, since an unverifiable translation of a security warning is its own hazard.
+
+**The fallback files follow the configured data root.** They resolve through `AppPaths`
+rather than reconstructing `dirs::data_local_dir()/agora`, so `AGORA_DATA_DIR` and a
+portable install move them along with everything else. The platform default is byte-identical
+to the old hardcoded path, so an ordinary install has nothing to migrate; a test pins that.
+
+Be aware of the limit: this governs the *fallback* only. Credentials that reach the OS
+keyring are held per-user by the OS, and no data-root setting relocates them -- a portable
+install on a machine with a working keyring still leaves them on that machine. Making
+portable mode genuinely self-contained for credentials would mean preferring the encrypted
+file over the keyring when running portable, which trades the OS's protection for
+portability. That is a product decision and has not been made.
+
+**Key rotation is an accepted limitation, not an open item.** One device key serves both
+the GitHub and MSA credentials and survives sign-out. Reviewed and deliberately left alone:
+the two credentials already get separate derived keys via domain separation, and a key with
+no ciphertext beside it is inert random bytes -- retaining it does not retain a deleted
+credential. Rotation would only help an attacker who obtained the key and a ciphertext
+through *separate* leaks at *different* times across a sign-out boundary. Every dominant
+threat -- profile theft, file-stealing malware, continuing access as the user -- takes both
+at once, and takes any replacement key too.
+
+Against that, rotating carries a concrete data-loss hazard: deleting `device-key.bin` while
+either ciphertext survives makes that credential permanently unreadable, and the load paths
+correctly report it as "nothing stored". Tying rotation to sign-out is worse still, since
+both credentials clear themselves automatically on permanent refresh failure -- background
+auth failure would silently become part of the shared-key lifecycle. Trading a certain
+rare data loss for a speculative narrow gain is the wrong trade.
+
+The question worth revisiting is not "when should sign-out rotate the key" -- sign-out is
+not a compromise signal. It is *what recovery does Agora promise if a user believes their
+local files were exposed?* Today: none beyond signing out and revoking at the provider,
+which is honest, because local deletion never revokes a token an attacker already copied.
+If that promise ever changes, the right unit is an explicit all-credentials reset plus
+provider-revocation guidance, not opportunistic deletion inside a per-credential sign-out.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

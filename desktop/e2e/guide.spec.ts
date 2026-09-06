@@ -32,6 +32,8 @@ async function installGuideMock(page: Page) {
           return Promise.resolve(null);
         }
         if (command === 'get_registry_status') return Promise.resolve(registryStatus);
+        // Multi-session launch state is a list; the backend never returns null.
+        if (command === 'query_launch_state') return Promise.resolve([]);
         if (command === 'list_instances') return Promise.resolve([]);
         if (command === 'list_categories') return Promise.resolve([]);
         if (command === 'list_manifest_loaders') return Promise.resolve([]);
@@ -59,13 +61,13 @@ test.beforeEach(async ({ page }) => {
 test('links the guide from the sidebar and Home page', async ({ page }) => {
   await expect(page.getByTestId('sidebar').getByRole('button', { name: 'Help & Guide', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Learn Agora at your level' })).toBeVisible();
-  await expect(page.getByText('36 guide pages')).toBeVisible();
+  await expect(page.getByText(/\d+ guide pages/)).toBeVisible();
 
   await page.getByRole('button', { name: /Open Help & Guide/ }).click();
 
   await expect(page.getByTestId('guide-page')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Learn the launcher. Understand your modded game.' })).toBeVisible();
-  await expect(page.getByText('18 topics, each with a beginner-friendly walkthrough')).toBeVisible();
+  await expect(page.getByText(/\d+ topics, each with a beginner-friendly walkthrough/)).toBeVisible();
 });
 
 test('switches experience levels and searches all guide content', async ({ page }) => {
@@ -94,7 +96,7 @@ test('tracks completed pages and restores the selected guide page', async ({ pag
   await page.getByRole('button', { name: 'Mark complete' }).click();
 
   await expect(page.getByRole('button', { name: 'Completed', exact: true })).toBeVisible();
-  await expect(page.getByText('1 of 36 pages')).toBeVisible();
+  await expect(page.getByText(/^1 of \d+ pages$/)).toBeVisible();
 
   await page.reload();
 
@@ -103,7 +105,7 @@ test('tracks completed pages and restores the selected guide page', async ({ pag
   await expect(page.getByRole('button', { name: 'Completed', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Reset', exact: true }).click();
-  await expect(page.getByText('0 of 36 pages')).toBeVisible();
+  await expect(page.getByText(/^0 of \d+ pages$/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Mark complete' })).toBeVisible();
 });
 

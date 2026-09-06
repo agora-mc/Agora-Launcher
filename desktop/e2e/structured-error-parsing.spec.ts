@@ -169,7 +169,7 @@ test.describe('Profile recovery warning panel UI', () => {
           if (command === 'plugin:event|unlisten' || command.startsWith('plugin:event|')) {
             return Promise.resolve(1);
           }
-          if (command === 'query_launch_state') return Promise.resolve(null);
+          if (command === 'query_launch_state') return Promise.resolve([]);
           if (command === 'list_instances') return Promise.resolve([row]);
           if (command === 'check_instance_crash') return Promise.resolve(null);
           if (command === 'check_instance_health') {

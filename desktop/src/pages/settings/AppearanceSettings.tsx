@@ -349,10 +349,10 @@ export function AppearanceResetControls({ onResetLayout }: { onResetLayout: () =
   const { resetPreferences } = useUiPreferences();
   return (
     <div className="flex flex-wrap gap-2">
-      <button type="button" onClick={resetPreferences} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
+      <button type="button" onClick={resetPreferences} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent bg-card">
         Reset appearance
       </button>
-      <button type="button" onClick={onResetLayout} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent">
+      <button type="button" onClick={onResetLayout} className="rounded-md border border-input px-3 py-1.5 text-sm font-medium hover:bg-accent bg-card">
         Reset layout
       </button>
     </div>

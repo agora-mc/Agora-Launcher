@@ -2,10 +2,12 @@ import Link from 'next/link';
 import { getAllItems, CONTENT_TYPES, contentTypeLabel, contentTypePath } from '@/lib/db';
 import { GITHUB_REPO_URL, GITHUB_RELEASES_URL, SPONSORS_URL } from '@/lib/site';
 import { DownloadButton } from '@/components/DownloadButton';
+import { fetchLatestDesktopRelease } from '@/lib/releases';
 import { HeroTrailer } from '@/components/HeroTrailer';
 
 export default async function HomePage() {
   const allItems = await getAllItems();
+  const latestRelease = await fetchLatestDesktopRelease();
   const mods = allItems.filter((i) => i.content_type === 'mod');
   const packs = allItems.filter((i) => i.content_type === 'pack');
   const featuredMods = mods.slice(0, 4);
@@ -54,7 +56,7 @@ export default async function HomePage() {
           </a>
         </div>
         <div className="mt-6">
-          <DownloadButton />
+          <DownloadButton initialRelease={latestRelease} />
         </div>
       </section>
 

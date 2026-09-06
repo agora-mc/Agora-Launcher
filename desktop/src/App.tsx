@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/command-palette';
 import { Home } from './pages/Home';
@@ -14,12 +15,24 @@ import AiChatPage from './pages/AiChatPage';
 import { Onboarding } from './pages/Onboarding';
 import { ModDetail } from './pages/ModDetail';
 import { InstanceEditor } from './pages/InstanceEditor';
-import { changeLoaderVersion, getInstanceDetail, getSetting, type HealthReport } from './lib/tauri';
+import {
+  changeLoaderVersion,
+  declineControlifyOffer,
+  evaluateControlifyOffer,
+  resetControlifyOffer,
+  takePendingCliLaunch,
+  getInstanceDetail,
+  getSetting,
+  type ControlifyOffer,
+  type HealthReport,
+} from './lib/tauri';
 import { OfflineBanner } from './components/offline-banner';
 import { SandboxBanner } from './components/sandbox-banner';
 import { HealthDialog } from './components/HealthDialog';
+import { ControlifyOfferDialog } from './components/controller/ControlifyOfferDialog';
+import { InstallFlow } from './components/InstallFlow';
 import { CrashInvestigator } from './components/CrashInvestigator';
-import { ToastContainer } from './components/Toast';
+import { showToast, ToastContainer } from './components/Toast';
 import { useDestination, type Destination, type Tab } from './lib/useDestination';
 import { useProcessController } from './lib/useProcessController';
 import { useInstanceHealthMonitor } from './lib/useInstanceHealthMonitor';
@@ -33,7 +46,11 @@ import { AmbienceProvider, useAmbience } from './features/ambience/AmbienceProvi
 import { AmbienceToasts } from './features/ambience/AmbienceToasts';
 import { AmbienceCoordinator } from './components/ambience-coordinator';
 import { PresentationMotionCoordinator } from './components/presentation-motion-coordinator';
+import type { InstallIntent } from './lib/installFlow';
 import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
+import { useController } from './features/controller/ControllerProvider';
+import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
+import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
 import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
@@ -215,6 +232,18 @@ function NotFoundView({ canGoBack, onGoHome, onGoBack }: { canGoBack: boolean; o
 /** The three known destination types used for validation. */
 const KNOWN_DEST_TYPES = new Set(['tab', 'mod-detail', 'instance-detail']);
 
+interface PendingControlifyLaunch {
+  instanceId: string;
+  directLaunch: boolean;
+  detailed: boolean;
+  onAwaitingHealth?: () => void;
+}
+
+interface ControlifyInstallRequest {
+  intent: InstallIntent;
+  instanceName: string;
+}
+
 export default function App() {
   const {
     destination,
@@ -227,7 +256,13 @@ export default function App() {
   } = useDestination();
 
   const processController = useProcessController();
+  const { connected: gamepadConnected } = useController();
   const mainRef = useRef<HTMLElement>(null);
+  const appShellRef = useRef<HTMLDivElement>(null);
+
+  // Put focus back where the user left it on each destination. Above the
+  // onboarding early return so the hook count stays constant.
+  useFocusMemory(focusMemoryKey(destination));
   const previousDestinationRef = useRef<Destination>(destination);
   const browseScrollTopRef = useRef(0);
   const instanceEditorScrollTopRef = useRef(0);
@@ -252,6 +287,15 @@ export default function App() {
     instanceName: string;
     report: HealthReport;
   } | null>(null);
+  const [controlifyOffer, setControlifyOffer] = useState<ControlifyOffer | null>(null);
+  const [controlifyInstall, setControlifyInstall] = useState<ControlifyInstallRequest | null>(null);
+  const pendingControlifyLaunchRef = useRef<PendingControlifyLaunch | null>(null);
+  const controlifyGateBusyRef = useRef(false);
+  const controlifyInstallBusyRef = useRef(false);
+  // Instances already asked about this sitting. A launch with a pad in hand
+  // should raise the offer rather than stay silent, but not on every single
+  // launch of the same instance in one session.
+  const controlifyAskedRef = useRef<Set<string>>(new Set());
   const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
   const registry = useRegistryState();
 
@@ -313,6 +357,29 @@ export default function App() {
     previousDestinationRef.current = destination;
   }, [destination]);
 
+  // A desktop shortcut carrying `--launch <id>` reaches an already-running app
+  // through the single-instance plugin, which forwards it as `cli-launch`.
+  // Navigating to the instance rather than launching outright is deliberate:
+  // starting a game from a background window with no confirmation would be a
+  // surprising thing for a click on a shortcut to do while the user is
+  // mid-something-else.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string>('cli-launch', (event) => {
+      if (event.payload) navigateToInstanceDetail(event.payload);
+    }).then((stop) => { unlisten = stop; });
+    return () => { unlisten?.(); };
+  }, [navigateToInstanceDetail]);
+
+  // The cold-start half of the same feature. A shortcut clicked while Agora is
+  // closed cannot arrive as an event — the backend parses argv before this
+  // listener exists — so the id is collected once here instead.
+  useEffect(() => {
+    void takePendingCliLaunch()
+      .then((instanceId) => { if (instanceId) navigateToInstanceDetail(instanceId); })
+      .catch(() => { /* No shortcut argument is the normal case. */ });
+  }, [navigateToInstanceDetail]);
+
   // Legacy bridge: the CommandPalette still uses (tab, instanceId?) signature.
   const handleNavigate = (tab: Tab, instanceId?: string) => {
     if (instanceId) {
@@ -338,22 +405,28 @@ export default function App() {
     };
   }, []);
 
-  // Re-read the ai_chat_enabled toggle whenever the destination changes
-  // so the sidebar reflects the current setting without an app restart.
+  // Re-read UI toggles whenever the destination changes so app-level features
+  // reflect Settings without requiring an app restart.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const ai = await getSetting('ai_chat_enabled');
-        if (!cancelled) setAiChatEnabled(ai === true || ai === 'true');
+        if (!cancelled) {
+          const asBool = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1';
+          setAiChatEnabled(asBool(ai));
+        }
       } catch {
-        if (!cancelled) setAiChatEnabled(false);
+        if (!cancelled) {
+          setAiChatEnabled(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [destination]);
+
 
   // React to the agora-navigate custom event (used by external code).
   useEffect(() => {
@@ -471,6 +544,7 @@ export default function App() {
   // Render the HealthDialog at the App level so it survives page navigation.
   const {
     state: processState,
+    liveSessions,
     logs: processLogs,
     startLaunch,
     startLaunchDetailed,
@@ -481,6 +555,7 @@ export default function App() {
     repairAndRetry,
     switchLoaderAndRetry,
     useDelegatedLaunch,
+    restartMojangLauncherAndRetry,
   } = processController;
 
   const resolveDirectLaunch = async (instanceId: string) => {
@@ -496,8 +571,168 @@ export default function App() {
     return directLaunch;
   };
 
+  // Deliberately plain functions, not useCallback: everything below this point
+  // sits after the onboarding early return, so a hook here would change the
+  // hook count between renders and crash on every cold start. None of these is
+  // used in a dependency array, so memoizing them bought nothing anyway.
+  const continueControlifyLaunch = async (request: PendingControlifyLaunch) => {
+    if (request.detailed) {
+      return startLaunchDetailed(request.instanceId, request.directLaunch, request.onAwaitingHealth);
+    }
+    return startLaunch(request.instanceId, request.directLaunch);
+  };
+
+  /**
+   * Check the backend-owned Controlify decision immediately before launching.
+   * A failed suggestion check never blocks an otherwise valid launch.
+   */
+  const maybeOfferControlify = async (request: PendingControlifyLaunch): Promise<boolean> => {
+    if (!gamepadConnected) return false;
+    if (pendingControlifyLaunchRef.current) return true;
+    if (controlifyGateBusyRef.current) return true;
+    if (controlifyAskedRef.current.has(request.instanceId)) return false;
+
+    controlifyGateBusyRef.current = true;
+    try {
+      let offer: ControlifyOffer;
+      try {
+        offer = await evaluateControlifyOffer(request.instanceId);
+      } catch {
+        return false;
+      }
+
+      // A decline used to silence the offer permanently, with no way back: the
+      // reset command existed but nothing ever called it. Someone launching
+      // with a controller in hand is asking for controller support, so an old
+      // "not now" gets cleared and the question asked properly again. The
+      // session guard above is what stops that becoming a nag.
+      if (offer.decision === 'declined') {
+        try {
+          await resetControlifyOffer(request.instanceId);
+          offer = await evaluateControlifyOffer(request.instanceId);
+        } catch {
+          // Leave the stale decision alone; the branch below still explains it.
+        }
+      }
+
+      if (offer.instance_id !== request.instanceId) return false;
+
+      // Nothing to say when the mod is already there. Every other decision gets
+      // shown, because the backend deliberately returns a reason rather than an
+      // option so the UI can explain why controller support is unavailable
+      // instead of the offer silently never appearing.
+      if (offer.decision === 'already_installed') return false;
+
+      controlifyAskedRef.current.add(request.instanceId);
+
+      // Keep both guards here and in the dialog. This makes the *install* path
+      // fail closed even if a future caller ignores the decision enum; the
+      // dialog renders a read-only explanation when it cannot install.
+      if (
+        offer.decision === 'offer'
+        && (typeof offer.modrinth_slug !== 'string' || offer.modrinth_slug.trim().length === 0)
+      ) {
+        return false;
+      }
+
+      pendingControlifyLaunchRef.current = request;
+      setControlifyOffer(offer);
+      return true;
+    } finally {
+      controlifyGateBusyRef.current = false;
+    }
+  };
+
+  const launchWithControlify = async (instanceId: string, directLaunch: boolean): Promise<boolean> => {
+    const intercepted = await maybeOfferControlify({ instanceId, directLaunch, detailed: false });
+    if (intercepted) return false;
+    return startLaunch(instanceId, directLaunch);
+  };
+
+  const launchDetailedWithControlify = async (
+    instanceId: string,
+    directLaunch: boolean,
+    onAwaitingHealth?: () => void,
+  ) => {
+    const intercepted = await maybeOfferControlify({
+      instanceId,
+      directLaunch,
+      detailed: true,
+      onAwaitingHealth,
+    });
+    if (intercepted) return 'failed' as const;
+    return startLaunchDetailed(instanceId, directLaunch, onAwaitingHealth);
+  };
+
+  const handleControlifyAccept = async (slug: string) => {
+    const offer = controlifyOffer;
+    const pending = pendingControlifyLaunchRef.current;
+    if (
+      controlifyInstallBusyRef.current
+      || !offer
+      || !pending
+      || offer.instance_id !== pending.instanceId
+      || offer.decision !== 'offer'
+      || offer.modrinth_slug !== slug
+      || !slug.trim()
+    ) return;
+
+    controlifyInstallBusyRef.current = true;
+    try {
+      const detail = await getInstanceDetail(pending.instanceId).catch(() => null);
+      const intent: InstallIntent = {
+        action: {
+          type: 'install',
+          sourceType: 'modrinth',
+          itemId: slug,
+        },
+        targetInstance: pending.instanceId,
+        optionalDeps: { type: 'prompt' },
+        requestedBy: 'interactive',
+        overrides: {
+          allowReplace: false,
+          skipHealthScan: false,
+          forceConflictResolution: {},
+        },
+      };
+      setControlifyOffer(null);
+      setControlifyInstall({
+        intent,
+        instanceName: detail?.row.name ?? pending.instanceId,
+      });
+    } finally {
+      controlifyInstallBusyRef.current = false;
+    }
+  };
+
+  const handleControlifyDecline = async () => {
+    const pending = pendingControlifyLaunchRef.current;
+    pendingControlifyLaunchRef.current = null;
+    setControlifyOffer(null);
+    if (!pending) return;
+
+    try {
+      await declineControlifyOffer(pending.instanceId);
+    } catch {
+      showToast('Could not save the Controlify choice; it may be offered again next time.', 'error');
+    }
+    void continueControlifyLaunch(pending);
+  };
+
+  const handleControlifyInstallClose = () => {
+    pendingControlifyLaunchRef.current = null;
+    setControlifyInstall(null);
+  };
+
+  const handleControlifyInstallSuccess = () => {
+    const pending = pendingControlifyLaunchRef.current;
+    pendingControlifyLaunchRef.current = null;
+    setControlifyInstall(null);
+    if (pending) void continueControlifyLaunch(pending);
+  };
+
   const handleInstanceEditorLaunch = async (instanceId: string) => {
-    return startLaunch(instanceId, await resolveDirectLaunch(instanceId));
+    return launchWithControlify(instanceId, await resolveDirectLaunch(instanceId));
   };
 
   const openHealthReview = (instanceId: string, instanceName: string, report: HealthReport) => {
@@ -562,11 +797,37 @@ export default function App() {
 
   return (
     <PackInstallProvider>
+      {controlifyOffer && (
+        <ControlifyOfferDialog
+          offer={controlifyOffer}
+          onAccept={(slug) => { void handleControlifyAccept(slug); }}
+          onDecline={() => { void handleControlifyDecline(); }}
+        />
+      )}
+      {controlifyInstall && (
+        <InstallFlow
+          open
+          intent={controlifyInstall.intent}
+          instanceName={controlifyInstall.instanceName}
+          onClose={handleControlifyInstallClose}
+          onSuccess={handleControlifyInstallSuccess}
+        />
+      )}
       <TourProvider onStart={handleTourStart}>
       <AmbienceProvider>
       <AmbienceEnabledBridge onChange={setAmbienceEnabled} />
       <QueuedTourStarter />
-      <div className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
+      <div ref={appShellRef} className="app-shell flex h-screen w-screen overflow-hidden gap-3 p-3">
+        <ControllerRootBindings
+          rootRef={appShellRef}
+          onOpenPalette={() => setCommandPaletteOpen(true)}
+          onCyclePage={(direction) => navigateToTab(
+            cycleTab(tabs.map((tab) => tab.id), effectiveTab, direction),
+          )}
+          // Already guarded against stepping off the app's own history, so a
+          // Cancel at the root is a no-op rather than an exit.
+          onBack={goBack}
+        />
         <OfflineBanner />
         <SandboxBanner />
         <Sidebar
@@ -660,7 +921,7 @@ export default function App() {
                     onNavigateTab={navigateToTab}
                     onOpenInstance={navigateToInstanceDetail}
                     onOpenMod={navigateToModDetail}
-                    onLaunch={startLaunch}
+                    onLaunch={launchWithControlify}
                     processState={processState}
                     onKillProcess={killProcess}
                   />
@@ -669,11 +930,13 @@ export default function App() {
                   <Instances
                     onEditInstance={(id) => navigateToInstanceDetail(id)}
                     processState={processState}
-                    onStartLaunch={startLaunch}
+                    liveSessions={liveSessions}
+                    onStartLaunch={launchWithControlify}
                     onKillProcess={killProcess}
                     onStartCrashInvestigation={setCrashInvestigation}
                     onRepairAndRetry={repairAndRetry}
                     onUseDelegatedLaunch={useDelegatedLaunch}
+                    onRestartMojangLauncher={restartMojangLauncherAndRetry}
                     onClearError={clearError}
                     healthReports={healthMonitor.reports}
                     healthErrors={healthMonitor.errors}
@@ -761,7 +1024,7 @@ export default function App() {
             crashFilename={crashInvestigation.crashFilename}
             manualLogText={crashInvestigation.manualLogText}
             onClose={() => setCrashInvestigation(null)}
-            onLaunch={(onAwaitingHealth) => startLaunchDetailed(
+            onLaunch={(onAwaitingHealth) => launchDetailedWithControlify(
               crashInvestigation.instanceId,
               crashInvestigation.directLaunch,
               onAwaitingHealth,
@@ -779,4 +1042,3 @@ export default function App() {
     </PackInstallProvider>
   );
 }
-

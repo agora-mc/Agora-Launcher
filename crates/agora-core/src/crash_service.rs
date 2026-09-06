@@ -141,10 +141,7 @@ impl CrashService {
         let manifest_path = self.ctx.paths.instance_manifest(&sanitized)?;
         let result = if manifest_path.exists() {
             (|| -> LauncherResult<()> {
-                let text = std::fs::read_to_string(&manifest_path)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                let mut manifest: crate::models::InstanceManifest =
-                    serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+                let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
                 set_enabled_in_all_arrays(&mut manifest, filename, false);
                 crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
             })()
@@ -179,10 +176,7 @@ impl CrashService {
         let manifest_path = self.ctx.paths.instance_manifest(&sanitized)?;
         let result = if manifest_path.exists() {
             (|| -> LauncherResult<()> {
-                let text = std::fs::read_to_string(&manifest_path)
-                    .map_err(|_| LauncherError::InstanceCreateFailed)?;
-                let mut manifest: crate::models::InstanceManifest =
-                    serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?;
+                let mut manifest = crate::helpers::read_manifest(&manifest_path)?;
                 set_enabled_in_all_arrays(&mut manifest, filename, true);
                 crate::helpers::atomic_write_manifest(&manifest_path, &manifest)
             })()
@@ -778,6 +772,34 @@ pub fn continue_investigation(
 
 /// Pure per-mod scoring computation.
 ///
+/// Whether a version-windowed curated conflict applies to what is installed.
+///
+/// Identity matches the scorer's own notion — `registry_id`, falling back to
+/// the filename — so a fact this returns `false` for is exactly a fact the
+/// scorer would otherwise have counted. A side that is present but carries no
+/// readable version does not satisfy a conditional window; see
+/// [`registry::KnownConflict::applies_to_versions`].
+fn conflict_applies_to_installed(
+    conflict: &registry::KnownConflict,
+    installed: &[crate::models::InstalledMod],
+) -> bool {
+    fn versions_of(installed: &[crate::models::InstalledMod], id: &str) -> Vec<Option<String>> {
+        installed
+            .iter()
+            .filter(|m| m.registry_id.as_deref() == Some(id) || m.filename == id)
+            .map(|m| m.version.clone())
+            .collect()
+    }
+
+    let a_versions = versions_of(installed, &conflict.mod_a_id);
+    let b_versions = versions_of(installed, &conflict.mod_b_id);
+    a_versions.iter().any(|a| {
+        b_versions
+            .iter()
+            .any(|b| conflict.applies_to_versions(a.as_deref(), b.as_deref()))
+    })
+}
+
 /// Computes a `SuspectScore` for a single mod from pre-gathered inputs.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_mod_score(
@@ -990,12 +1012,23 @@ pub fn score_suspects(
 
     let total_survivals: i64 = crash_svc.get_total_survival_count().unwrap_or(0);
 
-    let known_conflicts: Vec<registry::KnownConflict> =
-        registry_svc.known_conflicts().unwrap_or_default();
-
     let installed_ids: Vec<String> = installed
         .iter()
         .filter_map(|m| m.registry_id.clone().or_else(|| Some(m.filename.clone())))
+        .collect();
+
+    // Curated conflicts may carry version windows. Drop the ones that do not
+    // apply to what is actually installed *before* scoring, so a fact about
+    // "Sodium >= 0.5" contributes no suspicion on an instance running 0.4.
+    // Filtering here rather than inside `compute_mod_score` keeps signal G's
+    // arithmetic untouched — a fact either counts or is not in the list.
+    let known_conflicts: Vec<registry::KnownConflict> = registry_svc
+        .known_conflicts()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|conflict| {
+            !conflict.is_version_windowed() || conflict_applies_to_installed(conflict, installed)
+        })
         .collect();
 
     // -----------------------------------------------------------------------
@@ -1299,15 +1332,7 @@ fn update_manifest_disable(manifest_path: &std::path::Path, filename: &str) -> L
     if !manifest_path.exists() {
         return Ok(());
     }
-    let text = std::fs::read_to_string(manifest_path).map_err(|e| LauncherError::Generic {
-        code: "ERR_MANIFEST_READ".into(),
-        message: format!("Could not read manifest: {e}"),
-    })?;
-    let mut manifest: InstanceManifest =
-        serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
-            code: "ERR_MANIFEST_PARSE".into(),
-            message: format!("Invalid manifest: {e}"),
-        })?;
+    let mut manifest = crate::helpers::read_manifest(manifest_path)?;
 
     for entry in all_mod_entries_mut(&mut manifest) {
         if entry.filename == filename {
@@ -1334,15 +1359,7 @@ fn update_manifest_enable(manifest_path: &std::path::Path, filename: &str) -> La
     if !manifest_path.exists() {
         return Ok(());
     }
-    let text = std::fs::read_to_string(manifest_path).map_err(|e| LauncherError::Generic {
-        code: "ERR_MANIFEST_READ".into(),
-        message: format!("Could not read manifest: {e}"),
-    })?;
-    let mut manifest: InstanceManifest =
-        serde_json::from_str(&text).map_err(|e| LauncherError::Generic {
-            code: "ERR_MANIFEST_PARSE".into(),
-            message: format!("Invalid manifest: {e}"),
-        })?;
+    let mut manifest = crate::helpers::read_manifest(manifest_path)?;
 
     for entry in all_mod_entries_mut(&mut manifest) {
         if entry.filename == filename {
@@ -1431,6 +1448,8 @@ mod tests {
         }
 
         let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: instance_id.to_string(),
             name: instance_id.to_string(),
             created_from_pack: None,
@@ -1441,6 +1460,9 @@ mod tests {
             mods: mod_filenames
                 .iter()
                 .map(|fname| crate::models::InstalledMod {
+                    update_pinned: false,
+                    pack_managed: false,
+                    installed_as_dependency: false,
                     filename: fname.to_string(),
                     registry_id: None,
                     modrinth_id: None,
@@ -1980,6 +2002,9 @@ mod tests {
             severity: severity.to_string(),
             mitigated_by: vec![],
             notes: None,
+            mod_a_versions: vec![],
+            mod_b_versions: vec![],
+            version_grammar: crate::dependency_ops::VersionGrammar::Fabric,
         }
     }
 
@@ -2213,6 +2238,9 @@ Caused by: java.lang.NullPointerException
             severity: "hard".into(),
             mitigated_by: vec!["indium".into()],
             notes: None,
+            mod_a_versions: vec![],
+            mod_b_versions: vec![],
+            version_grammar: crate::dependency_ops::VersionGrammar::Fabric,
         };
         let s = compute_mod_score(
             "optifine".into(),

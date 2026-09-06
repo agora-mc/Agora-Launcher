@@ -278,6 +278,11 @@ enum InstanceCmd {
         jvm_custom_args: Option<String>,
         #[arg(long)]
         jvm_always_pre_touch: Option<bool>,
+        #[arg(
+            long = "template",
+            help = "Instance template id to seed configs and JVM settings from"
+        )]
+        template_id: Option<String>,
     },
     /// Clone an existing instance with copy-preference flags.
     Clone {
@@ -749,8 +754,13 @@ async fn main() {
         None => OutputFormat::Human,
     };
     let json = output_fmt.is_json_output();
-    let paths =
-        agora_core::app_paths::AppPaths::platform_default_with_override(cli.data_dir.clone());
+    // `--data-dir` still wins outright. Without it, defer to the same resolver
+    // the desktop uses so a portable install's bundled CLI lands on the pack of
+    // instances sitting next to it, rather than in the platform app-data dir.
+    let paths = match cli.data_dir.clone() {
+        Some(root) => agora_core::app_paths::AppPaths::from_root(root),
+        None => agora_core::app_paths::AppPaths::platform_default(),
+    };
     let log_path = cli
         .log_file
         .clone()
@@ -1004,6 +1014,7 @@ async fn run_command(
                 jvm_gc,
                 jvm_custom_args,
                 jvm_always_pre_touch,
+                template_id,
             } => {
                 let instance_id = agora_core::paths::sanitize_id(&name);
                 let jvm_memory_mode = Some(if jvm_memory_mb.is_some() {
@@ -1024,6 +1035,7 @@ async fn run_command(
                     jvm_always_pre_touch,
                     is_modpack: None,
                     pack_icon_url: None,
+                    template_id,
                 };
                 let row = InstanceService::new(ctx.clone()).create(request).await?;
                 if json {
@@ -1262,8 +1274,7 @@ async fn run_command(
                 if !manifest_path.exists() {
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
-                let text = std::fs::read_to_string(&manifest_path)?;
-                let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+                let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&manifest.mods)?);
                 } else {
@@ -1945,8 +1956,7 @@ async fn run_command(
             if !manifest_path.exists() {
                 anyhow::bail!("Instance manifest not found for '{}'", instance);
             }
-            let text = std::fs::read_to_string(&manifest_path)?;
-            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
             let reg_path = data_dir.join("registry.db");
             let reg_opt = if reg_path.exists() {
                 Some(reg_path)
@@ -1978,8 +1988,7 @@ async fn run_command(
                 anyhow::bail!("Instance '{}' not found", instance);
             }
             let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
-            let text = std::fs::read_to_string(&manifest_path)?;
-            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
             let inventory = agora_core::health::inventory(&instance_dir, &manifest);
             if json {
                 let artifacts: Vec<_> = inventory
@@ -2203,7 +2212,7 @@ async fn run_command(
             } else {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 match ext {
-                    "mrpack" => agora_core::import_service::ImportSource::Mrpack(path),
+                    "mrpack" => agora_core::import_service::ImportSource::mrpack(path),
                     "zip" => agora_core::import_service::ImportSource::PrismZip(path),
                     _ => anyhow::bail!(
                         "Unsupported file type '.{ext}'. Use .mrpack, .zip, or a directory"
@@ -2648,9 +2657,7 @@ async fn run_command(
                 anyhow::anyhow!("Cannot create destination '{}': {}", dest.display(), e)
             })?;
             let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
-            let text = std::fs::read_to_string(&manifest_path)
-                .map_err(|_| anyhow::anyhow!("Instance manifest not found for '{}'", instance))?;
-            let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)?;
+            let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
             let result = agora_core::server_export::export_server_environment(
                 &instance_dir,
                 &dest,
@@ -3422,6 +3429,9 @@ mod tests {
     #[test]
     fn removal_plan_detects_reverse_dependents() {
         let target = InstalledMod {
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
             filename: "core-lib.jar".into(),
             registry_id: Some("core-lib".into()),
             modrinth_id: None,
@@ -3441,6 +3451,9 @@ mod tests {
         };
 
         let dependent = InstalledMod {
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
             filename: "dependent-mod.jar".into(),
             registry_id: Some("dependent-mod".into()),
             modrinth_id: None,
@@ -3472,6 +3485,9 @@ mod tests {
     #[test]
     fn removal_plan_empty_for_unreferenced_mod() {
         let target = InstalledMod {
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
             filename: "standalone.jar".into(),
             registry_id: None,
             modrinth_id: None,
@@ -3491,6 +3507,9 @@ mod tests {
         };
 
         let other = InstalledMod {
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
             filename: "other.jar".into(),
             registry_id: Some("other".into()),
             modrinth_id: None,
@@ -4056,6 +4075,8 @@ mod tests {
         fs::write(&mod_path, b"fake mod content").expect("write mod file");
 
         let manifest = InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test-instance".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -4064,6 +4085,9 @@ mod tests {
             loader_version: "0.16.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                update_pinned: false,
+                pack_managed: false,
+                installed_as_dependency: false,
                 filename: "test-mod.jar".into(),
                 source: "manual".into(),
                 source_url: None,
@@ -4111,6 +4135,8 @@ mod tests {
             "disabled file exists"
         );
 
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let updated: InstanceManifest =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         assert!(!updated.mods[0].enabled, "mod disabled in manifest");
@@ -4134,6 +4160,8 @@ mod tests {
             "disabled file gone"
         );
 
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let updated2: InstanceManifest =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
         assert!(updated2.mods[0].enabled, "mod enabled in manifest");
@@ -4632,6 +4660,7 @@ mod tests {
             files_to_add: vec![],
             files_to_remove: vec![],
             files_to_disable: vec![],
+            files_to_promote: vec![],
             snapshot: SnapshotPlan {
                 label: "".into(),
                 estimated_bytes: 0,
@@ -4690,6 +4719,7 @@ mod tests {
             files_to_add: vec![],
             files_to_remove: vec![],
             files_to_disable: vec![],
+            files_to_promote: vec![],
             snapshot: SnapshotPlan {
                 label: "".into(),
                 estimated_bytes: 0,

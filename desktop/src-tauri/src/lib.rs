@@ -48,6 +48,40 @@ pub fn core_context<R: tauri::Runtime>(
     agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| ctx)
 }
 
+/// Pull the instance id out of a `--launch <id>` / `--launch=<id>` argv.
+///
+/// Sanitized here rather than trusted: argv reaches this from a desktop
+/// shortcut or a shell, so it is external input even though it looks internal.
+/// An id that does not survive sanitizing is not a real instance and is
+/// dropped rather than passed on.
+fn launch_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let candidate = if let Some(rest) = arg.strip_prefix("--launch=") {
+            rest.to_string()
+        } else if arg == "--launch" {
+            iter.next()?.to_string()
+        } else {
+            continue;
+        };
+        let sanitized = agora_core::paths::sanitize_id(&candidate);
+        if !sanitized.is_empty() && sanitized == candidate {
+            return Some(sanitized);
+        }
+        return None;
+    }
+    None
+}
+
+/// A `--launch <id>` seen in this process's own argv at startup.
+///
+/// The single-instance path can emit an event because the frontend is already
+/// listening. A cold start cannot: `setup` runs before any listener is
+/// attached, so an event there goes nowhere. The id is parked here instead and
+/// the frontend collects it once, on mount.
+#[derive(Default)]
+pub struct PendingCliLaunch(pub std::sync::Mutex<Option<String>>);
+
 /// Run the Tauri application.
 pub fn run() {
     // Log startup so the user can verify from the log file that they are
@@ -61,9 +95,17 @@ pub fn run() {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     ));
+    // Read this process's own argv before Tauri takes over. A shortcut clicked
+    // while Agora is closed lands here; one clicked while it is running lands
+    // in the single-instance callback below.
+    let pending_cli_launch = PendingCliLaunch(std::sync::Mutex::new(launch_arg(
+        &std::env::args().collect::<Vec<_>>(),
+    )));
+
     tauri::Builder::default()
         .manage(LauncherState::default())
         .manage(mcp::McpServerManager::default())
+        .manage(pending_cli_launch)
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_sql::Builder::new().build())
@@ -71,15 +113,31 @@ pub fn run() {
         // tauri.conf.json; an unsigned or wrongly-signed bundle is rejected by
         // the plugin before anything is installed.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        // Deliberately no `tauri_plugin_cli`. It requires a `plugins.cli`
+        // block in tauri.conf.json and panics at startup without one, and
+        // nothing here reads its parse results: `launch_arg` reads argv
+        // directly, which is all a single `--launch <id>` flag needs. A
+        // registered plugin whose output is never consumed is a second source
+        // of truth for the argument list and a startup failure waiting to
+        // happen.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second launch focuses the existing window instead of starting
             // a duplicate process (which previously could leave orphaned
             // windows such as the Microsoft sign-in webview behind).
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
             }
+            // ...and if it carried `--launch <id>`, hand that to the running
+            // app. This is what makes a desktop shortcut work: the shortcut
+            // starts a second process, single-instance forwards its argv here,
+            // and the already-running window does the launching.
+            if let Some(instance_id) = launch_arg(&args) {
+                use tauri::Emitter;
+                let _ = app.emit("cli-launch", instance_id);
+            }
         }))
         .invoke_handler(tauri::generate_handler![
+            commands::take_pending_cli_launch,
             commands::browse_items,
             commands::for_you_items,
             commands::get_registry_item,
@@ -105,6 +163,11 @@ pub fn run() {
             commands::apply_install_plan,
             commands::cancel_install,
             commands::check_instance_updates,
+            commands::get_cached_instance_updates,
+            commands::get_cached_all_updates,
+            commands::get_update_changelogs,
+            commands::set_mod_update_pinned,
+            commands::clear_cached_instance_updates,
             commands::get_lkg_marker,
             commands::export_lockfile,
             commands::import_lockfile,
@@ -115,6 +178,38 @@ pub fn run() {
             commands::create_snapshot,
             commands::restore_snapshot,
             commands::delete_snapshot,
+            commands::list_capturable_template_files,
+            commands::list_instance_templates,
+            commands::scan_runtime_prune,
+            commands::get_migration_report,
+            commands::get_launch_history,
+            commands::set_instance_wrapper_command,
+            commands::create_desktop_shortcut,
+            commands::get_shared_screenshot_status,
+            commands::link_shared_screenshots,
+            commands::unlink_shared_screenshots,
+            commands::preview_pack_update,
+            commands::apply_pack_update,
+            commands::plan_version_migration,
+            commands::run_version_migration,
+            commands::get_bisect_session,
+            commands::start_bisect,
+            commands::apply_bisect_trial,
+            commands::record_bisect_outcome,
+            commands::step_back_bisect,
+            commands::cancel_bisect,
+            commands::export_backup,
+            commands::import_backup,
+            commands::apply_backup_retention,
+            commands::get_mod_groups,
+            commands::set_mod_group,
+            commands::rename_mod_group,
+            commands::delete_mod_group,
+            commands::run_runtime_prune,
+            commands::create_instance_template,
+            commands::update_instance_template,
+            commands::delete_instance_template,
+            commands::apply_instance_template,
             commands::list_loadout_profiles,
             commands::create_loadout_profile,
             commands::apply_loadout_profile,
@@ -132,6 +227,9 @@ pub fn run() {
             commands::list_manifest_mc_versions,
             commands::get_setting,
             commands::set_setting,
+            commands::evaluate_controlify_offer,
+            commands::decline_controlify_offer,
+            commands::reset_controlify_offer,
             commands::github_login,
             commands::github_login_poll,
             commands::github_logout,
@@ -190,6 +288,8 @@ pub fn run() {
             commands::confirm_crash_fix,
             commands::report_still_crashing,
             commands::get_dependency_graph,
+            commands::get_orphaned_dependencies,
+            commands::explain_mod_presence,
             commands::get_disable_plan,
             commands::get_removal_plan,
             commands::get_install_plan,
@@ -209,6 +309,7 @@ pub fn run() {
             commands::ai_chat,
             commands::msa_login,
             commands::msa_get_status,
+            commands::credential_storage_status,
             commands::msa_refresh,
             commands::msa_logout,
             commands::compute_gc_args,
@@ -279,8 +380,10 @@ pub fn run() {
                     eprintln!("Failed to seed registry: {}", e);
                 }
                 if let Some(ctx) = startup_maintenance_ctx {
+                    // Prewarm remains bounded and launch never depends on it (maintenance.rs:1).
+                    let prewarm_ctx = ctx.clone();
                     tauri::async_runtime::spawn(async move {
-                        match agora_core::maintenance::prewarm_recent_instances(ctx).await {
+                        match agora_core::maintenance::prewarm_recent_instances(prewarm_ctx).await {
                             Ok(summary) if summary.warmed > 0 => eprintln!(
                                 "[core] warmed {} recent instance cache(s) ({} skipped, {} failed)",
                                 summary.warmed, summary.skipped, summary.failed
@@ -288,6 +391,26 @@ pub fn run() {
                             Ok(_) => {}
                             Err(error) => {
                                 eprintln!("[core] startup cache warmup unavailable: {error}")
+                            }
+                        }
+                    });
+                    // Bounded background sweep for update caches: refreshes ALL
+                    // instances without blocking cold start (task_scheduler /
+                    // BlockingPriority::Background). Silent offline via
+                    // NetworkPolicy (network.rs), never errors.
+                    let sweep_ctx = ctx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match agora_core::update_cache::sweep_all_updates(sweep_ctx).await {
+                            Ok(summary) if summary.updated > 0 => eprintln!(
+                                "[core] update sweep refreshed {} instance(s) ({} skipped, {} failed, offline={})",
+                                summary.updated, summary.skipped, summary.failed, summary.offline_skipped
+                            ),
+                            Ok(summary) if summary.offline_skipped => {
+                                eprintln!("[core] update sweep skipped (offline/lockdown)");
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("[core] update sweep unavailable: {error}")
                             }
                         }
                     });

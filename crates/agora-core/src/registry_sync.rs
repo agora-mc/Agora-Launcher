@@ -40,12 +40,17 @@ const REGISTRY_PUBKEY_HEX: &str = match option_env!("AGORA_REGISTRY_PUBKEY") {
 
 /// App-side expected schema version for registry.db.
 ///
-/// Bumped to 3 alongside the compiler adding a `modrinth_id` column to
-/// `registry_items` (used for metadata hydration and as the version-resolution
-/// fallback when a github_release mod's primary source fails). Compiler and
-/// app ship in lockstep from a single commit, so clients always receive a
-/// matching signed db via the update flow.
-pub const APP_REGISTRY_SCHEMA_VERSION: i64 = 8;
+/// Bumped to 9 alongside the compiler adding an `item_version_changelogs`
+/// table that stores per-version changelogs (Modrinth `changelog` + GitHub
+/// release `body`) so the desktop can show "what changed" offline without a
+/// runtime API call. Each row is keyed by `(item_id, version)` where
+/// `version` is the display version string (Modrinth `version_number` or
+/// GitHub `tag_name`) that the resolver and `InstalledMod.version` already
+/// use. The table is capped at 30 recent versions per item, each truncated to
+/// 8k chars, so the signed db stays compact. Compiler and app ship in
+/// lockstep from a single commit, so clients always receive a matching signed
+/// db via the update flow.
+pub const APP_REGISTRY_SCHEMA_VERSION: i64 = 9;
 
 /// Minimum interval between automatic update checks (1 hour).
 const UPDATE_CHECK_INTERVAL_SECS: i64 = 3600;

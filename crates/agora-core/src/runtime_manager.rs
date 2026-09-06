@@ -318,6 +318,47 @@ fn archive_ext(entry: &RuntimeCatalogEntry) -> &'static str {
 // ensure_runtime — the main provisioning entry point
 // ---------------------------------------------------------------------------
 
+/// True for the Windows error codes that mean another handle is still open.
+///
+/// Access denied (5), sharing violation (32), lock violation (33).
+#[cfg(windows)]
+fn is_transient_fs_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33))
+}
+
+#[cfg(not(windows))]
+fn is_transient_fs_error(_error: &std::io::Error) -> bool {
+    false
+}
+
+/// Rename, retrying briefly while the platform reports the source or
+/// destination as still in use.
+///
+/// On Windows a rename fails outright if any handle to either path is open, and
+/// an antivirus scanner or the search indexer opening a file moments after we
+/// wrote it is enough to cause it. It clears on its own in milliseconds. Unix
+/// has no equivalent condition, so this is exactly `std::fs::rename` there.
+///
+/// Worth retrying because these renames are the *commit* step of provisioning:
+/// losing the promotion after a successful download and extraction costs the
+/// user the entire runtime install and surfaces as a failed launch.
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    const MAX_ATTEMPTS: u32 = 10;
+    const BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let mut attempt: u32 = 1;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < MAX_ATTEMPTS && is_transient_fs_error(&error) => {
+                std::thread::sleep(BACKOFF_STEP * attempt);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Ensure a managed JRE for the given major version is installed and valid.
 ///
 /// # Steps
@@ -515,20 +556,20 @@ pub fn ensure_runtime(
     let had_existing = entry_path.exists();
 
     if had_existing {
-        std::fs::rename(&entry_path, &backup).map_err(|e| LauncherError::Generic {
+        rename_with_retry(&entry_path, &backup).map_err(|e| LauncherError::Generic {
             code: "ERR_RUNTIME_BACKUP".into(),
             message: format!("Failed to back up existing runtime: {e}"),
         })?;
     }
 
-    match std::fs::rename(&staging, &entry_path) {
+    match rename_with_retry(&staging, &entry_path) {
         Ok(()) => {
             staging_cleanup.disarm();
         }
         Err(error) => {
             // Rename failed — restore backup.
             if had_existing {
-                let _ = std::fs::rename(&backup, &entry_path);
+                let _ = rename_with_retry(&backup, &entry_path);
             }
             return Err(LauncherError::Generic {
                 code: "ERR_RUNTIME_PROMOTE".into(),
@@ -548,7 +589,7 @@ pub fn ensure_runtime(
         Err(error) => {
             let _ = std::fs::remove_dir_all(&entry_path);
             if had_existing {
-                let _ = std::fs::rename(&backup, &entry_path);
+                let _ = rename_with_retry(&backup, &entry_path);
             }
             return Err(error);
         }
@@ -639,6 +680,34 @@ enum ArchiveCacheOutcome {
 /// and if the extracted runtime still passes full validation
 /// (inspect_java + java_sha256), it is returned as `RuntimeRecovered`.
 /// Otherwise the stale runtime directory is removed and `DownloadNeeded` is
+/// Whether the cached archive is present.
+///
+/// `Path::is_file` collapses every metadata error into `false`. That is wrong
+/// here: on Windows a file another process has momentarily open -- a scanner,
+/// the indexer -- reports an access error rather than "missing", and treating
+/// that as a cache miss silently re-downloads an entire JRE. Worse, in tests it
+/// turns a hermetic run into a live network fetch.
+///
+/// Only a genuine `NotFound` counts as absent. Anything else is retried, then
+/// surfaced.
+fn cache_file_present(path: &Path) -> std::io::Result<bool> {
+    const MAX_ATTEMPTS: u32 = 5;
+    const BACKOFF_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let mut attempt: u32 = 1;
+    loop {
+        match std::fs::metadata(path) {
+            Ok(metadata) => return Ok(metadata.is_file()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if attempt < MAX_ATTEMPTS && is_transient_fs_error(&error) => {
+                std::thread::sleep(BACKOFF_STEP * attempt);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// returned so the caller proceeds with a fresh download and extraction.
 fn resolve_archive_cache(
     cache_path: &Path,
@@ -648,7 +717,11 @@ fn resolve_archive_cache(
     major: u32,
     progress: &dyn RuntimeProgress,
 ) -> LauncherResult<ArchiveCacheOutcome> {
-    if !cache_path.is_file() {
+    let cached = cache_file_present(cache_path).map_err(|e| LauncherError::Generic {
+        code: "ERR_ARCHIVE_CACHE_STAT".into(),
+        message: format!("Failed to inspect cached archive: {e}"),
+    })?;
+    if !cached {
         return Ok(ArchiveCacheOutcome::DownloadNeeded);
     }
 
@@ -837,7 +910,7 @@ fn download_archive_verified(
         }
 
         // Atomic rename to final cache path.
-        std::fs::rename(&partial, path).map_err(|e| LauncherError::Generic {
+        rename_with_retry(&partial, path).map_err(|e| LauncherError::Generic {
             code: "ERR_ARCHIVE_RENAME".into(),
             message: format!("Failed to rename archive: {e}"),
         })?;
@@ -1809,7 +1882,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> LauncherResult<()> {
         return Err(e);
     }
 
-    std::fs::rename(&temp, path).map_err(|e| LauncherError::Generic {
+    rename_with_retry(&temp, path).map_err(|e| LauncherError::Generic {
         code: "ERR_ATOMIC_WRITE".into(),
         message: format!(
             "Failed to rename {} to {}: {e}",
@@ -2139,12 +2212,15 @@ mod tests {
             image_type: "jre".into(),
             jvm_impl: "hotspot".into(),
             archive_type: test_archive_extension().into(),
-            url: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jre_x64_windows_hotspot_21.0.2_13.zip".into(),
+            // Unreachable on purpose -- see the note on make_java25_entry.
+            url: "https://tests.invalid/adoptium/must-not-be-fetched.zip".into(),
             sha256: sha256.into(),
             size,
             java_relative_path: test_java_rel().into(),
             license: "GPL-2.0-only WITH Classpath-exception-2.0".into(),
-            source_api_url: "https://api.adoptium.net/v3/assets/latest/21/hotspot?image_type=jre&vendor=eclipse".into(),
+            source_api_url:
+                "https://api.adoptium.net/v3/assets/latest/21/hotspot?image_type=jre&vendor=eclipse"
+                    .into(),
             version_major: Some(21),
             version_minor: Some(0),
             version_security: Some(2),
@@ -3239,16 +3315,25 @@ mod tests {
             full_version: "25.0.1+9".into(),
             openjdk_version: "25.0.1".into(),
             os: normalize_os(std::env::consts::OS).unwrap_or("linux").into(),
-            arch: normalize_arch(std::env::consts::ARCH).unwrap_or("x64").into(),
+            arch: normalize_arch(std::env::consts::ARCH)
+                .unwrap_or("x64")
+                .into(),
             image_type: "jre".into(),
             jvm_impl: "hotspot".into(),
             archive_type: test_archive_extension().into(),
-            url: "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.1%2B9/OpenJDK25U-jre_x64_linux_hotspot_25.0.1_9.tar.gz".into(),
+            // Deliberately unreachable and deliberately not allowlisted. Every
+            // runtime fixture seeds its archive into the cache, so a test that
+            // reaches the downloader has already failed; this makes that failure
+            // instant and offline rather than a live fetch of a real JRE whose
+            // hash cannot match the fixture. URL *validation* is covered
+            // separately by the validate_runtime_url tests, which use real URLs.
+            url: "https://tests.invalid/adoptium/must-not-be-fetched.tar.gz".into(),
             sha256: sha256.into(),
             size,
             java_relative_path: test_java_rel().into(),
             license: "GPL-2.0-only WITH Classpath-exception-2.0".into(),
-            source_api_url: "https://api.adoptium.net/v3/assets/latest/25/hotspot?image_type=jre".into(),
+            source_api_url: "https://api.adoptium.net/v3/assets/latest/25/hotspot?image_type=jre"
+                .into(),
             version_major: Some(25),
             version_minor: Some(0),
             version_security: Some(1),
@@ -3316,6 +3401,54 @@ mod tests {
     }
 
     #[test]
+    fn cache_file_present_detects_a_seeded_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.zip");
+        assert!(!cache_file_present(&path).unwrap(), "absent before writing");
+
+        std::fs::write(&path, b"data").unwrap();
+        assert!(cache_file_present(&path).unwrap(), "present after writing");
+    }
+
+    /// A directory sitting where the archive should be is not a usable cache
+    /// entry, but it is also not an error.
+    #[test]
+    fn cache_file_present_rejects_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.zip");
+        std::fs::create_dir(&path).unwrap();
+        assert!(!cache_file_present(&path).unwrap());
+    }
+
+    #[test]
+    fn rename_with_retry_moves_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        std::fs::write(&from, b"payload").unwrap();
+
+        rename_with_retry(&from, &to).expect("rename must succeed");
+        assert!(!from.exists());
+        assert_eq!(std::fs::read(&to).unwrap(), b"payload");
+    }
+
+    /// A non-transient error must surface immediately rather than burn the
+    /// whole backoff budget first.
+    #[test]
+    fn rename_with_retry_fails_fast_on_a_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let error = rename_with_retry(&dir.path().join("nope"), &dir.path().join("dest"))
+            .expect_err("missing source must fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "must not retry a permanent failure"
+        );
+    }
+
+    #[test]
     fn test_java_25_second_launch_all_network_categories_disabled() {
         let _guard = crate::java::set_mock_inspect(Some(java25_mock_inspect));
         let dir = tempfile::tempdir().unwrap();
@@ -3328,7 +3461,11 @@ mod tests {
 
         // First materialization
         let result1 = ensure_runtime(dir.path(), 25, &catalog, &policy, None, None);
-        assert!(result1.is_ok(), "First Java 25 provisioning failed");
+        assert!(
+            result1.is_ok(),
+            "First Java 25 provisioning failed: {:?}",
+            result1.as_ref().err()
+        );
         let inst1 = result1.unwrap();
 
         // Second launch: ALL categories disabled (including JavaRuntime)

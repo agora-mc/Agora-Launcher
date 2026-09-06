@@ -321,6 +321,8 @@ pub struct FileAdd {
     pub artifact: ResolvedArtifact,
     pub hashes: HashSpec,
     pub size: u64,
+    #[serde(default)]
+    pub installed_as_dependency: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +342,14 @@ pub struct FileRemove {
 #[serde(rename_all = "camelCase")]
 pub struct FileDisable {
     pub filename: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePromote {
+    pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +634,8 @@ pub struct ResolvedInstallPlan {
     pub files_to_add: Vec<FileAdd>,
     pub files_to_remove: Vec<FileRemove>,
     pub files_to_disable: Vec<FileDisable>,
+    #[serde(default)]
+    pub files_to_promote: Vec<FilePromote>,
     pub snapshot: SnapshotPlan,
     pub disk_estimate: DiskSpaceEstimate,
     pub warnings: Vec<PlanWarning>,
@@ -828,10 +840,8 @@ impl InstallPipeline {
             message: "Resolving install plan…".into(),
         });
 
-        let manifest_text = std::fs::read_to_string(instance_dir.join("instance_manifest.json"))
+        let manifest = crate::helpers::read_manifest(&instance_dir.join("instance_manifest.json"))
             .map_err(|e| format!("failed to read instance manifest: {e}"))?;
-        let manifest: crate::models::InstanceManifest = serde_json::from_str(&manifest_text)
-            .map_err(|e| format!("failed to parse instance manifest: {e}"))?;
         let live_index = crate::snapshot::live_file_index(instance_dir)?;
         let instance_state_hash = hash_serializable(&live_index)?;
 
@@ -911,6 +921,7 @@ impl InstallPipeline {
         let mut files_to_add = Vec::new();
         let mut files_to_remove = Vec::new();
         let mut files_to_disable = Vec::new();
+        let mut files_to_promote = Vec::new();
         match &operation {
             ResolvedOperation::Install { artifact } => plan_artifact_change(
                 artifact,
@@ -923,6 +934,8 @@ impl InstallPipeline {
                 &mut pending_choices,
                 &mut blocking_errors,
                 &mut warnings,
+                false,
+                &mut files_to_promote,
             ),
             ResolvedOperation::Update { new_artifact, .. } => plan_artifact_change(
                 new_artifact,
@@ -935,6 +948,8 @@ impl InstallPipeline {
                 &mut pending_choices,
                 &mut blocking_errors,
                 &mut warnings,
+                false,
+                &mut files_to_promote,
             ),
             ResolvedOperation::Remove {
                 target_filename,
@@ -999,6 +1014,8 @@ impl InstallPipeline {
                             &mut pending_choices,
                             &mut blocking_errors,
                             &mut warnings,
+                            false,
+                            &mut files_to_promote,
                         ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
@@ -1088,6 +1105,8 @@ impl InstallPipeline {
                             &mut pending_choices,
                             &mut blocking_errors,
                             &mut warnings,
+                            false,
+                            &mut files_to_promote,
                         ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
@@ -1117,6 +1136,8 @@ impl InstallPipeline {
                             &mut pending_choices,
                             &mut blocking_errors,
                             &mut warnings,
+                            false,
+                            &mut files_to_promote,
                         ),
                         ResolvedOperation::Update { new_artifact, .. } => plan_artifact_change(
                             new_artifact,
@@ -1129,6 +1150,8 @@ impl InstallPipeline {
                             &mut pending_choices,
                             &mut blocking_errors,
                             &mut warnings,
+                            false,
+                            &mut files_to_promote,
                         ),
                         ResolvedOperation::Remove {
                             target_filename,
@@ -1187,6 +1210,8 @@ impl InstallPipeline {
                     &mut pending_choices,
                     &mut blocking_errors,
                     &mut warnings,
+                    true,
+                    &mut files_to_promote,
                 );
             }
         }
@@ -1233,6 +1258,13 @@ impl InstallPipeline {
             .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
         files_to_disable.sort_by(|a, b| a.filename.cmp(&b.filename));
         files_to_disable.dedup_by(|a, b| a.filename == b.filename);
+        files_to_promote.sort_by(|a, b| {
+            a.filename
+                .cmp(&b.filename)
+                .then(a.content_type.cmp(&b.content_type))
+        });
+        files_to_promote
+            .dedup_by(|a, b| a.filename == b.filename && a.content_type == b.content_type);
         conflicts.sort_by(|a, b| a.conflict_id.cmp(&b.conflict_id));
         conflicts.dedup_by(|a, b| a.conflict_id == b.conflict_id);
         pending_choices.sort_by(|a, b| pending_choice_id(a).cmp(pending_choice_id(b)));
@@ -1270,6 +1302,7 @@ impl InstallPipeline {
             files_to_add,
             files_to_remove,
             files_to_disable,
+            files_to_promote,
             snapshot: SnapshotPlan {
                 label: String::new(),
                 estimated_bytes: snapshot_bytes,
@@ -1464,7 +1497,7 @@ impl InstallPipeline {
                 instance_dir.join("instance_manifest.json"),
             )
             .ok()
-            .and_then(|text| serde_json::from_str::<crate::models::InstanceManifest>(&text).ok())
+            .and_then(|text| serde_json::from_str::<crate::models::InstanceManifest>(&text).ok()) // allow-raw-instance-manifest
             .map(|manifest| manifest.minecraft_version)
             {
                 Some(version) => version,
@@ -1597,11 +1630,8 @@ impl InstallPipeline {
             let cache_result =
                 run_blocking_phase(scheduler, "install JAR metadata precompute", move || {
                     let manifest_path = cache_dir.join("instance_manifest.json");
-                    let manifest_text = std::fs::read_to_string(&manifest_path)
-                        .map_err(|error| format!("committed manifest is unreadable ({error})"))?;
-                    let manifest: crate::models::InstanceManifest =
-                        serde_json::from_str(&manifest_text)
-                            .map_err(|error| format!("committed manifest is invalid ({error})"))?;
+                    let manifest = crate::helpers::read_manifest(&manifest_path)
+                        .map_err(|e| format!("Cannot read instance manifest: {e}"))?;
                     crate::health::precompute_jar_metadata_cache(&cache_dir, &manifest)
                 })
                 .await;
@@ -1616,14 +1646,10 @@ impl InstallPipeline {
             let health_registry = registry_db_path.map(Path::to_path_buf);
             let report =
                 match run_blocking_phase(scheduler, "post-install health scan", move || {
-                    let manifest_text =
-                        std::fs::read_to_string(health_dir.join("instance_manifest.json"))
-                            .map_err(|error| {
-                                format!("Committed manifest is unreadable ({error})")
-                            })?;
-                    let manifest: crate::models::InstanceManifest =
-                        serde_json::from_str(&manifest_text)
-                            .map_err(|error| format!("Committed manifest is invalid ({error})"))?;
+                    let manifest = crate::helpers::read_manifest(
+                        &health_dir.join("instance_manifest.json"),
+                    )
+                    .map_err(|error| format!("Committed manifest is unreadable ({error})"))?;
                     // The post-commit health pass is already part of the
                     // install's longer-running work.  Use the cache-aware
                     // path so this scan publishes both the durable report
@@ -2034,10 +2060,8 @@ fn validate_staged_loader_compatibility(
     staging_dir: &Path,
 ) -> Result<(), String> {
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
+    let manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|error| format!("failed to read manifest for loader validation: {error}"))?;
-    let manifest: crate::models::InstanceManifest = serde_json::from_str(&manifest_text)
-        .map_err(|error| format!("failed to parse manifest for loader validation: {error}"))?;
     if matches!(manifest.loader.as_str(), "" | "vanilla") || manifest.loader_version.is_empty() {
         return Ok(());
     }
@@ -2133,6 +2157,8 @@ fn plan_artifact_change(
     pending_choices: &mut Vec<PendingChoice>,
     blocking_errors: &mut Vec<PlanError>,
     warnings: &mut Vec<PlanWarning>,
+    installed_as_dependency: bool,
+    promotions: &mut Vec<FilePromote>,
 ) {
     let filename = artifact_filename(artifact);
     if let Err(error) = validate_filename(filename) {
@@ -2172,6 +2198,12 @@ fn plan_artifact_change(
             .unwrap_or(false);
         let same_version = existing.version.as_deref() == Some(artifact_version_id(artifact));
         if same_content && same_version {
+            if !installed_as_dependency && existing.installed_as_dependency {
+                promotions.push(FilePromote {
+                    filename: existing.filename.clone(),
+                    content_type: Some(existing.content_type.clone()),
+                });
+            }
             warnings.push(PlanWarning {
                 code: "ALREADY_INSTALLED".into(),
                 message: format!(
@@ -2248,6 +2280,7 @@ fn plan_artifact_change(
         artifact: artifact.clone(),
         hashes: artifact_hashes(artifact).clone(),
         size: artifact_size(artifact),
+        installed_as_dependency,
     });
 }
 
@@ -2428,6 +2461,7 @@ struct PlanFingerprintMaterial<'a> {
     files_to_add: &'a [FileAdd],
     files_to_remove: &'a [FileRemove],
     files_to_disable: &'a [FileDisable],
+    files_to_promote: &'a [FilePromote],
     loader_change: &'a Option<LoaderChangePlan>,
     instance_state_hash: &'a str,
     registry_revision: &'a str,
@@ -2435,7 +2469,7 @@ struct PlanFingerprintMaterial<'a> {
 
 fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String> {
     hash_serializable(&PlanFingerprintMaterial {
-        schema_version: 2,
+        schema_version: 3,
         intent: &plan.intent,
         operation: &plan.operation,
         dependencies: &plan.dependencies,
@@ -2443,6 +2477,7 @@ fn compute_plan_fingerprint(plan: &ResolvedInstallPlan) -> Result<String, String
         files_to_add: &plan.files_to_add,
         files_to_remove: &plan.files_to_remove,
         files_to_disable: &plan.files_to_disable,
+        files_to_promote: &plan.files_to_promote,
         loader_change: &plan.loader_change,
         instance_state_hash: &plan.instance_state_hash,
         registry_revision: &plan.registry_revision,
@@ -2588,10 +2623,8 @@ fn prepare_manifest(
     use std::io::Write;
 
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
+    let mut manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("failed to read manifest before apply: {e}"))?;
-    let mut manifest: crate::models::InstanceManifest = serde_json::from_str(&text)
-        .map_err(|e| format!("failed to parse manifest before apply: {e}"))?;
 
     if let Some(change) = &plan.loader_change {
         if !manifest.loader.eq_ignore_ascii_case(&change.loader) {
@@ -2613,6 +2646,13 @@ fn prepare_manifest(
     for disable in &plan.files_to_disable {
         set_manifest_enabled(&mut manifest, &disable.filename, false);
     }
+    for promote in &plan.files_to_promote {
+        promote_manifest_entry(
+            &mut manifest,
+            &promote.filename,
+            promote.content_type.as_deref(),
+        );
+    }
     for add in &plan.files_to_add {
         let staged = staging_dir.join("artifacts").join(&add.staging_filename);
         if !staged.is_file() {
@@ -2632,6 +2672,11 @@ fn prepare_manifest(
         };
         let sha256 = crate::download::sha256_hex(&contents);
         let installed = crate::models::InstalledMod {
+            update_pinned: false,
+            // Individual install through the transaction pipeline. Pack-driven
+            // installs stamp their own provenance; see PackOrigin.
+            pack_managed: false,
+            installed_as_dependency: add.installed_as_dependency,
             filename: add.target_filename.clone(),
             registry_id: metadata.registry_id.clone(),
             modrinth_id: metadata.modrinth_id.clone(),
@@ -2707,7 +2752,7 @@ fn apply_transaction(
     let manifest_path = instance_dir.join("instance_manifest.json");
     let original_text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("failed to read current manifest during apply: {e}"))?;
-    let manifest: crate::models::InstanceManifest = serde_json::from_str(&original_text)
+    let manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("failed to parse current manifest during apply: {e}"))?;
     let manifest_backup = staging_dir.join("instance_manifest.original.json");
     std::fs::write(&manifest_backup, original_text.as_bytes())
@@ -2924,6 +2969,31 @@ fn set_manifest_enabled(
             item.filename == filename || effective_installed_filename(item) == filename
         }) {
             item.enabled = enabled;
+        }
+    }
+}
+
+fn promote_manifest_entry(
+    manifest: &mut crate::models::InstanceManifest,
+    filename: &str,
+    content_type: Option<&str>,
+) {
+    let target_ct = content_type.map(normalized_content_type);
+    for entries in [
+        &mut manifest.mods,
+        &mut manifest.resourcepacks,
+        &mut manifest.shaders,
+        &mut manifest.datapacks,
+        &mut manifest.worlds,
+    ] {
+        for entry in entries.iter_mut() {
+            let matches_filename =
+                entry.filename == filename || effective_installed_filename(entry) == filename;
+            let matches_content =
+                target_ct.is_none_or(|ct| normalized_content_type(&entry.content_type) == ct);
+            if matches_filename && matches_content {
+                entry.installed_as_dependency = false;
+            }
         }
     }
 }
@@ -3258,6 +3328,122 @@ mod tests {
             before
         );
         assert!(!instance_dir.join(".agora").exists());
+    }
+
+    #[test]
+    fn dependency_driven_adds_record_provenance_and_user_driven_ones_do_not() {
+        // The whole orphan-cleanup feature rests on this distinction: without
+        // it, a library pulled in for something else is indistinguishable from
+        // a mod the user chose.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let required_path = tmp.path().join("required.jar");
+        std::fs::write(&required_path, b"required").unwrap();
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "root",
+                    "root.jar",
+                    "a".repeat(64),
+                    ArtifactSource::Download {
+                        url: "https://example.com/root.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![ResolvedDep {
+                mod_jar_id: "required-dep".into(),
+                requirement: Requirement::Required,
+                source: DepSource::Manifest,
+                display_name: None,
+                page_url: None,
+                disposition: DepDisposition::InstallCandidate {
+                    artifact: Box::new(test_artifact(
+                        "required-dep",
+                        "required.jar",
+                        crate::download::sha256_hex(b"required"),
+                        ArtifactSource::LocalFile {
+                            path: required_path.to_string_lossy().into_owned(),
+                        },
+                        SourceType::Curated,
+                    )),
+                },
+            }],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                local_intent("root"),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+
+        let flag = |filename: &str| {
+            plan.files_to_add
+                .iter()
+                .find(|add| add.target_filename == filename)
+                .map(|add| add.installed_as_dependency)
+        };
+        assert_eq!(flag("root.jar"), Some(false), "the user asked for this one");
+        assert_eq!(
+            flag("required.jar"),
+            Some(true),
+            "this one only came along for the ride"
+        );
+    }
+
+    #[test]
+    fn explicitly_reinstalling_a_dependency_promotes_it_back_to_user_installed() {
+        // Otherwise cleanup would later offer to delete a mod the user had just
+        // asked for by name, because the flag from its first (automatic)
+        // install would still be set.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let contents = b"already-here";
+        seed_installed_mod(&instance_dir, "corelib", "corelib.jar", "1.0", contents);
+        let manifest_path = instance_dir.join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
+        let mut manifest: crate::models::InstanceManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.mods[0].installed_as_dependency = true;
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::Install {
+                artifact: test_artifact(
+                    "corelib",
+                    "corelib.jar",
+                    crate::download::sha256_hex(contents),
+                    ArtifactSource::Download {
+                        url: "https://example.com/corelib.jar".into(),
+                    },
+                    SourceType::Curated,
+                ),
+            },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let plan = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(
+                local_intent("corelib"),
+                &instance_dir,
+                prepared,
+                &NoopReporter,
+            ))
+            .unwrap();
+
+        // Same content and version, so there is no file to add — the promotion
+        // is the only thing this plan does.
+        assert!(plan.files_to_add.is_empty());
+        assert_eq!(plan.files_to_promote.len(), 1);
+        assert_eq!(plan.files_to_promote[0].filename, "corelib.jar");
     }
 
     #[test]
@@ -3653,6 +3839,7 @@ mod tests {
             b"verified local artifact"
         );
         let manifest: crate::models::InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
             &std::fs::read(instance_dir.join("instance_manifest.json")).unwrap(),
         )
         .unwrap();
@@ -4252,6 +4439,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
         let manifest_path = instance_dir.join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.is_locked = true;
@@ -4344,6 +4533,8 @@ mod tests {
         let directory = tmp.path().join("instance");
         std::fs::create_dir_all(directory.join("mods")).unwrap();
         let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -4472,9 +4663,14 @@ mod tests {
         let file_path = instance_dir.join("mods").join(filename);
         std::fs::write(&file_path, contents).unwrap();
         let manifest_path = instance_dir.join("instance_manifest.json");
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.mods.push(crate::models::InstalledMod {
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
             filename: filename.into(),
             registry_id: Some(item_id.into()),
             modrinth_id: None,
@@ -4963,6 +5159,8 @@ mod tests {
 
         assert!(matches!(outcome, InstallOutcome::Failed { .. }));
         assert!(!instance_dir.join("mods/needy.jar").exists());
+        // Asserts on the bytes actually written, so it must not heal.
+        // allow-raw-instance-manifest
         let manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         assert_eq!(manifest.loader, "fabric");
@@ -5010,6 +5208,7 @@ mod tests {
             files_to_add: vec![],
             files_to_remove: vec![],
             files_to_disable: vec![],
+            files_to_promote: vec![],
             snapshot: SnapshotPlan {
                 label: "test-snapshot".into(),
                 estimated_bytes: 0,

@@ -46,5 +46,12 @@ rand = { workspace = true }
 tar = "0.4"
 flate2 = "1"
 
+# Directory junctions for shared folders on Windows. `std`'s symlink_dir needs
+# Developer Mode or elevation and, when it fails, callers silently fall back to
+# copying — which for a *shared* folder means two trees that drift apart with no
+# error. Junctions need no elevation and are not in std.
+[target.'cfg(windows)'.dependencies]
+junction = "2"
+
 [dev-dependencies]
 tempfile = "3"

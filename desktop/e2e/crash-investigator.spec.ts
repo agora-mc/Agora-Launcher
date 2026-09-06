@@ -124,7 +124,7 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
           if (command === 'list_manifest_mc_versions') return Promise.resolve([]);
           if (command === 'for_you_items') return Promise.resolve([]);
           if (command === 'browse_search') return Promise.resolve({ items: [], total: 0, page: 0, hasMore: false });
-          if (command === 'query_launch_state') return Promise.resolve(null);
+          if (command === 'query_launch_state') return Promise.resolve([]);
 
           if (command === 'plugin:event|listen') { eventListeners.set(args.event as string, args.handler as number); return Promise.resolve(1); }
           if (command === 'plugin:event|unlisten') return Promise.resolve(1);

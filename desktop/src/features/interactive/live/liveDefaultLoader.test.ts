@@ -139,7 +139,7 @@ const javas: JavaRuntimeSummary[] = [
   { path: '/jdk', version: 17, version_string: '17', source: 'managed', arch: 'amd64' },
 ];
 
-const running: RunningProcess | null = null;
+const running: RunningProcess[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -285,5 +285,35 @@ describe('live default loader two-phase paint', () => {
     // Nothing paintable — the host reports its error state from the complete
     // read rather than flashing an empty world first.
     expect(onPartial).not.toHaveBeenCalled();
+  });
+});
+
+describe('readEssentialData session narrowing', () => {
+  function session(instanceId: string, sessionId: number): RunningProcess {
+    return { instance_id: instanceId, pid: 1000 + sessionId, session_id: sessionId };
+  }
+
+  // The backend reports every live session now. A scene depicts one instance,
+  // so another instance being up must not make this one look busy.
+  it('ignores sessions belonging to other instances', async () => {
+    const { readEssentialData } = await import('./liveScene');
+    mocks.queryLaunchState.mockResolvedValue([session('other-inst', 1)]);
+    const reads = await readEssentialData('inst-1');
+    expect(reads.running.status).toBe('ok');
+    expect(reads.running.status === 'ok' && reads.running.value).toBeNull();
+  });
+
+  it('reports this instance session when it is the one running', async () => {
+    const { readEssentialData } = await import('./liveScene');
+    mocks.queryLaunchState.mockResolvedValue([session('other-inst', 1), session('inst-1', 2)]);
+    const reads = await readEssentialData('inst-1');
+    expect(reads.running.status === 'ok' && reads.running.value?.session_id).toBe(2);
+  });
+
+  it('keeps a failed read as an error fragment rather than a null process', async () => {
+    const { readEssentialData } = await import('./liveScene');
+    mocks.queryLaunchState.mockRejectedValue(new Error('down'));
+    const reads = await readEssentialData('inst-1');
+    expect(reads.running.status).not.toBe('ok');
   });
 });

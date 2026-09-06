@@ -161,15 +161,56 @@ pub async fn revert_instance<R: tauri::Runtime>(
 }
 
 /// Launch an instance by delegating to the official Mojang launcher.
+///
+/// The official launcher reads `launcher_profiles.json` and its saved
+/// installation selection once, at startup. A handoff into an already-running
+/// launcher therefore cannot select the pack — it is single-instance, so the
+/// spawn below only focuses the existing window and leaves whatever was
+/// selected before in place. Rather than hand off and let the user find the
+/// wrong pack loaded, that case is reported as `ERR_MOJANG_LAUNCHER_RUNNING`
+/// so the UI can offer to restart it; `restart_launcher` is the confirmed
+/// retry.
 pub fn launch_instance<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     instance_id: &str,
+    restart_launcher: bool,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let preparation = agora_core::instance_service::InstanceService::new(ctx)
-        .prepare_delegated_launch(instance_id)?;
+    let service = agora_core::instance_service::InstanceService::new(ctx);
+    let mut preparation = service.prepare_delegated_launch(instance_id)?;
+
+    if preparation.launcher_running && restart_launcher {
+        let resolved = mojang::resolve_launcher_path(preparation.launcher_path.as_deref()).ok();
+        if !agora_core::official_launcher::close_running(
+            resolved.as_deref(),
+            std::time::Duration::from_secs(15),
+        ) {
+            return Err(LauncherError::Generic {
+                code: "ERR_MOJANG_LAUNCHER_RUNNING".into(),
+                message:
+                    "The Minecraft Launcher did not close. Close it yourself, then launch again."
+                        .into(),
+            });
+        }
+        // Re-prepare against a closed launcher: only now can Agora write the
+        // installation selection the launcher will actually read on startup.
+        preparation = service.prepare_delegated_launch(instance_id)?;
+    }
+
+    if preparation.launcher_running {
+        return Err(LauncherError::Generic {
+            code: "ERR_MOJANG_LAUNCHER_RUNNING".into(),
+            message:
+                "The Minecraft Launcher is already open, so it will not switch to this pack. Restart it to continue."
+                    .into(),
+        });
+    }
+
     let launcher_path = mojang::resolve_launcher_path(preparation.launcher_path.as_deref())?;
     std::process::Command::new(&launcher_path)
+        // Ignored by the current launcher, which restores its own saved
+        // selection instead (measured on core 3.39.31); kept for the legacy
+        // launcher, which does read it.
         .arg("--profile")
         .arg(&preparation.profile_id)
         .spawn()

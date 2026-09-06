@@ -75,20 +75,12 @@ pub async fn list_mod_versions_for(
         .await
 }
 
-/// Resolve the bounded candidate set used by explicit automatic update checks.
-pub async fn list_mod_versions_for_update(
-    app: &tauri::AppHandle,
-    instance_id: &str,
-    item_id: &str,
-) -> LauncherResult<Vec<ModVersionCandidate>> {
-    let ctx = crate::core_context(app)?;
-    let instance = load_instance_info(app, instance_id)?;
-    let item = load_registry_item(app, item_id)?;
-    make_resolver(ctx, app)
-        .await
-        .list_curated_versions_for_update(&item, &instance.minecraft_version, &instance.loader)
-        .await
-}
+// The bounded candidate set for update checks is resolved by
+// `agora_core::update_cache::check_single_instance_updates_with`, which owns
+// the caching and the matching rules for both the background sweep and the
+// `check_instance_updates` command. Adapters must not open a second door to
+// `Resolver::list_curated_versions_for_update` — see check 9 in
+// `scripts/check_architecture.py`.
 
 /// Quick compatibility badge via core Resolver.
 pub async fn check_mod_compat(
@@ -361,7 +353,7 @@ async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherRes
     let ctx = crate::core_context(app)?;
     let svc = agora_core::import_service::ImportService::new(ctx);
     let request = agora_core::import_service::ImportRequest {
-        source: agora_core::import_service::ImportSource::Mrpack(
+        source: agora_core::import_service::ImportSource::mrpack(
             Path::new(source_path).to_path_buf(),
         ),
         symlink_saves: false,
@@ -440,6 +432,7 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         jvm_always_pre_touch: None,
         is_modpack: None,
         pack_icon_url: None,
+        template_id: None,
     };
     instances::create_instance(app.clone(), req).await?;
     if let Some(mods_arr) = pack.get("mods").and_then(|m| m.as_array()) {
@@ -489,6 +482,45 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
                             .await;
                 }
             }
+        }
+    }
+    // Stamp PackOrigin for LocalFile pack and persist inventory.
+    // Honest identity is display name only; every id stays None so
+    // pack-update can distinguish "unknown" from "known".
+    let instance_dir = ctx.paths.instance_dir(&instance_id)?;
+    let pack_files =
+        agora_core::pack_inventory::collect_pack_inventory(&instance_dir).unwrap_or_default();
+    let pack_hash = if pack_files.is_empty() {
+        None
+    } else {
+        Some(agora_core::pack_inventory::pack_content_hash(&pack_files))
+    };
+    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = agora_core::db::replace_instance_pack_files(&conn, &instance_id, &pack_files);
+    }
+    let manifest_path = ctx.paths.instance_manifest(&instance_id)?;
+    if let Ok(mut manifest) = agora_core::helpers::read_manifest(&manifest_path) {
+        let pack_origin = agora_core::models::PackOrigin {
+            platform: agora_core::models::PackPlatform::LocalFile,
+            pack_name: name.clone(),
+            project_id: None,
+            version_id: None,
+            version_number: None,
+            origin_url: None,
+            pack_content_hash: pack_hash,
+            pack_minecraft_version: Some(mc_version.to_string()),
+            pack_loader: Some(loader.to_string()),
+            pack_loader_version: Some(loader_version.to_string()),
+            launcher_kind: None,
+            installation_key: None,
+            source_key: None,
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        manifest.pack_origin = Some(pack_origin);
+        manifest.manifest_version = agora_core::models::CURRENT_MANIFEST_VERSION;
+        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+            let _ = std::fs::write(&manifest_path, json);
         }
     }
     Ok(instance_id)

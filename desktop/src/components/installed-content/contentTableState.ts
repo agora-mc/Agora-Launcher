@@ -1,5 +1,5 @@
 import type { InstalledContentRow } from '../../lib/tauri';
-import type { ContentColumn, ContentFilters, SortColumn, SortState } from './types';
+import type { ContentColumn, ContentFilters, ContentGroup, GroupMode, SortColumn, SortState } from './types';
 
 export function normalizeSearchText(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
@@ -127,3 +127,72 @@ export function formatInstalledDate(value: string): string {
 }
 
 export const defaultColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions'];
+
+/**
+ * Split rows into display groups.
+ *
+ * Every mode but `custom` is purely derived — it reads a field the row already
+ * carries. `custom` reads the user's own assignments, which is the whole point
+ * of it: the other four answer questions about the mods, and this one answers a
+ * question about the user. A row still appears exactly once, because the store
+ * keeps each filename in at most one group.
+ *
+ * Sort order within a group is whatever the caller already applied; only the
+ * *group* order is decided here.
+ */
+export function groupInstalledContent(
+  rows: InstalledContentRow[],
+  mode: GroupMode,
+  modGroups: Record<string, string[]> = {},
+): ContentGroup[] {
+  if (mode === 'none') return [{ key: 'all', label: '', rows }];
+
+  const buckets = new Map<string, ContentGroup>();
+  const push = (key: string, label: string, row: InstalledContentRow) => {
+    const existing = buckets.get(key);
+    if (existing) existing.rows.push(row);
+    else buckets.set(key, { key, label, rows: [row] });
+  };
+
+  const groupByFilename = new Map<string, string>();
+  if (mode === 'custom') {
+    for (const [name, filenames] of Object.entries(modGroups)) {
+      for (const filename of filenames) groupByFilename.set(filename, name);
+    }
+  }
+
+  for (const row of rows) {
+    if (mode === 'custom') {
+      const name = groupByFilename.get(row.filename);
+      if (name) push(`custom:${name}`, name, row);
+      else push('custom:__none__', 'Ungrouped', row);
+    } else if (mode === 'pack') {
+      // Two buckets only, so an instance with no pack still reads sensibly.
+      if (row.pack_managed) push('pack', 'From the modpack', row);
+      else push('user', 'Added by you', row);
+    } else if (mode === 'source') {
+      push(`source:${row.source_label}`, row.source_label, row);
+    } else {
+      // A row can carry several categories; grouping on the first keeps every
+      // row in exactly one bucket. Duplicating rows across groups would break
+      // select-all and the counts.
+      const category = row.categories[0];
+      if (category) push(`category:${category}`, category, row);
+      else push('category:__none__', 'Uncategorized', row);
+    }
+  }
+
+  const groups = [...buckets.values()];
+  if (mode === 'pack') {
+    // Pack content first: it is the part the user did not choose and most
+    // wants to see distinguished.
+    return groups.sort((a, b) => (a.key === 'pack' ? -1 : b.key === 'pack' ? 1 : 0));
+  }
+  // The catch-all bucket sinks to the bottom; everything else is alphabetical.
+  return groups.sort((a, b) => {
+    const aRest = a.key === 'category:__none__' || a.key === 'custom:__none__';
+    const bRest = b.key === 'category:__none__' || b.key === 'custom:__none__';
+    if (aRest !== bRest) return aRest ? 1 : -1;
+    return a.label.localeCompare(b.label);
+  });
+}

@@ -33,6 +33,7 @@ import {
   getAuthStatus,
   getGithubProfile,
   getMcpSkillContent,
+  credentialStorageStatus,
   getMcpStatus,
   getSetting,
   githubLogin,
@@ -57,7 +58,7 @@ import {
   openDataFolder,
   restartApp,
 } from '../lib/tauri';
-import type { CopilotToken, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
+import type { CopilotToken, CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
 import { Privacy } from './Privacy';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
@@ -69,10 +70,14 @@ import {
   AppearanceThemeSettings,
   LivingBackgroundSettings,
 } from './settings/AppearanceSettings';
+import { TemplateSettings } from './settings/TemplateSettings';
+import { RuntimeReclaim } from './settings/RuntimeReclaim';
+import { DegradedCredentialNotice } from './settings/DegradedCredentialNotice';
 import { SettingsSection } from './settings/SettingsSection';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
+import { useConfirm } from '@/components/ui/confirm';
 
 /** One sub-page of a settings section. */
 interface SettingsPage {
@@ -167,6 +172,7 @@ export function Settings({
   onNavigateTab?: (tab: Tab) => void;
 }) {
   const ts = useTypedSettings();
+  const { confirm } = useConfirm();
 
   const [activeTabId, setActiveTabId] = useState<string>(() => readStoredSettingsTab() ?? 'general');
   const [activePageId, setActivePageId] = useState<string | null>(null);
@@ -218,6 +224,11 @@ export function Settings({
   const [ghError, setGhError] = useState<string | null>(null);
   const ghSessionRef = useRef(0);
 
+  // Where credentials are actually stored. Null until known -- the warning
+  // stays hidden unless the backend positively reports the degraded fallback,
+  // so a failed or unmocked call never invents a security warning.
+  const [credentialStorage, setCredentialStorage] = useState<CredentialStorageStatus | null>(null);
+
   // MSA auth state
   const [msaCreds, setMsaCreds] = useState<MsaAccountStatus | null>(null);
   const [msaLoading, setMsaLoading] = useState(true);
@@ -268,6 +279,8 @@ export function Settings({
   };
 
   const [versionSortByDate, setVersionSortByDate] = useState(false);
+  const [updateSweepIntervalHours, setUpdateSweepIntervalHours] = useState<number>(12);
+  const [showUpdateChangelogs, setShowUpdateChangelogs] = useState<boolean>(true);
 
   // Sync typed settings into local state for backward-compatible render code.
   useEffect(() => {
@@ -283,6 +296,8 @@ export function Settings({
     setJavaRuntimeMode((ts.values.javaRuntimeMode as string) as 'automatic' | 'prompt' | 'manual' || 'automatic');
     setGlobalJavaPath((ts.values.javaPath as string) ?? '');
     setVersionSortByDate(ts.values.versionSortByDate as boolean ?? false);
+    setUpdateSweepIntervalHours((ts.values.updateSweepIntervalHours as number) ?? 12);
+    setShowUpdateChangelogs((ts.values.showUpdateChangelogs as boolean) ?? true);
     setLoading(false);
   }, [ts.loading, ts.values]);
 
@@ -332,6 +347,23 @@ export function Settings({
         if (!cancelled) setMsaCreds(null);
       } finally {
         if (!cancelled) setMsaLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load credential storage backends on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await credentialStorageStatus();
+        if (!cancelled) setCredentialStorage(status);
+      } catch {
+        // Leave it unknown: showing no warning is the safe failure here, since
+        // a spurious one would tell the user their credentials are less
+        // protected than they are.
+        if (!cancelled) setCredentialStorage(null);
       }
     })();
     return () => { cancelled = true; };
@@ -550,28 +582,37 @@ export function Settings({
   // Turning either of these ON widens what Agora will fetch and execute, so
   // each needs an explicit acknowledgement of what is being accepted. Turning
   // them OFF is always safe and never prompts.
-  const TECHNIC_ENABLE_WARNING = [
-    'Enable Technic browsing?',
-    '',
-    'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
-    '',
-    'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
-    '',
-    'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
-  ].join('\n');
+  const TECHNIC_ENABLE_WARNING = {
+    title: 'Enable Technic browsing?',
+    // Each point is a separate thing the user is agreeing to.
+    // Kept as a list so that editing one cannot silently drop
+    // another, which parsing a joined blob apart at the call
+    // site could.
+    body: [
+      'Technic is an open platform: anyone can upload a modpack, and packs are not reviewed by Agora or by Technic.',
+      'Packs download from whatever host the uploader chose. Solder-backed packs report an MD5, which detects corruption but is not proof the file is genuine. Many listings are unofficial re-uploads of other people’s packs.',
+      'Agora still refuses private/loopback addresses, caps download sizes, and only extracts mods/*.jar. It cannot tell you whether a pack is trustworthy.',
+    ].join('\n\n'),
+  };
 
-  const UNVERIFIED_PACKS_ENABLE_WARNING = [
-    'Allow unverified zip packs?',
-    '',
-    'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
-    '',
-    'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
-    '',
-    'Only enable this if you already trust the specific pack you are installing.',
-  ].join('\n');
+  const UNVERIFIED_PACKS_ENABLE_WARNING = {
+    title: 'Allow unverified zip packs?',
+    // Each point is a separate thing the user is agreeing to.
+    // Kept as a list so that editing one cannot silently drop
+    // another, which parsing a joined blob apart at the call
+    // site could.
+    body: [
+      'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+      'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
+      'Only enable this if you already trust the specific pack you are installing.',
+    ].join('\n\n'),
+  };
 
   const toggleTechnic = async (value: boolean) => {
-    if (value && !window.confirm(TECHNIC_ENABLE_WARNING)) return;
+    if (value && !await confirm({
+      title: TECHNIC_ENABLE_WARNING.title,
+      body: TECHNIC_ENABLE_WARNING.body,
+    })) return;
     setTechnic(value);
     try {
       await setSetting('technic_enabled', value);
@@ -588,7 +629,10 @@ export function Settings({
   };
 
   const toggleAllowUnverifiedPacks = async (value: boolean) => {
-    if (value && !window.confirm(UNVERIFIED_PACKS_ENABLE_WARNING)) return;
+    if (value && !await confirm({
+      title: UNVERIFIED_PACKS_ENABLE_WARNING.title,
+      body: UNVERIFIED_PACKS_ENABLE_WARNING.body,
+    })) return;
     setAllowUnverifiedPacks(value);
     try {
       await setSetting('allow_unverified_packs', value);
@@ -745,7 +789,12 @@ export function Settings({
   };
 
   const handleRemoveUnusedJava = async () => {
-    if (!window.confirm('Remove unused managed Java runtimes? Only the newest runtime per major version will be kept.')) return;
+    if (!await confirm({
+      title: 'Remove unused managed Java runtimes?',
+      body: 'Only the newest runtime per major version will be kept.',
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    })) return;
     setJavaRemoveBusy(true);
     try {
       const removed = await removeUnusedJavaRuntimes();
@@ -801,6 +850,28 @@ export function Settings({
       await ts.update(SETTINGS.versionSortByDate, value);
     } catch (e) {
       setVersionSortByDate(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const handleShowUpdateChangelogsChange = async (value: boolean) => {
+    const previous = showUpdateChangelogs;
+    setShowUpdateChangelogs(value);
+    try {
+      await ts.update(SETTINGS.showUpdateChangelogs, value);
+    } catch (e) {
+      setShowUpdateChangelogs(previous);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const handleUpdateSweepIntervalChange = async (value: number) => {
+    const previous = updateSweepIntervalHours;
+    setUpdateSweepIntervalHours(value);
+    try {
+      await ts.update(SETTINGS.updateSweepIntervalHours, value);
+    } catch (e) {
+      setUpdateSweepIntervalHours(previous);
       showToast(formatError(e), 'error');
     }
   };
@@ -1015,9 +1086,11 @@ export function Settings({
             try {
               const update = await check();
               if (update?.available) {
-                const ok = await window.confirm(
-                  `Update available: ${update.version}\n\n${update.body ?? ''}\n\nDownload and install now?`
-                );
+                const ok = await confirm({
+                  title: 'Download and install now?',
+                  body: `Update available: ${update.version}\n\n${update.body ?? ''}`,
+                  confirmLabel: 'Install update',
+                });
                 if (ok) {
                   await update.downloadAndInstall();
                   // `plugin:process|restart` was invoked here previously, but
@@ -1058,6 +1131,57 @@ export function Settings({
       <p className="text-xs text-muted-foreground">
         Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.
       </p>
+    </SettingsSection>
+  );
+
+  const instanceUpdatesCard = (
+    <SettingsSection
+      id="settings-instance-updates"
+      icon={PackageCheck}
+      title="Instance mod updates"
+      description="How often Agora checks your instances for newer mod versions in the background."
+    >
+      <label className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Automatic update checks</span>
+        <select
+          value={String(updateSweepIntervalHours)}
+          onChange={(e) => void handleUpdateSweepIntervalChange(Number(e.target.value))}
+          className="w-full max-w-xs rounded-lg border border-input bg-background px-3 py-2 text-sm"
+          aria-label="Automatic update checks"
+        >
+          <option value="0">Manual only — only when I check</option>
+          <option value="6">Every 6 hours</option>
+          <option value="12">Every 12 hours (default)</option>
+          <option value="24">Once a day</option>
+          <option value="48">Every 2 days</option>
+        </select>
+      </label>
+      <p className="text-xs text-muted-foreground">
+        {updateSweepIntervalHours === 0
+          ? 'Automatic checks are off. Use “Check for updates” in the instance editor when you want fresh results.'
+          : `Agora will refresh an instance only if its last check is older than ${updateSweepIntervalHours} hours. Startup checks skip fresh entries to avoid Modrinth traffic when you open the launcher several times a day.`}
+      </p>
+      {ts.statuses['update_sweep_interval_hours']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['update_sweep_interval_hours']?.error}</p>
+      )}
+
+      <label className="mt-4 flex items-center justify-between">
+        <span className="text-sm">Show changelogs before updating</span>
+        <input
+          type="checkbox"
+          checked={showUpdateChangelogs}
+          onChange={(e) => void handleShowUpdateChangelogsChange(e.target.checked)}
+          className="h-5 w-5 accent-primary"
+          aria-label="Show changelogs before updating"
+        />
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Review what changed before an update is applied. Changelogs come from the signed registry,
+        so this works offline; mods with nothing published simply say so.
+      </p>
+      {ts.statuses['show_update_changelogs']?.status === 'error' && (
+        <p className="text-xs text-destructive">{ts.statuses['show_update_changelogs']?.error}</p>
+      )}
     </SettingsSection>
   );
 
@@ -1426,6 +1550,7 @@ export function Settings({
           <p className="text-xs text-muted-foreground">
             Required for direct launch mode. Used to authenticate with Minecraft services.
           </p>
+          <DegradedCredentialNotice backend={credentialStorage?.microsoft} />
           <button
             onClick={handleMsaSignOut}
             className="text-xs text-muted-foreground hover:text-foreground underline"
@@ -1477,6 +1602,7 @@ export function Settings({
           <p className="text-xs text-muted-foreground">
             Used for community governance (voting, proposals).
           </p>
+          <DegradedCredentialNotice backend={credentialStorage?.github} />
           <button
             onClick={handleGithubSignOut}
             className="text-xs text-muted-foreground hover:text-foreground underline"
@@ -1821,7 +1947,12 @@ export function Settings({
                   <CopyButton text={mcpToken.config_snippet} label="Copy MCP config" />
                   <button
                     onClick={async () => {
-                      if (!window.confirm('Regenerate token? This invalidates the current token. All AI clients must be updated.')) return;
+                      if (!await confirm({
+                        title: 'Regenerate token?',
+                        body: 'This invalidates the current token. All AI clients must be updated.',
+                        confirmLabel: 'Regenerate',
+                        tone: 'danger',
+                      })) return;
                       try {
                         const data = await regenerateMCPToken();
                         setMcpToken(data);
@@ -2012,7 +2143,18 @@ export function Settings({
           ),
         },
         { id: 'walkthrough', label: 'Walkthrough', content: walkthroughCard },
-        { id: 'updates', label: 'Updates', content: gate(updatesCard) },
+        { id: 'templates', label: 'Templates', content: <TemplateSettings /> },
+        { id: 'storage', label: 'Storage', content: <RuntimeReclaim /> },
+        {
+          id: 'updates',
+          label: 'Updates',
+          content: (
+            <>
+              {gate(updatesCard)}
+              {gate(instanceUpdatesCard)}
+            </>
+          ),
+        },
       ],
     },
     {

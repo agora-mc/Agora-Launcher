@@ -66,7 +66,7 @@ Global options:
 
 | Option | Purpose |
 | --- | --- |
-| `--data-dir <PATH>` | Override the Agora data root |
+| `--data-dir <PATH>` | Override the Agora data root. Without it the CLI resolves the root exactly as the desktop app does, so `AGORA_DATA_DIR` and a `portable.txt` marker beside the executable apply to both |
 | `--json` | Shorthand for `--output json` |
 | `--output <human|json>` | Select output format |
 | `--registry-repo <OWNER/REPO>` | Override the registry repository for development or testing |

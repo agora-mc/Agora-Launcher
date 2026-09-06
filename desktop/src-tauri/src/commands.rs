@@ -50,6 +50,14 @@ pub struct MsaAccountStatus {
     pub expires: String,
 }
 
+/// Where each credential is actually stored, so Settings can warn when the
+/// degraded encrypted-file fallback is in use rather than the OS keyring.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CredentialStorageStatus {
+    pub microsoft: agora_core::auth::CredentialBackend,
+    pub github: agora_core::auth::CredentialBackend,
+}
+
 impl From<&agora_core::msa::MsaCredentials> for MsaAccountStatus {
     fn from(credentials: &agora_core::msa::MsaCredentials) -> Self {
         Self {
@@ -383,6 +391,7 @@ pub async fn launch_instance(
     instance_id: String,
     allow_health_blockers: Option<bool>,
     health_scan_token: Option<String>,
+    restart_launcher: Option<bool>,
 ) -> LauncherResult<()> {
     let sanitized = paths::sanitize_id(&instance_id);
     if sanitized.is_empty() {
@@ -393,12 +402,6 @@ pub async fn launch_instance(
     }
     {
         let mut shared = state.lock().await;
-        if shared.running_process.is_some() {
-            return Err(LauncherError::Generic {
-                code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another launch is already running or starting.".into(),
-            });
-        }
         // SOL-2 §19.3: a target must never start a launch while its canonical
         // install transaction is applying. Delegated launches have no
         // launch_reservation, so an equivalent atomic start marker is
@@ -417,6 +420,7 @@ pub async fn launch_instance(
     let progress = DelegatedLaunchProgress {
         app: app.clone(),
         instance_id: sanitized.clone(),
+        restart_launcher: restart_launcher.unwrap_or(false),
     };
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized.clone(),
@@ -504,6 +508,9 @@ pub async fn launch_instance(
 struct DelegatedLaunchProgress {
     app: tauri::AppHandle,
     instance_id: String,
+    /// The user confirmed that Agora may close an already-running official
+    /// launcher so the handoff can select this pack.
+    restart_launcher: bool,
 }
 
 impl agora_core::launch_service::LaunchProgress for DelegatedLaunchProgress {
@@ -558,7 +565,7 @@ impl agora_core::launch_service::LaunchProgress for DelegatedLaunchProgress {
         &self,
         _identity: &agora_core::launch_planner::LaunchIdentity,
     ) -> LauncherResult<()> {
-        instances::launch_instance(&self.app, &self.instance_id)
+        instances::launch_instance(&self.app, &self.instance_id, self.restart_launcher)
     }
 }
 
@@ -593,10 +600,13 @@ pub async fn launch_instance_with_recovery(
     }
     {
         let shared = state.lock().await;
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
     }
@@ -616,16 +626,17 @@ pub async fn launch_instance_with_recovery(
         // SOL-2 §19.3: the reservation is the atomic final transition. Re-check
         // running/reservation AND reject an active install under the same lock
         // (closes the preflight -> reservation race).
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
         ensure_launch_admitted(&shared, &sanitized)?;
-        shared.launch_reservation = Some(agora_core::state::LaunchReservation {
-            instance_id: sanitized.clone(),
-        });
+        shared.launch_reservations.insert(sanitized.clone());
     }
     let progress = TauriLaunchProgress::new(
         app.clone(),
@@ -633,6 +644,7 @@ pub async fn launch_instance_with_recovery(
         sanitized.clone(),
         started_tx,
     );
+    let reservation_id = sanitized.clone();
     let request = agora_core::launch_service::LaunchRequest {
         instance_id: sanitized,
         mode: agora_core::launch_service::LaunchMode::Direct,
@@ -662,7 +674,7 @@ pub async fn launch_instance_with_recovery(
     };
     if result.is_err() {
         let mut shared = state.lock().await;
-        shared.launch_reservation = None;
+        shared.launch_reservations.remove(&reservation_id);
     }
     result
 }
@@ -688,10 +700,13 @@ pub async fn launch_instance_direct(
     }
     {
         let shared = state.lock().await;
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
     }
@@ -711,17 +726,21 @@ pub async fn launch_instance_direct(
         // SOL-2 §19.3: the reservation is the atomic final transition. Re-check
         // running/reservation AND reject an active install under the same lock
         // (closes the preflight -> reservation race).
-        if shared.running_process.is_some() || shared.launch_reservation.is_some() {
+        // Multiple instances may run at once, and the same instance may be
+        // launched more than once. What must not overlap is two launches of the
+        // *same* instance while its directory is still being materialized.
+        if shared.launch_reservations.contains(&sanitized) {
             return Err(LauncherError::Generic {
                 code: "ERR_ALREADY_RUNNING".into(),
-                message: "Another direct launch is already running or starting.".into(),
+                message: "This instance is already starting.".into(),
             });
         }
         ensure_launch_admitted(&shared, &sanitized)?;
-        shared.launch_reservation = Some(agora_core::state::LaunchReservation {
-            instance_id: sanitized.clone(),
-        });
+        shared.launch_reservations.insert(sanitized.clone());
     }
+    // `sanitized` is moved into the progress reporter; keep a copy so the
+    // failure path can release this instance's reservation.
+    let reservation_id = sanitized.clone();
     let progress =
         TauriLaunchProgress::new(app.clone(), state.inner().clone(), sanitized, started_tx);
     let request = agora_core::launch_service::LaunchRequest {
@@ -753,7 +772,7 @@ pub async fn launch_instance_direct(
     };
     if result.is_err() {
         let mut shared = state.lock().await;
-        shared.launch_reservation = None;
+        shared.launch_reservations.remove(&reservation_id);
     }
     result
 }
@@ -764,6 +783,9 @@ struct TauriLaunchProgress {
     instance_id: String,
     started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<LauncherResult<u32>>>>,
     session_id: std::sync::Mutex<Option<u64>>,
+    /// Open `launch_history` row and the clock it started on, so `finished`
+    /// can close it out. Local-only history; see `agora_core::launch_history`.
+    history: std::sync::Mutex<Option<(i64, std::time::Instant)>>,
     log_sender: std::sync::mpsc::SyncSender<QueuedGameLogLine>,
     dropped_log_lines: Arc<AtomicU64>,
 }
@@ -800,6 +822,7 @@ impl TauriLaunchProgress {
             instance_id,
             started: Mutex::new(Some(started)),
             session_id: Mutex::new(None),
+            history: Mutex::new(None),
             log_sender,
             dropped_log_lines,
         }
@@ -916,6 +939,40 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         if let Ok(mut session_id) = self.session_id.lock() {
             *session_id = Some(started.session_id);
         }
+        // Open a local history row. Best-effort throughout: losing a history
+        // row must never interfere with actually launching the game.
+        if let Ok(ctx) = crate::core_context(&self.app) {
+            let opened = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+                .ok()
+                .and_then(|conn| {
+                    let manifest = ctx
+                        .paths
+                        .instance_manifest(&self.instance_id)
+                        .ok()
+                        .and_then(|path| agora_core::helpers::read_manifest(&path).ok());
+                    let (mods, mc, loader) = match manifest.as_ref() {
+                        Some(m) => (
+                            m.mods.iter().filter(|entry| entry.enabled).count() as i64,
+                            m.minecraft_version.clone(),
+                            m.loader.clone(),
+                        ),
+                        None => (0, String::new(), String::new()),
+                    };
+                    agora_core::launch_history::begin_launch(
+                        &conn,
+                        &self.instance_id,
+                        &chrono::Utc::now().to_rfc3339(),
+                        mods,
+                        &mc,
+                        &loader,
+                    )
+                    .ok()
+                });
+            if let (Some(id), Ok(mut slot)) = (opened, self.history.lock()) {
+                *slot = Some((id, std::time::Instant::now()));
+            }
+        }
+
         let app = self.app.clone();
         let state = self.state.clone();
         let instance_id = self.instance_id.clone();
@@ -923,19 +980,15 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         tokio::spawn(async move {
             let mut shared = state.lock().await;
             // Reservation matched by instance_id — core assigns session_id.
-            if shared
-                .launch_reservation
-                .as_ref()
-                .map(|r| r.instance_id.as_str())
-                == Some(instance_id.as_str())
-            {
-                shared.launch_reservation = None;
-                shared.running_process = Some(agora_core::state::RunningProcess {
-                    instance_id: instance_id.clone(),
-                    pid: started.pid,
-                    session_id: started.session_id,
-                });
-                shared.process_identity = Some(started.process_identity);
+            if shared.launch_reservations.remove(instance_id.as_str()) {
+                shared.running_processes.insert(
+                    started.session_id,
+                    agora_core::state::RunningProcess {
+                        instance_id: instance_id.clone(),
+                        pid: started.pid,
+                        session_id: started.session_id,
+                    },
+                );
             }
             let _ = app.emit(
                 "game-started",
@@ -963,16 +1016,43 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
 
     fn finished(&self, result: &agora_core::launch_service::LaunchResult) {
         use tauri::Emitter;
+
+        // Close out the local history row, then trim. Best-effort: a lost row
+        // is a lost row, not a failed launch.
+        let opened = self.history.lock().ok().and_then(|mut slot| slot.take());
+        if let (Some((id, since)), Ok(ctx)) = (opened, crate::core_context(&self.app)) {
+            if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+                use agora_core::lkg::LaunchOutcome;
+                let outcome = match result.outcome {
+                    // Abandoned is a clean exit that happened to be brief, so
+                    // it belongs with Ok rather than being counted as a crash.
+                    LaunchOutcome::Success | LaunchOutcome::Abandoned => {
+                        agora_core::launch_history::LaunchResult::Ok
+                    }
+                    LaunchOutcome::Crash => agora_core::launch_history::LaunchResult::Crashed,
+                    LaunchOutcome::Cancelled | LaunchOutcome::Unknown => {
+                        agora_core::launch_history::LaunchResult::Unknown
+                    }
+                };
+                let _ = agora_core::launch_history::finish_launch(
+                    &conn,
+                    id,
+                    None,
+                    i64::try_from(since.elapsed().as_millis()).ok(),
+                    outcome,
+                    None,
+                );
+                let _ = agora_core::launch_history::prune_history(&conn, &self.instance_id);
+            }
+        }
+
         let app = self.app.clone();
         let state = self.state.clone();
         let instance_id = self.instance_id.clone();
         let result = result.clone();
         tokio::spawn(async move {
             let mut shared = state.lock().await;
-            if shared.running_process.as_ref().map(|p| p.session_id) == Some(result.session_id) {
-                shared.running_process = None;
-                shared.process_identity = None;
-            }
+            shared.running_processes.remove(&result.session_id);
             let _ = app.emit(
                 "game-exited",
                 serde_json::json!({
@@ -987,47 +1067,50 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
     }
 }
 
-/// Returns the currently tracked direct-launch process, if any, after
-/// verifying the OS still owns the PID.  Verifies identity via the core
-/// session manager, falling back to AppState for frontend presentation.
-/// Returns `None` if no direct launch is active or the process has exited.
+/// Returns every currently tracked direct-launch process.
+///
+/// Several instances may run at once, and the same instance may be launched
+/// more than once, so this is a list. The core session manager is
+/// authoritative: any session it no longer holds has exited or been
+/// terminated, and is pruned from the presentation map here.
 #[tauri::command]
 pub async fn query_launch_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<Option<agora_core::state::RunningProcess>> {
+) -> LauncherResult<Vec<agora_core::state::RunningProcess>> {
     let ctx = crate::core_context(&app)?;
 
-    // Phase 1 — snapshot session under AppState lock.
-    let app_snapshot = {
+    // Phase 1 — snapshot the presentation map under the AppState lock.
+    let tracked: Vec<agora_core::state::RunningProcess> = {
         let s = state.lock().await;
-        (s.running_process.clone(), s.process_identity.clone())
+        s.running_processes.values().cloned().collect()
     };
 
-    let (running, _identity) = app_snapshot;
-    let running = match running {
-        Some(rp) => rp,
-        None => return Ok(None),
-    };
-
-    // Phase 2 — consult authoritative manager.  If the session still exists
-    // the process is alive and tracked; if the manager removed it (e.g. via
-    // terminate or stale detection) return None.
-    if ctx
-        .process_session_manager
-        .get(running.session_id)
-        .is_none()
-    {
-        // Stale — clear AppState presentation fields.
-        let mut s = state.lock().await;
-        if s.running_process.as_ref().map(|rp| rp.session_id) == Some(running.session_id) {
-            s.running_process = None;
-            s.process_identity = None;
+    // Phase 2 — consult the authoritative manager for each session.
+    let mut live = Vec::new();
+    let mut stale = Vec::new();
+    for running in tracked {
+        if ctx
+            .process_session_manager
+            .get(running.session_id)
+            .is_some()
+        {
+            live.push(running);
+        } else {
+            stale.push(running.session_id);
         }
-        return Ok(None);
     }
 
-    Ok(Some(running))
+    if !stale.is_empty() {
+        let mut s = state.lock().await;
+        for session_id in stale {
+            s.running_processes.remove(&session_id);
+        }
+    }
+
+    // Stable order so the frontend does not reshuffle rows between polls.
+    live.sort_by_key(|running| running.session_id);
+    Ok(live)
 }
 
 /// Kill the backend-owned direct-launch process, if any.
@@ -1046,20 +1129,17 @@ pub async fn kill_process(
     // Phase 1 — snapshot session_id from AppState.
     let session_id = {
         let s = state.lock().await;
-        let owned = s.running_process.as_ref().map(|rp| (rp.pid, rp.session_id));
-        let Some((owned_pid, session_id)) = owned else {
+        // A PID is unique among live processes, so this identifies at most one
+        // session. The authoritative OS-identity check still happens in
+        // ProcessSessionManager::terminate below — this only decides which
+        // session to ask about.
+        let Some(running) = s.running_processes.values().find(|rp| rp.pid == pid) else {
             return Err(LauncherError::Generic {
                 code: "ERR_NOT_OWNED".into(),
-                message: format!("PID {pid} is not owned by Agora (no process is tracked)"),
+                message: format!("PID {pid} is not owned by Agora (no such tracked process)"),
             });
         };
-        if owned_pid != pid {
-            return Err(LauncherError::Generic {
-                code: "ERR_NOT_OWNED".into(),
-                message: format!("PID {pid} is not owned by Agora (owned pid: {owned_pid})"),
-            });
-        }
-        session_id
+        running.session_id
     };
 
     // Phase 2 — delegate verify + kill to the authoritative manager.
@@ -1067,21 +1147,15 @@ pub async fn kill_process(
         Ok(()) => {
             // Phase 3 — clean up AppState presentation fields.
             let mut s = state.lock().await;
-            if s.running_process.as_ref().map(|rp| rp.session_id) == Some(session_id) {
-                s.running_process = None;
-                s.process_identity = None;
-                s.user_cancelled_launches.insert(session_id);
-            }
+            s.running_processes.remove(&session_id);
+            s.user_cancelled_launches.insert(session_id);
             Ok(())
         }
         Err(agora_core::error::LauncherError::ProcessStale { pid: stale_pid, .. }) => {
             // Stale — clear AppState fields so frontend does not show a
             // zombie process.
             let mut s = state.lock().await;
-            if s.running_process.as_ref().map(|rp| rp.session_id) == Some(session_id) {
-                s.running_process = None;
-                s.process_identity = None;
-            }
+            s.running_processes.remove(&session_id);
             Err(agora_core::error::LauncherError::ProcessStale {
                 pid: stale_pid,
                 detail: "Stale process detected during kill".into(),
@@ -1806,10 +1880,8 @@ pub async fn batch_check_compat(
     }
     let manifest_path = paths::instance_manifest_path(&app, &sanitized)
         .map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest: crate::models::InstanceManifest = serde_json::from_slice(
-        &std::fs::read(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)?,
-    )
-    .map_err(|_| LauncherError::LocalStateFailed)?;
+    let manifest = agora_core::helpers::read_manifest(&manifest_path)
+        .map_err(|_| LauncherError::LocalStateFailed)?;
     let ctx = crate::core_context(&app)?;
     let svc = agora_core::registry::RegistryService::new(ctx);
     svc.batch_compat_lookup(&item_ids, &manifest.minecraft_version, &manifest.loader)
@@ -2584,6 +2656,48 @@ pub async fn get_dependency_graph(
     .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
+/// Mods that were installed only as dependencies and that nothing needs now.
+///
+/// Read this *after* a removal: the answer is always about the manifest as it
+/// stands, so the caller never has to model what a removal would cascade into.
+#[tauri::command]
+pub async fn get_orphaned_dependencies(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::dependency_ops::OrphanedDependency>> {
+    tokio::task::spawn_blocking(move || {
+        let mut manifest = load_manifest(&app, &instance_id)?;
+        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        Ok(agora_core::dependency_ops::find_orphaned_dependencies(
+            &manifest.mods,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// "Why is this mod here?" — trace one installed item back to the mods that
+/// need it, and to the mod the user actually asked for.
+#[tauri::command]
+pub async fn explain_mod_presence(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+) -> LauncherResult<Option<agora_core::dependency_ops::PresenceExplanation>> {
+    tokio::task::spawn_blocking(move || {
+        let mut manifest = load_manifest(&app, &instance_id)?;
+        dependency_ops::refresh_installed_jar_metadata(&app, &instance_id, &mut manifest.mods)?;
+        Ok(agora_core::dependency_ops::explain_presence(
+            &manifest.mods,
+            &filename,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// Build a disable plan for a mod: which other installed mods would be affected
 /// if this mod is disabled (renamed to `.disabled`).
 #[tauri::command]
@@ -3249,6 +3363,21 @@ pub async fn msa_get_status(
         .as_ref()
         .map(MsaAccountStatus::from))
 }
+/// Report which backend holds each stored credential.
+///
+/// MASTER_SPEC 7.5.2 requires Settings to warn the user when credentials fall
+/// back to local file encryption because no OS keyring was available.
+#[tauri::command]
+pub async fn credential_storage_status(
+    _app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<CredentialStorageStatus> {
+    Ok(CredentialStorageStatus {
+        microsoft: agora_core::msa::credentials_backend(),
+        github: agora_core::auth::github_credential_backend(),
+    })
+}
+
 /// Refresh expired MSA credentials.
 #[tauri::command]
 pub async fn msa_refresh(
@@ -3413,16 +3542,12 @@ pub async fn restore_snapshot(
 
     {
         let shared = state.lock().await;
+        // Any session of this instance blocks a restore, not just the first.
         let direct_active = shared
-            .running_process
-            .as_ref()
-            .map(|process| process.instance_id == sanitized)
-            .unwrap_or(false);
-        let launch_active = shared
-            .launch_reservation
-            .as_ref()
-            .map(|reservation| reservation.instance_id == sanitized)
-            .unwrap_or(false);
+            .running_processes
+            .values()
+            .any(|process| process.instance_id == sanitized);
+        let launch_active = shared.launch_reservations.contains(&sanitized);
         if direct_active || launch_active {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTANCE_RUNNING".into(),
@@ -3448,6 +3573,1220 @@ pub async fn restore_snapshot(
         code: "ERR_RESTORE".into(),
         message: e,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Minecraft version migration report
+// ---------------------------------------------------------------------------
+
+/// "Can this instance move to the next Minecraft version, and what breaks?"
+///
+/// Read-only: it classifies every installed item against the target version and
+/// reports. Executing the migration is a normal install transaction and is a
+/// separate, explicit step.
+#[tauri::command]
+pub async fn get_migration_report(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target_version: String,
+) -> LauncherResult<agora_core::migration_report::MigrationReport> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    agora_core::migration_report::MigrationService::new(ctx)
+        .report_for_instance(&sanitized, &target_version)
+        .await
+}
+
+// ---------------------------------------------------------------------------
+// Launch wrapper command
+// ---------------------------------------------------------------------------
+
+/// Set (or clear, with an empty string) the command the game is launched under.
+///
+/// Stored in the manifest's `user_preferences` so it travels with an exported
+/// instance and needs no migration. Validated here by parsing it the same way
+/// the launcher will, so a malformed quote is rejected while the user is
+/// looking at the field rather than at a failed launch.
+#[tauri::command]
+pub async fn set_instance_wrapper_command(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    wrapper: String,
+) -> LauncherResult<()> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let trimmed = wrapper.trim().to_string();
+    if !trimmed.is_empty() {
+        agora_core::launch_planner::parse_argument_string(&trimmed)?;
+    }
+    let ctx = crate::core_context(&app)?;
+    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
+    let lock_manager = ctx.lock_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "wrapper-command",
+        )?;
+        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+        if !manifest.user_preferences.is_object() {
+            manifest.user_preferences = serde_json::json!({});
+        }
+        if let Some(preferences) = manifest.user_preferences.as_object_mut() {
+            if trimmed.is_empty() {
+                preferences.remove("agora_wrapper_command");
+            } else {
+                preferences.insert(
+                    "agora_wrapper_command".into(),
+                    serde_json::Value::String(trimmed),
+                );
+            }
+        }
+        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        Ok::<_, LauncherError>(())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+// ---------------------------------------------------------------------------
+// Desktop shortcuts
+// ---------------------------------------------------------------------------
+
+/// Create a desktop shortcut that launches one instance directly.
+///
+/// The shortcut targets this executable with `--launch <id>`; the
+/// single-instance plugin forwards that to an already-running Agora, so
+/// clicking it either starts the app on that instance or tells the open app to
+/// launch it. OS mechanism, so it lives in the adapter rather than core.
+#[tauri::command]
+pub async fn create_desktop_shortcut(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    display_name: String,
+) -> LauncherResult<String> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    if sanitized.is_empty() {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_INSTANCE".into(),
+            message: "Instance ID is empty or invalid.".into(),
+        });
+    }
+    let exe = std::env::current_exe().map_err(|e| LauncherError::Generic {
+        code: "ERR_SHORTCUT".into(),
+        message: format!("Cannot locate the Agora executable: {e}"),
+    })?;
+    let desktop = dirs::desktop_dir().ok_or_else(|| LauncherError::Generic {
+        code: "ERR_SHORTCUT".into(),
+        message: "Could not find your Desktop folder.".into(),
+    })?;
+    // The label is user-supplied and becomes a filename; keep it to characters
+    // that are safe on every platform rather than trusting it.
+    let label: String = display_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+        .collect();
+    let label = label.trim();
+    let label = if label.is_empty() { &sanitized } else { label };
+    let _ = &app;
+
+    let shortcut = create_shortcut_file(&desktop, label, &exe, &sanitized)?;
+    Ok(shortcut.to_string_lossy().into_owned())
+}
+
+/// Escape a value for interpolation into a PowerShell single-quoted string.
+///
+/// PowerShell escapes a literal `'` by doubling it. Nothing else is special
+/// inside single quotes — `$`, backticks and backslashes are all literal —
+/// so this is the whole rule.
+#[cfg(windows)]
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(windows)]
+fn create_shortcut_file(
+    desktop: &std::path::Path,
+    label: &str,
+    exe: &std::path::Path,
+    instance_id: &str,
+) -> LauncherResult<std::path::PathBuf> {
+    let target = desktop.join(format!("{label}.lnk"));
+    // A .lnk is a COM structure, not a text file. Rather than take a COM
+    // dependency for one feature, drive the shell's own scripting object.
+    //
+    // Every interpolated value is escaped for a PowerShell single-quoted
+    // string. These are real paths, not constants: a user named O'Brien has an
+    // apostrophe in their desktop path, which would otherwise close the quote
+    // and leave the rest of their folder name parsed as code.
+    let script = format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');\
+         $s.TargetPath='{}';$s.Arguments='--launch {}';\
+         $s.WorkingDirectory='{}';$s.Save()",
+        ps_single_quote(&target.display().to_string()),
+        ps_single_quote(&exe.display().to_string()),
+        ps_single_quote(instance_id),
+        ps_single_quote(&exe.parent().unwrap_or(desktop).display().to_string()),
+    );
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_SHORTCUT".into(),
+            message: format!("Could not create the shortcut: {e}"),
+        })?;
+    if !output.status.success() {
+        return Err(LauncherError::Generic {
+            code: "ERR_SHORTCUT".into(),
+            message: format!(
+                "Could not create the shortcut: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
+    Ok(target)
+}
+
+#[cfg(not(windows))]
+fn create_shortcut_file(
+    desktop: &std::path::Path,
+    label: &str,
+    exe: &std::path::Path,
+    instance_id: &str,
+) -> LauncherResult<std::path::PathBuf> {
+    let target = desktop.join(format!("{label}.desktop"));
+    let contents = format!(
+        "[Desktop Entry]\nType=Application\nName={label}\nExec=\"{}\" --launch {instance_id}\nTerminal=false\nCategories=Game;\n",
+        exe.display()
+    );
+    std::fs::write(&target, contents).map_err(|e| LauncherError::Generic {
+        code: "ERR_SHORTCUT".into(),
+        message: format!("Could not write the shortcut: {e}"),
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // A .desktop launcher must be executable or the desktop refuses it.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(target)
+}
+
+// ---------------------------------------------------------------------------
+// Shared screenshot folder
+// ---------------------------------------------------------------------------
+
+/// Whether this instance's `screenshots/` is linked to the shared folder.
+#[derive(serde::Serialize)]
+pub struct SharedScreenshotStatus {
+    pub linked: bool,
+    /// Where the link points, when it is linked somewhere.
+    pub target: Option<String>,
+    /// The shared folder this instance would be linked to.
+    pub shared_root: String,
+}
+
+fn screenshots_dir(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+) -> LauncherResult<std::path::PathBuf> {
+    Ok(paths::instance_dir(app, instance_id)
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?
+        .join("screenshots"))
+}
+
+#[tauri::command]
+pub async fn get_shared_screenshot_status(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<SharedScreenshotStatus> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let dir = screenshots_dir(&app, &sanitized)?;
+    let shared = crate::core_context(&app)?.paths.shared_screenshots();
+    let linked = agora_core::shared_folder::is_link(&dir);
+    Ok(SharedScreenshotStatus {
+        linked,
+        target: if linked {
+            agora_core::shared_folder::link_target(&dir)
+                .map(|path| path.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+        shared_root: shared.to_string_lossy().into_owned(),
+    })
+}
+
+/// Point this instance's screenshots at the shared folder.
+///
+/// Existing screenshots are moved into the shared folder rather than discarded;
+/// a name collision refuses instead of overwriting.
+#[tauri::command]
+pub async fn link_shared_screenshots(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<String> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let dir = screenshots_dir(&app, &sanitized)?;
+    let shared = crate::core_context(&app)?.paths.shared_screenshots();
+    tokio::task::spawn_blocking(move || {
+        agora_core::shared_folder::link_shared_folder(&dir, &shared).map(|outcome| match outcome {
+            agora_core::shared_folder::LinkOutcome::Linked => "Screenshots are now shared.".into(),
+            agora_core::shared_folder::LinkOutcome::AlreadyLinked => {
+                "Screenshots were already shared.".into()
+            }
+            agora_core::shared_folder::LinkOutcome::MigratedThenLinked { moved } => {
+                format!("Screenshots are now shared. {moved} existing file(s) moved across.")
+            }
+        })
+    })
+    .await
+    .map_err(|e| LauncherError::Generic {
+        code: "ERR_SHARE_TASK".into(),
+        message: format!("Share task failed: {e}"),
+    })?
+    .map_err(|message| LauncherError::Generic {
+        code: "ERR_SHARE".into(),
+        message,
+    })
+}
+
+/// Stop sharing. The shared screenshots themselves are left alone.
+#[tauri::command]
+pub async fn unlink_shared_screenshots(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let dir = screenshots_dir(&app, &sanitized)?;
+    tokio::task::spawn_blocking(move || agora_core::shared_folder::unlink_shared_folder(&dir))
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_SHARE_TASK".into(),
+            message: format!("Unshare task failed: {e}"),
+        })?
+        .map_err(|message| LauncherError::Generic {
+            code: "ERR_SHARE".into(),
+            message,
+        })
+}
+
+// ---------------------------------------------------------------------------
+// Local launch history
+// ---------------------------------------------------------------------------
+
+/// Recorded launches for an instance, newest first, plus a summary.
+///
+/// Local only — this data has no endpoint and is deleted with the instance.
+#[derive(serde::Serialize)]
+pub struct LaunchHistoryView {
+    pub records: Vec<agora_core::launch_history::LaunchRecord>,
+    pub stats: agora_core::launch_history::LaunchStats,
+}
+
+#[tauri::command]
+pub async fn get_launch_history(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<LaunchHistoryView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn =
+            agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_LOCAL_STATE_FAILED".into(),
+                    message: e.to_string(),
+                }
+            })?;
+        let records = agora_core::launch_history::list_history(
+            &conn,
+            &sanitized,
+            agora_core::launch_history::HISTORY_LIMIT,
+        )
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: e.to_string(),
+        })?;
+        let stats = agora_core::launch_history::summarize(&records);
+        Ok(LaunchHistoryView { records, stats })
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+// ---------------------------------------------------------------------------
+// Surgical pack updates
+// ---------------------------------------------------------------------------
+
+fn pack_update_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_PACK_UPDATE".into(),
+        message,
+    }
+}
+
+/// Offline preview of what updating this instance to a new pack file would do.
+///
+/// Downloads nothing. Mod-content decisions for jars that are not already
+/// present locally are estimates, flagged in `unverified`.
+#[tauri::command]
+pub async fn preview_pack_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    mrpack_path: String,
+) -> LauncherResult<agora_core::pack_update::PackUpdatePreview> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+                    .map_err(|e| e.to_string())?;
+                agora_core::pack_update::preview_pack_update(
+                    &conn,
+                    &sanitized,
+                    &instance_dir,
+                    std::path::Path::new(&mrpack_path),
+                )
+            },
+        )
+        .await
+        .map_err(|e| pack_update_error(format!("Pack preview task failed: {e}")))?
+        .map_err(pack_update_error)
+}
+
+/// Apply a pack update.
+///
+/// `resolutions` must answer every conflict the preview reported — core refuses
+/// otherwise, because picking a side unasked is exactly what this feature
+/// exists to avoid.
+#[tauri::command]
+pub async fn apply_pack_update(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    mrpack_path: String,
+    resolutions: std::collections::BTreeMap<String, agora_core::pack_update::ConflictResolution>,
+) -> LauncherResult<agora_core::pack_update::PackUpdateOutcome> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    let staged_dir = ctx.paths.staging_dir(&format!("pack-update-{sanitized}"))?;
+    let lock_manager = ctx.lock_manager.clone();
+    let paths_for_db = ctx.paths.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let _lock = lock_manager
+                    .acquire(
+                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+                        "pack-update",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let conn = agora_core::db::local_state_connection(&paths_for_db.local_state_db())
+                    .map_err(|e| e.to_string())?;
+                let outcome = agora_core::pack_update::update_pack(
+                    &conn,
+                    &sanitized,
+                    &instance_dir,
+                    std::path::Path::new(&mrpack_path),
+                    &staged_dir,
+                    &resolutions,
+                    &agora_core::pack_update::NetworkFetcher,
+                    false,
+                );
+                let _ = std::fs::remove_dir_all(&staged_dir);
+                Ok::<_, String>(outcome)
+            },
+        )
+        .await
+        .map_err(|e| pack_update_error(format!("Pack update task failed: {e}")))?
+        .map_err(pack_update_error)
+}
+
+// ---------------------------------------------------------------------------
+// Minecraft version migration — execution
+// ---------------------------------------------------------------------------
+
+/// Plan a migration without performing it.
+///
+/// The plan's `blockers` list is what the user is being asked to accept: mods
+/// that will be left at their current version. Nothing is changed here.
+#[tauri::command]
+pub async fn plan_version_migration(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target_version: String,
+) -> LauncherResult<agora_core::version_migration::MigrationPlan> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    agora_core::version_migration::VersionMigrationService::new(ctx)
+        .plan(&sanitized, &target_version)
+        .await
+        .map_err(|rejection| LauncherError::Generic {
+            code: "ERR_MIGRATION_REJECTED".into(),
+            message: rejection
+                .reasons
+                .iter()
+                .map(|reason| reason.message.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })
+}
+
+/// Perform the migration.
+///
+/// `acceptBlockers` must be the user's actual answer to the planned blockers —
+/// passing it blindly would turn "leave these mods behind" into a silent
+/// default, which is the thing the plan exists to prevent.
+#[tauri::command]
+pub async fn run_version_migration(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    target_version: String,
+    accept_blockers: bool,
+) -> LauncherResult<agora_core::version_migration::MigrationOutcome> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    Ok(
+        agora_core::version_migration::VersionMigrationService::new(ctx)
+            .migrate(&sanitized, &target_version, accept_blockers)
+            .await,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Guided mod bisect
+// ---------------------------------------------------------------------------
+
+fn bisect_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_BISECT".into(),
+        message,
+    }
+}
+
+/// A session plus the trial it currently wants, in one read.
+#[derive(serde::Serialize)]
+pub struct BisectView {
+    pub session: Option<agora_core::bisect::BisectSession>,
+    pub trial: Option<agora_core::bisect::BisectTrial>,
+}
+
+fn load_bisect_view(app: &tauri::AppHandle, instance_id: &str) -> LauncherResult<BisectView> {
+    let instance_dir =
+        paths::instance_dir(app, instance_id).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let Some(session) = agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
+    else {
+        return Ok(BisectView {
+            session: None,
+            trial: None,
+        });
+    };
+    let manifest = load_manifest(app, instance_id)?;
+    let trial = agora_core::bisect::next_trial(&session, &manifest.mods);
+    Ok(BisectView {
+        session: Some(session),
+        trial: Some(trial),
+    })
+}
+
+#[tauri::command]
+pub async fn get_bisect_session(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<BisectView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || load_bisect_view(&app, &sanitized))
+        .await
+        .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Begin a bisect over the currently enabled mods.
+///
+/// `prime_suspects` are mod filenames the crash log implicated; they are tested
+/// first, which makes the opening split far more likely to be decisive than a
+/// blind halving.
+#[tauri::command]
+pub async fn start_bisect(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    prime_suspects: Vec<String>,
+) -> LauncherResult<BisectView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let instance_dir =
+            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                code: "ERR_PATH".into(),
+                message: e.to_string(),
+            })?;
+        if agora_core::bisect::read_session(&instance_dir)
+            .map_err(bisect_error)?
+            .is_some()
+        {
+            return Err(bisect_error(
+                "A bisect is already in progress for this instance.".into(),
+            ));
+        }
+        let manifest = load_manifest(&app, &sanitized)?;
+        let session = agora_core::bisect::start_session(
+            &manifest.mods,
+            &prime_suspects,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .map_err(bisect_error)?;
+        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
+        load_bisect_view(&app, &sanitized)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Apply the current trial's enable/disable set to the instance.
+///
+/// Separate from recording an outcome because the user has to actually launch
+/// the game in between.
+#[tauri::command]
+pub async fn apply_bisect_trial(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<BisectView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    let lock_manager = ctx.lock_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "bisect-trial",
+        )?;
+        let instance_dir =
+            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                code: "ERR_PATH".into(),
+                message: e.to_string(),
+            })?;
+        let view = load_bisect_view(&app, &sanitized)?;
+        let Some(trial) = view.trial.as_ref() else {
+            return Err(bisect_error("No bisect is in progress.".into()));
+        };
+        if trial.status != agora_core::bisect::BisectStatus::AwaitingTrial {
+            return Err(bisect_error("This bisect has already finished.".into()));
+        }
+        agora_core::bisect::apply_enabled_set(&instance_dir, &trial.enable)
+            .map_err(bisect_error)?;
+        load_bisect_view(&app, &sanitized)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Record what happened on the last launch and narrow the pool.
+#[tauri::command]
+pub async fn record_bisect_outcome(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    reproduced: bool,
+) -> LauncherResult<BisectView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let instance_dir =
+            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                code: "ERR_PATH".into(),
+                message: e.to_string(),
+            })?;
+        let Some(mut session) =
+            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
+        else {
+            return Err(bisect_error("No bisect is in progress.".into()));
+        };
+        let manifest = load_manifest(&app, &sanitized)?;
+        let outcome = if reproduced {
+            agora_core::bisect::TrialOutcome::Reproduced
+        } else {
+            agora_core::bisect::TrialOutcome::Clean
+        };
+        agora_core::bisect::record_outcome(&mut session, &manifest.mods, outcome)
+            .map_err(bisect_error)?;
+        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
+        load_bisect_view(&app, &sanitized)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Undo the last trial and take the other half next time.
+#[tauri::command]
+pub async fn step_back_bisect(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<BisectView> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let instance_dir =
+            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                code: "ERR_PATH".into(),
+                message: e.to_string(),
+            })?;
+        let Some(mut session) =
+            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
+        else {
+            return Err(bisect_error("No bisect is in progress.".into()));
+        };
+        agora_core::bisect::step_back(&mut session).map_err(bisect_error)?;
+        agora_core::bisect::write_session(&instance_dir, &session).map_err(bisect_error)?;
+        load_bisect_view(&app, &sanitized)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// End the bisect and put every mod back the way it was.
+///
+/// Restoring the baseline before clearing the session is the whole safety
+/// story: a bisect must be fully revertible at any point, and the baseline is
+/// the only record of what was on when it started.
+#[tauri::command]
+pub async fn cancel_bisect(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let ctx = crate::core_context(&app)?;
+    let lock_manager = ctx.lock_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "bisect-cancel",
+        )?;
+        let instance_dir =
+            paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                code: "ERR_PATH".into(),
+                message: e.to_string(),
+            })?;
+        if let Some(session) =
+            agora_core::bisect::read_session(&instance_dir).map_err(bisect_error)?
+        {
+            agora_core::bisect::apply_enabled_set(&instance_dir, &session.baseline_enabled)
+                .map_err(bisect_error)?;
+        }
+        agora_core::bisect::clear_session(&instance_dir).map_err(bisect_error)?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+// ---------------------------------------------------------------------------
+// Backup export / import
+// ---------------------------------------------------------------------------
+
+fn backup_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_BACKUP".into(),
+        message,
+    }
+}
+
+/// Write a snapshot out to a directory the user chose.
+///
+/// This is the $0 answer to cloud saves: the destination is any folder, so
+/// pointing it at one Dropbox or OneDrive already syncs gets offsite backups
+/// with no service behind them.
+#[tauri::command]
+pub async fn export_backup(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    snapshot_id: String,
+    export_dir: String,
+) -> LauncherResult<String> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                agora_core::backup::export_snapshot(
+                    &instance_dir,
+                    &snapshot_id,
+                    std::path::Path::new(&export_dir),
+                )
+                .map(|path| path.to_string_lossy().into_owned())
+            },
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup export task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// Read a backup artifact back into an instance.
+///
+/// The artifact is untrusted input — it may have come from another machine or
+/// another person — so core validates the whole thing before a single byte
+/// reaches the instance directory.
+#[tauri::command]
+pub async fn import_backup(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    artifact_path: String,
+) -> LauncherResult<agora_core::snapshot::Snapshot> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let ctx = crate::core_context(&app)?;
+    let lock_manager = ctx.lock_manager.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                let _lock = lock_manager
+                    .acquire(
+                        agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+                        "import-backup",
+                    )
+                    .map_err(|e| e.to_string())?;
+                agora_core::backup::import_backup(
+                    &instance_dir,
+                    std::path::Path::new(&artifact_path),
+                )
+            },
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup import task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+/// Apply a retention policy, returning the snapshot ids that were removed.
+#[tauri::command]
+pub async fn apply_backup_retention(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    keep_last: Option<u32>,
+    keep_days: Option<u32>,
+) -> LauncherResult<Vec<String>> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    let policy = agora_core::backup::BackupRetentionPolicy {
+        keep_last,
+        keep_days,
+    };
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::Background,
+            move || agora_core::backup::run_backup_retention(&instance_dir, &policy),
+        )
+        .await
+        .map_err(|e| backup_error(format!("Backup retention task failed: {e}")))?
+        .map_err(backup_error)
+}
+
+// ---------------------------------------------------------------------------
+// User-defined mod groups
+// ---------------------------------------------------------------------------
+
+fn group_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_MOD_GROUP".into(),
+        message,
+    }
+}
+
+/// Read an instance's user-defined groups, dropping names whose content is gone.
+#[tauri::command]
+pub async fn get_mod_groups(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = load_manifest(&app, &instance_id)?;
+        let mut groups = agora_core::mod_groups::read_groups(&manifest);
+        let installed: Vec<String> = manifest
+            .mods
+            .iter()
+            .chain(manifest.resourcepacks.iter())
+            .chain(manifest.shaders.iter())
+            .chain(manifest.datapacks.iter())
+            .chain(manifest.worlds.iter())
+            .map(|entry| entry.filename.clone())
+            .collect();
+        agora_core::mod_groups::prune_missing(&mut groups, &installed);
+        Ok(groups)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Assign content to a group, or clear the assignment when `group` is null.
+#[tauri::command]
+pub async fn set_mod_group(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filenames: Vec<String>,
+    group: Option<String>,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    mutate_mod_groups(app, instance_id, move |manifest| {
+        agora_core::mod_groups::assign(manifest, &filenames, group.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rename_mod_group(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    from: String,
+    to: String,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    mutate_mod_groups(app, instance_id, move |manifest| {
+        agora_core::mod_groups::rename(manifest, &from, &to)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_mod_group(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    group: String,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>> {
+    mutate_mod_groups(app, instance_id, move |manifest| {
+        Ok(agora_core::mod_groups::delete(manifest, &group))
+    })
+    .await
+}
+
+/// Read-modify-write the manifest under the instance lock.
+///
+/// Grouping only ever touches `user_preferences`, but it still goes through the
+/// canonical loader and the atomic writer so it cannot race a content operation
+/// or drop a manifest heal.
+async fn mutate_mod_groups<F>(
+    app: tauri::AppHandle,
+    instance_id: String,
+    mutate: F,
+) -> LauncherResult<std::collections::BTreeMap<String, Vec<String>>>
+where
+    F: FnOnce(
+            &mut agora_core::models::InstanceManifest,
+        ) -> Result<std::collections::BTreeMap<String, Vec<String>>, String>
+        + Send
+        + 'static,
+{
+    let ctx = crate::core_context(&app)?;
+    let sanitized = paths::sanitize_id(&instance_id);
+    let manifest_path = ctx.paths.instance_manifest(&sanitized)?;
+    let lock_manager = ctx.lock_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_manager.acquire(
+            agora_core::lock_manager::LockResource::Instance(sanitized.clone()),
+            "mod-groups",
+        )?;
+        let mut manifest = agora_core::helpers::read_manifest(&manifest_path)?;
+        let groups = mutate(&mut manifest).map_err(group_error)?;
+        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
+        Ok::<_, LauncherError>(groups)
+    })
+    .await
+    .map_err(|e| group_error(format!("Mod group task failed: {e}")))?
+}
+
+// ---------------------------------------------------------------------------
+// Shared-runtime disk reclaim
+// ---------------------------------------------------------------------------
+
+/// Dry-run scan of the shared `minecraft-runtime/` tree. Never deletes.
+#[tauri::command]
+pub async fn scan_runtime_prune(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<agora_core::prune_service::PruneReport> {
+    let ctx = crate::core_context(&app)?;
+    let scan_ctx = ctx.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || agora_core::prune_service::scan_locked(&scan_ctx),
+        )
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_PRUNE_TASK".into(),
+            message: format!("Reclaim scan task failed: {e}"),
+        })?
+}
+
+/// Delete the chosen categories. Only ever reached from an explicit user
+/// confirmation of a scan the user has already seen.
+#[tauri::command]
+pub async fn run_runtime_prune(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    categories: Vec<agora_core::prune_service::PruneCategory>,
+) -> LauncherResult<agora_core::prune_service::PruneResult> {
+    if categories.is_empty() {
+        return Err(LauncherError::Generic {
+            code: "ERR_PRUNE_EMPTY".into(),
+            message: "Choose at least one category to reclaim.".into(),
+        });
+    }
+    let ctx = crate::core_context(&app)?;
+    let prune_ctx = ctx.clone();
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || agora_core::prune_service::prune_locked(&prune_ctx, &categories),
+        )
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_PRUNE_TASK".into(),
+            message: format!("Reclaim task failed: {e}"),
+        })?
+}
+
+// ---------------------------------------------------------------------------
+// Instance templates
+// ---------------------------------------------------------------------------
+
+fn templates_root(app: &tauri::AppHandle) -> LauncherResult<std::path::PathBuf> {
+    Ok(crate::core_context(app)?.paths.templates_root())
+}
+
+fn template_error(message: String) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_TEMPLATE".into(),
+        message,
+    }
+}
+
+/// Files in an instance a template is allowed to capture, for the picker.
+#[tauri::command]
+pub async fn list_capturable_template_files(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<agora_core::template_service::CapturableFile>> {
+    let sanitized = paths::sanitize_id(&instance_id);
+    let instance_dir =
+        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+            code: "ERR_PATH".into(),
+            message: e.to_string(),
+        })?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::list_capturable_files(&instance_dir)
+    })
+    .await
+    .map_err(|e| template_error(format!("Template scan task failed: {e}")))?
+    .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn list_instance_templates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<Vec<agora_core::template_service::InstanceTemplate>> {
+    let root = templates_root(&app)?;
+    tokio::task::spawn_blocking(move || agora_core::template_service::list_templates(&root))
+        .await
+        .map_err(|e| template_error(format!("Template listing task failed: {e}")))?
+        .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn create_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    name: String,
+    description: Option<String>,
+    jvm: Option<agora_core::template_service::TemplateJvm>,
+    source_instance_id: Option<String>,
+    selected_paths: Vec<String>,
+) -> LauncherResult<agora_core::template_service::InstanceTemplate> {
+    let root = templates_root(&app)?;
+    // The id is generated rather than derived from the name: two templates may
+    // legitimately share a display name, and a name is renameable while the id
+    // is what the default-template setting and instance rows point at. The name
+    // slug is appended only so the directory is recognizable on disk.
+    let slug: String = paths::sanitize_id(&name).chars().take(24).collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let id = if slug.is_empty() {
+        format!("tpl-{stamp}")
+    } else {
+        format!("tpl-{stamp}-{slug}")
+    };
+    let source_dir = match source_instance_id {
+        Some(instance_id) => {
+            let sanitized = paths::sanitize_id(&instance_id);
+            Some(
+                paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
+                    code: "ERR_PATH".into(),
+                    message: e.to_string(),
+                })?,
+            )
+        }
+        None => None,
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::create_template(
+            &root,
+            agora_core::template_service::CreateTemplateRequest {
+                id: &id,
+                name: &name,
+                description,
+                jvm: jvm.unwrap_or_default(),
+                source_instance_dir: source_dir.as_deref(),
+                selected_paths: &selected_paths,
+                now: &now,
+            },
+        )
+    })
+    .await
+    .map_err(|e| template_error(format!("Template capture task failed: {e}")))?
+    .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn update_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    template_id: String,
+    name: Option<String>,
+    description: Option<Option<String>>,
+    jvm: Option<agora_core::template_service::TemplateJvm>,
+) -> LauncherResult<agora_core::template_service::InstanceTemplate> {
+    let root = templates_root(&app)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::update_template(
+            &root,
+            &template_id,
+            name.as_deref(),
+            description,
+            jvm,
+            &now,
+        )
+    })
+    .await
+    .map_err(|e| template_error(format!("Template update task failed: {e}")))?
+    .map_err(template_error)
+}
+
+#[tauri::command]
+pub async fn delete_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    template_id: String,
+) -> LauncherResult<()> {
+    let root = templates_root(&app)?;
+    // Clearing the default alongside the delete keeps the setting from pointing
+    // at a template that no longer exists.
+    let ctx = crate::core_context(&app)?;
+    let conn =
+        agora_core::db::local_state_connection(&ctx.paths.local_state_db()).map_err(|e| {
+            LauncherError::Generic {
+                code: "ERR_LOCAL_STATE_FAILED".into(),
+                message: e.to_string(),
+            }
+        })?;
+    let is_default = agora_core::db::get_setting(
+        &conn,
+        agora_core::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
+    )
+    .ok()
+    .flatten()
+    .and_then(|value| value.as_str().map(str::to_string))
+    .is_some_and(|current| current == template_id);
+    if is_default {
+        let _ = agora_core::db::set_setting(
+            &conn,
+            agora_core::instance_service::DEFAULT_TEMPLATE_SETTING_KEY,
+            &serde_json::Value::String(String::new()),
+        );
+    }
+    drop(conn);
+    tokio::task::spawn_blocking(move || {
+        agora_core::template_service::delete_template(&root, &template_id)
+    })
+    .await
+    .map_err(|e| template_error(format!("Template delete task failed: {e}")))?
+    .map_err(template_error)
+}
+
+/// Apply a template's captured files onto an existing instance.
+///
+/// Separate from instance creation so a user can retrofit a template onto an
+/// instance they already have.
+#[tauri::command]
+pub async fn apply_instance_template(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    template_id: String,
+) -> LauncherResult<agora_core::instance_service::TemplateApplyOutcome> {
+    let root = templates_root(&app)?;
+    let ctx = crate::core_context(&app)?;
+    // Core owns the whole operation: the lock, the undo snapshot, the ordering
+    // of the file and database halves, and the rollback.
+    tokio::task::spawn_blocking(move || {
+        agora_core::instance_service::InstanceService::new(ctx).apply_template(
+            &instance_id,
+            &root,
+            &template_id,
+        )
+    })
+    .await
+    .map_err(|e| template_error(format!("Template apply task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -3591,7 +4930,7 @@ pub async fn import_instance(
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase);
     let import_source = match extension.as_deref() {
-        Some("mrpack") => agora_core::import_service::ImportSource::Mrpack(source),
+        Some("mrpack") => agora_core::import_service::ImportSource::mrpack(source),
         Some("zip") => agora_core::import_service::ImportSource::PrismZip(source),
         _ => agora_core::import_service::ImportSource::Directory(source),
     };
@@ -4198,16 +5537,18 @@ fn ensure_install_apply_allowed(
     shared: &crate::state::AppState,
     instance_id: &str,
 ) -> LauncherResult<()> {
-    if let Some(running) = &shared.running_process {
-        if running.instance_id == instance_id {
-            return Err(LauncherError::Generic {
-                code: "ERR_INSTALL_PROCESS_ACTIVE".into(),
-                message: "This instance is running — stop it before installing.".into(),
-            });
-        }
+    if shared
+        .running_processes
+        .values()
+        .any(|running| running.instance_id == instance_id)
+    {
+        return Err(LauncherError::Generic {
+            code: "ERR_INSTALL_PROCESS_ACTIVE".into(),
+            message: "This instance is running — stop it before installing.".into(),
+        });
     }
-    if let Some(reservation) = &shared.launch_reservation {
-        if reservation.instance_id == instance_id {
+    {
+        if shared.launch_reservations.contains(instance_id) {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTALL_LAUNCH_RESERVED".into(),
                 message:
@@ -4465,7 +5806,7 @@ pub async fn repair_lockfile(
     let (_manifest, _live_index, operations) = tokio::task::spawn_blocking(move || {
         let manifest_text = std::fs::read_to_string(repair_dir.join("instance_manifest.json"))
             .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
-        let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&manifest_text)
+        let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&manifest_text) // allow-raw-instance-manifest
             .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
         if manifest.minecraft_version != repair_lockfile.instance.minecraft_version
             || manifest.loader != repair_lockfile.instance.loader
@@ -4706,8 +6047,9 @@ fn export_lockfile_sync(
         .map_err(|error| lockfile_error("ERR_INSTANCE_PATH", error.to_string()))?;
     let manifest_bytes = std::fs::read(&manifest_path)
         .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
-    let manifest: agora_core::models::InstanceManifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
+    let manifest: agora_core::models::InstanceManifest =
+        serde_json::from_slice(&manifest_bytes) // allow-raw-instance-manifest
+            .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
     let manifest_sha256 = hex::encode(Sha256::digest(&manifest_bytes));
 
     let loader = crate::loader_manifests::find_entry(
@@ -4907,6 +6249,9 @@ pub async fn import_lockfile(
         minecraft_version: lockfile.instance.minecraft_version.clone(),
         loader: lockfile.instance.loader.clone(),
         loader_version: lockfile.instance.loader_version.clone(),
+        // Pack-driven creates take the default template too; pack content is
+        // written afterwards, so anything the pack ships wins over it.
+        template_id: None,
         jvm_memory_mb: Some(memory),
         jvm_memory_mode: Some(
             if explicit_memory.is_some() {
@@ -5128,9 +6473,7 @@ fn apply_lockfile_metadata(
     }
 
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("Could not read imported manifest: {error}"))?;
-    let mut manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)
+    let mut manifest = agora_core::helpers::read_manifest(&manifest_path)
         .map_err(|error| format!("Could not parse imported manifest: {error}"))?;
     manifest.is_locked = lockfile.instance.is_locked;
     manifest.user_preferences = lockfile.instance.user_preferences.clone();
@@ -5195,9 +6538,7 @@ fn lockfile_health_report(
     registry_db_path: Option<&std::path::Path>,
 ) -> LauncherResult<agora_core::health::HealthReport> {
     let manifest_path = instance_dir.join("instance_manifest.json");
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|error| lockfile_error("ERR_MANIFEST_READ", error.to_string()))?;
-    let manifest: agora_core::models::InstanceManifest = serde_json::from_str(&text)
+    let manifest = agora_core::helpers::read_manifest(&manifest_path)
         .map_err(|error| lockfile_error("ERR_MANIFEST_PARSE", error.to_string()))?;
     Ok(agora_core::health::cached_health(
         instance_dir,
@@ -5355,170 +6696,174 @@ pub async fn cancel_install(app: tauri::AppHandle, plan_id: String) -> LauncherR
     })
 }
 
-/// Information about an available update for an installed content item.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UpdateInfo {
-    pub filename: String,
-    pub mod_jar_id: String,
-    pub current_version: String,
-    pub latest_version: String,
-    pub target_version: String,
-    pub source: String,
-}
-
-const UPDATE_CANDIDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
-async fn cached_curated_update_candidates(
-    state: &LauncherState,
-    app: &tauri::AppHandle,
-    instance_id: &str,
-    item_id: &str,
-    cache_key: String,
-) -> LauncherResult<Vec<ModVersionCandidate>> {
-    let cached = {
-        let state = state.lock().await;
-        state
-            .update_candidate_cache
-            .get(&cache_key)
-            .filter(|entry| entry.fetched_at.elapsed() < UPDATE_CANDIDATE_CACHE_TTL)
-            .map(|entry| entry.candidates.clone())
-    };
-    if let Some(candidates) = cached {
-        return Ok(candidates);
-    }
-
-    let candidates = mod_install::list_mod_versions_for_update(app, instance_id, item_id).await?;
-    let mut state = state.lock().await;
-    state.update_candidate_cache.insert(
-        cache_key,
-        agora_core::state::UpdateCandidateCacheEntry {
-            fetched_at: std::time::Instant::now(),
-            candidates: candidates.clone(),
-        },
-    );
-    Ok(candidates)
-}
+/// Re-export the core `UpdateInfo` so the IPC shape stays identical to the
+/// frontend contract at `desktop/src/lib/tauri.ts:633`. The canonical
+/// definition lives in core (`crates/agora-core/src/update_cache.rs`) and is
+/// also the row serialized into `instance_update_cache`.
+pub use agora_core::update_cache::UpdateInfo;
 
 /// Check for available updates for all tracked content in an instance.
 ///
-/// Resolves the newest compatible, verified candidate for each tracked item.
+/// Thin wrapper over `agora_core::update_cache::check_single_instance_updates_with`,
+/// which is the single implementation of the matching rules -- the background
+/// sweep (`sweep_all_updates`) drives the instance badge from that same code, so
+/// the badge and this panel cannot disagree. All this adds is the process-local
+/// candidate cache layered over core's persistent one, and the stricter error
+/// policy an explicit user action needs: a failed lookup must surface as an
+/// error here rather than read as "up to date".
 #[tauri::command]
 pub async fn check_instance_updates(
     app: tauri::AppHandle,
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
 ) -> LauncherResult<Vec<UpdateInfo>> {
-    use crate::models::InstanceManifest;
-    use crate::paths;
-
     let ctx = crate::core_context(&app)?;
+    let sanitized = crate::paths::sanitize_id(&instance_id);
     let shared_state = state.inner().clone();
-    let sanitized = paths::sanitize_id(&instance_id);
-    let manifest_path = paths::instance_manifest_path(&app, &sanitized)
-        .map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest_text =
-        std::fs::read_to_string(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)?;
-    let manifest: InstanceManifest =
-        serde_json::from_str(&manifest_text).map_err(|_| LauncherError::LocalStateFailed)?;
 
-    let mut updates = Vec::new();
-    for installed_mod in manifest
-        .mods
-        .iter()
-        .chain(manifest.resourcepacks.iter())
-        .chain(manifest.shaders.iter())
-        .chain(manifest.datapacks.iter())
-        .chain(manifest.worlds.iter())
-    {
-        if let Some(project_id) = installed_mod
-            .modrinth_id
-            .as_deref()
-            .filter(|_| installed_mod.source == "modrinth_raw")
-        {
-            let candidates = modrinth_raw::list_raw_modrinth_versions(
-                &ctx.http_clients,
-                &app,
-                Some(&sanitized),
-                project_id,
-                Some(match installed_mod.content_type.as_str() {
-                    "resourcepack" | "resourcepacks" => "resourcepack",
-                    "shader" | "shaders" | "shaderpack" | "shaderpacks" => "shader",
-                    "datapack" | "datapacks" => "datapack",
-                    "world" | "worlds" => "modpack",
-                    _ => "mod",
-                }),
-            )
-            .await?;
-            let Some(candidate) = candidates.first() else {
-                continue;
-            };
-            let current = installed_mod.version.as_deref().unwrap_or("");
-            if (current == candidate.version_id || current == candidate.version)
-                && installed_mod.filename == candidate.filename
-            {
-                continue;
-            }
-            updates.push(UpdateInfo {
-                filename: installed_mod.filename.clone(),
-                mod_jar_id: project_id.to_string(),
-                current_version: installed_mod
-                    .version
-                    .clone()
-                    .unwrap_or_else(|| "unknown".into()),
-                latest_version: candidate.version.clone(),
-                target_version: candidate.version_id.clone(),
-                source: installed_mod.source.clone(),
-            });
-            continue;
-        }
+    let updates = agora_core::update_cache::check_single_instance_updates_with(
+        &ctx,
+        &sanitized,
+        agora_core::update_cache::UpdateCheckOptions {
+            memory_cache: Some(&shared_state),
+            on_item_error: agora_core::update_cache::ItemErrorPolicy::Fail,
+        },
+    )
+    .await?;
 
-        let Some(registry_id) = installed_mod.registry_id.as_deref() else {
-            continue;
-        };
-        let item = mod_install::load_registry_item(&app, registry_id)?;
-        let cache_key = format!(
-            "{}\n{}\n{}",
-            item.source_identifier, manifest.minecraft_version, manifest.loader
-        );
-        let candidates = cached_curated_update_candidates(
-            &shared_state,
-            &app,
-            &sanitized,
-            registry_id,
-            cache_key,
-        )
-        .await?;
-        let Some(candidate) = candidates
-            .iter()
-            .find(|candidate| candidate.is_compatible)
-            .or_else(|| candidates.first())
-        else {
-            continue;
-        };
-        let same_version = installed_mod.version.as_deref() == Some(candidate.version.as_str());
-        let same_filename = installed_mod.filename == candidate.filename;
-        let same_hash = candidate
-            .sha256
-            .as_deref()
-            .map(|hash| hash.eq_ignore_ascii_case(&installed_mod.sha256))
-            .unwrap_or(true);
-        if same_version && same_filename && same_hash {
-            continue;
-        }
-        updates.push(UpdateInfo {
-            filename: installed_mod.filename.clone(),
-            mod_jar_id: registry_id.to_string(),
-            current_version: installed_mod
-                .version
-                .clone()
-                .unwrap_or_else(|| "unknown".into()),
-            latest_version: candidate.version.clone(),
-            target_version: candidate.version.clone(),
-            source: installed_mod.source.clone(),
-        });
+    // Persist so the result survives restart and can be read back without network.
+    if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
+        let _ = agora_core::update_cache::set_cached_instance_updates(&conn, &sanitized, &updates);
     }
 
     Ok(updates)
+}
+
+/// Read cached update results for a single instance without network.
+///
+/// Instant, offline-safe read from `instance_update_cache` (db.rs:370-v11).
+/// Returns `None` when no sweep or explicit check has been cached yet.
+#[tauri::command]
+pub async fn get_cached_instance_updates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Option<Vec<UpdateInfo>>> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        let cached = agora_core::update_cache::get_cached_instance_updates(&conn, &sanitized)
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        Ok(cached.map(|(updates, _checked_at)| updates))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Cached update envelope for one instance.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CachedInstanceUpdates {
+    pub instance_id: String,
+    pub updates: Vec<UpdateInfo>,
+    pub checked_at: String,
+}
+
+/// Read every cached instance row without network (instant hydration).
+///
+/// The frontend can render the last sweep's results immediately on mount
+/// without waiting for a fresh network check; a background refresh can follow.
+#[tauri::command]
+pub async fn get_cached_all_updates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<Vec<CachedInstanceUpdates>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        let rows = agora_core::update_cache::get_all_cached_instance_updates(&conn)
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        Ok(rows
+            .into_iter()
+            .map(|(instance_id, updates, checked_at)| CachedInstanceUpdates {
+                instance_id,
+                updates,
+                checked_at,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Pin or unpin an installed entry against updates.
+#[tauri::command]
+pub async fn set_mod_update_pinned(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+    pinned: bool,
+) -> LauncherResult<bool> {
+    check_not_locked(&app, &instance_id)?;
+    tokio::task::spawn_blocking(move || {
+        let ctx = crate::core_context(&app)?;
+        agora_core::install_service::InstallService::new(ctx).set_update_pinned(
+            &instance_id,
+            &filename,
+            pinned,
+        )
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Changelogs for every release between the installed version and the update.
+///
+/// Read from the signed `registry.db` — no network call, so this works offline
+/// and cannot stall the update dialog. Returns an empty list when the item has
+/// no upstream changelogs (curated or self-hosted items), when the registry
+/// predates the table, or on a downgrade; callers show a graceful fallback
+/// rather than treating empty as an error.
+#[tauri::command]
+pub async fn get_update_changelogs(
+    app: tauri::AppHandle,
+    item_id: String,
+    from_version: String,
+    to_version: String,
+) -> LauncherResult<Vec<agora_core::version_changelogs::VersionChangelog>> {
+    tokio::task::spawn_blocking(move || {
+        let ctx = crate::core_context(&app)?;
+        let svc = agora_core::registry::RegistryService::new(ctx);
+        svc.get_changelogs_between(&item_id, &from_version, &to_version)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Invalidate the cached update row after a successful install.
+///
+/// The cache behaves like an invalidated view: the installer never touches it
+/// (install_pipeline/install_service remain unaware). The frontend clears
+/// optimistically on `InstallFlow` success so the badge does not linger.
+#[tauri::command]
+pub async fn clear_cached_instance_updates(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    let ctx = crate::core_context(&app)?;
+    let sanitized = crate::paths::sanitize_id(&instance_id);
+    tokio::task::spawn_blocking(move || {
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        agora_core::update_cache::delete_cached_instance_updates(&conn, &sanitized)
+            .map_err(|_| LauncherError::LocalStateFailed)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
 // ---------------------------------------------------------------------------
@@ -6102,6 +7447,97 @@ fn reveal_in_explorer(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Take the `--launch <id>` this process was started with, if any.
+///
+/// Consuming rather than reading: a shortcut click is a one-time instruction,
+/// and a webview reload should not re-navigate the user somewhere they have
+/// since navigated away from.
+#[tauri::command]
+pub fn take_pending_cli_launch(state: tauri::State<'_, crate::PendingCliLaunch>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut slot| slot.take())
+}
+
+// ---------------------------------------------------------------------------
+// Controller / handheld mode
+// ---------------------------------------------------------------------------
+
+/// Resolve an instance id to its manifest, rejecting ids that do not survive
+/// sanitization.
+fn manifest_for_instance(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+) -> LauncherResult<agora_core::models::InstanceManifest> {
+    let sanitized = paths::sanitize_id(instance_id);
+    if sanitized.is_empty() || sanitized != instance_id {
+        return Err(LauncherError::Generic {
+            code: "ERR_INVALID_INSTANCE".into(),
+            message: "The instance ID is invalid.".into(),
+        });
+    }
+    let manifest_path = paths::instance_manifest_path(app, &sanitized)
+        .map_err(|_| LauncherError::LocalStateFailed)?;
+    agora_core::helpers::read_manifest(&manifest_path).map_err(|_| LauncherError::LocalStateFailed)
+}
+
+/// Decide whether to offer Controlify for an instance.
+///
+/// Called when a launch is about to start with a gamepad connected. Always
+/// returns a decision rather than an option, so the UI can explain *why* it is
+/// staying quiet instead of the offer silently never appearing.
+#[tauri::command]
+pub async fn evaluate_controlify_offer(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<agora_core::controller_service::ControlifyOffer> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = manifest_for_instance(&app, &instance_id)?;
+        let ctx = crate::core_context(&app)?;
+        let settings = agora_core::settings::SettingsService::new(ctx);
+        let declined = agora_core::controller_service::controlify_declined_instances(&settings)
+            .contains(&manifest.instance_id);
+        Ok(agora_core::controller_service::evaluate_controlify_offer(
+            &manifest, declined,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Remember that the user declined the Controlify offer for an instance.
+#[tauri::command]
+pub async fn decline_controlify_offer(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = manifest_for_instance(&app, &instance_id)?;
+        let ctx = crate::core_context(&app)?;
+        let settings = agora_core::settings::SettingsService::new(ctx);
+        agora_core::controller_service::decline_controlify_for(&settings, &manifest.instance_id)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Forget a previous decline so the offer can be made again.
+#[tauri::command]
+pub async fn reset_controlify_offer(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<()> {
+    tokio::task::spawn_blocking(move || {
+        let manifest = manifest_for_instance(&app, &instance_id)?;
+        let ctx = crate::core_context(&app)?;
+        let settings = agora_core::settings::SettingsService::new(ctx);
+        agora_core::controller_service::reset_controlify_decline(&settings, &manifest.instance_id)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 #[cfg(test)]
 mod command_helper_tests {
     use super::{
@@ -6116,11 +7552,14 @@ mod command_helper_tests {
         let state = LauncherState::default();
         {
             let mut shared = state.blocking_lock();
-            shared.running_process = Some(crate::state::RunningProcess {
-                instance_id: "inst-a".into(),
-                pid: 42,
-                session_id: 1,
-            });
+            shared.running_processes.insert(
+                1,
+                crate::state::RunningProcess {
+                    instance_id: "inst-a".into(),
+                    pid: 42,
+                    session_id: 1,
+                },
+            );
         }
         let shared = state.blocking_lock();
         let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
@@ -6134,9 +7573,7 @@ mod command_helper_tests {
         let state = LauncherState::default();
         {
             let mut shared = state.blocking_lock();
-            shared.launch_reservation = Some(crate::state::LaunchReservation {
-                instance_id: "inst-a".into(),
-            });
+            shared.launch_reservations.insert("inst-a".into());
         }
         let shared = state.blocking_lock();
         let err = ensure_install_apply_allowed(&shared, "inst-a").unwrap_err();
@@ -6174,11 +7611,14 @@ mod command_helper_tests {
         let state = LauncherState::default();
         {
             let mut shared = state.blocking_lock();
-            shared.running_process = Some(crate::state::RunningProcess {
-                instance_id: "inst-a".into(),
-                pid: 7,
-                session_id: 2,
-            });
+            shared.running_processes.insert(
+                2,
+                crate::state::RunningProcess {
+                    instance_id: "inst-a".into(),
+                    pid: 7,
+                    session_id: 2,
+                },
+            );
         }
         {
             let shared = state.blocking_lock();
@@ -6192,7 +7632,7 @@ mod command_helper_tests {
         // Process exits; apply is allowed and registers the marker.
         {
             let mut shared = state.blocking_lock();
-            shared.running_process = None;
+            shared.running_processes.clear();
             ensure_install_apply_allowed(&shared, "inst-a").unwrap();
             shared.active_install_instances.insert("inst-a".into());
         }
@@ -6405,6 +7845,7 @@ mod command_helper_tests {
         let directory = temp_instance_dir();
         std::fs::write(directory.join("mods/example.jar"), b"example").unwrap();
         let mut manifest: agora_core::models::InstanceManifest = serde_json::from_str(
+            // allow-raw-instance-manifest
             &std::fs::read_to_string(directory.join("instance_manifest.json")).unwrap_or_default(),
         )
         .unwrap_or_else(|_| test_manifest());
@@ -6449,10 +7890,11 @@ mod command_helper_tests {
         assert!(!directory.join("mods/example.jar").exists());
         assert!(directory.join("mods/example.jar.disabled").is_file());
         let updated: agora_core::models::InstanceManifest = serde_json::from_slice(
+            // allow-raw-instance-manifest
             &std::fs::read(directory.join("instance_manifest.json")).unwrap(),
         )
         .unwrap();
-        assert!(!updated.mods[0].enabled);
+        assert!(!updated.mods[0].enabled); // allow-raw-instance-manifest
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -6469,6 +7911,8 @@ mod command_helper_tests {
 
     fn test_manifest() -> agora_core::models::InstanceManifest {
         agora_core::models::InstanceManifest {
+            manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
             created_from_pack: None,
@@ -6487,6 +7931,9 @@ mod command_helper_tests {
 
     fn test_installed_mod(filename: &str, enabled: bool) -> agora_core::models::InstalledMod {
         agora_core::models::InstalledMod {
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
             filename: filename.into(),
             registry_id: Some("example".into()),
             modrinth_id: None,

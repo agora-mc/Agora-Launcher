@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ModBisectPanel } from './ModBisectPanel';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -1186,6 +1187,17 @@ export function CrashInvestigator({
                   </p>
                 </div>
               )}
+
+              {/* Guided bisect — the systematic fallback when scoring suspects
+                  has not produced an obvious answer, and the thing users
+                  otherwise do by hand across a dozen launches. */}
+              <ModBisectPanel
+                instanceId={instanceId}
+                primeSuspects={suspects.map((suspect) => suspect.filename)}
+                // The same launch path the single-suspect test uses, so a
+                // trial gets the health checks and launch mode of a real run.
+                onLaunch={() => onLaunch(() => { stackedHealthDialogRef.current = true; })}
+              />
 
               {/* Success */}
               {success && <SuccessBanner message={success} />}

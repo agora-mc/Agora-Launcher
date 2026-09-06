@@ -27,8 +27,6 @@ export interface UseDestinationReturn {
   navigateToInstanceDetail: (instanceId: string) => void;
 }
 
-const MAX_HISTORY = 50;
-
 function isValidDestination(d: unknown): d is Destination {
   if (!d || typeof d !== 'object') return false;
   const dest = d as Record<string, unknown>;
@@ -45,19 +43,27 @@ function isValidDestination(d: unknown): d is Destination {
   return false;
 }
 
+const HOME: Destination = { type: 'tab', tab: 'home' };
+
 export function useDestination(): UseDestinationReturn {
-  const historyRef = useRef<Destination[]>([{ type: 'tab', tab: 'home' }]);
-  const [destination, setDestination] = useState<Destination>(historyRef.current[0]);
+  // Depth into the browser's history stack, not a mirror of it.
+  //
+  // This used to be an array that `push` appended to. Because `goBack()`
+  // delegates to `window.history.back()`, the resulting `popstate` came back
+  // through the same handler and appended *again* — so navigating backwards
+  // grew the stack, and `canGoBack` could never return to false. Browser
+  // history is already the source of truth; carrying a position in its state
+  // is enough, and cannot drift from it.
+  const depthRef = useRef(0);
+  const [destination, setDestination] = useState<Destination>(HOME);
   const [canGoBack, setCanGoBack] = useState(false);
 
   const push = useCallback((dest: Destination) => {
-    historyRef.current.push(dest);
-    if (historyRef.current.length > MAX_HISTORY) {
-      historyRef.current = historyRef.current.slice(-MAX_HISTORY);
-    }
-    setCanGoBack(historyRef.current.length > 1);
+    const depth = depthRef.current + 1;
+    depthRef.current = depth;
+    setCanGoBack(depth > 0);
     setDestination(dest);
-    window.history.pushState({ __agora: dest }, '');
+    window.history.pushState({ __agora: dest, __agoraDepth: depth }, '');
   }, []);
 
   // Handle browser back/forward via popstate.
@@ -68,25 +74,31 @@ export function useDestination(): UseDestinationReturn {
     const existingState = window.history.state as Record<string, unknown> | null;
     const restoredDest = existingState?.__agora as Destination | undefined;
     if (restoredDest && isValidDestination(restoredDest)) {
-      historyRef.current[0] = restoredDest;
+      const restoredDepth = typeof existingState?.__agoraDepth === 'number'
+        ? existingState.__agoraDepth
+        : 0;
+      depthRef.current = restoredDepth;
       setDestination(restoredDest);
-      setCanGoBack(false);
+      // Entries behind us survive a reload, so back really does still work.
+      setCanGoBack(restoredDepth > 0);
     } else {
-      window.history.replaceState({ __agora: historyRef.current[0] }, '');
+      depthRef.current = 0;
+      window.history.replaceState({ __agora: HOME, __agoraDepth: 0 }, '');
     }
 
     const handlePopState = (e: PopStateEvent) => {
       const state = e.state as Record<string, unknown> | null;
       const restored = state?.__agora as Destination | undefined;
       if (restored && isValidDestination(restored)) {
+        const depth = typeof state?.__agoraDepth === 'number' ? state.__agoraDepth : 0;
+        depthRef.current = depth;
         setDestination(restored);
-        historyRef.current.push(restored);
-        if (historyRef.current.length > MAX_HISTORY) {
-          historyRef.current = historyRef.current.slice(-MAX_HISTORY);
-        }
-        setCanGoBack(historyRef.current.length > 1);
+        setCanGoBack(depth > 0);
       } else {
-        setDestination({ type: 'tab', tab: 'home' });
+        // Stepped off the entries this app owns, so there is nothing of ours
+        // left behind us.
+        depthRef.current = 0;
+        setDestination(HOME);
         setCanGoBack(false);
       }
     };
@@ -95,7 +107,13 @@ export function useDestination(): UseDestinationReturn {
   }, []);
 
   const navigate = useCallback((dest: Destination) => push(dest), [push]);
-  const goBack = useCallback(() => window.history.back(), []);
+  // Refuses to step off the entries this app owns. Cancel on a controller is
+  // bound to this, so an unguarded `history.back()` at the root would walk the
+  // webview out of the app entirely.
+  const goBack = useCallback(() => {
+    if (depthRef.current <= 0) return;
+    window.history.back();
+  }, []);
   const navigateToTab = useCallback((tab: Tab) => push({ type: 'tab', tab }), [push]);
   const navigateToBrowse = useCallback(
     (instanceId?: string, contentType?: string) => push({

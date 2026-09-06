@@ -1061,10 +1061,13 @@ test.describe('E3 — Bulk select and install', () => {
     await expect(page.getByText('Installing 2 selected items')).toHaveCount(0);
     await expect(review.getByText('TerraBlender')).toBeVisible();
     await expect(review.getByText('Required Dependency')).toBeVisible();
-    // Deps render in plan order (required-dep first, optional-dep-b second).
+    // Deps are grouped by what the user can act on: the optional extras the
+    // review is actually asking about come first, required ones after.
     await expect(review.getByRole('link', { name: 'View mod page ↗' })).toHaveCount(2);
-    await expect(review.getByRole('link', { name: 'View mod page ↗' }).nth(1))
+    await expect(review.getByRole('link', { name: 'View mod page ↗' }).first())
       .toHaveAttribute('href', 'https://modrinth.com/mod/terrablender');
+    await expect(review.getByRole('link', { name: 'View mod page ↗' }).nth(1))
+      .toHaveAttribute('href', 'https://modrinth.com/mod/required-dep');
     // A dependency satisfied by another batch item is labelled as such.
     await expect(review.getByText('Bulk Mod B')).toBeVisible();
     await expect(review.getByText('included in this batch')).toBeVisible();
@@ -1116,7 +1119,7 @@ test.describe('E3 — Bulk select and install', () => {
     const review = page.getByRole('dialog');
     await expect(review).toBeVisible();
     await expect(review.getByText(/Required dependency missing-dep could not be resolved/)).toBeVisible();
-    await expect(review.getByRole('button', { name: 'Retry Resolution', exact: true })).toBeVisible();
+    await expect(review.getByRole('button', { name: 'Try Again', exact: true })).toBeVisible();
     await expect(review.getByRole('button', { name: 'Cannot Apply' })).toBeDisabled();
     await expect(page.getByText('Installing 2 selected items')).toHaveCount(0);
   });

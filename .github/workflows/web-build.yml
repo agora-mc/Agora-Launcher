@@ -58,6 +58,9 @@ jobs:
         run: npm run build
         env:
           NEXT_PUBLIC_GITHUB_REPOSITORY: ${{ github.repository }}
+          # Lets the build resolve the newest desktop release without spending
+          # the 60/hour unauthenticated API budget shared by every runner.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Upload static site
         uses: actions/upload-artifact@v6

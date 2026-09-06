@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import pathlib
 import sqlite3
 import subprocess
 import sys
@@ -170,18 +172,36 @@ class TestAuditLogPopulated(_CompileFixtures):
 
 
 class TestSchemaVersion(_CompileFixtures):
-    """Test 9: schema_version is 8."""
+    """Test 9: the compiled db records the compiler's own schema version."""
 
     def test_schema_version(self):
-        """SELECT version FROM schema_version should return 8."""
+        """The stored version must track compile.SCHEMA_VERSION.
+
+        Derived rather than pinned to a literal: a hardcoded expectation here
+        fails on every legitimate schema bump and says nothing about whether
+        the db actually matches the compiler that wrote it.
+        """
+        # Read the constant from source rather than importing compile.py:
+        # importing it is import-path dependent (works under `discover -s
+        # compiler`, not under a dotted module path) and pulls in the whole
+        # compiler for one integer.
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        source = pathlib.Path(repo_root, "compiler", "compile.py").read_text(encoding="utf-8")
+        match = re.search(r"^SCHEMA_VERSION\s*=\s*(\d+)", source, re.MULTILINE)
+        self.assertIsNotNone(match, "SCHEMA_VERSION not found in compile.py")
+        expected = int(match.group(1))
+
         conn = self._open_db()
         try:
             row = conn.execute(
                 "SELECT version FROM schema_version"
             ).fetchone()
             self.assertIsNotNone(row, "schema_version table has no rows")
-            self.assertEqual(row[0], 8,
-                             f"Expected schema_version=8, got {row[0]}")
+            self.assertEqual(
+                row[0],
+                expected,
+                f"Expected schema_version={expected}, got {row[0]}",
+            )
         finally:
             conn.close()
 

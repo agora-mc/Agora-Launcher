@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import {
+  CircleCheck,
+  Info,
+  PackageMinus,
+  PackagePlus,
+  PowerOff,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 import {
   type InstallIntent,
   type ResolvedArtifact,
@@ -16,6 +26,8 @@ import {
 import { formatError, getSetting, parseLauncherError, restoreSnapshot } from '../lib/tauri';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
+import { useControllerLayer } from '@/features/controller/useControllerLayer';
+import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // User choices model
@@ -202,6 +214,7 @@ interface InstallFlowProps {
   instanceName: string;
   onOpenInstance?: (instanceId: string) => void;
   onClose?: () => void;
+  onSuccess?: (instanceId: string) => void;
   onBackgroundStart?: (plan: ResolvedInstallPlan) => void;
   background?: boolean;
   open: boolean;
@@ -224,6 +237,7 @@ export function InstallFlow({
   instanceName,
   onOpenInstance,
   onClose,
+  onSuccess,
   onBackgroundStart,
   background = false,
   open,
@@ -233,6 +247,7 @@ export function InstallFlow({
   alwaysAutoConfirm = false,
 }: InstallFlowProps) {
   const [state, dispatch] = useReducer(flowReducer, { phase: 'closed' } as FlowState);
+  const panelRef = useRef<HTMLElement>(null);
   const [resolutionIntent, setResolutionIntent] = useState(intent);
   const [settingAutoConfirmClean, setSettingAutoConfirmClean] = useState(false);
   const [settingAlwaysAutoConfirm, setSettingAlwaysAutoConfirm] = useState(false);
@@ -361,6 +376,10 @@ export function InstallFlow({
     };
   }, [state.phase]);
 
+  const awaitingUser = state.phase === 'review'
+    || state.phase === 'error'
+    || state.phase === 'result';
+
   const handleCancel = useCallback(() => {
     if (state.phase === 'executing') {
       void cancelInstall(state.plan.fingerprint).catch(() => {
@@ -416,6 +435,33 @@ export function InstallFlow({
     onClose?.();
   }, [onClose]);
 
+  // Invalidate the update cache on success so the badge does not linger. The
+  // cache is an invalidated view (install path stays unaware); clearing is
+  // honest and cheap, re-check is eager network work the sweep will do later.
+  //
+  // Fired exactly once per success via a ref, and reset when we leave the
+  // success state so a later install in the same mount still signals. Callers
+  // pass an inline closure, so a plain dependency on `onSuccess` would re-fire
+  // on every render — and if the handler sets state, that is an infinite loop.
+  //
+  // The trigger is "did the instance change", not "did it go perfectly".
+  // `health-rollback` *keeps* the install so the user can inspect and repair,
+  // so the new files are on disk and the cached updates describe versions that
+  // are no longer installed. Firing only on `success` left the badge showing
+  // updates the user had already applied, with no way to clear it.
+  const signalledSuccessRef = useRef(false);
+  const instanceChanged = state.phase === 'result'
+    && (state.outcome.type === 'success' || state.outcome.type === 'health-rollback');
+  useEffect(() => {
+    if (!instanceChanged) {
+      signalledSuccessRef.current = false;
+      return;
+    }
+    if (signalledSuccessRef.current) return;
+    signalledSuccessRef.current = true;
+    onSuccess?.(intent.targetInstance);
+  }, [instanceChanged, intent.targetInstance, onSuccess]);
+
   /**
    * Approve switching the instance loader to a signed-catalog compatible
    * version. The backend folds the switch into the same atomic install
@@ -461,6 +507,15 @@ export function InstallFlow({
       dispatch({ type: 'retry' });
     }
   }, [resolutionIntent, state.phase, onClose]);
+
+  // Only claims controller input while it is actually asking something. The
+  // corner progress panel must not, or an install running in the background
+  // would quietly take over navigation for the whole app.
+  useControllerLayer({
+    active: awaitingUser,
+    rootRef: panelRef,
+    onCancel: handleCancel,
+  });
 
   const renderContent = () => {
     switch (state.phase) {
@@ -548,12 +603,59 @@ export function InstallFlow({
   // Non-blocking corner panel — lets the user keep browsing, running health
   // checks, or opening other instances while resolving, reviewing, or
   // installing. The card expands in place instead of covering the app.
-  // z-50 keeps it above the pack-indicator stacking context when both are
-  // visible, so the review remains actionable; pack progress remains
-  // readable alongside via vertical stacking.
-  // It is still a dialog — a task the user is asked to act on — so it keeps
-  // the role and an accessible name; aria-modal="false" is what states that
-  // the rest of the app stays live behind it.
+  // Where this renders depends on whether it is *asking* the user something.
+  //
+  // Waiting on a decision — reviewing changes, answering an error, dismissing
+  // an outcome — takes the screen, because that is the task now. Everything
+  // else is progress reporting: resolving a plan and running an install do not
+  // need the user, and stealing focus for them interrupts whatever they were
+  // doing. Those stay in the corner, out of the way and out of the tab order's
+  // path, exactly as before.
+  //
+  // It also makes the review reachable with a controller. In the corner it was
+  // one small target among everything else on the page; as an overlay it owns
+  // input, so the stick goes straight to it.
+  const header = (
+    <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
+      <div className="min-w-0">
+        <h2 id="install-review-title" className={cn('truncate font-semibold', awaitingUser ? 'text-base' : 'text-sm')}>
+          Review Instance Changes
+        </h2>
+        <p className="truncate text-xs text-muted-foreground">{instanceName}</p>
+      </div>
+      <button
+        onClick={handleCancel}
+        className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+        aria-label="Close install panel"
+      >
+        Close
+      </button>
+    </div>
+  );
+
+  if (awaitingUser) {
+    return (
+      <div className="fixed inset-0 z-[61] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+        <section
+          ref={panelRef}
+          className="flex max-h-[85vh] w-[min(44rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+          data-tour="install-review-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="install-review-title"
+        >
+          {header}
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {renderContent()}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  // z-[61] keeps it above the pack-indicator stacking context when both are
+  // visible; pack progress remains readable alongside via vertical stacking.
+  // `aria-modal="false"` states that the rest of the app stays live behind it.
   return (
     <aside
       className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
@@ -563,19 +665,7 @@ export function InstallFlow({
       aria-labelledby="install-review-title"
       aria-live="polite"
     >
-      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-card px-4 py-3">
-        <div className="min-w-0">
-          <h2 id="install-review-title" className="truncate text-sm font-semibold">Review Instance Changes</h2>
-          <p className="truncate text-xs text-muted-foreground">{instanceName}</p>
-        </div>
-        <button
-          onClick={handleCancel}
-          className="shrink-0 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-accent"
-          aria-label="Close install panel"
-        >
-          Close
-        </button>
-      </div>
+      {header}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {renderContent()}
       </div>
@@ -643,20 +733,67 @@ function ReviewView({
       : plan.intent.action.type === 'batch-install'
         ? 'Install Batch'
         : 'Install';
-  const selectedVersions = operationArtifacts(plan.operation)
-    .map((artifact) => ({
-      filename: artifact.filename,
-      version: artifact.metadata.version,
-      isNew: newlyAddedFiles.has(artifact.filename),
-    }))
-    .filter((artifact) => artifact.version);
+  // Every file the plan touches, named. Counts alone answer "how much"; a
+  // removal review in particular is useless without "which one".
+  const changeItems: ChangeItem[] = [
+    ...operationArtifacts(plan.operation)
+      .filter((artifact) => artifact.metadata.version)
+      .map((artifact) => ({
+        kind: 'add' as const,
+        filename: artifact.filename,
+        tag: artifact.metadata.version as string,
+        isNew: newlyAddedFiles.has(artifact.filename),
+      })),
+    ...plan.filesToRemove.map((file) => ({
+      kind: 'remove' as const,
+      filename: file.filename,
+      tag: 'removed',
+      isNew: false,
+    })),
+    ...plan.filesToDisable.map((file) => ({
+      kind: 'disable' as const,
+      filename: file.filename,
+      tag: 'turned off',
+      isNew: false,
+    })),
+  ];
+
+  // Dependencies split by what the user can actually act on. Optional extras
+  // are a choice; required ones are an explanation; required ones that are
+  // already satisfied are neither, so they collapse to one reassuring line and
+  // their names move into the technical details.
+  const optionalDeps = plan.dependencies.filter((dep) => dep.requirement === 'optional');
+  const requiredDeps = plan.dependencies.filter((dep) => dep.requirement !== 'optional');
+  const satisfiedRequired = requiredDeps.filter((dep) => dep.disposition.type === 'reuse-existing');
+  const pendingRequired = requiredDeps.filter((dep) => dep.disposition.type !== 'reuse-existing');
+
+  const addCount = plan.filesToAdd.length;
+  const removeCount = plan.filesToRemove.length;
+  const disableCount = plan.filesToDisable.length;
+  const touchesFiles = addCount + removeCount + disableCount > 0;
 
   return (
     <div className="space-y-4">
       {reviewNotice && (
-        <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
-          {reviewNotice}
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
+          <Info className="mt-px h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>{reviewNotice}</p>
         </div>
+      )}
+
+      {/* Blockers come first: nothing further down is actionable until they clear */}
+      {plan.blockingErrors.length > 0 && (
+        <section className="rounded-xl border border-destructive/40 bg-destructive/10 p-3">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-destructive">
+            <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {plan.blockingErrors.length === 1
+              ? 'This change cannot be applied yet'
+              : `${plan.blockingErrors.length} problems block this change`}
+          </h3>
+          <ul className="mt-2 space-y-1 text-xs text-destructive">
+            {plan.blockingErrors.map((e, i) => <li key={i}>{e.message}</li>)}
+          </ul>
+        </section>
       )}
 
       {/* Loader version change — show the launcher chooser instead of blocking */}
@@ -683,106 +820,195 @@ function ReviewView({
         />
       )}
 
+      {/* Conflicts — the other thing that wants a decision before anything else */}
+      {plan.conflicts.length > 0 && (
+        <ReviewSection
+          title={plan.conflicts.length === 1
+            ? 'One overlap to sort out'
+            : `${plan.conflicts.length} overlaps to sort out`}
+          hint="These mods cannot both stay as they are. Pick what should happen to each."
+        >
+          {plan.conflicts.map((c, i) => (
+            <ConflictRow
+              key={i}
+              conflict={c}
+              selected={choices.conflictResolutions.get(c.conflictId) ?? c.chosen}
+              onSelect={(r) => onResolveConflict(c.conflictId, r)}
+            />
+          ))}
+        </ReviewSection>
+      )}
+
+      {/* The plain-language summary of what applying this actually does */}
+      <section className="rounded-xl border border-border bg-muted/40 p-3">
+        <h3 className="text-sm font-semibold">{actionHeadline(plan.intent.action)}</h3>
+        {touchesFiles ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {addCount > 0 && (
+              <ChangeChip icon={PackagePlus} tone="add" label={`${addCount} ${pluralFiles(addCount)} added`} />
+            )}
+            {removeCount > 0 && (
+              <ChangeChip icon={PackageMinus} tone="remove" label={`${removeCount} ${pluralFiles(removeCount)} removed`} />
+            )}
+            {disableCount > 0 && (
+              <ChangeChip icon={PowerOff} tone="neutral" label={`${disableCount} ${pluralFiles(disableCount)} turned off`} />
+            )}
+          </div>
+        ) : (
+          <p className="mt-1 text-xs text-muted-foreground">
+            No mod files change — only this instance&apos;s settings are updated.
+          </p>
+        )}
+
+        {changeItems.length > 0 && (
+          <ul className="mt-3 space-y-1">
+            {changeItems.map((item, index) => (
+              <li key={`${item.filename}-${index}`} className="flex items-center gap-2 text-xs">
+                <span
+                  className={cn(
+                    'min-w-0 truncate font-medium text-foreground',
+                    item.kind !== 'add' && 'line-through decoration-muted-foreground/60',
+                  )}
+                  title={item.filename}
+                >
+                  {item.filename}
+                </span>
+                {item.isNew && (
+                  <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                    new
+                  </span>
+                )}
+                <span className={cn(
+                  'ml-auto shrink-0 rounded-full bg-background px-2 py-0.5 text-[11px]',
+                  item.kind === 'add' ? 'font-mono text-muted-foreground' : 'text-muted-foreground',
+                )}>
+                  {item.tag}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {/* Approved loader switch, committed atomically with the file changes */}
       {plan.loaderChange && (
-        <div className="rounded-lg border border-green-600/30 bg-green-500/10 p-3 text-xs text-green-700 dark:text-green-300">
-          This change will switch the {plan.loaderChange.loader} loader from{' '}
-          {plan.loaderChange.fromVersion} to {plan.loaderChange.toVersion} in the same
-          atomic transaction as the mod files.
-        </div>
-      )}
-
-      {/* Warnings */}
-      {plan.warnings.length > 0 && (
-        <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3 text-xs text-amber-700 dark:text-amber-300 space-y-1">
-          {plan.warnings.map((w, i) => <p key={i}>{w.message}</p>)}
-        </div>
-      )}
-
-      {/* Blocking errors */}
-      {plan.blockingErrors.length > 0 && (
-        <div className="rounded-lg bg-destructive/10 p-3 text-xs text-destructive space-y-1">
-          {plan.blockingErrors.map((e, i) => <p key={i}>{e.message}</p>)}
-        </div>
-      )}
-
-      {/* Dependencies */}
-      {plan.dependencies.length > 0 && (
-        <div>
-          <h4 className="text-sm font-semibold mb-2">Dependencies</h4>
-          <div className="space-y-1 max-h-40 overflow-y-auto">
-            {plan.dependencies.map((dep, i) => (
-              <DepRow
-                key={i}
-                dep={dep}
-                checked={choices.optionalIncluded.has(dep.modJarId)}
-                onToggle={onToggleOptional}
-                highlighted={dependencyIsNew(dep, newlyAddedFiles)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Conflicts */}
-      {plan.conflicts.length > 0 && (
-        <div>
-          <h4 className="text-sm font-semibold mb-2">Conflicts</h4>
-          <div className="space-y-2">
-            {plan.conflicts.map((c, i) => (
-              <ConflictRow key={i} conflict={c} selected={choices.conflictResolutions.get(c.conflictId)} onSelect={(r) => onResolveConflict(c.conflictId, r)} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* File changes */}
-      {(plan.filesToAdd.length > 0 || plan.filesToRemove.length > 0) && (
-        <div>
-          <h4 className="text-sm font-semibold mb-2">File Changes</h4>
-          <p className="text-xs text-muted-foreground">
-            {plan.filesToAdd.length > 0 && <span>+{plan.filesToAdd.length} to add </span>}
-            {plan.filesToRemove.length > 0 && <span>-{plan.filesToRemove.length} to remove </span>}
-            {plan.filesToDisable.length > 0 && <span>~{plan.filesToDisable.length} to disable</span>}
+        <div className="flex items-start gap-2 rounded-lg border border-green-600/30 bg-green-500/10 p-3 text-xs text-green-700 dark:text-green-300">
+          <CircleCheck className="mt-px h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>
+            The {plan.loaderChange.loader} loader also moves from {plan.loaderChange.fromVersion} to{' '}
+            {plan.loaderChange.toVersion}. It happens in the same step as the mod files, so the
+            instance is never left half-changed.
           </p>
         </div>
       )}
 
-      {selectedVersions.length > 0 && (
-        <div>
-          <h4 className="text-sm font-semibold mb-2">Versions to Install</h4>
-          <div className="space-y-1 text-xs text-muted-foreground">
-            {selectedVersions.map((artifact, index) => (
-              <p key={`${artifact.filename}-${index}`}>
-                <span className={artifact.isNew ? 'rounded bg-primary/15 px-1 font-medium text-primary' : 'font-medium text-foreground'}>
-                  {artifact.isNew ? 'NEW ' : ''}{artifact.version}
-                </span>{' '}
-                {artifact.filename}
-              </p>
-            ))}
-          </div>
-        </div>
+      {/* Optional extras — the one genuine choice in most reviews */}
+      {optionalDeps.length > 0 && (
+        <ReviewSection
+          title="Optional extras"
+          hint="Not needed to run. Tick anything you also want installed."
+        >
+          {optionalDeps.map((dep, i) => (
+            <DepRow
+              key={i}
+              dep={dep}
+              checked={choices.optionalIncluded.has(dep.modJarId)}
+              onToggle={onToggleOptional}
+              highlighted={dependencyIsNew(dep, newlyAddedFiles)}
+            />
+          ))}
+        </ReviewSection>
+      )}
+
+      {/* Required dependencies — an explanation, not a decision */}
+      {pendingRequired.length > 0 && (
+        <ReviewSection
+          title="Comes along with it"
+          hint="These are required, so Agora handles them for you."
+        >
+          {pendingRequired.map((dep, i) => (
+            <DepRow
+              key={i}
+              dep={dep}
+              checked={false}
+              onToggle={onToggleOptional}
+              highlighted={dependencyIsNew(dep, newlyAddedFiles)}
+            />
+          ))}
+        </ReviewSection>
+      )}
+
+      {satisfiedRequired.length > 0 && (
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <CircleCheck className="h-3.5 w-3.5 shrink-0 text-green-600" aria-hidden="true" />
+          {satisfiedRequired.length === 1
+            ? 'One required dependency is already installed.'
+            : `${satisfiedRequired.length} required dependencies are already installed.`}
+        </p>
       )}
 
       {newlyAddedFiles.size > 0 && (
         <div className="rounded-lg border border-primary/30 bg-primary/10 p-3">
-          <h4 className="text-sm font-semibold text-primary mb-2">New Items From Optional Dependencies</h4>
+          <h4 className="mb-2 text-sm font-semibold text-primary">New Items From Optional Dependencies</h4>
           <ul className="space-y-1 text-xs text-primary">
             {[...newlyAddedFiles].map((filename) => <li key={filename}>+ {filename}</li>)}
           </ul>
         </div>
       )}
 
-      {/* Snapshot info */}
-      <div className="text-xs text-muted-foreground">
-        Snapshot: {plan.snapshot.label} ({formatBytes(plan.snapshot.estimatedBytes)})
+      {/* Warnings — worth reading, but they do not stop anything */}
+      {plan.warnings.length > 0 && (
+        <section className="rounded-lg border border-amber-500/30 bg-amber-50 p-3 dark:bg-amber-900/20">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300">
+            <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Worth knowing
+          </h3>
+          <ul className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-300">
+            {plan.warnings.map((w, i) => <li key={i}>{w.message}</li>)}
+          </ul>
+        </section>
+      )}
+
+      {/* The reassurance the raw snapshot line was always trying to give */}
+      <div className="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-xs text-muted-foreground">
+        <ShieldCheck className="mt-px h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
+        <p>
+          Agora saves a restore point before anything is written, so this can be undone in one
+          click if it goes wrong.
+        </p>
       </div>
 
+      {/* Everything above is what to decide; this is what happens underneath */}
+      <details className="rounded-lg border border-border bg-background/60 px-3 py-2">
+        <summary tabIndex={0} className="cursor-pointer select-none text-xs font-medium text-muted-foreground">
+          Technical details
+        </summary>
+        <div className="mt-3 space-y-3 text-xs text-muted-foreground">
+          <div>
+            <p className="font-medium text-foreground">Restore point</p>
+            <p>{plan.snapshot.label} ({formatBytes(plan.snapshot.estimatedBytes)})</p>
+          </div>
+          <FileList title="Files added" files={plan.filesToAdd.map((file) => file.targetFilename)} />
+          <FileList title="Files removed" files={plan.filesToRemove.map((file) => file.filename)} />
+          <FileList title="Files turned off" files={plan.filesToDisable.map((file) => file.filename)} />
+          {satisfiedRequired.length > 0 && (
+            <FileList
+              title="Required dependencies already installed"
+              files={satisfiedRequired.map((dep) => dep.displayName ?? dep.modJarId)}
+            />
+          )}
+          <div>
+            <p className="font-medium text-foreground">Plan id</p>
+            <p className="break-all font-mono">{plan.fingerprint}</p>
+          </div>
+        </div>
+      </details>
+
       {/* Actions */}
-      <div className="flex justify-end gap-2 pt-2">
+      <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-3">
         {plan.blockingErrors.length > 0 && (
           <button onClick={onRetry} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">
-            Retry Resolution
+            Try Again
           </button>
         )}
         {onSkip && (
@@ -812,49 +1038,142 @@ function ReviewView({
   );
 }
 
+/** One named file the plan touches, with the tag shown on its right. */
+interface ChangeItem {
+  kind: 'add' | 'remove' | 'disable';
+  filename: string;
+  tag: string;
+  isNew: boolean;
+}
+
+/** One titled block of the review, so every section reads the same way. */
+function ReviewSection({ title, hint, children }: {
+  title: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section>
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
+      <div className="mt-2 space-y-1.5">{children}</div>
+    </section>
+  );
+}
+
+function ChangeChip({ icon: Icon, label, tone }: {
+  icon: LucideIcon;
+  label: string;
+  tone: 'add' | 'remove' | 'neutral';
+}) {
+  const toneClass = tone === 'add'
+    ? 'border-green-600/30 bg-green-500/10 text-green-700 dark:text-green-300'
+    : tone === 'remove'
+      ? 'border-destructive/30 bg-destructive/10 text-destructive'
+      : 'border-border bg-background text-muted-foreground';
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', toneClass)}>
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
+function FileList({ title, files }: { title: string; files: string[] }) {
+  if (files.length === 0) return null;
+  return (
+    <div>
+      <p className="font-medium text-foreground">{title} ({files.length})</p>
+      <ul className="mt-0.5 space-y-0.5 font-mono">
+        {files.map((file) => <li key={file} className="break-all">{file}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+/** Plain-language description of the operation the plan represents. */
+function actionHeadline(action: InstallIntent['action']): string {
+  switch (action.type) {
+    case 'install': return 'Installing one item';
+    case 'update': return 'Updating one item';
+    case 'remove': return 'Removing one item';
+    case 'batch-remove': return `Removing ${action.filenames.length} ${plural(action.filenames.length, 'item')}`;
+    case 'batch-update': return `Updating ${action.items.length} ${plural(action.items.length, 'item')}`;
+    case 'batch-install': return `Installing ${action.items.length} ${plural(action.items.length, 'item')}`;
+    case 'repair-lockfile': return 'Repairing this instance file record';
+    default: return 'Changing this instance';
+  }
+}
+
+function plural(count: number, noun: string): string {
+  return count === 1 ? noun : `${noun}s`;
+}
+
+function pluralFiles(count: number): string {
+  return plural(count, 'file');
+}
+
 function DepRow({ dep, checked, onToggle, highlighted }: { dep: ResolvedDep; checked: boolean; onToggle: (id: string, inc: boolean) => void; highlighted: boolean }) {
   const isOptional = dep.requirement === 'optional';
   const displayName = dep.displayName ?? dep.modJarId;
+  const status = depStatus(dep);
+  const details = (
+    <span className="min-w-0 flex-1">
+      <span className="block truncate text-sm font-medium" title={displayName}>{displayName}</span>
+      <span className={cn('block text-xs', status.tone)}>{status.label}</span>
+    </span>
+  );
+
   return (
-    <div className={`flex items-center gap-2 rounded px-1 text-sm ${highlighted ? 'bg-primary/10 ring-1 ring-primary/30' : ''}`}>
-      {isOptional && (
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(e) => onToggle(dep.modJarId, e.target.checked)}
-          className="rounded"
-          aria-label={`Include optional dependency ${displayName}`}
-        />
-      )}
-      <span className={`min-w-0 truncate ${isOptional ? '' : 'font-medium'}`} title={displayName}>
-        {displayName}
-      </span>
-      <span className="shrink-0 text-xs text-muted-foreground">{dep.requirement}</span>
-      {dep.disposition.type === 'reuse-existing' && (
-        <span className="shrink-0 text-xs text-green-600">✓ already installed</span>
-      )}
-      {dep.disposition.type === 'install-candidate' && (
-        <span className="shrink-0 text-xs text-muted-foreground">⬇ will be installed</span>
-      )}
-      {dep.disposition.type === 'included-in-batch' && (
-        <span className="shrink-0 text-xs text-green-600">✓ included in this batch</span>
-      )}
-      {dep.disposition.type === 'unresolved' && (
-        <span className="shrink-0 text-xs text-destructive" title={dep.disposition.reason}>⚠ unresolved</span>
+    <div className={cn(
+      'flex items-start gap-2 rounded-lg border border-border bg-background px-2.5 py-2',
+      highlighted && 'border-primary/40 bg-primary/10',
+    )}>
+      {isOptional ? (
+        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onToggle(dep.modJarId, e.target.checked)}
+            className="mt-0.5 rounded"
+            aria-label={`Include optional dependency ${displayName}`}
+          />
+          {details}
+        </label>
+      ) : details}
+      {highlighted && (
+        <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[11px] font-medium text-primary">new</span>
       )}
       {dep.pageUrl?.startsWith('https://') && (
         <a
           href={dep.pageUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="shrink-0 text-xs text-primary hover:underline"
+          className="shrink-0 self-center text-xs text-primary hover:underline"
         >
           View mod page ↗
         </a>
       )}
-      {highlighted && <span className="shrink-0 text-xs font-medium text-primary">new</span>}
     </div>
   );
+}
+
+/** What a dependency disposition means, said the way a player would say it. */
+function depStatus(dep: ResolvedDep): { label: string; tone: string } {
+  switch (dep.disposition.type) {
+    case 'reuse-existing':
+      return { label: 'Already installed', tone: 'text-green-600 dark:text-green-400' };
+    case 'install-candidate':
+      return { label: 'Will be added', tone: 'text-muted-foreground' };
+    case 'included-in-batch':
+      return { label: 'Included in this batch', tone: 'text-green-600 dark:text-green-400' };
+    case 'excluded':
+      return { label: 'Not included', tone: 'text-muted-foreground' };
+    case 'unresolved':
+      return { label: `Could not be found — ${dep.disposition.reason}`, tone: 'text-destructive' };
+    default:
+      return { label: '', tone: 'text-muted-foreground' };
+  }
 }
 
 function dependencyIsNew(dep: ResolvedDep, newlyAddedFiles: Set<string>): boolean {
@@ -873,21 +1192,46 @@ function operationArtifacts(operation: ResolvedInstallPlan['operation']): Resolv
   }
 }
 
+/**
+ * Resolution options arrive as protocol identifiers (`disable-existing`).
+ * Showing them raw asks the user to read our enum; these say what the button
+ * does. Unknown values fall back to the identifier rather than hiding it.
+ */
+const RESOLUTION_LABELS: Record<string, string> = {
+  replace: 'Replace the installed one',
+  skip: 'Keep what is installed',
+  'disable-existing': 'Turn off the installed one',
+  abort: 'Cancel this change',
+};
+
 function ConflictRow({ conflict, selected, onSelect }: { conflict: DepConflict; selected?: string; onSelect: (r: string) => void }) {
+  const resolved = Boolean(selected);
   return (
-    <div className="rounded border border-border bg-muted p-2 text-sm">
+    <div className={cn(
+      'rounded-lg border p-2.5',
+      resolved ? 'border-border bg-muted' : 'border-amber-500/40 bg-amber-500/5',
+    )}>
       <p className="text-xs">{conflict.message}</p>
-      <div className="flex gap-2 mt-1">
+      <div className="mt-2 flex flex-wrap gap-1.5">
         {conflict.resolutionOptions.map((opt) => (
           <button
             key={opt}
             onClick={() => onSelect(opt)}
-            className={`rounded px-2 py-0.5 text-xs border ${selected === opt ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-accent'}`}
+            aria-pressed={selected === opt}
+            className={cn(
+              'rounded-full border px-2.5 py-1 text-xs font-medium',
+              selected === opt
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border hover:bg-accent',
+            )}
           >
-            {opt}
+            {RESOLUTION_LABELS[opt] ?? opt}
           </button>
         ))}
       </div>
+      {!resolved && conflict.blocking && (
+        <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-300">Pick one to continue.</p>
+      )}
     </div>
   );
 }

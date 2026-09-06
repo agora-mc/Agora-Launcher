@@ -11,14 +11,14 @@ use sha2::Digest;
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
-const RESTORE_MARKER: &str = ".agora_restore_in_progress";
+pub(crate) const RESTORE_MARKER: &str = ".agora_restore_in_progress";
 const SNAPSHOT_PENDING_MARKER: &str = ".agora_snapshot_pending";
 const SNAPSHOT_FAILED_MARKER: &str = ".agora_snapshot_failed";
 const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 const LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION: u32 = 4;
 const LIVE_FILE_INDEX_SCHEMA_VERSION: u32 = 1;
 
-const TRACKED_ENTRIES: &[&str] = &[
+pub(crate) const TRACKED_ENTRIES: &[&str] = &[
     "mods",
     "config",
     "resourcepacks",
@@ -280,11 +280,11 @@ fn legacy_snapshot_schema_version() -> u32 {
     1
 }
 
-fn snapshots_dir(instance_dir: &Path) -> PathBuf {
+pub(crate) fn snapshots_dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".agora_snapshots")
 }
 
-fn snapshot_manifest_path(instance_dir: &Path, id: &str) -> PathBuf {
+pub(crate) fn snapshot_manifest_path(instance_dir: &Path, id: &str) -> PathBuf {
     snapshots_dir(instance_dir).join(format!("{id}.json"))
 }
 
@@ -314,7 +314,7 @@ struct LiveFileIndexEntry {
 /// The object store is shared by instances belonging to the same app data
 /// root. Tests and callers that pass a standalone directory still get a
 /// sibling object store, while normal instances resolve to `<app>/snapshot-objects`.
-fn snapshot_objects_dir(instance_dir: &Path) -> PathBuf {
+pub(crate) fn snapshot_objects_dir(instance_dir: &Path) -> PathBuf {
     let instances_root = instance_dir.parent().unwrap_or(instance_dir);
     let app_root = if instances_root
         .file_name()
@@ -327,18 +327,18 @@ fn snapshot_objects_dir(instance_dir: &Path) -> PathBuf {
     app_root.join("snapshot-objects")
 }
 
-fn snapshot_blob_path(instance_dir: &Path, hash: &str) -> PathBuf {
+pub(crate) fn snapshot_blob_path(instance_dir: &Path, hash: &str) -> PathBuf {
     snapshot_objects_dir(instance_dir)
         .join(&hash[..2.min(hash.len())])
         .join(hash)
 }
 
 /// Legacy v1/v2 snapshots are retained as ZIPs and remain readable.
-fn snapshot_zip_path(instance_dir: &Path, id: &str) -> PathBuf {
+pub(crate) fn snapshot_zip_path(instance_dir: &Path, id: &str) -> PathBuf {
     snapshots_dir(instance_dir).join(format!("{id}.zip"))
 }
 
-fn pre_restore_dir(instance_dir: &Path) -> PathBuf {
+pub(crate) fn pre_restore_dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join(".agora_pre_restore")
 }
 
@@ -1143,7 +1143,7 @@ fn store_snapshot_object(instance_dir: &Path, source: &Path) -> Result<(String, 
     Ok((hash, size))
 }
 
-fn blob_file_matches(path: &Path, expected_hash: &str, expected_size: u64) -> bool {
+pub(crate) fn blob_file_matches(path: &Path, expected_hash: &str, expected_size: u64) -> bool {
     let Ok(file) = fs::File::open(path) else {
         return false;
     };
@@ -1596,7 +1596,7 @@ fn validate_manifest(manifest: &SnapshotManifest, snapshot_id: &str) -> Result<(
     Ok(())
 }
 
-fn validate_blob_hash(hash: &str) -> Result<(), String> {
+pub(crate) fn validate_blob_hash(hash: &str) -> Result<(), String> {
     if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("snapshot contains an invalid content hash".into());
     }
@@ -1623,7 +1623,7 @@ fn read_manifest(
     Ok(manifest)
 }
 
-fn validate_relative_path(relative_path: &str) -> Result<(), String> {
+pub(crate) fn validate_relative_path(relative_path: &str) -> Result<(), String> {
     if relative_path.is_empty() || relative_path.contains('\\') {
         return Err(format!("invalid snapshot path {relative_path:?}"));
     }
@@ -1660,7 +1660,7 @@ fn validate_relative_path(relative_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_snapshot_id(snapshot_id: &str) -> Result<(), String> {
+pub(crate) fn validate_snapshot_id(snapshot_id: &str) -> Result<(), String> {
     if snapshot_id.is_empty()
         || snapshot_id == "."
         || snapshot_id == ".."
@@ -1680,10 +1680,14 @@ fn snapshot_roots(manifest: &SnapshotManifest) -> HashSet<&str> {
         .collect()
 }
 
-fn sha256_hex(contents: &[u8]) -> String {
+pub(crate) fn sha256_hex(contents: &[u8]) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(contents);
     format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn atomic_write_pub(path: &Path, contents: &[u8]) -> Result<(), String> {
+    atomic_write(path, contents)
 }
 
 /// Reverse a failed restore without renaming over live destinations.  Any

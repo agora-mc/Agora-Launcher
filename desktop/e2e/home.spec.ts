@@ -145,6 +145,8 @@ async function installHomeMock(page: Page, opts: HomeMockOptions = {}) {
           if (command === 'browse_load_more') return Promise.resolve({ items: [], total: 0, page: 1, hasMore: false });
 
           // Instances
+          // Multi-session launch state is a list; the backend never returns null.
+          if (command === 'query_launch_state') return Promise.resolve([]);
           if (command === 'list_instances') return Promise.resolve(instances);
           if (command === 'check_instance_crash') return Promise.resolve(crashResult);
           if (command === 'check_instance_updates') {
@@ -475,21 +477,16 @@ test.describe('Home — zone C: Maintenance / LKG', () => {
     await expect(page.getByText('Last Known Good')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Restore' })).toBeVisible();
 
-    // Accept the confirm dialog
-    const dialogPromise = new Promise<string>((resolve) => {
-      page.on('dialog', (dialog) => {
-        resolve(dialog.message());
-        dialog.accept();
-      });
-    });
-
     // Click Restore
     await page.getByRole('button', { name: 'Restore' }).click();
 
-    // Verify the confirm message mentions the instance and snapshot
-    const msg = await dialogPromise;
-    expect(msg).toContain('Test Instance');
-    expect(msg).toContain('Before playing session 2026-07-11');
+    // Confirmation is an in-app dialog (reachable with a controller), and it
+    // names both the instance and the snapshot it would restore.
+    const confirmDialog = page.getByRole('dialog');
+    await expect(confirmDialog).toBeVisible();
+    await expect(confirmDialog.getByText(/Test Instance/)).toBeVisible();
+    await expect(confirmDialog.getByText(/Before playing session 2026-07-11/)).toBeVisible();
+    await confirmDialog.getByRole('button', { name: 'Restore snapshot' }).click();
 
     // After restore completes, loadData() re-runs and the KnownGoodCard re-renders
     await expect(page.getByText('Last Known Good')).toBeVisible();

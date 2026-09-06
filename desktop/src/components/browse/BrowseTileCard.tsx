@@ -13,7 +13,17 @@ export function BrowseTileCard({ item, context, onSelectMod, selected = false, o
         onToggleSelect ? 'browse-card--selectable' : '',
         selected ? 'browse-card--selected' : '',
       ].join(' ')}
+      role={onToggleSelect ? 'button' : undefined}
+      tabIndex={onToggleSelect ? 0 : undefined}
+      aria-pressed={onToggleSelect ? selected : undefined}
       onClick={onToggleSelect}
+      onKeyDown={(event) => {
+        if (!onToggleSelect || event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onToggleSelect();
+        }
+      }}
     >
       {selected && (
         <span className="browse-card-check" aria-hidden>

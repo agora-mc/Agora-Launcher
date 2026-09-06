@@ -18,6 +18,7 @@ import {
   type JavaRuntimeProgressEvent,
   type RecoverableJavaIssue,
   type RecoverableProfileIssue,
+  type RunningProcess,
 } from './tauri';
 import { activeHealthWarnings, loadHealthPreferences } from './healthPreferences';
 
@@ -63,6 +64,8 @@ export interface ProcessState {
 
 export interface ProcessController {
   state: ProcessState;
+  /** Every tracked session, not just the focused one. */
+  liveSessions: RunningProcess[];
   /** Bounded log buffer for the tracked instance. */
   logs: LogLine[];
   /** Start a health-gated launch. Shows the health dialog when warnings/blockers exist. */
@@ -97,6 +100,13 @@ export interface ProcessController {
    * blockers. Rejects with an error string if no instance is set.
    */
   switchLoaderAndRetry: (targetVersion: string) => Promise<void>;
+  /**
+   * Close the already-running official launcher and hand off again.
+   *
+   * Only offered after `ERR_MOJANG_LAUNCHER_RUNNING`, and only ever called
+   * from a confirmed user action: it terminates another application.
+   */
+  restartMojangLauncherAndRetry: () => Promise<void>;
   /**
    * Explicitly switch to delegated launch for the current instance,
    * bypassing only the Direct profile adoption (health checks already completed).
@@ -162,6 +172,12 @@ interface GameLogBatchEvent {
 
 export function useProcessController(): ProcessController {
   const [state, setState] = useState<ProcessState>(INITIAL_STATE);
+  /**
+   * Every direct-launch session the backend is tracking. `state` describes the
+   * focused one; this is what answers "is instance X running?" when more than
+   * one game is up, including two of the same instance.
+   */
+  const [liveSessions, setLiveSessions] = useState<RunningProcess[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -171,8 +187,13 @@ export function useProcessController(): ProcessController {
     let cancelled = false;
     (async () => {
       try {
-        const running = await queryLaunchState();
-        if (!cancelled && running) {
+        const sessions = await queryLaunchState();
+        if (cancelled) return;
+        setLiveSessions(sessions);
+        // Focus the oldest session so the console and Stop button have a
+        // definite target; the rest are still reported via `liveSessions`.
+        const running = sessions[0];
+        if (running) {
           setState({
             phase: 'running',
             instanceId: running.instance_id,
@@ -743,9 +764,46 @@ export function useProcessController(): ProcessController {
     }
   }, []);
 
+  const restartMojangLauncherAndRetry = useCallback(async () => {
+    const current = stateRef.current;
+    if (!current.instanceId) throw new Error('No instance selected');
+    if (current.phase === 'launching') return;
+
+    setState((prev) => ({
+      ...prev,
+      phase: 'launching',
+      error: null,
+      recoverableIssue: null,
+      recoverableJavaIssue: null,
+      runtimeProgress: null,
+      availableActions: [],
+    }));
+
+    try {
+      await launchInstance(
+        current.instanceId,
+        current.healthReport !== null,
+        current.healthReport?.scan_token,
+        true,
+      );
+      setState(launchedState(current.instanceId, false, null));
+    } catch (e) {
+      const parsed = parseLauncherError(e);
+      setState((prev) => ({
+        ...prev,
+        phase: 'failed',
+        error: parsed.message,
+        recoverableIssue: parsed.recoverableIssue,
+        recoverableJavaIssue: parsed.recoverableJavaIssue,
+        availableActions: parsed.availableActions,
+      }));
+    }
+  }, []);
+
   return {
     state,
     logs,
+    liveSessions,
     startLaunch,
     startLaunchDetailed,
     approveLaunch,
@@ -755,6 +813,7 @@ export function useProcessController(): ProcessController {
     repairAndRetry,
     switchLoaderAndRetry,
     useDelegatedLaunch,
+    restartMojangLauncherAndRetry,
     downloadRuntimeAndRetry,
     chooseJavaAndRetry,
     cancelJavaRecovery,

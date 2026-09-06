@@ -26,6 +26,9 @@ import {
   disableModForTest,
   getDisablePlan,
   checkInstanceUpdates,
+  getSetting,
+  setModUpdatePinned,
+  getCachedInstanceUpdates,
   exportInstancePack,
   formatError,
   inspectJavaExecutable,
@@ -39,6 +42,7 @@ import {
   repairLockfile,
   importLockfile,
   updateInstanceJava,
+  setInstanceWrapperCommand,
   updateInstanceJvm,
   computeGcArgs,
   recommendInstanceMemory,
@@ -51,7 +55,14 @@ import {
   revertInstance,
   planLoaderChange,
   changeLoaderVersion,
+  applyBackupRetention,
+  exportBackup,
   getDependencyGraph,
+  getModGroups,
+  importBackup,
+  pickDirectory,
+  getOrphanedDependencies,
+  setModGroup,
   listSnapshots,
   createSnapshot,
   restoreSnapshot,
@@ -64,8 +75,11 @@ import {
   deleteLoadoutProfile,
   openInstanceFolder,
   revealPath,
+  clearCachedInstanceUpdates,
   type InstanceDetail,
   type InstanceManifest,
+  type ModGroups,
+  type OrphanedDependency,
   type JavaRuntimeSummary,
   type GcProfile,
   type RegistryItem,
@@ -84,6 +98,17 @@ import {
   type HealthReport,
   type LoaderChangePlan,
 } from '../lib/tauri';
+import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
+import { useConfirm } from '@/components/ui/confirm';
+import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
+import { ModGroupDialog } from '../components/ModGroupDialog';
+import { MigrationReportPanel } from '../components/MigrationReportPanel';
+import { PackUpdatePanel } from '../components/PackUpdatePanel';
+import { LaunchHistoryPanel } from '../components/LaunchHistoryPanel';
+import { InstanceIntegrationPanel } from '../components/InstanceIntegrationPanel';
+import { WhyInstalledDialog } from '../components/WhyInstalledDialog';
+import { UpdateChangelogDialog } from '../components/UpdateChangelogDialog';
+import { SETTINGS } from '../lib/useTypedSettings';
 import { InstalledContentPanel } from '../components/installed-content/InstalledContentPanel';
 import { LoaderChooser } from '../components/LoaderChooser';
 import {
@@ -147,6 +172,9 @@ function fallbackContentRows(manifest: InstanceManifest | null): InstalledConten
       key: `${entry.content_type}:${entry.filename}:${entry.sha256}`,
       filename: entry.filename,
       display_name: entry.filename.replace(/\.[^.]+$/, ''),
+      pack_managed: entry.pack_managed ?? false,
+      installed_as_dependency: entry.installed_as_dependency ?? false,
+      update_pinned: entry.update_pinned ?? false,
       version: entry.version,
       content_type: entry.content_type,
       enabled: entry.enabled,
@@ -237,9 +265,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const { advancedMode } = useAdvancedMode();
   const { getTaskForInstance, revision: packInstallRevision, startPackFile, startPlan } = usePackInstall();
+  const { confirm, prompt } = useConfirm();
 
   // Sub-sidebar active tab
-  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'import' | 'export' | 'console' | 'java-args'>('mods');
+  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>('mods');
 
   // Snapshots state (Phase 6)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -272,6 +301,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   // Java & Args state
   const [instanceJavaPath, setInstanceJavaPath] = useState('');
   const [instanceJavaArgs, setInstanceJavaArgs] = useState('');
+  const [wrapperCommand, setWrapperCommand] = useState('');
   const [instanceJvmMemory, setInstanceJvmMemory] = useState(4096);
   const [instanceMemoryMode, setInstanceMemoryMode] = useState<'auto' | 'manual'>('manual');
   const [memoryRecommendation, setMemoryRecommendation] = useState<MemoryRecommendation | null>(null);
@@ -347,6 +377,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }
           setInstanceJavaPath(result?.row?.java_path ?? '');
           setInstanceJavaArgs(result?.row?.jvm_custom_args ?? '');
+          setWrapperCommand(typeof result?.manifest?.user_preferences?.agora_wrapper_command === 'string'
+            ? (result.manifest.user_preferences.agora_wrapper_command as string)
+            : '');
           setInstanceJvmMemory(result?.row?.jvm_memory_mb ?? 4096);
           setInstanceMemoryMode(result?.row?.jvm_memory_mode ?? 'manual');
           setInstanceGcMode(storedGcMode(result?.row?.jvm_gc));
@@ -441,6 +474,25 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       })
       .catch((cause) => setError(formatError(cause)));
   }, [instanceId, packInstallRevision]);
+
+  // Crash Doctor's guided bisect renames JARs from a global overlay, outside
+  // this page's knowledge. Without this the mod list keeps showing the state
+  // from before the trial — so both applying a trial and restoring afterwards
+  // look like they did nothing.
+  useEffect(() => {
+    const onContentChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ instanceId?: string }>).detail;
+      if (detail?.instanceId && detail.instanceId !== instanceId) return;
+      void getInstanceDetail(instanceId)
+        .then((result) => {
+          setDetail(result);
+          return refreshContent();
+        })
+        .catch((cause) => setError(formatError(cause)));
+    };
+    window.addEventListener('agora-instance-content-changed', onContentChanged);
+    return () => window.removeEventListener('agora-instance-content-changed', onContentChanged);
+  }, [instanceId, refreshContent]);
 
   useEffect(() => {
     if (detail?.snapshot_readiness !== 'pending') return undefined;
@@ -553,6 +605,134 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     return () => { cancelled = true; };
   }, [instanceId, activeTab]);
 
+  // Hydrated from the persisted check so the panels show what we already know
+  // before (or without) any network call. Held in state so the reference stays
+  // stable across renders — the panels re-seed whenever it changes.
+  const [cachedUpdates, setCachedUpdates] = useState<UpdateInfo[] | null>(null);
+  /** Updates awaiting the changelog review step; null when nothing is pending. */
+  const [pendingUpdates, setPendingUpdates] = useState<UpdateInfo[] | null>(null);
+  const [showUpdateChangelogs, setShowUpdateChangelogs] = useState(true);
+
+  useEffect(() => {
+    void getSetting(SETTINGS.showUpdateChangelogs.key)
+      .then((raw) => setShowUpdateChangelogs(SETTINGS.showUpdateChangelogs.parse(raw)))
+      .catch(() => { /* Default to showing it; a preview is never harmful. */ });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCachedUpdates(null);
+    void getCachedInstanceUpdates(instanceId)
+      .then((updates) => { if (!cancelled) setCachedUpdates(updates); })
+      .catch(() => { /* Cache is an optimization; an explicit check still works. */ });
+    return () => { cancelled = true; };
+  }, [instanceId]);
+
+  const [orphans, setOrphans] = useState<OrphanedDependency[]>([]);
+  const [explainTarget, setExplainTarget] = useState<InstalledContentRow | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [modGroups, setModGroups] = useState<ModGroups>({});
+  const [groupTarget, setGroupTarget] = useState<InstalledContentRow[] | null>(null);
+  const [groupBusy, setGroupBusy] = useState(false);
+
+  // Groups live in the manifest, so they are re-read whenever the installed set
+  // changes — a removal can empty a group out from under the picker.
+  useEffect(() => {
+    let cancelled = false;
+    getModGroups(instanceId)
+      .then((groups) => { if (!cancelled) setModGroups(groups); })
+      .catch(() => { if (!cancelled) setModGroups({}); });
+    return () => { cancelled = true; };
+  }, [instanceId, modMetadataKey]);
+
+  /** Write a snapshot out to a folder the user picks. */
+  const handleExportBackup = async (snapshotId: string) => {
+    setError(null);
+    const dir = await pickDirectory('Choose a folder for this backup');
+    if (!dir) return;
+    setBackupBusy(true);
+    try {
+      const path = await exportBackup(instanceId, snapshotId, dir);
+      setStatus(`Backup written to ${path}`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  /** Read a backup artifact back in. Core validates it before it touches
+   *  anything, so a file from another machine is safe to point at.
+   *
+   *  Importing only adds a snapshot; it never overwrites what is in the
+   *  instance right now. Restoring is the step that does, and it is offered
+   *  here as an explicit second choice so it goes through the guarded restore
+   *  path (which refuses while the instance is running and takes an undo
+   *  snapshot first). */
+  const handleImportBackup = async () => {
+    setError(null);
+    const artifact = await pickOpenFile('Choose a backup file', ['zip']);
+    if (!artifact) return;
+    setBackupBusy(true);
+    try {
+      const imported = await importBackup(instanceId, artifact);
+      setSnapshots(await listSnapshots(instanceId));
+      const label = imported.label ? `"${imported.label}"` : imported.id;
+      if (await confirm({
+        title: `Restore ${label} into this instance now?`,
+        body: `Backup imported as a restorable snapshot.\n\n`
+          + `This replaces the instance's current files. An undo snapshot is taken first, and you can also do `
+          + `this later from the snapshot list.`,
+        confirmLabel: 'Restore',
+        tone: 'danger',
+      })) {
+        await restoreSnapshot(instanceId, imported.id);
+        setSnapshots(await listSnapshots(instanceId));
+        setStatus(`Backup imported and restored. The previous state is saved as an undo snapshot.`);
+      } else {
+        setStatus('Backup imported as a restorable snapshot. Nothing in the instance changed.');
+      }
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleApplyRetention = async (keepLast: number) => {
+    setError(null);
+    if (!await confirm({
+      title: `Keep only the ${keepLast} most recent snapshots?`,
+      body: 'Older ones are deleted.',
+      confirmLabel: 'Delete older snapshots',
+      tone: 'danger',
+    })) return;
+    setBackupBusy(true);
+    try {
+      const removed = await applyBackupRetention(instanceId, { keepLast });
+      setSnapshots(await listSnapshots(instanceId));
+      setStatus(removed.length === 0
+        ? 'Nothing to remove — every snapshot is within the policy or protected.'
+        : `Removed ${removed.length} old snapshot${removed.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleAssignGroup = async (rows: InstalledContentRow[], group: string | null) => {
+    setGroupBusy(true);
+    try {
+      setModGroups(await setModGroup(instanceId, rows.map((row) => row.filename), group));
+      setGroupTarget(null);
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setGroupBusy(false);
+    }
+  };
+
   const beginCanonicalOperation = (action: InstallIntent['action']) => {
     setCanonicalOperation({
       instanceName: detail?.row.name ?? instanceId,
@@ -588,19 +768,23 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     });
   };
 
-  const handleRemove = (filename: string) => {
-    if (!confirm(`Review a safe removal plan for "${filename}"?`)) return;
+  const handleRemove = async (filename: string) => {
+    if (!await confirm({
+      title: `Review a safe removal plan for "${filename}"?`,
+    })) return;
     setError(null);
     beginCanonicalOperation({ type: 'remove', filename });
   };
 
-  const handleBulkRemove = (rows: InstalledContentRow[]): boolean => {
+  const handleBulkRemove = async (rows: InstalledContentRow[]): Promise<boolean> => {
     const filenames = Array.from(new Set(rows.map((content) => content.filename)));
     if (filenames.length === 0) return false;
     const preview = filenames.length <= 3
       ? filenames.join(', ')
       : `${filenames.slice(0, 3).join(', ')} and ${filenames.length - 3} more`;
-    if (!confirm(`Review one safe removal plan for ${filenames.length} selected item${filenames.length === 1 ? '' : 's'} (${preview})?`)) return false;
+    if (!await confirm({
+      title: `Review one safe removal plan for ${filenames.length} selected item${filenames.length === 1 ? '' : 's'} (${preview})?`,
+    })) return false;
     setError(null);
     beginCanonicalOperation({ type: 'batch-remove', filenames });
     return true;
@@ -694,12 +878,37 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     }
   };
 
-  const handleApplyUpdate = (row: InstalledContentRow, update: UpdateInfo) => {
-    if (row?.enabled === false || !row.mod_jar_id && !row.modrinth_id && !row.registry_id) return;
+  const handleTogglePin = async (content: InstalledContentRow, pinned: boolean) => {
+    if (row?.is_locked) return;
+    setError(null);
+    try {
+      await setModUpdatePinned(instanceId, content.filename, pinned);
+      await refreshContent();
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
+  /** Apply a reviewed set of updates as one transaction. */
+  const applyUpdates = (updates: UpdateInfo[]) => {
     beginCanonicalOperation({
       type: 'batch-update',
-      items: [{ itemId: update.mod_jar_id, targetVersion: update.target_version }],
+      items: updates.map((update) => ({ itemId: update.mod_jar_id, targetVersion: update.target_version })),
     });
+  };
+
+  const handleApplyUpdate = (row: InstalledContentRow, update: UpdateInfo) => {
+    if (row?.enabled === false || !row.mod_jar_id && !row.modrinth_id && !row.registry_id) return;
+    if (showUpdateChangelogs) setPendingUpdates([update]);
+    else applyUpdates([update]);
+  };
+
+  /** One plan, one snapshot, full rollback for every update in a panel. */
+  const handleUpdateAll = (updates: UpdateInfo[]) => {
+    if (row?.is_locked || updates.length === 0) return;
+    setError(null);
+    if (showUpdateChangelogs) setPendingUpdates(updates);
+    else applyUpdates(updates);
   };
 
   const handleSetInstanceIcon = async () => {
@@ -815,6 +1024,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   const handleUnlock = async () => {
     setError(null);
+    // Unlocking is the single consent gate for every kind of deviation — a
+    // changed mod version, an edited config, a Minecraft version migration.
+    // Modpack instances ship locked precisely so this question gets asked once,
+    // here, rather than being re-litigated at each individual change.
+    const fromPack = !!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack;
+    if (fromPack && !await confirm({
+      title: 'Unlock anyway?',
+      body: [
+        'Unlocking moves this instance away from the version the pack author published.',
+        '',
+        'Most pack authors do not support modified installs, and changes can cause instability. '
+        + 'If you later update the pack, some of your changes — mod versions, configuration files, '
+        + 'and other edits — may be overwritten.',
+      ].join('\n'),
+      confirmLabel: 'Unlock anyway',
+    })) return;
     try {
       await unlockInstance(instanceId);
       await refreshDetail();
@@ -834,7 +1059,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleRename = async () => {
-    const newName = window.prompt('Rename instance', row?.name ?? '');
+    const newName = await prompt({
+      title: 'Rename instance',
+      initialValue: row?.name ?? '',
+      confirmLabel: 'Rename',
+    });
     if (!newName || newName.trim() === '' || newName.trim() === row?.name) return;
     setError(null);
     try {
@@ -847,7 +1076,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   };
 
   const handleRevert = async () => {
-    if (!confirm('Revert to the snapshot taken when this instance was unlocked? This removes any mods you added since then.')) {
+    if (!await confirm({
+      title: 'Revert to the snapshot taken when this instance was unlocked?',
+      body: 'This removes any mods you added since then.',
+      confirmLabel: 'Revert',
+      tone: 'danger',
+    })) {
       return;
     }
     setError(null);
@@ -1034,9 +1268,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const handleRepairLockfile = async () => {
     const text = requireLockfileText();
     if (!text) return;
-    if (!window.confirm(
-      'Repair this instance to the pasted lockfile? Agora will create one recovery snapshot, download exact hashes, and remove managed artifacts that are not in the lockfile. Private config contents cannot be repaired because lockfiles never contain them.',
-    )) return;
+    if (!await confirm({
+      title: 'Repair this instance to the pasted lockfile?',
+      body: 'Agora will create one recovery snapshot, download exact hashes, and remove managed artifacts that are not in the lockfile. Private config contents cannot be repaired because lockfiles never contain them.',
+      confirmLabel: 'Repair',
+      tone: 'danger',
+    })) return;
 
     setLockfileBusy('repair');
     setError(null);
@@ -1667,14 +1904,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
       {/* Sub-sidebar tabs */}
       <div className="agora-tabbar">
-        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'import', 'export', 'console'] as const).map((tab) => (
+        {(['mods', 'resourcepacks', 'shaders', 'datapacks', 'snapshots', 'loadout-profiles', 'templates', 'migrate', 'import', 'export', 'console'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             data-active={activeTab === tab}
             className="agora-tab text-sm"
           >
-            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
+            {tab === 'mods' ? `Mods (${mods.length})` : tab === 'resourcepacks' ? `Resource Packs (${manifest?.resourcepacks?.length ?? 0})` : tab === 'shaders' ? `Shaders (${manifest?.shaders?.length ?? 0})` : tab === 'datapacks' ? `Data Packs (${manifest?.datapacks?.length ?? 0})` : tab === 'snapshots' ? 'Snapshots' : tab === 'loadout-profiles' ? 'Loadout Profiles' : tab === 'templates' ? 'Templates' : tab === 'migrate' ? 'Version Move' : tab === 'import' ? 'Import' : tab === 'export' ? 'Export' : 'Console'}
           </button>
         ))}
         <button
@@ -1702,6 +1939,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onRevealFile={handleRevealInstalledContent}
           onCheckUpdates={() => checkInstanceUpdates(instanceId)}
           onApplyUpdate={handleApplyUpdate}
+          onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget}
+          initialUpdates={cachedUpdates}
           onSetCustomIcon={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
             if (mod) void handleSetModIcon(mod);
@@ -1720,15 +1959,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -1888,6 +2127,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-sm">Snapshots</h3>
             <div className="flex gap-2">
+              <button
+                onClick={() => void handleImportBackup()}
+                disabled={backupBusy || snapshotOperationPending}
+                className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50 whitespace-nowrap"
+                title="Read a backup file back in as a restorable snapshot"
+              >
+                Import backup…
+              </button>
               <input
                 type="text"
                 value={snapshotLabelInput}
@@ -1982,6 +2229,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     >
                       {snapshotBusy === snap.id ? 'Restoring…' : 'Restore'}
                     </button>
+                    <button
+                      onClick={() => void handleExportBackup(snap.id)}
+                      disabled={backupBusy || snapshotBusy === snap.id}
+                      className="text-xs text-foreground hover:underline disabled:opacity-50"
+                      title="Write this snapshot to a folder — point it at one your cloud drive syncs"
+                    >
+                      Export…
+                    </button>
                     {confirmDeleteSnapshot === snap.id ? (
                       <div className="flex gap-1">
                         <button
@@ -2024,6 +2279,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   </div>
                 </div>
               ))}
+              {snapshots.length > 1 && (
+                <div className="flex items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground">
+                  <span>Snapshots accumulate. Trim to the most recent:</span>
+                  {[5, 10, 20].map((keep) => (
+                    <button
+                      key={keep}
+                      onClick={() => void handleApplyRetention(keep)}
+                      disabled={backupBusy || snapshotOperationPending}
+                      className="rounded border border-input px-2 py-1 hover:bg-accent disabled:opacity-50"
+                    >
+                      Keep {keep}
+                    </button>
+                  ))}
+                  <span className="ml-auto">Protected snapshots are never removed.</span>
+                </div>
+              )}
               {snapshotDiff && (
                 <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs space-y-2">
                   <div className="flex items-center justify-between gap-3">
@@ -2057,6 +2328,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           )}
         </section>
+      )}
+
+      {activeTab === 'templates' && (
+        <InstanceTemplatePanel
+          instanceId={instanceId}
+          row={detail?.row}
+          disabled={recoveryBlocked}
+          onApplied={() => { void refreshDetail(); }}
+        />
       )}
 
       {activeTab === 'loadout-profiles' && (
@@ -2173,6 +2453,19 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           )}
         </section>
+      )}
+
+      {activeTab === 'migrate' && (
+        <div className="space-y-4">
+          {(!!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack) && (
+            <PackUpdatePanel instanceId={instanceId} locked={!!row?.is_locked} />
+          )}
+          <MigrationReportPanel
+            instanceId={instanceId}
+            currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
+            loader={detail?.row.loader}
+          />
+        </div>
       )}
 
       {activeTab === 'import' && (
@@ -2402,6 +2695,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'console' && (
+        <div className="space-y-4">
+          <InstanceIntegrationPanel instanceId={instanceId} displayName={detail?.row.name ?? instanceId} />
+          <LaunchHistoryPanel instanceId={instanceId} />
+        </div>
+      )}
+
+      {activeTab === 'console' && (
         <section className="rounded-xl border border-border bg-card p-4 space-y-3">
           <h3 className="font-semibold text-sm">Game Console</h3>
           <p className="text-xs text-muted-foreground">
@@ -2620,6 +2920,23 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     placeholder="-Xss1M -Dsome.setting=true"
                     className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-mono resize-y"
                   />
+
+                  <label htmlFor="instance-wrapper" className="mt-4 block text-sm font-medium">
+                    Launch wrapper
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Runs the game through another program, such as <code>mangohud</code> or{' '}
+                    <code>gamescope -W 1920 -H 1080 --</code>. Leave empty for none.
+                  </p>
+                  <input
+                    id="instance-wrapper"
+                    type="text"
+                    value={wrapperCommand}
+                    disabled={recoveryBlocked}
+                    onChange={(e) => setWrapperCommand(e.target.value)}
+                    placeholder="mangohud"
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-mono"
+                  />
                 </div>
               )}
 
@@ -2675,6 +2992,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                       instanceJavaArgs.trim(),
                       instanceMemoryMode,
                     );
+                    await setInstanceWrapperCommand(instanceId, wrapperCommand.trim());
                     setStatus('Java settings saved.');
                     // Refresh to update the displayed detail
                     const fresh = await getInstanceDetail(instanceId);
@@ -2740,6 +3058,51 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         />
       )}
 
+      {pendingUpdates ? (
+        <UpdateChangelogDialog
+          updates={pendingUpdates}
+          displayNameFor={(update) =>
+            displayedContentRows.find((content) => content.filename === update.filename)?.display_name
+            ?? update.filename}
+          onConfirm={() => {
+            const updates = pendingUpdates;
+            setPendingUpdates(null);
+            applyUpdates(updates);
+          }}
+          onCancel={() => setPendingUpdates(null)}
+        />
+      ) : null}
+
+      {orphans.length > 0 && (
+        <OrphanCleanupDialog
+          orphans={orphans}
+          onClose={() => setOrphans([])}
+          onConfirm={(filenames) => {
+            setOrphans([]);
+            beginCanonicalOperation({ type: 'batch-remove', filenames });
+          }}
+        />
+      )}
+
+      {groupTarget && (
+        <ModGroupDialog
+          rows={groupTarget}
+          groups={Object.keys(modGroups)}
+          busy={groupBusy}
+          onClose={() => setGroupTarget(null)}
+          onConfirm={(group) => void handleAssignGroup(groupTarget, group)}
+        />
+      )}
+
+      {explainTarget && (
+        <WhyInstalledDialog
+          instanceId={instanceId}
+          filename={explainTarget.filename}
+          displayName={explainTarget.display_name}
+          onClose={() => setExplainTarget(null)}
+        />
+      )}
+
       {canonicalOperation && (
         <InstallFlow
           open
@@ -2748,15 +3111,36 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           background
           onBackgroundStart={(plan) => startPlan(plan, `Installing pack in ${canonicalOperation.instanceName}`, canonicalOperation.instanceName)}
           onOpenInstance={onOpenInstanceEditor}
+          onSuccess={(targetId) => {
+            // Invalidate the view: the cache lists updates that were just
+            // installed, so clearing is honest. Re-checking eagerly would
+            // add Modrinth traffic right after a user action; the next
+            // explicit "Check for updates" or the interval sweep will
+            // repopulate. Optimistically clear local state too so the badge
+            // disappears without a round-trip.
+            // Keep the same reference when already empty so this cannot drive
+            // a re-render loop if it is ever signalled more than once.
+            setCachedUpdates((current) => (current && current.length === 0 ? current : []));
+            void clearCachedInstanceUpdates(targetId).catch(() => {});
+            // Only a removal can strand a dependency, and the answer is read
+            // from the manifest as it now stands rather than modelled from the
+            // plan — so this is a plain question, asked once, after the fact.
+            const action = canonicalOperation?.intent.action.type;
+            if (action === 'remove' || action === 'batch-remove') {
+              void getOrphanedDependencies(targetId)
+                .then(setOrphans)
+                .catch(() => { /* Cleanup is an offer; failing to ask is fine. */ });
+            }
+          }}
            onClose={() => {
-             setCanonicalOperation(null);
-             void getInstanceDetail(instanceId)
-               .then((result) => {
-                 setDetail(result);
-                 return refreshContent();
-               })
-               .catch((cause) => setError(formatError(cause)));
-           }}
+              setCanonicalOperation(null);
+              void getInstanceDetail(instanceId)
+                .then((result) => {
+                  setDetail(result);
+                  return refreshContent();
+                })
+                .catch((cause) => setError(formatError(cause)));
+            }}
         />
       )}
 
