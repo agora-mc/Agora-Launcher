@@ -624,14 +624,11 @@ pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
             return None;
         }
         let data = std::fs::read(&path).ok()?;
-        let decrypted =
-            existing_fallback_key_for(TOKEN_KEY_CONTEXT).and_then(|key| decrypt_token(&data, &key));
-        if decrypted.is_none() {
-            // The device key is missing or was rotated, so this ciphertext can
-            // never be read again. Drop it rather than keep asking.
-            let _ = std::fs::remove_file(&path);
-        }
-        decrypted
+        // Deliberately no cleanup on failure. A missing device key and a device
+        // key we merely failed to read are the same `None` here, so deleting
+        // would turn a transient read error into permanent credential loss. An
+        // undecryptable file is inert, and the next store overwrites it.
+        existing_fallback_key_for(TOKEN_KEY_CONTEXT).and_then(|key| decrypt_token(&data, &key))
     });
 
     let raw = raw?;
@@ -875,16 +872,31 @@ pub fn get_token() -> Option<String> {
     load_token_bundle().map(|b| b.access_token)
 }
 
-/// Random per-install secret that keys the encrypted keyring fallback.
+/// Random per-profile secret that keys the encrypted keyring fallback.
 ///
-/// This file is the only thing that makes the fallback ciphertext readable:
-/// the key derivation used to run PBKDF2 over a constant compiled into the
-/// binary, so anyone holding an encrypted file could rederive the key from
-/// public information. Losing or rotating this secret makes existing fallback
-/// files permanently unreadable, which the load paths treat as "no stored
-/// credential" and clean up -- the user signs in again.
+/// This file is the only thing that makes the fallback ciphertext readable.
+/// The derivation used to run PBKDF2 over a constant compiled into the binary,
+/// so anyone holding an encrypted file could rederive the key from public
+/// information; now they would need this file too.
+///
+/// Be precise about what that buys: the key lives in the same directory as the
+/// ciphertext it protects, so its file permissions -- not AES -- are the
+/// boundary. It defeats an attacker who obtains only an encrypted file. It does
+/// nothing against one who copies the whole profile directory or runs as the
+/// user. Real machine binding needs DPAPI, a TPM, or an OS credential service,
+/// which is the thing whose absence puts us on this path in the first place.
 const DEVICE_KEY_FILE: &str = "device-key.bin";
 const DEVICE_KEY_LEN: usize = 32;
+
+/// How long a caller that loses the creation race waits for the winner to
+/// publish its key before treating the file as residue from an interrupted run.
+const DEVICE_KEY_PUBLISH_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Serializes device-key creation within the process. The GitHub and MSA
+/// stores share one device key, so without this they can race each other on
+/// first use.
+static DEVICE_KEY_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
 
 /// Directory holding the encrypted fallback files and the device key.
 fn fallback_data_dir() -> Option<std::path::PathBuf> {
@@ -915,18 +927,36 @@ fn write_device_secret_at(path: &std::path::Path, secret: &[u8]) -> LauncherResu
         code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
         message: "Failed to write the device key for encrypted credential storage.".into(),
     };
-    std::fs::write(path, secret).map_err(|_| write_failed())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).truncate(true).create(true);
     #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|_| write_failed())?;
+    #[cfg(unix)]
+    {
+        // `mode` only applies when the open creates the file, so an existing
+        // one still needs its permissions brought down explicitly.
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|_| write_failed())?;
     }
+    use std::io::Write;
+    file.write_all(secret).map_err(|_| write_failed())?;
+    file.sync_all().map_err(|_| write_failed())?;
     Ok(())
 }
 
 /// Read the device secret, generating one on first use.
+///
+/// Never returns a key that is not durably on disk: a caller that encrypted
+/// under a key some other writer then replaced would produce ciphertext nobody
+/// can read, so every path here ends by reading back what was published.
 fn load_or_create_device_secret_at(path: &std::path::Path) -> LauncherResult<Vec<u8>> {
+    let _guard = DEVICE_KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     if let Some(existing) = read_device_secret_at(path) {
         return Ok(existing);
     }
@@ -940,6 +970,11 @@ fn load_or_create_device_secret_at(path: &std::path::Path) -> LauncherResult<Vec
     use rand::Rng;
     let secret: [u8; DEVICE_KEY_LEN] = rand::thread_rng().gen();
 
+    let write_failed = || LauncherError::Generic {
+        code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+        message: "Failed to write the device key for encrypted credential storage.".into(),
+    };
+
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -950,51 +985,58 @@ fn load_or_create_device_secret_at(path: &std::path::Path) -> LauncherResult<Vec
     match options.open(path) {
         Ok(mut file) => {
             use std::io::Write;
-            file.write_all(&secret)
-                .map_err(|_| LauncherError::Generic {
-                    code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
-                    message: "Failed to write the device key for encrypted credential storage."
-                        .into(),
-                })?;
-            Ok(secret.to_vec())
+            file.write_all(&secret).map_err(|_| write_failed())?;
+            // Durable before anything encrypts under it: a key lost to a crash
+            // takes every credential written under it with it.
+            file.sync_all().map_err(|_| write_failed())?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            match read_device_secret_at(path) {
-                // Another writer won the race; its key is the one on disk.
-                Some(existing) => Ok(existing),
-                // Truncated or unreadable: it cannot decrypt anything, so
-                // replacing it loses nothing that was still recoverable.
-                None => {
-                    write_device_secret_at(path, &secret)?;
-                    Ok(secret.to_vec())
+            // `create_new` reserves the name atomically but publishes nothing.
+            // The winner may still be between create and write, and its file
+            // reads as zero-length until then -- so wait for it rather than
+            // mistake an in-flight key for residue and overwrite a key another
+            // caller is already encrypting under.
+            let deadline = std::time::Instant::now() + DEVICE_KEY_PUBLISH_WAIT;
+            loop {
+                if let Some(existing) = read_device_secret_at(path) {
+                    return Ok(existing);
                 }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
+            // Still not a valid key: an earlier run was interrupted between
+            // create and write. It cannot decrypt anything, so replacing it
+            // loses nothing that was still recoverable.
+            write_device_secret_at(path, &secret)?;
         }
-        Err(_) => Err(LauncherError::Generic {
-            code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
-            message: "Failed to write the device key for encrypted credential storage.".into(),
-        }),
+        Err(_) => return Err(write_failed()),
     }
+
+    read_device_secret_at(path).ok_or_else(|| LauncherError::Generic {
+        code: "ERR_AUTH_DEVICE_KEY_READ".into(),
+        message: "Wrote the device key but could not read it back.".into(),
+    })
 }
 
-/// Derive a 256-bit key using PBKDF2-HMAC-SHA256 from the per-install device
-/// secret. The secret is the password, so the key cannot be reconstructed from
-/// the source or from anything the encrypted file itself reveals; the salt
-/// separates the contexts and binds the key to the account and platform.
+/// Derive a 256-bit key from the device secret, which is the PBKDF2 password.
+/// The key therefore cannot be reconstructed from the source or from anything
+/// the encrypted file itself reveals.
+///
+/// `context` is public domain separation -- it keeps the GitHub and MSA keys
+/// distinct -- not a secret, which is why it belongs in the salt. The home
+/// directory name and platform used to be mixed in here too; they were public,
+/// added no confidentiality once the password is 256 random bits, and meant a
+/// renamed home directory silently produced a different key.
+///
+/// PBKDF2 is stretching an input that is already full-entropy, so the iteration
+/// count buys nothing here. It stays because the stored files are keyed on it.
 fn derive_key_from_device_secret(device_secret: &[u8], context: &[u8]) -> Vec<u8> {
     use pbkdf2::pbkdf2_hmac;
     use sha2::Sha256;
 
-    let username = dirs::home_dir()
-        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let salt = format!(
-        "agora-fallback:v2:{}:{}:{}",
-        String::from_utf8_lossy(context),
-        username,
-        std::env::consts::OS
-    );
+    let salt = format!("agora-fallback:v2:{}", String::from_utf8_lossy(context));
 
     let mut key = vec![0u8; 32];
     pbkdf2_hmac::<Sha256>(device_secret, salt.as_bytes(), PBKDF2_ITERATIONS, &mut key);
@@ -1171,17 +1213,15 @@ pub(crate) fn load_secret(
                 code: "ERR_AUTH_FALLBACK_READ".into(),
                 message: "Failed to read encrypted credentials.".into(),
             })?;
-            match existing_fallback_key_for(key_context)
+            // Report "nothing stored" rather than an error so the caller asks
+            // for a fresh sign-in instead of failing on every launch -- but
+            // leave the file alone. A missing device key and a device key we
+            // merely failed to read are indistinguishable here, so deleting
+            // would turn a transient read error into permanent credential loss.
+            if let Some(value) = existing_fallback_key_for(key_context)
                 .and_then(|key| decrypt_token(&encrypted, &key))
             {
-                Some(value) => return Ok(Some(value)),
-                // The device key is missing or was rotated, so this ciphertext
-                // can never be read again. Drop it and report "nothing stored"
-                // so the caller asks for a fresh sign-in instead of failing on
-                // every launch.
-                None => {
-                    let _ = std::fs::remove_file(&path);
-                }
+                return Ok(Some(value));
             }
         }
     }
@@ -2084,9 +2124,10 @@ mod tests {
         assert_ne!(key1, key2);
     }
 
-    /// The property the old derivation lacked: two installs that share a
-    /// binary, a username and a platform still get different keys, so an
-    /// encrypted file lifted off one machine is useless on another.
+    /// The property the old derivation lacked: two profiles that share a
+    /// binary, a username and a platform still get different keys. Note what
+    /// this does *not* claim -- copying `device-key.bin` along with the
+    /// ciphertext still yields a readable credential.
     #[test]
     fn derive_fallback_key_differs_for_different_device_secrets() {
         let key1 = derive_key_from_device_secret(&[0x01; DEVICE_KEY_LEN], b"same-context");
@@ -2125,6 +2166,9 @@ mod tests {
         );
     }
 
+    /// A key file that never got its contents is residue from an interrupted
+    /// first run, and is replaced -- but only after the publish wait, so an
+    /// in-flight writer is not overwritten.
     #[test]
     fn truncated_device_secret_is_replaced() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2141,6 +2185,37 @@ mod tests {
             read_device_secret_at(&path).as_deref(),
             Some(secret.as_slice())
         );
+    }
+
+    /// The race Sol caught: `create_new` reserves the name before any bytes
+    /// land, so a concurrent caller could see a zero-length file, call it
+    /// residue, and overwrite a key the winner was already encrypting under.
+    /// Every thread must come away with the one key that is actually on disk.
+    #[test]
+    fn concurrent_first_use_agrees_on_one_device_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+
+        let secrets: Vec<Vec<u8>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let path = path.clone();
+                    scope.spawn(move || load_or_create_device_secret_at(&path).expect("create"))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("join"))
+                .collect()
+        });
+
+        let published = read_device_secret_at(&path).expect("a key must be published");
+        for secret in &secrets {
+            assert_eq!(
+                secret, &published,
+                "every caller must get the key that is on disk"
+            );
+        }
     }
 
     #[cfg(unix)]
