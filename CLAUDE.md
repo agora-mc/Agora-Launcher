@@ -65,9 +65,11 @@ Per `AGENTS.md`: after registry/loader/crash-signature edits run the registry ga
   `npm run build`. Run it explicitly; CI will not catch a violation for you.
 - `scripts/check_docs.py` and `check_architecture.py` are hermetic — no network, no file writes.
 - The compiler has **no `.venv` checked out** in this working copy; create one before registry work.
-- **Local Rust is 1.96.0; CI uses `dtolnay/rust-toolchain@stable`, which is now 1.99.x.** Clippy
-  runs with `-D warnings`, so lints added after 1.96 fail CI while passing locally. A clean local
-  clippy is not proof CI is clean — `rustup update` before trusting it on lint-sensitive work.
+- **Local Rust is 1.98.1; CI uses `dtolnay/rust-toolchain@stable`, currently 1.98.x.** Clippy runs
+  with `-D warnings`, so a lint added in a release newer than the local toolchain fails CI while
+  passing locally (this is how `result_large_err` landed on the tree in 1.98). A clean local clippy
+  is only proof CI is clean while the two agree — `rustup update` before trusting it on
+  lint-sensitive work.
 
 ## Architecture boundaries (enforced, not advisory)
 
@@ -105,7 +107,7 @@ node scripts/check-interactive-boundaries.mjs --root scripts/boundary-fixtures/i
 ## Environment
 
 Windows 11, PowerShell primary (a Bash tool is also available — each takes its own syntax).
-Rust 1.96, Node 25 (CI uses 24), Python 3.12, `gh` authenticated.
+Rust 1.98.1, Node 25 (CI uses 24), Python 3.12, `gh` authenticated.
 
 - Use a disposable data root for experiments: `AGORA_DATA_DIR` for Tauri, `--data-dir` (or
   `AGORA_DATA_DIR`) for the CLI — without `--data-dir` the CLI now resolves the root exactly as the

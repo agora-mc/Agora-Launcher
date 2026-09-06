@@ -593,7 +593,7 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
         })?;
     }
 
-    let key = derive_fallback_key();
+    let key = derive_fallback_key()?;
     let encrypted = encrypt_token(&json, &key)?;
     std::fs::write(&path, encrypted).map_err(|_| LauncherError::Generic {
         code: "ERR_AUTH_FALLBACK_WRITE".into(),
@@ -624,8 +624,14 @@ pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
             return None;
         }
         let data = std::fs::read(&path).ok()?;
-        let key = derive_fallback_key();
-        decrypt_token(&data, &key)
+        let decrypted =
+            existing_fallback_key_for(TOKEN_KEY_CONTEXT).and_then(|key| decrypt_token(&data, &key));
+        if decrypted.is_none() {
+            // The device key is missing or was rotated, so this ciphertext can
+            // never be read again. Drop it rather than keep asking.
+            let _ = std::fs::remove_file(&path);
+        }
+        decrypted
     });
 
     let raw = raw?;
@@ -869,9 +875,113 @@ pub fn get_token() -> Option<String> {
     load_token_bundle().map(|b| b.access_token)
 }
 
-/// Derive a 256-bit key using PBKDF2-HMAC-SHA256.
-/// Salt is derived from the OS username and a stable machine identifier.
-fn derive_fallback_key_for(context: &[u8]) -> Vec<u8> {
+/// Random per-install secret that keys the encrypted keyring fallback.
+///
+/// This file is the only thing that makes the fallback ciphertext readable:
+/// the key derivation used to run PBKDF2 over a constant compiled into the
+/// binary, so anyone holding an encrypted file could rederive the key from
+/// public information. Losing or rotating this secret makes existing fallback
+/// files permanently unreadable, which the load paths treat as "no stored
+/// credential" and clean up -- the user signs in again.
+const DEVICE_KEY_FILE: &str = "device-key.bin";
+const DEVICE_KEY_LEN: usize = 32;
+
+/// Directory holding the encrypted fallback files and the device key.
+fn fallback_data_dir() -> Option<std::path::PathBuf> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Ok(dir) = std::env::var("AGORA_TEST_SECRET_DIR") {
+            return Some(std::path::PathBuf::from(dir));
+        }
+        if let Ok(dir) = std::env::var("AGORA_TEST_TOKEN_DIR") {
+            return Some(std::path::PathBuf::from(dir));
+        }
+    }
+    dirs::data_local_dir().map(|d| d.join("agora"))
+}
+
+fn device_key_path() -> Option<std::path::PathBuf> {
+    fallback_data_dir().map(|d| d.join(DEVICE_KEY_FILE))
+}
+
+fn read_device_secret_at(path: &std::path::Path) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(path).ok()?;
+    (bytes.len() == DEVICE_KEY_LEN).then_some(bytes)
+}
+
+/// Write `secret` with owner-only permissions where the platform has them.
+fn write_device_secret_at(path: &std::path::Path, secret: &[u8]) -> LauncherResult<()> {
+    let write_failed = || LauncherError::Generic {
+        code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+        message: "Failed to write the device key for encrypted credential storage.".into(),
+    };
+    std::fs::write(path, secret).map_err(|_| write_failed())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|_| write_failed())?;
+    }
+    Ok(())
+}
+
+/// Read the device secret, generating one on first use.
+fn load_or_create_device_secret_at(path: &std::path::Path) -> LauncherResult<Vec<u8>> {
+    if let Some(existing) = read_device_secret_at(path) {
+        return Ok(existing);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| LauncherError::Generic {
+            code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+            message: "Failed to create the encrypted credential directory.".into(),
+        })?;
+    }
+
+    use rand::Rng;
+    let secret: [u8; DEVICE_KEY_LEN] = rand::thread_rng().gen();
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&secret)
+                .map_err(|_| LauncherError::Generic {
+                    code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+                    message: "Failed to write the device key for encrypted credential storage."
+                        .into(),
+                })?;
+            Ok(secret.to_vec())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            match read_device_secret_at(path) {
+                // Another writer won the race; its key is the one on disk.
+                Some(existing) => Ok(existing),
+                // Truncated or unreadable: it cannot decrypt anything, so
+                // replacing it loses nothing that was still recoverable.
+                None => {
+                    write_device_secret_at(path, &secret)?;
+                    Ok(secret.to_vec())
+                }
+            }
+        }
+        Err(_) => Err(LauncherError::Generic {
+            code: "ERR_AUTH_DEVICE_KEY_WRITE".into(),
+            message: "Failed to write the device key for encrypted credential storage.".into(),
+        }),
+    }
+}
+
+/// Derive a 256-bit key using PBKDF2-HMAC-SHA256 from the per-install device
+/// secret. The secret is the password, so the key cannot be reconstructed from
+/// the source or from anything the encrypted file itself reveals; the salt
+/// separates the contexts and binds the key to the account and platform.
+fn derive_key_from_device_secret(device_secret: &[u8], context: &[u8]) -> Vec<u8> {
     use pbkdf2::pbkdf2_hmac;
     use sha2::Sha256;
 
@@ -879,17 +989,41 @@ fn derive_fallback_key_for(context: &[u8]) -> Vec<u8> {
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "unknown".to_string());
 
-    // TODO: use a stronger machine identifier (e.g. machine-id on Linux,
-    // MachineGuid on Windows) when available.
-    let salt = format!("agora-fallback:{}:{}", username, std::env::consts::OS);
+    let salt = format!(
+        "agora-fallback:v2:{}:{}:{}",
+        String::from_utf8_lossy(context),
+        username,
+        std::env::consts::OS
+    );
 
     let mut key = vec![0u8; 32];
-    pbkdf2_hmac::<Sha256>(context, salt.as_bytes(), PBKDF2_ITERATIONS, &mut key);
+    pbkdf2_hmac::<Sha256>(device_secret, salt.as_bytes(), PBKDF2_ITERATIONS, &mut key);
     key
 }
 
-fn derive_fallback_key() -> Vec<u8> {
-    derive_fallback_key_for(b"agora-mcp-keyring-fallback")
+/// Key for writing: generates the device secret if this is the first store.
+fn derive_fallback_key_for(context: &[u8]) -> LauncherResult<Vec<u8>> {
+    let path = device_key_path().ok_or_else(|| LauncherError::Generic {
+        code: "ERR_AUTH_FALLBACK_PATH".into(),
+        message: "Could not determine data directory for encrypted credential storage.".into(),
+    })?;
+    Ok(derive_key_from_device_secret(
+        &load_or_create_device_secret_at(&path)?,
+        context,
+    ))
+}
+
+/// Key for reading: no device secret means nothing on disk is decryptable, so
+/// this never creates one.
+fn existing_fallback_key_for(context: &[u8]) -> Option<Vec<u8>> {
+    let secret = read_device_secret_at(&device_key_path()?)?;
+    Some(derive_key_from_device_secret(&secret, context))
+}
+
+const TOKEN_KEY_CONTEXT: &[u8] = b"agora-mcp-keyring-fallback";
+
+fn derive_fallback_key() -> LauncherResult<Vec<u8>> {
+    derive_fallback_key_for(TOKEN_KEY_CONTEXT)
 }
 
 /// Encrypt the token using AES-256-GCM with a random 12-byte nonce.
@@ -1001,7 +1135,7 @@ pub(crate) fn store_secret(
             message: "Failed to create encrypted credential directory.".into(),
         })?;
     }
-    let encrypted = encrypt_token(value, &derive_fallback_key_for(key_context))?;
+    let encrypted = encrypt_token(value, &derive_fallback_key_for(key_context)?)?;
     std::fs::write(path, encrypted).map_err(|_| LauncherError::Generic {
         code: "ERR_AUTH_FALLBACK_WRITE".into(),
         message: "Failed to write encrypted credentials.".into(),
@@ -1033,16 +1167,22 @@ pub(crate) fn load_secret(
 
     if let Some(path) = fallback_secret_path(fallback_file) {
         if path.exists() {
-            let encrypted = std::fs::read(path).map_err(|_| LauncherError::Generic {
+            let encrypted = std::fs::read(&path).map_err(|_| LauncherError::Generic {
                 code: "ERR_AUTH_FALLBACK_READ".into(),
                 message: "Failed to read encrypted credentials.".into(),
             })?;
-            return decrypt_token(&encrypted, &derive_fallback_key_for(key_context))
-                .map(Some)
-                .ok_or_else(|| LauncherError::Generic {
-                    code: "ERR_AUTH_FALLBACK_DECRYPT".into(),
-                    message: "Failed to decrypt stored credentials.".into(),
-                });
+            match existing_fallback_key_for(key_context)
+                .and_then(|key| decrypt_token(&encrypted, &key))
+            {
+                Some(value) => return Ok(Some(value)),
+                // The device key is missing or was rotated, so this ciphertext
+                // can never be read again. Drop it and report "nothing stored"
+                // so the caller asks for a fresh sign-in instead of failing on
+                // every launch.
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
         }
     }
 
@@ -1150,10 +1290,14 @@ pub async fn get_github_user(token: &str) -> LauncherResult<GithubProfile> {
 mod tests {
     use super::*;
 
+    /// Stand-in for the per-install device key so derivation tests stay pure.
+    const TEST_DEVICE_SECRET: &[u8] = &[0x11; DEVICE_KEY_LEN];
+
     #[test]
     fn encrypted_fallback_roundtrips_large_credentials() {
         let credentials = "x".repeat(8_192);
-        let key = derive_fallback_key_for(b"agora-msa-credentials-fallback");
+        let key =
+            derive_key_from_device_secret(TEST_DEVICE_SECRET, b"agora-msa-credentials-fallback");
         let encrypted = encrypt_token(&credentials, &key).unwrap();
         assert_ne!(encrypted, credentials.as_bytes());
         assert_eq!(
@@ -1403,7 +1547,7 @@ mod tests {
     #[test]
     fn fallback_encrypt_decrypt_preserves_token() {
         let token = "gho_real_looking_token_12345abcde";
-        let key = derive_fallback_key_for(b"agora-test-fallback");
+        let key = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"agora-test-fallback");
         let encrypted = encrypt_token(token, &key).expect("encrypt must succeed");
         assert_ne!(
             encrypted.as_slice(),
@@ -1421,8 +1565,8 @@ mod tests {
     #[test]
     fn fallback_decrypt_wrong_key_returns_none() {
         let token = "gho_secret";
-        let k1 = derive_fallback_key_for(b"context-1");
-        let k2 = derive_fallback_key_for(b"context-2");
+        let k1 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-1");
+        let k2 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-2");
         let encrypted = encrypt_token(token, &k1).expect("encrypt must succeed");
         let decrypted = decrypt_token(&encrypted, &k2);
         assert!(decrypted.is_none(), "wrong key must not decrypt");
@@ -1430,7 +1574,7 @@ mod tests {
 
     #[test]
     fn fallback_decrypt_truncated_data_returns_none() {
-        let key = derive_fallback_key_for(b"test");
+        let key = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test");
         assert!(decrypt_token(&[], &key).is_none());
         assert!(decrypt_token(&[0u8; 4], &key).is_none());
         assert!(decrypt_token(&[0u8; 11], &key).is_none());
@@ -1913,7 +2057,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_roundtrip() {
-        let key = derive_fallback_key_for(b"test-context");
+        let key = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test-context");
         let data = "sensitive-token-value";
         let encrypted = encrypt_token(data, &key).unwrap();
         assert_ne!(encrypted.as_slice(), data.as_bytes());
@@ -1928,16 +2072,93 @@ mod tests {
 
     #[test]
     fn derive_fallback_key_is_deterministic_for_same_context() {
-        let key1 = derive_fallback_key_for(b"test-context");
-        let key2 = derive_fallback_key_for(b"test-context");
+        let key1 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test-context");
+        let key2 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"test-context");
         assert_eq!(key1, key2);
     }
 
     #[test]
     fn derive_fallback_key_differs_for_different_contexts() {
-        let key1 = derive_fallback_key_for(b"context-a");
-        let key2 = derive_fallback_key_for(b"context-b");
+        let key1 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-a");
+        let key2 = derive_key_from_device_secret(TEST_DEVICE_SECRET, b"context-b");
         assert_ne!(key1, key2);
+    }
+
+    /// The property the old derivation lacked: two installs that share a
+    /// binary, a username and a platform still get different keys, so an
+    /// encrypted file lifted off one machine is useless on another.
+    #[test]
+    fn derive_fallback_key_differs_for_different_device_secrets() {
+        let key1 = derive_key_from_device_secret(&[0x01; DEVICE_KEY_LEN], b"same-context");
+        let key2 = derive_key_from_device_secret(&[0x02; DEVICE_KEY_LEN], b"same-context");
+        assert_ne!(key1, key2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Device key file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn device_secret_is_created_once_and_then_reused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+
+        assert!(
+            read_device_secret_at(&path).is_none(),
+            "none before first use"
+        );
+        let first = load_or_create_device_secret_at(&path).expect("first create");
+        assert_eq!(first.len(), DEVICE_KEY_LEN);
+        let second = load_or_create_device_secret_at(&path).expect("second read");
+        assert_eq!(first, second, "an existing device key must be reused");
+    }
+
+    #[test]
+    fn device_secret_is_created_in_a_missing_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join(DEVICE_KEY_FILE);
+        let secret = load_or_create_device_secret_at(&path).expect("create");
+        assert_eq!(secret.len(), DEVICE_KEY_LEN);
+        assert_eq!(
+            read_device_secret_at(&path).as_deref(),
+            Some(secret.as_slice())
+        );
+    }
+
+    #[test]
+    fn truncated_device_secret_is_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+        std::fs::write(&path, b"too-short").expect("write stub");
+
+        assert!(
+            read_device_secret_at(&path).is_none(),
+            "wrong length is unusable"
+        );
+        let secret = load_or_create_device_secret_at(&path).expect("replace");
+        assert_eq!(secret.len(), DEVICE_KEY_LEN);
+        assert_eq!(
+            read_device_secret_at(&path).as_deref(),
+            Some(secret.as_slice())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_secret_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(DEVICE_KEY_FILE);
+        load_or_create_device_secret_at(&path).expect("create");
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "device key must not be group/world readable"
+        );
     }
 
     // -----------------------------------------------------------------------
