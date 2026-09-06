@@ -2778,9 +2778,13 @@ files and privileges.
 token is "encrypted with a machine-bound key", which was never true and is certainly not
 true now; a warning that overstates the protection is worse than none, because it is read
 at exactly the moment a user decides whether to trust the state. The shipped text is:
-*"Credential store unavailable. Your sign-in is encrypted in a file that only your user
-account can read. This is less secure than OS keychain storage -- anyone who can read your
-files can read it."* It renders only when the backend positively reports the fallback, so
+*"Credential store unavailable. Your sign-in is encrypted in a file in Agora's data folder
+instead. This is less secure than OS keychain storage -- anyone who can read that folder can
+read your sign-in."* It deliberately does not promise that only the user's own account can
+read the file: owner-only permissions are set explicitly on Unix, but elsewhere the file
+inherits whatever the data directory grants -- and that directory now follows
+`AGORA_DATA_DIR` and portable roots, which can be a removable drive with no per-user
+permissions at all. It renders only when the backend positively reports the fallback, so
 an unknown or failed lookup shows nothing rather than inventing a warning.
 `keyring_fallback_available()` is gone; `CredentialBackend` reports what actually holds each
 credential. The string is English-only for now: translations are deferred rather than
@@ -2798,10 +2802,28 @@ portable mode genuinely self-contained for credentials would mean preferring the
 file over the keyring when running portable, which trades the OS's protection for
 portability. That is a product decision and has not been made.
 
-**Still open:** one device key serves both the GitHub and MSA credentials, and sign-out
-leaves it in place, so there is no rotation story; rotating it needs an explicit "reset
-encrypted credential storage" operation rather than being attached to either individual
-sign-out.
+**Key rotation is an accepted limitation, not an open item.** One device key serves both
+the GitHub and MSA credentials and survives sign-out. Reviewed and deliberately left alone:
+the two credentials already get separate derived keys via domain separation, and a key with
+no ciphertext beside it is inert random bytes -- retaining it does not retain a deleted
+credential. Rotation would only help an attacker who obtained the key and a ciphertext
+through *separate* leaks at *different* times across a sign-out boundary. Every dominant
+threat -- profile theft, file-stealing malware, continuing access as the user -- takes both
+at once, and takes any replacement key too.
+
+Against that, rotating carries a concrete data-loss hazard: deleting `device-key.bin` while
+either ciphertext survives makes that credential permanently unreadable, and the load paths
+correctly report it as "nothing stored". Tying rotation to sign-out is worse still, since
+both credentials clear themselves automatically on permanent refresh failure -- background
+auth failure would silently become part of the shared-key lifecycle. Trading a certain
+rare data loss for a speculative narrow gain is the wrong trade.
+
+The question worth revisiting is not "when should sign-out rotate the key" -- sign-out is
+not a compromise signal. It is *what recovery does Agora promise if a user believes their
+local files were exposed?* Today: none beyond signing out and revoking at the provider,
+which is honest, because local deletion never revokes a token an attacker already copied.
+If that promise ever changes, the right unit is an explicit all-credentials reset plus
+provider-revocation guidance, not opportunistic deletion inside a per-credential sign-out.
 
 ---
 

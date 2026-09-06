@@ -700,9 +700,15 @@ pub fn clear_token_bundle() -> Result<(), String> {
         }
     }
 
+    // A failure here leaves a decryptable token on disk, so it cannot be
+    // swallowed: reporting a successful sign-out while the credential survives
+    // is the one outcome a user cannot detect or act on. The MSA path already
+    // propagates this; GitHub did not.
     if let Some(path) = fallback_token_path() {
         if path.exists() {
-            let _ = std::fs::remove_file(&path);
+            if let Err(error) = std::fs::remove_file(&path) {
+                return Err(format!("Failed to delete the stored GitHub token: {error}"));
+            }
         }
     }
 
@@ -2534,6 +2540,31 @@ mod tests {
             expected,
             "the default credential location must not shift under existing users"
         );
+    }
+
+    #[test]
+    fn github_sign_out_removes_the_encrypted_token_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_signout".into(),
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        store_token_bundle(&bundle).expect("store");
+        let path = dir.path().join(TOKEN_FALLBACK_FILE);
+        assert!(path.is_file(), "precondition: the token is on disk");
+
+        clear_token_bundle().expect("sign out");
+        assert!(
+            !path.exists(),
+            "sign-out must not leave a decryptable token behind"
+        );
+        assert!(load_token_bundle().is_none());
     }
 
     // -----------------------------------------------------------------------

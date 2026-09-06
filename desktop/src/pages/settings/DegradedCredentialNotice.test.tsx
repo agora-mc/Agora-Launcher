@@ -31,10 +31,14 @@ describe('DegradedCredentialNotice', () => {
   });
 
   // The old spec wording claimed a machine-bound key. It is not machine-bound,
-  // and the warning must not tell users it is.
-  it('does not claim the key is machine-bound', () => {
+  // and the warning must not tell users it is. Nor may it promise that only
+  // their own account can read the file: owner-only permissions are set on Unix,
+  // but elsewhere this inherits the data directory's, and that directory can be
+  // a removable drive with no per-user permissions at all.
+  it('does not overstate the protection', () => {
     render(<DegradedCredentialNotice backend="encrypted-file" />);
-    const text = screen.getByTestId('degraded-credential-storage').textContent ?? '';
-    expect(text.toLowerCase()).not.toContain('machine-bound');
+    const text = (screen.getByTestId('degraded-credential-storage').textContent ?? '').toLowerCase();
+    expect(text).not.toContain('machine-bound');
+    expect(text).not.toContain('only your user account');
   });
 });
