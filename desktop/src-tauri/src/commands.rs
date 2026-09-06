@@ -50,6 +50,14 @@ pub struct MsaAccountStatus {
     pub expires: String,
 }
 
+/// Where each credential is actually stored, so Settings can warn when the
+/// degraded encrypted-file fallback is in use rather than the OS keyring.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CredentialStorageStatus {
+    pub microsoft: agora_core::auth::CredentialBackend,
+    pub github: agora_core::auth::CredentialBackend,
+}
+
 impl From<&agora_core::msa::MsaCredentials> for MsaAccountStatus {
     fn from(credentials: &agora_core::msa::MsaCredentials) -> Self {
         Self {
@@ -3355,6 +3363,21 @@ pub async fn msa_get_status(
         .as_ref()
         .map(MsaAccountStatus::from))
 }
+/// Report which backend holds each stored credential.
+///
+/// MASTER_SPEC 7.5.2 requires Settings to warn the user when credentials fall
+/// back to local file encryption because no OS keyring was available.
+#[tauri::command]
+pub async fn credential_storage_status(
+    _app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+) -> LauncherResult<CredentialStorageStatus> {
+    Ok(CredentialStorageStatus {
+        microsoft: agora_core::msa::credentials_backend(),
+        github: agora_core::auth::github_credential_backend(),
+    })
+}
+
 /// Refresh expired MSA credentials.
 #[tauri::command]
 pub async fn msa_refresh(

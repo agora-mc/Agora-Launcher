@@ -143,6 +143,7 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
         if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'credential_storage_status') return Promise.resolve({ microsoft: 'keyring', github: 'keyring' });
         if (command === 'ensure_java_runtime') {
           (window as any).__ensureJavaCalls ??= [];
           (window as any).__ensureJavaCalls.push(args);
@@ -207,6 +208,7 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
         if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'credential_storage_status') return Promise.resolve({ microsoft: 'keyring', github: 'keyring' });
         if (command === 'ensure_java_runtime') {
           (window as any).__ensureJavaCalls ??= [];
           (window as any).__ensureJavaCalls.push(args);
@@ -267,6 +269,7 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'credential_storage_status') return Promise.resolve({ microsoft: 'keyring', github: 'keyring' });
         if (command.startsWith('plugin:event|') || command.startsWith('plugin:shell|')) return Promise.resolve(null);
         if (command === 'ensure_java_runtime') {
           return new Promise((_, reject) => {

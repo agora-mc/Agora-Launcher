@@ -864,6 +864,7 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command === 'msa_get_status') return Promise.resolve(null);
+        if (command === 'credential_storage_status') return Promise.resolve({ microsoft: 'keyring', github: 'keyring' });
         if (command === 'copilot_status') return Promise.resolve(null);
         if (command === 'get_auth_status') return Promise.resolve(null);
         if (command === 'get_github_profile') return Promise.resolve(null);

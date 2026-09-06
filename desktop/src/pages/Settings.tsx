@@ -33,6 +33,7 @@ import {
   getAuthStatus,
   getGithubProfile,
   getMcpSkillContent,
+  credentialStorageStatus,
   getMcpStatus,
   getSetting,
   githubLogin,
@@ -57,7 +58,7 @@ import {
   openDataFolder,
   restartApp,
 } from '../lib/tauri';
-import type { CopilotToken, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
+import type { CopilotToken, CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
 import { Privacy } from './Privacy';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
@@ -71,6 +72,7 @@ import {
 } from './settings/AppearanceSettings';
 import { TemplateSettings } from './settings/TemplateSettings';
 import { RuntimeReclaim } from './settings/RuntimeReclaim';
+import { DegradedCredentialNotice } from './settings/DegradedCredentialNotice';
 import { SettingsSection } from './settings/SettingsSection';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
@@ -222,6 +224,11 @@ export function Settings({
   const [ghError, setGhError] = useState<string | null>(null);
   const ghSessionRef = useRef(0);
 
+  // Where credentials are actually stored. Null until known -- the warning
+  // stays hidden unless the backend positively reports the degraded fallback,
+  // so a failed or unmocked call never invents a security warning.
+  const [credentialStorage, setCredentialStorage] = useState<CredentialStorageStatus | null>(null);
+
   // MSA auth state
   const [msaCreds, setMsaCreds] = useState<MsaAccountStatus | null>(null);
   const [msaLoading, setMsaLoading] = useState(true);
@@ -340,6 +347,23 @@ export function Settings({
         if (!cancelled) setMsaCreds(null);
       } finally {
         if (!cancelled) setMsaLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load credential storage backends on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await credentialStorageStatus();
+        if (!cancelled) setCredentialStorage(status);
+      } catch {
+        // Leave it unknown: showing no warning is the safe failure here, since
+        // a spurious one would tell the user their credentials are less
+        // protected than they are.
+        if (!cancelled) setCredentialStorage(null);
       }
     })();
     return () => { cancelled = true; };
@@ -1526,6 +1550,7 @@ export function Settings({
           <p className="text-xs text-muted-foreground">
             Required for direct launch mode. Used to authenticate with Minecraft services.
           </p>
+          <DegradedCredentialNotice backend={credentialStorage?.microsoft} />
           <button
             onClick={handleMsaSignOut}
             className="text-xs text-muted-foreground hover:text-foreground underline"
@@ -1577,6 +1602,7 @@ export function Settings({
           <p className="text-xs text-muted-foreground">
             Used for community governance (voting, proposals).
           </p>
+          <DegradedCredentialNotice backend={credentialStorage?.github} />
           <button
             onClick={handleGithubSignOut}
             className="text-xs text-muted-foreground hover:text-foreground underline"

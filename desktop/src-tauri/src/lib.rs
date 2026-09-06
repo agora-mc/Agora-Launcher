@@ -309,6 +309,7 @@ pub fn run() {
             commands::ai_chat,
             commands::msa_login,
             commands::msa_get_status,
+            commands::credential_storage_status,
             commands::msa_refresh,
             commands::msa_logout,
             commands::compute_gc_args,

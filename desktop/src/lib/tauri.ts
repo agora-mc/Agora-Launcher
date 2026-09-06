@@ -1932,6 +1932,15 @@ export interface MsaAccountStatus {
   expires: string;
 }
 
+/// Where a stored credential actually lives. `encrypted-file` is the degraded
+/// fallback used when no OS keyring was available.
+export type CredentialBackend = 'none' | 'keyring' | 'encrypted-file';
+
+export interface CredentialStorageStatus {
+  microsoft: CredentialBackend;
+  github: CredentialBackend;
+}
+
 export type GcProfile = 'low_latency' | 'high_efficiency' | 'manual';
 
 export interface GcResult {
@@ -1951,6 +1960,9 @@ export const msaGetStatus = () =>
 
 export const msaRefresh = () =>
   invoke<MsaAccountStatus>('msa_refresh');
+
+export const credentialStorageStatus = () =>
+  invoke<CredentialStorageStatus>('credential_storage_status');
 
 export const msaLogout = () =>
   invoke<void>('msa_logout');

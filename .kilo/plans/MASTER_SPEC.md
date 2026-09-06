@@ -2774,10 +2774,19 @@ files and privileges.
   storage is treated as evidence of exposure rather than a design flaw, server-side token
   revocation is a separate decision.
 
-**Still open:** the persistent Settings warning that 7.5.2 mandates is not implemented --
-`keyring_fallback_available()` returns `true` unconditionally and has no caller, and
-"the fallback is available" is not the same claim as "this credential is stored using it".
-One device key serves both the GitHub and MSA credentials, and sign-out leaves it in place,
+**The Settings warning is implemented, with corrected wording.** 7.5.2's string says the
+token is "encrypted with a machine-bound key", which was never true and is certainly not
+true now; a warning that overstates the protection is worse than none, because it is read
+at exactly the moment a user decides whether to trust the state. The shipped text is:
+*"Credential store unavailable. Your sign-in is encrypted in a file that only your user
+account can read. This is less secure than OS keychain storage -- anyone who can read your
+files can read it."* It renders only when the backend positively reports the fallback, so
+an unknown or failed lookup shows nothing rather than inventing a warning.
+`keyring_fallback_available()` is gone; `CredentialBackend` reports what actually holds each
+credential. The string is English-only for now: translations are deferred rather than
+guessed, since an unverifiable translation of a security warning is its own hazard.
+
+**Still open:** one device key serves both the GitHub and MSA credentials, and sign-out leaves it in place,
 so there is no rotation story; rotating it needs an explicit "reset encrypted credential
 storage" operation rather than being attached to either individual sign-out. The auth paths
 also resolve `dirs::data_local_dir()/agora` directly instead of going through `AppPaths`,
