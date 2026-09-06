@@ -1365,10 +1365,57 @@ pub(crate) fn clear_secret(
     }
 }
 
-/// Returns true — the fallback is always available on all platforms.
-/// This signal is used by Settings to show the spec-mandated "less secure" warning.
-pub fn keyring_fallback_available() -> bool {
-    true
+/// Where a stored credential actually lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialBackend {
+    /// Nothing is stored.
+    None,
+    /// The OS keyring: Credential Manager, Keychain, or Secret Service.
+    Keyring,
+    /// The degraded encrypted-file fallback, used when the keyring is
+    /// unavailable. Protected by file permissions rather than by the OS.
+    EncryptedFile,
+}
+
+/// Report which backend currently holds this credential.
+///
+/// Replaces an older `keyring_fallback_available()` that answered a question
+/// nobody needed: the fallback is *available* on every platform, always, so it
+/// returned an unconditional `true` and never told a caller whether the
+/// degraded path was actually in use. MASTER_SPEC 7.5.2 requires warning the
+/// user when their credential is stored this way, which needs this signal.
+pub(crate) fn credential_backend(
+    service: &str,
+    account: &str,
+    fallback_file: &str,
+) -> CredentialBackend {
+    if !using_test_secret_store() {
+        if let Ok(entry) = keyring::Entry::new(service, account) {
+            if entry.get_password().is_ok() {
+                return CredentialBackend::Keyring;
+            }
+        }
+    }
+    match fallback_secret_path(fallback_file) {
+        Some(path) if path.is_file() => CredentialBackend::EncryptedFile,
+        _ => CredentialBackend::None,
+    }
+}
+
+/// Which backend holds the GitHub token.
+pub fn github_credential_backend() -> CredentialBackend {
+    if !using_test_token_store() {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
+            if entry.get_password().is_ok() {
+                return CredentialBackend::Keyring;
+            }
+        }
+    }
+    match fallback_token_path() {
+        Some(path) if path.is_file() => CredentialBackend::EncryptedFile,
+        _ => CredentialBackend::None,
+    }
 }
 
 pub fn clear_token() -> Result<(), String> {
@@ -2410,6 +2457,53 @@ mod tests {
             mode & 0o777,
             0o600,
             "credentials must not be readable by others"
+        );
+    }
+
+    #[test]
+    fn credential_backend_reports_the_encrypted_file_when_it_is_in_use() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::None,
+            "nothing stored yet"
+        );
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::EncryptedFile,
+            "the degraded path is in use and must be reported as such"
+        );
+
+        clear_secret("svc", "acct", "creds.enc").expect("clear");
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::None
+        );
+    }
+
+    #[test]
+    fn github_credential_backend_reports_the_encrypted_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _guard = use_real_fallback_dir(dir.path());
+
+        assert_eq!(github_credential_backend(), CredentialBackend::None);
+
+        let bundle = GitHubTokenBundle {
+            access_token: "gho_backendtest".into(),
+            refresh_token: None,
+            access_expires_at: None,
+            refresh_expires_at: None,
+            token_type: None,
+            scope: None,
+        };
+        store_token_bundle(&bundle).expect("store");
+        assert_eq!(
+            github_credential_backend(),
+            CredentialBackend::EncryptedFile
         );
     }
 
