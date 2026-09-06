@@ -2723,6 +2723,66 @@ tables, text entry — fixed once each at the primitive level, rather than page 
 page. Until every class is covered, the honest description is limited coverage,
 not controller support.
 
+### 19.23 Keyring Fallback Keys Come From a Random Secret, Not Public Inputs (supersedes 7.5.2)
+
+Section 7.5.2 specifies deriving the fallback encryption key from "the OS username +
+machine ID ... using PBKDF2". That construction shipped, and every input to it was
+public: the PBKDF2 *password* was a constant compiled into the binary, and the salt was
+the home-directory name plus the platform string. Anyone holding an encrypted file could
+rederive the key from the open source, and the ciphertext was portable between machines.
+CodeQL flagged it as `rust/hard-coded-cryptographic-value`.
+
+**The key material is now a 32-byte random per-profile secret.** It is generated on first
+store from the CSPRNG, written owner-only to `device-key.bin` beside the encrypted files,
+and used as the PBKDF2 password. The context constants (`agora-msa-credentials-fallback`,
+`agora-mcp-keyring-fallback`) remain, but as domain separation in the salt -- keeping the
+MSA and GitHub keys distinct -- which is what they were always doing. The home-directory
+name and platform are gone from the derivation: public, contributing nothing once the
+password is full-entropy, and a renamed home directory silently produced a different key.
+
+**Adding a machine ID would not have fixed the actual weakness.** A machine ID is public
+too; it defeats copying one file, not copying the profile. Be precise about what the
+current design buys, because 7.5.2's "machine-bound key" wording overstates it:
+
+| Attacker capability | Old | Current |
+|---|---|---|
+| Obtains only `tokens.enc` / `msa-credentials.enc` | Key rederivable from source | Cannot recover the 256-bit secret |
+| Copies the whole profile directory | Recoverable | Recoverable -- the key travels with the ciphertext |
+| Runs as the logged-in user | Recoverable | Recoverable |
+
+The key sits in the same directory as what it protects, so **its file permissions, not
+AES, are the boundary**. This defeats an attacker who obtains a single encrypted file and
+nothing else. Real machine binding needs DPAPI, a TPM, or an OS credential service --
+whose absence is the reason this path exists at all. Meaningful protection against
+whole-profile theft requires a user-held passphrase, hardware-protected key material, or
+not persisting these credentials; there is no portable trick that lets an unattended
+application decrypt a local file while denying the same to an attacker holding the same
+files and privileges.
+
+**Consequences that are deliberate, not oversights:**
+
+- **No legacy migration.** Files written under the old derivation cannot be read. Keeping
+  the old key for decrypt-only migration would have preserved a genuine hard-coded-key
+  finding in the permanent read path. Affected users -- only those whose OS keyring was
+  unavailable at sign-in -- sign in once more. 7.5.2 already anticipated re-authentication
+  when the key input changes.
+- **Load paths never delete.** An undecryptable credential is reported absent, not removed.
+  A missing device key and one that merely failed to read are indistinguishable, so
+  deleting would turn a transient I/O error into permanent credential loss. A stale file is
+  inert and the next store overwrites it.
+- **Deleting the local ciphertext is not revocation.** No provider request is made. If old
+  storage is treated as evidence of exposure rather than a design flaw, server-side token
+  revocation is a separate decision.
+
+**Still open:** the persistent Settings warning that 7.5.2 mandates is not implemented --
+`keyring_fallback_available()` returns `true` unconditionally and has no caller, and
+"the fallback is available" is not the same claim as "this credential is stored using it".
+One device key serves both the GitHub and MSA credentials, and sign-out leaves it in place,
+so there is no rotation story; rotating it needs an explicit "reset encrypted credential
+storage" operation rather than being attached to either individual sign-out. The auth paths
+also resolve `dirs::data_local_dir()/agora` directly instead of going through `AppPaths`,
+so `AGORA_DATA_DIR` and portable roots do not move them.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**
