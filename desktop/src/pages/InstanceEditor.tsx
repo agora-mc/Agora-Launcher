@@ -134,7 +134,7 @@ function installedModSourceLabel(source: string): string {
   if (normalized === 'modrinth_raw' || normalized === 'modrinth') return 'Modrinth';
   if (normalized === 'modrinth_pack') return 'Modrinth Pack';
   if (normalized.includes('github')) return 'GitHub Release';
-  if (normalized === 'registry' || normalized === 'curated') return 'Agora Registry';
+  if (normalized === 'registry' || normalized === 'curated') return 'Agora Catalog';
   if (normalized.includes('manual') || normalized === 'local') return 'Manual';
   return 'Other';
 }

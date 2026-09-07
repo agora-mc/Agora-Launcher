@@ -37,7 +37,7 @@ const ROUTES = [
   {
     href: '/docs/development',
     heading: 'I want to build or contribute',
-    body: 'Local builds, validation gates, architecture boundaries, registry curation, and release procedure.',
+    body: 'Local builds, validation gates, architecture boundaries, catalog curation, and release procedure.',
     cta: 'Development guide',
   },
 ];
@@ -194,7 +194,7 @@ export default async function DocsPage() {
           <h2 className="text-2xl font-bold">Advanced and developer docs</h2>
           <p className="mt-2 max-w-3xl text-gray-600 dark:text-gray-300">
             The above guides are meant for desktop app users. If you are using the CLI tool, wish to contribute, or want to understand the inner workings of Agora, check the developer docs. 
-            They cover the CLI reference, local builds, validation gates, architecture boundaries, registry curation, and release procedure.
+            They cover the CLI reference, local builds, validation gates, architecture boundaries, catalog curation, and release procedure.
           </p>
         </div>
         {library.map((section) => (

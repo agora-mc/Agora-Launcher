@@ -27,7 +27,7 @@ async function installBootstrapMock(page: Page) {
               latest_tag: 'test',
               update_available: false,
               checked: true,
-              message: 'Registry ready.',
+              message: 'Catalog ready.',
             });
           }
           if (command === 'list_categories') return Promise.resolve([]);

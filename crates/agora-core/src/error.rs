@@ -212,7 +212,7 @@ impl std::fmt::Display for LauncherError {
             LauncherError::RegistrySignatureInvalid => {
                 write!(
                     f,
-                    "Registry signature check failed. The database may be compromised."
+                    "Catalog signature check failed. The catalog may be compromised."
                 )
             }
             LauncherError::SchemaTooNew => {
@@ -294,7 +294,10 @@ impl std::fmt::Display for LauncherError {
                 write!(f, "Could not update the Mojang launcher profiles. The file may be locked or corrupt.")
             }
             LauncherError::RegistryMissing => {
-                write!(f, "The cached registry database is missing. Please connect to the internet and restart.")
+                write!(
+                    f,
+                    "The cached catalog is missing. Please connect to the internet and restart."
+                )
             }
             LauncherError::UnsupportedLoader => {
                 write!(

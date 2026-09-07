@@ -66,9 +66,9 @@ Do not add `--governance-state-out` for a read-only diagnostic. Use a disposable
 
 Before sharing diagnostic output, remove tokens, webhook URLs, private usernames, and unrelated issue content.
 
-## Registry-vote label requirement
+## Catalog-vote label requirement
 
-The compiler requires every registry vote issue to carry the `registry-vote`
+The compiler requires every catalog vote issue to carry the `registry-vote`
 label before it will parse reactions on it as votes. This applies to both the
 active governance pipeline (`run_governance_pipeline`, driven by
 `registry/governance/vote_issues.json`) and the legacy Pass 1 vote harvest.

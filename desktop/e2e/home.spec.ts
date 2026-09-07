@@ -55,7 +55,7 @@ const REGISTRY_READY = {
   latest_tag: 'test',
   update_available: false,
   checked: true,
-  message: 'Registry ready.',
+  message: 'Catalog ready.',
 };
 
 // ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ test.describe('Home — zone A: Alerts', () => {
       latest_tag: null,
       update_available: false,
       checked: true,
-      message: 'No registry database found.',
+      message: 'No catalog found.',
     };
 
     await installHomeMock(page, {
@@ -302,14 +302,14 @@ test.describe('Home — zone A: Alerts', () => {
     await page.goto('/');
 
     // RegistryAlert shown with the "not downloaded" message for missing
-    await expect(page.getByText(/Registry not downloaded yet/)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Download registry' })).toBeVisible();
+    await expect(page.getByText(/Catalog not downloaded yet/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download catalog' })).toBeVisible();
   });
 
   test('registry recovery alert shows missing-state text when no cached DB', async ({ page }) => {
     // RegistryAlert in Home only renders when regState is 'missing',
     // which requires has_cached_db=false in useRegistryState.
-    // The "Using cached registry" text in RegistryAlert is technically
+    // The "Using cached catalog" text in RegistryAlert is technically
     // unreachable currently — this test verifies the reachable path.
     const noDbStatus = {
       has_cached_db: false,
@@ -318,14 +318,14 @@ test.describe('Home — zone A: Alerts', () => {
       latest_tag: null,
       update_available: false,
       checked: true,
-      message: 'No registry database found.',
+      message: 'No catalog found.',
     };
 
     await installHomeMock(page, { registryStatus: noDbStatus });
     await page.goto('/');
 
-    await expect(page.getByText(/Registry not downloaded yet/)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Download registry' })).toBeVisible();
+    await expect(page.getByText(/Catalog not downloaded yet/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download catalog' })).toBeVisible();
   });
 
 });

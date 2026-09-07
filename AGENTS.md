@@ -2,7 +2,7 @@
 
 ## Mission & Ethos
 
-Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite registry. Both launch modes are first-class: direct launch runs Minecraft inside Agora with integrated process status and console output, and delegated launch hands execution to the official launcher. Delegation is the *default* only so that a Microsoft sign-in is never required to use Agora -- it is not the point of the project.
+Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite catalog. Both launch modes are first-class: direct launch runs Minecraft inside Agora with integrated process status and console output, and delegated launch hands execution to the official launcher. Delegation is the *default* only so that a Microsoft sign-in is never required to use Agora -- it is not the point of the project.
 
 Core values:
 - **$0.00/month server footprint.** No backend services; data ships via GitHub Release Assets and static sites.
@@ -13,10 +13,10 @@ Core values:
 
 | Path | Purpose |
 |---|---|
-| `registry/` | Curated flat-file manifests (mods, packs, shaders, resource packs, servers, datapacks, worlds, governance) |
+| `registry/` | Curated catalog manifests (mods, packs, shaders, resource packs, servers, datapacks, worlds, governance) |
 | `crash-signatures/` | Crash triage regex definitions |
 | `loader-manifests/` | Pinned modloader URLs + SHA-256 hashes |
-| `compiler/` | Python compiler that builds `registry.db` from the flat files |
+| `compiler/` | Python compiler that builds the catalog (`registry.db`) from the flat files |
 | `desktop/` | Tauri desktop app (Rust backend, React frontend) |
 | `web/` | Next.js static web directory |
 | `scripts/` | Sanity-check and utility scripts |
@@ -26,7 +26,7 @@ Core values:
 | crates/ | Shared Rust workspace (agora-core shared lib, agora CLI binary) |
 | BACKLOG.md | Phase-by-phase task tracker |
 | CODE_OF_ENGAGEMENT.md | Canonical review-conduct rules |
-| REGISTRY_CURATION_REFERENCE.md | Self-contained manifest-authoring reference |
+| REGISTRY_CURATION_REFERENCE.md | Self-contained catalog manifest-authoring reference |
 
 ## Agent Roles
 
@@ -34,7 +34,7 @@ Core values:
 |---|---|
 | `code` | Primary implementation in Rust, TypeScript/React, and Python |
 | `security` | Security audits, threat-model reviews, hardening guidance |
-| `registry-curator` | Adding or reviewing registry entries and loader manifests |
+| `registry-curator` | Adding or reviewing catalog entries and loader manifests |
 | `reviewer` | Focused code review across security, logic, and deploy safety |
 
 ## Conventions
@@ -42,7 +42,7 @@ Core values:
 - Treat `AGENTS.md` and `.kilo/plans/MASTER_SPEC.md` as the source of truth. `MASTER_SPEC.md` §0-§18 are the original design spec; §19 captures architectural-evolution decisions and supersedes the earlier prose where they conflict. When the architecture genuinely pivots, append a new subsection under §19 (do NOT rewrite §0-§18 design prose as drive-by edits -- those are preserved for decision-rationale value).
 - Prefer the smallest change that satisfies the request; avoid drive-by refactoring.
 - Edit files via tools. Do not manually stage or edit files outside the project directory unless asked.
-- After registry/loader/crash-signature changes, run `/registry`.
+- After catalog/loader/crash-signature changes, run `/registry`.
 - After desktop changes, run `/desktop`.
 - After web changes, run `/web`.
 - Do not modify `.lock` files or existing data history in `registry/archived/`.
@@ -84,5 +84,5 @@ python compiler/compile.py --skip-sign --governance-mode read-only --governance-
 
 ## Environment Variables
 
-- `ED25519_PRIVATE_KEY` — CI-only Ed25519 key used to sign `registry.db`. Never expose or bundle it.
+- `ED25519_PRIVATE_KEY` — CI-only Ed25519 key used to sign the catalog (`registry.db`). Never expose or bundle it.
 - `GITHUB_TOKEN` — Standard GitHub token for compiler and CI operations.

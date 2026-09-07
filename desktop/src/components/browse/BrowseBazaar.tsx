@@ -459,7 +459,7 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
     setOpen(null);
   }, [open, showToast]);
 
-  // The shiny tint + CURATED tag belong to curated registry picks only —
+  // The shiny tint + CURATED tag belong to curated catalog picks only —
   // everything else stays plain (no popularity glow on the whole shelf).
   const curatedIds = useMemo(() => {
     const ids = new Set<string>();

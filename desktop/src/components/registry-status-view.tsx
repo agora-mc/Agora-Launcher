@@ -64,7 +64,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
     return (
       <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs">
         <span className="min-w-0 truncate text-muted-foreground">
-          {status?.cached_tag ? `Registry ${status.cached_tag}` : 'Registry ready.'}
+          {status?.cached_tag ? `Catalog ${status.cached_tag}` : 'Catalog ready.'}
           {status?.latest_tag && status.latest_tag !== status.cached_tag && (
             <span className="text-amber-600 dark:text-amber-400">
               {' '}· Update available: {status.latest_tag}
@@ -87,11 +87,11 @@ function BannerView({ state, status, error, actions }: BannerProps) {
     <div className="flex items-center justify-between gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs">
       <span className="text-amber-700 dark:text-amber-300">
         {state === 'missing'
-          ? 'Registry not downloaded yet. Download it to enable updates, recommendations, and governance.'
+          ? 'Catalog not downloaded yet. Download it to enable updates, recommendations, and governance.'
           : error && state === 'offline'
-            ? 'Using cached registry. Updates unavailable.'
+            ? 'Using cached catalog. Updates unavailable.'
             : isSyncing
-              ? 'Refreshing registry…'
+              ? 'Refreshing catalog…'
               : 'Offline mode'}
       </span>
       <button
@@ -99,7 +99,7 @@ function BannerView({ state, status, error, actions }: BannerProps) {
         disabled={isSyncing}
         className="shrink-0 rounded px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/40 disabled:opacity-50"
       >
-        {isSyncing ? 'Refreshing…' : state === 'missing' ? 'Download Registry' : 'Retry'}
+        {isSyncing ? 'Refreshing…' : state === 'missing' ? 'Download Catalog' : 'Retry'}
       </button>
     </div>
   );
@@ -123,13 +123,13 @@ function FullscreenView({
         <p className="text-sm">
           {state === 'loading' && status?.has_cached_db
             ? 'Checking for updates…'
-            : 'Downloading the latest registry…'}
+            : 'Downloading the latest catalog…'}
         </p>
       )}
 
       {!isSyncing && state === 'ready' && (
         <>
-          <p className="text-sm font-medium">Registry ready.</p>
+          <p className="text-sm font-medium">Catalog ready.</p>
           {status?.message && (
             <p className="text-xs text-muted-foreground mt-1">{status.message}</p>
           )}
@@ -151,7 +151,7 @@ function FullscreenView({
 
       {!isSyncing && state === 'offline' && (
         <>
-          <p className="text-sm">Using cached registry.</p>
+          <p className="text-sm">Using cached catalog.</p>
           {status?.cached_tag && (
             <p className="text-xs text-muted-foreground">Cached: {status.cached_tag}</p>
           )}
@@ -178,7 +178,7 @@ function FullscreenView({
 
       {!isSyncing && state === 'missing' && (
         <>
-          <p className="text-sm">No registry database found.</p>
+          <p className="text-sm">No catalog found.</p>
           {error && <p className="text-xs text-destructive mt-1">{error}</p>}
           {missingWarning && (
             <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
@@ -207,14 +207,14 @@ function FullscreenView({
 
       {!isSyncing && state === 'unknown' && (
         <>
-          <p className="text-sm text-muted-foreground">Checking registry status…</p>
+          <p className="text-sm text-muted-foreground">Checking catalog status…</p>
           {error && <p className="text-xs text-destructive mt-1">{error}</p>}
           <div className="mt-4 flex justify-end">
             <button
               onClick={actions.sync}
               className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Download Registry
+              Download Catalog
             </button>
           </div>
         </>
@@ -239,7 +239,7 @@ function StatusText({
   if (state === 'loading') {
     return (
       <p className="text-xs text-muted-foreground mt-1">
-        {status?.has_cached_db ? 'Checking for updates…' : 'Downloading registry…'}
+        {status?.has_cached_db ? 'Checking for updates…' : 'Downloading catalog…'}
       </p>
     );
   }
@@ -254,7 +254,7 @@ function StatusText({
     return (
       <>
         <p className="text-xs text-muted-foreground mt-1">
-          {status?.message ?? 'Using cached registry.'}
+          {status?.message ?? 'Using cached catalog.'}
         </p>
         {status?.cached_tag && (
           <p className="text-xs text-muted-foreground">
@@ -276,7 +276,7 @@ function StatusText({
     return (
       <>
         <p className="text-xs text-muted-foreground mt-1">
-          Using cached registry (offline).
+          Using cached catalog (offline).
         </p>
         {status?.cached_tag && (
           <p className="text-xs text-muted-foreground">
@@ -291,8 +291,8 @@ function StatusText({
   return (
     <p className="text-xs text-muted-foreground mt-1">
       {error
-        ? 'Unable to download the registry. Connect to the internet and try again.'
-        : 'No registry database found.'}
+        ? 'Unable to download the catalog. Connect to the internet and try again.'
+        : 'No catalog found.'}
     </p>
   );
 }
@@ -348,7 +348,7 @@ function ActionButton({
       disabled={isSyncing}
       className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
     >
-      Download Registry
+      Download Catalog
     </button>
   );
 }

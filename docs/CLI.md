@@ -1,6 +1,6 @@
 # Agora CLI reference
 
-The `agora` binary exposes the same core instance, registry, health, launch, snapshot, runtime, and install services used by the desktop application. It is intended for advanced users, support diagnostics, scripting, and local AI/MCP integrations.
+The `agora` binary exposes the same core instance, catalog, health, launch, snapshot, runtime, and install services used by the desktop application. It is intended for advanced users, support diagnostics, scripting, and local AI/MCP integrations.
 
 The CLI can modify the same data used by the desktop application. Read the safety section before experimenting.
 
@@ -69,7 +69,7 @@ Global options:
 | `--data-dir <PATH>` | Override the Agora data root. Without it the CLI resolves the root exactly as the desktop app does, so `AGORA_DATA_DIR` and a `portable.txt` marker beside the executable apply to both |
 | `--json` | Shorthand for `--output json` |
 | `--output <human|json>` | Select output format |
-| `--registry-repo <OWNER/REPO>` | Override the registry repository for development or testing |
+| `--registry-repo <OWNER/REPO>` | Override the catalog repository for development or testing |
 | `--log-file <PATH>` | Append CLI diagnostics to a chosen file |
 | `--help` | Show help |
 | `--version` | Show the CLI version |
@@ -90,7 +90,7 @@ agora registry status
 agora list-instances
 ```
 
-Synchronize the signed registry:
+Synchronize the signed catalog:
 
 ```bash
 agora registry sync
@@ -111,7 +111,7 @@ Use `list-instances` to obtain the generated instance ID:
 agora list-instances
 ```
 
-Search the curated registry:
+Search the curated catalog:
 
 ```bash
 agora mod search sodium --content-type mod --mc-version 1.21.1
@@ -148,15 +148,15 @@ agora launch <INSTANCE_ID> --timings
 | `agora inventory <INSTANCE>` | Inspect installed content |
 | `agora health <INSTANCE>` | Run the local health scanner |
 
-### Registry
+### Catalog
 
 | Command | Purpose |
 | --- | --- |
-| `agora registry status` | Inspect cached registry and active catalog state |
-| `agora registry sync` | Download and verify the latest signed registry |
-| `agora sync` | Convenience alias for registry synchronization |
+| `agora registry status` | Inspect the cached catalog and its active state |
+| `agora registry sync` | Download and verify the latest signed catalog |
+| `agora sync` | Convenience alias for catalog synchronization |
 
-Use `--registry-repo` only for an intentional development or sandbox registry. A different repository changes the trust and governance boundary.
+Use `--registry-repo` only for an intentional development or sandbox catalog. A different repository changes the trust and governance boundary.
 
 ### Instances
 
@@ -411,9 +411,9 @@ The CLI maps many core failures to stable semantic ranges.
 | `10` | Local-state or database failure |
 | `11` | Instance locked or profile missing/corrupt |
 | `12` | Instance creation failure |
-| `13` | Registry missing, invalid, or unsupported |
+| `13` | Catalog missing, invalid, or unsupported |
 | `20` | Offline |
-| `21` | Download or registry-download failure |
+| `21` | Download or catalog-download failure |
 | `30–34` | Integrity, trust, archive, or disk failure |
 | `40` | Authentication required or expired |
 | `50` | Feature disabled or unavailable |

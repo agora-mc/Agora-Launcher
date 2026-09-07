@@ -12,7 +12,7 @@ const SHOTS = [
     src: '/screenshots/onboarding-welcome.png',
     alt: 'Agora welcome screen with the Get Started button and onboarding summary.',
     title: 'Onboarding',
-    body: 'The first thing you see. Onboarding asks which optional services Agora may use, finds Java, and offers to download the signed registry. Every choice here is reversible in Settings.',
+    body: 'The first thing you see. Onboarding asks which optional services Agora may use, finds Java, and offers to download the signed catalog. Every choice here is reversible in Settings.',
     caption: 'Agora 0.1.0, captured 2026-08-05 with a sanitized fixture.',
     href: '/docs/guides/getting-started',
     hrefLabel: 'Getting started guide',

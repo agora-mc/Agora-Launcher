@@ -1065,8 +1065,8 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
       setVoteLoadError(null);
       showToast(
         desired
-          ? `${desired === 'upvote' ? 'Upvote' : 'Downvote'} recorded. Scores update after the next registry build.`
-          : 'Vote removed. Scores update after the next registry build.',
+          ? `${desired === 'upvote' ? 'Upvote' : 'Downvote'} recorded. Scores update after the next catalog build.`
+          : 'Vote removed. Scores update after the next catalog build.',
       );
     } catch (voteError) {
       try {
@@ -1269,7 +1269,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                           ? 'Conflicting reactions detected. Choose one direction to resolve them.'
                           : itemVoteState?.vote
                             ? `Your ${itemVoteState.vote} is recorded. Published scores update after the next registry build.`
-                            : 'Votes are public GitHub reactions. Published scores update after the next registry build.'}
+                            : 'Votes are public GitHub reactions. Published scores update after the next catalog build.'}
                 </p>
               </div>
             ) : isRegistryBacked ? (
@@ -1282,7 +1282,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                 </p>
                 {!item.is_immune && (
                   <p className="text-xs text-muted-foreground">
-                    Voting opens once this entry has a registry vote thread.
+                    Voting opens once this entry has a catalog vote thread.
                   </p>
                 )}
               </div>
@@ -2240,7 +2240,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
 
           {curatorNotes && (
             <div>
-              <h3 className="font-semibold text-sm mb-2">Registry Curator Notes</h3>
+              <h3 className="font-semibold text-sm mb-2">Catalog Curator Notes</h3>
               <p className="text-sm whitespace-pre-wrap text-muted-foreground">{curatorNotes}</p>
             </div>
           )}
@@ -2348,7 +2348,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
 
           {/* Copy Registry Item ID */}
           <div>
-            <h3 className="font-semibold text-sm mb-2">Registry Item ID</h3>
+            <h3 className="font-semibold text-sm mb-2">Catalog Item ID</h3>
             <div className="flex items-center gap-2">
               <code className="text-xs bg-muted px-2 py-1 rounded border border-border break-all">
                 {item.id}
@@ -2608,7 +2608,7 @@ function PackCreateDialog({
   const submitCurated = async (instanceId: string) => {
     const mods: PackModRow[] = await listPackMods(item.id);
     if (mods.length === 0) {
-      throw new Error('No mods found for this pack in the registry.');
+      throw new Error('No mods found for this pack in the catalog.');
     }
     setModProgress(mods.map((mod) => ({ modId: mod.mod_id, status: 'pending' as const })));
     const items: BatchInstallItem[] = [];

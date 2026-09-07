@@ -169,7 +169,7 @@ async function installSnapshotEditorMock(page: Page, opts: SnapshotEditorMockOpt
               latest_tag: 'test',
               update_available: false,
               checked: true,
-              message: 'Registry ready.',
+              message: 'Catalog ready.',
             });
           }
           if (command.startsWith('plugin:event|')) return Promise.resolve(1);

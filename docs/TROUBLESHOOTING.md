@@ -13,17 +13,17 @@ Start with the visible symptom, preserve the current state, and change one varia
 
 ## Common symptoms
 
-### The registry is unavailable or cannot be verified
+### The catalog is unavailable or cannot be verified
 
-- Confirm the device is online and registry networking is enabled.
-- Use the Registry status in Settings or run:
+- Confirm the device is online and catalog networking is enabled.
+- Use the catalog status in Settings or run:
 
   ```bash
   agora registry status
   agora registry sync
   ```
 
-- A packaged release must contain the expected registry verification key. A signature error should not be bypassed by accepting an unsigned database.
+- A packaged release must contain the expected catalog verification key. A signature error should not be bypassed by accepting an unsigned catalog.
 - If a newly packaged build alone fails, include the build identity and whether Browse works in the previous release.
 
 ### A loader requirement blocks launch
@@ -131,7 +131,7 @@ Offline readiness is instance-specific.
 
 Before disconnecting:
 
-1. synchronize the registry;
+1. synchronize the catalog;
 2. launch the exact instance once;
 3. ensure its Java runtime is present;
 4. ensure game, loader, and mod artifacts are cached;

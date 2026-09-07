@@ -36,11 +36,11 @@ const ENDPOINTS: Endpoint[] = [
   },
   {
     key: 'network_registry_sync_enabled',
-    name: 'GitHub Releases (registry sync)',
+    name: 'GitHub Releases (catalog sync)',
     hosts: 'github.com / objects.githubusercontent.com',
-    purpose: 'Check for and download signed registry.db updates.',
+    purpose: 'Check for and download signed catalog updates.',
     default: true,
-    group: 'Registry',
+    group: 'Catalog',
   },
   {
     key: 'network_github_oauth_enabled',

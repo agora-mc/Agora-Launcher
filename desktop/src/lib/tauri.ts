@@ -1104,6 +1104,12 @@ export interface GithubProfile {
   avatar_url: string;
 }
 
+/**
+ * Bring the launcher window back to the foreground. Best-effort — a
+ * compositor may refuse, so callers ignore failures.
+ */
+export const focusMainWindow = () => invoke<void>('focus_main_window');
+
 export const githubLogin = () => invoke<DeviceFlowResponse>('github_login');
 export const githubLoginPoll = (deviceCode: string, interval: number) =>
   invoke<boolean>('github_login_poll', { deviceCode, interval });

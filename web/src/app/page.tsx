@@ -41,7 +41,7 @@ export default async function HomePage() {
 
         <div className="mt-9 flex flex-wrap justify-center gap-3">
           <Link href="/mods" className="btn-gold px-5 py-3">
-            Browse the database
+            Browse the catalog
           </Link>
           <Link href="/docs" className="btn-ghost px-5 py-3">
             Read the docs
@@ -64,7 +64,7 @@ export default async function HomePage() {
       <section className="panel">
         <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
           <div className="max-w-2xl">
-            <h2 className="rule-gold text-2xl font-bold text-ink">More than a catalog</h2>
+            <h2 className="rule-gold text-2xl font-bold text-ink">More than a launcher</h2>
             <p className="mt-4 leading-8 text-ink-muted">
               Agora keeps Minecraft setups isolated, resolves dependency-aware install plans,
               checks health before launch, recommends compatible loader versions, and creates
@@ -144,17 +144,17 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* ── Registry growth notice ───────────────────────────────────── */}
+      {/* ── Catalog growth notice ───────────────────────────────────── */}
       {allItems.length < 20 && (
         <section className="panel border-amber-700/60 bg-[linear-gradient(135deg,rgba(154,101,28,0.16),rgba(23,38,59,0.93)_55%)]">
-          <h2 className="text-lg font-semibold text-amber-200">The registry is growing</h2>
+          <h2 className="text-lg font-semibold text-amber-200">The catalog is growing</h2>
           <p className="mt-2.5 leading-7 text-ink-muted">
             Agora currently contains <span className="font-semibold text-gold-bright">{allItems.length}</span>{' '}
-            curated items. The registry grows through community review and contribution.
+            curated items. The catalog grows through community review and contribution.
           </p>
           <div className="ui-text mt-4 flex flex-wrap gap-5 text-sm">
             <a
-              href={`${GITHUB_REPO_URL}/blob/HEAD/REGISTRY_CURATION_REFERENCE.md`}
+              href={`https://agoramc.com/docs/registry-curation-reference`}
               target="_blank"
               rel="noopener noreferrer"
               className="font-semibold text-gold-bright underline underline-offset-4 hover:text-ink"

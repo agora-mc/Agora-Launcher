@@ -21,7 +21,6 @@ import {
 } from 'lucide-react';
 import { check } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
-import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
@@ -29,6 +28,7 @@ import {
   copilotLogout,
   detectMojangLauncher,
   ensureJavaRuntime,
+  focusMainWindow,
   formatError,
   getAuthStatus,
   getGithubProfile,
@@ -487,14 +487,14 @@ export function Settings({
       const flow = await githubLogin();
       if (isStale()) return;
       setGhDevice(flow);
-      try {
-        const p = openUrl(flow.verification_uri);
-        Promise.resolve(p).catch(() => { });
-      } catch {
-        /* best-effort */
-      }
+      // The browser is NOT launched here. DeviceFlowPanel opens it once the
+      // user has copied the code, so focus stays on the window showing the
+      // code they are about to need.
       const token = await githubLoginPoll(flow.device_code, flow.interval);
       if (isStale()) return;
+      // Authorization happened in the browser, which now has focus. Take it
+      // back so the user sees the signed-in state they just produced.
+      focusMainWindow().catch(() => {});
       if (token) {
         setGhResult('Signed in successfully.');
         setGithubAuth(true);
@@ -509,7 +509,11 @@ export function Settings({
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : formatError(e);
-      if (!isStale()) setGhError(`Sign-in failed: ${msg}`);
+      if (!isStale()) {
+        setGhError(`Sign-in failed: ${msg}`);
+        // Same reason as the success path: the error is here, not in the browser.
+        focusMainWindow().catch(() => {});
+      }
     } finally {
       if (!isStale()) setGhPolling(false);
     }
@@ -1176,7 +1180,7 @@ export function Settings({
         />
       </label>
       <p className="text-xs text-muted-foreground">
-        Review what changed before an update is applied. Changelogs come from the signed registry,
+        Review what changed before an update is applied. Changelogs come from the signed catalog,
         so this works offline; mods with nothing published simply say so.
       </p>
       {ts.statuses['show_update_changelogs']?.status === 'error' && (
@@ -1648,7 +1652,7 @@ export function Settings({
       id="settings-services"
       icon={Boxes}
       title="Content sources"
-      description="Where Agora may fetch content from, beyond the curated registry."
+      description="Where Agora may fetch content from, beyond the curated catalog."
       contentClassName="space-y-4"
     >
       <label className="flex items-center justify-between">

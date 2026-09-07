@@ -299,8 +299,8 @@ export default function App() {
   const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
   const registry = useRegistryState();
 
-  // Fetch the latest signed registry at launch so the app always starts on a
-  // fresh catalog. Skipped when registry sync is disabled in Privacy settings
+  // Fetch the latest signed catalog at launch so the app always starts on a
+  // fresh one. Skipped when catalog sync is disabled in Privacy settings
   // (the backend errors on that case; a launch-time alert would nag every start).
   useEffect(() => {
     if (onboardingComplete !== true) return;

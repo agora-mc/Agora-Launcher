@@ -151,13 +151,13 @@ export function Sidebar({
           <div>v{__APP_VERSION__} · Community curated</div>
           <div className="mt-1">
             {registryStatus == null ? (
-              'Checking registry…'
+              'Checking catalog…'
             ) : registryStatus.has_cached_db ? (
               registryStatus.cached_tag
                 ? `Registry ${registryStatus.cached_tag}`
                 : `Local registry · schema v${registryStatus.cached_schema_version ?? '—'}`
             ) : (
-              'No registry loaded'
+              'No catalog loaded'
             )}
           </div>
         </div>

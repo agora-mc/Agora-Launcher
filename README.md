@@ -2,7 +2,7 @@
 
 > This is not a warehouse. This is a boutique.
 
-Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Community-curated manifests are compiled into a signed registry, and each Minecraft setup lives in an isolated instance.
+Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery platform. Community-curated manifests are compiled into a signed catalog, and each Minecraft setup lives in an isolated instance.
 
 ## AI disclaimer
 
@@ -25,7 +25,7 @@ Agora also includes a searchable **Help & Guide** tied to the current desktop in
 
 1. Download a packaged release for your operating system.
 2. Complete onboarding and review the optional service choices.
-3. Synchronize the signed registry.
+3. Synchronize the signed catalog.
 4. Let Agora discover or provision a compatible Java runtime.
 5. Create a small disposable instance or import a supported pack.
 6. Review health findings before launching.
@@ -73,7 +73,7 @@ cargo test -p agora-core --lib
 cargo test -p agora-cli
 ```
 
-Compile an unsigned local registry before the static website build:
+Compile an unsigned local catalog before the static website build:
 
 ```bash
 cd compiler
@@ -103,7 +103,7 @@ See [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) for prerequisites, environmen
 - [Development](./docs/DEVELOPMENT.md)
 - [Releasing](./docs/RELEASING.md)
 - [Governance operations](./docs/GOVERNANCE_OPERATIONS.md)
-- [Registry curation](./REGISTRY_CURATION_REFERENCE.md)
+- [Catalog curation](./REGISTRY_CURATION_REFERENCE.md)
 - [Architecture ownership](./docs/architecture/layer-ownership.md)
 - [Agent guide](./AGENTS.md)
 
