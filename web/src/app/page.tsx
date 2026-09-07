@@ -64,7 +64,7 @@ export default async function HomePage() {
       <section className="panel">
         <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
           <div className="max-w-2xl">
-            <h2 className="rule-gold text-2xl font-bold text-ink">More than a catalog</h2>
+            <h2 className="rule-gold text-2xl font-bold text-ink">More than a launcher</h2>
             <p className="mt-4 leading-8 text-ink-muted">
               Agora keeps Minecraft setups isolated, resolves dependency-aware install plans,
               checks health before launch, recommends compatible loader versions, and creates
