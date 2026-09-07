@@ -15,7 +15,7 @@ Canonical reference for which code belongs where.
 | Domain | Owner | Notes |
 |---|---|---|
 | AppPaths / data layout | `agora-core` | Canonical path derivation for runtimes, instances, cache, receipts |
-| Database access (all SQLite) | `agora-core` | Both `registry.db` and `local_state.db`; parameterized queries only |
+| Database access (all SQLite) | `agora-core` | Both `registry.db` (the catalog) and `local_state.db`; parameterized queries only |
 | Catalogs (runtime, modrinth, etc.) | `agora-core` | Typed catalog sources; search, version resolution |
 | LaunchService (spawn + orchestrate) | `agora-core` | Includes process spawning, process identity verification, exit classification, PID tracking. The adapter provides only the raw `std::process::Command` or equivalent handle — core owns the lifecycle |
 | InstallService (resolve + stage + apply) | `agora-core` | The full install pipeline: `InstallIntent` → `ResolvedInstallPlan` → verified staging → atomic apply → health rollback |
@@ -28,7 +28,7 @@ Canonical reference for which code belongs where.
 | Java runtime operations | `agora-core` | Managed runtime catalog, download, extraction, validation, promotion |
 | Loader operations | `agora-core` | Loader manifest resolution, installer execution, profile adoption |
 | MCP dispatcher | `agora-core` | Tool routing, argument deserialization, approval policy, system context generation. Adapter provides only transport framing |
-| Locks / operation state | `agora-core` | Per-instance mutex, registry read-writer lock, operation state machine |
+| Locks / operation state | `agora-core` | Per-instance mutex, catalog read-writer lock, operation state machine |
 | Process identity verification | `agora-core` | PID → executable path → start-time verification; os-identifier abstraction behind a core trait |
 | Controller support policy | `agora-core` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
 

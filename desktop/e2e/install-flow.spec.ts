@@ -213,7 +213,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
 
           // Registry
           if (command === 'get_registry_status') {
-            return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.' });
+            return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.' });
           }
           if (command === 'list_categories') return Promise.resolve([]);
           if (command === 'list_manifest_loaders') return Promise.resolve(['fabric', 'forge', 'quilt']);

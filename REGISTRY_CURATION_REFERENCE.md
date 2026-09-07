@@ -1,12 +1,12 @@
-# Agora Registry Curation Reference
+# Agora Catalog Curation Reference
 
-A self-contained reference for an agent who does **not** have access to the Agora repository. With this document alone, you can author valid mod / pack / shader / resource pack / datapack / server / world manifests for the curated registry.
+A self-contained reference for an agent who does **not** have access to the Agora repository. With this document alone, you can author valid mod / pack / shader / resource pack / datapack / server / world manifests for the curated catalog.
 
 ---
 
 ## 1. Repository layout (flat-file manifest)
 
-Everything lives under `registry/` in the Agora monorepo. Each content type has its own subdirectory, and one JSON file = one registry entry. The filename (minus `.json`) should match the manifest's `id`.
+Everything lives under `registry/` in the Agora monorepo. Each content type has its own subdirectory, and one JSON file = one catalog entry. The filename (minus `.json`) should match the manifest's `id`.
 
 ```
 registry/
@@ -69,7 +69,7 @@ Rules:
   `direct_hash` contract**, not just the first. A fallback that only fails once the preferred
   source is down would be worse than no fallback at all.
 - Additional `direct_hash` sources are *mirrors of the same bytes*. All sources of an entry share
-  one `sha256`; a genuinely different file needs its own registry entry.
+  one `sha256`; a genuinely different file needs its own catalog entry.
 - `download_strategy` and `source_identifier` may be omitted when `download_sources` is present —
   the compiler derives them from index 0 for the website and for older launcher builds. If you do
   write them, they must match index 0 or the build fails.
@@ -198,7 +198,7 @@ within the pinned host, and the response-size cap. The SHA-256 hash is curator-p
 out-of-band, so it stays authoritative regardless of where the file happens to be hosted.
 
 One entry describes one file. All declared `compatible_versions` point at the same pinned URL and
-hash, so a mod needing genuinely different files per Minecraft version needs one registry entry
+hash, so a mod needing genuinely different files per Minecraft version needs one catalog entry
 per file. Adding a Modrinth source is still worthwhile when the project also exists there: it
 hydrates display metadata, and the launcher falls back to it if the pinned host is unreachable —
 the download is SHA-256-verified whichever source delivers it.
@@ -263,7 +263,7 @@ Custom or non-open-source licenses MUST use the `LicenseRef-*` prefix. Do NOT in
 
 ## 4. Modpack manifest schema (`registry/packs/<id>.json`)
 
-Packs reference mods by ID and declare which loader + MC version the pack targets. A pack can mix mods from the curated registry, Modrinth (referenced by ID), and GitHub releases.
+Packs reference mods by ID and declare which loader + MC version the pack targets. A pack can mix mods from the curated catalog, Modrinth (referenced by ID), and GitHub releases.
 
 ### Full example
 
@@ -325,7 +325,7 @@ Each entry in `mods[]`:
 
 | Field | Type | Required? | Description |
 |---|---|---|---|
-| `id` | string | Yes | Mod registry ID (if `source: "manifest"`) or display ID. |
+| `id` | string | Yes | Mod catalog ID (if `source: "manifest"`) or display ID. |
 | `source` | string | Yes | `manifest` (lookup in registry.db), `modrinth_id` (query Modrinth API directly), or `github_release`. |
 | `modrinth_id` | string | Required when `source: "modrinth_id"` | The Modrinth project ID. |
 | `version` | string | Optional | Exact version string. If omitted, the launcher defaults to the latest version compatible with the pack's `minecraft_version` + `loader`. |
@@ -357,7 +357,7 @@ For shaders, resource packs, datapacks, servers, and worlds: the schema is the s
 
 ## 6. Governance files (`registry/governance/`)
 
-These are cross-cutting policy files that affect the whole registry, not a single entry.
+These are cross-cutting policy files that affect the whole catalog, not a single entry.
 
 ### 6.1 Known conflicts (`known_conflicts.json`)
 
@@ -411,7 +411,7 @@ condemning every version of a pair forever, scope the fact to the releases it ap
   you said "2.3 and up", and blocking a launch over a version nobody can confirm is worse than
   missing one warning.
 - Windows are optional and additive. Entries written before this field existed keep working
-  unchanged, and an older launcher reading a newer registry simply treats every fact as
+  unchanged, and an older launcher reading a newer catalog simply treats every fact as
   unconditional.
 | `notes` | string | Free-text explanation. |
 
@@ -468,7 +468,7 @@ Not under `registry/` — these live at the repo root in `crash-signatures/`. Ea
 | `solution_markdown` | string | Markdown shown to the user explaining the fix. |
 | `action_button` | object\|null | Optional `{label, mod_id}` — renders a button that installs the named mod. |
 | `action_button.label` | string | Button text. |
-| `action_button.mod_id` | string | Registry mod ID to install when clicked. |
+| `action_button.mod_id` | string | Catalog mod ID to install when clicked. |
 
 ### Regex DoS safety rules
 
@@ -532,7 +532,7 @@ For `github_release` and `modrinth_id` strategies, the compiler populates the ha
 - **Curator notes matter.** The `curator_note` field is shown in the UI and used as semantic context for the AI crash investigator. Write a clear, 1-3 sentence summary of what the mod does and why a user would (or wouldn't) want it.
 - **Don't set `compatible_versions` manually** unless you have a specific reason to override. The compiler fetches real version data from Modrinth's API for any mod with a resolvable `modrinth_id` (or whose manifest `id` matches a Modrinth slug). Manual overrides should be rare — `direct_hash` is the one strategy where it is mandatory.
 - **Immunity is rare.** `governance.immune: true` should only be set for mods that are foundational and shouldn't be subject to community vote triage (e.g. a core API). Always include `override_justification` when doing this.
-- **Archiving, not deleting.** To retire an entry, move its JSON file to `registry/archived/`. The compiler skips that directory entirely, so the entry disappears from the compiled database without losing git history.
+- **Archiving, not deleting.** To retire an entry, move its JSON file to `registry/archived/`. The compiler skips that directory entirely, so the entry disappears from the compiled catalog without losing git history.
 
 ---
 

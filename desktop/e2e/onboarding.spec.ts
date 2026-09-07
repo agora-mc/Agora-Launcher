@@ -402,12 +402,12 @@ test('cancelling GitHub device flow invalidates the active poll', async ({ page 
   await page.getByRole('button', { name: 'Continue' }).click();
   // GitHub step
   await page.getByRole('button', { name: 'Sign in with GitHub' }).click();
-  await expect(page.getByRole('button', { name: 'Copy Code' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy code & open browser' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Cancel' }).click();
   await page.evaluate(() => (window as any).__resolveGithubPoll(true));
   await expect(page.getByRole('heading', { name: 'Connect GitHub' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Download Registry' })).toHaveCount(0, { timeout: 1500 });
+  await expect(page.getByRole('heading', { name: 'Download Catalog' })).toHaveCount(0, { timeout: 1500 });
 });
 
 test('appearance step applies presets and text scale before entering the app', async ({ page }) => {

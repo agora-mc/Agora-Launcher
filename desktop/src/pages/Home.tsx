@@ -581,7 +581,7 @@ function RecommendationsCard({
     return (
       <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
         <p className="text-muted-foreground">
-          Download the registry to see compatible recommendations.
+          Download the catalog to see compatible recommendations.
         </p>
       </div>
     );

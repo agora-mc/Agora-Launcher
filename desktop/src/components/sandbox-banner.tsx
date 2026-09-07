@@ -27,9 +27,9 @@ export function SandboxBanner() {
   }
   if (isDevReg) {
     if (isSandbox) {
-      bannerText += ' | Development registry';
+      bannerText += ' | Development catalog';
     } else {
-      bannerText = 'Development registry - ' + config.repository;
+      bannerText = 'Development catalog - ' + config.repository;
     }
   }
 

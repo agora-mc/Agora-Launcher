@@ -63,7 +63,7 @@ async function installBrowseMock(page: Page) {
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
         }
         if (command === 'list_categories') {
@@ -424,14 +424,14 @@ async function installBrowseContextMock(page: Page) {
             return Promise.resolve({
               has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
               latest_tag: 'test', update_available: false, checked: true,
-              message: 'Registry ready.',
+              message: 'Catalog ready.',
             });
           }
           if (command === 'check_registry_update') {
             return Promise.resolve({
               has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
               latest_tag: 'test', update_available: false, checked: true,
-              message: 'Registry ready.',
+              message: 'Catalog ready.',
             });
           }
           if (command === 'list_categories') return Promise.resolve([]);
@@ -805,7 +805,7 @@ async function installBulkSelectMock(page: Page, autoConfirmClean = true, always
             return Promise.resolve({
               has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
               latest_tag: 'test', update_available: false, checked: true,
-              message: 'Registry ready.',
+              message: 'Catalog ready.',
             });
           }
           if (command === 'list_categories') return Promise.resolve([]);

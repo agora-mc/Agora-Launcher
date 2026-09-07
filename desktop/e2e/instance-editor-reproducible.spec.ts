@@ -235,7 +235,7 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
               latest_tag: 'test',
               update_available: false,
               checked: true,
-              message: 'Registry ready.',
+              message: 'Catalog ready.',
             });
           }
           if (command.startsWith('plugin:event|')) return Promise.resolve(1);

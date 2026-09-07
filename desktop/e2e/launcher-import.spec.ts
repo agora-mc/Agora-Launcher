@@ -208,7 +208,7 @@ async function installLauncherImportMock(page: Page, opts: ImportFlowMockOptions
           if (command === 'get_registry_status') {
             return Promise.resolve({
               has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
-              latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.',
+              latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.',
             });
           }
           if (command === 'check_registry_update') return Promise.resolve(null);
@@ -434,7 +434,7 @@ async function installOnboardingMockWithImport(page: Page) {
         if (command === 'get_registry_status') {
           return Promise.resolve({
             has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
-            latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.',
+            latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.',
           });
         }
         if (command === 'check_registry_update') return Promise.resolve(null);
@@ -735,7 +735,7 @@ test.describe('Launcher Import — mixed results rendering', () => {
           if (command === 'get_registry_status') {
             return Promise.resolve({
               has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
-              latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.',
+              latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.',
             });
           }
           if (command === 'check_registry_update') return Promise.resolve(null);
@@ -952,7 +952,7 @@ test.describe('Launcher Import — onboarding Bring Your Instances step', () => 
     await page.getByRole('button', { name: "I'll do this later" }).click();
 
     // Registry step — mock returns ready, so Finish should be available
-    await expect(page.getByRole('heading', { name: 'Download Registry' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'Download Catalog' })).toBeVisible({ timeout: 5000 });
 
     // Click Finish on Registry step (button label when registry is ready)
     const registryFinish = page.getByRole('button', { name: 'Finish' });

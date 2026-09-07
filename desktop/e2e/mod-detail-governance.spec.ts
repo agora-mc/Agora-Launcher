@@ -152,7 +152,7 @@ async function installModDetailMock(
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
           if (command === 'check_registry_update') return Promise.resolve({
             has_cached_db: true,
@@ -161,7 +161,7 @@ async function installModDetailMock(
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
 
           // Registry data
@@ -373,7 +373,7 @@ test.describe('ModDetail canonical voting controls', () => {
 
     await expect(upvote).toHaveAttribute('aria-pressed', 'true');
     await expect(upvote).toContainText('10');
-    await expect(page.getByText(/Upvote recorded\. Scores update after the next registry build/)).toBeVisible();
+    await expect(page.getByText(/Upvote recorded\. Scores update after the next catalog build/)).toBeVisible();
     const calls = await page.evaluate(() => (window as unknown as { __voteCalls: unknown[] }).__voteCalls);
     expect(calls).toEqual([{ itemId: 'test-mod', vote: 'upvote' }]);
   });

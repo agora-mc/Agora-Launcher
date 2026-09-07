@@ -79,7 +79,7 @@ async function installLaunchEventMock(page: Page, options: LaunchEventMockOption
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
         }
         if (command === 'check_registry_update') return Promise.resolve(null);

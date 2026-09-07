@@ -41,7 +41,7 @@ export default async function HomePage() {
 
         <div className="mt-9 flex flex-wrap justify-center gap-3">
           <Link href="/mods" className="btn-gold px-5 py-3">
-            Browse the database
+            Browse the catalog
           </Link>
           <Link href="/docs" className="btn-ghost px-5 py-3">
             Read the docs
@@ -144,13 +144,13 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* ── Registry growth notice ───────────────────────────────────── */}
+      {/* ── Catalog growth notice ───────────────────────────────────── */}
       {allItems.length < 20 && (
         <section className="panel border-amber-700/60 bg-[linear-gradient(135deg,rgba(154,101,28,0.16),rgba(23,38,59,0.93)_55%)]">
-          <h2 className="text-lg font-semibold text-amber-200">The registry is growing</h2>
+          <h2 className="text-lg font-semibold text-amber-200">The catalog is growing</h2>
           <p className="mt-2.5 leading-7 text-ink-muted">
             Agora currently contains <span className="font-semibold text-gold-bright">{allItems.length}</span>{' '}
-            curated items. The registry grows through community review and contribution.
+            curated items. The catalog grows through community review and contribution.
           </p>
           <div className="ui-text mt-4 flex flex-wrap gap-5 text-sm">
             <a

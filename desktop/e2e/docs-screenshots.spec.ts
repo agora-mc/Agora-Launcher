@@ -131,7 +131,7 @@ test('docs screenshot: create instance', async ({ page }) => {
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
         }
         if (command === 'check_registry_update') return Promise.resolve(null);
@@ -381,7 +381,7 @@ async function installFlowMock(page: Page) {
         }
 
         if (command === 'get_registry_status') {
-          return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.' });
+          return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.' });
         }
         if (command === 'list_categories') return Promise.resolve([]);
         if (command === 'list_manifest_loaders') return Promise.resolve(['fabric', 'forge', 'quilt']);
@@ -727,7 +727,7 @@ test('docs screenshot: crash doctor', async ({ page }) => {
         }
         if (command === 'set_setting') return Promise.resolve(null);
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
-        if (command === 'get_registry_status') return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.' });
+        if (command === 'get_registry_status') return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.' });
         if (command === 'check_registry_update') return Promise.resolve(null);
         if (command === 'list_categories') return Promise.resolve([]);
         if (command === 'list_manifest_loaders') return Promise.resolve([]);
@@ -873,7 +873,7 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
         if (command === 'list_snapshots') return Promise.resolve([]);
         if (command === 'check_all_instance_health') return Promise.resolve([]);
         if (command === 'get_registry_status') {
-          return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Registry ready.' });
+          return Promise.resolve({ has_cached_db: true, cached_tag: 'test', cached_schema_version: 5, latest_tag: 'test', update_available: false, checked: true, message: 'Catalog ready.' });
         }
         if (command === 'check_registry_update') return Promise.resolve(null);
         if (command === 'list_categories') return Promise.resolve([]);

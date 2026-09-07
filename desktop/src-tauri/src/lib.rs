@@ -230,6 +230,7 @@ pub fn run() {
             commands::evaluate_controlify_offer,
             commands::decline_controlify_offer,
             commands::reset_controlify_offer,
+            commands::focus_main_window,
             commands::github_login,
             commands::github_login_poll,
             commands::github_logout,

@@ -32,7 +32,7 @@ const RULES = [
   },
   {
     title: 'Zero tolerance',
-    body: 'Violations result in immediate and permanent removal from the registry review system. Keep it kind and keep it technical.',
+    body: 'Violations result in immediate and permanent removal from the catalog review system. Keep it kind and keep it technical.',
   },
 ];
 
@@ -70,7 +70,7 @@ export function Governance() {
           </div>
           <p className="max-w-3xl text-sm leading-6 text-white/80 sm:text-base">
             Agora is a <strong className="text-white">community-curated</strong> platform. Every
-            entry in the registry is reviewed and voted on by people like you, and the community’s
+            entry in the catalog is reviewed and voted on by people like you, and the community’s
             scores decide what stays, what is promoted, and what is removed. Voting is how we keep
             the catalog a boutique selection of genuinely good content instead of a warehouse of
             whatever happens to be popular.
@@ -102,7 +102,7 @@ export function Governance() {
           </li>
         </ul>
         <p className="mt-4 rounded-lg bg-primary/10 px-4 py-3 text-sm text-foreground sm:text-base">
-          Vote early and vote often — a few seconds of your time keeps the registry honest for
+          Vote early and vote often — a few seconds of your time keeps the catalog honest for
           everyone.
         </p>
       </section>
@@ -148,8 +148,8 @@ export function Governance() {
         <h3 className="text-xl font-semibold mb-2">How moderation &amp; voting work</h3>
         <div className="space-y-3 text-sm leading-6 text-muted-foreground sm:text-base">
           <p>
-            Every entry in the registry is a flat, public manifest in the Agora repository. A
-            nightly compiler turns those manifests into a signed database that your launcher
+            Every entry in the catalog is a flat, public manifest in the Agora repository. A
+            nightly compiler turns those manifests into a signed catalog that your launcher
             downloads and verifies. The same pipeline reads the community’s votes, scores every
             item, and publishes a transparent record of what changed and why.
           </p>
@@ -185,7 +185,7 @@ export function Governance() {
         </div>
         <p className="mt-4 text-sm text-muted-foreground">
           Want to socialize, share memes, or debate off-topic things? That belongs in the community
-          spaces, not the registry. Join us on Discord below.
+          spaces, not the catalog. Join us on Discord below.
         </p>
       </section>
 

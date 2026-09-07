@@ -1462,6 +1462,25 @@ pub async fn extract_overrides(
         })?
 }
 
+/// Bring the launcher window back to the foreground.
+///
+/// Used by the GitHub device flow: the browser takes focus while the user
+/// authorizes, and Agora takes it back once the token lands so the next step
+/// is where the user is already looking. Window focus is an OS mechanism, so
+/// it lives in the adapter rather than in `agora-core`.
+///
+/// Best-effort: a compositor may refuse the request, and a missing window is
+/// not an error worth surfacing mid-sign-in.
+#[tauri::command]
+pub async fn focus_main_window(app: tauri::AppHandle) -> LauncherResult<()> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
 /// Begin the GitHub OAuth Device Flow and return the code the user must enter.
 #[tauri::command]
 pub async fn github_login() -> LauncherResult<DeviceFlowResponse> {
@@ -5220,21 +5239,30 @@ pub async fn browse_search(
         let svc = agora_core::registry::RegistryService::new(ctx);
         let mean_approval = svc.mean_approval();
         let sort_enum = to_sort_option(sort.as_deref().unwrap_or("net_score"));
-        let items = svc
-            .browse_items(
-                content_type.as_deref(),
-                category.as_deref(),
-                &sort_enum,
-                &curated_strategies,
-                mc_version.as_deref(),
-                loader.as_deref(),
-                query.as_deref(),
-                100,
-            )
-            .map_err(|e| LauncherError::Generic {
-                code: "ERR_REGISTRY".into(),
-                message: e.to_string(),
-            })?;
+        let items = match svc.browse_items(
+            content_type.as_deref(),
+            category.as_deref(),
+            &sort_enum,
+            &curated_strategies,
+            mc_version.as_deref(),
+            loader.as_deref(),
+            query.as_deref(),
+            100,
+        ) {
+            Ok(items) => items,
+            // No catalog database on disk yet. When the user has a live source
+            // enabled, browsing degrades to that source rather than failing:
+            // an absent catalog is a missing *ingredient* here, not a broken
+            // query. With no live source there is nothing to show, so the
+            // error still surfaces.
+            Err(LauncherError::RegistryMissing) if api_ok || technic_ok => Vec::new(),
+            Err(e) => {
+                return Err(LauncherError::Generic {
+                    code: "ERR_REGISTRY".into(),
+                    message: e.to_string(),
+                })
+            }
+        };
         (api_ok, technic_ok, allow_unverified, mean_approval, items)
     };
 

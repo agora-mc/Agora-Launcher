@@ -10,7 +10,7 @@ The desktop and CLI use the same core-owned default data root. Ask the CLI to re
 agora paths
 ```
 
-If the CLI was started with `--data-dir` or the desktop was started with `AGORA_DATA_DIR`, run `agora paths` with the same override. The output identifies the root, instances, registry database, runtime caches, snapshots, staging area, and local state database.
+If the CLI was started with `--data-dir` or the desktop was started with `AGORA_DATA_DIR`, run `agora paths` with the same override. The output identifies the root, instances, catalog database, runtime caches, snapshots, staging area, and local state database.
 
 For one instance, open its editor and choose **Open in Folder**. For the application data root, choose **Settings > Software Updates > Open application data folder**; it opens the same root that `agora paths` reports. This is safer than reconstructing a platform path by hand.
 
@@ -28,11 +28,11 @@ The desktop shows its exact packaged version in **Settings > Software Updates** 
 
 | Evidence | Location or source | Use |
 | --- | --- | --- |
-| Agora/CLI diagnostics | CLI stdout and stderr; optionally a file selected with `--log-file` | Command parsing, registry, planning, launch, and host errors |
+| Agora/CLI diagnostics | CLI stdout and stderr; optionally a file selected with `--log-file` | Command parsing, catalog, planning, launch, and host errors |
 | Desktop error text | Visible dialogs, notices, and process console | Desktop workflow and direct-launch status; the current app has no general persisted app-log exporter |
 | Game log | The selected instance's `logs/latest.log` and, when present, `logs/debug.log` | Minecraft, loader, and mod initialization or runtime errors |
 | Crash report | The selected instance's `crash-reports/` or a JVM `hs_err_pid*.log` at the instance root | Structured game crashes and fatal JVM failures |
-| Compiler log | Local compiler terminal output or the Nightly Compiler workflow log | Registry-maintainer failures only; it is not stored in a player profile |
+| Compiler log | Local compiler terminal output or the Nightly Compiler workflow log | Catalog-maintainer failures only; it is not stored in a player profile |
 
 Crash Doctor reads a bounded, coherent set from recent crash reports, game logs, and JVM fatal-error logs. It does not make every file in the profile safe to share.
 
@@ -71,7 +71,7 @@ Remove secrets rather than masking only part of them. When a token may have been
 
 ## Reset the right layer
 
-Use **Settings > Appearance > Reset appearance** to restore visual preferences. Use **Reset layout** to restore shell/sidebar sizing. Neither action deletes instances, registry data, snapshots, accounts, or Minecraft content.
+Use **Settings > Appearance > Reset appearance** to restore visual preferences. Use **Reset layout** to restore shell/sidebar sizing. Neither action deletes instances, catalog data, snapshots, accounts, or Minecraft content.
 
 Agora has no in-app factory-reset action. Resetting application data is a different and destructive operation:
 

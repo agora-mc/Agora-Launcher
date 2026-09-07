@@ -4,10 +4,10 @@ Agora has two independent release streams:
 
 | Stream | Typical tag | Contents |
 | --- | --- | --- |
-| Registry | `registry-YYYY-MM-DD` | Signed registry database and web export |
+| Catalog | `registry-YYYY-MM-DD` | Signed catalog database and web export |
 | Desktop | `vX.Y.Z` | Platform installers and application bundles |
 
-Do not treat a successful registry release as proof that a desktop package was built correctly, or vice versa.
+Do not treat a successful catalog release as proof that a desktop package was built correctly, or vice versa.
 
 ## Desktop release checklist
 
@@ -50,7 +50,7 @@ Minimum test:
 
 1. install or run the packaged build;
 2. complete first-run setup on a clean disposable profile;
-3. synchronize and verify the registry;
+3. synchronize and verify the catalog;
 4. confirm Browse returns curated content;
 5. confirm loader and Java catalogs are available;
 6. create or import a disposable instance;
@@ -60,7 +60,7 @@ Minimum test:
 10. restart and verify settings and instances persist;
 11. exercise update detection from the previous release.
 
-The registry public-key check is release-critical. A package that builds successfully but lacks the expected verification key can fail only after installation. Always test registry synchronization in the packaged artifact.
+The catalog public-key check is release-critical. A package that builds successfully but lacks the expected verification key can fail only after installation. Always test catalog synchronization in the packaged artifact.
 
 ### Publish
 
@@ -78,17 +78,17 @@ After publishing:
 - confirm update checks can see the release;
 - monitor support channels for migration, signing, and installer failures.
 
-## Registry release checklist
+## Catalog release checklist
 
 - [ ] Curated manifests validate.
 - [ ] Governance inputs validate.
 - [ ] Loader/runtime catalog inputs are current and pinned.
 - [ ] Compiler tests pass.
-- [ ] The registry is signed with the production key.
+- [ ] The catalog is signed with the production key.
 - [ ] The public key expected by released clients matches the signing key.
-- [ ] Database and web export signatures verify.
+- [ ] Catalog database and web export signatures verify.
 - [ ] Release assets use the expected names.
-- [ ] A current packaged desktop client can download and open the new registry.
+- [ ] A current packaged desktop client can download and open the new catalog.
 
 The private signing key belongs only in the protected CI environment. Never place it in documentation, issue comments, artifacts, or local shell history.
 
@@ -105,13 +105,13 @@ When a desktop release is broken:
 5. test migration from both the broken and previous good versions;
 6. explain whether users must take manual action.
 
-### Registry
+### Catalog
 
-When a registry release is invalid:
+When a catalog release is invalid:
 
 1. do not weaken signature verification;
 2. retain the invalid release for audit unless policy requires removal;
-3. restore or republish the Last Known Good signed registry;
+3. restore or republish the Last Known Good signed catalog;
 4. verify client fallback behavior;
 5. correct source manifests or compiler logic through review;
 6. publish a new signed release.

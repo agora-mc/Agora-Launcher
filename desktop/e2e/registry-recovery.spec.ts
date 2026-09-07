@@ -8,12 +8,12 @@ test('missing registry stays recoverable and retry success opens Browse', async 
     const missing = {
       has_cached_db: false, cached_tag: null, cached_schema_version: null,
       latest_tag: null, update_available: false, checked: true,
-      message: 'No registry database found.',
+      message: 'No catalog found.',
     };
     const ready = {
       has_cached_db: true, cached_tag: 'test', cached_schema_version: 5,
       latest_tag: 'test', update_available: false, checked: true,
-      message: 'Registry ready.',
+      message: 'Catalog ready.',
     };
     const internals = {
       transformCallback(callback: (...args: unknown[]) => void) {
@@ -48,7 +48,7 @@ test('missing registry stays recoverable and retry success opens Browse', async 
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Browse', exact: true }).click();
-  await expect(page.getByText('No registry database found.')).toBeVisible();
+  await expect(page.getByText('No catalog found.')).toBeVisible();
   await expect(page.getByText('No items to display.')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Retry' }).click();

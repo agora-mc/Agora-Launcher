@@ -104,7 +104,7 @@ pub async fn check_and_download_update(
     if !db::is_network_enabled(&conn, "network_registry_sync_enabled") {
         return Err(LauncherError::Generic {
             code: "ERR_NETWORK_DISABLED".into(),
-            message: "Registry sync is disabled in Privacy settings.".into(),
+            message: "Catalog sync is disabled in Privacy settings.".into(),
         });
     }
     drop(conn);
@@ -130,7 +130,7 @@ pub async fn check_and_download_update(
                     latest_tag: None,
                     update_available: false,
                     checked: false,
-                    message: "Registry is up to date.".to_string(),
+                    message: "Catalog is up to date.".to_string(),
                 });
             }
         }
@@ -153,7 +153,7 @@ pub async fn check_and_download_update(
                 latest_tag: None,
                 update_available: false,
                 checked: false,
-                message: format!("Could not check for updates: {}. Using cached registry.", e),
+                message: format!("Could not check for updates: {}. Using cached catalog.", e),
             });
         }
     };
@@ -179,7 +179,7 @@ pub async fn check_and_download_update(
             latest_tag: Some(latest.tag_name.clone()),
             update_available: false,
             checked: true,
-            message: "Registry is up to date.".to_string(),
+            message: "Catalog is up to date.".to_string(),
         });
     }
 
@@ -232,7 +232,7 @@ pub async fn check_and_download_update(
         return Err(LauncherError::Generic {
             code: "ERR_REGISTRY_NEWER_SCHEMA".to_string(),
             message: format!(
-                "Registry schema version {} is newer than supported {}. Please update the app.",
+                "Catalog schema version {} is newer than supported {}. Please update the app.",
                 schema_version, APP_REGISTRY_SCHEMA_VERSION
             ),
         });
@@ -256,7 +256,7 @@ pub async fn check_and_download_update(
         latest_tag: Some(latest.tag_name.clone()),
         update_available: false,
         checked: true,
-        message: format!("Registry updated to {}.", latest.tag_name),
+        message: format!("Catalog updated to {}.", latest.tag_name),
     })
 }
 
@@ -354,9 +354,9 @@ pub fn get_status(app_data_dir: &Path, local_state_path: &Path) -> RegistryStatu
         update_available: false,
         checked: false,
         message: if has_cached_db {
-            "Using cached registry.".to_string()
+            "Using cached catalog.".to_string()
         } else {
-            "No registry database found.".to_string()
+            "No catalog found.".to_string()
         },
     }
 }
@@ -548,7 +548,7 @@ fn verify_signature(db_bytes: &[u8], sig_bytes: &[u8]) -> LauncherResult<()> {
         if REGISTRY_PUBKEY_HEX.is_empty() {
             return Err(LauncherError::Generic {
                 code: "ERR_REGISTRY_PUBKEY_NOT_CONFIGURED".to_string(),
-                message: "Registry public key not compiled in; refusing to verify. \
+                message: "Catalog public key not compiled in; refusing to verify. \
                           Set AGORA_REGISTRY_PUBKEY (Ed25519 public key, hex) as an \
                           environment variable before building the desktop app: \
                           `$env:AGORA_REGISTRY_PUBKEY='...'; npm run tauri:dev`. \

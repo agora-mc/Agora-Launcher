@@ -11,7 +11,7 @@ async function installGuideMock(page: Page) {
       latest_tag: 'test',
       update_available: false,
       checked: true,
-      message: 'Registry ready.',
+      message: 'Catalog ready.',
     };
 
     const internals = {

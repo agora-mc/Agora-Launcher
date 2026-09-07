@@ -52,7 +52,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Agora manages the files and settings around modded Minecraft: instances, mods, packs, Java runtimes, snapshots, compatibility checks, and recovery. By default, the official Minecraft launcher still handles game execution and your Microsoft account.',
           bullets: [
             'An instance is an isolated Minecraft setup with its own version, loader, mods, and settings.',
-            'The registry is Agora\'s community-curated catalog. Downloading it enables catalog and governance features.',
+            'The catalog is Agora\'s community-curated collection of mods, packs, and more. Downloading it enables discovery and governance features.',
             'A mod loader, such as Fabric or Quilt, lets Minecraft load mods. The loader belongs to an instance.',
           ],
           callout: {
@@ -69,7 +69,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Choose how Minecraft launches: delegated to the official Mojang launcher (the default, no sign-in required) or direct launch inside Agora.',
             'If you chose direct launch, let Agora prepare Java. Delegated launch skips this step because the official launcher brings its own runtime.',
             'Connect GitHub only if you want to vote or participate in community governance.',
-            'Download the signed registry when prompted.',
+            'Download the signed catalog when prompted.',
             'Finish onboarding and open Browse to choose a pack, or My Instances to build an empty instance.',
           ],
         },
@@ -91,12 +91,12 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       outcomes: [
         'Configure a minimal-network or fully featured installation intentionally.',
         'Know which setup choices are reversible and where their controls live.',
-        'Verify the registry and runtime state before building instances.',
+        'Verify the catalog and runtime state before building instances.',
       ],
       sections: [
         {
           title: 'Choose a service boundary',
-          body: 'Agora can run with only its cached registry, or enrich results with Modrinth, GitHub governance, Copilot, and an external MCP client. Each integration has a separate purpose and can be disabled independently.',
+          body: 'Agora can run with only its cached catalog, or enrich results with Modrinth, GitHub governance, Copilot, and an external MCP client. Each integration has a separate purpose and can be disabled independently.',
           bullets: [
             'Modrinth consent enables the feature; Privacy network permission controls whether live API and CDN access is allowed.',
             'GitHub governance sign-in is independent from the GitHub Copilot connection used by the AI Assistant.',
@@ -105,12 +105,12 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Validate the local foundation',
-          body: 'Before constructing a large instance, verify the cached registry, selected launch mode, Java policy, and network policy. This avoids discovering a blocked download or incompatible runtime halfway through an install plan.',
+          body: 'Before constructing a large instance, verify the cached catalog, selected launch mode, Java policy, and network policy. This avoids discovering a blocked download or incompatible runtime halfway through an install plan.',
           steps: [
             'Open Settings and enable Advanced mode if you need Privacy, manual JVM, or MCP controls.',
-            'Confirm the Registry status is ready and current.',
+            'Confirm the Catalog status is ready and current.',
             'Choose Automatic, Prompt, or Manual Java management.',
-            'Review every enabled endpoint in Privacy, especially registry, Modrinth, loader, Mojang, authentication, and runtime access.',
+            'Review every enabled endpoint in Privacy, especially catalog, Modrinth, loader, Mojang, authentication, and runtime access.',
             'Create a small test instance and launch it once before importing a large pack.',
           ],
         },
@@ -120,7 +120,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'tip',
             title: 'Prefer explicit checks',
-            text: 'When preparing an offline machine, download the registry, loader metadata, required mods, and Java runtime. Lockdown Mode blocks every network endpoint in the backend; test the exact launch workflow while you still have time to fix missing files.',
+            text: 'When preparing an offline machine, download the catalog, loader metadata, required mods, and Java runtime. Lockdown Mode blocks every network endpoint in the backend; test the exact launch workflow while you still have time to fix missing files.',
           },
         },
       ],
@@ -228,7 +228,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           title: 'Read Home from top to bottom',
           body: 'Alerts appear first because they may need action. Continue Playing launches the most recent instance. Last Known Good offers recovery when one exists. Compatible recommendations use your recent instance version and loader.',
           bullets: [
-            'A registry alert means discovery data is missing or unavailable.',
+            'A catalog alert means discovery data is missing or unavailable.',
             'A crash alert means the latest instance did not exit cleanly.',
             'Recommendations are filtered for your active instance when possible; they are not paid placements.',
           ],
@@ -380,13 +380,13 @@ export const GUIDE_TOPICS: GuideTopic[] = [
   },
   {
     id: 'browse-registry',
-    title: 'Browse, search, and the registry',
-    shortTitle: 'Browse & registry',
+    title: 'Browse, search, and the catalog',
+    shortTitle: 'Browse & catalog',
     category: 'Play',
     description: 'Find curated and live content, filter for compatibility, and understand trust labels.',
     keywords: ['browse', 'search', 'catalog', 'registry', 'curated', 'modrinth', 'sort'],
     basic: {
-      summary: 'Browse combines Agora\'s curated registry with optional live Modrinth results. Instance-aware discovery is the easiest way to avoid incompatible downloads.',
+      summary: 'Browse combines Agora\'s curated catalog with optional live Modrinth results. Instance-aware discovery is the easiest way to avoid incompatible downloads.',
       outcomes: [
         'Search and filter the catalog effectively.',
         'Find content compatible with a specific instance.',
@@ -406,7 +406,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Read result badges',
-          body: 'Compatible means Agora found an appropriate version for the selected Minecraft version and loader. Major Match is less exact and deserves testing. Installed means the selected instance already contains the project. Curated identifies a community-reviewed Agora registry entry.',
+          body: 'Compatible means Agora found an appropriate version for the selected Minecraft version and loader. Major Match is less exact and deserves testing. Installed means the selected instance already contains the project. Curated identifies a community-reviewed Agora catalog entry.',
         },
         {
           title: 'Choose a sort',
@@ -414,7 +414,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'note',
             title: 'Curated and live results are different',
-            text: 'A result without the Curated badge may still be legitimate, but it comes from the enabled live source rather than Agora\'s reviewed registry.',
+            text: 'A result without the Curated badge may still be legitimate, but it comes from the enabled live source rather than Agora\'s reviewed catalog.',
           },
         },
       ],
@@ -422,17 +422,17 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     advanced: {
       summary: 'Use catalog provenance, compatibility metadata, and ranking behavior to evaluate results rather than treating search order as a recommendation guarantee.',
       outcomes: [
-        'Distinguish cached registry data from live provider data.',
+        'Distinguish cached catalog data from live provider data.',
         'Interpret discovery ranking and degraded/offline states.',
         'Audit a project before it reaches an instance.',
       ],
       sections: [
         {
           title: 'Understand data provenance',
-          body: 'Curated entries ship in the signed Agora registry. Optional Modrinth results are requested live when both service consent and network permission are enabled. Detail pages may merge cached annotations with live descriptions, galleries, and versions.',
+          body: 'Curated entries ship in the signed Agora catalog. Optional Modrinth results are requested live when both service consent and network permission are enabled. Detail pages may merge cached annotations with live descriptions, galleries, and versions.',
           bullets: [
             'Cached data remains available offline.',
-            'Live versions can be newer than the registry but have a different trust path.',
+            'Live versions can be newer than the catalog but have a different trust path.',
             'The project source and selected artifact hash matter more than the visual card alone.',
           ],
         },
@@ -442,7 +442,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Work through degraded states',
-          body: 'When the registry is loading, missing, or offline, read the status panel before assuming no content exists. Download or refresh the registry when allowed. When the individual Privacy endpoint permissions are disabled, expect only already cached data and locally available artifacts.',
+          body: 'When the catalog is loading, missing, or offline, read the status panel before assuming no content exists. Download or refresh the catalog when allowed. When the individual Privacy endpoint permissions are disabled, expect only already cached data and locally available artifacts.',
           callout: {
             tone: 'tip',
             title: 'Use reproducible references',
@@ -625,7 +625,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Read the installed inventory',
-          body: 'The Mods list distinguishes the resolved project name from the physical filename and records source and install time when available. A missing registry or provider identity is a signal that future automated updates may require manual attention.',
+          body: 'The Mods list distinguishes the resolved project name from the physical filename and records source and install time when available. A missing catalog or provider identity is a signal that future automated updates may require manual attention.',
         },
         {
           title: 'Ask why a mod is here',
@@ -1170,7 +1170,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Trace the enablement chain',
-          body: 'For live Modrinth access, service consent, the Modrinth API permission, and the CDN permission must align. Similar endpoint-permission chains apply to registry updates, governance, runtime downloads, and authentication. Lockdown Mode is a global backend block that overrides every endpoint permission.'
+          body: 'For live Modrinth access, service consent, the Modrinth API permission, and the CDN permission must align. Similar endpoint-permission chains apply to catalog updates, governance, runtime downloads, and authentication. Lockdown Mode is a global backend block that overrides every endpoint permission.'
         },
         {
           title: 'Diagnose account state',
@@ -1205,7 +1205,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'What network access is for',
-          body: 'Network access can support Modrinth discovery and files, GitHub registry updates and governance, Mojang metadata and content, loader downloads, Microsoft authentication, Java runtime downloads, application updates, and optional AI services.',
+          body: 'Network access can support Modrinth discovery and files, GitHub catalog updates and governance, Mojang metadata and content, loader downloads, Microsoft authentication, Java runtime downloads, application updates, and optional AI services.',
         },
         {
           title: 'Use Lockdown Mode for a global block',
@@ -1219,7 +1219,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         {
           title: 'Prepare for offline play',
           steps: [
-            'Update the Agora registry.',
+            'Update the Agora catalog.',
             'Launch each required instance once so game and loader files are present.',
             'Confirm the selected Java runtime is installed.',
             'Download planned mods and packs before disconnecting.',
@@ -1239,11 +1239,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Apply capability-based policy',
-          body: 'Enable only the endpoint groups needed for the workflow: registry, governance, mod discovery, launch, runtime, authentication, updates, or AI. The individual choices are the enforced policy; Lockdown Mode overrides all of them at once for a total block.',
+          body: 'Enable only the endpoint groups needed for the workflow: catalog, governance, mod discovery, launch, runtime, authentication, updates, or AI. The individual choices are the enforced policy; Lockdown Mode overrides all of them at once for a total block.',
           bullets: [
             'Disabling the Modrinth API also prevents the associated CDN workflow.',
             'Runtime access is separate from Mojang game content and loader content.',
-            'A cached registry does not imply that every referenced artifact is cached.',
+            'A cached catalog does not imply that every referenced artifact is cached.',
           ],
         },
         {
@@ -1301,7 +1301,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       outcomes: [
         'Interpret vote distributions and action records critically.',
         'Understand immunity and triage without overgeneralizing them.',
-        'Contribute actionable evidence to the registry process.',
+        'Contribute actionable evidence to the catalog process.',
       ],
       sections: [
         {
@@ -1559,7 +1559,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'note',
             title: 'A hand-dropped JAR still counts',
-            text: 'Agora checks the loader id, the registry id, and the filename, so a copy of Controlify you added yourself is recognised and you are not asked again.',
+            text: 'Agora checks the loader id, the catalog id, and the filename, so a copy of Controlify you added yourself is recognised and you are not asked again.',
           },
         },
         {

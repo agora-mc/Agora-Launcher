@@ -55,7 +55,7 @@ async function installMock(page: Page, config: Record<string, unknown> | null) {
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
           if (command === 'check_registry_update') return Promise.resolve({
             has_cached_db: true,
@@ -64,7 +64,7 @@ async function installMock(page: Page, config: Record<string, unknown> | null) {
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
           if (command === 'list_categories') return Promise.resolve([]);
           if (command === 'list_instances') return Promise.resolve([]);
@@ -93,20 +93,20 @@ test.describe('SandboxBanner', () => {
     await installMock(page, SANDBOX_CONFIG);
     await page.goto('/');
     await expect(page.getByText(/Sandbox governance active/)).toBeVisible();
-    await expect(page.getByText('Development registry')).toBeVisible();
+    await expect(page.getByText('Development catalog')).toBeVisible();
   });
 
   test('shows only sandbox governance when environment is sandbox but not development_registry', async ({ page }) => {
     await installMock(page, SANDBOX_ONLY);
     await page.goto('/');
     await expect(page.getByText(/Sandbox governance active/)).toBeVisible();
-    await expect(page.getByText('Development registry')).toHaveCount(0);
+    await expect(page.getByText('Development catalog')).toHaveCount(0);
   });
 
   test('shows only development registry when production environment but development_registry true', async ({ page }) => {
     await installMock(page, DEVREG_ONLY);
     await page.goto('/');
-    await expect(page.getByText('Development registry').first()).toBeVisible();
+    await expect(page.getByText('Development catalog').first()).toBeVisible();
     await expect(page.getByText('Agora/registry-dev')).toBeVisible();
   });
 

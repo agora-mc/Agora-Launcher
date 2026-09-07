@@ -10,7 +10,7 @@ import {
 import { formatError, getUpdateChangelogs } from '@/lib/tauri';
 import type { UpdateInfo, VersionChangelog } from '@/lib/tauri';
 
-/** One pending update plus whatever the registry knows about what changed. */
+/** One pending update plus whatever the catalog knows about what changed. */
 interface Entry {
   update: UpdateInfo;
   displayName: string;
@@ -54,7 +54,7 @@ function ChangelogBody({ entries }: { entries: VersionChangelog[] }) {
 /**
  * Shows what changed before an update is applied.
  *
- * Changelogs come from the signed registry, so this never blocks on the
+ * Changelogs come from the signed catalog, so this never blocks on the
  * network and an item with nothing published simply reads "no changelog"
  * rather than failing.
  */

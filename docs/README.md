@@ -10,9 +10,9 @@ Agora's documentation is organized by audience and by depth. The goal is to help
 | Players before installation or sharing a link | [Website documentation](https://agoramc.com/docs) | Audience router, install and first run, visual tour, and the published task guides |
 | CLI users and automation authors | [CLI reference](./CLI.md) | Commands, flags, output formats, safety, examples, and exit codes |
 | Contributors | [Development guide](./DEVELOPMENT.md) | Local builds, tests, environment boundaries, and repository layout |
-| Release maintainers | [Release guide](./RELEASING.md) | Registry and desktop release checklists |
+| Release maintainers | [Release guide](./RELEASING.md) | Catalog and desktop release checklists |
 | Governance operators | [Governance operations](./GOVERNANCE_OPERATIONS.md) | Read-only diagnostics, monitor state, decisions, and incident recovery |
-| Registry curators | [Registry curation reference](../REGISTRY_CURATION_REFERENCE.md) | Manifest authoring and review rules |
+| Catalog curators | [Catalog curation reference](../REGISTRY_CURATION_REFERENCE.md) | Manifest authoring and review rules |
 | Review participants | [Code of Engagement](../CODE_OF_ENGAGEMENT.md) | Conduct and review boundaries |
 | Troubleshooting and support | [Troubleshooting](./TROUBLESHOOTING.md) | Safe diagnosis and evidence collection |
 | Support evidence and local data | [Support reference](./SUPPORT.md) | Data roots, logs, versions, minimal support bundles, redaction, and reset boundaries |
@@ -66,7 +66,7 @@ Pages classified `internal` are still published so cross-references never break,
 - The current interface is the source of truth for button names and navigation.
 - `crates/agora/src/main.rs` is the source of truth for CLI syntax. `docs/CLI.md` explains how to use that interface.
 - `desktop/src/data/guideContent.ts` is the source of truth for in-app guide copy **and** for the website's published task guides.
-- `REGISTRY_CURATION_REFERENCE.md` is the source of truth for registry manifests.
+- `REGISTRY_CURATION_REFERENCE.md` is the source of truth for catalog manifests.
 - `CODE_OF_ENGAGEMENT.md` is the source of truth for review conduct.
 - Workflow files are the source of truth for automated release triggers.
 - Secret values never belong in documentation, examples, screenshots, or support bundles.

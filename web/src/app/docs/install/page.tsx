@@ -17,8 +17,8 @@ const STEPS = [
     body: 'Onboarding asks which optional services Agora may use. Every switch can be changed later in Settings, so nothing here is permanent.',
   },
   {
-    title: 'Synchronize the signed registry',
-    body: 'The registry is Agora’s curated catalog. Downloading it is what makes Browse and community governance data available.',
+    title: 'Synchronize the signed catalog',
+    body: 'The catalog is Agora’s curated collection. Downloading it is what makes Browse and community governance data available.',
   },
   {
     title: 'Let Agora find or provision Java',

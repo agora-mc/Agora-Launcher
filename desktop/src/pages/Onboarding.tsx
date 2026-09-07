@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { open as openUrl } from '@tauri-apps/plugin-shell';
 import {
   cancelJavaRuntime,
   ensureJavaRuntime,
+  focusMainWindow,
   formatError,
   getSetting,
   githubLogin,
@@ -195,7 +195,7 @@ const STEP_LABELS: { id: Step; label: string }[] = [
   { id: 'launch', label: 'Launch' },
   { id: 'java', label: 'Java' },
   { id: 'github', label: 'GitHub' },
-  { id: 'registry', label: 'Registry' },
+  { id: 'registry', label: 'Catalog' },
   { id: 'import', label: 'Import' },
 ];
 
@@ -1072,22 +1072,15 @@ function GithubStep({
       if (isStale()) return;
       setDevice(flow);
 
-      // Auto-launch the user's default browser at the verification URL.
-      // Wrapped in its own try/catch AND fire-and-forget. If the shell plugin
-      // throws synchronously, the inner catch absorbs it so the outer flow
-      // continues to githubLoginPoll. URL+code remain displayed for manual
-      // fallback.
-      try {
-        const p = openUrl(flow.verification_uri);
-        Promise.resolve(p).catch(() => {
-          /* best-effort: URL shown in panel below */
-        });
-      } catch {
-        // URL and code remain visible for manual fallback.
-      }
+      // The browser is NOT launched here. DeviceFlowPanel opens it once the
+      // user has copied the code, so focus stays on the window showing the
+      // code they are about to need.
 
       const token = await githubLoginPoll(flow.device_code, flow.interval);
       if (isStale()) return;
+      // Authorization happened in the browser, which now has focus. Take it
+      // back so the user sees the result and the next onboarding step.
+      focusMainWindow().catch(() => {});
       if (token) {
         setResult('Signed in successfully.');
         setTimeout(() => {
@@ -1098,7 +1091,11 @@ function GithubStep({
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : formatError(e);
-      if (!isStale()) setError(`Sign-in failed: ${msg}`);
+      if (!isStale()) {
+        setError(`Sign-in failed: ${msg}`);
+        // Same reason as the success path: the error is here, not in the browser.
+        focusMainWindow().catch(() => {});
+      }
     } finally {
       if (!isStale()) setPolling(false);
     }
@@ -1199,9 +1196,9 @@ function RegistryStep({
   return (
     <div>
       <Stepper current="registry" />
-      <h2 className="text-2xl font-bold mb-2">Download Registry</h2>
+      <h2 className="text-2xl font-bold mb-2">Download Catalog</h2>
       <p className="text-muted-foreground mb-6">
-        Agora needs the curated registry database to show mods, packs, shaders, and more.
+        Agora needs the curated catalog to show mods, packs, shaders, and more.
       </p>
 
       <RegistryStatusView
@@ -1212,7 +1209,7 @@ function RegistryStep({
         actions={actions}
         onContinue={onFinish}
         allowMissingContinue
-        missingWarning="The registry is required to browse curated content. You can continue but the catalog will be empty until the registry is downloaded."
+        missingWarning="The catalog is required to browse curated content. You can continue, but there will be nothing curated to browse until it is downloaded."
       />
 
       <div className="mt-8 flex justify-between">

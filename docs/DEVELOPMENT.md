@@ -10,8 +10,8 @@ This page covers local builds and validation. Player instructions belong in the 
 | `crates/agora/` | Standalone CLI |
 | `desktop/` | Tauri desktop application and React UI |
 | `web/` | Public static directory |
-| `compiler/` | Registry compiler |
-| `registry/` | Curated source manifests and governance data |
+| `compiler/` | Catalog compiler |
+| `registry/` | Curated catalog source manifests and governance data |
 | `loader-manifests/` | Pinned loader catalog inputs |
 | `scripts/` | Validation and maintenance helpers |
 | `docs/` | User, developer, release, and operator reference |
@@ -50,7 +50,7 @@ A production installer must be tested as a packaged release. Development mode do
 
 ## Build the website
 
-Generate the root `registry-web.json` through the local compiler procedure below before building. Static export needs registry entries to generate the dynamic catalog routes.
+Generate the root `registry-web.json` through the local compiler procedure below before building. Static export needs catalog entries to generate the dynamic catalog routes.
 
 ```powershell
 cd web
@@ -63,7 +63,7 @@ On bash-compatible shells, export the same variable before `npm run build`. The 
 
 The website should remain useful without the desktop application installed. It owns pre-install guidance and shareable documentation, not the complete in-app learning curriculum.
 
-## Compile the registry locally
+## Compile the catalog locally
 
 ```bash
 cd compiler
@@ -78,7 +78,7 @@ python compile.py --skip-sign --no-governance-write --governance-mode off --out 
 python ../scripts/verify_db.py
 ```
 
-Use `--skip-sign` only for local development. Production clients must not trust unsigned registry output.
+Use `--skip-sign` only for local development. Production clients must not trust unsigned catalog output.
 
 ## Environment boundaries
 
@@ -101,8 +101,8 @@ The Rust desktop build embeds selected public configuration at compile time. A `
 | Variable | Purpose | Secret? |
 | --- | --- | --- |
 | `AGORA_OAUTH_CLIENT_ID` | Public GitHub application client ID used by the governance device flow | No |
-| `AGORA_REGISTRY_PUBKEY` | Public Ed25519 key used to verify downloaded registry signatures | No |
-| `AGORA_REGISTRY_REPO` | Registry repository in `owner/repo` form | No |
+| `AGORA_REGISTRY_PUBKEY` | Public Ed25519 key used to verify downloaded catalog signatures | No |
+| `AGORA_REGISTRY_REPO` | Catalog repository in `owner/repo` form | No |
 | `VITE_AGORA_REPOSITORY` | Repository used by desktop frontend links | No |
 
 The matching `ED25519_PRIVATE_KEY`, GitHub tokens, updater signing key, and webhook URLs are secrets. They belong only in the intended protected environment and must never be copied into documentation or screenshots. GitHub device flow does not require embedding a client secret in the native app.
@@ -110,8 +110,8 @@ The matching `ED25519_PRIVATE_KEY`, GitHub tokens, updater signing key, and webh
 Release workflows must verify the packaged executable can:
 
 - authenticate through intended public client configuration;
-- verify the signed registry;
-- synchronize the registry;
+- verify the signed catalog;
+- synchronize the catalog;
 - populate Browse;
 - load loader/runtime catalog data.
 

@@ -29,7 +29,7 @@ const PILLARS = [
   {
     icon: Code2,
     title: 'Open source',
-    body: 'Every line of the launcher, the compiler, and the registry is public. Anyone can read it, audit it, and contribute to it.',
+    body: 'Every line of the launcher, the compiler, and the catalog is public. Anyone can read it, audit it, and contribute to it.',
   },
   {
     icon: HandCoins,
@@ -39,7 +39,7 @@ const PILLARS = [
   {
     icon: Eye,
     title: 'Transparent',
-    body: 'The registry, the votes, the review history, and the moderation log are all public. What changed, who voted, and why is never hidden.',
+    body: 'The catalog, the votes, the review history, and the moderation log are all public. What changed, who voted, and why is never hidden.',
   },
   {
     icon: HeartHandshake,

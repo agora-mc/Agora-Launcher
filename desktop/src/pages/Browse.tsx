@@ -75,6 +75,34 @@ async function modrinthEffectivelyEnabled(): Promise<boolean> {
   return mr[0].status === 'fulfilled' && parseBool(mr[0].value);
 }
 
+/**
+ * Whether any live third-party browse source (Modrinth, Technic) is enabled.
+ *
+ * `null` means "not read yet". Callers must not choose between the browse UI
+ * and the catalog-recovery shell until this resolves, or the wrong one flashes.
+ */
+function useLiveSourcesEnabled(): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [modrinth, technic] = await Promise.allSettled([
+        modrinthEffectivelyEnabled(),
+        getSetting('technic_enabled'),
+      ]);
+      if (cancelled) return;
+      setEnabled(
+        (modrinth.status === 'fulfilled' && modrinth.value === true)
+        || (technic.status === 'fulfilled' && parseBool(technic.value)),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return enabled;
+}
+
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -370,26 +398,36 @@ function RegistryRecoveryShell({
 }
 
 export function Browse({ onSelectMod, onOpenInstance, initialInstanceId, initialContentType }: { onSelectMod?: (id: string, instanceId?: string) => void; onOpenInstance?: (instanceId: string) => void; initialInstanceId?: string; initialContentType?: string }) {
-  // Registry availability — show recovery panel when missing.
-  // This is the ONLY hook call in this component, so the hook count is stable.
+  // Catalog availability — show the recovery panel when there is nothing left
+  // to browse. These are the ONLY hook calls in this component, and both are
+  // unconditional, so the hook count is stable.
   const registry = useRegistryState();
+  const liveSourcesEnabled = useLiveSourcesEnabled();
 
-  // Bail out BEFORE any other hooks when the registry is unavailable.
+  // Whether the curated catalog can answer queries right now.
   //
-  // Conditions for showing the recovery shell:
-  //   - State is exactly 'missing' (no cache, no loading)
-  //   - State is 'loading' AND no cached database exists (registry download in
-  //     progress but we have nothing to show)
-  //   - State is 'unknown' with an error (status-read failed)
+  //   - 'missing': no cache and no download in flight
+  //   - 'loading' with no cached database: the first download is still running
+  //   - 'unknown' with an error: the status read itself failed
   //
   // Once the user has a cached database they can browse cached content, even
   // while an update downloads in the background ('loading' with cache).
-  const showRecovery =
+  const catalogUnavailable =
     registry.state === 'missing' ||
     (registry.state === 'loading' && !registry.hasCachedDb) ||
     (registry.state === 'unknown' && registry.error !== null);
 
-  if (showRecovery) {
+  const catalogAvailable = !catalogUnavailable;
+
+  // A missing catalog is only a dead end when there is also no live source.
+  // With Modrinth or Technic enabled the page still has something to show, so
+  // it renders normally and the banner explains what is missing.
+  if (catalogUnavailable && liveSourcesEnabled !== true) {
+    if (liveSourcesEnabled === null) {
+      // Still reading the source settings. Render nothing rather than flash
+      // the recovery shell at a user who has a live source enabled.
+      return null;
+    }
     return (
       <RegistryRecoveryShell
         state={registry.state}
@@ -400,7 +438,9 @@ export function Browse({ onSelectMod, onOpenInstance, initialInstanceId, initial
     );
   }
 
-  return <BrowseContent onSelectMod={onSelectMod} onOpenInstance={onOpenInstance} initialInstanceId={initialInstanceId} initialContentType={initialContentType} registryState={registry.state} registryStatus={registry.status} registryError={registry.error} registryActions={registry.actions} />;
+  // Remount when catalog availability flips (e.g. the first download lands) so
+  // every value derived from it — sort options, category metadata — is rebuilt.
+  return <BrowseContent key={catalogAvailable ? 'with-catalog' : 'live-only'} onSelectMod={onSelectMod} onOpenInstance={onOpenInstance} initialInstanceId={initialInstanceId} initialContentType={initialContentType} catalogAvailable={catalogAvailable} registryState={registry.state} registryStatus={registry.status} registryError={registry.error} registryActions={registry.actions} />;
 }
 
 function BrowseContent({
@@ -408,6 +448,7 @@ function BrowseContent({
   onOpenInstance,
   initialInstanceId,
   initialContentType,
+  catalogAvailable,
   registryState: regState,
   registryStatus: regStatus,
   registryError: regError,
@@ -417,6 +458,8 @@ function BrowseContent({
   onOpenInstance?: (instanceId: string) => void;
   initialInstanceId?: string;
   initialContentType?: string;
+  /** False when the curated catalog is not on disk; live sources carry the page. */
+  catalogAvailable: boolean;
   registryState: import('../lib/useRegistryState').RegistryState;
   registryStatus: import('../lib/tauri').RegistryStatus | null;
   registryError: string | null;
@@ -441,14 +484,16 @@ function BrowseContent({
     }
   }, []);
   const simpleBrowse = browseSurface === 'simple';
-  const sortOptions = simpleBrowse ? SIMPLE_SORTS : SORTS;
+  // "For You" ranks curated entries only, so it has nothing to offer while the
+  // catalog is unavailable and drops out for the same reason simple mode omits it.
+  const sortOptions = simpleBrowse || !catalogAvailable ? SIMPLE_SORTS : SORTS;
 
   const [sort, setSort] = useState<SortOption>(() => {
     try {
       const saved = localStorage.getItem('browse_sort');
       if (saved && sortOptions.some((s) => s.value === saved)) return saved as SortOption;
     } catch { /* ignore */ }
-    return simpleBrowse ? SIMPLE_DEFAULT_SORT : 'net_score';
+    return simpleBrowse || !catalogAvailable ? SIMPLE_DEFAULT_SORT : 'net_score';
   });
   const [category, setCategory] = useState<string | null>(null);
   const [contentType, setContentType] = useState<string | null>(initialContentType ?? 'mod');
@@ -863,7 +908,7 @@ function BrowseContent({
         if (!cancelled) setMetaLoading(true);
         setMetaError(null);
         const [curatedResult, modrinthEnabledResult] = await Promise.allSettled([
-          listCategories(),
+          catalogAvailable ? listCategories() : Promise.resolve([]),
           modrinthEffectivelyEnabled(),
         ]);
         if (cancelled) return;
@@ -1306,7 +1351,7 @@ function BrowseContent({
         </p>
       </section>
 
-      {/* Registry offline banner */}
+      {/* Catalog offline banner */}
       <RegistryStatusView
         variant="banner"
         state={regState}
@@ -1340,7 +1385,7 @@ function BrowseContent({
         {contextError && <p className="mt-2 text-xs text-destructive">{contextError}</p>}
       </section>
 
-      {/* Community-registry pitch: worth reading once, but it is an appeal, not
+      {/* Community-catalog pitch: worth reading once, but it is an appeal, not
           a control, and Simple mode keeps the page to the things that find a
           mod. It stays reachable from the About and Governance pages. */}
       {simpleBrowse ? null : (
@@ -1349,7 +1394,7 @@ function BrowseContent({
           <Leaf aria-hidden className="mt-0.5 h-5 w-5 text-sea-blue" />
           <div className="flex-1">
             <p className="text-sm font-semibold text-foreground">
-              Help grow the community registry
+              Help grow the community catalog
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               Agora's curated catalog is built by the community, for the community.

@@ -109,7 +109,7 @@ export function DownloadButton({ initialRelease = null }: DownloadButtonProps) {
       )}
       {!failed && !asset && !loading && (
         <p className="text-center text-xs text-indigo-100/70">
-          ⚠️ We couldn&apos;t find a download for your platform. On the releases page, download the file for your platform (<code>.msi</code>, <code>.dmg</code>, or <code>.AppImage</code>). Ignore releases tagged <code>registry-*</code> — those are database updates, not the app itself.
+          ⚠️ We couldn&apos;t find a download for your platform. On the releases page, download the file for your platform (<code>.msi</code>, <code>.dmg</code>, or <code>.AppImage</code>). Ignore releases tagged <code>registry-*</code> — those are catalog updates, not the app itself.
         </p>
       )}
     </div>

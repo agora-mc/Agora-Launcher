@@ -2,12 +2,15 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { GITHUB_REPO_URL, GITHUB_RELEASES_URL, SPONSORS_URL } from '@/lib/site';
 import { NavLinks, type NavItem } from './NavLinks';
+import { CatalogNav } from './CatalogNav';
+import { CATALOG_HOME, CATALOG_PATHS } from '@/lib/contentTypes';
 import { FontScaleControl } from './FontScaleControl';
 import LivingBackgroundMount from './LivingBackgroundMount';
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const navItems: NavItem[] = [
     { href: '/', label: 'Home', match: 'exact' },
+    { href: CATALOG_HOME, label: 'Catalog', match: 'prefix', activePaths: CATALOG_PATHS },
     { href: '/docs', label: 'Docs', match: 'prefix' },
     { href: '/governance', label: 'Governance', match: 'prefix' },
     { href: '/about', label: 'The Agora Difference', match: 'prefix' },
@@ -51,6 +54,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <FontScaleControl />
             </div>
           </div>
+          <CatalogNav />
         </header>
 
         <main id="main-content" className="shell-wrap flex-1 py-10">

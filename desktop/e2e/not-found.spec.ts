@@ -45,7 +45,7 @@ async function installMock(page: Page, options: { variant: 'invalid-mod' | 'inva
             latest_tag: 'test',
             update_available: false,
             checked: true,
-            message: 'Registry ready.',
+            message: 'Catalog ready.',
           });
         }
 
