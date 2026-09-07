@@ -35,7 +35,7 @@
       "endpoints": [
         "https://github.com/agora-mc/Agora-Launcher/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3ODdEMTNEQzU1MzA1NDIKUldSQ0JWUEZQZEdITnoyNXkvbkJ0SDlWUU5TMDdXRm94c2RMcGFyNVp1c3dZOXZHSVpCM0R5Wk0K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY0RURFOTU4MzkzQ0VENjMKUldSajdUdzVXT250OUQwSEFWREVIam5pUlduY3dIUkhRa2lObUMyY1ZEa2dYREtUNUMvUEhVY2UK",
       "windows": {
         "installMode": "passive"
       }
