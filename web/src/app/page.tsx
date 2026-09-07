@@ -154,7 +154,7 @@ export default async function HomePage() {
           </p>
           <div className="ui-text mt-4 flex flex-wrap gap-5 text-sm">
             <a
-              href={`${GITHUB_REPO_URL}/blob/HEAD/REGISTRY_CURATION_REFERENCE.md`}
+              href={`https://agoramc.com/docs/registry-curation-reference`}
               target="_blank"
               rel="noopener noreferrer"
               className="font-semibold text-gold-bright underline underline-offset-4 hover:text-ink"
