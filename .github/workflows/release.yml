@@ -136,6 +136,11 @@ jobs:
           # present and fall back to a secret for legacy setups.
           AGORA_REGISTRY_PUBKEY: ${{ vars.AGORA_REGISTRY_PUBKEY || secrets.AGORA_REGISTRY_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # A key generated with a passphrase cannot be decoded without it, and
+          # tauri-action only reports that ~14 minutes into the build. Leave the
+          # secret unset when the key has no passphrase; an empty value is what
+          # an unencrypted key expects anyway.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: desktop
           tagName: ${{ github.event.inputs.tag || github.ref_name }}

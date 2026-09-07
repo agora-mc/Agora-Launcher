@@ -60,7 +60,7 @@ test('renders the governance intro and encourages voting by quality', async ({ p
   await expect(page.getByRole('heading', { name: 'Why your vote matters' })).toBeVisible();
   await expect(page.getByText(/Rank by quality/)).toBeVisible();
   await expect(page.getByText(/not by the quantity of downloads/)).toBeVisible();
-  await expect(page.getByText(/keeps the registry honest for everyone/)).toBeVisible();
+  await expect(page.getByText(/keeps the catalog honest for everyone/)).toBeVisible();
 });
 
 test('explains how to vote in the app and on GitHub', async ({ page }) => {
