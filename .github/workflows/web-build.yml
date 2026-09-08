@@ -67,6 +67,8 @@ jobs:
         with:
           name: web-static
           path: web/dist
+          # Preserve public dot-directories such as .well-known.
+          include-hidden-files: true
 
   deploy:
     needs: build
@@ -88,10 +90,17 @@ jobs:
           name: web-static
           path: _site
 
+      - name: Verify Microsoft identity association survived artifact transfer
+        run: |
+          test -s _site/.well-known/microsoft-identity-association.json
+          python3 -m json.tool _site/.well-known/microsoft-identity-association.json > /dev/null
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+          # The Pages archive also excludes .well-known by default.
+          include-hidden-files: true
 
       - name: Deploy to GitHub Pages
         id: deployment
