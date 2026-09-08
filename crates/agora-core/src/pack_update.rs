@@ -129,9 +129,96 @@ struct MrpackIndex {
     #[serde(default, alias = "versionId")]
     version_id: Option<String>,
     #[serde(default)]
-    files: Vec<MrpackFile>,
+    files: Option<Vec<MrpackFile>>,
     #[serde(default)]
     overrides: String,
+    #[serde(default)]
+    dependencies: BTreeMap<String, String>,
+}
+
+impl MrpackIndex {
+    fn runtime_requirement(&self) -> Result<PackRuntimeRequirement, String> {
+        parse_runtime_requirement(&self.dependencies)
+    }
+
+    fn files(&self) -> Result<&[MrpackFile], String> {
+        self.files.as_deref().ok_or_else(|| {
+            "mrpack index is missing the files key; refusing an update that could erase the instance"
+                .to_string()
+        })
+    }
+}
+
+/// The Minecraft and loader runtime a `.mrpack` declares in its dependencies.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackRuntimeRequirement {
+    pub minecraft_version: String,
+    pub loader: String,
+    pub loader_version: String,
+}
+
+fn parse_runtime_requirement(
+    dependencies: &BTreeMap<String, String>,
+) -> Result<PackRuntimeRequirement, String> {
+    if dependencies.is_empty() {
+        return Err(
+            "unsupported pack runtime: dependencies must declare minecraft and one supported loader"
+                .to_string(),
+        );
+    }
+
+    let minecraft_version = dependencies
+        .get("minecraft")
+        .filter(|version| !version.is_empty())
+        .cloned()
+        .ok_or_else(|| {
+            "unsupported pack runtime: dependencies must declare a non-empty minecraft version"
+                .to_string()
+        })?;
+
+    let mut loader_requirement = None;
+    for (key, version) in dependencies {
+        if key == "minecraft" {
+            continue;
+        }
+        let loader = match key.as_str() {
+            "fabric-loader" => "fabric",
+            "forge" => "forge",
+            "neoforge" => "neoforge",
+            "quilt-loader" => "quilt",
+            unknown => {
+                return Err(format!(
+                    "unsupported pack runtime: unknown loader family '{unknown}'"
+                ));
+            }
+        };
+        if version.is_empty() {
+            return Err(format!(
+                "unsupported pack runtime: loader '{key}' has an empty version"
+            ));
+        }
+        if loader_requirement.is_some() {
+            return Err(
+                "unsupported pack runtime: dependencies declare multiple loader families"
+                    .to_string(),
+            );
+        }
+        loader_requirement = Some((loader, version.clone()));
+    }
+
+    // No loader key in an otherwise well-formed dependencies object is not a
+    // missing declaration — it is how the mrpack format expresses a vanilla
+    // pack. Reading it as such is not the same as inferring "keep whatever
+    // loader the instance has": a vanilla pack is still rejected against a
+    // Fabric instance, because the tuples differ.
+    let (loader, loader_version) = loader_requirement.unwrap_or(("vanilla", String::new()));
+
+    Ok(PackRuntimeRequirement {
+        minecraft_version,
+        loader: loader.to_string(),
+        loader_version,
+    })
 }
 
 #[derive(Deserialize)]
@@ -264,6 +351,8 @@ pub struct MrpackTheirs {
     pub size_unknown_count: usize,
     pub pack_name: String,
     pub pack_version_id: Option<String>,
+    /// Runtime declared by the pack's `dependencies` object.
+    pub runtime_requirement: PackRuntimeRequirement,
 }
 
 /// Build a THEIRS inventory from a local `.mrpack` **with no network access**.
@@ -288,6 +377,8 @@ pub fn theirs_from_mrpack(mrpack_path: &Path) -> Result<MrpackTheirs, String> {
         serde_json::from_str::<MrpackIndex>(&text)
             .map_err(|e| format!("invalid modrinth.index.json: {e}"))?
     };
+    let runtime_requirement = index.runtime_requirement()?;
+    let index_files = index.files()?;
 
     let mut files: BTreeMap<String, InstancePackFile> = BTreeMap::new();
     let mut unverified: BTreeSet<String> = BTreeSet::new();
@@ -299,7 +390,7 @@ pub fn theirs_from_mrpack(mrpack_path: &Path) -> Result<MrpackTheirs, String> {
     let mut size_unknown_count = 0usize;
 
     // Index-listed files (mods and other downloadable content).
-    for file_entry in &index.files {
+    for file_entry in index_files {
         let rel = file_entry.path.replace('\\', "/");
         if !in_pack_scope(&rel) {
             continue;
@@ -409,6 +500,7 @@ pub fn theirs_from_mrpack(mrpack_path: &Path) -> Result<MrpackTheirs, String> {
         size_unknown_count,
         pack_name: index.name,
         pack_version_id: index.version_id,
+        runtime_requirement,
     })
 }
 
@@ -444,6 +536,51 @@ fn sha2_256_hex(data: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
+fn read_mrpack_runtime_requirement(mrpack_path: &Path) -> Result<PackRuntimeRequirement, String> {
+    let file = fs::File::open(mrpack_path)
+        .map_err(|e| format!("cannot open mrpack {}: {e}", mrpack_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("invalid mrpack zip: {e}"))?;
+    let mut entry = archive
+        .by_name("modrinth.index.json")
+        .map_err(|_| "missing modrinth.index.json".to_string())?;
+    let mut text = String::new();
+    entry
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read modrinth.index.json: {e}"))?;
+    let index = serde_json::from_str::<MrpackIndex>(&text)
+        .map_err(|e| format!("invalid modrinth.index.json: {e}"))?;
+    index.runtime_requirement()
+}
+
+fn validate_runtime_requirement(
+    conn: &rusqlite::Connection,
+    instance_id: &str,
+    required: &PackRuntimeRequirement,
+) -> Result<(), String> {
+    let current = crate::db::get_instance(conn, instance_id)
+        .map_err(|e| format!("cannot read instance runtime: {e}"))?
+        .ok_or_else(|| {
+            format!("cannot read instance runtime: instance '{instance_id}' not found")
+        })?;
+
+    if current.minecraft_version != required.minecraft_version
+        || current.loader != required.loader
+        || current.loader_version != required.loader_version
+    {
+        return Err(format!(
+            "pack runtime mismatch: current tuple ({}, {}, {}); required tuple ({}, {}, {})",
+            current.minecraft_version,
+            current.loader,
+            current.loader_version,
+            required.minecraft_version,
+            required.loader,
+            required.loader_version,
+        ));
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Preview
 // ---------------------------------------------------------------------------
@@ -462,6 +599,7 @@ pub struct PackUpdatePreview {
     pub size_unknown_count: usize,
     pub pack_name: String,
     pub pack_version_id: Option<String>,
+    pub runtime_requirement: PackRuntimeRequirement,
 }
 
 impl PackUpdatePreview {
@@ -486,6 +624,7 @@ pub fn preview_pack_update(
         .map_err(|e| format!("cannot read instance pack inventory: {e}"))?;
     let ours = crate::pack_inventory::collect_pack_inventory(instance_dir)?;
     let mut theirs_side = theirs_from_mrpack(mrpack_path)?;
+    validate_runtime_requirement(conn, instance_id, &theirs_side.runtime_requirement)?;
 
     // Convergence: if a local file is byte-identical to the new pack's jar, we
     // need not download it and the content decision is exact.
@@ -552,6 +691,7 @@ pub fn preview_pack_update(
         size_unknown_count: theirs_side.size_unknown_count,
         pack_name: theirs_side.pack_name,
         pack_version_id: theirs_side.pack_version_id,
+        runtime_requirement: theirs_side.runtime_requirement,
     })
 }
 
@@ -1584,10 +1724,25 @@ pub fn update_pack<F: PackFileFetcher>(
         snapshot_id: None,
     };
 
+    let required_runtime = match read_mrpack_runtime_requirement(mrpack_path) {
+        Ok(requirement) => requirement,
+        Err(error) => return failed("runtime", error),
+    };
+    if let Err(error) = validate_runtime_requirement(conn, instance_id, &required_runtime) {
+        return failed("runtime", error);
+    }
+
     let preview = match preview_pack_update(conn, instance_id, instance_dir, mrpack_path) {
         Ok(preview) => preview,
         Err(error) => return failed("preview", error),
     };
+    // Keep this guard in the applying path as well as in preview. It protects
+    // the stage boundary if the instance runtime changes while previewing.
+    if let Err(error) =
+        validate_runtime_requirement(conn, instance_id, &preview.runtime_requirement)
+    {
+        return failed("runtime", error);
+    }
     for conflict in &preview.plan.conflicts {
         if !resolutions.contains_key(&conflict.key) {
             return failed(
@@ -1738,11 +1893,6 @@ pub fn stage_pack<F: PackFileFetcher>(
     staged_dir: &Path,
     fetcher: &F,
 ) -> Result<(), String> {
-    if staged_dir.exists() {
-        fs::remove_dir_all(staged_dir).map_err(|e| format!("cannot clear staging dir: {e}"))?;
-    }
-    fs::create_dir_all(staged_dir).map_err(|e| format!("cannot create staging dir: {e}"))?;
-
     let file = fs::File::open(mrpack_path).map_err(|e| format!("cannot open mrpack: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("invalid mrpack zip: {e}"))?;
     let index = {
@@ -1756,6 +1906,12 @@ pub fn stage_pack<F: PackFileFetcher>(
         serde_json::from_str::<MrpackIndex>(&text)
             .map_err(|e| format!("invalid modrinth.index.json: {e}"))?
     };
+    let _runtime_requirement = index.runtime_requirement()?;
+    let index_files = index.files()?;
+    if staged_dir.exists() {
+        fs::remove_dir_all(staged_dir).map_err(|e| format!("cannot clear staging dir: {e}"))?;
+    }
+    fs::create_dir_all(staged_dir).map_err(|e| format!("cannot create staging dir: {e}"))?;
 
     // Overrides embedded in the archive.
     for i in 0..archive.len() {
@@ -1778,7 +1934,7 @@ pub fn stage_pack<F: PackFileFetcher>(
     }
 
     // Index-listed files (mods and other content).
-    for file_entry in &index.files {
+    for file_entry in index_files {
         let rel = file_entry.path.replace('\\', "/");
         if !in_pack_scope(&rel) {
             continue;
@@ -1906,6 +2062,14 @@ mod tests {
         );
     }
 
+    fn test_runtime_requirement() -> PackRuntimeRequirement {
+        PackRuntimeRequirement {
+            minecraft_version: "1.21".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+        }
+    }
+
     /// Build a minimal .mrpack (zip) with an index + optional embedded overrides.
     /// `index_files` is a list of `(path, sha1, sha512, downloads_json)` — the
     /// hashes must match the bytes if `bytes` is `Some` (embedded).
@@ -1914,6 +2078,37 @@ mod tests {
         name: &str,
         files: Vec<(&str, &str, &str, &str)>,
         overrides: Vec<(&str, &[u8])>,
+    ) -> PathBuf {
+        build_mrpack_with_options(
+            dir,
+            name,
+            files,
+            overrides,
+            Some(serde_json::json!({
+                "minecraft": "1.21",
+                "fabric-loader": "0.15.0"
+            })),
+            true,
+        )
+    }
+
+    fn build_mrpack_with_dependencies(
+        dir: &Path,
+        name: &str,
+        files: Vec<(&str, &str, &str, &str)>,
+        overrides: Vec<(&str, &[u8])>,
+        dependencies: Option<serde_json::Value>,
+    ) -> PathBuf {
+        build_mrpack_with_options(dir, name, files, overrides, dependencies, true)
+    }
+
+    fn build_mrpack_with_options(
+        dir: &Path,
+        name: &str,
+        files: Vec<(&str, &str, &str, &str)>,
+        overrides: Vec<(&str, &[u8])>,
+        dependencies: Option<serde_json::Value>,
+        include_files_key: bool,
     ) -> PathBuf {
         use zip::write::FileOptions;
         let path = dir.join(format!("{name}.mrpack"));
@@ -1929,14 +2124,18 @@ mod tests {
                 "downloads": serde_json::from_str::<serde_json::Value>(downloads).unwrap(),
             }));
         }
-        let index = serde_json::json!({
+        let mut index = serde_json::json!({
             "formatVersion": 1,
             "game": "minecraft",
             "versionId": "2.0.0",
             "name": name,
-            "dependencies": { "minecraft": "1.21", "fabric-loader": "0.15.0" },
-            "files": index_files,
         });
+        if let Some(dependencies) = dependencies {
+            index["dependencies"] = dependencies;
+        }
+        if include_files_key {
+            index["files"] = serde_json::Value::Array(index_files);
+        }
         zip.start_file("modrinth.index.json", opts).unwrap();
         zip.write_all(serde_json::to_string_pretty(&index).unwrap().as_bytes())
             .unwrap();
@@ -2019,6 +2218,7 @@ mod tests {
         let opts = zip::write::FileOptions::default();
         let index = serde_json::json!({
             "formatVersion": 1, "game": "minecraft", "name": "p",
+            "dependencies": { "minecraft": "1.21", "fabric-loader": "0.15.0" },
             "files": [{ "path": "mods/embedded.jar", "hashes": { "sha1": sha1_hex(bytes), "sha512": sha512_hex(bytes) }, "downloads": [] }]
         });
         zw.start_file("modrinth.index.json", opts).unwrap();
@@ -2190,6 +2390,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
         let reconciled = reconcile_manifest(
             &old_manifest,
@@ -2324,6 +2525,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
         let reconciled = reconcile_manifest(
             &old_manifest,
@@ -2390,6 +2592,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
         let reconciled = reconcile_manifest(
             &old_manifest,
@@ -2457,6 +2660,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
         let reconciled = reconcile_manifest(
             &old_manifest,
@@ -2529,6 +2733,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
         let reconciled = reconcile_manifest(
             &old_manifest,
@@ -2576,6 +2781,18 @@ mod tests {
                 .get(url)
                 .cloned()
                 .ok_or_else(|| format!("no fake bytes for {url}"))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingFetcher {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl PackFileFetcher for CountingFetcher {
+        fn fetch(&self, url: &str) -> Result<Vec<u8>, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(format!("unexpected fetch for {url}"))
         }
     }
 
@@ -2627,6 +2844,253 @@ mod tests {
         let fetcher = FakeFetcher::default();
         let staged = tmp.path().join("staged");
         assert!(stage_pack(&mrpack, &staged, &fetcher).is_err());
+    }
+
+    #[test]
+    fn update_pack_with_matching_runtime_still_applies() {
+        let tmp = TempDir::new().unwrap();
+        let (conn, _dbtmp) = test_conn();
+        seed_instance_row(&conn, "inst");
+        let inst = seed_instance(&tmp, "inst");
+        let mrpack = build_mrpack(
+            tmp.path(),
+            "matching",
+            vec![],
+            vec![("overrides/config/new.toml", b"new config".as_slice())],
+        );
+
+        let outcome = update_pack(
+            &conn,
+            "inst",
+            &inst,
+            &mrpack,
+            &tmp.path().join("staged"),
+            &BTreeMap::new(),
+            &FakeFetcher::default(),
+            true,
+        );
+
+        assert!(matches!(outcome, PackUpdateOutcome::Updated { .. }));
+        assert_eq!(
+            fs::read(inst.join("config/new.toml")).unwrap(),
+            b"new config"
+        );
+    }
+
+    fn assert_runtime_rejection_unchanged(
+        dependencies: Option<serde_json::Value>,
+        skip_health_scan: bool,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let (conn, _dbtmp) = test_conn();
+        seed_instance_row(&conn, "inst");
+        let inst = seed_instance(&tmp, "inst");
+        write(&inst, "mods/existing.jar", b"existing bytes");
+        write(&inst, "config/user.toml", b"user settings");
+        crate::db::replace_instance_pack_files(
+            &conn,
+            "inst",
+            &[
+                InstancePackFile {
+                    relative_path: "mods/existing.jar".into(),
+                    sha256: sha2_256_hex(b"existing bytes"),
+                    size: 14,
+                },
+                InstancePackFile {
+                    relative_path: "config/user.toml".into(),
+                    sha256: sha2_256_hex(b"user settings"),
+                    size: 13,
+                },
+            ],
+        )
+        .unwrap();
+
+        let jar_url = "https://cdn.modrinth.com/data/runtime/versions/v1/runtime.jar";
+        let jar_bytes = b"this must not be fetched";
+        let mrpack = build_mrpack_with_dependencies(
+            tmp.path(),
+            "runtime-rejected",
+            vec![(
+                "mods/runtime.jar",
+                &sha1_hex(jar_bytes),
+                &sha512_hex(jar_bytes),
+                &format!(r#"["{jar_url}"]"#),
+            )],
+            vec![],
+            dependencies,
+        );
+
+        let before_files = crate::snapshot::live_file_index(&inst).unwrap();
+        let before_manifest = fs::read(inst.join("instance_manifest.json")).unwrap();
+        let before_runtime = crate::db::get_instance(&conn, "inst")
+            .unwrap()
+            .expect("seeded instance");
+        let preview_error = preview_pack_update(&conn, "inst", &inst, &mrpack).unwrap_err();
+        assert!(
+            preview_error.contains("unsupported pack runtime")
+                || preview_error.contains("pack runtime mismatch"),
+            "unexpected preview rejection: {preview_error}"
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetcher = CountingFetcher {
+            calls: calls.clone(),
+        };
+        let staged = tmp.path().join("staged");
+
+        let outcome = update_pack(
+            &conn,
+            "inst",
+            &inst,
+            &mrpack,
+            &staged,
+            &BTreeMap::new(),
+            &fetcher,
+            skip_health_scan,
+        );
+
+        match outcome {
+            PackUpdateOutcome::Failed {
+                phase,
+                error,
+                rolled_back,
+                snapshot_id,
+            } => {
+                assert_eq!(phase, "runtime", "runtime rejection error: {error}");
+                assert!(!rolled_back);
+                assert!(snapshot_id.is_none());
+            }
+            other => panic!("expected runtime rejection, got {other:?}"),
+        }
+        assert_eq!(
+            crate::snapshot::live_file_index(&inst).unwrap(),
+            before_files,
+            "runtime rejection must not mutate instance files"
+        );
+        assert_eq!(
+            fs::read(inst.join("instance_manifest.json")).unwrap(),
+            before_manifest,
+            "runtime rejection must not rewrite instance_manifest.json"
+        );
+        let after_runtime = crate::db::get_instance(&conn, "inst")
+            .unwrap()
+            .expect("seeded instance");
+        assert_eq!(
+            (
+                after_runtime.minecraft_version,
+                after_runtime.loader,
+                after_runtime.loader_version
+            ),
+            (
+                before_runtime.minecraft_version,
+                before_runtime.loader,
+                before_runtime.loader_version
+            ),
+            "runtime rejection must not change database runtime fields"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "runtime rejection must not fetch pack files"
+        );
+        assert!(
+            !staged.exists(),
+            "runtime rejection must not create staging"
+        );
+    }
+
+    #[test]
+    fn runtime_changes_are_rejected_before_staging_for_both_health_modes() {
+        let cases: [Option<serde_json::Value>; 7] = [
+            Some(serde_json::json!({ "minecraft": "1.21.1", "fabric-loader": "0.15.0" })),
+            Some(serde_json::json!({ "minecraft": "1.21", "neoforge": "21.1.66" })),
+            Some(serde_json::json!({ "minecraft": "1.21", "fabric-loader": "0.16.0" })),
+            None,
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({ "minecraft": "1.21", "liteloader": "1.0.0" })),
+            // A vanilla pack is well-formed, but this instance is on Fabric,
+            // so the tuples still differ and it is still refused.
+            Some(serde_json::json!({ "minecraft": "1.21" })),
+        ];
+
+        for skip_health_scan in [false, true] {
+            for dependencies in &cases {
+                assert_runtime_rejection_unchanged(dependencies.clone(), skip_health_scan);
+            }
+        }
+    }
+
+    /// An mrpack with no loader key is a vanilla pack, not a malformed one.
+    /// Reading it as unsupported would make every vanilla pack un-updatable.
+    #[test]
+    fn a_pack_with_no_loader_key_is_read_as_vanilla() {
+        let requirement = parse_runtime_requirement(
+            &[("minecraft".to_string(), "1.21".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .expect("a minecraft-only dependencies object is a valid vanilla pack");
+        assert_eq!(requirement.minecraft_version, "1.21");
+        assert_eq!(requirement.loader, "vanilla");
+        assert_eq!(requirement.loader_version, "");
+    }
+
+    #[test]
+    fn preview_reports_the_pack_runtime_requirement_without_applying() {
+        let tmp = TempDir::new().unwrap();
+        let (conn, _dbtmp) = test_conn();
+        seed_instance_row(&conn, "inst");
+        let inst = seed_instance(&tmp, "inst");
+        let mrpack = build_mrpack(
+            tmp.path(),
+            "preview",
+            vec![],
+            vec![("overrides/config/preview.toml", b"preview".as_slice())],
+        );
+        let before_files = crate::snapshot::live_file_index(&inst).unwrap();
+        let before_manifest = fs::read(inst.join("instance_manifest.json")).unwrap();
+
+        let preview = preview_pack_update(&conn, "inst", &inst, &mrpack).unwrap();
+
+        assert_eq!(preview.runtime_requirement, test_runtime_requirement());
+        let serialized = serde_json::to_value(&preview).unwrap();
+        assert_eq!(serialized["runtimeRequirement"]["minecraftVersion"], "1.21");
+        assert_eq!(serialized["runtimeRequirement"]["loader"], "fabric");
+        assert_eq!(serialized["runtimeRequirement"]["loaderVersion"], "0.15.0");
+        assert_eq!(
+            crate::snapshot::live_file_index(&inst).unwrap(),
+            before_files,
+            "preview must not mutate the instance"
+        );
+        assert_eq!(
+            fs::read(inst.join("instance_manifest.json")).unwrap(),
+            before_manifest,
+            "preview must not rewrite instance_manifest.json"
+        );
+    }
+
+    #[test]
+    fn absent_files_key_is_rejected_but_explicit_empty_files_is_distinct() {
+        let tmp = TempDir::new().unwrap();
+        let absent = build_mrpack_with_options(
+            tmp.path(),
+            "absent-files",
+            vec![],
+            vec![],
+            Some(serde_json::json!({
+                "minecraft": "1.21",
+                "fabric-loader": "0.15.0"
+            })),
+            false,
+        );
+        let error = theirs_from_mrpack(&absent).unwrap_err();
+        assert!(
+            error.contains("missing the files key"),
+            "unexpected error: {error}"
+        );
+
+        let explicit_empty = build_mrpack(tmp.path(), "explicit-empty-files", vec![], vec![]);
+        let theirs = theirs_from_mrpack(&explicit_empty).unwrap();
+        assert!(theirs.files.is_empty());
     }
 
     // ---- Preview -----------------------------------------------------------
@@ -2874,6 +3338,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
 
         let reconciled =
@@ -2990,6 +3455,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
 
         let reconciled =
@@ -3082,6 +3548,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
 
         let reconciled =
@@ -3465,6 +3932,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
 
         let reconciled =
@@ -3533,6 +4001,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
         let reconciled =
             reconcile_manifest(&old, &plan, &BTreeMap::new(), &theirs, &staged).unwrap();
@@ -3620,6 +4089,7 @@ mod tests {
             size_unknown_count: 0,
             pack_name: "test".into(),
             pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
         };
 
         // KeepOurs preserves old sha and pack_managed
