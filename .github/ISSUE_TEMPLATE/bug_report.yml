@@ -1,0 +1,102 @@
+name: Bug report
+description: Report a reproducible problem with Agora.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Agora. Please search existing issues before submitting a duplicate.
+
+        Do not include Microsoft account credentials, access tokens, private keys, or other sensitive information in this report.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Clearly describe the problem and what you expected to happen.
+      placeholder: Tell us what went wrong and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest set of steps that consistently reproduces the problem.
+      placeholder: |
+        1. Open Agora...
+        2. Select...
+        3. Click...
+        4. See...
+    validations:
+      required: true
+
+  - type: input
+    id: agora-version
+    attributes:
+      label: Agora version
+      description: Include the release version or commit, if known.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: launch-mode
+    attributes:
+      label: Launch mode
+      description: Which launch path were you using when the problem occurred?
+      options:
+        - Delegated launch
+        - Direct launch
+        - Not launch-related
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating system
+      description: Include the OS and version.
+      placeholder: e.g. Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: minecraft-version
+    attributes:
+      label: Minecraft version
+      description: Include the Minecraft version, if applicable.
+      placeholder: e.g. 1.21.1
+
+  - type: input
+    id: mod-loader
+    attributes:
+      label: Mod loader and version
+      description: Include Fabric, NeoForge, Forge, or another loader and its version, if applicable.
+      placeholder: e.g. Fabric Loader 0.16.9
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or crash report
+      description: Paste relevant logs or a crash report. Please remove secrets and personal information first.
+      render: text
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add screenshots, links, or any other context that may help investigate the issue.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed passwords, tokens, private keys, and other sensitive information from this report.
+          required: true

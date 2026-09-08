@@ -49,13 +49,23 @@ jobs:
     needs: test
     strategy:
       fail-fast: false
+      # tauri-action merges latest.json with the existing release asset. Keep
+      # the desktop uploads serialized so the platform entries are not lost
+      # when the macOS ARM and Intel jobs update that asset together.
+      max-parallel: 1
       matrix:
         include:
           - platform: windows-latest
+            target: ""
             args: ""
           - platform: macos-latest
-            args: ""
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-15-intel
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
           - platform: ubuntu-22.04
+            target: ""
             args: ""
 
     runs-on: ${{ matrix.platform }}
@@ -70,6 +80,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -161,6 +173,52 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Verify packaged macOS build
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          BUNDLE_DIR="target/${TARGET}/release/bundle"
+          APP="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          DMG="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          UPDATER="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+
+          test -n "$APP" || { echo "::error::No packaged .app found under $BUNDLE_DIR"; exit 1; }
+          test -n "$DMG" || { echo "::error::No packaged .dmg found under $BUNDLE_DIR"; exit 1; }
+          test -n "$UPDATER" || { echo "::error::No packaged updater archive found under $BUNDLE_DIR"; exit 1; }
+          test -f "${UPDATER}.sig" || { echo "::error::No updater signature found for $UPDATER"; exit 1; }
+
+          case "$TARGET" in
+            aarch64-apple-darwin) EXPECTED_MACHO='arm64' ;;
+            x86_64-apple-darwin) EXPECTED_MACHO='x86_64' ;;
+            *) echo "::error::Unexpected macOS target: $TARGET"; exit 1 ;;
+          esac
+
+          APP_BINARY="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -print -quit)"
+          file "$APP_BINARY" | grep -Eq "$EXPECTED_MACHO" || {
+            echo "::error::Packaged binary does not contain the expected $EXPECTED_MACHO architecture."
+            file "$APP_BINARY"
+            exit 1
+          }
+
+          # Exercise the actual packaged binary briefly; this is intentionally
+          # separate from tauri dev so bundle/runtime failures are visible.
+          "$APP_BINARY" >"$RUNNER_TEMP/agora-packaged-launch.log" 2>&1 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 10); do
+            kill -0 "$APP_PID" 2>/dev/null && sleep 1 || {
+              cat "$RUNNER_TEMP/agora-packaged-launch.log"
+              echo "::error::Packaged Agora app exited during launch smoke test."
+              exit 1
+            }
+          done
+          kill "$APP_PID" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
 
   # ------------------------------------------------------------------
   # Build CLI
@@ -283,6 +341,68 @@ jobs:
             echo "Uploading $f ..."
             gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
           done
+
+      - name: Verify macOS release assets and updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          mkdir -p "$RUNNER_TEMP/agora-updater-check"
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json \
+            --dir "$RUNNER_TEMP/agora-updater-check" \
+            --clobber
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            >"$RUNNER_TEMP/agora-updater-check/release.json"
+
+          python - "$RUNNER_TEMP/agora-updater-check" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          release = json.loads((root / "release.json").read_text())
+          latest = json.loads((root / "latest.json").read_text())
+          asset_names = [asset["name"] for asset in release["assets"]]
+
+          markers = {
+              "aarch64": ("aarch64", "arm64"),
+              "x86_64": ("x86_64", "x64"),
+          }
+          for architecture, names in markers.items():
+              bundles = [
+                  name
+                  for name in asset_names
+                  if name.endswith(".dmg")
+                  and any(marker in name for marker in names)
+              ]
+              updater_archives = [
+                  name
+                  for name in asset_names
+                  if name.endswith(".app.tar.gz")
+                  and any(marker in name for marker in names)
+              ]
+              if not bundles or not updater_archives:
+                  raise SystemExit(
+                      f"missing {architecture} macOS assets; "
+                      f"dmg={bundles!r}, updater={updater_archives!r}"
+                  )
+
+              platform = latest.get("platforms", {}).get(f"darwin-{architecture}")
+              if not platform or not platform.get("signature"):
+                  raise SystemExit(
+                      f"latest.json is missing a signed darwin-{architecture} entry"
+                  )
+              if not platform.get("url", "").endswith(".app.tar.gz"):
+                  raise SystemExit(
+                      f"darwin-{architecture} updater URL is not an .app.tar.gz: "
+                      f"{platform.get('url')!r}"
+                  )
+
+          print("Verified Intel and Apple Silicon macOS bundles and updater entries.")
+          PY
 
       # The release stays a draft here on purpose: a human must smoke-test
       # the artifacts and publish explicitly (see docs/RELEASING.md).

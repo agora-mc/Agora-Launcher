@@ -16,7 +16,7 @@ Do not treat a successful catalog release as proof that a desktop package was bu
 - [ ] Version metadata agrees across package files (`python scripts/set_release_version.py --check`; also enforced by the `version-metadata` CI job).
 - [ ] Changelog or release notes describe user-visible changes.
 - [ ] Required public build variables are present in the release workflow.
-- [ ] Signing and updater configuration are available for intended platforms.
+- [ ] Signing and updater configuration are available for intended platforms, including Apple Silicon and Intel macOS.
 - [ ] Unit, integration, frontend, and end-to-end tests pass.
 - [ ] The in-app guide and website documentation match current labels.
 - [ ] CLI help and `docs/CLI.md` match current commands.
@@ -35,10 +35,11 @@ Do not rely on fixed installer filenames or package sizes in documentation. Taur
 The workflow leaves the release as a draft with all artifacts uploaded and `SHA256SUMS` generated. It never publishes automatically. Inspect the draft after the workflow finishes before publishing, and cancel or re-run the workflow if any of these are wrong:
 
 - platform and architecture coverage;
+- both Apple Silicon and Intel macOS installers, with architecture-bearing bundle names;
 - version shown by the application;
 - installer identity;
 - checksums or signatures where provided;
-- updater metadata;
+- updater metadata contains signed `darwin-aarch64` and `darwin-x86_64` entries;
 - release notes;
 - accidental debug artifacts.
 
@@ -49,6 +50,7 @@ Use the actual release artifact, not `tauri dev`.
 Minimum test:
 
 1. install or run the packaged build;
+   - On macOS, launch both the Apple Silicon and Intel `.app` packages on their matching hardware.
 2. complete first-run setup on a clean disposable profile;
 3. synchronize and verify the catalog;
 4. confirm Browse returns curated content;
