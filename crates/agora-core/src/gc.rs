@@ -25,6 +25,64 @@ pub enum GcProfile {
     Manual,
 }
 
+/// Canonical persisted JVM garbage-collector selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GcSelection {
+    /// Let the Java version choose the recommended profile.
+    Auto,
+    /// Generational ZGC on Java 21+ (classic ZGC on older supported Java).
+    LowLatency,
+    /// Aikar's G1GC-derived profile.
+    HighEfficiency,
+    /// User-supplied raw JVM flags.
+    Manual,
+}
+
+impl GcSelection {
+    /// Parse new caller input strictly, accepting only canonical values and
+    /// the aliases that have historically been sent by callers.
+    pub fn from_input(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "auto" | "g1gc" => Some(Self::Auto),
+            "low_latency" | "zgc" => Some(Self::LowLatency),
+            "high_efficiency" => Some(Self::HighEfficiency),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+
+    /// Decode a stored value without rewriting it. Legacy and unknown values
+    /// intentionally retain the historical Auto behavior.
+    pub fn from_persisted(value: &str) -> Self {
+        match Self::from_input(value) {
+            Some(selection) => selection,
+            None => Self::Auto,
+        }
+    }
+
+    /// Return the canonical value used for new persistence writes.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::LowLatency => "low_latency",
+            Self::HighEfficiency => "high_efficiency",
+            Self::Manual => "manual",
+        }
+    }
+
+    /// Resolve Auto as `None`, preserving the existing GC call-site contract.
+    pub const fn resolve(self) -> Option<GcProfile> {
+        match self {
+            Self::Auto => None,
+            Self::LowLatency => Some(GcProfile::LowLatency),
+            Self::HighEfficiency => Some(GcProfile::HighEfficiency),
+            Self::Manual => Some(GcProfile::Manual),
+        }
+    }
+}
+
 impl GcProfile {
     pub fn recommended_for_java_version(java_version: u32) -> Self {
         if java_version >= 21 {
@@ -345,5 +403,53 @@ mod tests {
         assert_eq!(result.profile, GcProfile::LowLatency);
         assert!(result.jvm_args.contains("-XX:+UseZGC"));
         assert!(result.jvm_args.contains("-XX:+ZGenerational"));
+    }
+
+    #[test]
+    fn gc_selection_input_is_strict_and_canonical() {
+        let accepted = [
+            ("auto", GcSelection::Auto, "auto"),
+            ("manual", GcSelection::Manual, "manual"),
+            ("low_latency", GcSelection::LowLatency, "low_latency"),
+            (
+                "high_efficiency",
+                GcSelection::HighEfficiency,
+                "high_efficiency",
+            ),
+            ("g1gc", GcSelection::Auto, "auto"),
+            ("zgc", GcSelection::LowLatency, "low_latency"),
+        ];
+        for (input, expected, persisted) in accepted {
+            let selection = GcSelection::from_input(input).expect("input should be accepted");
+            assert_eq!(selection, expected);
+            assert_eq!(selection.as_str(), persisted);
+        }
+
+        assert_eq!(
+            GcSelection::from_input("  HIGH_EFFICIENCY  "),
+            Some(GcSelection::HighEfficiency)
+        );
+        assert!(GcSelection::from_input("shenandoah").is_none());
+        assert!(GcSelection::from_input("nonsense").is_none());
+        assert!(GcSelection::from_input("").is_none());
+    }
+
+    #[test]
+    fn gc_selection_persisted_values_use_compatibility_fallbacks() {
+        let values = [
+            ("auto", GcSelection::Auto),
+            ("manual", GcSelection::Manual),
+            ("low_latency", GcSelection::LowLatency),
+            ("high_efficiency", GcSelection::HighEfficiency),
+            ("g1gc", GcSelection::Auto),
+            ("zgc", GcSelection::LowLatency),
+            ("shenandoah", GcSelection::Auto),
+            ("", GcSelection::Auto),
+            ("garbage", GcSelection::Auto),
+            ("  ZGC  ", GcSelection::LowLatency),
+        ];
+        for (stored, expected) in values {
+            assert_eq!(GcSelection::from_persisted(stored), expected);
+        }
     }
 }

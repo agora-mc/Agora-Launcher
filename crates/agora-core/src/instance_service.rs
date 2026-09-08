@@ -381,10 +381,16 @@ impl InstanceService {
     ) -> LauncherResult<()> {
         let instance_id = self.validate_id(instance_id)?;
         let memory_mb = memory_mb.clamp(2048, 32768);
-        let gc = match gc.trim().to_ascii_lowercase().as_str() {
-            "auto" | "g1gc" | "zgc" | "shenandoah" | "manual" => gc.trim().to_ascii_lowercase(),
-            _ => "auto".to_string(),
-        };
+        let gc_selection = crate::gc::GcSelection::from_input(gc).ok_or_else(|| {
+            LauncherError::Generic {
+                code: "ERR_INVALID_JVM_GC".into(),
+                message: format!(
+                    "Unsupported JVM GC selection '{}'. Expected auto, low_latency, high_efficiency, or manual.",
+                    gc.trim()
+                ),
+            }
+        })?;
+        let gc = gc_selection.as_str();
         let conn = self.connection()?;
         let _row = crate::db::get_instance(&conn, &instance_id)
             .map_err(|error| LauncherError::Generic {
@@ -399,7 +405,7 @@ impl InstanceService {
             &conn,
             &instance_id,
             memory_mb,
-            &gc,
+            gc,
             always_pre_touch,
             custom_args,
             memory_mode,
@@ -1422,7 +1428,19 @@ fn prepare_row(instance_id: &str, request: &CreateInstanceRequest) -> InstanceRo
             .filter(|mode| *mode == "manual")
             .unwrap_or("auto")
             .into(),
-        jvm_gc: request.jvm_gc.clone().unwrap_or_else(|| "auto".into()),
+        // Creation takes its GC from a template or a clone source, so the
+        // value has not been through `update_jvm`'s validation. Normalize it
+        // here rather than persisting a third vocabulary; an unrecognised
+        // value decodes to Auto, which is what it would have done anyway.
+        jvm_gc: request
+            .jvm_gc
+            .as_deref()
+            .map(|gc| {
+                crate::gc::GcSelection::from_persisted(gc)
+                    .as_str()
+                    .to_string()
+            })
+            .unwrap_or_else(|| "auto".into()),
         jvm_custom_args: request.jvm_custom_args.clone().unwrap_or_default(),
         jvm_always_pre_touch: request.jvm_always_pre_touch.unwrap_or_else(|| {
             crate::models::recommended_java_version_for_minecraft(&request.minecraft_version) < 21
@@ -1559,6 +1577,124 @@ mod tests {
             .is_ok());
         service.delete("test", None).unwrap();
         assert!(service.list().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn update_jvm_persists_canonical_gc_and_resolves_launch_profile() {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "GC Test".into(),
+            instance_id: "gc-test".into(),
+            minecraft_version: "1.21".into(),
+            loader: "vanilla".into(),
+            loader_version: "".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let row = prepare_row("gc-test", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        drop(conn);
+
+        let service = InstanceService::new(ctx.clone());
+        let cases = [
+            (
+                "low_latency",
+                "low_latency",
+                Some(crate::gc::GcProfile::LowLatency),
+            ),
+            (
+                "high_efficiency",
+                "high_efficiency",
+                Some(crate::gc::GcProfile::HighEfficiency),
+            ),
+            ("manual", "manual", Some(crate::gc::GcProfile::Manual)),
+            ("auto", "auto", None),
+        ];
+
+        for (input, persisted, expected_profile) in cases {
+            service
+                .update_jvm("gc-test", 4096, input, true, "", "manual")
+                .unwrap();
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let row = crate::db::get_instance(&conn, "gc-test")
+                .unwrap()
+                .expect("fixture row should exist");
+            assert_eq!(row.jvm_gc, persisted);
+            assert_eq!(
+                crate::gc::GcSelection::from_persisted(&row.jvm_gc).resolve(),
+                expected_profile
+            );
+        }
+
+        let auto_java_17 = crate::gc::compute_gc(17, 4096, "", None).jvm_args;
+        let low_latency_java_17 =
+            crate::gc::compute_gc(17, 4096, "", Some(crate::gc::GcProfile::LowLatency)).jvm_args;
+        assert_ne!(low_latency_java_17, auto_java_17);
+
+        let auto_java_21 = crate::gc::compute_gc(21, 4096, "", None).jvm_args;
+        let high_efficiency_java_21 =
+            crate::gc::compute_gc(21, 4096, "", Some(crate::gc::GcProfile::HighEfficiency))
+                .jvm_args;
+        assert_ne!(high_efficiency_java_21, auto_java_21);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_jvm_gc_is_rejected_without_changing_the_row() {
+        let (ctx, root) = context();
+        let request = CreateInstanceRequest {
+            name: "GC Invalid Test".into(),
+            instance_id: "gc-invalid".into(),
+            minecraft_version: "1.21".into(),
+            loader: "vanilla".into(),
+            loader_version: "".into(),
+            jvm_memory_mb: None,
+            jvm_memory_mode: None,
+            jvm_gc: None,
+            jvm_custom_args: None,
+            jvm_always_pre_touch: None,
+            is_modpack: None,
+            pack_icon_url: None,
+            template_id: None,
+        };
+        let row = prepare_row("gc-invalid", &request);
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        drop(conn);
+
+        let service = InstanceService::new(ctx.clone());
+        service
+            .update_jvm("gc-invalid", 4096, "low_latency", true, "", "manual")
+            .unwrap();
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        let before = crate::db::get_instance(&conn, "gc-invalid")
+            .unwrap()
+            .expect("fixture row should exist");
+        drop(conn);
+
+        for invalid in ["shenandoah", "nonsense"] {
+            let error = service
+                .update_jvm("gc-invalid", 8192, invalid, false, "-Xss1M", "auto")
+                .unwrap_err();
+            assert_eq!(error.code(), "ERR_INVALID_JVM_GC");
+            assert!(error.to_string().contains(invalid));
+
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            let after = crate::db::get_instance(&conn, "gc-invalid")
+                .unwrap()
+                .expect("fixture row should exist");
+            assert_eq!(after.jvm_gc, before.jvm_gc);
+        }
+
         let _ = std::fs::remove_dir_all(root);
     }
 
