@@ -27,6 +27,11 @@ const LIVE_FILE_INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const TRACKED_ENTRIES: &[&str] = &[
     "mods",
     "config",
+    // Pack overrides and instance templates write these, so a rollback that
+    // did not capture them left the failed operation's partial writes in place
+    // while reporting a clean restore.
+    "defaultconfigs",
+    "kubejs",
     "resourcepacks",
     "shaderpacks",
     "datapacks",
@@ -46,6 +51,8 @@ pub(crate) const TRACKED_ENTRIES: &[&str] = &[
 const PRELAUNCH_TRACKED_ENTRIES: &[&str] = &[
     "mods",
     "config",
+    "defaultconfigs",
+    "kubejs",
     "resourcepacks",
     "shaderpacks",
     "datapacks",
@@ -57,6 +64,12 @@ const PRELAUNCH_TRACKED_ENTRIES: &[&str] = &[
 /// (everything except `saves/`).
 pub fn prelaunch_tracked_entries() -> &'static [&'static str] {
     PRELAUNCH_TRACKED_ENTRIES
+}
+
+/// The full tracked-entry set, the starting point for an operation's recovery
+/// scope. See [`recovery_scope_for_writes`].
+pub fn default_tracked_entries() -> &'static [&'static str] {
+    TRACKED_ENTRIES
 }
 
 /// Stable identity for the exact roots covered by a snapshot receipt.
@@ -1940,6 +1953,70 @@ fn snapshot_roots(manifest: &SnapshotManifest) -> HashSet<&str> {
         .collect()
 }
 
+/// The recovery scope an operation needs, given the paths it plans to write.
+///
+/// A snapshot can only undo what it captured, so an operation's rollback point
+/// is only trustworthy when
+///
+/// ```text
+/// writes(operation) ⊆ coverage(snapshot)
+/// ```
+///
+/// The launcher used to satisfy that by hoping a hand-maintained list of
+/// tracked directories happened to include everything every operation touched.
+/// It did not: pack overrides may write `defaultconfigs/` and `kubejs/`, which
+/// nothing captured, so a failed update rolled back to a snapshot that never
+/// held those files and left the partial write behind while reporting success.
+///
+/// Deriving the scope from the operation's own plan removes the coupling. A
+/// pack that introduces a new root gets coverage because the operation said it
+/// would write there, not because someone remembered to extend a constant.
+///
+/// "Writes" includes creation, deletion, replacement, and both sides of a
+/// rename — pass every path the operation may touch, not just the new ones.
+pub fn recovery_scope_for_writes<'a>(
+    base: &[&'a str],
+    writes: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<String>, String> {
+    let mut roots: Vec<String> = base.iter().map(|name| (*name).to_string()).collect();
+    let mut seen: HashSet<String> = roots.iter().cloned().collect();
+    for relative in writes {
+        let root = write_root(relative)?;
+        if seen.insert(root.clone()) {
+            roots.push(root);
+        }
+    }
+    roots.sort();
+    Ok(roots)
+}
+
+/// Paths an operation plans to write that the given scope would not recover.
+///
+/// Returned rather than asserted so the caller can name them in an error before
+/// touching live state.
+pub fn uncovered_writes<'a>(
+    scope: &[&str],
+    writes: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<String>, String> {
+    let covered: HashSet<&str> = scope.iter().copied().collect();
+    let mut uncovered = Vec::new();
+    for relative in writes {
+        let root = write_root(relative)?;
+        if !covered.contains(root.as_str()) && !uncovered.contains(&relative.to_string()) {
+            uncovered.push(relative.to_string());
+        }
+    }
+    Ok(uncovered)
+}
+
+/// The top-level root a relative write path belongs to.
+fn write_root(relative: &str) -> Result<String, String> {
+    let normalized = relative.replace('\\', "/");
+    let root = normalized.split('/').next().unwrap_or_default();
+    validate_scope_root(root)?;
+    Ok(root.to_string())
+}
+
 /// Record the live state of each scope root at capture time.
 ///
 /// Uses `symlink_metadata` so a link is classified as what it is rather than
@@ -2556,6 +2633,45 @@ mod tests {
         );
         assert_eq!(fs::read(world.join("region.mca")).unwrap(), b"region data");
         assert!(!inst.join(".agora_pre_restore").exists());
+    }
+
+    #[test]
+    fn a_recovery_scope_grows_to_cover_the_paths_an_operation_declares() {
+        let scope = recovery_scope_for_writes(
+            &["mods", "config"],
+            [
+                "kubejs/server_scripts/a.js",
+                "mods/x.jar",
+                "brand_new/y.cfg",
+            ],
+        )
+        .unwrap();
+        assert!(scope.contains(&"kubejs".to_string()));
+        assert!(scope.contains(&"brand_new".to_string()));
+        // Already-covered roots are not duplicated.
+        assert_eq!(scope.iter().filter(|r| *r == "mods").count(), 1);
+    }
+
+    #[test]
+    fn uncovered_writes_names_the_paths_a_scope_cannot_recover() {
+        let uncovered = uncovered_writes(
+            &["mods", "config"],
+            ["mods/x.jar", "kubejs/a.js", "defaultconfigs/b.toml"],
+        )
+        .unwrap();
+        assert_eq!(uncovered, vec!["kubejs/a.js", "defaultconfigs/b.toml"]);
+
+        assert!(uncovered_writes(&["mods"], ["mods/x.jar"])
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A write path must not be able to name the launcher's own state, or an
+    /// operation could "cover" — and therefore replace — the object store.
+    #[test]
+    fn a_write_path_cannot_name_private_launcher_state() {
+        assert!(recovery_scope_for_writes(&["mods"], [".agora_snapshots/x"]).is_err());
+        assert!(uncovered_writes(&["mods"], ["../escape"]).is_err());
     }
 
     #[test]

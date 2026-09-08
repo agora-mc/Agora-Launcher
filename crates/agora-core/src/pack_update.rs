@@ -1480,7 +1480,28 @@ pub fn apply_merge(
         }
     }
 
-    let snapshot = crate::snapshot::create_snapshot(instance_dir, Some("pack-merge"))?;
+    // The rollback point is derived from what this merge will actually write,
+    // not from a hand-maintained list of tracked directories. A pack whose
+    // overrides reach `defaultconfigs/` or `kubejs/` — or any root a future
+    // pack format introduces — is covered because the plan says so.
+    let planned_writes = planned_write_paths(plan, resolutions);
+    let scope = crate::snapshot::recovery_scope_for_writes(
+        crate::snapshot::default_tracked_entries(),
+        planned_writes.iter().map(String::as_str),
+    )?;
+    let scope_refs: Vec<&str> = scope.iter().map(String::as_str).collect();
+    // Belt and braces: if the derivation ever misses something, fail here,
+    // before any live file is touched, rather than after.
+    let uncovered =
+        crate::snapshot::uncovered_writes(&scope_refs, planned_writes.iter().map(String::as_str))?;
+    if !uncovered.is_empty() {
+        return Err(format!(
+            "refusing to apply: these paths would be written but could not be rolled back: {}",
+            uncovered.join(", ")
+        ));
+    }
+    let snapshot =
+        crate::snapshot::create_snapshot_scoped(instance_dir, Some("pack-merge"), &scope_refs)?;
 
     // Everything that can leave the instance inconsistent belongs inside this
     // closure, because everything inside it is undone by the snapshot restore
@@ -1561,6 +1582,47 @@ fn needs_staged_source(kind: &str) -> bool {
         kind,
         "add" | "update" | "update_keep_disabled" | "rename_update" | "rename_update_keep_disabled"
     )
+}
+
+/// Every instance-relative path this merge may write, delete, or replace.
+///
+/// Both sides of a rename are included: rolling back a rename means restoring
+/// the path the file came from as well as the one it went to.
+fn planned_write_paths(
+    plan: &PackMergePlan,
+    resolutions: &BTreeMap<String, ConflictResolution>,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut push = |value: &str| {
+        if !value.is_empty() && !paths.iter().any(|existing| existing == value) {
+            paths.push(value.to_string());
+        }
+    };
+    for action in &plan.actions {
+        match action.kind.as_str() {
+            "keep" | "keep_user_added" => {}
+            _ => {
+                push(&action.target_path);
+                if let Some(previous) = &action.previous_path {
+                    push(previous);
+                }
+            }
+        }
+    }
+    for conflict in &plan.conflicts {
+        if resolutions.get(&conflict.key) == Some(&ConflictResolution::TakeTheirs) {
+            if let Some(theirs) = &conflict.theirs_path {
+                push(theirs);
+            }
+            if let Some(ours) = &conflict.ours_path {
+                push(ours);
+            }
+            push(&conflict.logical_path);
+        }
+    }
+    // The merge always rewrites the manifest.
+    push("instance_manifest.json");
+    paths
 }
 
 fn apply_one_action(
@@ -2774,6 +2836,96 @@ mod tests {
         // The instance manifest still exists and the pre-merge file is back.
         assert!(inst.join("instance_manifest.json").is_file());
         assert_eq!(fs::read(inst.join("mods/a.jar")).unwrap(), b"a-old");
+    }
+
+    /// Rollback must cover every root the operation writes, not just the ones
+    /// on the launcher's tracked list.
+    ///
+    /// `kubejs/` is a legitimate pack-override root that nothing captured, so
+    /// a merge that wrote there and then failed rolled back to a snapshot which
+    /// had never held those files — leaving the partial write in place while
+    /// reporting that the instance had been restored.
+    #[test]
+    fn rollback_covers_an_override_root_outside_the_tracked_list() {
+        let tmp = TempDir::new().unwrap();
+        let inst = seed_instance(&tmp, "inst");
+        write(&inst, "kubejs/server_scripts/recipes.js", b"user-edited");
+
+        let base = vec![InstancePackFile {
+            relative_path: "kubejs/server_scripts/recipes.js".into(),
+            sha256: sha2_256_hex(b"user-edited"),
+            size: 11,
+        }];
+        let theirs = vec![InstancePackFile {
+            relative_path: "kubejs/server_scripts/recipes.js".into(),
+            sha256: sha('c'),
+            size: 1,
+        }];
+        let ours = crate::pack_inventory::collect_pack_inventory(&inst).unwrap();
+        let plan = crate::pack_merge::plan_pack_update(&base, &theirs, &ours);
+        assert_eq!(plan.actions.len(), 1, "expected a single update action");
+
+        let staged = tmp.path().join("staged");
+        write(
+            &staged,
+            "kubejs/server_scripts/recipes.js",
+            b"from-the-pack",
+        );
+
+        let before = crate::snapshot::live_file_index(&inst).unwrap();
+        PACK_UPDATE_TEST_FAILPOINT.with(|s| *s.borrow_mut() = Some("apply-one"));
+        let (conn, _dbtmp) = test_conn();
+        seed_instance_row(&conn, "inst");
+        let old_manifest =
+            crate::helpers::read_manifest(&inst.join("instance_manifest.json")).unwrap();
+        let theirs_struct = MrpackTheirs {
+            files: theirs.clone(),
+            unverified: BTreeSet::new(),
+            converged: BTreeSet::new(),
+            provisional_hash: BTreeMap::new(),
+            download_urls: BTreeMap::new(),
+            mod_ids: HashMap::new(),
+            files_needing_download: 0,
+            download_bytes: 0,
+            size_unknown_count: 0,
+            pack_name: "test".into(),
+            pack_version_id: None,
+            runtime_requirement: test_runtime_requirement(),
+        };
+        let reconciled = reconcile_manifest(
+            &old_manifest,
+            &plan,
+            &BTreeMap::new(),
+            &theirs_struct,
+            &staged,
+        )
+        .unwrap();
+        let err = apply_merge(
+            &conn,
+            "inst",
+            &inst,
+            &staged,
+            &plan,
+            &BTreeMap::new(),
+            &reconciled,
+        )
+        .unwrap_err();
+        PACK_UPDATE_TEST_FAILPOINT.with(|s| *s.borrow_mut() = None);
+
+        assert!(
+            err.contains("restored"),
+            "apply must restore on failure: {err}"
+        );
+        assert_eq!(
+            fs::read(inst.join("kubejs/server_scripts/recipes.js")).unwrap(),
+            b"user-edited",
+            "the override root was written but not rolled back"
+        );
+        assert_eq!(
+            crate::snapshot::live_file_index(&inst).unwrap(),
+            before,
+            "instance must be exactly as it was before the merge"
+        );
     }
 
     // ---- Staging (offline, fake fetcher) -----------------------------------
