@@ -169,7 +169,7 @@ fn fabric_single_matches(sub: &str, version: &str) -> bool {
 }
 
 fn tilde_matches(version: &str, reference: &str) -> bool {
-    if compare_versions(version, reference) == Ordering::Less {
+    if compare_approximation_bounds(version, reference) == Ordering::Less {
         return false;
     }
     // Mirror StrictOp::SameToNextMinor::test — version >= reference and
@@ -192,7 +192,7 @@ fn tilde_matches(version: &str, reference: &str) -> bool {
 }
 
 fn caret_matches(version: &str, reference: &str) -> bool {
-    if compare_versions(version, reference) == Ordering::Less {
+    if compare_approximation_bounds(version, reference) == Ordering::Less {
         return false;
     }
     // Mirror StrictOp::SameToNextMajor::test — version >= reference and
@@ -202,6 +202,22 @@ fn caret_matches(version: &str, reference: &str) -> bool {
     let v_major = v_segs.first().copied().unwrap_or("0");
     let r_major = r_segs.first().copied().unwrap_or("0");
     compare_segments(v_major, r_major) == Ordering::Equal
+}
+
+/// Compare the lower bounds used by the lenient `~` and `^` operators.
+///
+/// The general lenient comparator intentionally ranks a numeric segment above
+/// a non-numeric segment, which is useful for non-SemVer Minecraft versions.
+/// For semantic versions, however, a hyphen introduces prerelease identifiers
+/// whose ordering is different (numeric identifiers rank below non-numeric
+/// identifiers, and every prerelease ranks below its release). Keep that
+/// distinction local to the operators that need it instead of changing the
+/// shared comparator used by all other lenient operators.
+fn compare_approximation_bounds(a: &str, b: &str) -> Ordering {
+    match (parse_semantic(a, false), parse_semantic(b, false)) {
+        (Ok(a), Ok(b)) => semantic_compare(&a, &b),
+        _ => compare_versions(a, b),
+    }
 }
 
 /// Parse the operator prefix from a predicate like `">=1.0"` → `(GreaterEqual, "1.0")`.
@@ -1407,6 +1423,10 @@ mod tests {
         assert!(unsat(&fabric_decl(&["^1.2"]), "0.9"));
         assert!(sat(&fabric_decl(&["^1"]), "1.99"));
         assert!(unsat(&fabric_decl(&["^1"]), "2.0"));
+        // Fabric's caret operator is same-major even when the major is zero;
+        // it does not use npm's special ^0.x narrowing rule.
+        assert!(sat(&fabric_decl(&["^0.2.3"]), "0.9.0"));
+        assert!(unsat(&fabric_decl(&["^0.2.3"]), "1.0.0"));
     }
 
     #[test]
@@ -1661,6 +1681,14 @@ mod tests {
                 "pred '{pred}' vs '{version}'"
             );
         }
+
+        // SemVer prerelease ordering is numeric < non-numeric. The old
+        // flattened lenient comparison inverted this and falsely matched.
+        let ranges = vec!["~1.2.3-alpha".to_string()];
+        assert_eq!(
+            evaluate_version_match(&ranges, "1.2.3-1", true),
+            VersionMatch::NotMatched
+        );
     }
 
     #[test]
@@ -1681,5 +1709,20 @@ mod tests {
                 "pred '{pred}' vs '{version}'"
             );
         }
+
+        // The caret form has the same prerelease lower-bound ordering.
+        let ranges = vec!["^1.2.3-alpha".to_string()];
+        assert_eq!(
+            evaluate_version_match(&ranges, "1.2.3-1", true),
+            VersionMatch::NotMatched
+        );
+
+        // Pin the repository's Fabric-compatible major-zero behavior: this is
+        // not npm's ^0.2.3 => <0.3.0 rule.
+        let ranges = vec!["^0.2.3".to_string()];
+        assert_eq!(
+            evaluate_version_match(&ranges, "0.9.0", true),
+            VersionMatch::Matched
+        );
     }
 }
