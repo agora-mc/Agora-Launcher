@@ -285,13 +285,7 @@ impl LaunchService {
         let network_policy = NetworkPolicy::from_db(&conn);
         let identity = if request.mode == LaunchMode::Direct {
             network_policy.check(crate::network::NetworkCategory::MicrosoftAuthentication)?;
-            match crate::msa::get_valid_credentials(
-                self.ctx
-                    .http_clients
-                    .get(crate::http_client::ClientCategory::Microsoft),
-            )
-            .await
-            {
+            match crate::msa::get_valid_credentials(&self.ctx.http_clients).await {
                 crate::msa::MsaCredentialOutcome::Valid(credentials) => LaunchIdentity {
                     username: credentials.username,
                     access_token: credentials.access_token,

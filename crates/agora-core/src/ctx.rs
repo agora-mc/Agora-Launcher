@@ -134,6 +134,12 @@ impl CoreContext {
 
         // 2. Fatal: initialize / migrate local_state.db.
         let db_path = paths.local_state_db();
+        // Every adapter reaches the network through this context, so this is
+        // the one place the outbound policy has to be installed. Until it is,
+        // `network_gate` denies — a missing policy must not read as consent.
+        crate::network_gate::install(Arc::new(crate::network_gate::SettingsGate::new(
+            db_path.clone(),
+        )));
         crate::db::init_local_state_db(&db_path).map_err(|e| {
             let msg = format!(
                 "Failed to initialize local state database at {}: {e}",
@@ -293,6 +299,11 @@ impl CoreContext {
         let paths = AppPaths::from_root(root);
         let lock_manager = LockManager::new(paths.locks_root());
         let _ = std::fs::create_dir_all(paths.locks_root());
+        // Outbound requests are denied until an adapter installs a policy, so
+        // a test context installs a permissive one. Production adapters must
+        // install `SettingsGate` instead — there is no production constructor
+        // that yields an unrestricted gate.
+        crate::network_gate::install(std::sync::Arc::new(crate::network_gate::AllowAll));
         Self {
             paths,
             launcher_profiles_path: Some(launcher_profiles_path),

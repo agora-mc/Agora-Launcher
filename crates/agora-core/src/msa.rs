@@ -934,7 +934,11 @@ async fn get_minecraft_profile(
 ///
 /// `db_path` is the path to `local_state.db` — the caller must provide the
 /// correct path for the running binary (desktop app vs CLI).
-pub async fn begin_login(client: &reqwest::Client, db_path: &Path) -> LauncherResult<LoginFlow> {
+pub async fn begin_login(
+    clients: &crate::http_client::HttpClients,
+    db_path: &Path,
+) -> LauncherResult<LoginFlow> {
+    let client = authorized_microsoft_client(clients)?;
     check_network_enabled(
         db_path,
         "network_msa_enabled",
@@ -970,12 +974,13 @@ pub async fn begin_login(client: &reqwest::Client, db_path: &Path) -> LauncherRe
 /// `db_path` is the path to `local_state.db` — must match the path passed to
 /// [`begin_login`].
 pub async fn finish_login(
-    client: &reqwest::Client,
+    clients: &crate::http_client::HttpClients,
     code: &str,
     flow: &LoginFlow,
     state: Option<&str>,
     db_path: &Path,
 ) -> LauncherResult<MsaCredentials> {
+    let client = authorized_microsoft_client(clients)?;
     check_network_enabled(
         db_path,
         "network_msa_enabled",
@@ -1044,10 +1049,11 @@ pub async fn finish_login(
 /// `db_path` is the path to `local_state.db` — must match the path passed to
 /// [`begin_login`].
 pub async fn refresh_credentials(
-    client: &reqwest::Client,
+    clients: &crate::http_client::HttpClients,
     creds: &MsaCredentials,
     db_path: &Path,
 ) -> LauncherResult<MsaCredentials> {
+    let client = authorized_microsoft_client(clients)?;
     check_network_enabled(
         db_path,
         "network_msa_enabled",
@@ -1292,8 +1298,30 @@ impl MsaRefreshHttp for MockMsaRefreshHttp {
 ///    - On network / 5xx / malformed responses, preserves credentials and returns `RefreshFailed`.
 ///    - On success, performs the full refresh chain, persists it, and returns `Valid`.
 ///
-pub async fn get_valid_credentials(client: &reqwest::Client) -> MsaCredentialOutcome {
+pub async fn get_valid_credentials(
+    clients: &crate::http_client::HttpClients,
+) -> MsaCredentialOutcome {
+    let client = match authorized_microsoft_client(clients) {
+        Ok(client) => client,
+        // A refused request is a temporary condition — Lockdown Mode or a
+        // disabled endpoint — so stored credentials must be preserved rather
+        // than treated as an invalidated session.
+        Err(error) => return MsaCredentialOutcome::RefreshFailed(error),
+    };
     get_valid_credentials_inner(&LiveMsaRefreshHttp, client).await
+}
+
+/// Authorize Microsoft traffic, then hand back the category's client.
+///
+/// The Xbox Live sign-in chain talks to a fixed set of Microsoft endpoints
+/// through a raw client rather than the checked helpers, so the gate is applied
+/// here at the entry point instead. Keeping the client crate-private means an
+/// adapter cannot obtain one and skip this.
+fn authorized_microsoft_client(
+    clients: &crate::http_client::HttpClients,
+) -> LauncherResult<&reqwest::Client> {
+    crate::network_gate::authorize(crate::http_client::ClientCategory::Microsoft)?;
+    Ok(clients.get(crate::http_client::ClientCategory::Microsoft))
 }
 
 /// Internal variant with injectable HTTP — enables deterministic testing.

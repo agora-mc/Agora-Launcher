@@ -3358,17 +3358,23 @@ async fn capture_msa_callback(
 #[tauri::command]
 pub async fn msa_login(
     app: tauri::AppHandle,
-    state: tauri::State<'_, LauncherState>,
+    _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<MsaAccountStatus> {
     let db_path = crate::paths::local_state_db_path(&app).map_err(|e| LauncherError::Generic {
         code: "ERR_DB".into(),
         message: e.to_string(),
     })?;
-    let client = { state.lock().await.client.clone() };
-    let flow = agora_core::msa::begin_login(&client, &db_path).await?;
+    let ctx = crate::core_context(&app)?;
+    let flow = agora_core::msa::begin_login(&ctx.http_clients, &db_path).await?;
     let (code, oauth_state) = capture_msa_callback(app, &flow.auth_uri).await?;
-    let creds =
-        agora_core::msa::finish_login(&client, &code, &flow, Some(&oauth_state), &db_path).await?;
+    let creds = agora_core::msa::finish_login(
+        &ctx.http_clients,
+        &code,
+        &flow,
+        Some(&oauth_state),
+        &db_path,
+    )
+    .await?;
     Ok(MsaAccountStatus::from(&creds))
 }
 
@@ -3401,18 +3407,22 @@ pub async fn credential_storage_status(
 #[tauri::command]
 pub async fn msa_refresh(
     app: tauri::AppHandle,
-    state: tauri::State<'_, LauncherState>,
+    _state: tauri::State<'_, LauncherState>,
 ) -> LauncherResult<MsaAccountStatus> {
     let db_path = crate::paths::local_state_db_path(&app).map_err(|e| LauncherError::Generic {
         code: "ERR_DB".into(),
         message: e.to_string(),
     })?;
-    let s = state.lock().await;
     let creds = agora_core::msa::load_credentials()?.ok_or_else(|| LauncherError::Generic {
         code: "ERR_MSA_NOT_AUTHENTICATED".into(),
         message: "Not signed in. Sign in with your Microsoft account first.".into(),
     })?;
-    let refreshed = agora_core::msa::refresh_credentials(&s.client, &creds, &db_path).await?;
+    let refreshed = agora_core::msa::refresh_credentials(
+        &crate::core_context(&app)?.http_clients,
+        &creds,
+        &db_path,
+    )
+    .await?;
     Ok(MsaAccountStatus::from(&refreshed))
 }
 
@@ -3520,7 +3530,8 @@ pub async fn create_snapshot(
     let ctx = crate::core_context(&app)?;
     // Locking, launch exclusion, and retention all live in the core service,
     // so the CLI and MCP adapters get exactly the same guarantees.
-    ctx.task_scheduler
+    let scheduler = ctx.task_scheduler.clone();
+    scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
             move || {
@@ -3564,7 +3575,8 @@ pub async fn restore_snapshot(
     }
 
     let ctx = crate::core_context(&app)?;
-    ctx.task_scheduler
+    let scheduler = ctx.task_scheduler.clone();
+    scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
             move || {
@@ -4883,7 +4895,7 @@ pub async fn apply_loadout_profile(
             return Err(LauncherError::Generic {
                 code: "ERR_LOADOUT".into(),
                 message: match restored {
-                    Ok(()) => format!("Loadout application failed and was rolled back: {error}"),
+                    Ok(_) => format!("Loadout application failed and was rolled back: {error}"),
                     Err(restore_error) => format!(
                         "Loadout application failed and rollback also failed: {error}; {restore_error}"
                     ),
@@ -6006,7 +6018,7 @@ pub async fn repair_lockfile(
             if !report.blockers.is_empty() {
                 let restored = agora_core::snapshot::restore_snapshot(&post_dir, &post_snapshot_id);
                 return match restored {
-                    Ok(()) => Ok(
+                    Ok(_) => Ok(
                         agora_core::install_pipeline::InstallOutcome::HealthRollback {
                             health_report: report,
                             snapshot_id: post_snapshot_id.clone(),
@@ -6395,7 +6407,7 @@ pub async fn import_lockfile(
         .map_err(|e| lockfile_error("ERR_LOCKFILE_RESTORE", e.to_string()));
         let _ = crate::instances::delete_instance(&app, &instance_id);
         let message = match restore_result {
-            Ok(Ok(())) => format!("Could not finalize lockfile metadata; the clone was rolled back: {error}"),
+            Ok(Ok(_)) => format!("Could not finalize lockfile metadata; the clone was rolled back: {error}"),
             Ok(Err(restore_error)) => format!(
                 "Could not finalize lockfile metadata and rollback failed: {error}; {restore_error}"
             ),

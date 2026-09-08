@@ -352,9 +352,10 @@ impl HttpClients {
 
     /// Get the raw client for a category.
     ///
-    /// Prefer [`checked_request`] or [`checked_get_bytes`] instead of using
-    /// this directly, to ensure policy enforcement.
-    pub fn get(&self, category: ClientCategory) -> &reqwest::Client {
+    /// Crate-private on purpose: a public accessor is a way around the gate
+    /// and the URL policy, which is exactly how the desktop governance client
+    /// ended up talking to `api.github.com` unchecked. Use a checked helper.
+    pub(crate) fn get(&self, category: ClientCategory) -> &reqwest::Client {
         &self.by_category[category.index()]
     }
 
@@ -610,6 +611,10 @@ pub async fn checked_request_with_policy(
     url: &str,
     policy: HostPolicy<'_>,
 ) -> LauncherResult<reqwest::Response> {
+    // Authorization first: URL validation resolves the hostname, so checking
+    // the gate afterwards would already have produced network activity under
+    // Lockdown Mode.
+    crate::network_gate::authorize(category)?;
     // Validate initial URL against category policies.
     let _validated = check_request_url_with_policy(category, url, policy)?;
 
@@ -695,6 +700,7 @@ pub async fn checked_send(
     body: Option<Vec<u8>>,
     content_type: Option<&str>,
 ) -> LauncherResult<reqwest::Response> {
+    crate::network_gate::authorize(category)?;
     check_request_url(category, url)?;
     let client = clients.get(category);
     let mut current_method = method;
@@ -1095,6 +1101,7 @@ pub fn blocking_checked_request_with_policy(
     url: &str,
     policy: HostPolicy<'_>,
 ) -> LauncherResult<reqwest::blocking::Response> {
+    crate::network_gate::authorize(category)?;
     let _validated = check_request_url_with_policy(category, url, policy)?;
 
     // Build a blocking client with the same security posture.

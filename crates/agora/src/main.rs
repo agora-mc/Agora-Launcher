@@ -808,12 +808,7 @@ async fn main() {
         eprintln!("Warning: {warning}");
     }
     let data_dir = paths.root().to_path_buf();
-    let client = ctx
-        .http_clients
-        .get(agora_core::http_client::ClientCategory::GitHub)
-        .clone();
-
-    let result = run_command(cli, &paths, &data_dir, &client, &ctx, output_fmt).await;
+    let result = run_command(cli, &paths, &data_dir, &ctx, output_fmt).await;
     if let Err(e) = result {
         progress.log("error", &e.to_string());
         let code = exit_code_from_error(&e);
@@ -922,7 +917,6 @@ async fn run_command(
     cli: Cli,
     paths: &agora_core::app_paths::AppPaths,
     data_dir: &Path,
-    client: &reqwest::Client,
     ctx: &agora_core::ctx::Ctx,
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
@@ -2267,7 +2261,7 @@ async fn run_command(
         Commands::Auth { action } => match action {
             AuthCmd::Login => {
                 let db_path = data_dir.join("local_state.db");
-                let flow = agora_core::msa::begin_login(client, &db_path).await?;
+                let flow = agora_core::msa::begin_login(&ctx.http_clients, &db_path).await?;
                 if json {
                     eprintln!("Open this URL in your browser:");
                     eprintln!("{}", flow.auth_uri);
@@ -2286,9 +2280,14 @@ async fn run_command(
                     anyhow::bail!("No input provided");
                 }
                 let (code, state) = extract_auth_redirect(input)?;
-                let credentials =
-                    agora_core::msa::finish_login(client, &code, &flow, Some(&state), &db_path)
-                        .await?;
+                let credentials = agora_core::msa::finish_login(
+                    &ctx.http_clients,
+                    &code,
+                    &flow,
+                    Some(&state),
+                    &db_path,
+                )
+                .await?;
                 if json {
                     println!(
                         "{}",

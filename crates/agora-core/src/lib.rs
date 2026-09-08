@@ -79,6 +79,7 @@ pub mod models;
 pub mod modrinth;
 pub mod msa;
 pub mod network;
+pub mod network_gate;
 pub mod official_launcher;
 pub mod operation_manager;
 pub mod override_sanitizer;

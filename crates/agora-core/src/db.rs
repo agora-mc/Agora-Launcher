@@ -560,11 +560,56 @@ pub fn is_network_enabled(conn: &Connection, key: &str) -> bool {
 /// Lockdown overrides every per-endpoint toggle. It defaults to off when the
 /// setting has never been written.
 pub fn is_lockdown_enabled(conn: &Connection) -> bool {
-    get_setting(conn, "network_lockdown_enabled")
-        .ok()
-        .flatten()
-        .map(|v| is_value_enabled(&v))
-        .unwrap_or(false)
+    // Kept for callers that only need a best-effort answer for display.
+    // Enforcement must use `lockdown_denies_network`, which distinguishes
+    // "the user turned lockdown off" from "we could not tell".
+    lockdown_denies_network(conn).unwrap_or(true)
+}
+
+/// Whether Lockdown Mode forbids network access, failing closed.
+///
+/// `is_value_enabled` is shared with the per-endpoint toggles, where returning
+/// `true` for an unexpected shape means *enabled* and is the permissive
+/// default. For lockdown the same `true` means *deny*, so one helper produced
+/// opposite security outcomes for the two uses: an unrecognised string
+/// (`"yes"`) or a failed read silently turned lockdown **off**.
+///
+/// This parses lockdown on its own terms. Canonical booleans and the
+/// documented legacy strings are honoured; a value that is present but not
+/// understood, or a store that cannot be read, denies rather than guessing —
+/// a kill switch that fails open is not a kill switch. A cleanly absent
+/// setting keeps the documented default of off.
+pub fn lockdown_denies_network(conn: &Connection) -> crate::error::LauncherResult<bool> {
+    let raw = get_setting(conn, "network_lockdown_enabled").map_err(|error| {
+        crate::error::LauncherError::Generic {
+            code: "ERR_NETWORK_SETTINGS_UNREADABLE".into(),
+            message: format!("Could not read the Lockdown Mode setting: {error}"),
+        }
+    })?;
+    let Some(value) = raw else {
+        return Ok(false);
+    };
+    match &value {
+        serde_json::Value::Bool(enabled) => Ok(*enabled),
+        serde_json::Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(crate::error::LauncherError::Generic {
+                code: "ERR_NETWORK_SETTINGS_MALFORMED".into(),
+                message: format!(
+                    "The Lockdown Mode setting holds {text:?}, which is not a yes-or-no value. \
+                     Network access is blocked until it is corrected in Settings."
+                ),
+            }),
+        },
+        other => Err(crate::error::LauncherError::Generic {
+            code: "ERR_NETWORK_SETTINGS_MALFORMED".into(),
+            message: format!(
+                "The Lockdown Mode setting holds {other}, which is not a yes-or-no value. \
+                 Network access is blocked until it is corrected in Settings."
+            ),
+        }),
+    }
 }
 
 /// Parse a stored setting value as a boolean, accepting both JSON booleans
