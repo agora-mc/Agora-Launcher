@@ -339,13 +339,7 @@ impl LaunchService {
             });
         let minecraft_root = self.ctx.paths.minecraft_runtime_root();
         let layout = crate::minecraft_runtime::ensure_runtime_layout(&minecraft_root)?;
-        let jvm_gc_profile = match row.jvm_gc.to_ascii_lowercase().as_str() {
-            "zgc" | "low_latency" => Some(crate::gc::GcProfile::LowLatency),
-            // `g1gc` was the implicit default before Auto was persisted.
-            "high_efficiency" => Some(crate::gc::GcProfile::HighEfficiency),
-            "manual" => Some(crate::gc::GcProfile::Manual),
-            _ => None,
-        };
+        let jvm_gc_profile = crate::gc::GcSelection::from_persisted(&row.jvm_gc).resolve();
         let global_pre_touch = crate::db::get_setting(&conn, "jvm_always_pre_touch")
             .ok()
             .flatten()
@@ -1137,6 +1131,130 @@ mod tests {
         let first = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
         let second = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
         assert!(second > first);
+    }
+
+    #[test]
+    fn persisted_gc_values_match_launch_and_preview_resolution() {
+        let root = std::env::temp_dir().join(format!(
+            "agora-launch-gc-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let ctx = Ctx::for_testing(root.clone());
+        crate::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
+        let row = crate::models::InstanceRow {
+            instance_id: "gc-fixture".into(),
+            name: "GC Fixture".into(),
+            minecraft_version: "1.21".into(),
+            loader: "vanilla".into(),
+            loader_version: "".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "manual".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: false,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+        let instance_dir = ctx.paths.instance_dir("gc-fixture").unwrap();
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let manifest = crate::models::InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "gc-fixture".into(),
+            name: "GC Fixture".into(),
+            created_from_pack: None,
+            minecraft_version: "1.21".into(),
+            loader: "vanilla".into(),
+            loader_version: "".into(),
+            is_locked: false,
+            mods: Vec::new(),
+            resourcepacks: Vec::new(),
+            shaders: Vec::new(),
+            datapacks: Vec::new(),
+            worlds: Vec::new(),
+            user_preferences: serde_json::json!({}),
+        };
+        std::fs::write(
+            ctx.paths.instance_manifest("gc-fixture").unwrap(),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        drop(conn);
+
+        let fixtures = [
+            ("auto", crate::gc::GcSelection::Auto),
+            ("manual", crate::gc::GcSelection::Manual),
+            ("low_latency", crate::gc::GcSelection::LowLatency),
+            ("high_efficiency", crate::gc::GcSelection::HighEfficiency),
+            ("g1gc", crate::gc::GcSelection::Auto),
+            ("zgc", crate::gc::GcSelection::LowLatency),
+            ("shenandoah", crate::gc::GcSelection::Auto),
+            ("", crate::gc::GcSelection::Auto),
+            ("garbage", crate::gc::GcSelection::Auto),
+        ];
+        let service = LaunchService::new(ctx.clone());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        for (stored, expected_selection) in fixtures {
+            let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+            conn.execute(
+                "UPDATE user_instances SET jvm_gc = ?1 WHERE instance_id = ?2",
+                rusqlite::params![stored, "gc-fixture"],
+            )
+            .unwrap();
+            drop(conn);
+
+            let inputs = runtime
+                .block_on(service.load_inputs(LaunchRequest {
+                    instance_id: "gc-fixture".into(),
+                    mode: LaunchMode::Delegated,
+                    health_policy: HealthPolicy::WarnOnly,
+                    health_scan_token: None,
+                }))
+                .unwrap();
+            assert_eq!(
+                inputs.jvm_gc_profile,
+                expected_selection.resolve(),
+                "launch resolution for stored value {stored:?}"
+            );
+
+            let java_version = if expected_selection == crate::gc::GcSelection::LowLatency {
+                17
+            } else {
+                21
+            };
+            let preview = crate::models::JvmConfig {
+                memory_mb: 4096,
+                gc: stored.into(),
+                custom_args: String::new(),
+                always_pre_touch: false,
+            }
+            .to_args_for_java(java_version);
+            let expected_preview = crate::gc::compute_gc_with_pre_touch(
+                java_version,
+                4096,
+                "",
+                expected_selection.resolve(),
+                Some(false),
+            )
+            .jvm_args;
+            assert_eq!(
+                preview, expected_preview,
+                "preview resolution for stored value {stored:?}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

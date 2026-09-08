@@ -57,56 +57,15 @@ impl JvmConfig {
 
     /// Build arguments using the selected Java major for automatic GC mode.
     pub fn to_args_for_java(&self, java_version: u32) -> String {
-        let gc = self.gc.trim().to_ascii_lowercase();
-        let profile = match gc.as_str() {
-            // `g1gc` was the implicit default before Auto was persisted.
-            "auto" | "" | "g1gc" => None,
-            "low_latency" | "zgc" => Some(crate::gc::GcProfile::LowLatency),
-            "high_efficiency" => Some(crate::gc::GcProfile::HighEfficiency),
-            "manual" => Some(crate::gc::GcProfile::Manual),
-            _ => None,
-        };
-        if gc == "auto" || gc == "g1gc" || gc.is_empty() {
-            return crate::gc::compute_gc_with_pre_touch(
-                java_version,
-                self.memory_mb,
-                &self.custom_args,
-                None,
-                Some(self.always_pre_touch),
-            )
-            .jvm_args;
-        }
-
-        if let Some(profile) = profile {
-            return crate::gc::compute_gc_with_pre_touch(
-                java_version,
-                self.memory_mb,
-                &self.custom_args,
-                Some(profile),
-                Some(self.always_pre_touch),
-            )
-            .jvm_args;
-        }
-
-        let mut parts: Vec<String> = Vec::new();
-        let mem = format!("-Xmx{}M -Xms{}M", self.memory_mb, self.memory_mb);
-        parts.push(mem);
-
-        match self.gc.to_ascii_lowercase().as_str() {
-            "zgc" => parts.push("-XX:+UseZGC".to_string()),
-            "shenandoah" => parts.push("-XX:+UseShenandoahGC".to_string()),
-            "g1gc" => parts.push("-XX:+UseG1GC".to_string()),
-            _ => {}
-        }
-
-        if !self.custom_args.trim().is_empty() {
-            parts.push(self.custom_args.trim().to_string());
-        }
-        if self.always_pre_touch {
-            parts.push("-XX:+UnlockExperimentalVMOptions".to_string());
-            parts.push("-XX:+AlwaysPreTouch".to_string());
-        }
-        parts.join(" ")
+        let selection = crate::gc::GcSelection::from_persisted(&self.gc);
+        crate::gc::compute_gc_with_pre_touch(
+            java_version,
+            self.memory_mb,
+            &self.custom_args,
+            selection.resolve(),
+            Some(self.always_pre_touch),
+        )
+        .jvm_args
     }
 }
 
@@ -667,6 +626,44 @@ mod tests {
         .to_args_for_java(25);
         assert!(args.contains("-XX:+UseZGC"));
         assert!(args.contains("-XX:+ZGenerational"));
+    }
+
+    #[test]
+    fn preview_uses_compatibility_decoding_for_legacy_gc_values() {
+        let fixtures = [
+            ("auto", crate::gc::GcSelection::Auto),
+            ("manual", crate::gc::GcSelection::Manual),
+            ("low_latency", crate::gc::GcSelection::LowLatency),
+            ("high_efficiency", crate::gc::GcSelection::HighEfficiency),
+            ("g1gc", crate::gc::GcSelection::Auto),
+            ("zgc", crate::gc::GcSelection::LowLatency),
+            ("shenandoah", crate::gc::GcSelection::Auto),
+            ("", crate::gc::GcSelection::Auto),
+            ("garbage", crate::gc::GcSelection::Auto),
+        ];
+        for (stored, expected_selection) in fixtures {
+            let java_version = if expected_selection == crate::gc::GcSelection::LowLatency {
+                17
+            } else {
+                21
+            };
+            let preview = JvmConfig {
+                memory_mb: 4096,
+                gc: stored.into(),
+                custom_args: String::new(),
+                always_pre_touch: false,
+            }
+            .to_args_for_java(java_version);
+            let expected = crate::gc::compute_gc_with_pre_touch(
+                java_version,
+                4096,
+                "",
+                expected_selection.resolve(),
+                Some(false),
+            )
+            .jvm_args;
+            assert_eq!(preview, expected, "preview for stored value {stored:?}");
+        }
     }
 
     /// A manifest exactly as written before pack provenance existed: no
