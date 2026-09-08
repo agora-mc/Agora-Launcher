@@ -27,3 +27,6 @@ tokens.enc
 registry-web.json
 registry-web.json.sig
 docs-web.json
+
+# Scratch space for local diagnostics and working notes
+tmp/
