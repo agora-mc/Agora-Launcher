@@ -187,21 +187,28 @@ async fn github_graphql<T: serde::de::DeserializeOwned>(
     body: &serde_json::Value,
     operation: &str,
 ) -> LauncherResult<T> {
+    let ctx = crate::core_context(app)?;
     let mut token = crate::auth::get_valid_access_token(app)
         .await
         .ok_or(LauncherError::AuthRequired)?;
+    let request_body = serde_json::to_vec(body).map_err(|_| LauncherError::Generic {
+        code: "ERR_GOVERNANCE_VOTE".to_string(),
+        message: "Failed to encode the vote request.".to_string(),
+    })?;
 
     for attempt in 0..2 {
         let _permit = agora_core::github_ratelimit::acquire_github_permit().await;
-        let response = agora_core::github_ratelimit::github_client()
-            .post("https://api.github.com/graphql")
-            .header("Authorization", format!("Bearer {token}"))
-            .header("User-Agent", "agora-launcher")
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|_| LauncherError::NetworkOffline)?;
+        let response = agora_core::http_client::checked_send(
+            &ctx.http_clients,
+            agora_core::http_client::ClientCategory::GitHub,
+            reqwest::Method::POST,
+            "https://api.github.com/graphql",
+            &github_headers(&token, None),
+            Some(request_body.clone()),
+            Some("application/json"),
+        )
+        .await
+        .map_err(|_| LauncherError::NetworkOffline)?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             if attempt == 0
@@ -238,8 +245,17 @@ async fn github_graphql<T: serde::de::DeserializeOwned>(
             });
         }
 
+        let response_text = agora_core::http_client::checked_response_text(
+            response,
+            agora_core::http_client::ClientCategory::GitHub,
+        )
+        .await
+        .map_err(|_| LauncherError::Generic {
+            code: "ERR_GOVERNANCE_VOTE".to_string(),
+            message: "GitHub returned an invalid vote response.".to_string(),
+        })?;
         let envelope: GraphQlEnvelope<T> =
-            response.json().await.map_err(|_| LauncherError::Generic {
+            serde_json::from_str(&response_text).map_err(|_| LauncherError::Generic {
                 code: "ERR_GOVERNANCE_VOTE".to_string(),
                 message: "GitHub returned an invalid vote response.".to_string(),
             })?;
@@ -511,7 +527,14 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     };
 
     let repo = resolve_governance_repo();
-    let client = agora_core::github_ratelimit::github_client();
+    let ctx = match crate::core_context(app) {
+        Ok(ctx) => ctx,
+        Err(error) => {
+            eprintln!("[governance] core context unavailable for network diagnostics: {error}");
+            return Vec::new();
+        }
+    };
+    let http_clients = &ctx.http_clients;
 
     let mut checks = Vec::new();
     let (owner, repo_name) = repo.split_once('/').unwrap_or(("", ""));
@@ -539,7 +562,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     }
 
     // 5. repository_metadata_readable (also yields issues + discussions)
-    match call_with_401_retry(&diagnostic_token, || get_repo_meta(client, &repo)).await {
+    match call_with_401_retry(&diagnostic_token, || get_repo_meta(http_clients, &repo)).await {
         Ok(meta) => {
             checks.push(DiagnosticCheck {
                 id: "repository_metadata_readable".into(),
@@ -594,7 +617,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
 
     // 8. triage_category_exists
     match call_with_401_retry(&diagnostic_token, || {
-        check_triage_category(client, owner, repo_name)
+        check_triage_category(http_clients, owner, repo_name)
     })
     .await
     {
@@ -619,7 +642,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
 
     // 9-11. Label existence checks
     let known_labels: Option<Vec<String>> = match call_with_401_retry(&diagnostic_token, || {
-        list_repo_labels(client, owner, repo_name)
+        list_repo_labels(http_clients, owner, repo_name)
     })
     .await
     {
@@ -678,7 +701,7 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
     ] {
         let tmpl_result = call_with_401_retry(&diagnostic_token, || {
             let path = template_path.to_owned();
-            async move { check_template_exists(client, owner, repo_name, &path).await }
+            async move { check_template_exists(http_clients, owner, repo_name, &path).await }
         })
         .await;
         match tmpl_result {
@@ -707,21 +730,65 @@ pub async fn run_network_diagnostics(app: &AppHandle) -> Vec<DiagnosticCheck> {
 // GitHub API helpers (read-only)
 // ---------------------------------------------------------------------------
 
+fn github_headers(token: &str, accept: Option<&str>) -> Vec<(String, String)> {
+    let mut headers = vec![
+        ("Authorization".to_string(), format!("Bearer {token}")),
+        ("User-Agent".to_string(), "agora-launcher".to_string()),
+    ];
+    if let Some(accept) = accept {
+        headers.push(("Accept".to_string(), accept.to_string()));
+    }
+    headers
+}
+
+async fn checked_github_graphql(
+    http_clients: &agora_core::http_client::HttpClients,
+    token: &str,
+    body: &serde_json::Value,
+) -> LauncherResult<reqwest::Response> {
+    let body = serde_json::to_vec(body).map_err(|error| LauncherError::Generic {
+        code: "ERR_JSON_ENCODE".to_string(),
+        message: format!("Failed to encode GitHub GraphQL request: {error}"),
+    })?;
+    agora_core::http_client::checked_send(
+        http_clients,
+        agora_core::http_client::ClientCategory::GitHub,
+        reqwest::Method::POST,
+        "https://api.github.com/graphql",
+        &github_headers(token, None),
+        Some(body),
+        Some("application/json"),
+    )
+    .await
+}
+
+async fn checked_github_get(
+    http_clients: &agora_core::http_client::HttpClients,
+    url: &str,
+    token: &str,
+) -> LauncherResult<reqwest::Response> {
+    agora_core::http_client::checked_request_with_headers(
+        http_clients,
+        agora_core::http_client::ClientCategory::GitHub,
+        url,
+        github_headers(token, Some("application/vnd.github+json")),
+    )
+    .await
+}
+
 struct RepoMeta {
     has_issues: bool,
     has_discussions: bool,
 }
 
 /// Fetch repository metadata (issues + discussions enabled).
-async fn get_repo_meta(client: &reqwest::Client, repo: &str) -> Result<RepoMeta, String> {
+async fn get_repo_meta(
+    http_clients: &agora_core::http_client::HttpClients,
+    repo: &str,
+) -> Result<RepoMeta, String> {
     let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
     let url = format!("https://api.github.com/repos/{}", repo);
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "agora-launcher")
-        .header("Accept", "application/vnd.github+json")
-        .send()
+    let resp = checked_github_get(http_clients, &url, &token)
         .await
         .map_err(|e| format!("Network error getting repo metadata: {e}"))?;
 
@@ -738,9 +805,14 @@ async fn get_repo_meta(client: &reqwest::Client, repo: &str) -> Result<RepoMeta,
         has_discussions: bool,
     }
 
+    let response_text = agora_core::http_client::checked_response_text(
+        resp,
+        agora_core::http_client::ClientCategory::GitHub,
+    )
+    .await
+    .map_err(|e| format!("Parse error: {e}"))?;
     let body: RepoResponse =
-        serde_json::from_str(&resp.text().await.map_err(|e| format!("Parse error: {e}"))?)
-            .map_err(|e| format!("JSON parse error: {e}"))?;
+        serde_json::from_str(&response_text).map_err(|e| format!("JSON parse error: {e}"))?;
 
     Ok(RepoMeta {
         has_issues: body.has_issues,
@@ -750,7 +822,7 @@ async fn get_repo_meta(client: &reqwest::Client, repo: &str) -> Result<RepoMeta,
 
 /// Run a GraphQL query to check for a discussion category named "Triage".
 async fn check_triage_category(
-    client: &reqwest::Client,
+    http_clients: &agora_core::http_client::HttpClients,
     owner: &str,
     repo: &str,
 ) -> Result<bool, String> {
@@ -768,13 +840,7 @@ async fn check_triage_category(
         "variables": { "owner": owner, "repo": repo },
     });
 
-    let resp = client
-        .post("https://api.github.com/graphql")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "agora-launcher")
-        .header("Content-Type", "application/json")
-        .json(&query)
-        .send()
+    let resp = checked_github_graphql(http_clients, &token, &query)
         .await
         .map_err(|e| format!("Network error checking triage category: {e}"))?;
 
@@ -809,9 +875,14 @@ async fn check_triage_category(
         slug: String,
     }
 
+    let response_text = agora_core::http_client::checked_response_text(
+        resp,
+        agora_core::http_client::ClientCategory::GitHub,
+    )
+    .await
+    .map_err(|e| format!("Parse error: {e}"))?;
     let body: GraphQLResponse =
-        serde_json::from_str(&resp.text().await.map_err(|e| format!("Parse error: {e}"))?)
-            .map_err(|e| format!("JSON parse error: {e}"))?;
+        serde_json::from_str(&response_text).map_err(|e| format!("JSON parse error: {e}"))?;
 
     let categories = body
         .data
@@ -827,18 +898,13 @@ async fn check_triage_category(
 
 /// Fetch all label names from the repository.
 async fn list_repo_labels(
-    client: &reqwest::Client,
+    http_clients: &agora_core::http_client::HttpClients,
     owner: &str,
     repo: &str,
 ) -> Result<Vec<String>, String> {
     let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
     let url = format!("https://api.github.com/repos/{owner}/{repo}/labels?per_page=100");
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "agora-launcher")
-        .header("Accept", "application/vnd.github+json")
-        .send()
+    let resp = checked_github_get(http_clients, &url, &token)
         .await
         .map_err(|e| format!("Network error listing labels: {e}"))?;
 
@@ -854,9 +920,14 @@ async fn list_repo_labels(
         name: String,
     }
 
+    let response_text = agora_core::http_client::checked_response_text(
+        resp,
+        agora_core::http_client::ClientCategory::GitHub,
+    )
+    .await
+    .map_err(|e| format!("Parse error: {e}"))?;
     let body: Vec<LabelResponse> =
-        serde_json::from_str(&resp.text().await.map_err(|e| format!("Parse error: {e}"))?)
-            .map_err(|e| format!("JSON parse error: {e}"))?;
+        serde_json::from_str(&response_text).map_err(|e| format!("JSON parse error: {e}"))?;
 
     Ok(body.into_iter().map(|l| l.name).collect())
 }
@@ -864,19 +935,14 @@ async fn list_repo_labels(
 /// Check whether a specific file exists in the `.github/ISSUE_TEMPLATE/`
 /// directory via the read-only Contents API.
 async fn check_template_exists(
-    client: &reqwest::Client,
+    http_clients: &agora_core::http_client::HttpClients,
     owner: &str,
     repo: &str,
     path: &str,
 ) -> Result<bool, String> {
     let token = agora_core::auth::get_token().ok_or("No token available".to_string())?;
     let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}");
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "agora-launcher")
-        .header("Accept", "application/vnd.github+json")
-        .send()
+    let resp = checked_github_get(http_clients, &url, &token)
         .await
         .map_err(|e| format!("Network error checking template: {e}"))?;
 
@@ -900,6 +966,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         .ok_or(LauncherError::AuthRequired)?;
 
     let _permit = agora_core::github_ratelimit::acquire_github_permit().await;
+    let ctx = crate::core_context(app)?;
 
     let governance_repo_str = resolve_governance_repo();
     let search_query = format!(
@@ -926,13 +993,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         "variables": { "q": search_query },
     });
 
-    let mut resp = agora_core::github_ratelimit::github_client()
-        .post("https://api.github.com/graphql")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "agora-launcher")
-        .header("Content-Type", "application/json")
-        .json(&search_body)
-        .send()
+    let mut resp = checked_github_graphql(&ctx.http_clients, &token, &search_body)
         .await
         .map_err(|_| LauncherError::NetworkOffline)?;
 
@@ -944,13 +1005,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         {
             if let Some(new_token) = crate::auth::get_valid_access_token(app).await {
                 token = new_token;
-                let retry_resp = agora_core::github_ratelimit::github_client()
-                    .post("https://api.github.com/graphql")
-                    .header("Authorization", format!("Bearer {}", token))
-                    .header("User-Agent", "agora-launcher")
-                    .header("Content-Type", "application/json")
-                    .json(&search_body)
-                    .send()
+                let retry_resp = checked_github_graphql(&ctx.http_clients, &token, &search_body)
                     .await
                     .map_err(|_| LauncherError::NetworkOffline)?;
                 if retry_resp.status() != reqwest::StatusCode::UNAUTHORIZED {
@@ -975,7 +1030,12 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
     }
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = agora_core::http_client::checked_response_text(
+            resp,
+            agora_core::http_client::ClientCategory::GitHub,
+        )
+        .await
+        .unwrap_or_default();
         return Err(LauncherError::Generic {
             code: "ERR_TRIAGE_POLL".to_string(),
             message: format!("Triage poll search failed (status {status}): {body}"),
@@ -999,10 +1059,20 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         title: String,
     }
 
-    let search_resp: SearchResponse = resp.json().await.map_err(|_| LauncherError::Generic {
+    let search_text = agora_core::http_client::checked_response_text(
+        resp,
+        agora_core::http_client::ClientCategory::GitHub,
+    )
+    .await
+    .map_err(|_| LauncherError::Generic {
         code: "ERR_TRIAGE_POLL".to_string(),
         message: "Failed to parse triage poll search response.".to_string(),
     })?;
+    let search_resp: SearchResponse =
+        serde_json::from_str(&search_text).map_err(|_| LauncherError::Generic {
+            code: "ERR_TRIAGE_POLL".to_string(),
+            message: "Failed to parse triage poll search response.".to_string(),
+        })?;
 
     let nodes = search_resp.search.and_then(|s| s.nodes).unwrap_or_default();
     let discussion = nodes
@@ -1032,13 +1102,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         "variables": { "id": discussion.id },
     });
 
-    let mut resp2 = agora_core::github_ratelimit::github_client()
-        .post("https://api.github.com/graphql")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "agora-launcher")
-        .header("Content-Type", "application/json")
-        .json(&reactions_body)
-        .send()
+    let mut resp2 = checked_github_graphql(&ctx.http_clients, &token, &reactions_body)
         .await
         .map_err(|_| LauncherError::NetworkOffline)?;
 
@@ -1052,13 +1116,7 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         {
             if let Some(new_token) = crate::auth::get_valid_access_token(app).await {
                 token = new_token;
-                let retry_resp = agora_core::github_ratelimit::github_client()
-                    .post("https://api.github.com/graphql")
-                    .header("Authorization", format!("Bearer {}", token))
-                    .header("User-Agent", "agora-launcher")
-                    .header("Content-Type", "application/json")
-                    .json(&reactions_body)
-                    .send()
+                let retry_resp = checked_github_graphql(&ctx.http_clients, &token, &reactions_body)
                     .await
                     .map_err(|_| LauncherError::NetworkOffline)?;
                 if retry_resp.status() != reqwest::StatusCode::UNAUTHORIZED {
@@ -1083,7 +1141,12 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
     }
     if !resp2.status().is_success() {
         let status = resp2.status();
-        let body = resp2.text().await.unwrap_or_default();
+        let body = agora_core::http_client::checked_response_text(
+            resp2,
+            agora_core::http_client::ClientCategory::GitHub,
+        )
+        .await
+        .unwrap_or_default();
         return Err(LauncherError::Generic {
             code: "ERR_TRIAGE_POLL".to_string(),
             message: format!("Triage poll reactions failed (status {status}): {body}"),
@@ -1107,8 +1170,17 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         content: String,
     }
 
+    let reactions_text = agora_core::http_client::checked_response_text(
+        resp2,
+        agora_core::http_client::ClientCategory::GitHub,
+    )
+    .await
+    .map_err(|_| LauncherError::Generic {
+        code: "ERR_TRIAGE_POLL".to_string(),
+        message: "Failed to parse triage poll reactions response.".to_string(),
+    })?;
     let reactions_resp: ReactionsResponse =
-        resp2.json().await.map_err(|_| LauncherError::Generic {
+        serde_json::from_str(&reactions_text).map_err(|_| LauncherError::Generic {
             code: "ERR_TRIAGE_POLL".to_string(),
             message: "Failed to parse triage poll reactions response.".to_string(),
         })?;
@@ -1136,6 +1208,26 @@ pub async fn fetch_triage_poll(app: &AppHandle, mod_id: String) -> LauncherResul
         keep_votes,
         remove_votes,
     })
+}
+
+#[cfg(test)]
+mod http_policy_tests {
+    #[test]
+    fn governance_does_not_construct_or_use_a_raw_http_client() {
+        // This guards the architectural rule that governance requests must go
+        // through agora_core's checked HTTP helpers, rather than testing HTTP
+        // behavior itself.
+        let source = include_str!("governance.rs");
+        let reqwest_client = ["reqwest", "::Client"].concat();
+        assert!(!source.contains(&reqwest_client));
+        assert!(!source.contains(&["reqwest", "::Client", "::builder"].concat()));
+        assert!(!source.contains(&["reqwest", "::Client", "::new"].concat()));
+        let bypass_client = ["github", "_client", "()"].concat();
+        assert!(!source.contains(&bypass_client));
+        for method in ["get", "post"] {
+            assert!(!source.contains(&format!(".{method}(")));
+        }
+    }
 }
 
 #[cfg(test)]
