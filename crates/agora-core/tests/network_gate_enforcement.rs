@@ -69,6 +69,43 @@ async fn the_gate_refuses_posts_as_well_as_gets() {
     );
 }
 
+/// The authenticated-GET helper is a fourth independent request path.
+///
+/// It is what carries the GitHub `/user` call after sign-in, and it was missed
+/// when the other three chokepoints were gated — which is the whole reason this
+/// file enumerates paths rather than trusting that one of them covers the rest.
+#[tokio::test]
+async fn the_gate_refuses_requests_carrying_custom_headers() {
+    let clients = deny_everything();
+    let error = http_client::checked_request_with_headers(
+        &clients,
+        ClientCategory::GitHub,
+        "https://api.github.com/user",
+        vec![("Authorization".to_string(), "token irrelevant".to_string())],
+    )
+    .await
+    .expect_err("a denied gate must refuse an authenticated GET");
+    assert!(
+        format!("{error:?}").contains("ERR_NETWORK_GATE_MISSING"),
+        "the authenticated-GET path was not gated: {error:?}"
+    );
+}
+
+/// Every public request helper must reach the gate.
+///
+/// A structural guard: the count of `network_gate::authorize` calls in the HTTP
+/// module must match the number of request entry points. Adding a helper
+/// without gating it should fail here rather than in production.
+#[test]
+fn every_request_path_in_the_http_module_consults_the_gate() {
+    let source = include_str!("../src/http_client.rs");
+    let gated = source.matches("network_gate::authorize(").count();
+    assert!(
+        gated >= 4,
+        "expected every request chokepoint to call the gate, found {gated}"
+    );
+}
+
 /// The blocking helpers are a separate code path and were separately ungated.
 #[test]
 fn the_gate_refuses_blocking_requests() {

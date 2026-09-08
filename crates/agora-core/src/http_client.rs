@@ -1012,6 +1012,7 @@ pub async fn checked_request_with_headers(
     url: &str,
     headers: Vec<(String, String)>,
 ) -> LauncherResult<reqwest::Response> {
+    crate::network_gate::authorize(category)?;
     let _validated = check_request_url(category, url)?;
     let client = clients.get(category);
 
