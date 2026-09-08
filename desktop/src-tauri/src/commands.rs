@@ -3517,21 +3517,15 @@ pub async fn create_snapshot(
     label: Option<String>,
 ) -> LauncherResult<agora_core::snapshot::Snapshot> {
     let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
-
     let ctx = crate::core_context(&app)?;
+    // Locking, launch exclusion, and retention all live in the core service,
+    // so the CLI and MCP adapters get exactly the same guarantees.
     ctx.task_scheduler
         .run_blocking(
             agora_core::task_scheduler::BlockingPriority::UserInitiated,
             move || {
-                let result =
-                    agora_core::snapshot::create_snapshot(&instance_dir, label.as_deref())?;
-                agora_core::lkg::run_retention(&instance_dir)?;
-                Ok::<_, String>(result)
+                agora_core::snapshot_service::SnapshotService::new(ctx.clone())
+                    .create(&sanitized, label.as_deref())
             },
         )
         .await
@@ -3539,10 +3533,6 @@ pub async fn create_snapshot(
             code: "ERR_SNAPSHOT_TASK".into(),
             message: format!("Snapshot creation task failed: {e}"),
         })?
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_SNAPSHOT".into(),
-            message: e,
-        })
 }
 
 #[tauri::command]
@@ -3551,17 +3541,15 @@ pub async fn restore_snapshot(
     state: tauri::State<'_, LauncherState>,
     instance_id: String,
     snapshot_id: String,
-) -> LauncherResult<()> {
+) -> LauncherResult<agora_core::snapshot::RestoreOutcome> {
     let sanitized = paths::sanitize_id(&instance_id);
-    let instance_dir =
-        paths::instance_dir(&app, &sanitized).map_err(|e| LauncherError::Generic {
-            code: "ERR_PATH".into(),
-            message: e.to_string(),
-        })?;
 
+    // In-process state gives a faster, friendlier refusal for the common case.
+    // It is *not* the authority: it cannot see a game started by another
+    // process, and it is released before the work begins. The core service
+    // holds the instance lock and checks the durable runtime lease.
     {
         let shared = state.lock().await;
-        // Any session of this instance blocks a restore, not just the first.
         let direct_active = shared
             .running_processes
             .values()
@@ -3575,23 +3563,20 @@ pub async fn restore_snapshot(
         }
     }
 
-    tokio::task::spawn_blocking(move || {
-        let pre_label = format!("pre-restore-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-        agora_core::snapshot::create_snapshot(&instance_dir, Some(&pre_label))
-            .map_err(|e| format!("Could not create undo snapshot: {e}"))?;
-        agora_core::snapshot::restore_snapshot(&instance_dir, &snapshot_id)?;
-        agora_core::lkg::run_retention(&instance_dir)?;
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| LauncherError::Generic {
-        code: "ERR_RESTORE_TASK".into(),
-        message: format!("Restore task failed: {e}"),
-    })?
-    .map_err(|e| LauncherError::Generic {
-        code: "ERR_RESTORE".into(),
-        message: e,
-    })
+    let ctx = crate::core_context(&app)?;
+    ctx.task_scheduler
+        .run_blocking(
+            agora_core::task_scheduler::BlockingPriority::UserInitiated,
+            move || {
+                agora_core::snapshot_service::SnapshotService::new(ctx.clone())
+                    .restore(&sanitized, &snapshot_id)
+            },
+        )
+        .await
+        .map_err(|e| LauncherError::Generic {
+            code: "ERR_RESTORE_TASK".into(),
+            message: format!("Restore task failed: {e}"),
+        })?
 }
 
 // ---------------------------------------------------------------------------

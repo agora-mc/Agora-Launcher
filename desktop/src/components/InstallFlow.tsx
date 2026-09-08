@@ -23,7 +23,13 @@ import {
   subscribeProgress,
   planNeedsUserReview,
 } from '../lib/installFlow';
-import { formatError, getSetting, parseLauncherError, restoreSnapshot } from '../lib/tauri';
+import {
+  describeRestoreCoverage,
+  formatError,
+  getSetting,
+  parseLauncherError,
+  restoreSnapshot,
+} from '../lib/tauri';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
 import { useControllerLayer } from '@/features/controller/useControllerLayer';
@@ -1305,6 +1311,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
 }) {
   const [rollbackState, setRollbackState] = useState<'idle' | 'restoring' | 'restored'>('idle');
   const [rollbackError, setRollbackError] = useState<string | null>(null);
+  const [rollbackNote, setRollbackNote] = useState<string | null>(null);
   const snapshotId =
     outcome.type === 'success' || outcome.type === 'health-rollback' || outcome.type === 'failed'
       ? outcome.snapshotId
@@ -1322,7 +1329,8 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
     setRollbackState('restoring');
     setRollbackError(null);
     try {
-      await restoreSnapshot(instanceId, snapshotId);
+      const outcome = await restoreSnapshot(instanceId, snapshotId);
+      setRollbackNote(describeRestoreCoverage(outcome));
       setRollbackState('restored');
     } catch (cause) {
       setRollbackState('idle');
@@ -1396,6 +1404,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
       {rollbackState === 'restored' && (
         <div className="rounded-lg bg-green-500/10 p-3 text-sm text-green-700 dark:text-green-300">
           The recovery snapshot was restored.
+          {rollbackNote && <span className="mt-1 block opacity-80">{rollbackNote}</span>}
         </div>
       )}
       {rollbackError && (

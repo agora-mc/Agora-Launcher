@@ -1394,9 +1394,16 @@ pub fn apply_merge(
     if let Err(error) = apply_result {
         let restore = crate::snapshot::restore_snapshot(instance_dir, &snapshot.id);
         return match restore {
-            Ok(()) => Err(format!(
-                "merge apply failed and the pre-merge snapshot was restored: {error}"
-            )),
+            Ok(outcome) => Err(match outcome.coverage {
+                crate::snapshot::RestoreCoverageKind::Exact => format!(
+                    "merge apply failed and the pre-merge snapshot was restored: {error}"
+                ),
+                crate::snapshot::RestoreCoverageKind::LegacyPartial => format!(
+                    "merge apply failed and the pre-merge snapshot was restored, but it predates scoped \
+                     snapshots so roots outside {:?} were left as they are: {error}",
+                    outcome.restored_roots
+                ),
+            }),
             Err(restore_error) => Err(format!(
                 "merge apply failed and automatic restore could not complete; original state is protected in recovery storage. apply: {error}; restore: {restore_error}"
             )),

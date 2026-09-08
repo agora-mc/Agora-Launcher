@@ -163,21 +163,117 @@ pub enum ClientCategory {
     ConsentedContent,
 }
 
+/// How a category's requests are bounded in time.
+///
+/// The distinction matters: a single total deadline is the right bound for a
+/// small request/response pair, but it is the wrong shape for a large streamed
+/// body. `reqwest`'s `Client::timeout` covers the whole request *including*
+/// reading the body, so a 30-second total deadline kills a perfectly healthy
+/// 500 MB modpack download at 30 seconds regardless of how fast it is going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimeBudget {
+    /// Bound the whole exchange. Correct when the response is small.
+    Request { total: Duration },
+    /// Bound connection setup and *stalls*, and give the whole transfer a
+    /// generous ceiling. A download that is progressing is not killed; one
+    /// that has stopped producing bytes is.
+    Transfer {
+        connect: Duration,
+        idle: Duration,
+        total: Duration,
+    },
+}
+
+/// Slowest connection a bulk transfer is expected to complete over.
+///
+/// The ceiling for a transfer category is derived from its size cap at this
+/// rate, so adding a category cannot silently inherit a budget that is too
+/// short for the bytes it is allowed to fetch.
+const TRANSFER_FLOOR_BYTES_PER_SEC: u64 = 256 * 1024;
+/// No transfer gets a ceiling below this, however small its size cap.
+const TRANSFER_MIN_TOTAL: Duration = Duration::from_secs(10 * 60);
+/// A transfer that produces no bytes for this long is treated as stalled.
+const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connection setup budget for a bulk transfer.
+const TRANSFER_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 impl ClientCategory {
-    fn timeout(&self) -> Duration {
+    /// Every category, exactly once.
+    ///
+    /// This is the single definition that client construction and
+    /// [`Self::index`] are both derived from — see [`HttpClients`].
+    const ALL: [ClientCategory; 12] = [
+        ClientCategory::MojangMetadata,
+        ClientCategory::MojangContent,
+        ClientCategory::Loader,
+        ClientCategory::Modrinth,
+        ClientCategory::Modpack,
+        ClientCategory::GitHub,
+        ClientCategory::Microsoft,
+        ClientCategory::Registry,
+        ClientCategory::AiAssistant,
+        ClientCategory::JavaRuntime,
+        ClientCategory::PinnedArtifact,
+        ClientCategory::ConsentedContent,
+    ];
+
+    /// Position of this category in [`Self::ALL`].
+    ///
+    /// Exhaustive by construction: adding a variant fails to compile here.
+    const fn index(self) -> usize {
         match self {
-            ClientCategory::MojangMetadata => Duration::from_secs(30),
-            ClientCategory::MojangContent => Duration::from_secs(120),
-            ClientCategory::Loader => Duration::from_secs(60),
-            ClientCategory::Modrinth => Duration::from_secs(30),
-            ClientCategory::Modpack => Duration::from_secs(5 * 60),
-            ClientCategory::GitHub => Duration::from_secs(30),
-            ClientCategory::Microsoft => Duration::from_secs(30),
-            ClientCategory::Registry => Duration::from_secs(60),
-            ClientCategory::AiAssistant => Duration::from_secs(60),
-            ClientCategory::JavaRuntime => Duration::from_secs(120),
-            ClientCategory::PinnedArtifact => Duration::from_secs(120),
-            ClientCategory::ConsentedContent => Duration::from_secs(5 * 60),
+            ClientCategory::MojangMetadata => 0,
+            ClientCategory::MojangContent => 1,
+            ClientCategory::Loader => 2,
+            ClientCategory::Modrinth => 3,
+            ClientCategory::Modpack => 4,
+            ClientCategory::GitHub => 5,
+            ClientCategory::Microsoft => 6,
+            ClientCategory::Registry => 7,
+            ClientCategory::AiAssistant => 8,
+            ClientCategory::JavaRuntime => 9,
+            ClientCategory::PinnedArtifact => 10,
+            ClientCategory::ConsentedContent => 11,
+        }
+    }
+
+    /// Whether this category streams large bodies rather than small responses.
+    fn is_bulk_transfer(&self) -> bool {
+        matches!(
+            self,
+            ClientCategory::MojangContent
+                | ClientCategory::Loader
+                | ClientCategory::Registry
+                | ClientCategory::JavaRuntime
+                | ClientCategory::Modpack
+                | ClientCategory::PinnedArtifact
+                | ClientCategory::ConsentedContent
+        )
+    }
+
+    fn time_budget(&self) -> TimeBudget {
+        if self.is_bulk_transfer() {
+            let cap = self.max_response_bytes().unwrap_or(0);
+            let derived = Duration::from_secs(cap / TRANSFER_FLOOR_BYTES_PER_SEC);
+            return TimeBudget::Transfer {
+                connect: TRANSFER_CONNECT_TIMEOUT,
+                idle: TRANSFER_IDLE_TIMEOUT,
+                total: derived.max(TRANSFER_MIN_TOTAL),
+            };
+        }
+        TimeBudget::Request {
+            total: match self {
+                ClientCategory::AiAssistant => Duration::from_secs(60),
+                _ => Duration::from_secs(30),
+            },
+        }
+    }
+
+    /// The whole-exchange ceiling for this category.
+    fn timeout(&self) -> Duration {
+        match self.time_budget() {
+            TimeBudget::Request { total } => total,
+            TimeBudget::Transfer { total, .. } => total,
         }
     }
 
@@ -208,17 +304,19 @@ impl ClientCategory {
 ///
 /// Construct via [`HttpClients::new()`] (production) or
 /// [`HttpClients::for_testing()`] (tests only — no policy enforcement).
+/// One client per category, indexed by [`ClientCategory::index`].
+///
+/// The array is deliberate. The previous shape had one named field per
+/// *some* categories and mapped the rest onto a neighbour, which is how
+/// `Modpack`, `PinnedArtifact`, and `ConsentedContent` all ended up sharing
+/// the Modrinth client — and therefore its 30-second deadline — while
+/// declaring budgets of two to five minutes. Indexing by an exhaustive
+/// category list makes that class of mistake impossible to reintroduce: a new
+/// variant fails to compile in [`ClientCategory::index`] instead of silently
+/// aliasing an existing client.
 #[derive(Debug, Clone)]
 pub struct HttpClients {
-    mojang_metadata: reqwest::Client,
-    mojang_content: reqwest::Client,
-    loader: reqwest::Client,
-    modrinth: reqwest::Client,
-    github: reqwest::Client,
-    microsoft: reqwest::Client,
-    registry: reqwest::Client,
-    ai_assistant: reqwest::Client,
-    java_runtime: reqwest::Client,
+    by_category: [reqwest::Client; ClientCategory::ALL.len()],
 }
 
 impl HttpClients {
@@ -226,16 +324,18 @@ impl HttpClients {
     ///
     /// Returns `Err` if the TLS backend cannot be initialised (fatal).
     pub fn new() -> LauncherResult<Self> {
+        // Built from ClientCategory::ALL so every category gets a client
+        // configured with its own budget. Do not reintroduce per-field
+        // construction: that is what let three categories share one client.
+        let mut built = Vec::with_capacity(ClientCategory::ALL.len());
+        for category in ClientCategory::ALL {
+            built.push(Self::build_client(category)?);
+        }
         Ok(Self {
-            mojang_metadata: Self::build_client(ClientCategory::MojangMetadata)?,
-            mojang_content: Self::build_client(ClientCategory::MojangContent)?,
-            loader: Self::build_client(ClientCategory::Loader)?,
-            modrinth: Self::build_client(ClientCategory::Modrinth)?,
-            github: Self::build_client(ClientCategory::GitHub)?,
-            microsoft: Self::build_client(ClientCategory::Microsoft)?,
-            registry: Self::build_client(ClientCategory::Registry)?,
-            ai_assistant: Self::build_client(ClientCategory::AiAssistant)?,
-            java_runtime: Self::build_client(ClientCategory::JavaRuntime)?,
+            by_category: built.try_into().map_err(|_| LauncherError::Generic {
+                code: "ERR_HTTP_CLIENT_BUILD".into(),
+                message: "HTTP client table size does not match the category list".into(),
+            })?,
         })
     }
 
@@ -246,15 +346,7 @@ impl HttpClients {
     /// and override individual clients with `with_*`.
     pub fn for_testing(client: reqwest::Client) -> Self {
         Self {
-            mojang_metadata: client.clone(),
-            mojang_content: client.clone(),
-            loader: client.clone(),
-            modrinth: client.clone(),
-            github: client.clone(),
-            microsoft: client.clone(),
-            registry: client.clone(),
-            ai_assistant: client.clone(),
-            java_runtime: client,
+            by_category: std::array::from_fn(|_| client.clone()),
         }
     }
 
@@ -263,52 +355,56 @@ impl HttpClients {
     /// Prefer [`checked_request`] or [`checked_get_bytes`] instead of using
     /// this directly, to ensure policy enforcement.
     pub fn get(&self, category: ClientCategory) -> &reqwest::Client {
-        match category {
-            ClientCategory::MojangMetadata => &self.mojang_metadata,
-            ClientCategory::MojangContent => &self.mojang_content,
-            ClientCategory::Loader => &self.loader,
-            ClientCategory::Modrinth => &self.modrinth,
-            ClientCategory::Modpack => &self.modrinth,
-            ClientCategory::GitHub => &self.github,
-            ClientCategory::Microsoft => &self.microsoft,
-            ClientCategory::Registry => &self.registry,
-            ClientCategory::AiAssistant => &self.ai_assistant,
-            ClientCategory::JavaRuntime => &self.java_runtime,
-            ClientCategory::PinnedArtifact => &self.modrinth,
-            ClientCategory::ConsentedContent => &self.modrinth,
-        }
+        &self.by_category[category.index()]
     }
 
     fn build_client(category: ClientCategory) -> LauncherResult<reqwest::Client> {
         // Redirects are handled by checked_request's manual per-hop loop
         // with re-validation. The client itself follows none to prevent
         // any accidental bypass when callers use .get() directly.
-        reqwest::Client::builder()
-            .timeout(category.timeout())
+        let builder = reqwest::Client::builder()
             .user_agent(category.user_agent())
             .redirect(reqwest::redirect::Policy::none())
-            .pool_max_idle_per_host(4)
-            .build()
-            .map_err(|e| LauncherError::Generic {
-                code: "ERR_HTTP_CLIENT_BUILD".into(),
-                message: format!("Failed to build HTTP client for {category:?}: {e}"),
-            })
+            .pool_max_idle_per_host(4);
+        let builder = match category.time_budget() {
+            TimeBudget::Request { total } => builder.timeout(total),
+            // `timeout` still applies as the outer ceiling; `read_timeout` is
+            // what actually distinguishes a slow-but-progressing download from
+            // a stalled one. Setting only `read_timeout` would leave the short
+            // total deadline in place and change nothing.
+            TimeBudget::Transfer {
+                connect,
+                idle,
+                total,
+            } => builder
+                .connect_timeout(connect)
+                .read_timeout(idle)
+                .timeout(total),
+        };
+        builder.build().map_err(|e| LauncherError::Generic {
+            code: "ERR_HTTP_CLIENT_BUILD".into(),
+            message: format!("Failed to build HTTP client for {category:?}: {e}"),
+        })
     }
 
     // ------------------------------------------------------------------
     // Builder override helpers (testing)
     // ------------------------------------------------------------------
 
-    /// Replace the Modrinth client (e.g., with a mock).
-    pub fn with_modrinth_client(mut self, client: reqwest::Client) -> Self {
-        self.modrinth = client;
+    /// Replace the client used for a single category (e.g., with a mock).
+    pub fn with_client(mut self, category: ClientCategory, client: reqwest::Client) -> Self {
+        self.by_category[category.index()] = client;
         self
     }
 
+    /// Replace the Modrinth client (e.g., with a mock).
+    pub fn with_modrinth_client(self, client: reqwest::Client) -> Self {
+        self.with_client(ClientCategory::Modrinth, client)
+    }
+
     /// Replace the GitHub client (e.g., with a mock).
-    pub fn with_github_client(mut self, client: reqwest::Client) -> Self {
-        self.github = client;
-        self
+    pub fn with_github_client(self, client: reqwest::Client) -> Self {
+        self.with_client(ClientCategory::GitHub, client)
     }
 }
 
@@ -1175,6 +1271,69 @@ mod tests {
                 "{:?} timeout too short",
                 cat
             );
+        }
+    }
+
+    /// The client table must have exactly one slot per category.
+    ///
+    /// This is the invariant whose violation aliased `Modpack`,
+    /// `PinnedArtifact`, and `ConsentedContent` onto the Modrinth client.
+    #[test]
+    fn every_category_has_its_own_client_slot() {
+        let mut seen = std::collections::HashSet::new();
+        for category in ClientCategory::ALL {
+            assert!(
+                seen.insert(category.index()),
+                "{category:?} shares an index with another category"
+            );
+            assert_eq!(
+                ClientCategory::ALL[category.index()],
+                category,
+                "{category:?} does not round-trip through its index"
+            );
+        }
+        assert_eq!(seen.len(), ClientCategory::ALL.len());
+    }
+
+    /// The three categories that used to borrow the Modrinth client must not
+    /// inherit its short deadline.
+    #[test]
+    fn bulk_categories_do_not_inherit_the_modrinth_deadline() {
+        let modrinth = ClientCategory::Modrinth.timeout();
+        for category in [
+            ClientCategory::Modpack,
+            ClientCategory::PinnedArtifact,
+            ClientCategory::ConsentedContent,
+        ] {
+            assert!(
+                category.timeout() > modrinth,
+                "{category:?} still has a request-sized deadline ({:?})",
+                category.timeout()
+            );
+        }
+    }
+
+    /// A large download must be bounded by stalls, not by wall-clock progress.
+    #[test]
+    fn bulk_categories_bound_stalls_rather_than_progress() {
+        for category in ClientCategory::ALL {
+            match category.time_budget() {
+                TimeBudget::Transfer { idle, total, .. } => {
+                    assert!(category.is_bulk_transfer(), "{category:?}");
+                    assert!(idle < total, "{category:?} idle budget exceeds its ceiling");
+                    // The ceiling must allow the whole size cap to arrive at
+                    // the documented floor throughput.
+                    let cap = category.max_response_bytes().unwrap_or(0);
+                    let needed = Duration::from_secs(cap / TRANSFER_FLOOR_BYTES_PER_SEC);
+                    assert!(
+                        total >= needed,
+                        "{category:?} cannot fetch its own size cap: {total:?} < {needed:?}"
+                    );
+                }
+                TimeBudget::Request { .. } => {
+                    assert!(!category.is_bulk_transfer(), "{category:?}");
+                }
+            }
         }
     }
 

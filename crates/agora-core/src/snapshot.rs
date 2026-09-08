@@ -14,7 +14,13 @@ use std::os::windows::fs::MetadataExt;
 pub(crate) const RESTORE_MARKER: &str = ".agora_restore_in_progress";
 const SNAPSHOT_PENDING_MARKER: &str = ".agora_snapshot_pending";
 const SNAPSHOT_FAILED_MARKER: &str = ".agora_snapshot_failed";
-const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+/// v4 added the explicit `scope` field. Before it, restore inferred which
+/// roots it was allowed to replace from the *current* build's tracked-entry
+/// list, which meant a pre-launch snapshot (no `saves/`) moved the player's
+/// worlds aside and then deleted the backup.
+const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+/// First schema version that records its own scope.
+const SNAPSHOT_SCOPE_SCHEMA_VERSION: u32 = 4;
 const LIVE_METADATA_FINGERPRINT_SCHEMA_VERSION: u32 = 4;
 const LIVE_FILE_INDEX_SCHEMA_VERSION: u32 = 1;
 
@@ -259,6 +265,103 @@ struct SnapshotManifest {
     schema_version: u32,
     snapshot: Snapshot,
     files: Vec<SnapshotFileEntry>,
+    /// The roots this snapshot is authoritative over, recorded at capture.
+    ///
+    /// `None` for manifests written before [`SNAPSHOT_SCOPE_SCHEMA_VERSION`];
+    /// those are restored with deliberately conservative coverage, because
+    /// absence of a root from `files` cannot distinguish "not covered" from
+    /// "covered and empty". See [`RestoreCoverage`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<Vec<SnapshotRoot>>,
+}
+
+/// What a covered root looked like when the snapshot was taken.
+///
+/// `files` alone cannot express this: a root with no file entries is
+/// indistinguishable from a root that was not captured at all, and an empty
+/// directory is indistinguishable from one that did not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RootState {
+    /// The root did not exist. Restoring removes it.
+    Absent,
+    Directory,
+    File,
+}
+
+/// One root covered by a snapshot, and the state restore should reproduce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotRoot {
+    pub name: String,
+    pub state: RootState,
+}
+
+/// The roots a restore is allowed to touch.
+///
+/// Coverage is taken from the snapshot itself, never from the running build's
+/// tracked-entry list: adding a root to the default scope in a later release
+/// must not retroactively give an old snapshot authority to delete it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RestoreCoverage {
+    /// Schema v4+. The snapshot is authoritative over exactly these roots,
+    /// including the ones it records as absent.
+    Exact(Vec<SnapshotRoot>),
+    /// Legacy manifests and ZIPs, which did not record their scope. Only
+    /// roots with actual recorded content are replaced; every other root is
+    /// preserved, because absence is not evidence that deletion was intended.
+    LegacyPartial(Vec<SnapshotRoot>),
+}
+
+impl RestoreCoverage {
+    fn roots(&self) -> &[SnapshotRoot] {
+        match self {
+            RestoreCoverage::Exact(roots) | RestoreCoverage::LegacyPartial(roots) => roots,
+        }
+    }
+
+    fn is_exact(&self) -> bool {
+        matches!(self, RestoreCoverage::Exact(_))
+    }
+}
+
+/// Whether a restore reproduced the captured state exactly, or could only
+/// guarantee that it did not destroy anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestoreCoverageKind {
+    /// The snapshot recorded its own scope; covered roots now match it
+    /// exactly and uncovered roots were left alone.
+    Exact,
+    /// A pre-v4 snapshot. Roots with recorded content were replaced; roots
+    /// whose coverage could not be established were preserved as they were.
+    LegacyPartial,
+}
+
+/// What a restore actually did.
+///
+/// A pre-launch snapshot does not cover `saves/`, so restoring one cannot undo
+/// world changes — it can only leave them alone. The caller needs to be able to
+/// say which of those two promises it is making, so this is reported rather
+/// than inferred from a label or a file count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreOutcome {
+    pub snapshot_id: String,
+    pub coverage: RestoreCoverageKind,
+    /// Roots the snapshot was authoritative over and that now match it.
+    pub restored_roots: Vec<String>,
+    /// Roots that exist in the instance but were outside coverage, and were
+    /// therefore left exactly as they were.
+    pub preserved_roots: Vec<String>,
+    /// Set when the restore itself committed but housekeeping afterwards did
+    /// not. Live state has already changed; this must not be reported as a
+    /// failure, or the user will retry an operation that already succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_warning: Option<String>,
+    /// Recovery material from an earlier interrupted restore that was
+    /// preserved rather than deleted, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preserved_recovery_dir: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1038,6 +1141,7 @@ pub fn create_snapshot_scoped(
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         snapshot: snapshot.clone(),
         files,
+        scope: Some(capture_root_states(instance_dir, entries)),
     };
 
     let manifest_json = serde_json::to_vec_pretty(&manifest)
@@ -1252,17 +1356,41 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
 /// renames.  If any exchange fails, every partially promoted snapshot entry is
 /// displaced before the pre-restore entries are moved back, so rollback never
 /// depends on renaming over a non-empty destination.
-pub fn restore_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<(), String> {
+pub fn restore_snapshot(instance_dir: &Path, snapshot_id: &str) -> Result<RestoreOutcome, String> {
     restore_snapshot_impl(instance_dir, snapshot_id, None)
+}
+
+/// The scope a restore of this snapshot would cover.
+///
+/// Callers use this to size an undo snapshot to the same roots the restore
+/// will replace — copying worlds to undo a configuration-only restore is pure
+/// cost — and to tell the user what the restore can and cannot promise.
+pub fn restore_scope(instance_dir: &Path, snapshot_id: &str) -> Result<Vec<String>, String> {
+    validate_snapshot_id(snapshot_id)?;
+    let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
+    let manifest = if manifest_path.is_file() {
+        read_manifest_file(&manifest_path, snapshot_id)?
+    } else {
+        let file = fs::File::open(snapshot_zip_path(instance_dir, snapshot_id))
+            .map_err(|e| format!("failed to open snapshot zip: {e}"))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|e| format!("failed to read snapshot zip: {e}"))?;
+        read_manifest(&mut archive, snapshot_id)?
+    };
+    Ok(resolve_restore_coverage(&manifest)?
+        .roots()
+        .iter()
+        .map(|root| root.name.clone())
+        .collect())
 }
 
 fn restore_snapshot_impl(
     instance_dir: &Path,
     snapshot_id: &str,
     fail_after_promotions: Option<usize>,
-) -> Result<(), String> {
+) -> Result<RestoreOutcome, String> {
     validate_snapshot_id(snapshot_id)?;
-    recover_interrupted_restore(instance_dir)?;
+    let preserved_recovery_dir = recover_interrupted_restore(instance_dir)?;
     let manifest_path = snapshot_manifest_path(instance_dir, snapshot_id);
     let zip_path = snapshot_zip_path(instance_dir, snapshot_id);
     if !manifest_path.exists() && !zip_path.exists() {
@@ -1273,6 +1401,9 @@ fn restore_snapshot_impl(
     let extract_dir = instance_dir.join(format!(".agora_restore_extract_{restore_id}"));
     fs::create_dir_all(&extract_dir).map_err(|e| format!("failed to create extract dir: {e}"))?;
 
+    // Everything below this point is validated before a single live file
+    // moves: a corrupt blob or an out-of-scope path must leave the instance
+    // untouched.
     let manifest = match extract_and_verify(instance_dir, snapshot_id, &extract_dir) {
         Ok(manifest) => manifest,
         Err(error) => {
@@ -1280,22 +1411,52 @@ fn restore_snapshot_impl(
             return Err(error);
         }
     };
+    let coverage = match resolve_restore_coverage(&manifest) {
+        Ok(coverage) => coverage,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&extract_dir);
+            return Err(error);
+        }
+    };
+
+    let covered: Vec<String> = coverage
+        .roots()
+        .iter()
+        .map(|root| root.name.clone())
+        .collect();
+    let original = capture_root_states(
+        instance_dir,
+        &covered.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
 
     let pre_dir = pre_restore_dir(instance_dir);
     if pre_dir.exists() {
-        fs::remove_dir_all(&pre_dir)
-            .map_err(|e| format!("failed to remove pre-restore dir: {e}"))?;
+        // recover_interrupted_restore has already dealt with any recognised
+        // recovery material, so anything still here is unaccounted for.
+        preserve_orphaned_recovery_dir(instance_dir, &pre_dir)?;
     }
     fs::create_dir_all(&pre_dir).map_err(|e| format!("failed to create pre-restore dir: {e}"))?;
 
+    // The journal is durable before the first destructive step, so an
+    // interruption at any point below can be reconstructed.
+    let mut journal = RestoreJournal {
+        schema_version: RESTORE_JOURNAL_SCHEMA_VERSION,
+        restore_id: restore_id.clone(),
+        snapshot_id: snapshot_id.to_string(),
+        original: original.clone(),
+        target: coverage.roots().to_vec(),
+        committed: false,
+    };
+    journal.write(instance_dir)?;
     let marker_path = instance_dir.join(RESTORE_MARKER);
-    fs::write(&marker_path, b"restore in progress")
+    fs::write(&marker_path, restore_id.as_bytes())
         .map_err(|e| format!("failed to write restore marker: {e}"))?;
 
+    let staged_roots = snapshot_roots(&manifest);
     let mut moved_current = Vec::new();
-    for entry_name in TRACKED_ENTRIES {
+    for entry_name in &covered {
         let src = instance_dir.join(entry_name);
-        if src.exists() {
+        if fs::symlink_metadata(&src).is_ok() {
             let dst = pre_dir.join(entry_name);
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("failed to create parent: {e}"))?;
@@ -1304,19 +1465,21 @@ fn restore_snapshot_impl(
                 let rollback =
                     rollback_restore(instance_dir, &pre_dir, &[], &moved_current, &restore_id);
                 let _ = fs::remove_dir_all(&extract_dir);
+                let _ = fs::remove_file(restore_journal_path(instance_dir));
                 return Err(combine_restore_error(
                     format!("failed to move current {entry_name} into backup: {error}"),
                     rollback,
                 ));
             }
-            moved_current.push((*entry_name).to_string());
+            moved_current.push(entry_name.clone());
         }
     }
 
-    let staged_roots = snapshot_roots(&manifest);
     let mut promoted = Vec::new();
-    for entry_name in TRACKED_ENTRIES {
-        if !staged_roots.contains(*entry_name) {
+    for entry_name in &covered {
+        // A covered root with no staged content is one the snapshot recorded
+        // as absent. Moving it aside above already produced that state.
+        if !staged_roots.contains(entry_name.as_str()) {
             continue;
         }
 
@@ -1336,76 +1499,173 @@ fn restore_snapshot_impl(
                 &restore_id,
             );
             let _ = fs::remove_dir_all(&extract_dir);
+            let _ = fs::remove_file(restore_journal_path(instance_dir));
             return Err(combine_restore_error(
                 format!("failed to promote restored {entry_name}: {error}"),
                 rollback,
             ));
         }
-        promoted.push((*entry_name).to_string());
+        promoted.push(entry_name.clone());
     }
 
-    if marker_path.exists() {
-        fs::remove_file(&marker_path)
-            .map_err(|e| format!("failed to remove restore marker: {e}"))?;
-    }
+    // Commit. Past this line the restore has happened, and any later failure
+    // is a cleanup problem rather than a restore failure.
+    journal.committed = true;
+    journal.write(instance_dir)?;
 
-    if pre_dir.exists() {
-        fs::remove_dir_all(&pre_dir)
-            .map_err(|e| format!("restore succeeded but backup cleanup failed: {e}"))?;
+    let mut cleanup_warning = None;
+    if let Err(error) = finish_committed_restore(instance_dir, &pre_dir) {
+        cleanup_warning = Some(error);
     }
-
     let _ = fs::remove_dir_all(&extract_dir);
 
-    // A restore rewrites tracked content; the next pre-launch snapshot must
+    // A restore rewrites covered content; the next pre-launch snapshot must
     // not be reused from before the restore.
     let _ = mark_instance_mutated(instance_dir);
 
+    // Tracked roots that still exist but were outside this snapshot's
+    // authority. `saves` lands here for every pre-launch snapshot, which is
+    // exactly the fact the caller needs to surface.
+    let mut preserved_roots: Vec<String> = TRACKED_ENTRIES
+        .iter()
+        .filter(|name| !covered.iter().any(|root| root == *name))
+        .filter(|name| fs::symlink_metadata(instance_dir.join(name)).is_ok())
+        .map(|name| (*name).to_string())
+        .collect();
+    preserved_roots.sort();
+
+    Ok(RestoreOutcome {
+        snapshot_id: snapshot_id.to_string(),
+        coverage: if coverage.is_exact() {
+            RestoreCoverageKind::Exact
+        } else {
+            RestoreCoverageKind::LegacyPartial
+        },
+        restored_roots: covered,
+        preserved_roots,
+        cleanup_warning,
+        preserved_recovery_dir: preserved_recovery_dir.map(|path| path.display().to_string()),
+    })
+}
+
+/// Clear the transaction's own artefacts after a committed restore.
+///
+/// Reported separately from the restore result: if this fails the instance is
+/// already restored, and telling the caller the restore failed would invite a
+/// retry of an operation that has already succeeded.
+fn finish_committed_restore(instance_dir: &Path, pre_dir: &Path) -> Result<(), String> {
+    if pre_dir.exists() {
+        fs::remove_dir_all(pre_dir)
+            .map_err(|e| format!("restore applied, but backup cleanup failed: {e}"))?;
+    }
+    let marker = instance_dir.join(RESTORE_MARKER);
+    if marker.exists() {
+        fs::remove_file(&marker)
+            .map_err(|e| format!("restore applied, but marker cleanup failed: {e}"))?;
+    }
+    let journal = restore_journal_path(instance_dir);
+    if journal.exists() {
+        fs::remove_file(&journal)
+            .map_err(|e| format!("restore applied, but journal cleanup failed: {e}"))?;
+    }
     Ok(())
 }
 
 /// Complete rollback from a process interruption before starting any new
 /// restore. Only roots with an actual backup are displaced, so roots that had
 /// not yet moved when the process stopped remain untouched.
-fn recover_interrupted_restore(instance_dir: &Path) -> Result<(), String> {
+/// Returns the path of any recovery material that was preserved rather than
+/// consumed, so the caller can tell the user where it went.
+fn recover_interrupted_restore(instance_dir: &Path) -> Result<Option<PathBuf>, String> {
     let marker = instance_dir.join(RESTORE_MARKER);
     let pre_dir = pre_restore_dir(instance_dir);
-    if !marker.exists() {
-        if pre_dir.exists() {
-            fs::remove_dir_all(&pre_dir)
-                .map_err(|e| format!("failed to remove stale restore backup: {e}"))?;
+
+    let Some(journal) = RestoreJournal::read(instance_dir) else {
+        // No journal. Either nothing was interrupted, or an older build was
+        // interrupted and left a marker we cannot interpret.
+        if marker.exists() {
+            // A pre-journal marker records that *something* was in flight but
+            // not what. Guessing here is what produced mixed states, so
+            // preserve the evidence and refuse rather than improvise.
+            let preserved = if pre_dir.exists() {
+                Some(preserve_orphaned_recovery_dir(instance_dir, &pre_dir)?)
+            } else {
+                None
+            };
+            fs::remove_file(&marker)
+                .map_err(|e| format!("failed to clear legacy restore marker: {e}"))?;
+            return Err(match preserved {
+                Some(path) => format!(
+                    "A previous restore was interrupted by an older version and its outcome cannot be determined. \
+                     The recovery material was preserved at {} — check it before retrying.",
+                    path.display()
+                ),
+                None => "A previous restore was interrupted by an older version and left no recovery material; \
+                         the instance may be in a mixed state."
+                    .to_string(),
+            });
         }
-        return Ok(());
+        if pre_dir.exists() {
+            // An orphaned backup with no marker at all. The old code deleted
+            // this. Under the pre-v4 restore bug it is where the instance's
+            // only surviving worlds would be, so it is preserved instead.
+            return Ok(Some(preserve_orphaned_recovery_dir(
+                instance_dir,
+                &pre_dir,
+            )?));
+        }
+        return Ok(None);
+    };
+
+    if journal.committed {
+        // The restore landed; only cleanup was interrupted. Finishing it is
+        // idempotent and must not touch live state.
+        finish_committed_restore(instance_dir, &pre_dir)?;
+        return Ok(None);
     }
-    if !pre_dir.is_dir() {
-        return Err(
-            "Previous restore was interrupted without a recovery backup; live state was left untouched."
-                .into(),
-        );
-    }
-    let backed_up = TRACKED_ENTRIES
+
+    // Uncommitted: undo it. `original` is authoritative, including for roots
+    // that did not exist before the restore — those have no backup entry and
+    // must be removed rather than left behind.
+    let promoted: Vec<String> = journal
+        .original
         .iter()
-        .filter(|entry| pre_dir.join(entry).exists())
-        .map(|entry| (*entry).to_string())
-        .collect::<Vec<_>>();
-    if backed_up.is_empty() {
-        fs::remove_file(&marker)
-            .map_err(|e| format!("failed to clear empty restore marker: {e}"))?;
-        fs::remove_dir_all(&pre_dir)
-            .map_err(|e| format!("failed to clear empty restore backup: {e}"))?;
-        return Ok(());
-    }
+        .filter(|root| {
+            root.state == RootState::Absent
+                && fs::symlink_metadata(instance_dir.join(&root.name)).is_ok()
+        })
+        .map(|root| root.name.clone())
+        .collect();
+    let backed_up: Vec<String> = journal
+        .original
+        .iter()
+        .filter(|root| root.state != RootState::Absent)
+        .map(|root| root.name.clone())
+        .filter(|name| pre_dir.join(name).exists())
+        .collect();
+    let mut displace = promoted;
+    displace.extend(backed_up.iter().cloned());
+
     rollback_restore(
         instance_dir,
         &pre_dir,
+        &displace,
         &backed_up,
-        &backed_up,
-        &format!("interrupted-{}", uuid::Uuid::new_v4()),
+        &format!("interrupted-{}", journal.restore_id),
     )?;
     if pre_dir.exists() {
         fs::remove_dir_all(&pre_dir)
             .map_err(|e| format!("failed to clean recovered restore backup: {e}"))?;
     }
-    Ok(())
+    let journal_path = restore_journal_path(instance_dir);
+    if journal_path.exists() {
+        fs::remove_file(&journal_path)
+            .map_err(|e| format!("failed to clear restore journal: {e}"))?;
+    }
+    if marker.exists() {
+        fs::remove_file(&marker).map_err(|e| format!("failed to clear restore marker: {e}"))?;
+    }
+    Ok(None)
 }
 
 fn extract_and_verify(
@@ -1678,6 +1938,164 @@ fn snapshot_roots(manifest: &SnapshotManifest) -> HashSet<&str> {
         .iter()
         .filter_map(|entry| entry.relative_path.split('/').next())
         .collect()
+}
+
+/// Record the live state of each scope root at capture time.
+///
+/// Uses `symlink_metadata` so a link is classified as what it is rather than
+/// as whatever it points at.
+fn capture_root_states(instance_dir: &Path, entries: &[&str]) -> Vec<SnapshotRoot> {
+    entries
+        .iter()
+        .map(|name| {
+            let state = match fs::symlink_metadata(instance_dir.join(name)) {
+                Ok(metadata) if metadata.is_dir() => RootState::Directory,
+                Ok(_) => RootState::File,
+                Err(_) => RootState::Absent,
+            };
+            SnapshotRoot {
+                name: (*name).to_string(),
+                state,
+            }
+        })
+        .collect()
+}
+
+/// Decide which roots this snapshot may replace.
+///
+/// v4+ manifests carry their scope, so coverage is exact. Anything older is
+/// restored conservatively: only roots that actually contain recorded content
+/// are replaced. That can leave a stale root behind, which the caller reports
+/// as a partial restore — the alternative is deleting a root the snapshot may
+/// never have covered, which is how worlds were lost.
+fn resolve_restore_coverage(manifest: &SnapshotManifest) -> Result<RestoreCoverage, String> {
+    if let Some(scope) = &manifest.scope {
+        for root in scope {
+            validate_scope_root(&root.name)?;
+        }
+        let mut seen = HashSet::new();
+        for root in scope {
+            if !seen.insert(root.name.as_str()) {
+                return Err(format!("snapshot scope lists {} twice", root.name));
+            }
+        }
+        // Every recorded file must live inside a covered root, or the manifest
+        // is internally inconsistent and must not be applied.
+        for entry in &manifest.files {
+            let root = entry.relative_path.split('/').next().unwrap_or_default();
+            if !seen.contains(root) {
+                return Err(format!(
+                    "snapshot contains {} which is outside its recorded scope",
+                    entry.relative_path
+                ));
+            }
+        }
+        return Ok(RestoreCoverage::Exact(scope.clone()));
+    }
+
+    if manifest.schema_version >= SNAPSHOT_SCOPE_SCHEMA_VERSION {
+        // A manifest that claims to record its scope but does not is damaged.
+        // Silently downgrading it to legacy handling would hide the damage.
+        return Err(format!(
+            "snapshot manifest claims schema {} but records no scope",
+            manifest.schema_version
+        ));
+    }
+
+    let mut roots: Vec<SnapshotRoot> = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in &manifest.files {
+        let name = entry.relative_path.split('/').next().unwrap_or_default();
+        validate_scope_root(name)?;
+        if seen.insert(name.to_string()) {
+            // A legacy manifest only proves a root existed, never that it was
+            // absent, so every inferred root is content-bearing.
+            let state = if entry.relative_path.contains('/') {
+                RootState::Directory
+            } else {
+                RootState::File
+            };
+            roots.push(SnapshotRoot {
+                name: name.to_string(),
+                state,
+            });
+        }
+    }
+    Ok(RestoreCoverage::LegacyPartial(roots))
+}
+
+const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 1;
+
+fn restore_journal_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(".agora_restore_journal.json")
+}
+
+/// Everything recovery needs to reconstruct an interrupted restore.
+///
+/// The previous design wrote a plain-text marker and inferred the transaction
+/// from whatever happened to be sitting in the backup directory. That cannot
+/// represent a root which was *absent* before the restore: such a root has no
+/// backup entry, so a crash after promoting it left the promotion in place
+/// with nothing recording that it should be undone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RestoreJournal {
+    schema_version: u32,
+    restore_id: String,
+    snapshot_id: String,
+    /// Root states as they were before the restore began.
+    original: Vec<SnapshotRoot>,
+    /// Root states the restore intends to produce.
+    target: Vec<SnapshotRoot>,
+    /// Set once every promotion has landed. Before this, recovery rolls back;
+    /// after it, recovery only finishes cleanup.
+    committed: bool,
+}
+
+impl RestoreJournal {
+    fn write(&self, instance_dir: &Path) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|e| format!("failed to serialize restore journal: {e}"))?;
+        atomic_write(&restore_journal_path(instance_dir), &bytes)
+    }
+
+    fn read(instance_dir: &Path) -> Option<Self> {
+        let bytes = fs::read(restore_journal_path(instance_dir)).ok()?;
+        let journal: RestoreJournal = serde_json::from_slice(&bytes).ok()?;
+        (journal.schema_version == RESTORE_JOURNAL_SCHEMA_VERSION).then_some(journal)
+    }
+}
+
+/// Move an unrecognised recovery directory aside instead of deleting it.
+///
+/// An orphaned `.agora_pre_restore` is evidence that a restore was interrupted.
+/// Under the pre-v4 behaviour it is also exactly where the only surviving copy
+/// of an instance's worlds would be. Deleting it — which is what the old code
+/// did whenever the marker was missing — can therefore destroy the very data
+/// the backup existed to protect.
+fn preserve_orphaned_recovery_dir(instance_dir: &Path, pre_dir: &Path) -> Result<PathBuf, String> {
+    let preserved = instance_dir.join(format!(".agora_orphaned_backup_{}", uuid::Uuid::new_v4()));
+    fs::rename(pre_dir, &preserved).map_err(|e| {
+        format!(
+            "found recovery material at {} but could not preserve it: {e}",
+            pre_dir.display()
+        )
+    })?;
+    Ok(preserved)
+}
+
+/// Scope roots must be plain top-level names, and must never name the
+/// launcher's own coordination state.
+fn validate_scope_root(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.starts_with(".agora")
+    {
+        return Err(format!("invalid snapshot scope root {name:?}"));
+    }
+    Ok(())
 }
 
 pub(crate) fn sha256_hex(contents: &[u8]) -> String {
@@ -2102,6 +2520,44 @@ mod tests {
             .any(|entry| entry.path.starts_with("saves/")));
     }
 
+    /// Restoring a pre-launch recovery point must not touch world data.
+    ///
+    /// The pre-launch scope deliberately omits `saves/`, so a restore that
+    /// assumes the full [`TRACKED_ENTRIES`] scope moves worlds into the
+    /// pre-restore backup, never promotes them back, and then deletes the
+    /// backup — destroying every world in the instance.
+    #[test]
+    fn restoring_a_prelaunch_snapshot_preserves_worlds() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let world = inst.join("saves").join("world1");
+        fs::create_dir_all(&world).unwrap();
+        fs::write(world.join("level.dat"), b"world data").unwrap();
+        fs::write(world.join("region.mca"), b"region data").unwrap();
+
+        let scoped =
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries()).unwrap();
+
+        // The player then plays: worlds change, and a mod is broken.
+        fs::write(world.join("level.dat"), b"world data after playing").unwrap();
+        fs::write(inst.join("mods").join("test.jar"), b"broken mod").unwrap();
+
+        restore_snapshot(&inst, &scoped.id).unwrap();
+
+        // In-scope content is rolled back...
+        assert_eq!(
+            fs::read(inst.join("mods").join("test.jar")).unwrap(),
+            b"mod content"
+        );
+        // ...and out-of-scope worlds are left exactly as the game left them.
+        assert_eq!(
+            fs::read(world.join("level.dat")).unwrap(),
+            b"world data after playing"
+        );
+        assert_eq!(fs::read(world.join("region.mca")).unwrap(), b"region data");
+        assert!(!inst.join(".agora_pre_restore").exists());
+    }
+
     #[test]
     fn mutation_journal_bumps_and_reads_generation() {
         let tmp = TempDir::new().unwrap();
@@ -2399,7 +2855,23 @@ mod tests {
             b"partial snapshot state",
         )
         .unwrap();
-        fs::write(inst.join(RESTORE_MARKER), b"restore in progress").unwrap();
+        fs::write(inst.join(RESTORE_MARKER), b"interrupted").unwrap();
+        RestoreJournal {
+            schema_version: RESTORE_JOURNAL_SCHEMA_VERSION,
+            restore_id: "interrupted".into(),
+            snapshot_id: "whatever".into(),
+            original: vec![SnapshotRoot {
+                name: "mods".into(),
+                state: RootState::Directory,
+            }],
+            target: vec![SnapshotRoot {
+                name: "mods".into(),
+                state: RootState::Directory,
+            }],
+            committed: false,
+        }
+        .write(&inst)
+        .unwrap();
 
         let error = restore_snapshot(&inst, "missing-snapshot").unwrap_err();
         assert!(error.contains("not found"));
@@ -2409,6 +2881,182 @@ mod tests {
         );
         assert!(!inst.join(RESTORE_MARKER).exists());
         assert!(!pre.exists());
+        assert!(!restore_journal_path(&inst).exists());
+    }
+
+    /// A root that did not exist before the restore has no backup entry, so
+    /// the old marker-plus-backup-directory scheme could not know it had been
+    /// promoted and left it in place — a state that is neither the original
+    /// instance nor the snapshot.
+    #[test]
+    fn recovery_removes_a_root_that_did_not_exist_before_the_restore() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        fs::remove_dir_all(inst.join("shaderpacks")).unwrap();
+
+        // Simulate a crash right after `shaderpacks/` was promoted: it exists
+        // live, and nothing was backed up for it.
+        fs::create_dir_all(inst.join("shaderpacks")).unwrap();
+        fs::write(inst.join("shaderpacks").join("from-snapshot.zip"), b"x").unwrap();
+        let pre = pre_restore_dir(&inst);
+        fs::create_dir_all(&pre).unwrap();
+        fs::write(inst.join(RESTORE_MARKER), b"crashed").unwrap();
+        RestoreJournal {
+            schema_version: RESTORE_JOURNAL_SCHEMA_VERSION,
+            restore_id: "crashed".into(),
+            snapshot_id: "whatever".into(),
+            original: vec![SnapshotRoot {
+                name: "shaderpacks".into(),
+                state: RootState::Absent,
+            }],
+            target: vec![SnapshotRoot {
+                name: "shaderpacks".into(),
+                state: RootState::Directory,
+            }],
+            committed: false,
+        }
+        .write(&inst)
+        .unwrap();
+
+        let error = restore_snapshot(&inst, "missing-snapshot").unwrap_err();
+        assert!(error.contains("not found"));
+        assert!(
+            !inst.join("shaderpacks").exists(),
+            "the promoted root should have been undone"
+        );
+    }
+
+    /// An orphaned backup is where the only surviving copy of the worlds ends
+    /// up under the pre-v4 restore bug. It must never be deleted on sight.
+    #[test]
+    fn an_orphaned_recovery_backup_is_preserved_not_deleted() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let pre = pre_restore_dir(&inst);
+        fs::create_dir_all(pre.join("saves").join("world1")).unwrap();
+        fs::write(
+            pre.join("saves").join("world1").join("level.dat"),
+            b"the only copy",
+        )
+        .unwrap();
+
+        let snap = create_snapshot(&inst, None).unwrap();
+        let outcome = restore_snapshot(&inst, &snap.id).unwrap();
+
+        let preserved = outcome
+            .preserved_recovery_dir
+            .expect("orphaned backup should be reported");
+        let preserved = Path::new(&preserved);
+        assert!(preserved.exists(), "orphaned backup was deleted");
+        assert_eq!(
+            fs::read(preserved.join("saves").join("world1").join("level.dat")).unwrap(),
+            b"the only copy"
+        );
+    }
+
+    /// A marker written by a pre-journal build cannot tell us what was in
+    /// flight, so recovery must refuse rather than guess.
+    #[test]
+    fn a_legacy_interrupted_marker_is_reported_not_improvised() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let pre = pre_restore_dir(&inst);
+        fs::create_dir_all(&pre).unwrap();
+        fs::write(pre.join("options.txt"), b"pre-restore options").unwrap();
+        fs::write(inst.join(RESTORE_MARKER), b"restore in progress").unwrap();
+
+        let snap_error = restore_snapshot(&inst, "missing-snapshot").unwrap_err();
+        assert!(
+            snap_error.contains("cannot be determined"),
+            "unexpected error: {snap_error}"
+        );
+        // The evidence survives, under a name that says what it is.
+        let preserved: Vec<_> = fs::read_dir(&inst)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".agora_orphaned_backup_")
+            })
+            .collect();
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(
+            fs::read(preserved[0].path().join("options.txt")).unwrap(),
+            b"pre-restore options"
+        );
+    }
+
+    /// Restoring must report what it covered, so a caller can tell an exact
+    /// restore from one that merely did not destroy anything.
+    #[test]
+    fn restore_reports_its_coverage() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
+        fs::write(inst.join("saves").join("world1").join("level.dat"), b"w").unwrap();
+
+        let scoped =
+            create_snapshot_scoped(&inst, Some("pre-launch"), prelaunch_tracked_entries()).unwrap();
+        let outcome = restore_snapshot(&inst, &scoped.id).unwrap();
+        assert_eq!(outcome.coverage, RestoreCoverageKind::Exact);
+        assert!(outcome.restored_roots.iter().any(|r| r == "mods"));
+        assert!(
+            outcome.preserved_roots.iter().any(|r| r == "saves"),
+            "a pre-launch restore must report that worlds were left alone"
+        );
+
+        let full = create_snapshot(&inst, Some("backup")).unwrap();
+        let outcome = restore_snapshot(&inst, &full.id).unwrap();
+        assert!(outcome.restored_roots.iter().any(|r| r == "saves"));
+        assert!(outcome.preserved_roots.is_empty());
+    }
+
+    /// A legacy manifest carries no scope, so restore must not infer deletion
+    /// authority from a root's absence — and must say the restore was partial.
+    #[test]
+    fn a_legacy_snapshot_preserves_roots_it_cannot_account_for() {
+        let tmp = TempDir::new().unwrap();
+        let inst = make_instance(&tmp);
+        let id = "legacy-scopeless";
+        fs::create_dir_all(snapshots_dir(&inst)).unwrap();
+        let blob = store_snapshot_object(&inst, &inst.join("options.txt")).unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 3,
+            "snapshot": {
+                "id": id,
+                "label": "legacy",
+                "created_at": "2024-01-01T00:00:00Z",
+                "file_count": 1,
+                "size_estimate": blob.1,
+            },
+            "files": [{
+                "relative_path": "options.txt",
+                "size": blob.1,
+                "sha256": blob.0,
+                "blob_sha256": blob.0,
+            }],
+        });
+        fs::write(
+            snapshot_manifest_path(&inst, id),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
+        fs::write(inst.join("saves").join("world1").join("level.dat"), b"w").unwrap();
+
+        let outcome = restore_snapshot(&inst, id).unwrap();
+        assert_eq!(outcome.coverage, RestoreCoverageKind::LegacyPartial);
+        assert_eq!(outcome.restored_roots, vec!["options.txt".to_string()]);
+        // mods/ and saves/ were never proven to be outside the snapshot, so
+        // they stay exactly as they are.
+        assert!(inst.join("mods").join("test.jar").exists());
+        assert_eq!(
+            fs::read(inst.join("saves").join("world1").join("level.dat")).unwrap(),
+            b"w"
+        );
     }
 
     fn write_test_archive(path: &Path, entries: &[(&str, &[u8])]) {

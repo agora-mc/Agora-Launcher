@@ -1601,8 +1601,21 @@ impl InstallPipeline {
             .await;
             cleanup_staging_dir(scheduler, &staging_dir).await;
             return match restore {
-                Ok(()) => fail(
-                    format!("Apply failed; the recovery snapshot was restored: {apply_error}"),
+                Ok(outcome) => fail(
+                    match outcome.coverage {
+                        crate::snapshot::RestoreCoverageKind::Exact => format!(
+                            "Apply failed; the recovery snapshot was restored: {apply_error}"
+                        ),
+                        // The rollback point predates scoped snapshots, so it
+                        // cannot establish that every root was returned to its
+                        // pre-apply state. Say so rather than claiming a clean
+                        // rollback.
+                        crate::snapshot::RestoreCoverageKind::LegacyPartial => format!(
+                            "Apply failed; the recovery snapshot was restored, but it predates scoped snapshots so \
+                             roots outside {:?} were left as they are: {apply_error}",
+                            outcome.restored_roots
+                        ),
+                    },
                     Some(snapshot.id),
                     true,
                 ),

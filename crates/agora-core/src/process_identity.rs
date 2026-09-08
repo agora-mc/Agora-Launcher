@@ -168,7 +168,7 @@ pub fn verify(identity: &ProcessIdentity) -> LauncherResult<()> {
 /// **not** serialised to the frontend.  The public
 /// [`RunningProcess`](crate::state::RunningProcess) carries only the fields
 /// the UI needs (instance_id, pid, session_id).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProcessIdentity {
     pub pid: u32,
     /// The process start time reported by the OS (seconds since epoch).

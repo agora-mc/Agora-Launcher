@@ -4,6 +4,7 @@ import {
   formatError,
   importInstancePack,
   importModrinthPackByUrl,
+  describeRestoreCoverage,
   restoreSnapshot,
 } from '../lib/tauri';
 import { applyInstallPlan, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
@@ -472,8 +473,15 @@ function PackInstallIndicator({ tasks }: { tasks: PackInstallTask[] }) {
                         setRollbackBusy(task.id);
                         setRollbackError((prev) => ({ ...prev, [task.id]: '' }));
                         try {
-                          await restoreSnapshot(task.instanceId, task.snapshotId);
-                          dismissTask(task.id);
+                          const outcome = await restoreSnapshot(task.instanceId, task.snapshotId);
+                          const note = describeRestoreCoverage(outcome);
+                          if (note) {
+                            // Not an error: the restore succeeded, but it did
+                            // not cover everything the user might assume.
+                            setRollbackError((prev) => ({ ...prev, [task.id]: note }));
+                          } else {
+                            dismissTask(task.id);
+                          }
                         } catch (cause) {
                           setRollbackError((prev) => ({ ...prev, [task.id]: formatError(cause) }));
                         } finally {

@@ -673,12 +673,36 @@ impl LaunchService {
 
         // -- Direct mode: spawn Java and attach --
         progress.phase("launching", "Starting Minecraft");
-        let child = crate::launch_planner::spawn(&prepared)?;
+        // Published *before* the spawn, while the instance lock is still held.
+        // A crash between here and `publish_running` leaves an unfinished
+        // launch on record, which blocks mutation until someone confirms the
+        // game is gone — the safe answer, because a dead launcher says nothing
+        // about whether Minecraft is still writing to this instance.
+        let lease_generation =
+            crate::instance_runtime::publish_starting(&self.ctx.paths, &request.instance_id)?;
+        let child = match crate::launch_planner::spawn(&prepared) {
+            Ok(child) => child,
+            Err(error) => {
+                // Nothing was spawned, so the lease is definitively ours to drop.
+                let _ = crate::instance_runtime::clear(
+                    &self.ctx.paths,
+                    &request.instance_id,
+                    Some(&lease_generation),
+                );
+                return Err(error);
+            }
+        };
         let pid = child.id().ok_or_else(|| LauncherError::Generic {
             code: "ERR_NO_PID".into(),
             message: "Spawned process has no PID.".into(),
         })?;
         let process_identity = crate::process_identity::capture(pid)?;
+        crate::instance_runtime::publish_running(
+            &self.ctx.paths,
+            &request.instance_id,
+            &lease_generation,
+            process_identity.clone(),
+        )?;
         record_launch_started(&self.ctx, &request.instance_id);
 
         // Register the session with the core-owned process session manager.
@@ -725,6 +749,16 @@ impl LaunchService {
         .inspect_err(|_| {
             self.ctx.process_session_manager.remove(session_id);
         })?;
+
+        // The game has exited, so release the instance. On the error path
+        // above the lease is deliberately left in place: we no longer know
+        // whether the process is alive, and `check_idle` will verify the
+        // recorded identity and clear it once the process is provably gone.
+        let _ = crate::instance_runtime::clear(
+            &self.ctx.paths,
+            &request.instance_id,
+            Some(&lease_generation),
+        );
 
         // The game already ran to completion, so a failed LKG write must not
         // retroactively fail the launch: that would skip `finished` and leave

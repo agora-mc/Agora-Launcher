@@ -2052,8 +2052,47 @@ export const listSnapshots = (instanceId: string) =>
 export const createSnapshot = (instanceId: string, label?: string) =>
   invoke<Snapshot>('create_snapshot', { instanceId, label });
 
+export type RestoreCoverageKind = 'exact' | 'legacy-partial';
+
+/**
+ * What a restore actually did.
+ *
+ * Coverage is not cosmetic: a pre-launch snapshot deliberately excludes
+ * `saves/`, so restoring one rolls back mods and configuration but leaves
+ * worlds exactly as the last session left them. The UI has to be able to say
+ * which promise it is making rather than implying a full undo.
+ */
+export interface RestoreOutcome {
+  snapshotId: string;
+  coverage: RestoreCoverageKind;
+  restoredRoots: string[];
+  preservedRoots: string[];
+  cleanupWarning?: string;
+  preservedRecoveryDir?: string;
+}
+
 export const restoreSnapshot = (instanceId: string, snapshotId: string) =>
-  invoke<void>('restore_snapshot', { instanceId, snapshotId });
+  invoke<RestoreOutcome>('restore_snapshot', { instanceId, snapshotId });
+
+/** One plain sentence describing what a restore covered, or null if it was a
+ *  complete restore with nothing worth remarking on. */
+export const describeRestoreCoverage = (outcome: RestoreOutcome): string | null => {
+  const notes: string[] = [];
+  if (outcome.coverage === 'legacy-partial') {
+    notes.push(
+      `This backup predates scoped snapshots, so only ${outcome.restoredRoots.join(', ')} could be put back.`,
+    );
+  }
+  if (outcome.preservedRoots.includes('saves')) {
+    notes.push('Your worlds were left exactly as they are — this backup does not cover them.');
+  } else if (outcome.preservedRoots.length > 0) {
+    notes.push(`Left untouched: ${outcome.preservedRoots.join(', ')}.`);
+  }
+  if (outcome.cleanupWarning) {
+    notes.push(outcome.cleanupWarning);
+  }
+  return notes.length > 0 ? notes.join(' ') : null;
+};
 
 export const deleteSnapshot = (instanceId: string, snapshotId: string) =>
   invoke<void>('delete_snapshot', { instanceId, snapshotId });

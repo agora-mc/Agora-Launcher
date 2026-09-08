@@ -2154,12 +2154,38 @@ async fn run_command(
                 if !instance_dir.exists() {
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
-                agora_core::snapshot::restore_snapshot(&instance_dir, &snapshot_id)
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                println!(
-                    "Restored instance '{}' from snapshot {}",
-                    instance, snapshot_id
-                );
+                // Same core service the desktop app uses: the instance lock,
+                // the launch-exclusion check, and the undo snapshot are not
+                // things a second front end gets to skip.
+                let outcome = agora_core::snapshot_service::SnapshotService::new(ctx.clone())
+                    .restore(&instance, &snapshot_id)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&outcome)?);
+                } else {
+                    println!(
+                        "Restored instance '{}' from snapshot {}",
+                        instance, snapshot_id
+                    );
+                    if outcome.coverage == agora_core::snapshot::RestoreCoverageKind::LegacyPartial
+                    {
+                        println!(
+                            "  This snapshot predates scoped snapshots, so only {} could be restored.",
+                            outcome.restored_roots.join(", ")
+                        );
+                    }
+                    if !outcome.preserved_roots.is_empty() {
+                        println!(
+                            "  Left untouched (outside this snapshot): {}",
+                            outcome.preserved_roots.join(", ")
+                        );
+                    }
+                    if let Some(warning) = &outcome.cleanup_warning {
+                        println!("  Note: {warning}");
+                    }
+                    if let Some(preserved) = &outcome.preserved_recovery_dir {
+                        println!("  Recovery material from an earlier interrupted restore was kept at {preserved}");
+                    }
+                }
             }
             SnapshotsCmd::Delete {
                 instance,
