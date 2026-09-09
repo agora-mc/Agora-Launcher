@@ -514,7 +514,11 @@ enum SnapshotsCmd {
 
 #[derive(Subcommand)]
 enum AuthCmd {
-    Login,
+    Login {
+        /// Print the sign-in link instead of opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     Status,
     Logout,
 }
@@ -2259,35 +2263,48 @@ async fn run_command(
             run_launch_service(ctx, &instance, yes, timings, output_fmt).await?;
         }
         Commands::Auth { action } => match action {
-            AuthCmd::Login => {
+            AuthCmd::Login { no_browser } => {
                 let db_path = data_dir.join("local_state.db");
                 let flow = agora_core::msa::begin_login(&ctx.http_clients, &db_path).await?;
+
+                // In --json mode stdout must stay machine-readable, so the
+                // human-facing prompt goes to stderr.
+                let prompt = format!(
+                    "To sign in, open {} and enter the code: {}",
+                    flow.verification_uri, flow.user_code
+                );
                 if json {
-                    eprintln!("Open this URL in your browser:");
-                    eprintln!("{}", flow.auth_uri);
-                    eprintln!();
-                    eprintln!("After authorizing, paste the full redirect URL here:");
+                    eprintln!("{prompt}");
                 } else {
-                    println!("Open this URL in your browser:");
-                    println!("{}", flow.auth_uri);
-                    println!();
-                    println!("After authorizing, paste the full redirect URL here:");
+                    println!("{prompt}");
                 }
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                let input = input.trim();
-                if input.is_empty() {
-                    anyhow::bail!("No input provided");
+
+                if no_browser {
+                    eprintln!("Waiting for you to finish signing in… (Ctrl-C to cancel)");
+                } else {
+                    match open_url_in_browser(&flow.verification_uri) {
+                        Ok(()) => eprintln!(
+                            "Opened your browser. Waiting for you to finish signing in…                              (Ctrl-C to cancel)"
+                        ),
+                        Err(error) => eprintln!(
+                            "Could not open a browser ({error}). Open the link above manually.                              Waiting… (Ctrl-C to cancel)"
+                        ),
+                    }
                 }
-                let (code, state) = extract_auth_redirect(input)?;
-                let credentials = agora_core::msa::finish_login(
-                    &ctx.http_clients,
-                    &code,
-                    &flow,
-                    Some(&state),
-                    &db_path,
-                )
-                .await?;
+
+                // Ctrl-C stops the polling loop cleanly instead of leaving a
+                // half-finished sign-in behind.
+                let cancel = agora_core::msa::MsaLoginCancel::new();
+                let on_signal = cancel.clone();
+                tokio::spawn(async move {
+                    if tokio::signal::ctrl_c().await.is_ok() {
+                        on_signal.cancel();
+                    }
+                });
+
+                let credentials =
+                    agora_core::msa::poll_login(&ctx.http_clients, &flow, &db_path, &cancel)
+                        .await?;
                 if json {
                     println!(
                         "{}",
@@ -2303,7 +2320,23 @@ async fn run_command(
             }
             AuthCmd::Status => match agora_core::msa::load_credentials()? {
                 Some(creds) => {
-                    if creds.is_expired() {
+                    if creds.needs_reauth() {
+                        // Stored by the pre-migration flow: no refresh token
+                        // Agora now holds can renew it.
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "status": "sign_in_required",
+                                    "username": creds.username,
+                                    "reason": agora_core::msa::LEGACY_CREDENTIALS_MESSAGE,
+                                })
+                            );
+                        } else {
+                            println!("Signed in as {} — sign-in required", creds.username);
+                            println!("{}", agora_core::msa::LEGACY_CREDENTIALS_MESSAGE);
+                        }
+                    } else if creds.is_expired() {
                         if json {
                             println!(
                                 "{}",
@@ -3340,37 +3373,44 @@ async fn run_mcp_stdio(ctx: &agora_core::ctx::Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Extract the authorization code and CSRF state from the complete browser
-/// redirect URL. The direct-launch OAuth flow always creates a state value, so
-/// accepting a bare code would make CLI login fail closed and hide the cause.
-fn extract_auth_redirect(input: &str) -> anyhow::Result<(String, String)> {
-    let url = reqwest::Url::parse(input).map_err(|_| {
-        anyhow::anyhow!(
-            "Paste the complete redirect URL so Agora can verify the OAuth state parameter."
-        )
-    })?;
-    let mut code = None;
-    let mut state = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => state = Some(value.into_owned()),
-            _ => {}
-        }
+/// Open a URL with the OS handler.
+///
+/// Only https URLs are passed to the shell, and only ones Microsoft returned
+/// for the pending sign-in — never a string typed by the user.
+fn open_url_in_browser(url: &str) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| anyhow::anyhow!("Microsoft returned an invalid sign-in URL"))?;
+    if parsed.scheme() != "https" {
+        anyhow::bail!("refusing to open a non-https sign-in URL");
     }
 
-    let code =
-        code.ok_or_else(|| anyhow::anyhow!("Redirect URL did not include an OAuth code."))?;
-    let state =
-        state.ok_or_else(|| anyhow::anyhow!("Redirect URL did not include an OAuth state."))?;
-    Ok((code, state))
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", parsed.as_str()]);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = std::process::Command::new("open");
+        c.arg(parsed.as_str());
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(parsed.as_str());
+        c
+    };
+
+    command.spawn()?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::exit_code_from_error;
     use super::exit_code_from_launcher_error;
-    use super::extract_auth_redirect;
     use super::Cli;
     use super::Commands;
     use super::LoadoutCmd;
@@ -3400,21 +3440,6 @@ mod tests {
             cli.command,
             Commands::Inventory { instance } if instance == "my-instance"
         ));
-    }
-
-    #[test]
-    fn parses_code_and_state_from_redirect_url() {
-        let (code, state) = extract_auth_redirect(
-            "https://login.live.com/oauth20_desktop.srf?code=abc%20123&state=csrf-token",
-        )
-        .unwrap();
-        assert_eq!(code, "abc 123");
-        assert_eq!(state, "csrf-token");
-    }
-
-    #[test]
-    fn rejects_redirect_without_state() {
-        assert!(extract_auth_redirect("https://example.invalid/?code=abc").is_err());
     }
 
     #[test]

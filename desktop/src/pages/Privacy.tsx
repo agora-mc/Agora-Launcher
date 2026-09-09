@@ -81,7 +81,7 @@ const ENDPOINTS: Endpoint[] = [
   {
     key: 'network_msa_enabled',
     name: 'Minecraft Authentication',
-    hosts: 'login.live.com / user.auth.xboxlive.com / api.minecraftservices.com',
+    hosts: 'login.microsoftonline.com / user.auth.xboxlive.com / xsts.auth.xboxlive.com / api.minecraftservices.com',
     purpose: 'Authenticate with Microsoft/Xbox to launch Minecraft.',
     note: 'Only used when launching with direct sign-in (Phase 5).',
     default: true,
