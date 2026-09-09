@@ -17,16 +17,49 @@ Do not treat a successful catalog release as proof that a desktop package was bu
 - [ ] Changelog or release notes describe user-visible changes.
 - [ ] Required public build variables are present in the release workflow.
 - [ ] Signing and updater configuration are available for intended platforms, including Apple Silicon and Intel macOS.
-- [ ] Unit, integration, frontend, and end-to-end tests pass.
 - [ ] The in-app guide and website documentation match current labels.
 - [ ] CLI help and `docs/CLI.md` match current commands.
 - [ ] Migration from the previous public release has been tested with disposable data.
 - [ ] A clean installation has been tested.
 - [ ] A packaged upgrade has been tested.
 
+### Checks that gate a release build
+
+No release artifact is built until these three workflows pass **for the commit being
+released**. The `Release` workflow calls them with `uses:`, so they are the same
+workflows that gate ordinary pushes and pull requests — not a second copy that can
+drift — and they run against this run's checkout rather than a previous run's:
+
+| Required check | Covers |
+| --- | --- |
+| [`CI Enforcement`](../.github/workflows/ci-enforcement.yml) | `cargo fmt`, clippy for core/CLI/desktop, Rust tests on Linux/Windows/macOS, compiler and script tests, TypeScript and Vite build, architecture boundaries, Tauri binding manifest, documentation gates, version-metadata agreement |
+| [`Launch Planner CI`](../.github/workflows/launch-planner.yml) | Cross-platform launch-planner integration tests and the `launchMode` delegation-default assertion |
+| [`E2E Tests`](../.github/workflows/e2e.yml) | The Playwright browser suite |
+
+Two properties make "the checks passed for the released revision" a fact rather than
+an inference:
+
+- Because the checks are *called* rather than looked up, a stale green run on an
+  earlier commit cannot stand in for this one, and a missing, pending, failed, or
+  cancelled run leaves the build jobs unreachable. Path filters do not apply to a
+  called workflow, so a change that no filter matches — a loader-only revision, for
+  example — is still fully tested at release time.
+- The `release-ref` job asserts that the release tag resolves to the commit this run
+  is building. A tag push satisfies this by construction; a manual dispatch from a
+  branch whose HEAD is not the tagged commit fails here instead of publishing
+  artifacts that no check ever examined. Push the tag first, then dispatch against it.
+
+`loader-manifests/`, `runtime-catalog/`, and `crash-signatures/` are `include_str!`
+inputs to `agora-core`, so they are also in `CI Enforcement`'s push and pull-request
+path filters. A loader-refresh commit therefore gets the full suite on `master`, not
+only `Launch Planner CI`.
+
+The `Web Build` and `Nightly Compiler` workflows are not release gates: they serve the
+catalog and website streams on their own schedules.
+
 ### Build and inspect
 
-The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. It tests core and CLI code, builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
+The `Release` workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs for a pushed `v*` tag or a manual dispatch with a tag. Its first build step rewrites the version from that tag into every file that carries one — the workspace `Cargo.toml`, `desktop/src-tauri/Cargo.toml`, `tauri.conf.json`, `desktop/package.json`, and the `Cargo.lock` workspace entries — via `scripts/set_release_version.py`. The tag is therefore the single source of truth for installer filenames, the version the application shows, and `agora --version`. It rewrites the ephemeral CI checkout only; nothing is committed back. After the required checks above pass, it builds native desktop bundles on Windows, macOS, and Linux, packages standalone CLI archives, generates `SHA256SUMS`, and assembles a draft release. The workflow never publishes the release itself; it stays a draft until a maintainer smoke-tests the artifacts and publishes explicitly.
 
 Public desktop build variables and secret boundaries are documented once in [DEVELOPMENT.md](./DEVELOPMENT.md). Confirm the workflow has every required public value and protected signing credential without copying their values into release notes or logs.
 
@@ -44,6 +77,13 @@ The workflow leaves the release as a draft with all artifacts uploaded and `SHA2
 - accidental debug artifacts.
 
 ### Packaged smoke test
+
+Everything in this section is **manual and not enforced by CI**. The required checks
+above run against source; nothing in them installs or launches a packaged build, so a
+release that compiles and tests clean can still fail on first run. The one automated
+exception is the macOS launch check inside `build-desktop`, which starts the packaged
+`.app` for a few seconds to catch bundle and startup failures; it is not a substitute
+for the steps below, and there is no Windows or Linux equivalent.
 
 Use the actual release artifact, not `tauri dev`.
 

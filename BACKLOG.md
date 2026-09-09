@@ -344,7 +344,7 @@
 
 - [x] **Automated test suite** (§18.1)
   - **Short:** Add unit tests, integration tests, and end-to-end tests.
-  - **Detail:** 538 Rust workspace tests, 86 compiler tests, 20 script tests, and 135 Playwright tests pass. The browser suite covers instance creation through canonical launch/exit, install planning/execution, batch updates, Home/Browse context, settings, LKG snapshots/restore/diff, Crash Doctor, lockfile export/verify/repair/clone, recovery states, and request-race handling. Real Minecraft process/platform smoke checks remain outside deterministic CI.
+  - **Detail:** Rust workspace tests, compiler tests, script tests, desktop unit tests, and a Playwright browser suite all run in CI; `docs/RELEASING.md` names the workflows that must pass. (Counts are deliberately not recorded here — they went stale the moment they were written. Run the suites for the current numbers.) The browser suite covers instance creation through canonical launch/exit, install planning/execution, batch updates, Home/Browse context, settings, LKG snapshots/restore/diff, Crash Doctor, lockfile export/verify/repair/clone, recovery states, and request-race handling. Real Minecraft process/platform smoke checks and the packaged-release smoke test remain outside deterministic CI.
   - **Spec:** §18.1
   - **Acceptance:** `cargo test` and `pytest` pass; E2E test creates an instance and launches.
 

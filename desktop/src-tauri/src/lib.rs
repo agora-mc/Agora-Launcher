@@ -107,8 +107,12 @@ pub fn run() {
         .manage(mcp::McpServerManager::default())
         .manage(pending_cli_launch)
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_sql::Builder::new().build())
+        // Deliberately no `tauri_plugin_sql` or `tauri_plugin_store`. Every
+        // query in this app runs in agora-core through rusqlite, and settings
+        // persist through core's own state files, so neither plugin ever had a
+        // caller: no frontend import, no Rust use, and no capability granting
+        // their permissions. Registering them anyway only added an unreachable
+        // SQL and filesystem surface to the app.
         // Update checks are signature-verified against the `pubkey` in
         // tauri.conf.json; an unsigned or wrongly-signed bundle is rejected by
         // the plugin before anything is installed.

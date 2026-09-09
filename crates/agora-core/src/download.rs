@@ -63,11 +63,20 @@ pub fn canonical_version_json(value: &serde_json::Value) -> String {
 ///
 /// Uses the [`HttpClients`] category system: Modrinth URLs use the Modrinth
 /// category; all others (GitHub, objects.githubusercontent, etc.) use GitHub.
+///
+/// Picking a category is not authorization. Whichever category is chosen, the
+/// host still has to survive that category's allowlist along with every other
+/// URL gate, so a lookalike host such as `modrinth.com.attacker.example` is
+/// refused either way. Classifying it by dot boundary rather than by substring
+/// keeps the choice honest: routing a lookalike into the Modrinth category
+/// would put its (tighter) timeouts and size caps on a request that only ever
+/// belonged to the GitHub allowlist, and the reader could no longer tell which
+/// hosts this branch is about.
 pub async fn download_mod_bytes(clients: &HttpClients, url: &str) -> LauncherResult<Vec<u8>> {
     let parsed = reqwest::Url::parse(url).map_err(|_| LauncherError::UntrustedSource)?;
     let category = if parsed
         .host_str()
-        .is_some_and(|h| h.contains("modrinth.com"))
+        .is_some_and(|h| http_client::host_matches_domain(h, "modrinth.com"))
     {
         ClientCategory::Modrinth
     } else {

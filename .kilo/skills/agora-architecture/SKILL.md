@@ -25,7 +25,7 @@ This skill describes the Agora project layout and data flow. Refer to `.kilo/pla
 
 ## Desktop App
 
-The Tauri app uses `tauri-plugin-sql` for `registry.db` (read-only) and `local_state.db` (user/instance state). It delegates Microsoft/Xbox auth and JVM execution to the official Mojang launcher.
+The Tauri app reads `registry.db` (read-only) and `local_state.db` (user/instance state) through `rusqlite` in `agora-core`; there is no Tauri SQL plugin, and the frontend reaches the database only through `invoke()`. It delegates Microsoft/Xbox auth and JVM execution to the official Mojang launcher.
 
 ## Web Directory
 

@@ -16,37 +16,75 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
-  # Test
+  # Release ref guard
   # ------------------------------------------------------------------
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: core
-            os: ubuntu-latest
-            command: cargo test --locked -p agora-core
-          - name: cli
-            os: ubuntu-latest
-            command: cargo test --locked -p agora-cli
-    runs-on: ${{ matrix.os }}
+  # Everything below builds `github.sha`, but the release is *named* by a tag.
+  # For a `v*` tag push those are the same commit by construction; for a manual
+  # dispatch they are not, because the run is started from a branch while the
+  # tag names something else. Assert the two agree so "the checks passed for
+  # the released commit" is a fact rather than an assumption.
+  release-ref:
+    name: Release tag resolves to this commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
         with:
-          workspaces: crates -> target
+          fetch-depth: 0
 
-      - name: Test ${{ matrix.name }}
-        run: ${{ matrix.command }}
+      - name: Tag points at the commit being built
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # actions/checkout does not always leave the tag ref in place (it
+          # fetches the ref it was asked for, which for a dispatch is a branch).
+          # Fetch it explicitly so a missing local ref cannot be mistaken for a
+          # missing tag. `^{commit}` dereferences annotated tags.
+          git fetch --no-tags --force origin "refs/tags/${TAG}:refs/tags/${TAG}" || true
+          if ! TAG_SHA="$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}")"; then
+            echo "::error::Tag ${TAG} does not exist. Push the tag before dispatching a release."
+            exit 1
+          fi
+          if [ "$TAG_SHA" != "$SHA" ]; then
+            echo "::error::Tag ${TAG} points at ${TAG_SHA}, but this run builds ${SHA}."
+            echo "Re-run the release from the tagged commit so the gating checks,"
+            echo "the built artifacts, and the tag all describe the same revision."
+            exit 1
+          fi
+          echo "Release ${TAG} == ${SHA}."
+
+  # ------------------------------------------------------------------
+  # Required checks
+  # ------------------------------------------------------------------
+  # These call the very same workflows that gate ordinary pushes and pull
+  # requests, rather than a second copy that can drift from them. Calling them
+  # (instead of querying past runs) means they execute against this run's
+  # checkout: no path filter can skip them, and an older green run on an
+  # earlier commit cannot stand in for this one.
+  ci-enforcement:
+    name: CI Enforcement
+    needs: release-ref
+    uses: ./.github/workflows/ci-enforcement.yml
+
+  launch-planner:
+    name: Launch Planner CI
+    needs: release-ref
+    uses: ./.github/workflows/launch-planner.yml
+
+  e2e:
+    name: E2E Tests
+    needs: release-ref
+    uses: ./.github/workflows/e2e.yml
 
   # ------------------------------------------------------------------
   # Build Desktop
   # ------------------------------------------------------------------
   build-desktop:
-    needs: test
+    needs: [release-ref, ci-enforcement, launch-planner, e2e]
     strategy:
       fail-fast: false
       # tauri-action merges latest.json with the existing release asset. Keep
@@ -224,7 +262,7 @@ jobs:
   # Build CLI
   # ------------------------------------------------------------------
   build-cli:
-    needs: test
+    needs: [release-ref, ci-enforcement, launch-planner, e2e]
     strategy:
       fail-fast: false
       matrix:

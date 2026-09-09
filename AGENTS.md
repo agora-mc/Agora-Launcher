@@ -49,7 +49,7 @@ Core values:
 - Security defaults:
   - **Whitelist over denylist** for capabilities, shell scopes, and network access.
   - Verify every download with SHA-256 and package signatures.
-  - Use `tauri-plugin-sql` with parameterized queries only.
+  - All SQL lives in `agora-core` behind `rusqlite`, parameterized only. The frontend reaches it through `invoke()`; there is deliberately no Tauri SQL plugin registered.
   - Never render community content with `dangerouslySetInnerHTML`.
   - Never store secrets, tokens, or private keys in source files or manifests.
 

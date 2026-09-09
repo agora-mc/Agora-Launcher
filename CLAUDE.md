@@ -38,8 +38,7 @@ Desktop frontend (from `desktop/`):
 npm run build && npm run test:unit
 ```
 
-`npm run build` = `check:boundaries` + `tsc` + `vite build`. E2E (`npx playwright test`, ~243
-tests) is slow — run when asked or when touching UI flows.
+`npm run build` = `check:boundaries` + `tsc` + `vite build`. E2E (`npx playwright test`; 255 tests as of this writing) is slow — run when asked or when touching UI flows.
 
 Web (from `web/`) needs `registry-web.json` generated first and the repo variable set:
 
@@ -81,7 +80,7 @@ core; adapters own only transport and OS mechanism.
 - Need a platform primitive? Define a **trait in core**, implement it in the adapter.
 - React owns UI state and returns user decisions via callback; it never executes business
   operations and must never call MCP HTTP (`127.0.0.1:39741`) directly — always `invoke()`.
-- SQL is core-only, parameterized, via `tauri-plugin-sql`.
+- SQL is core-only, parameterized, via `rusqlite` in `agora-core`. No Tauri SQL plugin is registered.
 - Never `dangerouslySetInnerHTML` on community content.
 
 ### Interactive feature (`desktop/src/features/interactive/`)

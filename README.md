@@ -6,8 +6,8 @@ Agora is a decentralized, ad-free, open-source Minecraft launcher and discovery 
 
 ## AI disclaimer
 
-I used AI extensively to build Agora, this text block is part of the very little that was actually written by flesh and blood. I made decisions, overviewed progress, and came up with ideas, but the work was done my a machine. Agora was still months of work. So while I tried my best to use my programming knowlege to steer it, this project was beyond my experience and skill level so there may be major achitectural flaws and security risks. I would appreciate any suggestions from expereinced professionals that would like to help. 
-For now Agora's small amount of art is also made by AI, but there's very little beyond I suppose the living background and I would be extremely grateful if someone wants to contribue their actual, human made work to Agora.
+I used AI extensively to build Agora, this text block is part of the very little that was actually written by flesh and blood. I made decisions, overviewed progress, and came up with ideas, but the work was done by a machine. Agora was still months of work. So while I tried my best to use my programming knowledge to steer it, this project was beyond my experience and skill level so there may be major architectural flaws and security risks. I would appreciate any suggestions from experienced professionals that would like to help. 
+For now Agora's small amount of art is also made by AI, but there's very little beyond I suppose the living background and I would be extremely grateful if someone wants to contribute their actual, human made work to Agora.
 
 ## Download and documentation
 
@@ -53,7 +53,7 @@ Agora supports two launch modes. Direct launch runs Minecraft inside Agora and g
 - Loadouts remember enabled state; lockfiles describe reproducible artifacts.
 - None of these should be the only backup for an irreplaceable world.
 
-Agora makes no automated analytics calls. Functional features can still contact their documented services. The individual Privacy endpoint switches are enforced by the backend; the current Lockdown toggle does not yet enforce a global network block, so disable each endpoint individually before relying on an offline test.
+Agora makes no automated analytics calls. Functional features can still contact their documented services. The individual Privacy endpoint switches are enforced by the backend, and Lockdown Mode is enforced there too: it is checked inside the shared HTTP request path rather than by each feature separately, so turning it on blocks Agora's network requests without you having to disable endpoints one at a time.
 
 ## Project principles
 

@@ -564,6 +564,30 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Whether `host` is `domain` itself or a dot-delimited subdomain of it.
+///
+/// This is the one place that decides what "belongs to a domain" means, so
+/// that no caller has to reach for a substring test. `contains("modrinth.com")`
+/// would accept `modrinth.com.attacker.example` and `evil-modrinth.com` alike;
+/// a boundary-anchored suffix accepts only `modrinth.com` and `*.modrinth.com`.
+///
+/// Hosts are compared verbatim. `Url::host_str` already lower-cases hosts for
+/// http/https, and folding case here would only widen matching for inputs that
+/// cannot reach an authorization decision.
+pub fn host_matches_domain(host: &str, domain: &str) -> bool {
+    // An empty domain would make the suffix test match every host ending in
+    // ".", so refuse it rather than authorize the world.
+    if domain.is_empty() {
+        return false;
+    }
+    if host == domain {
+        return true;
+    }
+    host.len() > domain.len()
+        && host.ends_with(domain)
+        && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
+}
+
 /// Decide whether `host` is authorized under `policy`.
 fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>) -> bool {
     match policy {
@@ -571,11 +595,9 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
             let allowlist = category_allowlist(category);
             allowlist
                 .iter()
-                .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+                .any(|allowed| host_matches_domain(host, allowed))
         }
-        HostPolicy::SignedManifest(pinned) => {
-            host == pinned || host.ends_with(&format!(".{pinned}"))
-        }
+        HostPolicy::SignedManifest(pinned) => host_matches_domain(host, pinned),
         HostPolicy::UserConsented => {
             // Host authorization is delegated to the core consent check that
             // precedes this request. The empty ConsentedContent allowlist
@@ -1417,6 +1439,86 @@ mod tests {
             "https://piston-meta.mojang.com/manifest.json"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn test_host_matches_domain_exact_and_subdomain() {
+        assert!(host_matches_domain("modrinth.com", "modrinth.com"));
+        assert!(host_matches_domain("cdn.modrinth.com", "modrinth.com"));
+        assert!(host_matches_domain("a.b.modrinth.com", "modrinth.com"));
+    }
+
+    #[test]
+    fn test_host_matches_domain_rejects_lookalikes() {
+        // Every one of these contains "modrinth.com" as a substring, which is
+        // exactly why substring classification is wrong.
+        for lookalike in [
+            "modrinth.com.attacker.example",
+            "evil-modrinth.com",
+            "notmodrinth.com",
+            "modrinth.com.evil.co",
+            "xmodrinth.com",
+            "modrinth.community",
+            "cdn.modrinth.com.evil.example",
+        ] {
+            assert!(
+                lookalike.contains("modrinth.com"),
+                "{lookalike} should be a substring match, or the test proves nothing"
+            );
+            assert!(
+                !host_matches_domain(lookalike, "modrinth.com"),
+                "{lookalike} must not be treated as modrinth.com"
+            );
+        }
+    }
+
+    #[test]
+    fn test_host_matches_domain_rejects_prefix_and_empty_cases() {
+        // A host shorter than, or equal to a prefix of, the domain never matches.
+        assert!(!host_matches_domain("rinth.com", "modrinth.com"));
+        assert!(!host_matches_domain("", "modrinth.com"));
+        // An empty domain must not authorize everything.
+        assert!(!host_matches_domain("modrinth.com", ""));
+        assert!(!host_matches_domain("anything.example", ""));
+        // The separator must be a real dot, not just any byte.
+        assert!(!host_matches_domain("cdn-modrinth.com", "modrinth.com"));
+    }
+
+    #[test]
+    fn test_check_rejects_modrinth_lookalike_hosts() {
+        // The end-to-end consequence: a lookalike is not authorized by the
+        // Modrinth allowlist, whichever category a caller routes it to.
+        for lookalike in [
+            "https://modrinth.com.attacker.example/mod.jar",
+            "https://evil-modrinth.com/mod.jar",
+            "https://cdn.modrinth.com.evil.example/mod.jar",
+        ] {
+            let err = check_request_url(ClientCategory::Modrinth, lookalike).unwrap_err();
+            assert_eq!(
+                err.code(),
+                "ERR_HTTP_HOST_NOT_ALLOWED",
+                "{lookalike} must be rejected"
+            );
+            let err = check_request_url(ClientCategory::GitHub, lookalike).unwrap_err();
+            assert_eq!(
+                err.code(),
+                "ERR_HTTP_HOST_NOT_ALLOWED",
+                "{lookalike} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_signed_manifest_policy_rejects_pinned_host_lookalike() {
+        // The pinned host comes from the signed registry row; a redirect to a
+        // host that merely embeds it must not inherit that authorization.
+        let err = check_request_url_with_policy(
+            ClientCategory::PinnedArtifact,
+            "https://cdn.example.com.attacker.example/artifact.jar",
+            HostPolicy::SignedManifest("cdn.example.com"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
     }
 
     #[test]

@@ -9,7 +9,7 @@ Security rules for the Agora desktop app. Apply these whenever modifying `deskto
 ## Capability Scoping
 
 - Use explicit, narrow capability patterns. Prefer path literals over globs for privileged APIs.
-- Never grant `sql:allow-execute` or arbitrary SQL execution. Use `tauri-plugin-sql` with prepared statements only.
+- Never grant `sql:allow-execute` or arbitrary SQL execution. SQL belongs in `agora-core` behind `rusqlite` prepared statements, not in a frontend-reachable plugin.
 - Shell and HTTP permissions require explicit allow-lists; use `deny` as the default and add scopes one-by-one.
 
 ## Shell / URL Scopes
@@ -24,7 +24,7 @@ Security rules for the Agora desktop app. Apply these whenever modifying `deskto
 
 ## Database Security
 
-- All SQL queries through `tauri-plugin-sql` must use parameter binding.
+- All SQL queries must use parameter binding, and all of them live in `agora-core`.
 - Treat `registry.db` as read-only and `local_state.db` as read-write. Version both schemas.
 
 ## Secrets & OAuth

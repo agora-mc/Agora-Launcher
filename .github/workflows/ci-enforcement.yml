@@ -29,6 +29,12 @@ on:
       - "crates/**"
       - "desktop/**"
       - "compiler/**"
+      # Embedded at compile time into agora-core via include_str!/include_bytes!
+      # (loader_manifests.rs, runtime_catalog.rs, crash_diagnostics.rs), so a
+      # change here changes every Rust artifact the release ships.
+      - "crash-signatures/**"
+      - "loader-manifests/**"
+      - "runtime-catalog/**"
       - "scripts/**"
       - "README.md"
       - "AGENTS.md"
@@ -44,6 +50,12 @@ on:
       - "crates/**"
       - "desktop/**"
       - "compiler/**"
+      # Embedded at compile time into agora-core via include_str!/include_bytes!
+      # (loader_manifests.rs, runtime_catalog.rs, crash_diagnostics.rs), so a
+      # change here changes every Rust artifact the release ships.
+      - "crash-signatures/**"
+      - "loader-manifests/**"
+      - "runtime-catalog/**"
       - "scripts/**"
       - "README.md"
       - "AGENTS.md"
@@ -53,6 +65,9 @@ on:
       - "web/**"
       - ".github/workflows/ci-enforcement.yml"
   workflow_dispatch:
+  # Called by release.yml so the release gate runs these exact jobs against the
+  # exact commit being released, instead of a drifting copy of them.
+  workflow_call:
 
 permissions:
   contents: read
