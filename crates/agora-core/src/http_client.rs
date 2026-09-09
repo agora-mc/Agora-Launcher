@@ -92,13 +92,6 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
             "xsts.auth.xboxlive.com",
             "api.minecraftservices.com",
         ],
-        ClientCategory::AiAssistant => &[
-            // Explicitly approved Copilot API hosts. Other user-configured
-            // AI endpoints require a separate approval policy and are not
-            // accepted by this production helper.
-            "api.individual.githubcopilot.com",
-            "api.githubcopilot.com",
-        ],
         // Deliberately empty: hosts for this category come from the signed
         // manifest via `HostPolicy::SignedManifest`, never from a compile-time
         // list. The empty-list-rejects-everything property means the category
@@ -153,8 +146,6 @@ pub enum ClientCategory {
     Microsoft,
     /// Registry database download from GitHub Releases.
     Registry,
-    /// AI assistant / OpenAI-compatible API.
-    AiAssistant,
     /// Managed Java runtime metadata and archives.
     JavaRuntime,
     /// Artifacts pinned by SHA-256 in the signed registry; host authorization
@@ -204,7 +195,7 @@ impl ClientCategory {
     ///
     /// This is the single definition that client construction and
     /// [`Self::index`] are both derived from — see [`HttpClients`].
-    const ALL: [ClientCategory; 12] = [
+    const ALL: [ClientCategory; 11] = [
         ClientCategory::MojangMetadata,
         ClientCategory::MojangContent,
         ClientCategory::Loader,
@@ -213,7 +204,6 @@ impl ClientCategory {
         ClientCategory::GitHub,
         ClientCategory::Microsoft,
         ClientCategory::Registry,
-        ClientCategory::AiAssistant,
         ClientCategory::JavaRuntime,
         ClientCategory::PinnedArtifact,
         ClientCategory::ConsentedContent,
@@ -232,10 +222,9 @@ impl ClientCategory {
             ClientCategory::GitHub => 5,
             ClientCategory::Microsoft => 6,
             ClientCategory::Registry => 7,
-            ClientCategory::AiAssistant => 8,
-            ClientCategory::JavaRuntime => 9,
-            ClientCategory::PinnedArtifact => 10,
-            ClientCategory::ConsentedContent => 11,
+            ClientCategory::JavaRuntime => 8,
+            ClientCategory::PinnedArtifact => 9,
+            ClientCategory::ConsentedContent => 10,
         }
     }
 
@@ -264,10 +253,7 @@ impl ClientCategory {
             };
         }
         TimeBudget::Request {
-            total: match self {
-                ClientCategory::AiAssistant => Duration::from_secs(60),
-                _ => Duration::from_secs(30),
-            },
+            total: Duration::from_secs(30),
         }
     }
 
@@ -1272,7 +1258,6 @@ mod tests {
             ClientCategory::GitHub,
             ClientCategory::Microsoft,
             ClientCategory::Registry,
-            ClientCategory::AiAssistant,
             ClientCategory::PinnedArtifact,
             ClientCategory::ConsentedContent,
         ] {
@@ -1473,17 +1458,6 @@ mod tests {
     fn test_check_rejects_invalid_url() {
         let err = check_request_url(ClientCategory::GitHub, "not a url").unwrap_err();
         assert_eq!(err.code(), "ERR_INVALID_URL");
-    }
-
-    #[test]
-    fn test_ai_assistant_rejects_unapproved_host() {
-        // Only the explicitly approved Copilot hosts are accepted.
-        let err = check_request_url(
-            ClientCategory::AiAssistant,
-            "https://api.openai.com/v1/chat/completions",
-        )
-        .unwrap_err();
-        assert_eq!(err.code(), "ERR_HTTP_HOST_NOT_ALLOWED");
     }
 
     // ------------------------------------------------------------------
@@ -1736,6 +1710,5 @@ mod tests {
         assert!(!category_allowlist(ClientCategory::Loader).is_empty());
         assert!(!category_allowlist(ClientCategory::MojangContent).is_empty());
         assert!(!category_allowlist(ClientCategory::Registry).is_empty());
-        assert!(!category_allowlist(ClientCategory::AiAssistant).is_empty());
     }
 }

@@ -1,6 +1,6 @@
-use crate::ai_assistant::{self, ChatMessage, ChatResponse};
 use crate::auth::{DeviceFlowResponse, GithubProfile};
 use crate::crash_diagnostics::{self, CrashReportInfo, CrashTriageResult};
+use crate::crash_export;
 use crate::crash_investigator;
 use crate::dependency_ops;
 use crate::error::{LauncherError, LauncherResult};
@@ -3067,215 +3067,28 @@ pub async fn set_mcp_approval(
     .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
-/// Start the GitHub Copilot device code flow.
-#[tauri::command]
-pub async fn copilot_login(
-    app: tauri::AppHandle,
-    _state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<ai_assistant::CopilotDeviceFlowResponse> {
-    let ctx = crate::core_context(&app)?;
-    ai_assistant::start_copilot_flow(&ctx.http_clients).await
-}
-
-/// Try to use the existing governance GitHub token for Copilot, skipping the
-/// device flow if the token is valid and the user has a Copilot subscription.
-/// Returns `Some(CopilotToken)` on success, or `None` if the user needs to
-/// go through the device flow instead.
-#[tauri::command]
-pub async fn copilot_try_governance_token(
-    app: tauri::AppHandle,
-    _state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<Option<ai_assistant::CopilotToken>> {
-    let ghu_token = match crate::auth::get_valid_access_token(&app).await {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-    let ctx = crate::core_context(&app)?;
-    match ai_assistant::resolve_copilot_endpoint(&ctx.http_clients, &ghu_token).await {
-        Ok(copilot_token) => {
-            ai_assistant::store_copilot_token(&copilot_token)?;
-            Ok(Some(copilot_token))
-        }
-        Err(_) => {
-            // Token either doesn't have a Copilot subscription or belongs to a
-            // different OAuth app — fall through to the device flow.
-            Ok(None)
-        }
-    }
-}
-
-/// Poll the Copilot device flow. On success, resolves endpoint + stores token.
-#[tauri::command]
-pub async fn copilot_login_poll(
-    app: tauri::AppHandle,
-    _state: tauri::State<'_, LauncherState>,
-    device_code: String,
-    interval: u64,
-) -> LauncherResult<ai_assistant::CopilotToken> {
-    let ctx = crate::core_context(&app)?;
-    let ghu_token =
-        ai_assistant::poll_copilot_flow(&ctx.http_clients, &device_code, interval).await?;
-    let copilot_token =
-        ai_assistant::resolve_copilot_endpoint(&ctx.http_clients, &ghu_token).await?;
-    ai_assistant::store_copilot_token(&copilot_token)?;
-    Ok(copilot_token)
-}
-
-/// Check if Copilot is connected and the token is still valid.
-#[tauri::command]
-pub async fn copilot_status(
-    _app: tauri::AppHandle,
-    _state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<Option<ai_assistant::CopilotToken>> {
-    ai_assistant::load_copilot_token()
-}
-
-/// Sign out of Copilot.
-#[tauri::command]
-pub async fn copilot_logout(
-    _app: tauri::AppHandle,
-    _state: tauri::State<'_, LauncherState>,
-) -> LauncherResult<()> {
-    ai_assistant::clear_copilot_token()
-}
-
-/// Send a chat message to the AI assistant and return the response.
+/// Build a shareable crash report the user can paste into an AI assistant or
+/// the community Discord.
 ///
-/// If `context` is provided and the messages don't already contain a context
-/// message, one is prepended. A system prompt is always inserted as the first
-/// message.
+/// Purely local: the report is assembled and redacted in-process and handed
+/// back to the caller. Agora does not send it anywhere — where it goes is the
+/// user's decision.
 #[tauri::command]
-pub async fn ai_chat(
-    app: tauri::AppHandle,
-    messages: Vec<ChatMessage>,
-    context: Option<serde_json::Value>,
-) -> Result<ChatResponse, LauncherError> {
-    // Respect the AI chat setting — when disabled, no AI calls should be made.
-    {
-        let ctx = crate::core_context(&app)?;
-        let enabled = agora_core::settings::SettingsService::new(ctx)
-            .get_bool("ai_chat_enabled")
-            .unwrap_or(false);
-        if !enabled {
-            return Err(LauncherError::Generic {
-                code: "ERR_AI_DISABLED".into(),
-                message: "AI Assistant is disabled in Settings → AI & automation.".into(),
-            });
-        }
-    }
-    let token = ai_assistant::load_copilot_token()?
-        .ok_or_else(|| LauncherError::Generic {
-            code: "ERR_AI_NOT_AUTHENTICATED".to_string(),
-            message: "GitHub Copilot is not connected. Click 'Connect with GitHub' in the chat panel to set up free AI diagnostics (50 requests/month).".to_string(),
-        })?;
-
-    let mut messages = messages;
-
-    // Build context message if context JSON is provided and not already present.
-    if let Some(ctx_val) = &context {
-        let has_context = messages.iter().any(|m| {
-            m.role == "system"
-                || (m.role == "user"
-                    && (m.content.contains("## Crash Log")
-                        || m.content.contains("## Ranked Suspect Mods")
-                        || m.content.contains("## Curated Crash Signatures")))
-        });
-        if !has_context {
-            let instance_id = ctx_val
-                .get("instance_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let crash_log = ctx_val
-                .get("crash_log")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let crash_signatures = ctx_val
-                .get("crash_signatures")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let suspects = ctx_val
-                .get("suspects")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let ctx = ai_assistant::AiContext {
-                instance_id,
-                crash_log,
-                crash_signatures,
-                suspects,
-            };
-            let context_text = ai_assistant::build_context_message(&ctx);
-            messages.insert(
-                0,
-                ChatMessage {
-                    role: "user".to_string(),
-                    content: context_text,
-                },
-            );
-        }
-    }
-
-    // Ensure system prompt is first.
-    if messages.is_empty() || messages[0].role != "system" {
-        messages.insert(
-            0,
-            ChatMessage {
-                role: "system".to_string(),
-                content: ai_assistant::build_system_prompt(),
-            },
-        );
-    }
-
-    ai_assistant::chat_completion(messages, &token).await
-}
-
-/// Get an AI explanation for a detected crash.
-#[tauri::command]
-pub async fn explain_crash(
+pub async fn export_crash_report(
     app: tauri::AppHandle,
     _state: tauri::State<'_, LauncherState>,
-    instance_id: String,
-    crash_log: String,
-) -> Result<String, LauncherError> {
-    {
-        let ctx = crate::core_context(&app)?;
-        let enabled = agora_core::settings::SettingsService::new(ctx)
-            .get_bool("ai_chat_enabled")
-            .unwrap_or(false);
-        if !enabled {
-            return Err(LauncherError::Generic {
-                code: "ERR_AI_DISABLED".into(),
-                message: "AI Assistant is disabled in Settings → AI & automation.".into(),
-            });
-        }
-    }
-    let token = ai_assistant::load_copilot_token()?.ok_or_else(|| LauncherError::Generic {
-        code: "ERR_AI_NOT_AUTHENTICATED".into(),
-        message: "GitHub Copilot is not connected. Click 'Connect with GitHub' in the chat panel."
-            .into(),
-    })?;
-
-    let context = ai_assistant::AiContext {
-        instance_id: Some(instance_id),
-        crash_log: Some(crash_log),
-        crash_signatures: None,
-        suspects: None,
+    instance_id: Option<String>,
+    crash_log: Option<String>,
+    crash_signatures: Option<String>,
+    suspects: Option<String>,
+) -> LauncherResult<String> {
+    let context = crash_export::CrashReportContext {
+        instance_id,
+        crash_log,
+        crash_signatures,
+        suspects,
     };
-    let system = ai_assistant::build_system_prompt();
-    let context_msg = ai_assistant::build_context_message(&context);
-
-    let messages = vec![
-        ChatMessage {
-            role: "system".into(),
-            content: system,
-        },
-        ChatMessage {
-            role: "user".into(),
-            content: context_msg,
-        },
-    ];
-
-    let response = ai_assistant::chat_completion(messages, &token).await?;
-    Ok(response.content)
+    Ok(crash_export::build_crash_report(&app, &context))
 }
 
 // ---------------------------------------------------------------------------

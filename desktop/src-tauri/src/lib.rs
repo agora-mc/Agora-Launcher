@@ -1,7 +1,7 @@
-pub mod ai_assistant;
 pub mod auth;
 pub mod commands;
 pub mod crash_diagnostics;
+pub mod crash_export;
 pub mod crash_investigator;
 pub mod dependency_ops;
 pub use agora_core::{download, error, loader_manifests, models};
@@ -225,6 +225,7 @@ pub fn run() {
             commands::change_loader_version,
             commands::list_manifest_loaders,
             commands::list_manifest_mc_versions,
+            commands::export_crash_report,
             commands::get_setting,
             commands::set_setting,
             commands::evaluate_controlify_offer,
@@ -254,7 +255,6 @@ pub fn run() {
             commands::discover_launcher_imports,
             commands::plan_launcher_imports,
             commands::execute_launcher_imports,
-            commands::explain_crash,
             commands::export_instance_pack,
             commands::import_instance_pack,
             commands::is_modrinth_enabled,
@@ -302,12 +302,6 @@ pub fn run() {
             commands::regenerate_mcp_token,
             commands::get_mcp_skill_content,
             commands::set_mcp_approval,
-            commands::copilot_login,
-            commands::copilot_try_governance_token,
-            commands::copilot_login_poll,
-            commands::copilot_status,
-            commands::copilot_logout,
-            commands::ai_chat,
             commands::msa_begin_login,
             commands::msa_open_verification_url,
             commands::msa_complete_login,

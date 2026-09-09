@@ -222,7 +222,6 @@ async function installReproducibleMock(page: Page, opts: ReproducibleMockOptions
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'launch_mode') return Promise.resolve('delegation');
             if (key === 'modrinth_enabled') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') return Promise.resolve(true);
             return Promise.resolve(null);
           }
           if (command === 'set_setting') return Promise.resolve(null);

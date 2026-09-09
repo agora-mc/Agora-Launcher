@@ -24,8 +24,6 @@ import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
-  copilotStatus,
-  copilotLogout,
   detectMojangLauncher,
   ensureJavaRuntime,
   focusMainWindow,
@@ -60,7 +58,7 @@ import {
   openDataFolder,
   restartApp,
 } from '../lib/tauri';
-import type { CopilotToken, CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus, MsaLoginPrompt } from '../lib/tauri';
+import type { CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus, MsaLoginPrompt } from '../lib/tauri';
 import { Privacy } from './Privacy';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
@@ -190,7 +188,6 @@ export function Settings({
   const [technic, setTechnic] = useState(false);
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
   const [aiMcp, setAiMcp] = useState(false);
-  const [aiChatEnabled, setAiChatEnabled] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
   const [alwaysPreTouch, setAlwaysPreTouch] = useState(true);
   const [autoConfirmCleanInstalls, setAutoConfirmCleanInstalls] = useState(false);
@@ -213,9 +210,6 @@ export function Settings({
   const [mcpToken, setMcpToken] = useState<McpTokenData | null>(null);
   const [skillCopied, setSkillCopied] = useState(false);
 
-  // AI Copilot state
-  const [copilotToken, setCopilotToken] = useState<CopilotToken | null>(null);
-  const [copilotLoading, setCopilotLoading] = useState(true);
 
   // GitHub governance auth state
   const [githubAuth, setGithubAuth] = useState(false);
@@ -291,7 +285,6 @@ export function Settings({
     if (ts.loading) return;
     setModrinth(ts.values.modrinthEnabled as boolean ?? false);
     setAiMcp(ts.values.aiMcpEnabled as boolean ?? false);
-    setAiChatEnabled(ts.values.aiChatEnabled as boolean ?? false);
     setLauncherPath(ts.values.launcherPath as string ?? '');
     setAlwaysPreTouch(ts.values.alwaysPreTouch as boolean ?? true);
     setAutoConfirmCleanInstalls(ts.values.autoConfirmCleanInstalls as boolean ?? false);
@@ -428,24 +421,6 @@ export function Settings({
       cancelled = true;
     };
   }, [aiMcp]);
-
-  // Check Copilot connection status on mount
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const token = await copilotStatus();
-        if (!cancelled) setCopilotToken(token);
-      } catch {
-        if (!cancelled) setCopilotToken(null);
-      } finally {
-        if (!cancelled) setCopilotLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Check GitHub governance auth status on mount
   useEffect(() => {
@@ -672,16 +647,6 @@ export function Settings({
       await ts.update(SETTINGS.aiMcpEnabled, value);
     } catch (e) {
       setAiMcp(!value);
-      showToast(formatError(e), 'error');
-    }
-  };
-
-  const toggleAiChat = async (value: boolean) => {
-    setAiChatEnabled(value);
-    try {
-      await ts.update(SETTINGS.aiChatEnabled, value);
-    } catch (e) {
-      setAiChatEnabled(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -973,15 +938,6 @@ export function Settings({
   const handleApprovalChange = async (instanceId: string, _tool: string, state: string) => {
     try {
       await setMcpApproval(_tool, instanceId, state);
-    } catch (e) {
-      showToast(formatError(e), 'error');
-    }
-  };
-
-  const handleCopilotLogout = async () => {
-    try {
-      await copilotLogout();
-      setCopilotToken(null);
     } catch (e) {
       showToast(formatError(e), 'error');
     }
@@ -1834,65 +1790,24 @@ export function Settings({
     <SettingsSection
       icon={Bot}
       title="AI & automation"
-      description="The local MCP server for external agents, and the built-in assistant."
+      description="The local MCP server for external agents."
       contentClassName="space-y-4"
     >
-      <label className="flex items-center justify-between">
-        <div>
-          <span className="text-sm">Integrated AI Assistant</span>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Built-in AI chat powered by GitHub Copilot. Free with your GitHub account — no separate API key needed. Use this for quick crash analysis and mod questions.
-          </p>
-        </div>
-        <input
-          type="checkbox"
-          checked={aiChatEnabled}
-          onChange={(e) => toggleAiChat(e.target.checked)}
-          className="h-5 w-5 accent-primary"
-        />
-      </label>
-      {ts.statuses['ai_chat_enabled']?.status === 'error' && (
-        <p className="text-xs text-destructive">{ts.statuses['ai_chat_enabled']?.error}</p>
-      )}
-      {(aiMcp || aiChatEnabled) && (
-        <div className="rounded-lg bg-muted p-3 space-y-2">
-          <h4 className="text-xs font-semibold">Two ways to use AI with Agora</h4>
-          <p className="text-xs text-muted-foreground">
-            <strong>MCP Server</strong> — Lets your external AI tool (Claude Desktop, Kilo Code, Opencode, etc.) control Agora directly. The agent can list instances, disable mods, and analyze crashes on its own. Best for users who already have an AI agent set up. No cost — uses your agent's AI provider.
-          </p>
-          <p className="text-xs text-muted-foreground">
-            <strong>Integrated AI</strong> — A built-in chat in Agora powered by GitHub Copilot. Quick questions, crash analysis, mod help. 50 free chats/month with your GitHub account.
-          </p>
-        </div>
-      )}
-
-      {aiChatEnabled && (
-        <div className="pt-2 border-t border-border space-y-3">
-          <div className="space-y-1">
-            <label className="text-sm font-medium">GitHub Copilot</label>
-            {copilotLoading ? (
-              <p className="text-xs text-muted-foreground">Checking connection…</p>
-            ) : copilotToken ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-green-600 dark:text-green-400">● Connected as {copilotToken.username} ({copilotToken.plan})</span>
-                <button
-                  onClick={handleCopilotLogout}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Not connected. Open the AI Assistant chat and click "Connect with GitHub" to activate. 50 free chats/month with any GitHub account.
-              </p>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            GitHub Copilot provides free AI diagnostics — no API key needed. For higher limits or custom models, connect an external AI agent via the MCP server above.
-          </p>
-        </div>
-      )}
+      <div className="rounded-lg bg-muted p-3 space-y-2">
+        <h4 className="text-xs font-semibold">Using AI with Agora</h4>
+        <p className="text-xs text-muted-foreground">
+          Agora has no built-in chat assistant. Crash Doctor diagnoses crashes
+          locally, and its <strong>Copy crash report</strong> button produces a
+          redacted report you can paste into any AI assistant or share in the
+          Agora Discord.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          <strong>MCP Server</strong> — Lets your external AI tool (Claude
+          Desktop, Kilo Code, Opencode, etc.) control Agora directly. The agent
+          can list instances, disable mods, and analyze crashes on its own. No
+          cost — it uses your agent&apos;s AI provider.
+        </p>
+      </div>
 
       <label className="flex items-center justify-between pt-2 border-t border-border">
         <span className="text-sm">AI / MCP Server</span>

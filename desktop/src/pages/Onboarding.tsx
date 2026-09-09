@@ -73,7 +73,6 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     technic: false,
     allowUnverifiedPacks: false,
     aiMcp: false,
-    aiChat: false,
   });
   const [servicesLoading, setServicesLoading] = useState(true);
   const [directLaunch, setDirectLaunch] = useState(false);
@@ -89,10 +88,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
       getSetting('technic_enabled'),
       getSetting('allow_unverified_packs'),
       getSetting('ai_mcp_enabled'),
-      getSetting('ai_chat_enabled'),
       getSetting('launch_mode'),
       getSetting('onboarding_step'),
-    ]).then(([modrinth, technic, allowUnverifiedPacks, aiMcp, aiChat, launchMode, savedStep]) => {
+    ]).then(([modrinth, technic, allowUnverifiedPacks, aiMcp, launchMode, savedStep]) => {
       if (cancelled) return;
       setServices({
         modrinth: modrinth.status === 'fulfilled' ? parseBooleanSetting(modrinth.value) : false,
@@ -101,7 +99,6 @@ export function Onboarding({ onComplete }: OnboardingProps) {
           ? parseBooleanSetting(allowUnverifiedPacks.value)
           : false,
         aiMcp: aiMcp.status === 'fulfilled' ? parseBooleanSetting(aiMcp.value) : false,
-        aiChat: aiChat.status === 'fulfilled' ? parseBooleanSetting(aiChat.value) : false,
       });
       const direct = launchMode.status === 'fulfilled' && launchMode.value === 'direct';
       setDirectLaunch(direct);
@@ -480,7 +477,6 @@ function ServicesStep({
     technic: boolean;
     allowUnverifiedPacks: boolean;
     aiMcp: boolean;
-    aiChat: boolean;
   };
   loading: boolean;
   onChange: (value: {
@@ -488,7 +484,6 @@ function ServicesStep({
     technic: boolean;
     allowUnverifiedPacks: boolean;
     aiMcp: boolean;
-    aiChat: boolean;
   }) => void;
   onContinue: () => void;
   onBack: () => void;
@@ -505,7 +500,6 @@ function ServicesStep({
       await setSetting('technic_enabled', values.technic);
       await setSetting('allow_unverified_packs', values.allowUnverifiedPacks);
       await setSetting('ai_mcp_enabled', values.aiMcp);
-      await setSetting('ai_chat_enabled', values.aiChat);
       onContinue();
     } catch (e) {
       setError(formatError(e));
@@ -522,8 +516,7 @@ function ServicesStep({
       | 'modrinth_enabled'
       | 'technic_enabled'
       | 'allow_unverified_packs'
-      | 'ai_mcp_enabled'
-      | 'ai_chat_enabled',
+      | 'ai_mcp_enabled',
     value: boolean,
   ) => {
     void setSetting(key, value).catch(() => {});
@@ -627,15 +620,6 @@ function ServicesStep({
           onChange={(aiMcp) => {
             onChange({ ...values, aiMcp });
             handleToggle('ai_mcp_enabled', aiMcp);
-          }}
-        />
-        <ServiceToggle
-          title="Integrated AI Assistant (ALPHA)"
-          description="Built-in AI chat using free GitHub Copilot. Get instant crash analysis and mod help without any external setup."
-          checked={values.aiChat}
-          onChange={(aiChat) => {
-            onChange({ ...values, aiChat });
-            handleToggle('ai_chat_enabled', aiChat);
           }}
         />
       </div>

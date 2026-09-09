@@ -414,7 +414,6 @@ async function installBrowseContextMock(page: Page) {
             const key = args.key as string;
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'modrinth_enabled') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') return Promise.resolve(false);
             if (key === 'ai_mcp_enabled') return Promise.resolve(false);
             return Promise.resolve(null);
           }
@@ -796,7 +795,6 @@ async function installBulkSelectMock(page: Page, autoConfirmClean = true, always
             const key = args.key;
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'modrinth_enabled') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') return Promise.resolve(false);
             if (key === 'install_auto_confirm_clean') return Promise.resolve(autoConfirmClean);
             if (key === 'install_always_auto_confirm') return Promise.resolve(alwaysAutoConfirm);
             return Promise.resolve(null);

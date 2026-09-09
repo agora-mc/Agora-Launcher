@@ -13,12 +13,11 @@ interface CrashCfg {
   withDependents?: boolean;
   snapshotId?: string;
   investigateError?: string;
-  aiFail?: boolean;
+  exportFail?: boolean;
   noSuspects?: boolean;
   stillCrashingSuspects?: number;
   stillCrashingRuledOut?: string;
   launchError?: string;
-  aiChatEnabled?: boolean;
 }
 
 async function installMock(page: Page, cfg: CrashCfg = {}) {
@@ -28,12 +27,11 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
     withDependents: false,
     snapshotId: RECOVERY_SNAPSHOT_ID,
     investigateError: '',
-    aiFail: false,
+    exportFail: false,
     noSuspects: false,
     stillCrashingSuspects: 1,
     stillCrashingRuledOut: 'suspect-mod',
     launchError: '',
-    aiChatEnabled: true,
   };
   const merged = { ...defaults, ...cfg };
 
@@ -106,14 +104,12 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'launch_mode') return Promise.resolve('direct');
             if (key === 'modrinth_enabled') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') {
-              // Respect the CrashCfg ai chat toggle for gating tests; default true
-              // so existing AI tests keep working.
-              if ((cfg as any).aiChatEnabled === false) return Promise.resolve(false);
-              return Promise.resolve(true);
-            }
             if (key === 'last_home_visit') return Promise.resolve(null);
             return Promise.resolve(false);
+          }
+          if (command === 'export_crash_report') {
+            if (cfg.exportFail) return Promise.reject(new Error('ERR_EXPORT_FAILED'));
+            return Promise.resolve('# Minecraft crash report' + String.fromCharCode(10) + '## Crash Log');
           }
           if (command === 'set_setting') return Promise.resolve(null);
           if (command === 'get_windows_accent_color') return Promise.resolve(null);
@@ -168,11 +164,6 @@ async function installMock(page: Page, cfg: CrashCfg = {}) {
 
           if (command === 'confirm_crash_fix') return Promise.resolve(null);
           if (command === 'report_still_crashing') return Promise.resolve(stillCrashingResult);
-
-          if (command === 'explain_crash') {
-            if (cfg.aiFail) return Promise.reject(new Error('ERR_AI_NOT_AUTHENTICATED'));
-            return Promise.resolve('This crash is likely caused by suspect-mod.jar conflicting with the rendering pipeline.');
-          }
 
           if (command === 'check_instance_health') {
             return Promise.resolve({
@@ -490,37 +481,29 @@ test.describe('CrashInvestigator', () => {
     expect(calls['restore_snapshot'] ?? 0).toBe(0);
   });
 
-  test('AI failure shows connect-github, deterministic flow still works', async ({ page }) => {
-    await installMock(page, { aiFail: true });
+  test('a failed export surfaces an error and leaves the deterministic flow intact', async ({ page }) => {
+    await installMock(page, { exportFail: true });
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: 'Explain this crash in plain language' }).click();
-    await expect(page.getByText(/The AI helper isn’t connected/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'Copy crash report' }).click();
+
+    await expect(page.getByText(/ERR_EXPORT_FAILED/)).toBeVisible({ timeout: 8000 });
+    // Export is an optional escape hatch; local diagnosis must not depend on it.
     await expect(page.getByText('0.85')).toBeVisible();
     await relaunch(page);
     await expect(page.getByText(/Did the game start properly without/)).toBeVisible({ timeout: 8000 });
   });
 
-  test('AI explanation renders and Dismiss clears it', async ({ page }) => {
-    await installMock(page, { aiFail: false });
+  test('rapid export clicks only trigger one invocation', async ({ page }) => {
+    await installMock(page);
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: 'Explain this crash in plain language' }).click();
-    await expect(page.getByText(/This crash is likely caused/)).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText('Here’s what might have happened')).toBeVisible();
-    await page.getByText('Dismiss').click();
-    await expect(page.getByText(/This crash is likely caused/)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Explain this crash in plain language' })).toBeVisible();
-  });
-
-  test('rapid Explain clicks only trigger one invocation', async ({ page }) => {
-    await installMock(page, { aiFail: false });
-    await openDialog(page);
-    await waitForContent(page);
-    await page.getByRole('button', { name: 'Explain this crash in plain language' }).click({ clickCount: 3 });
-    await expect(page.getByText(/This crash is likely caused/)).toBeVisible({ timeout: 8000 });
+    await page.getByRole('button', { name: 'Copy crash report' }).click({ clickCount: 3 });
+    await expect(page.getByRole('button', { name: 'Copied to clipboard' })).toBeVisible({ timeout: 8000 });
     const calls = await getCalls(page);
-    expect(calls['explain_crash']).toBe(1);
+    expect(calls['export_crash_report']).toBe(1);
   });
 
   test('loading state shows Investigating crash text', async ({ page }) => {
@@ -550,30 +533,30 @@ test.describe('CrashInvestigator', () => {
     await expect(page.getByText('Crash Doctor')).toBeVisible();
   });
 
-  test('Ask AI Assistant opens panel, Back to suspects returns', async ({ page }) => {
+  test('crash report is exported to the clipboard', async ({ page }) => {
+    await installMock(page);
+    // Clipboard writes need permission in a headless context.
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await openDialog(page);
+    await waitForContent(page);
+
+    await page.getByRole('button', { name: 'Copy crash report' }).click();
+
+    // The button confirms rather than silently succeeding — this is the only
+    // feedback the user gets that anything reached the clipboard.
+    await expect(page.getByRole('button', { name: 'Copied to clipboard' })).toBeVisible({ timeout: 5000 });
+
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clipboard).toContain('# Minecraft crash report');
+  });
+
+  test('the export entry points are always available', async ({ page }) => {
+    // Sharing a crash report is not gated behind any setting, so both entry
+    // points must be present unconditionally.
     await installMock(page);
     await openDialog(page);
     await waitForContent(page);
-    await page.getByRole('button', { name: 'Ask AI Assistant' }).click();
-    // Wait for AI assistant to render
-    await expect(page.getByText('Back to suspects')).toBeVisible();
-    // AiAssistant renders "Connect with GitHub" when not authenticated
-    await expect(page.getByText('Connect with GitHub')).toBeVisible({ timeout: 5000 });
-    // Give React time to remove the suspect list from the DOM
-    await page.waitForTimeout(500);
-    // Verify the suspect heading is gone. Use a more relaxed check:
-    // the AiAssistant's content should replace the suspects area.
-    await expect(page.getByText('Connect with GitHub')).toBeVisible();
-    // The "Back to suspects" and AI panel should be visible instead of suspects
-    await page.getByText('Back to suspects').click();
-    await expect(page.getByText(/Mods that might be causing this/)).toBeVisible({ timeout: 5000 });
-  });
-
-  test('AI buttons hidden when ai_chat_enabled is false', async ({ page }) => {
-    await installMock(page, { aiChatEnabled: false });
-    await openDialog(page);
-    await waitForContent(page);
-    await expect(page.getByRole('button', { name: 'Ask AI Assistant' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Explain this crash in plain language' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Copy report for help' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Copy crash report' })).toBeVisible();
   });
 });

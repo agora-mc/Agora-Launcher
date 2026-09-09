@@ -96,10 +96,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Choose a service boundary',
-          body: 'Agora can run with only its cached catalog, or enrich results with Modrinth, GitHub governance, Copilot, and an external MCP client. Each integration has a separate purpose and can be disabled independently.',
+          body: 'Agora can run with only its cached catalog, or enrich results with Modrinth, GitHub governance, and an external MCP client. Each integration has a separate purpose and can be disabled independently.',
           bullets: [
             'Modrinth consent enables the feature; Privacy network permission controls whether live API and CDN access is allowed.',
-            'GitHub governance sign-in is independent from the GitHub Copilot connection used by the AI Assistant.',
+            'GitHub governance sign-in is only used for community curation, never for launching or downloading.',
             'Microsoft sign-in is only needed for direct in-app launching and online play. Delegated launch uses the official launcher.',
           ],
         },
@@ -235,7 +235,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Use the sidebar',
-          body: 'Home is the dashboard, Browse is the catalog, My Instances is your library, Community Governance shows curation activity, Help & Guide is this learning center, and Settings controls Agora itself. AI Assistant appears when that service is enabled.',
+          body: 'Home is the dashboard, Browse is the catalog, My Instances is your library, Community Governance shows curation activity, Help & Guide is this learning center, and Settings controls Agora itself.',
           steps: [
             'Select an item to move to that area.',
             'Use the arrow button at the sidebar edge to collapse or expand it.',
@@ -1131,8 +1131,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Accounts and optional services',
     shortTitle: 'Accounts & services',
     category: 'Connect',
-    description: 'Understand why Agora offers GitHub, Microsoft, Modrinth, and Copilot connections.',
-    keywords: ['account', 'github', 'microsoft', 'modrinth', 'copilot', 'services'],
+    description: 'Understand why Agora offers GitHub, Microsoft, and Modrinth connections.',
+    keywords: ['account', 'github', 'microsoft', 'modrinth', 'services'],
     basic: {
       summary: 'Agora does not require every account for every feature. Connect only the service needed for the task you want to perform.',
       outcomes: [
@@ -1143,11 +1143,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Match services to purposes',
-          body: 'Modrinth adds live catalog and download access. GitHub governance sign-in enables voting and community participation. Microsoft sign-in enables direct in-app online launching. GitHub Copilot powers the optional integrated AI Assistant.',
+          body: 'Modrinth adds live catalog and download access. GitHub governance sign-in enables voting and community participation. Microsoft sign-in enables direct in-app online launching.',
         },
         {
           title: 'Keep account roles separate',
-          body: 'The GitHub account under Accounts is for governance. The AI Assistant may request its own GitHub Copilot authorization. Microsoft is a different identity used for Minecraft ownership and online authentication during direct launch.',
+          body: 'The GitHub account under Accounts is for governance. Microsoft is a different identity used for Minecraft ownership and online authentication during direct launch.',
           callout: {
             tone: 'note',
             title: 'Delegated launch stays simple',
@@ -1575,70 +1575,70 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     },
   },
   {
-    id: 'ai-assistant',
-    title: 'Integrated AI Assistant',
-    shortTitle: 'AI Assistant',
+    id: 'crash-report-sharing',
+    title: 'Getting help with a crash',
+    shortTitle: 'Getting help',
     category: 'Connect',
-    description: 'Use optional Copilot chat for explanations while controlling the context you share.',
-    keywords: ['ai', 'assistant', 'copilot', 'chat', 'crash explanation'],
+    description: 'Export a redacted crash report to share with the community or an AI assistant of your choosing.',
+    keywords: ['crash', 'report', 'export', 'share', 'discord', 'ai', 'help'],
     basic: {
-      summary: 'The optional AI Assistant can explain crash information, suggest troubleshooting steps, and answer Agora or modding questions. It should support, not replace, backups and verified compatibility data.',
+      summary: 'Agora diagnoses crashes locally in Crash Doctor. When that is not enough, Crash Doctor can copy a single redacted report containing everything it found, which you can paste wherever you want help. Agora has no built-in chat assistant and never sends your crash data anywhere on its own.',
       outcomes: [
-        'Connect and use the integrated assistant.',
-        'Ask focused questions with useful context.',
-        'Recognize privacy and accuracy limits.',
+        'Export a complete crash report from Crash Doctor.',
+        'Know what the report contains and what is removed.',
+        'Choose a good place to ask for help.',
       ],
       sections: [
         {
-          title: 'Enable and connect',
-          body: 'Turn on Integrated AI Assistant in Settings, open its sidebar destination, and connect with GitHub when prompted. This Copilot connection can be separate from the GitHub account used for governance.',
+          title: 'Export the report',
+          body: 'Open Crash Doctor for the affected instance and choose Copy crash report. The report is assembled on your machine and placed on your clipboard. It contains the crash log, any matched crash signatures, the ranked suspect mods, and the instance\'s installed mod list — the same evidence Agora used for its own diagnosis.',
         },
         {
-          title: 'Ask better questions',
-          body: 'State the Minecraft version, loader, exact mod versions, what changed, what you expected, and the first relevant error. Ask for a small diagnostic sequence rather than a long list of unrelated fixes.',
-          steps: [
-            'Describe the goal and observed failure.',
-            'Include exact versions and the relevant log excerpt.',
-            'Ask the assistant to separate evidence from guesses.',
-            'Apply one reversible step at a time.',
-            'Verify the result in Agora and Minecraft.',
-          ],
-        },
-        {
-          title: 'Protect your data',
-          body: 'Assistant messages are sent to GitHub Copilot. When opened from Crash Doctor, the first message can also include the instance ID, selected crash log, matched signatures, and ranked suspects. Review all of that context for personal paths, usernames, server addresses, tokens, or private chat before submitting it.',
+          title: 'Know what is shared',
+          body: 'File paths and usernames are removed before the report is built, because a Minecraft crash log normally contains your home directory and therefore your real name. Nothing else is filtered, so read the report before posting it if the instance involves private server addresses or anything else you would rather not publish.',
           callout: {
             tone: 'warning',
-            title: 'AI can be wrong',
-            text: 'Do not download unknown files, weaken security controls, or delete saves only because an AI response suggests it. Prefer Agora\'s reviewed plan and recovery tools.',
+            title: 'You control where it goes',
+            text: 'Agora only puts the report on your clipboard. Pasting it into a chat service or AI assistant sends it to that provider under their terms, not Agora\'s.',
           },
+        },
+        {
+          title: 'Choose where to ask',
+          body: 'The Agora Discord reaches people who know this launcher and the curated catalog, and is the best place for questions about Agora itself. A general AI assistant is often faster for reading a stack trace. Either way, the exported report already contains the context that makes an answer possible.',
+          steps: [
+            'Reproduce the crash so Crash Doctor has fresh evidence.',
+            'Copy the crash report.',
+            'Paste it, unedited, into Discord or an assistant.',
+            'Apply one reversible change at a time.',
+            'Verify in Agora and Minecraft before trying the next.',
+          ],
         },
       ],
     },
     advanced: {
-      summary: 'Use the assistant as a hypothesis generator with controlled context, deterministic evidence, and explicit verification.',
+      summary: 'Treat any outside answer as a hypothesis, and keep Crash Doctor\'s one-variable testing discipline when acting on it.',
       outcomes: [
-        'Structure crash context for higher-quality analysis.',
-        'Manage provider limits and connection state.',
-        'Audit suggested actions before execution.',
+        'Turn an outside suggestion into a reversible Agora action.',
+        'Keep deterministic evidence as the source of truth.',
+        'Automate the loop with an external agent when you want more.',
       ],
       sections: [
         {
-          title: 'Use structured context',
-          body: 'When opened from Crash Doctor, the assistant can receive the instance ID, crash log, matched signatures, and ranked suspects in the first message. A mod-list request can send the selected instance\'s installed-mod context. Ask it to cite the exact evidence for each hypothesis and preserve Crash Doctor\'s one-variable testing discipline.',
-        },
-        {
-          title: 'Work within service limits',
-          body: 'The UI reports the connected state and provider rate limits. If the assistant is unavailable, deterministic Crash Doctor, console filters, snapshots, and lockfiles still work. AI is optional and should never be the only recovery path.',
-        },
-        {
-          title: 'Review every proposed operation',
-          body: 'Translate suggestions into Agora actions: snapshot, resolve an install plan, disable with dependent review, verify a lockfile, or inspect Java. Reject commands that bypass hash verification, expose credentials, or modify unrelated files.',
+          title: 'Verify before you act',
+          body: 'An AI answer is a hypothesis, not a diagnosis. Translate it into an Agora action — take a snapshot, disable a mod with dependent review, verify a lockfile, inspect Java — and change one thing at a time so you can tell what actually fixed it. Reject any suggestion that bypasses hash verification, exposes credentials, or deletes saves.',
           callout: {
             tone: 'tip',
-            title: 'Request falsifiable tests',
-            text: 'A useful answer predicts what evidence should change if the hypothesis is correct. Test that prediction before accepting the diagnosis.',
+            title: 'Ask for falsifiable tests',
+            text: 'A useful answer predicts what evidence should change if it is correct. Test that prediction before accepting the diagnosis.',
           },
+        },
+        {
+          title: 'Let an agent drive Agora directly',
+          body: 'If you already run an MCP-capable AI client, the local MCP server is stronger than copy and paste: the agent can list instances, read bounded crash evidence, search local knowledge, and request supported enable/disable actions itself, with per-instance approval for anything destructive. See the MCP automation topic.',
+        },
+        {
+          title: 'Agora still works without any of this',
+          body: 'Crash Doctor, console filters, snapshots, and lockfiles are deterministic and entirely local. Outside help is optional and should never be the only recovery path.',
         },
       ],
     },
@@ -1651,7 +1651,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     description: 'Connect an external local AI client and control what it may do to instances.',
     keywords: ['mcp', 'external ai', 'automation', 'localhost', 'bearer token', 'tools'],
     basic: {
-      summary: 'MCP is an advanced optional bridge that lets a compatible AI tool inspect Agora and request supported actions. Most users do not need it; the integrated AI Assistant is simpler for occasional help.',
+      summary: 'MCP is an advanced optional bridge that lets a compatible AI tool inspect Agora and request supported actions. Most users do not need it; copying a crash report from Crash Doctor is simpler for occasional help.',
       outcomes: [
         'Decide whether MCP is appropriate for your workflow.',
         'Start and stop the local server.',
@@ -1660,7 +1660,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Choose integrated AI or MCP',
-          body: 'Use Integrated AI for GitHub Copilot chat inside Agora. Use MCP when you already operate an external AI client and want it to inspect instances, read bounded crash evidence, search local knowledge, or request supported enable/disable actions through Agora\'s tool interface.',
+          body: 'Copy a crash report from Crash Doctor for one-off questions. Use MCP when you already operate an external AI client and want it to inspect instances, read bounded crash evidence, search local knowledge, or request supported enable/disable actions through Agora\'s tool interface.',
         },
         {
           title: 'Connect a client',

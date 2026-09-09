@@ -29,7 +29,6 @@ test('one failed setting does not cascade and settings page renders', async ({ p
             if (key === 'mojang_launcher_path') return Promise.resolve('');
           if (key === 'launch_mode') return Promise.resolve('delegation');
           if (key === 'onboarding_complete') return Promise.resolve(true);
-          if (key === 'ai_chat_enabled') return Promise.resolve(true);
           return Promise.resolve(null);
         }
         if (command === 'get_windows_accent_color') return Promise.resolve(null);

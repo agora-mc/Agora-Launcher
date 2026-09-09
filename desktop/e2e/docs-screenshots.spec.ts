@@ -55,7 +55,6 @@ test('docs screenshot: onboarding welcome', async ({ page }) => {
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(true);
           if (args.key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (args.key === 'ai_chat_enabled') return Promise.resolve(true);
           return Promise.resolve(null);
         }
         if (command === 'set_setting') return Promise.resolve(null);
@@ -374,7 +373,6 @@ async function installFlowMock(page: Page) {
           const key = args.key as string;
           if (key === 'onboarding_complete') return Promise.resolve(true);
           if (key === 'modrinth_enabled') return Promise.resolve(true);
-          if (key === 'ai_chat_enabled') return Promise.resolve(false);
           if (key === 'mojang_launcher_path') return Promise.resolve('');
           if (key === 'launch_mode') return Promise.resolve('delegation');
           return Promise.resolve(null);
@@ -839,7 +837,6 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
           if (key === 'onboarding_complete') return Promise.resolve(true);
           if (key === 'modrinth_enabled') return Promise.resolve(true);
           if (key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (key === 'ai_chat_enabled') return Promise.resolve(true);
           if (key === 'mojang_launcher_path') return Promise.resolve('');
           if (key === 'java_path') return Promise.resolve(null);
           if (key === 'java_runtime_mode') return Promise.resolve('automatic');
@@ -865,7 +862,6 @@ test('docs screenshot: privacy lockdown', async ({ page }) => {
         if (command === 'get_windows_accent_color') return Promise.resolve(null);
         if (command === 'msa_get_status') return Promise.resolve(null);
         if (command === 'credential_storage_status') return Promise.resolve({ microsoft: 'keyring', github: 'keyring' });
-        if (command === 'copilot_status') return Promise.resolve(null);
         if (command === 'get_auth_status') return Promise.resolve(null);
         if (command === 'get_github_profile') return Promise.resolve(null);
         if (command === 'get_mcp_status') return Promise.resolve(null);

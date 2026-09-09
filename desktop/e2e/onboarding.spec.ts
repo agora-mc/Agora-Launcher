@@ -17,7 +17,6 @@ async function installOnboardingMock(page: Page) {
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(true);
           if (args.key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (args.key === 'ai_chat_enabled') return Promise.resolve(true);
           return Promise.resolve(null);
         }
         if (command === 'set_setting') return Promise.resolve(null);
@@ -87,13 +86,12 @@ test('persisted service choices survive Back and Continue', async ({ page }) => 
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
 
-  // On Services step: 5 switches (modrinth, technic, unverified, aiMcp, aiChat)
+  // On Services step: 4 switches (modrinth, technic, unverified, aiMcp)
   const switches = page.getByRole('switch');
   await expect(switches.nth(0)).toHaveAttribute('aria-checked', 'true');
   await expect(switches.nth(1)).toHaveAttribute('aria-checked', 'false');
   await expect(switches.nth(2)).toHaveAttribute('aria-checked', 'false');
   await expect(switches.nth(3)).toHaveAttribute('aria-checked', 'false');
-  await expect(switches.nth(4)).toHaveAttribute('aria-checked', 'true');
 
   await switches.nth(1).click();
   // Turning Technic on asks for confirmation in an in-app dialog first.
@@ -136,7 +134,6 @@ test('Java step checked invokes ensure_java_runtime with onboarding operationId'
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(true);
           if (args.key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (args.key === 'ai_chat_enabled') return Promise.resolve(true);
           return Promise.resolve(null);
         }
         if (command === 'set_setting') return Promise.resolve(null);
@@ -201,7 +198,6 @@ test('Java step unchecked does not invoke ensure_java_runtime', async ({ page })
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(true);
           if (args.key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (args.key === 'ai_chat_enabled') return Promise.resolve(true);
           return Promise.resolve(null);
         }
         if (command === 'set_setting') return Promise.resolve(null);
@@ -263,7 +259,6 @@ test('onboarding Java step cancel allows continue without Java', async ({ page }
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(true);
           if (args.key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (args.key === 'ai_chat_enabled') return Promise.resolve(true);
           return Promise.resolve(null);
         }
         if (command === 'set_setting') return Promise.resolve(null);

@@ -205,7 +205,6 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
             const key = args.key as string;
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'modrinth_enabled') return Promise.resolve(mrEnabled);
-            if (key === 'ai_chat_enabled') return Promise.resolve(false);
             if (key === 'mojang_launcher_path') return Promise.resolve('');
             if (key === 'launch_mode') return Promise.resolve('delegation');
             return Promise.resolve(null);

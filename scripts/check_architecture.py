@@ -35,7 +35,7 @@ CORE_CARGO = REPO_ROOT / "crates" / "agora-core" / "Cargo.toml"
 # allowed because they only re-export types and/or bridge AppHandle -> Ctx.
 # They are NOT duplicates of core business logic.
 THIN_ADAPTER_MODULES: set[str] = {
-    "ai_assistant",
+    "crash_export",
     "auth",
     "crash_diagnostics",
     "crash_investigator",
