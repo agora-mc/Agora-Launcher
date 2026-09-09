@@ -34,7 +34,6 @@ async fn the_gate_refuses_every_category_on_the_get_path() {
         ClientCategory::GitHub,
         ClientCategory::Microsoft,
         ClientCategory::Registry,
-        ClientCategory::AiAssistant,
         ClientCategory::JavaRuntime,
         ClientCategory::PinnedArtifact,
         ClientCategory::ConsentedContent,

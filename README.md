@@ -43,7 +43,7 @@ Agora supports two launch modes. Direct launch runs Minecraft inside Agora and g
 - Surgical pack updates that keep the mods you added and ask before overwriting a file you edited.
 - Minecraft version migration that reports which mods have a build for the target before moving anything.
 - Handheld mode: pick up a controller and Agora becomes a full-screen, gamepad-navigable picker, with an offer to add Controlify so the game accepts the pad too.
-- A standalone CLI, optional integrated GitHub Copilot assistant, and authenticated local MCP automation.
+- A standalone CLI and authenticated local MCP automation, so external AI agents can drive Agora directly.
 
 ## Safety and recovery boundaries
 

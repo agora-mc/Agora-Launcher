@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ModBisectPanel } from './ModBisectPanel';
-import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import {
   confirmCrashFix,
   createSnapshot,
   deleteSnapshot,
   disableModForTest,
+  exportCrashReport,
   formatError,
   getDisablePlan,
-  getSetting,
   investigateCrash,
   investigateInstanceEvidence,
   investigateManual,
@@ -24,7 +23,6 @@ import {
   type SuggestedAction,
 } from '../lib/tauri';
 import { DependencyPrompt } from './DependencyPrompt';
-import { AiAssistant } from './AiAssistant';
 import { tryEarnInteraction } from '../features/interactive/live/interactionAchievements';
 import type { ProcessState } from '../lib/useProcessController';
 import type { LaunchStartOutcome } from '../lib/useProcessController';
@@ -292,15 +290,12 @@ export function CrashInvestigator({
     modId: string;
     plan: DisablePlan;
   } | null>(null);
-  // AI assistant panel
-  const [showAiAssistant, setShowAiAssistant] = useState(false);
-  // AI crash explanation
-  const [aiExplanation, setAiExplanation] = useState<string | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
+  // Crash report export
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exported, setExported] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
   const [pasteText, setPasteText] = useState('');
-  const [aiChatEnabled, setAiChatEnabled] = useState(false);
   const cancelledRef = useRef(false);
   const closeInProgressRef = useRef(false);
   const pendingLaunchRef = useRef(false);
@@ -599,24 +594,6 @@ export function CrashInvestigator({
     }
   }, [instanceId, pasteText]);
 
-  // Respect the AI chat setting for both AI entry points.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const v = await getSetting('ai_chat_enabled');
-        if (!cancelled) setAiChatEnabled(v === true || v === 'true');
-      } catch {
-        if (!cancelled) setAiChatEnabled(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    if (!aiChatEnabled) setShowAiAssistant(false);
-  }, [aiChatEnabled]);
-
   // Track whether the component is still mounted.
   // Reset on setup so StrictMode double-invocation (dev) or real remounts
   // don't leave cancelledRef stuck at true from a previous cleanup.
@@ -798,34 +775,32 @@ export function CrashInvestigator({
     onClose();
   }, [onClose]);
 
-  const handleAiExplain = useCallback(async () => {
-    if (!aiChatEnabled || aiLoading || cancelledRef.current) return;
-    setAiLoading(true);
-    setAiError(null);
-    setAiExplanation(null);
-    const logText = crashLogText || manualLogText || '';
-    if (!logText) {
-      setAiError('No crash log available to analyze.');
-      setAiLoading(false);
-      return;
-    }
+  // Build a redacted report and put it on the clipboard. Everything happens
+  // locally; Agora never sends the report anywhere.
+  const handleExportReport = useCallback(async () => {
+    if (exporting || cancelledRef.current) return;
+    setExporting(true);
+    setExportError(null);
+    setExported(false);
     try {
-      const explanation = await invoke<string>('explain_crash', {
-        instanceId: instanceId,
-        crashLog: logText,
+      const report = await exportCrashReport({
+        instance_id: instanceId ?? null,
+        crash_log: crashLogText || manualLogText || null,
+        crash_signatures: result?.signature_name ?? null,
+        suspects: result?.suspects?.length
+          ? result.suspects
+              .map((s, i) => `${i + 1}. ${s.filename} (score ${s.total_score})`)
+              .join('\n')
+          : null,
       });
-      if (!cancelledRef.current) setAiExplanation(explanation);
+      await navigator.clipboard.writeText(report);
+      if (!cancelledRef.current) setExported(true);
     } catch (e) {
-      const msg = formatError(e);
-      if (msg.includes('ERR_AI_NOT_AUTHENTICATED') || msg.toLowerCase().includes('not authenticated') || msg.toLowerCase().includes('not connected')) {
-        if (!cancelledRef.current) setAiError('connect-github');
-      } else {
-        if (!cancelledRef.current) setAiError(msg);
-      }
+      if (!cancelledRef.current) setExportError(formatError(e));
     } finally {
-      if (!cancelledRef.current) setAiLoading(false);
+      if (!cancelledRef.current) setExporting(false);
     }
-  }, [instanceId, crashLogText, manualLogText, aiLoading, aiChatEnabled]);
+  }, [exporting, instanceId, crashLogText, manualLogText, result]);
 
   if (loading && !result) {
     return (
@@ -934,16 +909,15 @@ export function CrashInvestigator({
               </p>
             )}
           </div>
-          {aiChatEnabled && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowAiAssistant(true)}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                Ask AI Assistant
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportReport}
+              disabled={exporting}
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              {exporting ? 'Preparing…' : exported ? 'Copied!' : 'Copy report for help'}
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-4 pr-1">
@@ -1054,25 +1028,7 @@ export function CrashInvestigator({
               </button>
             </div>
           )}
-          {/* AI Assistant panel or suspect list — gated by ai_chat_enabled */}
-          {aiChatEnabled && showAiAssistant ? (
-            <div className="h-[480px] space-y-2">
-              <button
-                onClick={() => setShowAiAssistant(false)}
-                className="text-xs text-primary hover:underline"
-              >
-                Back to suspects
-              </button>
-              <AiAssistant
-                instanceId={instanceId}
-                crashLog={crashLogText || manualLogText || null}
-                crashSignatures={JSON.stringify(result.signature_name ?? null)}
-                suspects={JSON.stringify(result.suspects)}
-                onClose={() => setShowAiAssistant(false)}
-              />
-            </div>
-          ) : (
-            <>
+          <>
               {/* Suspect list */}
               {suspects.length > 0 && (
                 <div className="space-y-3">
@@ -1096,52 +1052,33 @@ export function CrashInvestigator({
               {/* Ruled out */}
               <RuledOutList ruledOut={ruled_out} />
 
-              {/* AI Explain toggle — gated by ai_chat_enabled */}
-              {aiChatEnabled && !aiExplanation && !aiLoading && !aiError && (
+              {/* Take it elsewhere. Agora's local checks are the first stop;
+                  this is the escape hatch when they aren't enough. */}
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Still stuck?
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Copy a report of everything above — crash log, matched
+                  signatures, suspect mods and your installed mod list — then
+                  paste it to an AI assistant or share it in the Agora Discord.
+                  File paths and usernames are removed.
+                </p>
                 <button
-                  onClick={handleAiExplain}
-                  className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                  onClick={handleExportReport}
+                  disabled={exporting}
+                  className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                 >
-                  Explain this crash in plain language
+                  {exporting
+                    ? 'Preparing report…'
+                    : exported
+                      ? 'Copied to clipboard'
+                      : 'Copy crash report'}
                 </button>
-              )}
-
-              {aiChatEnabled && aiLoading && (
-                <div className="flex items-center gap-2 rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
-                  <div role="status" aria-label="Getting plain-language explanation" className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  Getting a plain-language explanation…
-                </div>
-              )}
-
-              {aiChatEnabled && aiError === 'connect-github' && (
-                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-muted-foreground">
-                  The AI helper isn’t connected.{' '}
-                  <span className="text-primary">Connect GitHub in Settings</span> to get a plain-language explanation.
-                </div>
-              )}
-
-              {aiChatEnabled && aiError && aiError !== 'connect-github' && (
-                <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                  {aiError}
-                </div>
-              )}
-
-              {aiChatEnabled && aiExplanation && (
-                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Here’s what might have happened
-                    </p>
-                    <button
-                      onClick={() => setAiExplanation(null)}
-                      className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                  <p className="text-sm whitespace-pre-wrap">{aiExplanation}</p>
-                </div>
-              )}
+                {exportError && (
+                  <p className="mt-2 text-xs text-destructive">{exportError}</p>
+                )}
+              </div>
 
               {/* Post-launch confirmation */}
               {pendingTest && (
@@ -1201,8 +1138,7 @@ export function CrashInvestigator({
 
               {/* Success */}
               {success && <SuccessBanner message={success} />}
-            </>
-          )}
+          </>
         </div>
         </DialogContent>
       </Dialog>

@@ -33,7 +33,6 @@ function setupTauriMocks(page: import('@playwright/test').Page, overrides: Recor
           const key = args.key as string;
           if (key === 'modrinth_enabled') return Promise.resolve(true);
           if (key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (key === 'ai_chat_enabled') return Promise.resolve(true);
           if (key === 'mojang_launcher_path') return Promise.resolve('');
           if (key === 'always_pre_touch') return Promise.resolve(true);
           if (key === 'launch_mode') return Promise.resolve('delegation');
@@ -179,7 +178,6 @@ test.describe('Inline setting errors (B3)', () => {
             const key = args.key as string;
             if (key === 'modrinth_enabled') return Promise.resolve(true);
             if (key === 'ai_mcp_enabled') return Promise.resolve(false);
-            if (key === 'ai_chat_enabled') return Promise.resolve(true);
             if (key === 'mojang_launcher_path') return Promise.resolve('');
             if (key === 'always_pre_touch') return Promise.resolve(true);
             if (key === 'launch_mode') return Promise.resolve('delegation');
@@ -241,7 +239,6 @@ test.describe('Inline setting errors (B3)', () => {
             if (key === 'mojang_launcher_path') return Promise.resolve('');
             if (key === 'launch_mode') return Promise.resolve('delegation');
             if (key === 'onboarding_complete') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') return Promise.resolve(true);
             if (key === 'java_path') return Promise.resolve('');
             return Promise.resolve(null);
           }

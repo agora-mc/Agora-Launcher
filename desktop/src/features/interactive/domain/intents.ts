@@ -33,7 +33,7 @@ export const GUIDE_TOPIC_IDS = [
   'accounts-services',
   'privacy-offline',
   'governance',
-  'ai-assistant',
+  'crash-report-sharing',
   'mcp-automation',
 ] as const;
 

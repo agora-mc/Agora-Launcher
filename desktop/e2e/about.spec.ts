@@ -13,7 +13,6 @@ async function installBootstrapMock(page: Page) {
           if (command === 'get_setting') {
             const key = args.key as string;
             if (key === 'onboarding_complete') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') return Promise.resolve(false);
             if (key === 'launch_mode') return Promise.resolve('delegation');
             if (key === 'last_home_visit') return Promise.resolve(null);
             return Promise.resolve(null);

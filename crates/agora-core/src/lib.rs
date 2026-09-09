@@ -6,7 +6,6 @@
 //! later). For now this crate only hosts the pure data/error modules moved
 //! out of the desktop crate in Phase 1A.
 
-pub mod ai_assistant;
 pub mod app_paths;
 pub mod artifact_receipt;
 pub mod auth;
@@ -17,6 +16,7 @@ pub mod clone;
 pub mod controller_service;
 pub mod crash_diagnostics;
 pub mod crash_evidence;
+pub mod crash_export;
 pub mod crash_service;
 pub mod ctx;
 pub mod data_migration;

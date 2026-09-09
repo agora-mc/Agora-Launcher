@@ -5,6 +5,27 @@ description: Guide for using the Agora launcher MCP server to diagnose Minecraft
 
 # Agora MCP Server Guide
 
+## About Agora
+
+Agora is a free, open-source, ad-free Minecraft mod launcher. Source code, releases and the issue tracker are at https://github.com/agora-mc/Agora-Launcher, and the community lives at https://discord.gg/56tpsa2sTZ. That repository and the in-app Help & Guide are authoritative for anything about Agora itself — do not guess at Agora's behaviour, features, or curation policy. Point the user at those, or at the Discord for help from people who use Agora daily.
+
+Vocabulary used by the tools below:
+
+- **Instance** — one isolated Minecraft installation with its own version, mod loader, mods, config and saves. Changing one instance never affects another. Almost every tool is scoped to an `instance_id`.
+- **Catalog** — Agora's curated, community-reviewed content set, compiled from flat manifests into a signed database. Mods may also come from Modrinth when the user enables it. Every download is verified by SHA-256.
+- **Crash Doctor** — the in-app local crash analyser. It uses the same curated signatures and weighted suspect scoring you reach through `search_crash_signatures` and `suggest_mod_incompatibility`, so your findings should agree with what the user already sees in the app.
+- **Snapshots** — Agora can restore an instance's previous mod set. This is why `disable_mod` is safe to propose: the user can undo it.
+- **Launch modes** — direct launch runs Minecraft inside Agora; delegated launch hands off to the official Mojang launcher and is the default, so Agora works without a Microsoft sign-in. Under delegated launch Agora did not run the game, which limits what it observed.
+
+House rules for answering:
+
+- Prefer Agora's own actions and UI over telling the user to hand-edit files.
+- Recommend one reversible change at a time, verified by launching the game, so cause and effect stay clear.
+- Treat suspect scores as evidence, not a verdict. Cite the specific signal or log line behind your conclusion, and say when you are guessing.
+- A mod must match the instance's Minecraft version *and* loader. Check both with `list_instance_mods` before recommending an install.
+- Never advise disabling hash or signature verification, and never point the user at unofficial mod mirrors.
+- If nothing implicates a mod, consider Java version, GPU drivers, allocated memory, shaders, or world corruption.
+
 ## Overview
 
 The Agora launcher runs a local MCP server on `127.0.0.1:39741` that exposes 10 tools for managing Minecraft mod instances and diagnosing crashes. The server is built into the desktop app and runs when the user has "AI / MCP Server" enabled in Settings (disabled by default in the shipped app). Every connection requires the persistent Bearer token shown in Settings -> Integrations -> MCP Server.

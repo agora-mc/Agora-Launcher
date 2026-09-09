@@ -94,7 +94,6 @@ fn endpoint_setting(category: ClientCategory) -> Option<&'static str> {
         ClientCategory::JavaRuntime => Some("network_adoptium_enabled"),
         ClientCategory::Registry => Some("network_registry_sync_enabled"),
         ClientCategory::GitHub => Some("network_github_oauth_enabled"),
-        ClientCategory::AiAssistant => Some("network_github_oauth_enabled"),
         // These carry content the user has separately consented to; the
         // consent check lives at the call site. Lockdown still applies.
         ClientCategory::PinnedArtifact | ClientCategory::ConsentedContent => None,

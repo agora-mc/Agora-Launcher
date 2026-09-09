@@ -27,7 +27,6 @@ async function installGuideMock(page: Page) {
         if (command === 'get_setting') {
           const key = args.key as string;
           if (key === 'onboarding_complete') return Promise.resolve(true);
-          if (key === 'ai_chat_enabled') return Promise.resolve(false);
           if (key === 'advanced_mode') return Promise.resolve('false');
           return Promise.resolve(null);
         }

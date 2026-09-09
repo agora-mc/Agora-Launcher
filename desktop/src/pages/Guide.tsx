@@ -66,7 +66,7 @@ const TOPIC_DESTINATIONS: Record<string, TopicDestination> = {
   'controller-handheld': { label: 'Open My Instances', tab: 'instances' },
   'disk-and-desktop': { label: 'Open Settings', tab: 'settings' },
   governance: { label: 'Open Governance', tab: 'governance' },
-  'ai-assistant': { label: 'Configure AI Assistant', tab: 'settings' },
+  'crash-report-sharing': { label: 'Open My Instances', tab: 'instances' },
   'mcp-automation': { label: 'Configure MCP', tab: 'settings' },
 };
 

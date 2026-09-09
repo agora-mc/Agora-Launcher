@@ -11,7 +11,6 @@ import { FieldGuide } from './pages/FieldGuide';
 import { LivingBackground } from './pages/LivingBackground';
 import { About } from './pages/About';
 import { Settings } from './pages/Settings';
-import AiChatPage from './pages/AiChatPage';
 import { Onboarding } from './pages/Onboarding';
 import { ModDetail } from './pages/ModDetail';
 import { InstanceEditor } from './pages/InstanceEditor';
@@ -51,7 +50,7 @@ import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './fe
 import { useController } from './features/controller/ControllerProvider';
 import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
 import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
-import { BookOpen, Bot, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
+import { BookOpen, Boxes, Compass, HomeIcon, Info, Landmark, Mountain, NotebookPen, SettingsIcon } from 'lucide-react';
 
 const BASE_TABS = [
   { id: 'home' as Tab, label: 'Home', icon: HomeIcon },
@@ -102,12 +101,6 @@ function QueuedTourStarter() {
   }, [start]);
   return null;
 }
-
-const AI_TAB = {
-  id: 'ai' as Tab,
-  label: 'AI Assistant',
-  icon: Bot,
-};
 
 interface ShellLayout {
   version: 1;
@@ -271,7 +264,6 @@ export default function App() {
   const [instanceEditorVisited, setInstanceEditorVisited] = useState(false);
 
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
-  const [aiChatEnabled, setAiChatEnabled] = useState<boolean>(false);
   const [ambienceEnabled, setAmbienceEnabled] = useState<boolean>(true);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [guideTopic, setGuideTopic] = useState<string | null>(null);
@@ -405,27 +397,6 @@ export default function App() {
     };
   }, []);
 
-  // Re-read UI toggles whenever the destination changes so app-level features
-  // reflect Settings without requiring an app restart.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const ai = await getSetting('ai_chat_enabled');
-        if (!cancelled) {
-          const asBool = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1';
-          setAiChatEnabled(asBool(ai));
-        }
-      } catch {
-        if (!cancelled) {
-          setAiChatEnabled(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [destination]);
 
 
   // React to the agora-navigate custom event (used by external code).
@@ -474,8 +445,7 @@ export default function App() {
     );
   }
 
-  // The AI Assistant tab appears between Governance and Settings when enabled;
-  // the Living Background tab only appears while the living background is on.
+  // The Living Background tab only appears while the living background is on.
   // Built by explicit reference (never by index — index-based construction
   // silently drops any tab appended to BASE_TABS, e.g. Settings).
   // Agora Lab is intentionally absent: it is the high-interaction entry point
@@ -487,7 +457,6 @@ export default function App() {
     tabBrowse,
     tabInstances,
     tabGovernance,
-    ...(aiChatEnabled ? [AI_TAB] : []),
     tabGuide,
     tabFieldGuide,
     ...(ambienceEnabled ? [{ id: 'living-background' as Tab, label: 'Living Background', icon: Mountain }] : []),
@@ -498,9 +467,7 @@ export default function App() {
   // Resolve the current UI state from the destination. A tab that became
   // unavailable (e.g. living background toggled off while open) falls back.
   const effectiveTab: Tab =
-    destination.type === 'tab' && destination.tab === 'ai' && !aiChatEnabled
-      ? 'home'
-      : destination.type === 'tab' && destination.tab === 'living-background' && !ambienceEnabled
+    destination.type === 'tab' && destination.tab === 'living-background' && !ambienceEnabled
         ? 'home'
         : destToTab(destination);
 
@@ -945,7 +912,6 @@ export default function App() {
                   />
                 )}
                 {effectiveTab === 'governance' && <Governance />}
-                {effectiveTab === 'ai' && aiChatEnabled && <AiChatPage />}
                 {effectiveTab === 'guide' && (
                   <Guide
                     key={guideTopic ?? 'default'}

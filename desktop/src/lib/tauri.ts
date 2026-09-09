@@ -1849,33 +1849,21 @@ export interface McpTokenData {
 export const getMCPToken = () => invoke<McpTokenData>('get_mcp_token');
 export const regenerateMCPToken = () => invoke<McpTokenData>('regenerate_mcp_token');
 
-// --- AI Assistant (GitHub Models) ---
+// --- Crash report export ---
 
-export interface ChatMessage {
-  role: string;
-  content: string;
-}
-
-export interface ChatResponse {
-  content: string;
-  model: string;
-}
-
-export interface AiContext {
+/** Evidence Agora has gathered about a crash, assembled into a shareable
+ *  report by the backend. */
+export interface CrashReportContext {
   instance_id: string | null;
   crash_log: string | null;
   crash_signatures: string | null;
   suspects: string | null;
 }
 
-export const aiChat = (
-  messages: ChatMessage[],
-  context?: AiContext | null,
-) =>
-  invoke<ChatResponse>('ai_chat', {
-    messages,
-    context: context ?? null,
-  });
+/** Build a redacted, shareable crash report. Purely local — the report is
+ *  returned to the caller, never sent anywhere by Agora. */
+export const exportCrashReport = (context: CrashReportContext) =>
+  invoke<string>('export_crash_report', { ...context });
 
 export const getWindowsAccentColor = () =>
   invoke<string | null>('get_windows_accent_color');
@@ -1889,42 +1877,6 @@ export const detectMojangLauncher = () =>
 /** Validate that a given launcher path exists and is a valid executable. */
 export const testLauncherPath = (path: string) =>
   invoke<boolean>('test_launcher_path', { path });
-
-// --- AI Copilot auth ---
-
-export interface CopilotDeviceFlowResponse {
-  device_code: string;
-  user_code: string;
-  verification_uri: string;
-  expires_in: number;
-  interval: number;
-}
-
-export interface CopilotToken {
-  access_token: string;
-  copilot_token: string | null;
-  endpoint: string;
-  plan: string;
-  username: string;
-  stored_at: string;
-}
-
-export const copilotLogin = () =>
-  invoke<CopilotDeviceFlowResponse>('copilot_login');
-
-/** Try to use the existing governance GitHub token for Copilot, skipping the
- *  device flow if the token works and the user has a Copilot subscription. */
-export const copilotTryGovernanceToken = () =>
-  invoke<CopilotToken | null>('copilot_try_governance_token');
-
-export const copilotLoginPoll = (deviceCode: string, interval: number) =>
-  invoke<CopilotToken>('copilot_login_poll', { deviceCode, interval });
-
-export const copilotStatus = () =>
-  invoke<CopilotToken | null>('copilot_status');
-
-export const copilotLogout = () =>
-  invoke<void>('copilot_logout');
 
 // ---------------------------------------------------------------------------
 // Phase 5: MSA auth + GC architect

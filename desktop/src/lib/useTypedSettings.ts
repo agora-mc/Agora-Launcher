@@ -102,7 +102,6 @@ export const SETTINGS = {
   technicEnabled: boolDef('technic_enabled'),
   allowUnverifiedPacks: boolDef('allow_unverified_packs'),
   aiMcpEnabled: boolDef('ai_mcp_enabled'),
-  aiChatEnabled: boolDef('ai_chat_enabled'),
   launcherPath: stringDef('mojang_launcher_path'),
   javaPath: nullableDef('java_path', stringDef('java_path')),
   javaRuntimeMode: enumDef('java_runtime_mode', ['automatic', 'prompt', 'manual'] as const, 'automatic'),

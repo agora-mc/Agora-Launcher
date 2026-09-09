@@ -69,7 +69,6 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
     // during onboarding before any of them can be used or auto-started.
     for key in [
         "modrinth_enabled",
-        "ai_chat_enabled",
         "ai_mcp_enabled",
         "install_auto_confirm_clean",
         "install_always_auto_confirm",
@@ -98,7 +97,6 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
 
 const BOOLEAN_SETTING_KEYS: &[&str] = &[
     "modrinth_enabled",
-    "ai_chat_enabled",
     "ai_mcp_enabled",
     "always_pre_touch",
     "install_auto_confirm_clean",
@@ -1673,7 +1671,6 @@ mod tests {
         let (conn, _path) = test_db();
         for key in [
             "modrinth_enabled",
-            "ai_chat_enabled",
             "ai_mcp_enabled",
             "install_auto_confirm_clean",
             "install_always_auto_confirm",

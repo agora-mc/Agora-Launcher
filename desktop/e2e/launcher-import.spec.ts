@@ -198,7 +198,6 @@ async function installLauncherImportMock(page: Page, opts: ImportFlowMockOptions
             if (key === 'launch_mode') return Promise.resolve('direct');
             if (key === 'modrinth_enabled') return Promise.resolve(true);
             if (key === 'ai_mcp_enabled') return Promise.resolve(false);
-            if (key === 'ai_chat_enabled') return Promise.resolve(true);
             if (key === 'last_home_visit') return Promise.resolve(null);
             return Promise.resolve(null);
           }
@@ -423,7 +422,6 @@ async function installOnboardingMockWithImport(page: Page) {
           if (args.key === 'onboarding_complete') return Promise.resolve(false);
           if (args.key === 'modrinth_enabled') return Promise.resolve(false);
           if (args.key === 'ai_mcp_enabled') return Promise.resolve(false);
-          if (args.key === 'ai_chat_enabled') return Promise.resolve(false);
           if (args.key === 'last_home_visit') return Promise.resolve(null);
           if (args.key === 'launch_mode') return Promise.resolve('direct');
           return Promise.resolve(null);
@@ -730,7 +728,6 @@ test.describe('Launcher Import — mixed results rendering', () => {
             if (key === 'onboarding_complete') return Promise.resolve(true);
             if (key === 'launch_mode') return Promise.resolve('direct');
             if (key === 'modrinth_enabled') return Promise.resolve(true);
-            if (key === 'ai_chat_enabled') return Promise.resolve(false);
             if (key === 'last_home_visit') return Promise.resolve(null);
             return Promise.resolve(null);
           }
