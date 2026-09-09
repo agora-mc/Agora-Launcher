@@ -85,6 +85,11 @@ jobs:
   # ------------------------------------------------------------------
   build-desktop:
     needs: [release-ref, ci-enforcement, launch-planner, e2e]
+    environment: windows-signing
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
     strategy:
       fail-fast: false
       # tauri-action merges latest.json with the existing release asset. Keep
@@ -173,6 +178,10 @@ jobs:
           cd desktop
           npm install
 
+      - name: Set up Windows signing
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/windows-signing
+
       - name: Build and release Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -210,7 +219,7 @@ jobs:
             - `agora-v*-macos-aarch64.tar.gz`
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ runner.os == 'Windows' && format('--config "{0}"', env.AGORA_WINDOWS_SIGNING_CONFIG) || '' }}
 
       - name: Verify packaged macOS build
         if: startsWith(matrix.platform, 'macos-')
@@ -263,6 +272,10 @@ jobs:
   # ------------------------------------------------------------------
   build-cli:
     needs: [release-ref, ci-enforcement, launch-planner, e2e]
+    environment: windows-signing
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -320,6 +333,15 @@ jobs:
 
       - name: Build CLI
         run: cargo build --release --locked -p agora-cli --target ${{ matrix.target }}
+
+      - name: Set up Windows signing
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/windows-signing
+
+      - name: Sign and verify Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '& ./scripts/sign-windows.ps1 -FilePath "target/${{ matrix.target }}/release/agora.exe"'
 
       - name: Package CLI (Windows)
         if: matrix.archive == 'zip'
