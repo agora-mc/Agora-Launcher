@@ -104,7 +104,7 @@ const AGORA_CLASSIC_PREFERENCES: UiPreferences = {
 /** Curated appearance presets shared by the Settings page and onboarding. */
 export const APPEARANCE_PRESETS: Record<string, { label: string; preferences: UiPreferences }> = {
   agora: {
-    label: 'Agora default',
+    label: 'Agora Blue',
     preferences: AGORA_CLASSIC_PREFERENCES,
   },
   night: {
@@ -112,7 +112,7 @@ export const APPEARANCE_PRESETS: Record<string, { label: string; preferences: Ui
     preferences: { ...AGORA_CLASSIC_PREFERENCES, colorMode: 'dark' },
   },
   civic: {
-    label: 'Civic gold',
+    label: 'Civic Gold (default)',
     preferences: DEFAULT_UI_PREFERENCES,
   },
   ender: {

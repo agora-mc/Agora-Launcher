@@ -24,6 +24,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
+  isPortableMode,
   detectMojangLauncher,
   ensureJavaRuntime,
   focusMainWindow,
@@ -195,6 +196,10 @@ export function Settings({
   const [loading, setLoading] = useState(true);
   const [directLaunch, setDirectLaunch] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [portableUpdateNotice, setPortableUpdateNotice] = useState(false);
+  useEffect(() => {
+    void isPortableMode().then((portable) => setPortableUpdateNotice(portable === true)).catch(() => {});
+  }, []);
   const [dataFolderOpening, setDataFolderOpening] = useState(false);
 
   // MCP server state
@@ -1055,6 +1060,12 @@ export function Settings({
       icon={RefreshCw}
       title="Software Updates"
     >
+      {portableUpdateNotice && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Portable mode: download the latest portable ZIP from GitHub Releases.
+          Close Agora and replace the executable, keeping portable.txt and your data folder.
+        </p>
+      )}
       {appVersion && (
         <p className="text-xs text-muted-foreground">
           Agora Launcher <span className="font-medium">{appVersion}</span>
@@ -1064,6 +1075,10 @@ export function Settings({
         <button
           onClick={async () => {
             try {
+              if (await isPortableMode()) {
+                setPortableUpdateNotice(true);
+                return;
+              }
               const update = await check();
               if (update?.available) {
                 const ok = await confirm({
@@ -1109,7 +1124,9 @@ export function Settings({
         </button>
       </div>
       <p className="text-xs text-muted-foreground">
-        Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.
+        {portableUpdateNotice
+          ? 'Portable copies are updated by replacing the executable from a new portable ZIP.'
+          : 'Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.'}
       </p>
     </SettingsSection>
   );

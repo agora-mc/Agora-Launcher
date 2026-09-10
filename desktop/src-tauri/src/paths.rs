@@ -30,6 +30,11 @@ pub fn app_data_dir<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> anyhow::Re
 pub fn migrate_legacy_data_dir<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> anyhow::Result<bool> {
+    // A portable copy or explicit data root must never move an installed
+    // copy's profile into its own folder on first launch.
+    if crate::commands::is_portable_mode() || std::env::var_os("AGORA_DATA_DIR").is_some() {
+        return Ok(false);
+    }
     let target = agora_core::app_paths::AppPaths::platform_default()
         .root()
         .to_path_buf();

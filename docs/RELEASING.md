@@ -11,6 +11,29 @@ Do not treat a successful catalog release as proof that a desktop package was bu
 
 ## Desktop release checklist
 
+### Windows portable desktop
+
+The Windows desktop job also publishes
+`agora-desktop-vX.Y.Z-windows-x86_64-portable.zip` and its `.zip.sha256` checksum.
+This is distinct from the standalone CLI ZIP. The archive contains the signed desktop
+executable, `portable.txt`, and instructions; extract it into a writable folder and run
+`Agora Launcher.exe`. WebView2 Runtime must already be installed. The normal MSI/NSIS
+installers remain installed applications; portable mode is distributed separately.
+
+Data and WebView preferences live in the adjacent `data` folder unless `AGORA_DATA_DIR`
+overrides it. Installed data is not automatically moved into a portable copy. Credentials
+stored in the OS keyring remain on that machine. Close any other running Agora copy
+before starting the portable one (the application enforces a single instance).
+
+To update, close Agora, replace the executable from the next portable ZIP, and keep
+`portable.txt` and `data`. The portable update action explains this instead of running
+an installer. Before publishing, smoke-test extraction, first launch, moving the folder,
+preference persistence, and this update path on Windows. Verify the extracted executable's
+Authenticode signature and the ZIP checksum.
+
+Fresh appearance preferences and **Reset appearance** use **Civic Gold (default)**.
+Existing saved appearance choices are preserved; the previous blue preset is **Agora Blue**.
+
 ### Windows code signing
 
 Windows releases use Azure Artifact Signing with GitHub OIDC. The shared setup is

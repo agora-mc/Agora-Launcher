@@ -33,6 +33,39 @@ test.beforeEach(async ({ page }) => {
   await openAppearance(page);
 });
 
+test('fresh preferences select Civic Gold and explicitly selected Agora Blue persists', async ({ page }) => {
+  await expect(page.getByLabel('Appearance preset')).toHaveValue('civic');
+  await expect(page.getByLabel('Custom accent color')).toHaveValue('#c28b28');
+  await expect(page.locator('html')).toHaveClass(/dark/);
+  await page.getByLabel('Appearance preset').selectOption({ label: 'Agora Blue' });
+  await page.reload();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await openAppearance(page);
+  await expect(page.getByLabel('Appearance preset')).toHaveValue('agora');
+  await page.getByRole('button', { name: 'Reset appearance' }).click();
+  await expect(page.getByLabel('Appearance preset')).toHaveValue('civic');
+});
+
+test('portable updates explain ZIP replacement without invoking the installer updater', async ({ page }) => {
+  await page.evaluate(() => {
+    const runtime = (window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> } }).__TAURI_INTERNALS__;
+    const original = runtime.invoke;
+    runtime.invoke = (command, args) => {
+      if (command === 'is_portable_mode') return Promise.resolve(true);
+      if (command.startsWith('plugin:updater|')) {
+        localStorage.setItem('unexpected-installer-update', command);
+        return Promise.reject(new Error('Portable must not invoke installer updater'));
+      }
+      return original(command, args);
+    };
+  });
+  await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('tab', { name: 'General', exact: true }).click();
+  await page.getByRole('tab', { name: 'Updates', exact: true }).click();
+  await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Portable mode:' })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('unexpected-installer-update'))).toBeNull();
+});
+
 test('custom accent updates semantic tokens, persists, and resets', async ({ page }) => {
   // Default theme is dark (civic gold) which lifts accent lightness to 52%; force light
   // so the raw hsl conversion (40% for #663399) is tested without dark adaptation.
@@ -184,7 +217,7 @@ test('extra color controls stay collapsed until requested', async ({ page }) => 
   await expect(page.getByLabel('Use custom block color')).toBeVisible();
 });
 
-test('appearance presets apply grouped preferences and Agora default restores defaults', async ({ page }) => {
+test('appearance presets apply grouped preferences and Agora Blue remains available', async ({ page }) => {
   // A preset reaches controls on both sub-pages, so it is checked across both.
   await page.getByLabel('Appearance preset').selectOption('terminal');
   await expect(page.locator('html')).toHaveClass(/dark/);

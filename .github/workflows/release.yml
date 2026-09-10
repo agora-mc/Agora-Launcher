@@ -208,6 +208,7 @@ jobs:
             ## Desktop
             Download the installer for your platform below.
             - Windows: `.msi` or `.exe`
+            - Windows portable: `agora-desktop-v*-windows-x86_64-portable.zip` (extract and run; no installer)
             - macOS: `.dmg`
             - Linux: `.AppImage` or `.deb`
 
@@ -220,6 +221,20 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ runner.os == 'Windows' && format('--config "{0}"', env.AGORA_WINDOWS_SIGNING_CONFIG) || '' }}
+
+      - name: Package and upload Windows portable desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          ./scripts/test_package_portable.ps1
+          ./scripts/package_portable.ps1 -Executable target/release/agora-desktop.exe -Version $env:RELEASE_TAG -OutputDirectory "$env:RUNNER_TEMP/agora-portable"
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw 'Portable packaging failed' }
+          $assets = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/agora-portable" -File
+          gh release upload $env:RELEASE_TAG @($assets.FullName) --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Portable upload failed' }
 
       - name: Verify packaged macOS build
         if: startsWith(matrix.platform, 'macos-')
@@ -426,6 +441,9 @@ jobs:
           release = json.loads((root / "release.json").read_text())
           latest = json.loads((root / "latest.json").read_text())
           asset_names = [asset["name"] for asset in release["assets"]]
+          portable = [name for name in asset_names if name.startswith("agora-desktop-v") and name.endswith("-windows-x86_64-portable.zip")]
+          if len(portable) != 1 or portable[0] + ".sha256" not in asset_names:
+              raise SystemExit("Missing Windows portable desktop ZIP or checksum")
 
           markers = {
               "aarch64": ("aarch64", "arm64"),

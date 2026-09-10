@@ -613,6 +613,7 @@ export const revertInstance = (instanceId: string) =>
 export const openInstanceFolder = (instanceId: string) =>
   invoke<void>('open_instance_folder', { instanceId });
 export const openDataFolder = () => invoke<void>('open_data_folder');
+export const isPortableMode = () => invoke<boolean>('is_portable_mode');
 /** Relaunch the app. Used after the updater stages a new version. Never resolves. */
 export const restartApp = () => invoke<void>('restart_app');
 export const revealPath = (path: string) =>
