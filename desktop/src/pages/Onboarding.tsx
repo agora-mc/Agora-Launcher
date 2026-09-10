@@ -9,20 +9,16 @@ import {
   githubLogin,
   githubLoginPoll,
   msaGetStatus,
-  msaBeginLogin,
-  msaCompleteLogin,
-  msaCancelLogin,
+  msaLogin,
   msaLogout,
   setSetting,
   type DeviceFlowResponse,
   type JavaRuntimeProgressEvent,
   type MsaAccountStatus,
-  type MsaLoginPrompt,
 } from '../lib/tauri';
 import { useRegistryState } from '../lib/useRegistryState';
 import { RegistryStatusView } from '../components/registry-status-view';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
-import { MsaDeviceFlowPanel } from '../components/MsaDeviceFlowPanel';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { queueTourStart } from '../features/tour/tourHandoff';
 import {
@@ -871,7 +867,6 @@ function LaunchStep({
   const [msaLoading, setMsaLoading] = useState(true);
   const [msaBusy, setMsaBusy] = useState(false);
   const [msaError, setMsaError] = useState<string | null>(null);
-  const [msaPrompt, setMsaPrompt] = useState<MsaLoginPrompt | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -899,30 +894,16 @@ function LaunchStep({
     void setSetting('launch_mode', value ? 'direct' : 'delegation').catch(() => {});
   };
 
-  // Show the code first, then wait: the polling call only resolves once the
-  // user has finished in the browser.
   const handleMsaSignIn = async () => {
     setMsaError(null);
     setMsaBusy(true);
     try {
-      setMsaPrompt(await msaBeginLogin());
-      setMsa(await msaCompleteLogin());
-      setMsaPrompt(null);
+      setMsa(await msaLogin());
     } catch (e) {
       setMsaError(formatError(e));
-      setMsaPrompt(null);
     } finally {
       setMsaBusy(false);
     }
-  };
-
-  const handleMsaCancelSignIn = async () => {
-    try {
-      await msaCancelLogin();
-    } catch {
-      // The polling call reports the cancellation itself.
-    }
-    setMsaPrompt(null);
   };
 
   const handleMsaSignOut = async () => {
@@ -973,7 +954,7 @@ function LaunchStep({
               <p className="mt-1 text-[11px] text-muted-foreground">Part of launch mode — required for direct launch, not needed for delegated launch.</p>
               {msaLoading ? (
                 <p className="mt-2 text-xs text-muted-foreground">Checking connection…</p>
-              ) : msa && !msa.needs_reauth ? (
+              ) : msa ? (
                 <div className="mt-2 space-y-1">
                   <p className="text-sm text-green-600 dark:text-green-400">
                     ● Signed in as <strong>{msa.username}</strong>
@@ -990,34 +971,21 @@ function LaunchStep({
                 </div>
               ) : (
                 <div className="mt-2 space-y-3">
-                  {msa?.needs_reauth ? (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
-                      {msa.reauth_message}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Sign in with your Microsoft account to use direct launch with full online play.
-                      Delegated launch keeps authentication in the official Mojang launcher and does not need this.
-                    </p>
-                  )}
-                  {msaPrompt && (
-                    <MsaDeviceFlowPanel
-                      prompt={msaPrompt}
-                      polling={msaBusy}
-                      onCancel={handleMsaCancelSignIn}
-                    />
-                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Sign in with your Microsoft account to use direct launch with full online play.
+                    Delegated launch keeps authentication in the official Mojang launcher and does not need this.
+                  </p>
                   {msaError && <p className="text-xs text-destructive">{msaError}</p>}
                   <button
                     onClick={handleMsaSignIn}
                     disabled={msaBusy}
                     className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
-                    {msaBusy ? 'Waiting…' : 'Sign in with Microsoft'}
+                    {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
                   </button>
                 </div>
               )}
-              {directLaunch && !msaLoading && (!msa || msa.needs_reauth) && (
+              {directLaunch && !msaLoading && !msa && (
                 <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs font-medium text-amber-800 dark:text-amber-200">
                   Direct launch requires a Microsoft sign-in to continue. Sign in above, or switch direct launch off to use delegated launch.
                 </p>

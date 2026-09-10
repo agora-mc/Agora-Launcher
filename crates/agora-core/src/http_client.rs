@@ -82,15 +82,13 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
             "release-assets.githubusercontent.com",
         ],
         ClientCategory::Microsoft => &[
-            // Device-code sign-in against Agora's own Entra application, then
-            // the Xbox Live and Minecraft exchanges. The legacy launcher flow's
-            // hosts (login.live.com, sisu/device.auth.xboxlive.com) are gone
-            // with it: the allowlist is a whitelist, so an unused host is a
-            // reachable host for no reason.
+            "login.live.com",
             "login.microsoftonline.com",
-            "user.auth.xboxlive.com",
-            "xsts.auth.xboxlive.com",
+            "sisu.xboxlive.com",
             "api.minecraftservices.com",
+            "xsts.auth.xboxlive.com",
+            "user.auth.xboxlive.com",
+            "device.auth.xboxlive.com",
         ],
         // Deliberately empty: hosts for this category come from the signed
         // manifest via `HostPolicy::SignedManifest`, never from a compile-time

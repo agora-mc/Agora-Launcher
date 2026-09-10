@@ -316,16 +316,11 @@ The CLI launches directly through Agora core. Microsoft authentication is theref
 
 ```text
 agora auth login
-agora auth login --no-browser
 agora auth status
 agora auth logout
 ```
 
 These commands manage the Microsoft/Xbox/Minecraft identity used for direct launch. They are separate from the GitHub account used by desktop governance features.
-
-`auth login` uses the Microsoft device-code flow: it prints a short code and a verification URL, opens the URL in your browser unless `--no-browser` is given, and then waits until you finish signing in. Press Ctrl-C to cancel. The device code and every token stay inside Agora; nothing is pasted back into the terminal.
-
-Sessions created before Agora moved to its own Microsoft application cannot be renewed. `auth status` reports those as `sign_in_required`; run `auth login` once to restore direct launch. Instances and other accounts are unaffected.
 
 Authentication is not scoped by `--data-dir`. `auth logout` removes the shared operating-system credential entry and can sign the desktop app out even when the CLI uses a disposable data root.
 

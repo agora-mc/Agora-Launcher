@@ -112,8 +112,6 @@ fn test_msa_credentials_json() -> String {
         access_token: "test_access_token".into(),
         refresh_token: "test_refresh_token".into(),
         expires: chrono::Utc::now() + chrono::Duration::hours(1),
-        client_id: agora_core::msa::AGORA_MSA_CLIENT_ID.into(),
-        auth_version: agora_core::msa::MSA_AUTH_VERSION,
     })
     .expect("serialize fake MSA credentials")
 }

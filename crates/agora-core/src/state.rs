@@ -1,7 +1,7 @@
 use crate::browse_cache::SharedBrowseCache;
 use crate::error::LauncherResult;
 use crate::models::ModVersionCandidate;
-use crate::msa::{MsaDeviceCodeFlow, MsaLoginCancel};
+use crate::msa::LoginFlow;
 use crate::process_identity::{self, ProcessIdentity};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -34,14 +34,9 @@ pub struct UpdateCandidateCacheEntry {
 pub struct AppState {
     /// Shared HTTP client for all network operations (MSA, Modrinth, etc.)
     pub client: reqwest::Client,
-    /// In-flight MSA device-code login (ephemeral — only alive while polling).
-    /// The device code never leaves the backend, so the flow is held here
-    /// rather than handed to the frontend. If the app exits, the flow is lost
-    /// and the user starts sign-in again.
-    pub login_flow: Option<MsaDeviceCodeFlow>,
-    /// Cancellation handle for the in-flight login, so a "Cancel" in the UI
-    /// stops the polling loop instead of leaving it running to expiry.
-    pub login_cancel: Option<MsaLoginCancel>,
+    /// In-flight MSA login flow (ephemeral — only alive between begin/finish).
+    /// If the app crashes, the flow is lost and the user re-authenticates.
+    pub login_flow: Option<LoginFlow>,
     /// Shared browse cache for paginated Modrinth + registry results.
     pub browse_cache: SharedBrowseCache,
     /// Tracked directly-launched processes, keyed by session id, stored so the
@@ -107,7 +102,6 @@ impl AppState {
         Self {
             client,
             login_flow: None,
-            login_cancel: None,
             browse_cache: crate::browse_cache::new_cache(),
             running_processes: HashMap::new(),
             launch_reservations: HashSet::new(),
