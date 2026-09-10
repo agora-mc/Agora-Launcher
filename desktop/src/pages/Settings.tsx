@@ -42,7 +42,9 @@ import {
   isAuthExpired,
   listInstances,
   listJavaRuntimes,
-  msaLogin,
+  msaBeginLogin,
+  msaCompleteLogin,
+  msaCancelLogin,
   msaGetStatus,
   msaLogout,
   pickOpenFile,
@@ -57,10 +59,11 @@ import {
   openDataFolder,
   restartApp,
 } from '../lib/tauri';
-import type { CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus } from '../lib/tauri';
+import type { CredentialStorageStatus, DeviceFlowResponse, GithubProfile, InstanceRow, JavaRuntimeProgressEvent, JavaRuntimeSummary, McpStatus, McpTokenData, MsaAccountStatus, MsaLoginPrompt } from '../lib/tauri';
 import { Privacy } from './Privacy';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { DeviceFlowPanel } from '../components/DeviceFlowPanel';
+import { MsaDeviceFlowPanel } from '../components/MsaDeviceFlowPanel';
 import { useTypedSettings, SETTINGS } from '../lib/useTypedSettings';
 import { showToast } from '../components/Toast';
 import {
@@ -233,6 +236,7 @@ export function Settings({
   const [msaLoading, setMsaLoading] = useState(true);
   const [msaError, setMsaError] = useState<string | null>(null);
   const [msaBusy, setMsaBusy] = useState(false);
+  const [msaPrompt, setMsaPrompt] = useState<MsaLoginPrompt | null>(null);
 
 
   // Java Runtime Management state
@@ -511,17 +515,33 @@ export function Settings({
     }
   };
 
+  // Two steps: show the code immediately, then wait. The polling call resolves
+  // only when the user finishes in the browser, so it must not gate the render
+  // of the code they need to type.
   const handleMsaSignIn = async () => {
     setMsaError(null);
     setMsaBusy(true);
     try {
-      const creds = await msaLogin();
+      const prompt = await msaBeginLogin();
+      setMsaPrompt(prompt);
+      const creds = await msaCompleteLogin();
       setMsaCreds(creds);
+      setMsaPrompt(null);
     } catch (e) {
       setMsaError(formatError(e));
+      setMsaPrompt(null);
     } finally {
       setMsaBusy(false);
     }
+  };
+
+  const handleMsaCancelSignIn = async () => {
+    try {
+      await msaCancelLogin();
+    } catch {
+      // The polling call reports the cancellation itself.
+    }
+    setMsaPrompt(null);
   };
 
   const handleMsaSignOut = async () => {
@@ -1509,17 +1529,45 @@ export function Settings({
   const microsoftCard = (
     <SettingsSection
       icon={UserRound}
-      title="Microsoft Account"
+      title="Microsoft Account (temporarily not available)"
     >
       {msaLoading ? (
         <p className="text-xs text-muted-foreground">Checking connection…</p>
       ) : msaCreds ? (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-green-600 dark:text-green-400">
-              ● Signed in as <strong>{msaCreds.username}</strong>
-            </span>
+            {msaCreds.needs_reauth ? (
+              <span className="text-sm text-amber-600 dark:text-amber-400">
+                ● <strong>{msaCreds.username}</strong> — sign in again
+              </span>
+            ) : (
+              <span className="text-sm text-green-600 dark:text-green-400">
+                ● Signed in as <strong>{msaCreds.username}</strong>
+              </span>
+            )}
           </div>
+          {msaCreds.needs_reauth && (
+            <>
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {msaCreds.reauth_message}
+              </p>
+              {msaPrompt && (
+                <MsaDeviceFlowPanel
+                  prompt={msaPrompt}
+                  polling={msaBusy}
+                  onCancel={handleMsaCancelSignIn}
+                />
+              )}
+              {msaError && <p className="text-xs text-destructive">{msaError}</p>}
+              <button
+                onClick={handleMsaSignIn}
+                disabled={msaBusy}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {msaBusy ? 'Waiting…' : 'Sign in with Microsoft'}
+              </button>
+            </>
+          )}
           {/* <p className="text-xs text-muted-foreground">
                 UUID: {msaCreds.uuid}<br />
                 Expires: {msaCreds.expires}
@@ -1541,13 +1589,21 @@ export function Settings({
             Sign in with your Microsoft account to enable direct in-app launching (without the Mojang launcher).
           </p>
 
+          {msaPrompt && (
+            <MsaDeviceFlowPanel
+              prompt={msaPrompt}
+              polling={msaBusy}
+              onCancel={handleMsaCancelSignIn}
+            />
+          )}
+
           {msaError && <p className="text-xs text-destructive">{msaError}</p>}
           <button
             onClick={handleMsaSignIn}
             disabled={msaBusy}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {msaBusy ? 'Signing in…' : 'Sign in with Microsoft'}
+            {msaBusy ? 'Waiting…' : 'Sign in with Microsoft'}
           </button>
         </div>
       )}

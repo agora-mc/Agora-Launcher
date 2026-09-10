@@ -1889,6 +1889,21 @@ export interface MsaAccountStatus {
   username: string;
   uuid: string;
   expires: string;
+  /** Session predates Agora's own Microsoft application; a one-time sign-in is
+   * needed before direct launch works again. */
+  needs_reauth: boolean;
+  /** Explanation to show when `needs_reauth` is set. */
+  reauth_message: string | null;
+}
+
+/** What the user needs to complete a Microsoft device-code sign-in. The device
+ * code itself never leaves the Rust backend. */
+export interface MsaLoginPrompt {
+  user_code: string;
+  verification_uri: string;
+  /** RFC 3339 instant after which the code stops working. */
+  expires_at: string;
+  interval_secs: number;
 }
 
 /// Where a stored credential actually lives. `encrypted-file` is the degraded
@@ -1911,8 +1926,23 @@ export interface GcResult {
   recommended: boolean;
 }
 
-export const msaLogin = () =>
-  invoke<MsaAccountStatus>('msa_login');
+/** Start a device-code sign-in and get the code + URL to show the user. */
+export const msaBeginLogin = () =>
+  invoke<MsaLoginPrompt>('msa_begin_login');
+
+/** Open the pending sign-in's verification page in the system browser. The URL
+ * comes from the backend's stored flow, not from the frontend. */
+export const msaOpenVerificationUrl = () =>
+  invoke<void>('msa_open_verification_url');
+
+/** Poll until the pending sign-in completes, is declined, expires, or is
+ * cancelled. Resolves with the signed-in account. */
+export const msaCompleteLogin = () =>
+  invoke<MsaAccountStatus>('msa_complete_login');
+
+/** Cancel the sign-in currently being polled. */
+export const msaCancelLogin = () =>
+  invoke<void>('msa_cancel_login');
 
 export const msaGetStatus = () =>
   invoke<MsaAccountStatus | null>('msa_get_status');

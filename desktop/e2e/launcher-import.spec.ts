@@ -438,9 +438,12 @@ async function installOnboardingMockWithImport(page: Page) {
         if (command === 'check_registry_update') return Promise.resolve(null);
 
         // --- Microsoft auth (onboarding Launch step blocks Continue on direct launch without it) ---
-        if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'msa_get_status') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z', needs_reauth: false, reauth_message: null });
         if (command === 'credential_storage_status') return Promise.resolve({ microsoft: 'keyring', github: 'keyring' });
-        if (command === 'msa_login') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z' });
+        if (command === 'msa_begin_login') return Promise.resolve({ user_code: 'ABCD-EFGH', verification_uri: 'https://microsoft.com/link', expires_at: '2099-01-01T00:00:00Z', interval_secs: 5 });
+        if (command === 'msa_complete_login') return Promise.resolve({ username: 'TestUser', uuid: '00000000-0000-0000-0000-000000000000', expires: '2099-01-01T00:00:00Z', needs_reauth: false, reauth_message: null });
+        if (command === 'msa_open_verification_url') return Promise.resolve(null);
+        if (command === 'msa_cancel_login') return Promise.resolve(null);
         if (command === 'msa_logout') return Promise.resolve(null);
 
         // --- Browse / ambient ---
