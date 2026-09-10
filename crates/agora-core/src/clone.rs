@@ -11,7 +11,15 @@ const MAX_CLONE_ENTRIES: usize = 1_000_000;
 enum EntryKind {
     Directory,
     File,
-    Symlink { directory: bool },
+    Symlink {
+        // Only the Windows `symlink_entry` distinguishes a directory link from
+        // a file link; every other target writes this field and never reads it.
+        #[cfg_attr(not(windows), allow(dead_code))]
+        directory: bool,
+    },
+    // Reparse points are a Windows-only concept, so no other target
+    // constructs this variant.
+    #[cfg_attr(not(windows), allow(dead_code))]
     UnrecognizedReparse,
     Unsupported,
 }
@@ -876,7 +884,7 @@ mod tests {
 
         let dst = tmp.path().join("clone");
         let error = clone_instance(&src, &dst, &ClonePrefs::default()).unwrap_err();
-        assert!(error.contains(link.to_string_lossy().as_ref()), "{error}");
+        assert!(error.contains(&format!("{link:?}")), "{error}");
         assert!(!path_is_present(&dst).unwrap());
     }
 
@@ -896,7 +904,7 @@ mod tests {
 
         let dst = tmp.path().join("clone");
         let error = clone_instance(&src, &dst, &ClonePrefs::default()).unwrap_err();
-        assert!(error.contains(link.to_string_lossy().as_ref()), "{error}");
+        assert!(error.contains(&format!("{link:?}")), "{error}");
         assert!(!path_is_present(&dst).unwrap());
     }
 
@@ -934,7 +942,7 @@ mod tests {
 
         let dst = tmp.path().join("clone");
         let error = clone_instance(&src, &dst, &ClonePrefs::default()).unwrap_err();
-        assert!(error.contains(link.to_string_lossy().as_ref()), "{error}");
+        assert!(error.contains(&format!("{link:?}")), "{error}");
         assert!(!path_is_present(&dst).unwrap());
     }
 

@@ -7189,6 +7189,15 @@ pub async fn open_instance_folder(
 }
 
 #[tauri::command]
+pub fn is_portable_mode() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        .and_then(|dir| agora_core::app_paths::AppPaths::portable_root_for(&dir))
+        .is_some()
+}
+
+#[tauri::command]
 pub async fn open_data_folder(app: tauri::AppHandle) -> Result<(), String> {
     let path = crate::paths::app_data_dir(&app)
         .map_err(|e| format!("Failed to resolve application data folder: {e}"))?;

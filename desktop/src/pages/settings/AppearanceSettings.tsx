@@ -40,15 +40,16 @@ export function AppearanceThemeSettings() {
         <span className="font-medium">Appearance preset</span>
         <select
           aria-label="Appearance preset"
-          defaultValue=""
+          value={Object.entries(APPEARANCE_PRESETS).find(([, preset]) =>
+            Object.entries(preset.preferences).every(([key, value]) =>
+              preferences[key as keyof typeof preferences] === value))?.[0] ?? ''}
           onChange={(event) => {
             const preset = APPEARANCE_PRESETS[event.target.value];
             if (preset) setPreferences(preset.preferences);
-            event.currentTarget.value = '';
           }}
           className={`${selectClass} block w-full sm:w-72`}
         >
-          <option value="" disabled>Choose a preset…</option>
+          <option value="" disabled>Custom appearance</option>
           {Object.entries(APPEARANCE_PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
         </select>
       </label>

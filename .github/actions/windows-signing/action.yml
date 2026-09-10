@@ -1,0 +1,24 @@
+name: Set up Windows signing
+description: Authenticate with Azure OIDC and prepare Agora's Authenticode signing hook.
+runs:
+  using: composite
+  steps:
+    - name: Check signing failure handling
+      shell: pwsh
+      run: '& "$env:GITHUB_WORKSPACE/scripts/test_windows_signing.ps1"'
+
+    - name: Install .NET for the Microsoft signing client
+      uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Authenticate to Azure
+      uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+      with:
+        client-id: aadd6b45-bc51-4274-ab0a-d31f7e9d91e6
+        tenant-id: 4e53f04d-d68e-48f4-b965-e9eb54497a43
+        subscription-id: 969df700-10bf-453f-9fcb-64454362c6d0
+
+    - name: Prepare signing tools and Tauri hook
+      shell: pwsh
+      run: '& "$env:GITHUB_WORKSPACE/scripts/setup-windows-signing.ps1"'

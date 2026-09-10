@@ -11,6 +11,79 @@ Do not treat a successful catalog release as proof that a desktop package was bu
 
 ## Desktop release checklist
 
+### Windows portable desktop
+
+The Windows desktop job also publishes
+`agora-desktop-vX.Y.Z-windows-x86_64-portable.zip` and its `.zip.sha256` checksum.
+This is distinct from the standalone CLI ZIP. The archive contains the signed desktop
+executable, `portable.txt`, and instructions; extract it into a writable folder and run
+`Agora Launcher.exe`. WebView2 Runtime must already be installed. The normal MSI/NSIS
+installers remain installed applications; portable mode is distributed separately.
+
+Data and WebView preferences live in the adjacent `data` folder unless `AGORA_DATA_DIR`
+overrides it. Installed data is not automatically moved into a portable copy. Credentials
+stored in the OS keyring remain on that machine. Close any other running Agora copy
+before starting the portable one (the application enforces a single instance).
+
+To update, close Agora, replace the executable from the next portable ZIP, and keep
+`portable.txt` and `data`. The portable update action explains this instead of running
+an installer. Before publishing, smoke-test extraction, first launch, moving the folder,
+preference persistence, and this update path on Windows. Verify the extracted executable's
+Authenticode signature and the ZIP checksum.
+
+Fresh appearance preferences and **Reset appearance** use **Civic Gold (default)**.
+Existing saved appearance choices are preserved; the previous blue preset is **Agora Blue**.
+
+### Windows code signing
+
+Windows releases use Azure Artifact Signing with GitHub OIDC. The shared setup is
+in `.github/actions/windows-signing/action.yml`; the Azure identifiers there are
+public configuration, not secrets. The signing profile is `Agora-MC-Launcher` in
+account `Agora-MC-Launcher`, resource group `Agora`, at
+`https://wus2.codesigning.azure.net` (West US 2).
+
+The Entra application `Agora GitHub Release Signing` needs the **Artifact Signing
+Certificate Profile Signer** role on this signing account. Its federated credential
+uses issuer `https://token.actions.githubusercontent.com`, audience
+`api://AzureADTokenExchange`, and this immutable GitHub subject:
+
+```text
+repo:agora-mc@309633368/Agora-Launcher@1272711399:environment:windows-signing
+```
+
+Enable immutable subjects in the repository's GitHub Actions OIDC settings so the
+issued token matches this credential. The `windows-signing` GitHub environment
+allows selected **tags** matching `v*`. Both release build jobs use this environment;
+only their Windows matrix entries authenticate to Azure and invoke signing. For
+manual dispatch, select the actual release tag as the workflow ref, not `master`.
+
+No client secret or exported code-signing private key is required. The setup downloads
+a version- and SHA-256-pinned Microsoft signing client and verifies its NuGet signature.
+It uses the signed Windows SDK SignTool installed on the hosted Windows runner.
+
+For desktop builds, a temporary Tauri configuration supplies a custom signing hook.
+Tauri signs the application and installer executables during packaging, before
+creating updater signatures. Each hook invocation verifies Authenticode and requires
+a timestamp. The Windows CLI is signed and verified before its ZIP is created, so
+the release checksums cover the signed binary. Signing or verification failure fails
+the job; it never falls back to an unsigned Windows release. Local development builds
+do not load this temporary signing configuration.
+
+The existing `TAURI_SIGNING_PRIVATE_KEY` and optional password remain required for
+Tauri updater signatures; Azure Authenticode signing does not replace them.
+
+Offline hook regression checks: `pwsh -NoProfile -File scripts/test_windows_signing.ps1`.
+These test error propagation and path handling with a fake signing tool, not Azure
+authentication. The first tagged release must verify the live OIDC exchange and
+signing permissions. Before publishing its draft, check the Windows installers and
+extracted CLI with `Get-AuthenticodeSignature`; status must be `Valid`, the signer
+must match the profile's validated identity, and a timestamp must be present. Also
+test a packaged update from the prior release.
+
+References: [Microsoft signing integration](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations),
+[immutable OIDC subjects](https://learn.microsoft.com/en-us/entra/workload-id/workload-identities-github-immutable-subjects),
+[Tauri custom signing hook](https://v2.tauri.app/distribute/sign/windows/#custom-sign-command).
+
 ### Before tagging
 
 - [ ] Version metadata agrees across package files (`python scripts/set_release_version.py --check`; also enforced by the `version-metadata` CI job).

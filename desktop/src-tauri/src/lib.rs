@@ -102,6 +102,15 @@ pub fn run() {
         &std::env::args().collect::<Vec<_>>(),
     )));
 
+    let mut context = tauri::generate_context!();
+    // Keep WebView cookies and localStorage (including appearance) with a
+    // portable copy instead of sharing the installed application's profile.
+    if cfg!(target_os = "windows") && commands::is_portable_mode() {
+        for window in &mut context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
+
     tauri::Builder::default()
         .manage(LauncherState::default())
         .manage(mcp::McpServerManager::default())
@@ -337,11 +346,25 @@ pub fn run() {
             commands::cancel_java_runtime,
             commands::open_instance_folder,
             commands::open_data_folder,
+            commands::is_portable_mode,
             commands::reveal_path,
             commands::restart_app,
             commands::open_external_url,
         ])
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if commands::is_portable_mode() {
+                let webview_data = agora_core::app_paths::AppPaths::platform_default()
+                    .root()
+                    .join("webview");
+                let webview_data = std::path::absolute(webview_data)?;
+                std::fs::create_dir_all(&webview_data)?;
+                for window in &app.config().app.windows {
+                    tauri::WebviewWindowBuilder::from_config(app, window)?
+                        .data_directory(webview_data.clone())
+                        .build()?;
+                }
+            }
             if let Err(error) = crate::paths::migrate_legacy_data_dir(app.handle()) {
                 eprintln!("Failed to migrate legacy Agora data directory: {error}");
             }
@@ -484,6 +507,6 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
