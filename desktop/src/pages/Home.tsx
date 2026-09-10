@@ -306,48 +306,50 @@ export function Home({
 
       <GuideCard onOpenGuide={() => onNavigateTab('guide')} />
 
-      {/* Community */}
-      <section className="rounded-xl border border-border bg-card p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <MessagesSquare className="h-5 w-5 text-[#5865F2]" aria-hidden="true" />
-          <h3 className="text-lg font-semibold">Get help from the community</h3>
-        </div>
-        <p className="text-sm leading-6 text-muted-foreground mb-4">
-          Stuck on a crash, hunting for a mod, or want to help curate the
-          catalog? The Discord is where Agora players and curators hang
-          out. Crash Doctor can copy a ready-to-share report for you —
-          paths and usernames removed.
-        </p>
-        <a
-          href={agoraDiscordUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 rounded-lg bg-[#5865F2] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#4752c4]"
-        >
-          <MessagesSquare className="h-4 w-4" aria-hidden="true" />
-          Join the Discord
-        </a>
-      </section>
+      <div className="grid gap-4 md:grid-cols-2">
+        {/* Community */}
+        <section className="flex h-full flex-col rounded-xl border border-border bg-card p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <MessagesSquare className="h-5 w-5 text-[#5865F2]" aria-hidden="true" />
+            <h3 className="text-lg font-semibold">Get help from the community</h3>
+          </div>
+          <p className="text-sm leading-6 text-muted-foreground mb-4">
+            Stuck on a crash, hunting for a mod, or want to help curate the
+            catalog? The Discord is where Agora players and curators hang
+            out. Crash Doctor can copy a ready-to-share report for you —
+            paths and usernames removed.
+          </p>
+          <a
+            href={agoraDiscordUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-auto inline-flex w-fit items-center gap-2 rounded-lg bg-[#5865F2] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#4752c4]"
+          >
+            <MessagesSquare className="h-4 w-4" aria-hidden="true" />
+            Join the Discord
+          </a>
+        </section>
 
-      {/* Support Agora */}
-      <section className="rounded-xl border border-pink-500/100 bg-pink-500/50 p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
-          <h3 className="text-lg font-semibold">Support Agora’s future</h3>
-        </div>
-        <p className="text-sm leading-6 text-muted-foreground mb-4">
-          Agora is free, open source, and ad-free — built by a solo developer who loves the Minecraft community. If Agora has made modding easier or more enjoyable for you, please consider sponsoring its development. Your donation keeps Agora improving and helps fund awesome new projects for the community. Every contribution means a lot — thank you!
-        </p>
-        <a
-          href={agoraSponsorsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 rounded-lg bg-pink-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-pink-700"
-        >
-          <HeartHandshake className="h-4 w-4" aria-hidden="true" />
-          Sponsor on GitHub
-        </a>
-      </section>
+        {/* Support Agora */}
+        <section className="flex h-full flex-col rounded-xl border border-pink-500/100 bg-pink-500/50 p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <HeartHandshake className="h-5 w-5 text-pink-600 dark:text-pink-400" aria-hidden="true" />
+            <h3 className="text-lg font-semibold">Support Agora’s future</h3>
+          </div>
+          <p className="text-sm leading-6 text-muted-foreground mb-4">
+            Agora is free, open source, and ad-free — built by a solo developer who loves the Minecraft community. If Agora has made modding easier or more enjoyable for you, please consider sponsoring its development. Your donation keeps Agora improving and helps fund awesome new projects for the community. Every contribution means a lot — thank you!
+          </p>
+          <a
+            href={agoraSponsorsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-auto inline-flex w-fit items-center gap-2 rounded-lg bg-pink-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-pink-700"
+          >
+            <HeartHandshake className="h-4 w-4" aria-hidden="true" />
+            Sponsor on GitHub
+          </a>
+        </section>
+      </div>
 
 
 
