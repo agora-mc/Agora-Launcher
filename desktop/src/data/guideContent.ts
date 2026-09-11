@@ -286,7 +286,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Creating and managing instances',
     shortTitle: 'Instances',
     category: 'Play',
-    description: 'Create isolated setups, edit their content, lock stable builds, and manage their lifecycle.',
+    description: 'Create isolated instances, edit their content, lock the stable ones, and manage their lifecycle.',
     keywords: ['instance', 'create', 'import', 'prism', 'curseforge', 'modrinth', 'edit', 'delete', 'lock', 'memory'],
     basic: {
       summary: 'An instance is a self-contained Minecraft setup. Separate instances let you keep different game versions, mod loaders, packs, and play styles without mixing their files.',
@@ -327,11 +327,11 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           },
         },
         {
-          title: 'Lock a stable setup',
-          body: 'Locking prevents content changes while still allowing launch. Use it after a pack or personal setup is working well. Unlock only when you intend to install, remove, enable, disable, or update content.',
+          title: 'Lock a stable instance',
+          body: 'Locking prevents content changes while still allowing launch. Use it after a modpack or a personal instance is working well. Unlock only when you intend to install, remove, enable, disable, or update content.',
         },
         {
-          title: 'Reuse a setup with templates',
+          title: 'Reuse instance settings with templates',
           body: 'Once an instance is set up the way you like, save it as a template: the memory and Java arguments, plus whichever configuration files you choose to include. Applying it to a new instance saves redoing the same work, and named Java profiles let you keep several memory setups without editing arguments each time.',
           callout: {
             tone: 'note',
@@ -469,7 +469,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Install from a detail page',
-          body: 'Select Install to Instance, choose the target, select a compatible project version, and review the plan. Packs use Create Instance from Pack because they define a complete starting setup.',
+          body: 'Select Install to Instance, choose the target, select a compatible project version, and review the plan. Packs use Create Instance from Pack because they define a complete starting instance.',
           steps: [
             'Confirm the target instance, Minecraft version, and loader.',
             'Choose an exact-compatible file when available.',
@@ -769,7 +769,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       outcomes: [
         'Open an automatic or pasted-log investigation.',
         'Test a ranked suspect without losing the starting state.',
-        'Restore a known-good setup when investigation is not the priority.',
+        'Restore a known-good instance when investigation is not the priority.',
       ],
       sections: [
         {
@@ -852,7 +852,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Create a snapshot',
-          body: 'Open an instance, select Snapshots, enter a useful label, and create the snapshot before a risky change. Include the reason in the label, such as Before 1.21.2 update or Stable server setup.',
+          body: 'Open an instance, select Snapshots, enter a useful label, and create the snapshot before a risky change. Include the reason in the label, such as Before 1.21.2 update or Stable server instance.',
         },
         {
           title: 'Compare and restore',
@@ -911,14 +911,14 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Packs, import, export, and reproduction',
     shortTitle: 'Packs & sharing',
     category: 'Manage',
-    description: 'Move complete setups between machines and verify that another instance matches.',
+    description: 'Move complete instances between machines and verify that another instance matches.',
     keywords: ['pack', 'mrpack', 'import', 'export', 'lockfile', 'clone', 'repair'],
     basic: {
-      summary: 'Packs are the easiest way to distribute a coordinated setup. Agora supports Modrinth packs and its native pack format, while reproduction lockfiles focus on proving exact file state.',
+      summary: 'Packs are the easiest way to distribute a coordinated instance. Agora supports Modrinth packs and its native pack format, while reproduction lockfiles focus on proving exact file state.',
       outcomes: [
         'Import a supported pack into a new instance.',
         'Choose the right export format.',
-        'Share a setup without assuming snapshots travel with it.',
+        'Share an instance without assuming snapshots travel with it.',
       ],
       sections: [
         {
@@ -953,7 +953,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Share responsibly',
-          body: 'Tell recipients which Minecraft and loader versions the setup targets. Do not assume private saves, server lists, account details, or all configuration are included. Confirm that every bundled project license permits redistribution.',
+          body: 'Tell recipients which Minecraft and loader versions the modpack targets. Do not assume private saves, server lists, account details, or all configuration are included. Confirm that every bundled project license permits redistribution.',
           callout: {
             tone: 'warning',
             title: 'Test the export',
@@ -1022,7 +1022,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           callout: {
             tone: 'tip',
             title: 'Start with the pack recommendation',
-            text: 'Small setups often need much less memory than large content packs. Change one step at a time and observe actual behavior.',
+            text: 'Small instances often need much less memory than large modpacks. Change one step at a time and observe actual behavior.',
           },
         },
         {

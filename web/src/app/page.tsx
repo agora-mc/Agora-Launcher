@@ -66,7 +66,7 @@ export default async function HomePage() {
           <div className="max-w-2xl">
             <h2 className="rule-gold text-2xl font-bold text-ink">More than a launcher</h2>
             <p className="mt-4 leading-8 text-ink-muted">
-              Agora keeps Minecraft setups isolated, resolves dependency-aware install plans,
+              Agora keeps Minecraft instances isolated, resolves dependency-aware install plans,
               checks health before launch, recommends compatible loader versions, and creates
               recovery points before risky changes.
             </p>

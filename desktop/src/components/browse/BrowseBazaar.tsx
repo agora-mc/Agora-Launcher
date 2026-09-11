@@ -17,12 +17,21 @@
  *    pre-flight does;
  *  - "Show me more like this" (dSimilar) and the toast.
  *
- * Adding an item does NOT open a side channel — it goes through the parent's
- * reviewed install flow (`onAdd`). "Put it in my bag" is staged locally for
- * the shelf ordering / gacha exclusion only, exactly as the plan requires.
+ * Adding an item does NOT open a side channel. "Put it in my bag" only stages
+ * the pick locally (shelf ordering / gacha exclusion); installing it means
+ * opening the bag and handing the whole thing to the parent's reviewed batch
+ * install flow (`onInstallBag`), which is the same pipeline as the standard
+ * selection bar. Nothing here installs anything by itself.
+ *
+ * Every overlay this component draws (the quick look, the bag, the toast) is
+ * portalled to `document.body`. They are `position: fixed`, and when ambience
+ * is on `main` carries a `backdrop-filter` — which makes it the containing
+ * block for fixed descendants, so rendering them in place pinned them to the
+ * top of the scrolled page instead of the middle of the screen.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getSetting } from '../../lib/tauri';
 import {
   STALL_ICONS,
@@ -30,6 +39,8 @@ import {
   VIBES,
   VIBE_LABEL,
   categoryTags,
+  bagItems,
+  clearBag,
   crank,
   fitFor,
   gachaMachineArt,
@@ -65,8 +76,6 @@ export interface BrowseBazaarProps {
   instanceVersion: string | null;
   /** Items already installed in the target instance. */
   ownedIds: Set<string>;
-  /** Opens the reviewed install path (the Standard ModDetail flow). */
-  onAdd: (item: BazaarItem) => void;
   /** Opens the full mod details page (Standard ModDetail) — the tile's
    * "View details" button routes here instead of the in-bazaar modal. */
   onOpenMod: (item: BazaarItem) => void;
@@ -121,6 +130,9 @@ function blip(f: number, dur = 0.12, type: OscillatorType = 'triangle', vol = 0.
     // never let sound break the bazaar
   }
 }
+/** Stall label by content type, for telling the user where a bagged pick lives. */
+const STALL_LABEL: Record<string, string> = Object.fromEntries(STALLS.map((st) => [st.id, st.label]));
+
 function fanfare(): void { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => blip(f, 0.18), i * 80)); }
 
 /** A critter-art tile (fallback when the real icon_url is missing). */
@@ -185,7 +197,11 @@ function ItemTile({
         ) : (
           <CritterArt name={item.name} size={88} />
         )}
-        {owned ? <span className="bazaar-inbag" aria-label="Already in your bag">🎒</span> : null}
+        {state.staged[item.id]
+          ? <span className="bazaar-inbag" aria-label="In your bag">🎒</span>
+          : state.owned[item.id]
+            ? <span className="bazaar-inbag installed" aria-label="Already installed">✅</span>
+            : null}
       </button>
       <button type="button" className="bazaar-tile-name" onClick={() => onPeek(item)}>{item.name}</button>
       <span className="bazaar-tile-by">{item.author ? `by ${item.author}` : ''}</span>
@@ -194,9 +210,9 @@ function ItemTile({
       </span>
       <span className={`bazaar-fit ${fit === false ? 'bad' : fit === true ? 'ok' : ''}`}>
         {fit === false
-          ? '⚠️ Needs a different game version'
+          ? '⚠️ Needs a different Minecraft version'
           : fit === true
-            ? '✅ Fits your world'
+            ? '✅ Fits this instance'
             : 'Choose an instance to check the fit'}
       </span>
       {/* Hearts, NOT thumbs.
@@ -340,7 +356,7 @@ function GachaMachine({ state, pool, onPick }: { state: BazaarState; pool: Bazaa
   );
 }
 
-export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMod, onExit, hasMore = false, loadMoreLoading = false, onLoadMore, onInstallBag, stall: stallProp, onStallChange, initialSettledOrder, onSettledOrderChange }: BrowseBazaarProps) {
+export function BrowseBazaar({ items, instanceVersion, ownedIds, onOpenMod, onExit, hasMore = false, loadMoreLoading = false, onLoadMore, onInstallBag, stall: stallProp, onStallChange, initialSettledOrder, onSettledOrderChange }: BrowseBazaarProps) {
   const [state, setState] = useState<BazaarState>(() => {
     const loaded = loadBazaarState();
     return { ...loaded, owned: Object.fromEntries(Array.from(ownedIds).map((id) => [id, true])) };
@@ -349,7 +365,9 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
   const stall = stallProp ?? stallLocal;
   const setStall = (id: string) => { setStallLocal(id); onStallChange?.(id); };
   const [open, setOpen] = useState<BazaarItem | null>(null);
+  const [bagOpen, setBagOpen] = useState(false);
   const detailRef = useRef<HTMLDivElement>(null);
+  const bagRef = useRef<HTMLDivElement>(null);
 
   // The detail modal owns controller input while it is up, so Cancel closes it
   // rather than falling through to whatever is behind the scrim.
@@ -357,6 +375,11 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
     active: open !== null,
     rootRef: detailRef,
     onCancel: () => setOpen(null),
+  });
+  useControllerLayer({
+    active: bagOpen,
+    rootRef: bagRef,
+    onCancel: () => setBagOpen(false),
   });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -382,11 +405,21 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
     settledOrderRef.current = shelf.map((item) => item.id);
     onSettledOrderChange?.(settledOrderRef.current);
   }, [shelf, onSettledOrderChange]);
-  const bagCount = useMemo(() => Object.keys(state.owned).length + Object.keys(state.staged).length, [state]);
-  const stagedItems = useMemo(
-    () => items.filter((it) => state.staged[it.id]),
-    [items, state.staged],
-  );
+  // The bag is what you PICKED. It used to count the instance's existing
+  // contents too, which made the badge disagree with everything the bag could
+  // actually do with them (install, remove).
+  const bag = useMemo(() => bagItems(state), [state]);
+  const bagCount = bag.length;
+  // Installing goes through Browse's batch flow, which resolves items out of
+  // the currently loaded result set — so a pick made on another stall is in the
+  // bag but not installable until that stall is loaded again. Say so in the bag
+  // rather than silently dropping it from the batch.
+  const loadedIds = useMemo(() => new Set(items.map((it) => it.id)), [items]);
+  // `fitFor` answers three things, not two: `null` means "no basis to judge"
+  // (no instance chosen, or the item lists no versions), which is not the same
+  // as a fit and must not be reported as one.
+  const openFit = open ? fitFor(open, instanceVersion) : null;
+  const readyItems = useMemo(() => bag.filter((it) => loadedIds.has(it.id)), [bag, loadedIds]);
 
   // Infinite scroll: the shelf reuses the standard Browse load-more so the
   // Bazaar keeps filling past the first page (browse_search returns 20/page).
@@ -426,23 +459,38 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
     });
     showToast(`Added ${item.name} to your bag.`);
     fanfare();
-    onAdd(item);
-  }, [onAdd, showToast]);
+  }, [showToast]);
 
-  // The bag button IS the bulk-install button: it hands the staged items to
-  // the normal Browse batch install flow (same reviewed pipeline as the
-  // standard selection bar).
+  const handleRemove = useCallback((item: BazaarItem) => {
+    setState((cur) => unstageItem(cur, item.id));
+    showToast(`Took ${item.name} back out of your bag.`);
+    blip(300, 0.1);
+  }, [showToast]);
+
+  const handleEmptyBag = useCallback(() => {
+    setState((cur) => clearBag(cur));
+    showToast('Bag emptied.');
+    blip(260, 0.12);
+  }, [showToast]);
+
+  // Installing the bag hands the picks to the normal Browse batch install flow
+  // (same reviewed pipeline as the standard selection bar).
   const handleInstallBag = useCallback(() => {
-    if (!onInstallBag) {
-      showToast(stagedItems.length ? `In your bag: ${stagedItems.length} item${stagedItems.length === 1 ? '' : 's'}` : 'Your bag is empty. Go poke something.');
-      return;
-    }
-    if (stagedItems.length === 0) {
+    if (bag.length === 0) {
       showToast('Your bag is empty. Open something and put it in first.');
       return;
     }
-    onInstallBag(stagedItems);
-  }, [onInstallBag, stagedItems, showToast]);
+    if (readyItems.length === 0) {
+      showToast('Nothing in your bag belongs to this stall — open its stall to install it.');
+      return;
+    }
+    if (!onInstallBag) {
+      showToast(`In your bag: ${bag.length} item${bag.length === 1 ? '' : 's'}`);
+      return;
+    }
+    setBagOpen(false);
+    onInstallBag(readyItems);
+  }, [onInstallBag, bag, readyItems, showToast]);
 
   const handleSimilar = useCallback(() => {
     if (!open) return;
@@ -481,9 +529,9 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
             <button
               type="button"
               className="bazaar-pack"
-              title="Install everything you picked"
-              onClick={handleInstallBag}
-              data-testid="bazaar-install-bag"
+              title="See what you've picked"
+              onClick={() => { setBagOpen(true); blip(560, 0.09); }}
+              data-testid="bazaar-open-bag"
             >
               <span style={{ fontSize: 17 }}>🎒</span>
               <b>{bagCount}</b>
@@ -542,6 +590,11 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
         )}
       </div>
 
+      {/* Overlays live on <body>, not in here — see the note at the top of the
+          file: `main` becomes the containing block for fixed positioning as
+          soon as ambience puts a backdrop-filter on it. */}
+      {createPortal(
+        <>
       {/* detail modal */}
       {open && (
         <div
@@ -568,25 +621,44 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
                 {categoryTags(open).map((c) => <span key={c} className="bazaar-tag">{c}</span>)}
               </span>
             ) : null}
-            <span className={`bazaar-fit-line ${fitFor(open, instanceVersion) === false ? 'bad' : 'ok'}`}>
-              {fitFor(open, instanceVersion) === false
-                ? '⚠️ This one won’t fit your world as it is — it needs a different game version.'
-                : '✅ This fits your world. Nothing else needs changing.'}
+            <span className={`bazaar-fit-line ${openFit === false ? 'bad' : openFit === true ? 'ok' : 'unknown'}`}>
+              {openFit === false
+                ? '⚠️ This one won’t fit this instance as it is — it needs a different Minecraft version.'
+                : openFit === true
+                  ? '✅ This fits this instance. Nothing else needs changing.'
+                  : instanceVersion
+                    ? '❔ This one doesn’t list the Minecraft versions it supports, so the fit can’t be checked.'
+                    : '❔ Choose an instance to check the fit.'}
             </span>
             <div className="bazaar-detail-actions">
-              <button
-                type="button"
-                className="bazaar-add big"
-                disabled={isOwned(state, open.id)}
-                onClick={() => { handleAdd(open); setOpen(null); }}
-              >
-                {isOwned(state, open.id) ? 'In your bag' : 'Put it in my bag'}
-              </button>
-              {isOwned(state, open.id) && state.staged[open.id] ? (
-                <button type="button" className="bazaar-add ghost" onClick={() => { setState((cur) => unstageItem(cur, open.id)); setOpen(null); }}>
-                  Take it back out
+              {/* One button, two states. "In your bag" as a dead label was the
+                  only thing this offered for something already picked, so the
+                  pick could not be undone from the place it was made. Something
+                  already installed in the instance is a different thing and is
+                  not ours to take out of anywhere. */}
+              {state.owned[open.id] ? (
+                <button type="button" className="bazaar-add big" disabled data-testid="bazaar-detail-bag">
+                  Already in this instance
                 </button>
-              ) : null}
+              ) : state.staged[open.id] ? (
+                <button
+                  type="button"
+                  className="bazaar-add big remove"
+                  data-testid="bazaar-detail-bag"
+                  onClick={() => { handleRemove(open); setOpen(null); }}
+                >
+                  Remove from my bag
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="bazaar-add big"
+                  data-testid="bazaar-detail-bag"
+                  onClick={() => { handleAdd(open); setOpen(null); }}
+                >
+                  Put it in my bag
+                </button>
+              )}
               <button type="button" className="bazaar-add ghost" onClick={handleSimilar}>
                 Show me more like this
               </button>
@@ -604,6 +676,80 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
         </div>
       )}
 
+      {/* the bag itself — what you picked, and the way back out of it */}
+      {bagOpen && (
+        <div
+          className="bazaar-detail-scrim"
+          // controller-exempt: backdrop, not a control (same reasoning as the
+          // quick look's scrim above).
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setBagOpen(false);
+          }}
+        >
+          <div ref={bagRef} className="bazaar-detail bazaar-bag" role="dialog" aria-modal="true" aria-label="Your bag" data-testid="bazaar-bag">
+            <button type="button" className="bazaar-close" onClick={() => setBagOpen(false)} aria-label="Close">×</button>
+            <h4 className="bazaar-detail-name">🎒 Your bag</h4>
+            <p className="bazaar-detail-by">
+              {bag.length === 0
+                ? 'Empty. Poke something on the shelf and put it in.'
+                : `${bag.length} thing${bag.length === 1 ? '' : 's'} picked. Nothing is installed until you say so.`}
+            </p>
+            {bag.length > 0 ? (
+              <ul className="bazaar-bag-list">
+                {bag.map((it) => {
+                  const ready = loadedIds.has(it.id);
+                  const stallName = STALL_LABEL[it.contentType] ?? it.contentType;
+                  return (
+                    <li key={it.id} className="bazaar-bag-row">
+                      <span className="bazaar-bag-art">
+                        {it.iconUrl
+                          ? <img src={it.iconUrl} alt="" loading="lazy" />
+                          : <CritterArt name={it.name} size={40} />}
+                      </span>
+                      <span className="bazaar-bag-text">
+                        <b>{it.name}</b>
+                        <small className={ready ? '' : 'warn'}>
+                          {ready
+                            ? (it.author ? `by ${it.author}` : stallName)
+                            : `Open the ${stallName} stall to install this one`}
+                        </small>
+                      </span>
+                      <button
+                        type="button"
+                        className="bazaar-bag-remove"
+                        aria-label={`Remove ${it.name} from my bag`}
+                        onClick={() => handleRemove(it)}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+            <div className="bazaar-detail-actions">
+              <button
+                type="button"
+                className="bazaar-add big"
+                disabled={readyItems.length === 0}
+                onClick={handleInstallBag}
+                data-testid="bazaar-install-bag"
+              >
+                {readyItems.length === bag.length
+                  ? `Install everything (${bag.length})`
+                  : `Install ${readyItems.length} of ${bag.length}`}
+              </button>
+              <button type="button" className="bazaar-add ghost" disabled={bag.length === 0} onClick={handleEmptyBag}>
+                Empty the bag
+              </button>
+              <button type="button" className="bazaar-add ghost" onClick={() => setBagOpen(false)}>
+                Keep looking
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* toast */}
       <div className={`bazaar-toast ${toast ? 'show' : ''}`} role="status" data-testid="bazaar-toast">
         {toast}
@@ -612,6 +758,9 @@ export function BrowseBazaar({ items, instanceVersion, ownedIds, onAdd, onOpenMo
       <div aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}>
         {toast ?? ''}
       </div>
+        </>,
+        document.body,
+      )}
     </div>
   );
 }

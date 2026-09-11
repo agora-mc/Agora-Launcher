@@ -266,7 +266,7 @@
 }
 
 .ws-say.good { background: hsl(120 60% 48% / 0.12); border-color: hsl(120 60% 48% / 0.36); }
-.ws-say.bad { background: hsl(var(--we-danger, 8 90% 60%) / 0.12); border-color: hsl(8 90% 60% / 0.36); }
+.ws-say.bad { background: hsl(var(--inst-danger, 8 90% 60%) / 0.12); border-color: hsl(8 90% 60% / 0.36); }
 
 .ws-btn {
   font: inherit;

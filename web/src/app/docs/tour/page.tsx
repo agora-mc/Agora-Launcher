@@ -21,7 +21,7 @@ const SHOTS = [
     src: '/screenshots/create-instance.png',
     alt: 'Create Custom Instance dialog showing Minecraft, loader, loader version, and memory controls.',
     title: 'Creating an instance',
-    body: 'An instance is one isolated Minecraft setup with its own version, mod loader, mods, and memory. Keeping setups separate is what stops one experiment from breaking another.',
+    body: 'An instance is one isolated Minecraft setup with its own version, mod loader, mods, and memory. Keeping instances separate is what stops one experiment from breaking another.',
     caption: 'Agora 0.1.0, captured 2026-08-05 with synthetic data.',
     href: '/docs/guides/instances',
     hrefLabel: 'Instances guide',

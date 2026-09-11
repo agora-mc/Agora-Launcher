@@ -62,6 +62,16 @@ export interface BazaarState {
   owned: Record<string, boolean>;
   /** Staged this session ("put it in my bag") — same treatment as owned. */
   staged: Record<string, boolean>;
+  /**
+   * A snapshot of every staged item, keyed by id.
+   *
+   * The bag has to outlive the shelf that filled it: changing stalls refetches
+   * Browse with a different content type, so an item staged from the Mods stall
+   * is simply not in `items` any more once you wander over to Shaders. Without
+   * a snapshot the bag would appear to empty itself, and nothing in it could be
+   * listed or removed.
+   */
+  bag: Record<string, BazaarItem>;
 }
 
 export function initialBazaarState(): BazaarState {
@@ -70,6 +80,7 @@ export function initialBazaarState(): BazaarState {
     votes: {},
     owned: {},
     staged: {},
+    bag: {},
   };
 }
 
@@ -142,14 +153,48 @@ export function vote(state: BazaarState, item: BazaarItem, direction: VoteDirect
 /** Mark an item staged ("put it in my bag" → the reviewed install flow). */
 export function stageItem(state: BazaarState, item: BazaarItem): BazaarState {
   if (isOwned(state, item.id)) return state;
-  return { ...state, staged: { ...state.staged, [item.id]: true } };
+  return {
+    ...state,
+    staged: { ...state.staged, [item.id]: true },
+    bag: { ...state.bag, [item.id]: item },
+  };
 }
 
 export function unstageItem(state: BazaarState, id: string): BazaarState {
   if (!state.staged[id]) return state;
   const staged = { ...state.staged };
   delete staged[id];
-  return { ...state, staged };
+  const bag = { ...(state.bag ?? {}) };
+  delete bag[id];
+  return { ...state, staged, bag };
+}
+
+/** Tip the whole bag out (the staged picks only — installed items are not ours
+ * to drop). */
+export function clearBag(state: BazaarState): BazaarState {
+  if (Object.keys(state.staged).length === 0) return state;
+  return { ...state, staged: {}, bag: {} };
+}
+
+/**
+ * What is in the bag, in the order it was put there.
+ *
+ * `staged` is the membership set the shelf and the gacha ask about; this is the
+ * same set with the item data attached, which is what the bag view needs. A bag
+ * written before snapshots existed still lists (and can be emptied), it just has
+ * nothing but the id to show.
+ */
+export function bagItems(state: BazaarState): BazaarItem[] {
+  return Object.keys(state.staged).map((id) => state.bag?.[id] ?? {
+    id,
+    name: id,
+    iconUrl: null,
+    description: null,
+    contentType: 'mod',
+    author: null,
+    categories: [],
+    supportedVersions: [],
+  });
 }
 
 /** The vibe whose current taste is strongest (for the "Looks like you're
@@ -374,6 +419,7 @@ export function loadBazaarState(): BazaarState {
       votes: parsed.votes ?? {},
       owned: parsed.owned ?? {},
       staged: parsed.staged ?? {},
+      bag: parsed.bag ?? {},
     };
   } catch {
     return initialBazaarState();

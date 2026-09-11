@@ -250,8 +250,8 @@ function liveSubarea(file) {
       '/live/intentController.ts',
       // The High Interaction instance view: presentation only, emits
       // VisualIntent via the host, no tauri.
-      '/live/WorldEditor.tsx',
-      '/live/worldEditorData.ts',
+      '/live/LiveInstanceEditor.tsx',
+      '/live/liveInstanceEditorData.ts',
       // Persisted interaction achievements (pure localStorage, no tauri).
       '/live/interactionAchievements.ts',
     ];

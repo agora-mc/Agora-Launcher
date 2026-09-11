@@ -52,7 +52,7 @@ export function err<T>(): Fragment<T> {
 }
 
 /**
- * The reads that PAINT the world: instance identity and process state.
+ * The reads that PAINT the instance: identity and process state.
  *
  * Both are cheap (a local-state row plus the manifest, and the in-memory
  * launch record), which is what makes a first paint possible before the
@@ -64,7 +64,7 @@ export interface EssentialReads {
 }
 
 /**
- * The reads that ENRICH an already-painted world.
+ * The reads that ENRICH an already-painted instance.
  *
  * These are the expensive ones — a full health scan, crash-evidence triage,
  * jar dependency parsing, Java discovery — and none of them are needed to
@@ -91,7 +91,7 @@ async function safe<T>(run: () => Promise<T>): Promise<Fragment<T>> {
   }
 }
 
-/** Instance identity and process state — enough to paint the world. */
+/** Instance identity and process state — enough to paint the instance. */
 export async function readEssentialData(instanceId: string): Promise<EssentialReads> {
   const [detail, sessions] = await Promise.all([
     safe(() => getInstanceDetail(instanceId)),
@@ -106,7 +106,7 @@ export async function readEssentialData(instanceId: string): Promise<EssentialRe
   return { detail, running };
 }
 
-/** The expensive reads that enrich an already-painted world. */
+/** The expensive reads that enrich an already-painted instance. */
 export async function readEnrichmentData(instanceId: string): Promise<EnrichmentReads> {
   const [health, snapshots, investigation, memory, javas, dependencies] = await Promise.all([
     safe(() => checkInstanceHealth(instanceId)),

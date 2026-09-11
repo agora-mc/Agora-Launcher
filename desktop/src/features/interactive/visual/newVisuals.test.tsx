@@ -307,12 +307,12 @@ describe('TERRA-6 shared-visual fixes', () => {
     expect(screen.getByText('Not verified')).toBeInTheDocument();
 
     rerender(<InstanceBench instance={bench('incompatible')} {...props} />);
-    expect(screen.getByText('Does not fit this setup')).toBeInTheDocument();
+    expect(screen.getByText('Does not fit this instance')).toBeInTheDocument();
 
     rerender(<InstanceBench instance={bench('indeterminate')} {...props} />);
     expect(screen.getByText(/Needs review/)).toBeInTheDocument();
 
     rerender(<InstanceBench instance={bench('compatible')} {...props} />);
-    expect(screen.getByText('Fits this setup')).toBeInTheDocument();
+    expect(screen.getByText('Fits this instance')).toBeInTheDocument();
   });
 });

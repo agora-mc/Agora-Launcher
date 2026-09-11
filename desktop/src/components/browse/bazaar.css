@@ -363,6 +363,12 @@
 .bazaar-add:disabled { opacity: 0.55; cursor: default; }
 .bazaar-add.big { font-size: calc(13px * var(--font-scale)); padding: 10px 16px; border-radius: var(--radius); width: 100%; margin-left: 0; }
 .bazaar-add.ghost { background: transparent; color: hsl(var(--muted-foreground)); margin-left: 0; }
+.bazaar-add.remove {
+  background: hsl(var(--destructive) / 0.12);
+  border-color: hsl(var(--destructive) / 0.45);
+  color: hsl(var(--destructive));
+}
+.bazaar-add.remove:hover:not(:disabled) { background: hsl(var(--destructive) / 0.2); border-color: hsl(var(--destructive)); }
 
 /* detail */
 .bazaar-detail-scrim {
@@ -411,10 +417,14 @@
   padding: 10px 12px;
   border-radius: var(--radius);
   font-size: calc(13.5px * var(--font-scale));
-  background: hsl(120 60% 48% / 0.12);
-  border: 1px solid hsl(120 60% 48% / 0.35);
+  /* The colour is carried by the state class, not the base rule: an unknown
+     fit must not inherit the green one. */
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.4);
 }
+.bazaar-fit-line.ok { background: hsl(120 60% 48% / 0.12); border-color: hsl(120 60% 48% / 0.35); }
 .bazaar-fit-line.bad { background: hsl(var(--destructive) / 0.12); border-color: hsl(var(--destructive) / 0.38); }
+.bazaar-fit-line.unknown { color: hsl(var(--muted-foreground)); }
 
 .bazaar-close {
   position: absolute;
@@ -431,13 +441,72 @@
 
 .bazaar-detail-actions { display: flex; gap: 9px; margin-top: 14px; flex-wrap: wrap; }
 
+/* ── the bag ── */
+.bazaar-bag-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.bazaar-bag-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--muted) / 0.35);
+}
+
+.bazaar-bag-art {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: calc(var(--radius) * 0.7);
+  overflow: hidden;
+  background: hsl(var(--muted) / 0.6);
+  display: grid;
+  place-items: center;
+}
+.bazaar-bag-art img { width: 100%; height: 100%; object-fit: cover; }
+
+.bazaar-bag-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.bazaar-bag-text b { font-size: calc(14px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bazaar-bag-text small { color: hsl(var(--muted-foreground)); font-size: calc(12px * var(--font-scale)); }
+.bazaar-bag-text small.warn { color: hsl(var(--destructive)); }
+
+.bazaar-bag-remove {
+  font: inherit;
+  font-size: calc(13px * var(--font-scale));
+  font-weight: 600;
+  flex: 0 0 auto;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  padding: 6px 13px;
+  cursor: pointer;
+  background: hsl(var(--card) / 0.85);
+  color: hsl(var(--foreground));
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.bazaar-bag-remove:hover {
+  border-color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.14);
+  color: hsl(var(--destructive));
+}
+
 /* toast */
 .bazaar-toast {
   position: fixed;
   left: 50%;
   bottom: 26px;
   transform: translate(-50%, 14px);
-  z-index: 70;
+  /* Above the scrim: the toast confirms what the quick look just did ("added
+     to your bag"), so it is unreadable behind the dialog's own backdrop. */
+  z-index: 90;
   background: hsl(var(--popover) / 0.94);
   border: 1px solid hsl(var(--border));
   border-radius: calc(var(--radius) * 1.17);

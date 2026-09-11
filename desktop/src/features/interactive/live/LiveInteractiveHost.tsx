@@ -78,7 +78,7 @@ export type LiveHostLoad = (
  * alone and streams the rest in — was effectively instant.
  *
  * Both phases start together, so the complete scene arrives no later than
- * before; the world is simply painted as soon as it CAN be. The partial scene
+ * before; the instance is simply painted as soon as it CAN be. The partial scene
  * is stamped `refreshing`, which is literally true and already means
  * non-executable everywhere (`freshness.isExecutable`), so nothing can be
  * driven from half-read data.

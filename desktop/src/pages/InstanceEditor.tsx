@@ -259,7 +259,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
 
   // Optional dependencies ("recommends" edges between installed mods — the
-  // standard-editor mirror of the high-interaction world's optional overlay).
+  // standard-editor mirror of the high-interaction instance editor's optional overlay).
   const [optionalEdges, setOptionalEdges] = useState<DependencyEdge[] | null>(null);
   const [optionalDepsOpen, setOptionalDepsOpen] = useState(false);
 
@@ -3145,7 +3145,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {/* Optional dependencies overlay — the standard-editor mirror of the
-          high-interaction world's optional panel. Every listed target is
+          high-interaction instance editor's optional panel. Every listed target is
           installed (the dependency graph only reports resolved pairs), so rows
           are informational. */}
       {optionalDepsOpen && (

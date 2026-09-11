@@ -344,7 +344,7 @@ export function healthToVisual(report: HealthReport): VisualHealthFinding[] {
       ...(warning.suggested_action ? { suggestedAction: warning.suggested_action } : {}),
       structuredKind: warning.loader_compatibility ? 'loader-compatibility' : 'content',
       // Approved seam (SOL-2 §20): a health warning reviews through the
-      // Standard reviewOnly HealthDialog. The WorldEditor finding row renders
+      // Standard reviewOnly HealthDialog. The LiveInstanceEditor finding row renders
       // a Review button for this intent (blockers with loader-compatibility
       // review through the loader chooser instead).
       reviewIntent: { kind: 'review-health' as const },
