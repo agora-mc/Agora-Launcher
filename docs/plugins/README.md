@@ -10,6 +10,7 @@ Build the desktop application, open **Settings → Services → Plugins**, and e
 - `diagnostics`: lists disabled mods in an instance and proposes enabling one. The instance's integration area shows findings and a repair review; no repair runs until the user approves it. Its launch reminder feeds into the normal launch flow.
 - `theme`: adds selectable Forest accents. Choose it in the Plugins page. Built-in appearance preferences remain stored and resume when the plugin is disabled.
 - `custom-dashboard`: an isolated HTML panel calls a declared command that reads instances and saves the count. This is the custom-view prototype, not a general webview hosting API.
+- `home-replacement`: offers to render Agora's home screen instead of adding a page. Installing it changes nothing until you choose it under **Who draws each screen**, and Agora's own screen comes back the moment you disable it.
 
 The same operations exist in the standalone CLI, which is usually faster while iterating:
 
@@ -24,7 +25,7 @@ agora plugin disable-all
 data-preserving removal default. The CLI and the desktop app drive the same core service, so
 they always agree about what is installed.
 
-Every folder contains `agora-plugin.json` at its root. A local ZIP must have that file at the archive root, not inside an extra enclosing folder. Load folders during development; ZIP installation copies files into Agora's package directory. Never distribute secrets in either format. Hosted downloads and verified publisher distribution are not implemented yet.
+Every folder contains `agora-plugin.json` at its root. A local ZIP must have that file at the archive root, not inside an extra enclosing folder. Load folders during development; ZIP installation copies files into Agora's package directory. Never distribute secrets in either format. For publishing updates from your own host, and what the signature on them does and does not prove, see [publishing.md](publishing.md).
 
 ## Manifest and runtime
 
@@ -60,9 +61,45 @@ Diagnostics return findings with title, severity, evidence and optional typed re
 
 Theme tokens accept six-digit hex colors. Supported tokens are background, foreground, surface, surface-foreground, primary, primary-foreground, accent, accent-foreground, border, muted, muted-foreground, and destructive. Unknown names and other color syntax are ignored by the renderer. Light and dark token maps apply only to the corresponding mode. Theme CSS never loads remote resources.
 
+## Replacing a built-in screen
+
+A plugin can offer to render one of Agora's own screens instead of adding a new one:
+
+```json
+"replacements": [
+  {
+    "id": "home",
+    "title": "Compact",
+    "description": "One dense list instead of cards.",
+    "surface": "home",
+    "view": { "kind": "host", "export": "home" }
+  }
+]
+```
+
+Declaring this does **not** take the screen over. It puts "Compact" on a list in Settings, and
+Agora's own screen renders until a user chooses yours. Two plugins offering the same surface is a
+list of two, not a race decided by install order, and the user can always go back. Write the
+`title` to say what your version *is* rather than repeating the surface name — it appears beside
+Agora's own entry.
+
+`surface` is a closed set, currently `home` alone. A surface joins it when the launcher can
+genuinely hand it over; naming one a plugin can declare but never render would be worse than not
+offering it. Adding a surface later is additive, so a manifest written today keeps working.
+
+Only `kind: "host"` may replace a surface. A replacement is the whole screen, and the host-rendered
+path is themed, accessible and controller-navigable by construction. Declare `onView:<id>` with the
+replacement's id so your plugin starts when the screen opens.
+
+Expect to be fallen back on. If your plugin is disabled, removed, or fails to start, Agora renders
+its own screen and tells the user why; the choice is remembered, so fixing the problem restores it.
+`examples/plugins/home-replacement/` is a working example, including how to handle an optional
+capability the user declined.
+
 ## Custom-view prototype
 
-Declare `view: { kind: "custom", html: "view.html" }`. Bundle into one UTF-8 HTML file of at most 512 KiB, with inline CSS/JavaScript and data-URL images/fonts. Relative and remote asset loading is deliberately unavailable in this prototype. The core only reads manifest-declared views inside the package.
+This adds a page or an instance panel; it cannot replace a built-in screen. Declare
+`view: { kind: "custom", html: "view.html" }`. Bundle into one UTF-8 HTML file of at most 512 KiB, with inline CSS/JavaScript and data-URL images/fonts. Relative and remote asset loading is deliberately unavailable in this prototype. The core only reads manifest-declared views inside the package.
 
 The frame has an opaque origin and `sandbox="allow-scripts"`. Its CSP disables network, child frames, objects, forms and base URLs. It cannot read parent DOM or Tauri IPC. Do not request additional sandbox permissions.
 
