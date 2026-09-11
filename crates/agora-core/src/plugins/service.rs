@@ -364,32 +364,38 @@ impl PluginService {
     // -- installing --------------------------------------------------------
 
     pub fn preview_package(&self, archive: &Path) -> LauncherResult<InstallPreview> {
-        let existing = self.existing_versions(archive_id(archive).as_ref());
-        install::preview_package(archive, existing.0.as_ref(), existing.1)
+        let existing = self.existing_install(archive_id(archive).as_ref());
+        install::preview_package(
+            archive,
+            existing.as_ref().map(ExistingRecord::as_ref).as_ref(),
+        )
     }
 
     pub fn preview_folder(&self, folder: &Path) -> LauncherResult<InstallPreview> {
         let manifest = install::read_folder_manifest(folder)?;
-        let existing = self.existing_versions(Some(&manifest.id));
-        install::preview_folder(folder, existing.0.as_ref(), existing.1)
+        let existing = self.existing_install(Some(&manifest.id));
+        install::preview_folder(
+            folder,
+            existing.as_ref().map(ExistingRecord::as_ref).as_ref(),
+        )
     }
 
-    fn existing_versions(
-        &self,
-        plugin_id: Option<&PluginId>,
-    ) -> (Option<semver::Version>, Option<u32>) {
-        let Some(plugin_id) = plugin_id else {
-            return (None, None);
-        };
-        let Ok(conn) = self.inner.conn() else {
-            return (None, None);
-        };
+    /// The live install under this id, or `None` if there is not one.
+    ///
+    /// A tombstone — uninstalled with its data kept — is deliberately `None`.
+    /// Keeping someone's settings across an uninstall is a convenience; it is
+    /// not a standing capability grant, so reinstalling asks again.
+    fn existing_install(&self, plugin_id: Option<&PluginId>) -> Option<ExistingRecord> {
+        let plugin_id = plugin_id?;
+        let conn = self.inner.conn().ok()?;
         match store::get(&conn, plugin_id) {
-            Ok(Some(record)) if !store::is_tombstone(&record) => (
-                Some(record.manifest.version.clone()),
-                Some(record.data_version),
-            ),
-            _ => (None, None),
+            Ok(Some(record)) if !store::is_tombstone(&record) => Some(ExistingRecord {
+                version: record.manifest.version.clone(),
+                data_version: record.data_version,
+                hosts: record.manifest.network.hosts.clone(),
+                granted: record.granted,
+            }),
+            _ => None,
         }
     }
 
@@ -405,7 +411,6 @@ impl PluginService {
         accept_capabilities: bool,
     ) -> LauncherResult<PluginSummary> {
         let (manifest, _, _) = install::read_package_manifest(archive)?;
-        self.guard_consent(&manifest, accept_capabilities)?;
 
         let destination =
             install::package_dir(&self.inner.ctx.paths.plugin_packages_root(), &manifest.id);
@@ -418,6 +423,14 @@ impl PluginService {
 
         let conn = self.inner.conn()?;
         let previous = store::get(&conn, &manifest.id)?;
+        let live = self.existing_install(Some(&manifest.id));
+        self.guard_consent(&manifest, live.as_ref(), accept_capabilities)?;
+
+        // Resolved before anything moves. `grant_for` rejects a manifest that
+        // requires a capability this build cannot provide, and discovering
+        // that *after* the swap would leave the new files in place with the
+        // old ones stranded in the rollback directory.
+        let granted = install::grant_for(&manifest)?;
 
         // Anything currently running must stop before its files move.
         let _ = self.deactivate(&manifest.id);
@@ -448,16 +461,36 @@ impl PluginService {
             return Err(error);
         }
 
-        let granted = install::grant_for(&manifest)?;
-        store::upsert(
+        // Updating something the user had switched off must not switch it back
+        // on. Only a first install defaults to enabled; a replacement inherits
+        // the state the user chose, and a reinstall over a tombstone is a
+        // first install again.
+        let enabled = match &previous {
+            Some(record) if !store::is_tombstone(record) => record.enabled,
+            _ => true,
+        };
+
+        if let Err(error) = store::upsert(
             &conn,
             &manifest,
             &granted,
             &PluginSource::Package,
             &destination,
-            true,
+            enabled,
             &now(&self.inner.ctx),
-        )?;
+        ) {
+            // The files are already swapped. Leaving them there would put the
+            // new version on disk under the old version's record — the install
+            // would look like it never happened while the code on disk had in
+            // fact changed.
+            if had_files {
+                let _ = std::fs::remove_dir_all(&destination);
+                install::restore_rollback(&rollback, &destination)?;
+            } else {
+                let _ = std::fs::remove_dir_all(&destination);
+            }
+            return Err(error);
+        }
         let _ = std::fs::remove_dir_all(&rollback);
 
         self.reload()?;
@@ -471,9 +504,11 @@ impl PluginService {
         accept_capabilities: bool,
     ) -> LauncherResult<PluginSummary> {
         let manifest = install::read_folder_manifest(folder)?;
-        self.guard_consent(&manifest, accept_capabilities)?;
 
         let conn = self.inner.conn()?;
+        let live = self.existing_install(Some(&manifest.id));
+        self.guard_consent(&manifest, live.as_ref(), accept_capabilities)?;
+
         if let Some(existing) = store::get(&conn, &manifest.id)? {
             if !store::is_tombstone(&existing) && !existing.source.is_development() {
                 return Err(LauncherError::Generic {
@@ -504,21 +539,46 @@ impl PluginService {
         self.summary(&manifest.id)
     }
 
+    /// Refuse an install that would grant more than the user has agreed to.
+    ///
+    /// `previous` is the grant already on record. Passing it is what makes a
+    /// replacement different from a first install: reinstalling the same
+    /// plugin with the same capabilities is not a new decision and should not
+    /// be re-asked, while an update that wants something further must be.
     fn guard_consent(
         &self,
         manifest: &agora_plugin_api::PluginManifest,
+        previous: Option<&ExistingRecord>,
         accepted: bool,
     ) -> LauncherResult<()> {
-        if install::requires_capability_consent(manifest) && !accepted {
-            return Err(LauncherError::Generic {
-                code: "ERR_PLUGIN_CONSENT_REQUIRED".into(),
-                message: format!(
-                    "`{}` asks for capabilities that have not been accepted",
-                    manifest.id
-                ),
-            });
+        let added = install::added_capabilities(previous.map(|p| &p.granted), manifest);
+        let hosts = install::added_hosts(previous.map(|p| p.hosts.as_slice()), manifest);
+        if (added.is_empty() && hosts.is_empty()) || accepted {
+            return Ok(());
         }
-        Ok(())
+        let mut wants = Vec::new();
+        if !added.is_empty() {
+            wants.push(added.join(", "));
+        }
+        if !hosts.is_empty() {
+            wants.push(format!("network access to {}", hosts.join(", ")));
+        }
+        let wants = wants.join("; and ");
+        let message = if previous.is_some() {
+            format!(
+                "`{}` now asks for {wants}, which was not granted before; installing it is a                  new decision",
+                manifest.id
+            )
+        } else {
+            format!(
+                "`{}` asks for {wants}, which has not been accepted",
+                manifest.id
+            )
+        };
+        Err(LauncherError::Generic {
+            code: "ERR_PLUGIN_CONSENT_REQUIRED".into(),
+            message,
+        })
     }
 
     pub fn set_enabled(&self, plugin_id: &PluginId, enabled: bool) -> LauncherResult<()> {
@@ -1358,6 +1418,25 @@ fn archive_id(archive: &Path) -> Option<PluginId> {
 }
 
 /// Capabilities a stored grant covers, for display.
+/// An install read out of the database, owned so the connection can be closed.
+struct ExistingRecord {
+    version: semver::Version,
+    data_version: u32,
+    hosts: Vec<String>,
+    granted: CapabilitySet,
+}
+
+impl ExistingRecord {
+    fn as_ref(&self) -> install::ExistingInstall<'_> {
+        install::ExistingInstall {
+            version: &self.version,
+            data_version: self.data_version,
+            granted: &self.granted,
+            hosts: &self.hosts,
+        }
+    }
+}
+
 pub fn granted_names(granted: &CapabilitySet) -> Vec<String> {
     granted.iter().map(|cap| cap.as_str().to_string()).collect()
 }

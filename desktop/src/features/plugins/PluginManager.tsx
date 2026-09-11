@@ -400,6 +400,13 @@ function InstallPrompt({
   onConfirm: () => void;
 }) {
   const blocked = preview.unsupportedCapabilities.length > 0;
+  // Coerced: an older backend that predates this field would otherwise put
+  // `undefined` where a list is expected, in a component whose whole job is
+  // telling the user what they are agreeing to.
+  const newlyRequested = Array.isArray(preview.addedCapabilities)
+    ? preview.addedCapabilities
+    : [];
+  const newHosts = Array.isArray(preview.addedHosts) ? preview.addedHosts : [];
 
   return (
     <div className="rounded-lg border border-border bg-muted/30 p-4">
@@ -426,6 +433,19 @@ function InstallPrompt({
         </p>
       ) : null}
 
+      {/*
+        On an update the full permission list is not the decision — the user
+        already agreed to most of it. Naming only what is new is what makes a
+        release that starts asking for more impossible to skim past.
+      */}
+      {preview.replacesVersion && (newlyRequested.length > 0 || newHosts.length > 0) ? (
+        <p className="mt-2 flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          This version asks for something it did not have before:{' '}
+          {[...newlyRequested, ...newHosts.map((host) => `contact ${host}`)].join(', ')}.
+        </p>
+      ) : null}
+
       {preview.requiredCapabilities.length > 0 ? (
         <div className="mt-3">
           <div className="text-sm font-medium">It needs permission to:</div>
@@ -440,9 +460,34 @@ function InstallPrompt({
             ))}
           </ul>
         </div>
-      ) : (
+      ) : null}
+
+      {/*
+        Optional capabilities are granted too — the plugin simply copes if they
+        are missing in some future build. Listing only the required ones told
+        the user "it asks for no permissions" while handing over the optional
+        ones, which is the one sentence this dialog must never get wrong.
+      */}
+      {preview.optionalCapabilities.length > 0 ? (
+        <div className="mt-3">
+          <div className="text-sm font-medium">It will also use, if allowed:</div>
+          <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
+            {preview.optionalCapabilities.map((capability) => (
+              <li key={capability.name}>
+                {capability.summary}
+                {capability.isMutating ? (
+                  <span className="ml-1 text-amber-600 dark:text-amber-400">(makes changes)</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {preview.requiredCapabilities.length === 0 &&
+      preview.optionalCapabilities.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">It asks for no permissions.</p>
-      )}
+      ) : null}
 
       {preview.manifest.network?.hosts?.length ? (
         <p className="mt-2 text-sm text-muted-foreground">

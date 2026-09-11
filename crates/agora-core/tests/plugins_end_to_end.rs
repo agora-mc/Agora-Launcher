@@ -947,6 +947,251 @@ fn a_package_install_lands_files_in_agoras_own_directory() {
 }
 
 // ---------------------------------------------------------------------------
+// An update cannot widen its own grant
+// ---------------------------------------------------------------------------
+
+/// Write `manifest` and the dashboard script into a package at `archive`.
+fn package_at(archive: &Path, manifest: &serde_json::Value) {
+    use std::io::Write;
+    let file = std::fs::File::create(archive).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("agora-plugin.json", options).unwrap();
+    zip.write_all(serde_json::to_string(manifest).unwrap().as_bytes())
+        .unwrap();
+    zip.start_file("main.js", options).unwrap();
+    zip.write_all(DASHBOARD_MAIN.as_bytes()).unwrap();
+    zip.finish().unwrap();
+}
+
+/// The reason grants are stored rather than re-read from the manifest. A
+/// plugin you allowed to *read* your instances must not be able to ship
+/// itself the ability to *change your mods* by publishing a new version.
+#[test]
+fn an_update_that_wants_more_than_was_granted_is_refused_without_fresh_consent() {
+    let world = world();
+
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["capabilities"] = serde_json::json!({
+        "required": ["instance:read", "content:write"]
+    });
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+
+    // The preview names the widening specifically, so the prompt can say what
+    // changed rather than re-listing everything.
+    let preview = world.service.preview_package(&update).unwrap();
+    assert_eq!(preview.replaces_version.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        preview.added_capabilities,
+        vec!["content:write".to_string()],
+        "only the new capability is a new decision"
+    );
+    assert!(preview.requires_capability_consent());
+
+    // `false` is an adapter that did not ask. It must not be treated as a yes.
+    let error = world.service.install_package(&update, false).unwrap_err();
+    assert!(
+        error.to_string().contains("content:write"),
+        "the refusal should name what it refused: {error}"
+    );
+
+    let record = world.service.list();
+    let installed = record
+        .iter()
+        .find(|p| p.id == "acme.dashboard")
+        .expect("still installed");
+    assert_eq!(
+        installed.version, "1.0.0",
+        "a refused update must not have replaced anything"
+    );
+
+    // With consent it goes through, and the wider grant is what gets stored.
+    world.service.install_package(&update, true).unwrap();
+    let record = world.service.list();
+    let installed = record.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert_eq!(installed.version, "2.0.0");
+}
+
+/// The other half: re-installing what is already granted is not a new
+/// decision, so an ordinary bugfix update does not nag.
+#[test]
+fn an_update_asking_for_no_more_than_before_needs_no_second_consent() {
+    let world = world();
+
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("1.0.1");
+    let update = world._dir.path().join("v101.zip");
+    package_at(&update, &second);
+
+    let preview = world.service.preview_package(&update).unwrap();
+    assert!(preview.added_capabilities.is_empty());
+    assert!(!preview.requires_capability_consent());
+
+    world.service.install_package(&update, false).unwrap();
+    let record = world.service.list();
+    let installed = record.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert_eq!(installed.version, "1.0.1");
+}
+
+/// A package that requires something this build has never heard of is refused
+/// *before* the files are swapped, so a bad update cannot leave the old plugin
+/// stranded in the rollback directory.
+#[test]
+fn a_package_requiring_an_unknown_capability_is_refused_before_anything_moves() {
+    let world = world();
+
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+
+    // The manifest on disk is what distinguishes the two versions, so it is
+    // what proves whether the swap happened.
+    let on_disk = world
+        .ctx
+        .paths
+        .plugin_packages_root()
+        .join("acme.dashboard")
+        .join("agora-plugin.json");
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["capabilities"] = serde_json::json!({ "required": ["instance:teleport"] });
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+
+    let error = world.service.install_package(&update, true).unwrap_err();
+    assert!(error.to_string().contains("instance:teleport"), "{error}");
+
+    let installed_manifest = std::fs::read_to_string(&on_disk).unwrap();
+    assert!(
+        installed_manifest.contains("1.0.0") && !installed_manifest.contains("2.0.0"),
+        "the refused version must not be the one sitting on disk: {installed_manifest}"
+    );
+    let record = world.service.list();
+    let installed = record.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert_eq!(installed.version, "1.0.0");
+}
+
+/// `network` is permission to reach a named list of hosts, not the internet.
+/// An update that keeps the capability and quietly appends a host has widened
+/// its reach, and has to ask.
+#[test]
+fn an_update_that_adds_a_network_host_needs_consent_even_though_the_capability_is_unchanged() {
+    let world = world();
+
+    let mut first = dashboard_manifest(serde_json::json!({
+        "required": ["instance:read", "network"]
+    }));
+    first["network"] = serde_json::json!({ "hosts": ["api.example.com"] });
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["network"] = serde_json::json!({ "hosts": ["api.example.com", "collect.example.net"] });
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+
+    let preview = world.service.preview_package(&update).unwrap();
+    assert!(
+        preview.added_capabilities.is_empty(),
+        "the capability list really is unchanged"
+    );
+    assert_eq!(preview.added_hosts, vec!["collect.example.net".to_string()]);
+    assert!(
+        preview.requires_capability_consent(),
+        "a wider reach is still a wider grant"
+    );
+
+    let error = world.service.install_package(&update, false).unwrap_err();
+    assert!(error.to_string().contains("collect.example.net"), "{error}");
+
+    let record = world.service.list();
+    let installed = record.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert_eq!(installed.version, "1.0.0");
+}
+
+/// Dropping a host is a narrowing, and narrowing is never a new decision.
+#[test]
+fn an_update_that_drops_a_network_host_does_not_ask_again() {
+    let world = world();
+
+    let mut first = dashboard_manifest(serde_json::json!({
+        "required": ["instance:read", "network"]
+    }));
+    first["network"] = serde_json::json!({ "hosts": ["a.example.com", "b.example.com"] });
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["network"] = serde_json::json!({ "hosts": ["a.example.com"] });
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+
+    let preview = world.service.preview_package(&update).unwrap();
+    assert!(preview.added_hosts.is_empty());
+    world.service.install_package(&update, false).unwrap();
+}
+
+/// Someone who switched a plugin off and then updated it has not asked for it
+/// back. Re-enabling it on their behalf would run code they had deliberately
+/// stopped running.
+#[test]
+fn updating_a_disabled_plugin_leaves_it_disabled() {
+    let world = world();
+
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+    world
+        .service
+        .set_enabled(&id("acme.dashboard"), false)
+        .unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+    world.service.install_package(&update, false).unwrap();
+
+    let record = world.service.list();
+    let installed = record.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert_eq!(installed.version, "2.0.0", "the update did land");
+    assert!(!installed.enabled, "but it must not have been switched on");
+    assert!(!installed.running);
+}
+
+/// A first install still defaults to enabled — otherwise installing something
+/// would appear to do nothing.
+#[test]
+fn a_first_install_is_enabled() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &manifest);
+    let summary = world.service.install_package(&archive, true).unwrap();
+    assert!(summary.enabled);
+}
+
+// ---------------------------------------------------------------------------
 // Activation events actually gate activation
 // ---------------------------------------------------------------------------
 

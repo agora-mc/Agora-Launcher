@@ -1078,8 +1078,20 @@ fn print_plugin_preview(
             preview.unsupported_capabilities.join(", ")
         );
     }
-    if !preview.requires_capability_consent() {
+    if preview.required_capabilities.is_empty() && preview.optional_capabilities.is_empty() {
         println!("Capabilities: none");
+    } else if preview.replaces_version.is_some() {
+        // On a replacement the whole list is not the decision; the difference
+        // is. Saying so is what lets someone approve a bugfix quickly and
+        // still notice the release that started asking for more.
+        if preview.added_capabilities.is_empty() {
+            println!("New capabilities: none beyond what is already granted");
+        } else {
+            println!(
+                "New capabilities not previously granted: {}",
+                preview.added_capabilities.join(", ")
+            );
+        }
     }
     Ok(())
 }

@@ -73,6 +73,14 @@ export interface InstallPreview {
   optionalCapabilities: CapabilityDescription[];
   unsupportedCapabilities: string[];
   replacesVersion: string | null;
+  /**
+   * Permissions this package wants that are not already granted. On a first
+   * install that is everything; on a replacement it is only what is new, which
+   * is the part the user is actually being asked about.
+   */
+  addedCapabilities: string[];
+  /** Hosts this package would reach that the installed version could not. */
+  addedHosts: string[];
   migratesData: boolean;
   fileCount: number;
   uncompressedBytes: number;

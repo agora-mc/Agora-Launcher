@@ -25,6 +25,11 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
   and a failed extraction leaves nothing behind.
 - Enable, disable, uninstall. Discarding plugin data is a **separate** question from removing
   the plugin, and a reinstall of the same id adopts the retained settings.
+- A grant is made once and compared afterwards. An update that asks for a capability — or for a
+  network host — the installed version did not have is refused until it is accepted again, and the
+  prompt names *what changed* rather than re-listing everything. An update that asks for the same
+  or less installs without asking again, and updating a plugin the user switched off leaves it
+  off.
 - Dependency resolution with version ranges, cycle detection, and a deterministic activation
   order. Unresolvability propagates up a chain rather than one level.
 - Pages, instance panels, palette and instance-context commands, declared settings, themes,

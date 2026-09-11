@@ -46,7 +46,7 @@ pub mod store;
 
 pub use dispatch::{MethodRequirement, NoopUiSink, PluginUiSink};
 pub use events::{EventSubscriptions, PluginEventBus};
-pub use install::{requires_capability_consent, CapabilityDescription, InstallPreview};
+pub use install::{added_capabilities, CapabilityDescription, ExistingInstall, InstallPreview};
 pub use registry::{NamespacedContribution, PluginStatus, Resolution};
 pub use service::{
     LaunchCheckOutcome, LaunchCheckResult, PluginService, PluginSettingsView, PluginSummary,

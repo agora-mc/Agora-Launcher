@@ -601,14 +601,19 @@ pub fn restore_latest_checkpoint(
     };
     let entries: Vec<StorageRow> = serde_json::from_str(&payload).map_err(db_error)?;
 
-    conn.execute(
+    // One transaction, because the first statement deletes everything the
+    // plugin currently has. Failing partway through an un-transacted restore
+    // would leave the user with neither their current settings nor the
+    // checkpoint they were trying to get back to.
+    let tx = conn.unchecked_transaction().map_err(db_error)?;
+    tx.execute(
         "DELETE FROM plugin_storage WHERE plugin_id = ?1",
         params![plugin_id.as_str()],
     )
     .map_err(db_error)?;
     for entry in &entries {
         let text = serde_json::to_string(&entry.value).map_err(db_error)?;
-        conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO plugin_storage
                  (plugin_id, kind, instance_id, key, value_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -622,5 +627,6 @@ pub fn restore_latest_checkpoint(
         )
         .map_err(db_error)?;
     }
+    tx.commit().map_err(db_error)?;
     Ok(Some(entries.len()))
 }

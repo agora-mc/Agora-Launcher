@@ -49,6 +49,26 @@ fn io_error(message: impl Into<String>) -> LauncherError {
     }
 }
 
+/// The install already on record for a plugin id, as the preview needs it.
+///
+/// Grouped rather than passed as three positional options because the three
+/// are only ever known together, and a caller that has none of them means
+/// something specific: nothing is installed under this id.
+#[derive(Debug, Clone, Copy)]
+pub struct ExistingInstall<'a> {
+    pub version: &'a semver::Version,
+    pub data_version: u32,
+    /// What the user actually granted, which may be narrower than what the
+    /// installed manifest asks for.
+    pub granted: &'a CapabilitySet,
+    /// The hosts the installed version was allowed to reach.
+    ///
+    /// Held separately from `granted` because the `network` capability and the
+    /// host list are two different agreements. Keeping the capability while
+    /// changing the list is still asking for something new.
+    pub hosts: &'a [String],
+}
+
 /// What the user is agreeing to when they install something.
 ///
 /// Produced by inspecting a package *without* installing it, so the manager
@@ -65,6 +85,20 @@ pub struct InstallPreview {
     pub unsupported_capabilities: Vec<String>,
     /// Set when a plugin with this id is already installed.
     pub replaces_version: Option<String>,
+    /// Capabilities this package asks for that are not already granted.
+    ///
+    /// On a first install that is everything it asks for. On a replacement it
+    /// is the *widening* — and it is the widening the user has to agree to,
+    /// because agreeing once to `instance:read` is not agreeing later to
+    /// `content:write`.
+    pub added_capabilities: Vec<String>,
+    /// Hosts this package would reach that the installed version could not.
+    ///
+    /// `network` is not permission to reach the internet, it is permission to
+    /// reach a named list. An update that keeps the capability and adds a host
+    /// to the list has widened its reach just as surely as one that asked for
+    /// a new capability, and is treated the same way.
+    pub added_hosts: Vec<String>,
     /// True when the upgrade changes the plugin's stored data shape.
     pub migrates_data: bool,
     pub file_count: usize,
@@ -77,7 +111,7 @@ impl InstallPreview {
     /// Kept on the core-owned preview so adapters do not duplicate the
     /// consent rule while deciding whether to show their own prompt.
     pub fn requires_capability_consent(&self) -> bool {
-        requires_capability_consent(&self.manifest)
+        !self.added_capabilities.is_empty() || !self.added_hosts.is_empty()
     }
 }
 
@@ -89,9 +123,47 @@ pub struct CapabilityDescription {
     pub is_mutating: bool,
 }
 
-/// Whether the manifest asks the user to grant any capabilities.
-pub fn requires_capability_consent(manifest: &PluginManifest) -> bool {
-    !manifest.capabilities.required.is_empty() || !manifest.capabilities.optional.is_empty()
+/// Hosts this manifest declares that the installed version did not.
+///
+/// Compared case-insensitively because hostnames are, and a list differing
+/// only in case is the same list.
+pub fn added_hosts(previous: Option<&[String]>, manifest: &PluginManifest) -> Vec<String> {
+    let known = previous.unwrap_or(&[]);
+    manifest
+        .network
+        .hosts
+        .iter()
+        .filter(|host| !known.iter().any(|seen| seen.eq_ignore_ascii_case(host)))
+        .cloned()
+        .collect()
+}
+
+/// Capabilities this manifest asks for beyond what is already granted.
+///
+/// `previous` is the grant on record for a plugin of the same id, and `None`
+/// means there is nothing on record — a first install, or a reinstall after an
+/// uninstall that kept the data. In that case everything it asks for is new,
+/// which is exactly right: an uninstall ends the grant even when the settings
+/// survive it.
+///
+/// Only supported capabilities appear here. One this build cannot provide is
+/// not something to ask the user about; it is reported separately and fails
+/// the install if it was required.
+pub fn added_capabilities(
+    previous: Option<&CapabilitySet>,
+    manifest: &PluginManifest,
+) -> Vec<String> {
+    match previous {
+        Some(granted) => widens_capabilities(granted, manifest),
+        None => manifest
+            .capabilities
+            .required
+            .iter()
+            .chain(manifest.capabilities.optional.iter())
+            .filter_map(|name| name.parse::<agora_plugin_api::Capability>().ok())
+            .map(|cap| cap.as_str().to_string())
+            .collect(),
+    }
 }
 
 fn describe(
@@ -232,14 +304,12 @@ pub fn read_package_manifest(archive: &Path) -> LauncherResult<(PluginManifest, 
 /// Describe what installing a package would do.
 pub fn preview_package(
     archive: &Path,
-    installed_version: Option<&semver::Version>,
-    installed_data_version: Option<u32>,
+    existing: Option<&ExistingInstall<'_>>,
 ) -> LauncherResult<InstallPreview> {
     let (manifest, file_count, uncompressed_bytes) = read_package_manifest(archive)?;
     Ok(build_preview(
         manifest,
-        installed_version,
-        installed_data_version,
+        existing,
         file_count,
         uncompressed_bytes,
     ))
@@ -248,33 +318,27 @@ pub fn preview_package(
 /// Describe what loading a development folder would do.
 pub fn preview_folder(
     folder: &Path,
-    installed_version: Option<&semver::Version>,
-    installed_data_version: Option<u32>,
+    existing: Option<&ExistingInstall<'_>>,
 ) -> LauncherResult<InstallPreview> {
     let manifest = read_folder_manifest(folder)?;
-    Ok(build_preview(
-        manifest,
-        installed_version,
-        installed_data_version,
-        0,
-        0,
-    ))
+    Ok(build_preview(manifest, existing, 0, 0))
 }
 
 fn build_preview(
     manifest: PluginManifest,
-    installed_version: Option<&semver::Version>,
-    installed_data_version: Option<u32>,
+    existing: Option<&ExistingInstall<'_>>,
     file_count: usize,
     uncompressed_bytes: u64,
 ) -> InstallPreview {
     let (required, optional, unsupported) = describe(&manifest.capabilities);
     InstallPreview {
-        replaces_version: installed_version.map(|v| v.to_string()),
+        replaces_version: existing.map(|current| current.version.to_string()),
+        added_capabilities: added_capabilities(existing.map(|current| current.granted), &manifest),
+        added_hosts: added_hosts(existing.map(|current| current.hosts), &manifest),
         // Only a *change* is a migration. A first install has nothing to
         // migrate, and a reinstall of the same data version does not either.
-        migrates_data: installed_data_version
-            .is_some_and(|existing| existing != manifest.data_version),
+        migrates_data: existing
+            .is_some_and(|current| current.data_version != manifest.data_version),
         required_capabilities: required,
         optional_capabilities: optional,
         unsupported_capabilities: unsupported,
@@ -726,7 +790,7 @@ mod tests {
     #[test]
     fn a_first_install_is_not_a_data_migration() {
         let manifest: PluginManifest = serde_json::from_str(&manifest_json("acme.one")).unwrap();
-        let preview = build_preview(manifest, None, None, 2, 100);
+        let preview = build_preview(manifest, None, 2, 100);
         assert!(!preview.migrates_data);
         assert!(preview.replaces_version.is_none());
     }
@@ -737,14 +801,97 @@ mod tests {
             serde_json::from_str(&manifest_json("acme.one")).unwrap();
         value["dataVersion"] = serde_json::json!(2);
         let manifest: PluginManifest = serde_json::from_value(value).unwrap();
+        let installed = semver::Version::new(1, 0, 0);
+        let granted = CapabilitySet::resolve(&CapabilityRequest::default()).unwrap();
         let preview = build_preview(
             manifest,
-            Some(&semver::Version::new(1, 0, 0)),
-            Some(1),
+            Some(&ExistingInstall {
+                version: &installed,
+                data_version: 1,
+                granted: &granted,
+                hosts: &[],
+            }),
             2,
             100,
         );
         assert!(preview.migrates_data);
         assert_eq!(preview.replaces_version.as_deref(), Some("1.0.0"));
+    }
+
+    /// The point of storing the grant: an update that wants more than the
+    /// user agreed to has to ask again, and one that wants the same or less
+    /// must not.
+    #[test]
+    fn only_a_widening_update_asks_for_consent_again() {
+        let granted = CapabilitySet::resolve(&CapabilityRequest {
+            required: vec!["instance:read".into()],
+            optional: vec![],
+        })
+        .unwrap();
+        let installed = semver::Version::new(1, 0, 0);
+        let existing = ExistingInstall {
+            version: &installed,
+            data_version: 1,
+            granted: &granted,
+            hosts: &[],
+        };
+
+        let same: PluginManifest = serde_json::from_value(serde_json::json!({
+            "manifest": 1,
+            "id": "acme.one",
+            "name": "One",
+            "version": "2.0.0",
+            "license": "MIT",
+            "apiRange": ">=0.1, <0.2",
+            "entrypoint": "main.js",
+            "capabilities": { "required": ["instance:read"] }
+        }))
+        .unwrap();
+        let preview = build_preview(same, Some(&existing), 2, 100);
+        assert!(
+            !preview.requires_capability_consent(),
+            "re-granting what is already granted is not a new decision"
+        );
+
+        let wider: PluginManifest = serde_json::from_value(serde_json::json!({
+            "manifest": 1,
+            "id": "acme.one",
+            "name": "One",
+            "version": "3.0.0",
+            "license": "MIT",
+            "apiRange": ">=0.1, <0.2",
+            "entrypoint": "main.js",
+            "capabilities": { "required": ["instance:read", "content:write"] }
+        }))
+        .unwrap();
+        let preview = build_preview(wider, Some(&existing), 2, 100);
+        assert_eq!(
+            preview.added_capabilities,
+            vec!["content:write".to_string()]
+        );
+        assert!(preview.requires_capability_consent());
+    }
+
+    /// A first install has no grant to compare against, so everything it asks
+    /// for is new.
+    #[test]
+    fn a_first_install_counts_every_requested_capability_as_added() {
+        let manifest: PluginManifest = serde_json::from_value(serde_json::json!({
+            "manifest": 1,
+            "id": "acme.one",
+            "name": "One",
+            "version": "1.0.0",
+            "license": "MIT",
+            "apiRange": ">=0.1, <0.2",
+            "entrypoint": "main.js",
+            "capabilities": { "required": ["instance:read"], "optional": ["content:read"] }
+        }))
+        .unwrap();
+        let preview = build_preview(manifest, None, 2, 100);
+        assert_eq!(
+            preview.added_capabilities,
+            vec!["instance:read".to_string(), "content:read".to_string()]
+        );
+        assert!(preview.requires_capability_consent());
     }
 }
