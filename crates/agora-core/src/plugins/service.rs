@@ -38,6 +38,13 @@ use std::time::Duration;
 /// Setting that turns the whole subsystem on. Off by default.
 pub const PLUGINS_ENABLED_SETTING: &str = "plugins_enabled";
 
+/// Whether Agora may check publishers for plugin updates on its own.
+///
+/// Distinct from `network_plugins_enabled`, which is whether a plugin's own
+/// code may reach the network. A user can reasonably want either without the
+/// other, and conflating them would mean refusing one refuses both.
+pub const PLUGIN_UPDATES_ENABLED_SETTING: &str = "plugin_updates_enabled";
+
 /// How long a view render or command may take.
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -638,6 +645,61 @@ impl PluginService {
             &verdict_summary(&verdict),
         )?;
         Ok(verdict)
+    }
+
+    /// Whether the user asked for update checks to happen on their own.
+    ///
+    /// Separate from [`PLUGINS_ENABLED_SETTING`] because they are different
+    /// questions: one is whether plugins run at all, the other is whether
+    /// Agora contacts a publisher without being asked. Off by default, like
+    /// everything else here that reaches the network.
+    pub fn automatic_updates_enabled(&self) -> bool {
+        self.inner
+            .conn()
+            .ok()
+            .and_then(|conn| {
+                crate::db::get_setting(&conn, PLUGIN_UPDATES_ENABLED_SETTING)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Check every plugin that has somewhere to check, if that was asked for.
+    ///
+    /// Returns an empty list — and contacts nothing — when the setting is off,
+    /// so the caller does not have to know the rule. That is deliberate: a
+    /// policy question answered in one place cannot be answered differently by
+    /// the GUI and the CLI.
+    ///
+    /// Best effort by design. A publisher being unreachable is not a launcher
+    /// failure, so the reason is recorded on the trust record for the manager
+    /// to show and nothing is raised at the user.
+    pub fn check_all_updates(&self) -> Vec<(String, Result<UpdateVerdict, String>)> {
+        if !self.automatic_updates_enabled() || !self.is_enabled() {
+            return Vec::new();
+        }
+        let Ok(conn) = self.inner.conn() else {
+            return Vec::new();
+        };
+        let candidates: Vec<PluginId> = self
+            .list()
+            .into_iter()
+            .filter(|plugin| !plugin.development && plugin.update_source.is_some())
+            .filter_map(|plugin| PluginId::parse(&plugin.id).ok())
+            .collect();
+        drop(conn);
+
+        candidates
+            .into_iter()
+            .map(|plugin_id| {
+                let outcome = self
+                    .check_update(&plugin_id)
+                    .map_err(|error| error.to_string());
+                (plugin_id.to_string(), outcome)
+            })
+            .collect()
     }
 
     /// Download and install the release [`Self::check_update`] offered.

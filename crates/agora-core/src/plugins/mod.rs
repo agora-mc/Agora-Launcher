@@ -55,6 +55,7 @@ pub use registry::{NamespacedContribution, PluginStatus, Resolution};
 pub use service::{
     LaunchCheckOutcome, LaunchCheckResult, PluginService, PluginSettingsView, PluginSummary,
     RepairConflict, RepairOutcome, UpdateCheckRecord, UpdateOutcome, PLUGINS_ENABLED_SETTING,
+    PLUGIN_UPDATES_ENABLED_SETTING,
 };
 pub use store::{PluginRecord, PluginSource, StorageKind};
 pub use updates::{PinnedTrust, UpdateVerdict};

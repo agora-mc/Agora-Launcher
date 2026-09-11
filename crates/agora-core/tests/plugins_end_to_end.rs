@@ -1536,6 +1536,64 @@ fn a_verified_update_asking_for_nothing_new_installs_and_leaves_no_download() {
     );
 }
 
+/// The automatic-check setting has to actually gate something. A toggle that
+/// changes no behaviour is worse than no toggle: it tells the user they have
+/// made a decision they have not made.
+#[test]
+fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &manifest, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+
+    // Default: off. Nothing is contacted, so this returns without reaching the
+    // network at all — which is also why this test is fast.
+    assert!(!world.service.automatic_updates_enabled());
+    assert!(
+        world.service.check_all_updates().is_empty(),
+        "with the setting off, nothing should be checked"
+    );
+
+    // Switched on, the plugin becomes a candidate. The check itself fails here
+    // because there is no network in a test, and that failure being *recorded*
+    // rather than raised is the contract: an unreachable publisher is not a
+    // launcher error.
+    let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
+    agora_core::db::set_setting(
+        &conn,
+        agora_core::plugins::PLUGIN_UPDATES_ENABLED_SETTING,
+        &serde_json::json!(true),
+    )
+    .unwrap();
+    assert!(world.service.automatic_updates_enabled());
+
+    let results = world.service.check_all_updates();
+    assert_eq!(results.len(), 1, "the installed plugin is a candidate");
+    assert_eq!(results[0].0, "acme.dashboard");
+}
+
+/// A plugin with nowhere to check is not a candidate, so a sweep does not
+/// produce a row of failures for plugins that were never going to update.
+#[test]
+fn a_plugin_without_an_update_source_is_not_swept() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &manifest, None);
+    world.service.install_package(&archive, true).unwrap();
+
+    let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
+    agora_core::db::set_setting(
+        &conn,
+        agora_core::plugins::PLUGIN_UPDATES_ENABLED_SETTING,
+        &serde_json::json!(true),
+    )
+    .unwrap();
+
+    assert!(world.service.check_all_updates().is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // Activation events actually gate activation
 // ---------------------------------------------------------------------------

@@ -46,6 +46,9 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
   the SHA-256 inside it. `agora plugin keygen` and `agora plugin sign` are the author side, and a
   round-trip test drives the real binary and verifies the result with the real verifier, because
   the two halves silently breaking apart is the failure nothing else would catch.
+- Automatic checking is a separate opt-in (`plugin_updates_enabled`, off) from letting plugins
+  reach the network (`network_plugins_enabled`, off). Neither implies the other. With it off,
+  nothing contacts a publisher unless you press the button.
 
 ## Known limits — read before relying on any of this
 

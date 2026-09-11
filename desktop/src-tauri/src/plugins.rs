@@ -144,6 +144,22 @@ pub async fn start_plugins(
         *started = true;
     }
     let failures = service.activate_all()?;
+
+    // Off the startup path entirely. Checking is network work whose result
+    // nobody is waiting for, and the launcher must open at the same speed
+    // whether or not a publisher's host is reachable. Core decides whether it
+    // happens at all; this only decides where it runs.
+    let background = service.clone();
+    std::thread::spawn(move || {
+        for (plugin_id, outcome) in background.check_all_updates() {
+            if let Err(reason) = outcome {
+                // Recorded on the trust record by core already; this is the
+                // developer-facing trail for a check nobody asked to see.
+                eprintln!("[plugin-update] {plugin_id}: {reason}");
+            }
+        }
+    });
+
     Ok(failures
         .into_iter()
         .map(|(id, error)| PluginStartFailure {

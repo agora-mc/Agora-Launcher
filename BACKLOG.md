@@ -569,6 +569,8 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
   - [x] Author tooling: `agora plugin keygen`, `agora plugin sign`, and a round-trip test that
         drives the real binary and verifies its output with the real verifier.
   - [x] `agora plugin check-update` / `agora plugin update`, and the desktop equivalents.
+  - [x] Automatic checking behind its own opt-in, run off the startup path so the launcher opens
+        at the same speed whether or not a publisher is reachable.
   - [ ] A real publish-and-update cycle against an author-hosted file. The network gate rejects
         loopback by design, so this cannot be proven locally.
   - [ ] Revocation, or an explicit decision that there will not be one.
