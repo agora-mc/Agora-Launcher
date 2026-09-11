@@ -29,6 +29,7 @@ import {
 import { usePlugins } from './PluginProvider';
 import { PluginSettingsForm } from './PluginSettingsForm';
 import { PluginThemeSelect } from './PluginTheme';
+import { PluginSurfacePicker } from './PluginSurfacePicker';
 import type {
   CapabilityDescription,
   InstallPreview,
@@ -381,6 +382,7 @@ export function PluginManager() {
       {systemEnabled ? (
         <>
           <PluginThemeSelect />
+          <PluginSurfacePicker />
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" onClick={() => void choosePackage()}>
               <Package className="h-4 w-4" /> Install from file

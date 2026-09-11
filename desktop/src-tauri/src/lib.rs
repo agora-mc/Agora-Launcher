@@ -162,6 +162,8 @@ pub fn run() {
             plugins::install_plugin_package,
             plugins::plugin_check_update,
             plugins::plugin_apply_update,
+            plugins::plugin_surfaces,
+            plugins::plugin_set_surface,
             plugins::add_plugin_development_folder,
             plugins::set_plugin_enabled,
             plugins::uninstall_plugin,

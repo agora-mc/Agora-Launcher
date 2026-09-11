@@ -151,7 +151,12 @@ export function Home({
       setInstancesLoading(true);
       setKnownGoodChecked(false);
       try {
-        const all = await listInstances();
+        // Coerced rather than trusted. This is the first screen the launcher
+        // shows, so a value in an unexpected shape here is a blank window
+        // rather than a missing list — and `[...instances]` below runs during
+        // render, where a throw takes the whole page down.
+        const loaded = await listInstances();
+        const all = Array.isArray(loaded) ? loaded : [];
         setInstances(all);
         setInstancesLoading(false);
         void loadBackgroundData(all);

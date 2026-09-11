@@ -16,7 +16,7 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
 | **P2** — extension surfaces | Done | `crates/agora-core/tests/plugins_end_to_end.rs` (27 tests) against the real QuickJS host |
 | **P3** — first public release materials | Mostly done; see gaps below | `sdk/`, `examples/plugins/`, `docs/plugins/`, `fixtures/` |
 | **P4** — author-hosted signed updates | Built; unexercised against a real host | `crates/agora-plugin-api/src/distribution.rs`, `crates/agora-core/src/plugins/updates.rs`, `crates/agora/tests/signing_round_trip.rs` |
-| **P5** — replacement views, richer hooks | Not started | — |
+| **P5** — replacement views, richer hooks | Home only; see below | `crates/agora-core/tests/plugins_end_to_end.rs`, `desktop/src/features/plugins/PluginSurface.test.tsx` |
 
 ## What works
 
@@ -49,6 +49,11 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
 - Automatic checking is a separate opt-in (`plugin_updates_enabled`, off) from letting plugins
   reach the network (`network_plugins_enabled`, off). Neither implies the other. With it off,
   nothing contacts a publisher unless you press the button.
+
+- A plugin can offer to render Agora's **home screen**. Offering is not taking: the offer joins a
+  list in Settings and Agora's own screen renders until someone chooses otherwise. A chosen plugin
+  that is disabled, removed or unable to run falls back to the built-in and says why, and the
+  choice survives so re-enabling restores it.
 
 ## Known limits — read before relying on any of this
 
@@ -94,6 +99,13 @@ accessibility and controller usability inside it. Do not build a product on it y
 **Windows/MSVC is the only platform actually exercised.** The runtime is portable in principle
 and `rquickjs` builds cleanly elsewhere, but macOS and Linux packaging of the plugin host has
 not been verified here. Treat cross-platform as an open gate, not a claim.
+
+**Replacement views cover one surface.** `home`, and nothing else. The instance overview is the
+obvious next one and is deliberately not offered: it is an inline region inside `InstanceEditor`
+rather than a component, and naming a surface a plugin can declare but never render would be worse
+than not offering it. Only host-rendered views may replace a surface — a replacement is the whole
+screen, and the custom-frame prototype owns its own accessibility and controller behaviour, so
+standing one in for a built-in is exactly the thing "do not build a product on it" rules out.
 
 **API 0.1 is experimental.** Pin `>=0.1, <0.2`. There is no deprecation window yet, because
 there has not yet been anything to deprecate. Before v1 is advertised as stable, the items

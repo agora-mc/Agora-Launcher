@@ -432,3 +432,26 @@ pub async fn read_plugin_log(
 ) -> LauncherResult<Vec<String>> {
     Ok(service(&app)?.logs(&parse_id(&plugin_id)?, lines.unwrap_or(200).clamp(1, 2_000)))
 }
+
+/// Every replaceable surface, who offered to render it, and what will.
+#[tauri::command]
+pub async fn plugin_surfaces(
+    app: AppHandle,
+) -> LauncherResult<Vec<agora_core::plugins::SurfaceChoice>> {
+    Ok(service(&app)?.surfaces())
+}
+
+/// Choose who renders a surface. A null `contributionId` restores Agora's own.
+#[tauri::command]
+pub async fn plugin_set_surface(
+    app: AppHandle,
+    surface: String,
+    contribution_id: Option<String>,
+) -> LauncherResult<()> {
+    let surface: agora_plugin_api::contributions::ReplaceableSurface =
+        surface.parse().map_err(|_| LauncherError::Generic {
+            code: "ERR_PLUGIN_SURFACE_UNKNOWN".into(),
+            message: format!("`{surface}` is not a surface this version of Agora can hand over"),
+        })?;
+    service(&app)?.set_surface(surface, contribution_id.as_deref())
+}

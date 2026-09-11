@@ -577,8 +577,18 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
   - [ ] Optional curated catalog, and a content-source example. Not started; installing needs
         neither.
 
-- [ ] **P5** — Deeper customization — replacement views, richer sources and hooks.
-      Native companions only if a concrete plugin justifies them. Not started.
+- [ ] **P5** — Deeper customization
+  - [x] Replacement views for the **home screen**. A plugin *offers*; the user chooses; Agora's
+        own view is the default and the fallback. Two plugins offering the same surface is a list,
+        not a race. Host-rendered only.
+        Example: `examples/plugins/home-replacement/`. Fixtures pin the contract.
+  - [ ] More surfaces. The instance overview is next and needs extracting from `InstanceEditor`
+        first — it is an inline region rather than a component, and a surface a plugin can declare
+        but never render is worse than one that is not offered.
+  - [ ] Richer sources, import/export and install hooks. Not started.
+  - [ ] A decision on whether the custom-view prototype becomes supported or is withdrawn.
+        Replacements already rule it out for whole surfaces.
+        Native companions only if a concrete plugin justifies them.
 
 **Explicitly out of scope for v1:** MO2 integration, Steam discovery, generic
 game adapters. These are a separate initiative and block none of the above.

@@ -20,7 +20,8 @@ export type ContributionKind =
   | 'setting'
   | 'diagnostic'
   | 'launch-check'
-  | 'theme';
+  | 'theme'
+  | 'replacement';
 
 /** A contribution with its plugin namespace applied: `publisher.plugin/local`. */
 export interface NamespacedContribution {
@@ -38,6 +39,35 @@ export type PluginStatus =
   | { state: 'unresolvedDependency'; detail: { dependency: string; reason: string } }
   | { state: 'dependencyCycle'; detail: { cycle: string[] } }
   | { state: 'failed'; detail: { message: string } };
+
+export interface ReplacementOffer {
+  id: string;
+  pluginId: string;
+  localId: string;
+  pluginName: string;
+  title: string;
+  description: string | null;
+  surface: string;
+  /** The plugin export that builds the view. */
+  export: string;
+}
+
+export interface SurfaceChoice {
+  surface: string;
+  title: string;
+  /** Every offer from an installed plugin, runnable or not. */
+  offers: ReplacementOffer[];
+  /** What the user picked, even if it cannot currently render. */
+  selected: string | null;
+  /** What will actually render. `null` means Agora's own view. */
+  effective: ReplacementOffer | null;
+  /**
+   * Set when a selection exists but is not what renders, with the reason.
+   * This is the difference between "you chose the built-in" and "your choice
+   * is broken and we quietly did something else".
+   */
+  fallbackReason: string | null;
+}
 
 export interface KeyFingerprint {
   id: string;

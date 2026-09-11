@@ -48,6 +48,7 @@ import { PresentationMotionCoordinator } from './components/presentation-motion-
 import type { InstallIntent } from './lib/installFlow';
 import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
 import { PluginProvider, usePlugins } from './features/plugins/PluginProvider';
+import { PluginSurface } from './features/plugins/PluginSurface';
 import { PluginPage } from './features/plugins/PluginSurfaces';
 import { PluginTheme } from './features/plugins/PluginTheme';
 import { usePluginLaunchGate } from './features/plugins/usePluginLaunchGate';
@@ -903,13 +904,22 @@ function AppContent() {
             ) : destination.type === 'instance-detail' ? null : (
               <>
                 {effectiveTab === 'home' && (
-                  <Home
-                    onNavigateTab={navigateToTab}
-                    onOpenInstance={navigateToInstanceDetail}
-                    onOpenMod={navigateToModDetail}
-                    onLaunch={launchWithControlify}
-                    processState={processState}
-                    onKillProcess={killProcess}
+                  // A plugin may render this surface instead, but only one the
+                  // user chose in Settings. Anything uncertain — no choice, a
+                  // disabled plugin, an unreachable backend — falls through to
+                  // Agora's own home screen rather than to an empty page.
+                  <PluginSurface
+                    surface="home"
+                    fallback={
+                      <Home
+                        onNavigateTab={navigateToTab}
+                        onOpenInstance={navigateToInstanceDetail}
+                        onOpenMod={navigateToModDetail}
+                        onLaunch={launchWithControlify}
+                        processState={processState}
+                        onKillProcess={killProcess}
+                      />
+                    }
                   />
                 )}
                 {effectiveTab === 'instances' && (

@@ -16,6 +16,7 @@ import type {
   PluginSummary,
   RepairOutcome,
   RepairProposal,
+  SurfaceChoice,
   UpdateOutcome,
   UpdateVerdict,
   ViewModel,
@@ -80,3 +81,9 @@ export const setPluginSetting = (pluginId: string, key: string, value: unknown) 
 
 export const readPluginLog = (pluginId: string, lines?: number) =>
   invoke<string[]>('read_plugin_log', { pluginId, lines: lines ?? null });
+
+export const pluginSurfaces = () => invoke<SurfaceChoice[]>('plugin_surfaces');
+
+/** `contributionId: null` restores Agora's own view for that surface. */
+export const setPluginSurface = (surface: string, contributionId: string | null) =>
+  invoke<void>('plugin_set_surface', { surface, contributionId });
