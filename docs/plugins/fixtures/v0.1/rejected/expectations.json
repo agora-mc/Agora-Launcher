@@ -8,6 +8,24 @@
     "`messageContains` is asserted case-insensitively so wording can be improved without",
     "breaking the fixture; the code and the stage are the parts that must not drift."
   ],
+  "replacement-uses-a-custom-frame.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "host-rendered",
+    "why": "A replacement is the whole screen. The host-rendered path is themed, accessible and controller-navigable by construction; a custom frame owns all of that itself and is still a prototype, so standing one in for a built-in surface is building a product on unproven ground."
+  },
+  "replacement-names-an-unknown-surface.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "unknown variant",
+    "why": "Replaceable surfaces are a closed set so that renaming an internal component is not a breaking change for plugins. A manifest naming one this build does not have must fail rather than be silently ignored, or the author sees a plugin that installs and does nothing."
+  },
+  "two-offers-for-one-surface.json": {
+    "stage": "manifest",
+    "code": "DUPLICATE_CONTRIBUTION",
+    "messageContains": "more than once",
+    "why": "One plugin offering the same surface twice would appear in the user's picker as two entries they cannot tell apart by origin, which makes the choice meaningless."
+  },
   "activation-names-nothing.json": {
     "stage": "manifest",
     "code": "INVALID_MANIFEST",

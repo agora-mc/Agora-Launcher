@@ -21,7 +21,9 @@ use super::updates::{self, UpdateVerdict};
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use agora_plugin_api::capability::CapabilitySet;
-use agora_plugin_api::contributions::{LaunchCheckFailure, SettingDefinition, MAX_LAUNCH_CHECK_MS};
+use agora_plugin_api::contributions::{
+    LaunchCheckFailure, ReplaceableSurface, SettingDefinition, ViewSource, MAX_LAUNCH_CHECK_MS,
+};
 use agora_plugin_api::diagnostics::{DiagnosticReport, RepairAction, RepairProposal, Severity};
 use agora_plugin_api::distribution::{Release, UpdateDocument};
 use agora_plugin_api::dto::ViewModel;
@@ -37,6 +39,13 @@ use std::time::Duration;
 
 /// Setting that turns the whole subsystem on. Off by default.
 pub const PLUGINS_ENABLED_SETTING: &str = "plugins_enabled";
+
+/// Which plugin, if any, the user chose to render each replaceable surface.
+///
+/// One setting holding a map rather than a setting per surface, so adding a
+/// surface later does not need a migration and an unknown key from a newer
+/// build is ignored rather than read as a selection.
+pub const SURFACE_SELECTIONS_SETTING: &str = "plugin_surface_selections";
 
 /// Whether Agora may check publishers for plugin updates on its own.
 ///
@@ -96,6 +105,45 @@ pub struct PluginSummary {
 pub struct UpdateCheckRecord {
     pub at: String,
     pub result: String,
+}
+
+/// One plugin's offer to render a built-in surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacementOffer {
+    /// `publisher.plugin/local`.
+    pub id: String,
+    pub plugin_id: String,
+    pub local_id: String,
+    pub plugin_name: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub surface: String,
+    /// The export to call. Carried so the adapter renders through the same
+    /// path a contributed page uses rather than inventing a second one.
+    pub export: String,
+}
+
+/// Everything the user needs in order to choose who renders one surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceChoice {
+    pub surface: String,
+    pub title: String,
+    /// Every offer from a plugin that is installed, whether or not it can
+    /// currently run. An offer from a broken plugin is still shown, because
+    /// hiding it would make the user's own selection vanish from the list they
+    /// chose it in.
+    pub offers: Vec<ReplacementOffer>,
+    /// What the user picked, even if it cannot currently render.
+    pub selected: Option<String>,
+    /// What will actually render. `None` means Agora's own view — either
+    /// because nothing was selected, or because what was selected cannot run.
+    pub effective: Option<ReplacementOffer>,
+    /// Set when a selection exists but is not what will render, with the
+    /// reason. This is the difference between "you chose the built-in" and
+    /// "your choice is broken and we quietly did something else".
+    pub fallback_reason: Option<String>,
 }
 
 /// What applying an update did, or what it needs first.
@@ -424,6 +472,161 @@ impl PluginService {
             }
         }
         (sources, checks)
+    }
+
+    // -- replaceable surfaces ----------------------------------------------
+
+    /// Every replaceable surface, who has offered to render it, and what will.
+    ///
+    /// The whole point of the design is here: a plugin declaring a replacement
+    /// does not get the surface. It joins a list, and Agora's own view is what
+    /// renders until the user says otherwise. Two plugins offering the same
+    /// surface is a list of two rather than a race won by install order.
+    pub fn surfaces(&self) -> Vec<SurfaceChoice> {
+        let selections = self.surface_selections();
+        let offers = self.replacement_offers();
+        let runnable: BTreeMap<String, bool> = self
+            .list()
+            .into_iter()
+            .map(|plugin| (plugin.id.clone(), plugin.running || plugin.enabled))
+            .collect();
+
+        ReplaceableSurface::ALL
+            .iter()
+            .map(|surface| {
+                let key = surface.as_str().to_string();
+                let mine: Vec<ReplacementOffer> = offers
+                    .iter()
+                    .filter(|offer| offer.surface == key)
+                    .cloned()
+                    .collect();
+                let selected = selections.get(&key).cloned();
+
+                // Resolved rather than assumed. A selection survives the plugin
+                // being disabled or uninstalled, so that re-enabling restores
+                // the user's choice instead of silently forgetting it — but it
+                // never decides what renders.
+                let (effective, fallback_reason) = match &selected {
+                    None => (None, None),
+                    Some(chosen) => match mine.iter().find(|offer| &offer.id == chosen) {
+                        None => (
+                            None,
+                            Some(format!(
+                                "`{chosen}` is no longer installed, so Agora's own view is \
+                                 being shown."
+                            )),
+                        ),
+                        Some(offer) if runnable.get(&offer.plugin_id).copied().unwrap_or(false) => {
+                            (Some(offer.clone()), None)
+                        }
+                        Some(offer) => (
+                            None,
+                            Some(format!(
+                                "`{}` is not running, so Agora's own view is being shown.",
+                                offer.plugin_name
+                            )),
+                        ),
+                    },
+                };
+
+                SurfaceChoice {
+                    surface: key,
+                    title: surface.title().to_string(),
+                    offers: mine,
+                    selected,
+                    effective,
+                    fallback_reason,
+                }
+            })
+            .collect()
+    }
+
+    /// Choose who renders a surface. `None` restores Agora's own view.
+    ///
+    /// Accepts only an offer that exists right now. A selection pointing at
+    /// something that was never installed is not a preference to be preserved,
+    /// it is a typo or a stale client, and storing it would produce a fallback
+    /// notice the user can neither act on nor clear.
+    pub fn set_surface(
+        &self,
+        surface: ReplaceableSurface,
+        contribution_id: Option<&str>,
+    ) -> LauncherResult<()> {
+        let mut selections = self.surface_selections();
+        match contribution_id {
+            None => {
+                selections.remove(surface.as_str());
+            }
+            Some(id) => {
+                let known = self
+                    .replacement_offers()
+                    .into_iter()
+                    .any(|offer| offer.id == id && offer.surface == surface.as_str());
+                if !known {
+                    return Err(LauncherError::Generic {
+                        code: "ERR_PLUGIN_SURFACE_UNKNOWN".into(),
+                        message: format!("no installed plugin offers `{id}` for {surface}"),
+                    });
+                }
+                selections.insert(surface.as_str().to_string(), id.to_string());
+            }
+        }
+        let conn = self.inner.conn()?;
+        crate::db::set_setting(
+            &conn,
+            SURFACE_SELECTIONS_SETTING,
+            &serde_json::to_value(&selections).unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| LauncherError::Generic {
+            code: "ERR_LOCAL_STATE_FAILED".into(),
+            message: error.to_string(),
+        })
+    }
+
+    /// The stored selections, ignoring anything that is not a string pair.
+    fn surface_selections(&self) -> BTreeMap<String, String> {
+        self.inner
+            .conn()
+            .ok()
+            .and_then(|conn| {
+                crate::db::get_setting(&conn, SURFACE_SELECTIONS_SETTING)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    /// Every offer from every installed plugin, runnable or not.
+    fn replacement_offers(&self) -> Vec<ReplacementOffer> {
+        let Ok(resolution) = self.inner.resolution.read() else {
+            return Vec::new();
+        };
+        let mut offers = Vec::new();
+        for resolved in &resolution.plugins {
+            let manifest = &resolved.record.manifest;
+            for replacement in &manifest.contributions.replacements {
+                // Only the host-rendered form reaches here; the manifest
+                // validator refuses anything else, so this is a `let else`
+                // rather than a branch with a user-facing message.
+                let ViewSource::Host { export } = &replacement.view else {
+                    continue;
+                };
+                offers.push(ReplacementOffer {
+                    id: manifest.id.qualify(&replacement.id),
+                    plugin_id: manifest.id.to_string(),
+                    local_id: replacement.id.clone(),
+                    plugin_name: manifest.name.clone(),
+                    title: replacement.title.clone(),
+                    description: replacement.description.clone(),
+                    surface: replacement.surface.as_str().to_string(),
+                    export: export.clone(),
+                });
+            }
+        }
+        // Deterministic, so the picker does not reorder itself between reads.
+        offers.sort_by(|a, b| a.id.cmp(&b.id));
+        offers
     }
 
     /// Contributions from every plugin that is currently runnable.

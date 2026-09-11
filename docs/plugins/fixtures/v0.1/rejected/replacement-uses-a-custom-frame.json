@@ -1,0 +1,19 @@
+{
+  "manifest": 1,
+  "id": "acme.compact",
+  "name": "Compact home",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "contributions": {
+    "replacements": [
+      {
+        "id": "home",
+        "title": "Compact",
+        "surface": "home",
+        "view": { "kind": "custom", "html": "home.html" }
+      }
+    ]
+  }
+}

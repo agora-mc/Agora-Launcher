@@ -464,7 +464,8 @@ impl PluginManifest {
                 .contributions
                 .instance_panels
                 .iter()
-                .any(|p| matches!(p.view, crate::contributions::ViewSource::Host { .. }));
+                .any(|p| matches!(p.view, crate::contributions::ViewSource::Host { .. }))
+            || !self.contributions.replacements.is_empty();
         if needs_script && self.entrypoint.is_none() {
             return Err(PluginError::invalid_manifest(
                 "this plugin contributes something that has to call into script, \
@@ -482,6 +483,42 @@ impl PluginManifest {
                 validate_package_path("instance panel view html", html)?;
             }
         }
+        for replacement in &self.contributions.replacements {
+            // A replacement is the whole screen. The host-rendered path is the
+            // one that is themed, accessible and controller-navigable by
+            // construction, and a custom frame is still a prototype — putting
+            // an unproven one where the home page used to be is precisely
+            // "building a product on it".
+            if !matches!(
+                replacement.view,
+                crate::contributions::ViewSource::Host { .. }
+            ) {
+                return Err(PluginError::invalid_manifest(format!(
+                    "replacement `{}` must use a host-rendered view; a custom frame may add a                      page but may not stand in for a built-in surface",
+                    replacement.id
+                )));
+            }
+        }
+
+        // Two offers for the same surface from one plugin is an author
+        // mistake: the picker would show the same plugin twice with no way to
+        // tell the entries apart from their origin.
+        let mut surfaces = BTreeMap::new();
+        for replacement in &self.contributions.replacements {
+            if surfaces
+                .insert(replacement.surface, replacement.id.as_str())
+                .is_some()
+            {
+                return Err(PluginError::new(
+                    PluginErrorCode::DuplicateContribution,
+                    format!(
+                        "this plugin offers to replace `{}` more than once",
+                        replacement.surface
+                    ),
+                ));
+            }
+        }
+
         for check in &self.contributions.launch_checks {
             if check.timeout_ms == 0 {
                 return Err(PluginError::invalid_manifest(format!(
@@ -500,15 +537,20 @@ impl PluginManifest {
         for event in &self.activation {
             match event {
                 ActivationEvent::View(id) => {
+                    // Replacements count: opening a surface the user chose this
+                    // plugin for is opening one of its views, and a replacement
+                    // that never started would render as the built-in with no
+                    // explanation.
                     let known = self.contributions.pages.iter().any(|p| &p.id == id)
                         || self
                             .contributions
                             .instance_panels
                             .iter()
-                            .any(|p| &p.id == id);
+                            .any(|p| &p.id == id)
+                        || self.contributions.replacements.iter().any(|p| &p.id == id);
                     if !known {
                         return Err(PluginError::invalid_manifest(format!(
-                            "activation `onView:{id}` names no page or instance panel in this manifest"
+                            "activation `onView:{id}` names no page, instance panel or                              replacement in this manifest"
                         )));
                     }
                 }
@@ -948,5 +990,126 @@ mod network_tests {
     #[test]
     fn a_plugin_that_wants_no_network_needs_no_declaration() {
         assert!(with_network(serde_json::json!({ "required": ["instance:read"] }), &[]).is_ok());
+    }
+
+    fn with_replacements(replacements: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "manifest": 1,
+            "id": "acme.dashboard",
+            "name": "Dashboard",
+            "version": "1.0.0",
+            "license": "MIT",
+            "apiRange": ">=0.1, <0.2",
+            "entrypoint": "main.js",
+            "contributions": { "replacements": replacements }
+        })
+    }
+
+    #[test]
+    fn a_host_rendered_replacement_is_accepted() {
+        let manifest = PluginManifest::parse(
+            &with_replacements(serde_json::json!([{
+                "id": "home",
+                "title": "Compact home",
+                "surface": "home",
+                "view": { "kind": "host", "export": "home" }
+            }]))
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(manifest.contributions.replacements.len(), 1);
+        assert_eq!(
+            manifest.contributions.replacements[0].surface,
+            crate::contributions::ReplaceableSurface::Home
+        );
+    }
+
+    /// A replacement is the whole screen, so it has to be the path that is
+    /// themed and controller-navigable by construction. A custom frame may
+    /// still add a page; it may not stand in for a built-in surface.
+    #[test]
+    fn a_custom_frame_may_not_replace_a_built_in_surface() {
+        let error = PluginManifest::parse(
+            &with_replacements(serde_json::json!([{
+                "id": "home",
+                "title": "Compact home",
+                "surface": "home",
+                "view": { "kind": "custom", "html": "home.html" }
+            }]))
+            .to_string(),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("host-rendered"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_surface_this_build_does_not_know_is_refused_rather_than_ignored() {
+        let error = PluginManifest::parse(
+            &with_replacements(serde_json::json!([{
+                "id": "home",
+                "title": "Whatever",
+                "surface": "the-entire-launcher",
+                "view": { "kind": "host", "export": "home" }
+            }]))
+            .to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, PluginErrorCode::InvalidManifest);
+    }
+
+    /// One plugin offering the same surface twice would appear in the picker
+    /// as two entries the user cannot tell apart by origin.
+    #[test]
+    fn one_plugin_cannot_offer_the_same_surface_twice() {
+        let error = PluginManifest::parse(
+            &with_replacements(serde_json::json!([
+                {
+                    "id": "compact",
+                    "title": "Compact",
+                    "surface": "home",
+                    "view": { "kind": "host", "export": "a" }
+                },
+                {
+                    "id": "roomy",
+                    "title": "Roomy",
+                    "surface": "home",
+                    "view": { "kind": "host", "export": "b" }
+                }
+            ]))
+            .to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, PluginErrorCode::DuplicateContribution);
+    }
+
+    #[test]
+    fn a_replacement_needs_an_entrypoint_to_call_into() {
+        let mut value = with_replacements(serde_json::json!([{
+            "id": "home",
+            "title": "Compact home",
+            "surface": "home",
+            "view": { "kind": "host", "export": "home" }
+        }]));
+        value.as_object_mut().unwrap().remove("entrypoint");
+        let error = PluginManifest::parse(&value.to_string()).unwrap_err();
+        assert!(error.message.contains("entrypoint"), "{}", error.message);
+    }
+
+    /// Opening a surface the user chose this plugin for is opening one of its
+    /// views, so `onView:` has to accept a replacement id — otherwise the
+    /// plugin never starts and the surface silently renders as the built-in.
+    #[test]
+    fn activation_may_name_a_replacement() {
+        let mut value = with_replacements(serde_json::json!([{
+            "id": "home",
+            "title": "Compact home",
+            "surface": "home",
+            "view": { "kind": "host", "export": "home" }
+        }]));
+        value["activation"] = serde_json::json!(["onView:home"]);
+        assert!(PluginManifest::parse(&value.to_string()).is_ok());
+
+        value["activation"] = serde_json::json!(["onView:nothing-here"]);
+        assert!(PluginManifest::parse(&value.to_string()).is_err());
     }
 }

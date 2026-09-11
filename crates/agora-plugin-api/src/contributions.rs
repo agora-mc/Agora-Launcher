@@ -38,6 +38,11 @@ pub struct Contributions {
     /// Bounded checks that run before a launch, when the user opts in.
     #[serde(default)]
     pub launch_checks: Vec<LaunchCheckContribution>,
+    /// Built-in surfaces this plugin offers to render instead of Agora.
+    ///
+    /// An offer, never a takeover — see [`ReplacementContribution`].
+    #[serde(default)]
+    pub replacements: Vec<ReplacementContribution>,
 }
 
 impl Contributions {
@@ -80,6 +85,11 @@ impl Contributions {
                 .iter()
                 .map(|c| (ContributionKind::LaunchCheck, c.id.as_str())),
         );
+        ids.extend(
+            self.replacements
+                .iter()
+                .map(|c| (ContributionKind::Replacement, c.id.as_str())),
+        );
         ids
     }
 
@@ -91,6 +101,7 @@ impl Contributions {
             && self.theme.is_none()
             && self.diagnostics.is_empty()
             && self.launch_checks.is_empty()
+            && self.replacements.is_empty()
     }
 }
 
@@ -105,6 +116,7 @@ pub enum ContributionKind {
     Diagnostic,
     LaunchCheck,
     Theme,
+    Replacement,
 }
 
 impl ContributionKind {
@@ -117,6 +129,7 @@ impl ContributionKind {
             ContributionKind::Diagnostic => "diagnostic",
             ContributionKind::LaunchCheck => "launch-check",
             ContributionKind::Theme => "theme",
+            ContributionKind::Replacement => "replacement",
         }
     }
 }
@@ -172,6 +185,93 @@ pub struct InstancePanelContribution {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    pub view: ViewSource,
+}
+
+/// A built-in surface a plugin may offer to render instead of Agora.
+///
+/// A closed set, deliberately. "Any component, addressed by name" would make
+/// every internal rename a breaking change for plugins and would stop the
+/// launcher from being refactored — which is exactly the trap the plan warns
+/// about when it says not to depend on private selectors or internal
+/// component injection. Adding a surface here is a considered decision with a
+/// compatibility cost attached; there is no escape hatch that avoids paying it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReplaceableSurface {
+    /// The first screen: what the launcher shows with nothing else selected.
+    Home,
+}
+
+impl ReplaceableSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplaceableSurface::Home => "home",
+        }
+    }
+
+    /// What the user is choosing between, in their words.
+    pub fn title(self) -> &'static str {
+        match self {
+            ReplaceableSurface::Home => "Home",
+        }
+    }
+
+    /// Every surface, for a settings page that lists them.
+    ///
+    /// One, for now. A surface belongs here when the launcher can actually
+    /// hand it over — the instance overview is next, and is not listed because
+    /// it is currently an inline region rather than a component, and naming a
+    /// surface a plugin can declare but never render would be worse than not
+    /// offering it. Adding one later is additive: an author gains an option
+    /// and nothing they wrote stops working.
+    pub const ALL: [ReplaceableSurface; 1] = [ReplaceableSurface::Home];
+}
+
+impl std::fmt::Display for ReplaceableSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ReplaceableSurface {
+    type Err = ();
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "home" => Ok(ReplaceableSurface::Home),
+            _ => Err(()),
+        }
+    }
+}
+
+/// An offer to render a built-in surface.
+///
+/// Declaring one does **not** take the surface over. It puts the plugin on a
+/// list the user chooses from, and the built-in is what is chosen until they
+/// say otherwise. That is the whole design:
+///
+/// - two plugins offering the same surface is a list of two, not a conflict
+///   resolved by install order;
+/// - a plugin that is disabled, removed, broken, or simply slow falls back to
+///   the built-in rather than leaving a blank screen;
+/// - the built-in is always reachable, so a replacement can never be a trap.
+///
+/// Only [`ViewSource::Host`] is permitted here. A replacement is the whole
+/// screen, and the host-rendered path is the one that is themed, accessible
+/// and controller-navigable by construction. Custom frames remain an additive
+/// prototype; putting an unproven one where the home page used to be is the
+/// definition of building a product on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReplacementContribution {
+    pub id: String,
+    /// Shown in the picker, so it should say what this version *is* rather
+    /// than repeating the surface name.
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub surface: ReplaceableSurface,
     pub view: ViewSource,
 }
 

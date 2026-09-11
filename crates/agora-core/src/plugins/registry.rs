@@ -303,6 +303,11 @@ fn contribution_title(record: &PluginRecord, kind: ContributionKind, local_id: &
             .find(|c| c.id == local_id)
             .map(|c| c.title.clone()),
         ContributionKind::Theme => contributions.theme.as_ref().map(|c| c.title.clone()),
+        ContributionKind::Replacement => contributions
+            .replacements
+            .iter()
+            .find(|c| c.id == local_id)
+            .map(|c| c.title.clone()),
     };
     found.unwrap_or_else(|| local_id.to_string())
 }

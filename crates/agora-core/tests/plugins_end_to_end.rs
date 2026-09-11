@@ -12,6 +12,7 @@
 
 use agora_core::ctx::Ctx;
 use agora_core::plugins::{PluginService, PLUGINS_ENABLED_SETTING};
+use agora_plugin_api::contributions::ReplaceableSurface;
 use agora_plugin_api::error::PluginErrorCode;
 use agora_plugin_api::host::ScriptHost;
 use agora_plugin_api::manifest::PluginId;
@@ -825,7 +826,13 @@ fn nothing_activates_while_the_plugin_system_is_switched_off() {
 fn shipped_examples_install_and_run_using_the_public_contract() {
     let world = world();
     let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
-    for name in ["dashboard", "diagnostics", "theme", "custom-dashboard"] {
+    for name in [
+        "dashboard",
+        "diagnostics",
+        "theme",
+        "custom-dashboard",
+        "home-replacement",
+    ] {
         world
             .service
             .add_development_folder(&examples.join(name), true)
@@ -856,6 +863,27 @@ fn shipped_examples_install_and_run_using_the_public_contract() {
         .service
         .custom_view_html(&id("agora.custom-dashboard"), "../main.js")
         .is_err());
+    // The replacement example renders through the same path a page does, and
+    // — the point of the surface design — offers rather than takes.
+    world
+        .service
+        .render_view(&id("agora.compact-home"), "home", serde_json::Value::Null)
+        .unwrap();
+    let home = world
+        .service
+        .surfaces()
+        .into_iter()
+        .find(|choice| choice.surface == "home")
+        .unwrap();
+    assert!(home
+        .offers
+        .iter()
+        .any(|o| o.id == "agora.compact-home/home"));
+    assert!(
+        home.effective.is_none(),
+        "a shipped example must not seize the home screen by being installed"
+    );
+
     world
         .service
         .set_enabled(&id("agora.custom-dashboard"), false)
@@ -1592,6 +1620,242 @@ fn a_plugin_without_an_update_source_is_not_swept() {
     .unwrap();
 
     assert!(world.service.check_all_updates().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Replaceable surfaces
+// ---------------------------------------------------------------------------
+
+/// A plugin that offers to render the home page.
+fn replacement_manifest(id: &str, title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "manifest": 1,
+        "id": format!("acme.{id}"),
+        "name": format!("{title} plugin"),
+        "version": "1.0.0",
+        "license": "MIT",
+        "apiRange": ">=0.1, <0.2",
+        "entrypoint": "main.js",
+        "activation": ["onView:home"],
+        "capabilities": { "required": ["instance:read"] },
+        "contributions": {
+            "replacements": [{
+                "id": "home",
+                "title": title,
+                "description": "A different first screen.",
+                "surface": "home",
+                "view": { "kind": "host", "export": "home" }
+            }]
+        }
+    })
+}
+
+const REPLACEMENT_MAIN: &str = r#"
+export function home() {
+  return { title: 'Replaced', blocks: [] };
+}
+"#;
+
+fn install_replacement(world: &World, id: &str, title: &str) {
+    let folder = plugin_folder(
+        world._dir.path(),
+        id,
+        replacement_manifest(id, title),
+        REPLACEMENT_MAIN,
+    );
+    world.service.add_development_folder(&folder, true).unwrap();
+}
+
+fn home(world: &World) -> agora_core::plugins::SurfaceChoice {
+    world
+        .service
+        .surfaces()
+        .into_iter()
+        .find(|choice| choice.surface == "home")
+        .expect("home is a replaceable surface")
+}
+
+/// The central rule: declaring a replacement is an offer, not a takeover.
+/// A plugin that ships one and is installed and running still does not get
+/// the surface until the user picks it.
+#[test]
+fn offering_to_replace_a_surface_does_not_replace_it() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    world.service.activate_all().unwrap();
+
+    let choice = home(&world);
+    assert_eq!(choice.offers.len(), 1, "the offer is on the list");
+    assert_eq!(choice.offers[0].id, "acme.compact/home");
+    assert!(choice.selected.is_none());
+    assert!(
+        choice.effective.is_none(),
+        "nothing was chosen, so Agora's own view renders"
+    );
+    assert!(choice.fallback_reason.is_none(), "which is not a fallback");
+}
+
+#[test]
+fn choosing_an_offer_is_what_makes_it_render() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    world.service.activate_all().unwrap();
+
+    world
+        .service
+        .set_surface(ReplaceableSurface::Home, Some("acme.compact/home"))
+        .unwrap();
+
+    let choice = home(&world);
+    assert_eq!(choice.selected.as_deref(), Some("acme.compact/home"));
+    let effective = choice.effective.expect("the chosen plugin renders it");
+    assert_eq!(effective.export, "home");
+    assert_eq!(effective.plugin_id, "acme.compact");
+    assert!(choice.fallback_reason.is_none());
+}
+
+/// Two plugins wanting the same surface is a list to choose from, not a race
+/// decided by install order. This is the case that would otherwise be
+/// last-writer-wins.
+#[test]
+fn two_plugins_offering_the_same_surface_both_appear_and_neither_wins() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    install_replacement(&world, "roomy", "Roomy home");
+    world.service.activate_all().unwrap();
+
+    let choice = home(&world);
+    assert_eq!(choice.offers.len(), 2);
+    assert!(
+        choice.effective.is_none(),
+        "neither may take the surface on its own"
+    );
+    // Deterministic order, so the picker does not shuffle between reads.
+    assert_eq!(choice.offers[0].id, "acme.compact/home");
+    assert_eq!(choice.offers[1].id, "acme.roomy/home");
+}
+
+/// Disabling the chosen plugin must not leave the user on a blank screen, and
+/// must not silently forget what they chose either.
+#[test]
+fn disabling_the_chosen_plugin_falls_back_and_says_so_without_losing_the_choice() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    world.service.activate_all().unwrap();
+    world
+        .service
+        .set_surface(ReplaceableSurface::Home, Some("acme.compact/home"))
+        .unwrap();
+
+    world
+        .service
+        .set_enabled(&id("acme.compact"), false)
+        .unwrap();
+
+    let choice = home(&world);
+    assert!(choice.effective.is_none(), "Agora's own view renders");
+    let reason = choice
+        .fallback_reason
+        .expect("and the user is told why rather than left guessing");
+    assert!(reason.contains("not running"), "{reason}");
+    assert_eq!(
+        choice.selected.as_deref(),
+        Some("acme.compact/home"),
+        "the choice survives, so turning it back on restores it"
+    );
+
+    // And it does restore.
+    world
+        .service
+        .set_enabled(&id("acme.compact"), true)
+        .unwrap();
+    assert!(home(&world).effective.is_some());
+}
+
+/// Removing the plugin entirely is the harsher case: the offer is gone, so the
+/// notice has to say that rather than implying it might come back.
+#[test]
+fn uninstalling_the_chosen_plugin_falls_back_with_a_different_reason() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    world.service.activate_all().unwrap();
+    world
+        .service
+        .set_surface(ReplaceableSurface::Home, Some("acme.compact/home"))
+        .unwrap();
+
+    world.service.uninstall(&id("acme.compact"), true).unwrap();
+
+    let choice = home(&world);
+    assert!(choice.offers.is_empty());
+    assert!(choice.effective.is_none());
+    let reason = choice.fallback_reason.expect("a reason");
+    assert!(reason.contains("no longer installed"), "{reason}");
+}
+
+/// Choosing nothing is a real choice and must be distinguishable from a
+/// fallback, or "I prefer the built-in" reads as "something is broken".
+#[test]
+fn restoring_the_built_in_view_clears_the_selection_rather_than_recording_a_fallback() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    world.service.activate_all().unwrap();
+    world
+        .service
+        .set_surface(ReplaceableSurface::Home, Some("acme.compact/home"))
+        .unwrap();
+    world
+        .service
+        .set_surface(ReplaceableSurface::Home, None)
+        .unwrap();
+
+    let choice = home(&world);
+    assert!(choice.selected.is_none());
+    assert!(choice.effective.is_none());
+    assert!(choice.fallback_reason.is_none());
+}
+
+/// A selection has to name an offer that exists. Storing one that does not
+/// would produce a permanent fallback notice nobody can act on or clear.
+#[test]
+fn a_surface_cannot_be_pointed_at_something_nobody_offers() {
+    let world = world();
+    install_replacement(&world, "compact", "Compact home");
+    world.service.activate_all().unwrap();
+
+    let error = world
+        .service
+        .set_surface(ReplaceableSurface::Home, Some("acme.nothing/home"))
+        .unwrap_err();
+    assert!(error.to_string().contains("offers"), "{error}");
+    assert!(home(&world).selected.is_none());
+}
+
+/// Every surface the contract names is offered to the user, whether or not any
+/// plugin has anything to say about it — otherwise a surface with no offers
+/// would simply vanish from the settings page.
+#[test]
+fn every_replaceable_surface_is_listed_even_with_no_offers() {
+    let world = world();
+    let surfaces = world.service.surfaces();
+    assert_eq!(surfaces.len(), ReplaceableSurface::ALL.len());
+    assert!(surfaces.iter().all(|choice| choice.offers.is_empty()));
+    assert!(surfaces.iter().any(|choice| choice.surface == "home"));
+}
+
+/// The contract must only name surfaces the launcher can actually hand over.
+/// A declared surface that silently renders nothing is the decorative-feature
+/// failure mode: the manifest documents a capability the product lacks.
+#[test]
+fn every_named_surface_is_one_the_launcher_can_actually_hand_over() {
+    for surface in ReplaceableSurface::ALL {
+        assert_eq!(
+            surface.as_str().parse::<ReplaceableSurface>().ok(),
+            Some(surface),
+            "`{surface}` does not round-trip through its own wire name"
+        );
+        assert!(!surface.title().is_empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
