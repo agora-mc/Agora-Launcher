@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,6 +10,7 @@ use agora_core::crash_service::CrashService;
 use agora_core::install_service::InstallService;
 use agora_core::instance_service::{CreateInstanceRequest, InstanceService};
 use agora_core::loader_service::LoaderService;
+use agora_core::plugins::{CapabilityDescription, InstallPreview, PluginService, PluginSummary};
 use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
@@ -107,8 +108,8 @@ impl OutputFormat {
 #[command(
     name = "agora",
     version,
-    about = "Manage Agora instances, content, recovery, and direct launches",
-    long_about = "Agora's standalone command-line interface uses the same core services as the desktop application. It can synchronize the signed registry, create and inspect instances, resolve content changes, run health checks, manage snapshots and lockfiles, investigate crashes, and launch Minecraft directly.",
+    about = "Manage Agora instances, content, plugins, recovery, and direct launches",
+    long_about = "Agora's standalone command-line interface uses the same core services as the desktop application. It can synchronize the signed registry, create and inspect instances, resolve content changes, manage community plugins, run health checks, manage snapshots and lockfiles, investigate crashes, and launch Minecraft directly.",
     after_help = "Start with `agora paths`, `agora registry status`, and `agora list-instances`. Use `--data-dir` for an isolated test profile. See docs/CLI.md for safety guidance, examples, structured output, and exit codes.",
     arg_required_else_help = true
 )]
@@ -214,6 +215,11 @@ enum Commands {
     Loader {
         #[command(subcommand)]
         action: LoaderCmd,
+    },
+    /// Install, inspect, and recover community plugins.
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCmd,
     },
     /// Read or write Agora settings.
     Settings {
@@ -343,6 +349,62 @@ enum LoaderCmd {
         #[arg(long, help = "Reinstall even when a verified profile exists")]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List installed plugins, including the core-resolved status and reason.
+    #[command(visible_alias = "status")]
+    List,
+    /// Preview a package or development folder without installing it.
+    Preview {
+        #[command(subcommand)]
+        source: PluginSourceCmd,
+    },
+    /// Install a package or register a development folder.
+    Install {
+        #[command(subcommand)]
+        source: PluginSourceCmd,
+        /// Accept the manifest's requested capabilities without prompting.
+        ///
+        /// `global` so it is accepted on either side of the `package` /
+        /// `development` subcommand. Both readings are natural, and a consent
+        /// flag that silently fails to parse is the wrong thing to be strict
+        /// about.
+        #[arg(
+            long,
+            global = true,
+            help = "Accept requested plugin capabilities without prompting"
+        )]
+        yes: bool,
+    },
+    /// Enable a previously disabled plugin.
+    Enable { id: String },
+    /// Disable a plugin without removing it.
+    Disable { id: String },
+    /// Remove a plugin; keep its stored data unless --purge-data is given.
+    Remove {
+        id: String,
+        #[arg(long, help = "Also discard the plugin's stored data")]
+        purge_data: bool,
+    },
+    /// Read the most recent lines from a plugin's log.
+    Log {
+        id: String,
+        #[arg(long, default_value_t = 200, help = "Number of log lines to read")]
+        lines: usize,
+    },
+    /// Disable every installed plugin as a recovery action.
+    #[command(name = "disable-all")]
+    DisableAll,
+}
+
+#[derive(Subcommand)]
+enum PluginSourceCmd {
+    /// Inspect or install a packaged plugin archive.
+    Package { path: PathBuf },
+    /// Inspect or register a plugin development folder in place.
+    Development { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -913,6 +975,288 @@ fn run_data_migration(
     Ok(())
 }
 
+fn plugin_service(ctx: &agora_core::ctx::Ctx) -> PluginService {
+    let host: Arc<dyn agora_plugin_api::host::ScriptHost> =
+        Arc::new(agora_plugin_host::QuickJsHost::new());
+    PluginService::headless(ctx.clone(), host)
+}
+
+fn parse_plugin_id(raw: &str) -> anyhow::Result<agora_plugin_api::manifest::PluginId> {
+    agora_plugin_api::manifest::PluginId::parse(raw).map_err(|error| {
+        anyhow::Error::from(agora_core::error::LauncherError::Generic {
+            code: "ERR_PLUGIN_ID_INVALID".into(),
+            message: error.message,
+        })
+    })
+}
+
+fn preview_plugin_source(
+    service: &PluginService,
+    source: &PluginSourceCmd,
+) -> anyhow::Result<InstallPreview> {
+    Ok(match source {
+        PluginSourceCmd::Package { path } => service.preview_package(path)?,
+        PluginSourceCmd::Development { path } => service.preview_folder(path)?,
+    })
+}
+
+fn install_plugin_source(
+    service: &PluginService,
+    source: PluginSourceCmd,
+    accept_capabilities: bool,
+) -> anyhow::Result<PluginSummary> {
+    Ok(match source {
+        PluginSourceCmd::Package { path } => service.install_package(&path, accept_capabilities)?,
+        PluginSourceCmd::Development { path } => {
+            service.add_development_folder(&path, accept_capabilities)?
+        }
+    })
+}
+
+fn print_plugin_preview(
+    preview: &InstallPreview,
+    json: bool,
+    to_stderr: bool,
+) -> anyhow::Result<()> {
+    if json {
+        let rendered = serde_json::to_string_pretty(preview)?;
+        if to_stderr {
+            eprintln!("{rendered}");
+        } else {
+            println!("{rendered}");
+        }
+        return Ok(());
+    }
+
+    println!(
+        "Plugin: {} ({})",
+        preview.manifest.name, preview.manifest.id
+    );
+    println!("Version: {}", preview.manifest.version);
+    println!("License: {}", preview.manifest.license);
+    println!("API: {}", preview.manifest.api_range);
+    if let Some(description) = &preview.manifest.description {
+        println!("Description: {description}");
+    }
+    if let Some(source) = &preview.manifest.source {
+        println!("Source: {source}");
+    }
+    if preview.file_count > 0 {
+        println!(
+            "Package: {} file(s), {} uncompressed bytes",
+            preview.file_count, preview.uncompressed_bytes
+        );
+    } else {
+        println!("Source: development folder (loaded in place)");
+    }
+    if let Some(version) = &preview.replaces_version {
+        println!("Replaces installed version: {version}");
+    }
+    if preview.migrates_data {
+        println!("Data: the installed data shape would be migrated");
+    }
+
+    fn print_capabilities(label: &str, capabilities: &[CapabilityDescription]) {
+        if capabilities.is_empty() {
+            return;
+        }
+        println!("{label}:");
+        for capability in capabilities {
+            let mut suffix = String::new();
+            if capability.is_mutating {
+                suffix.push_str(" [can change data]");
+            }
+            println!("  - {}: {}{}", capability.name, capability.summary, suffix);
+        }
+    }
+
+    print_capabilities("Required capabilities", &preview.required_capabilities);
+    print_capabilities("Optional capabilities", &preview.optional_capabilities);
+    if !preview.unsupported_capabilities.is_empty() {
+        println!(
+            "Unsupported capabilities: {}",
+            preview.unsupported_capabilities.join(", ")
+        );
+    }
+    if !preview.requires_capability_consent() {
+        println!("Capabilities: none");
+    }
+    Ok(())
+}
+
+fn accept_plugin_capabilities(
+    preview: &InstallPreview,
+    json: bool,
+    skip_prompt: bool,
+) -> anyhow::Result<bool> {
+    if skip_prompt || !preview.requires_capability_consent() {
+        return Ok(skip_prompt);
+    }
+
+    // A preview is a diagnostic while an install is pending. Keep it off
+    // stdout in JSON mode so a successful command still emits one value.
+    print_plugin_preview(preview, json, json)?;
+    if !std::io::stdin().is_terminal() {
+        if json {
+            eprintln!(
+                "Capability consent was not granted in a non-interactive session; rerun with --yes."
+            );
+        } else {
+            eprintln!(
+                "Capability consent requires an interactive terminal; rerun with --yes for scripting."
+            );
+        }
+        // Passing false through to core preserves PluginService's consent
+        // check and its error instead of recreating that policy here.
+        return Ok(false);
+    }
+
+    let prompt = format!(
+        "Accept the requested capabilities for {}? [y/N]: ",
+        preview.manifest.id
+    );
+    if json {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+    } else {
+        print!("{prompt}");
+        std::io::stdout().flush()?;
+    }
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn run_plugin_command(
+    service: &PluginService,
+    action: PluginCmd,
+    output_fmt: OutputFormat,
+) -> anyhow::Result<()> {
+    let json = output_fmt.is_json_output();
+    match action {
+        PluginCmd::List => {
+            service.reload()?;
+            let plugins = service.list();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&plugins)?);
+            } else {
+                let rows: Vec<Vec<String>> = plugins
+                    .iter()
+                    .map(|plugin| {
+                        vec![
+                            plugin.id.clone(),
+                            plugin.name.clone(),
+                            plugin.version.clone(),
+                            if plugin.development {
+                                "development".into()
+                            } else {
+                                "package".into()
+                            },
+                            if plugin.enabled { "yes" } else { "no" }.into(),
+                            if plugin.running { "yes" } else { "no" }.into(),
+                            plugin.status_text.clone(),
+                        ]
+                    })
+                    .collect();
+                print_table(
+                    &[
+                        "ID",
+                        "Name",
+                        "Version",
+                        "Source",
+                        "Enabled",
+                        "Running",
+                        "Status / reason",
+                    ],
+                    &rows,
+                );
+            }
+        }
+        PluginCmd::Preview { source } => {
+            let preview = preview_plugin_source(service, &source)?;
+            print_plugin_preview(&preview, json, false)?;
+        }
+        PluginCmd::Install { source, yes } => {
+            let preview = preview_plugin_source(service, &source)?;
+            let accepted = accept_plugin_capabilities(&preview, json, yes)?;
+            let summary = install_plugin_source(service, source, accepted)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            } else {
+                println!(
+                    "Installed plugin {} v{} ({}).",
+                    summary.id,
+                    summary.version,
+                    if summary.development {
+                        "development folder"
+                    } else {
+                        "package"
+                    }
+                );
+            }
+        }
+        PluginCmd::Enable { id } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            service.set_enabled(&plugin_id, true)?;
+            if json {
+                println!("{}", serde_json::json!({"id": id, "enabled": true}));
+            } else {
+                println!("Enabled plugin {id}.");
+            }
+        }
+        PluginCmd::Disable { id } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            service.set_enabled(&plugin_id, false)?;
+            if json {
+                println!("{}", serde_json::json!({"id": id, "enabled": false}));
+            } else {
+                println!("Disabled plugin {id}.");
+            }
+        }
+        PluginCmd::Remove { id, purge_data } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            service.uninstall(&plugin_id, purge_data)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "id": id,
+                        "removed": true,
+                        "purgedData": purge_data,
+                    })
+                );
+            } else if purge_data {
+                println!("Removed plugin {id} and discarded its stored data.");
+            } else {
+                println!("Removed plugin {id}; stored data was kept.");
+            }
+        }
+        PluginCmd::Log { id, lines } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            let log_lines = service.logs(&plugin_id, lines);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&log_lines)?);
+            } else {
+                for line in log_lines {
+                    println!("{line}");
+                }
+            }
+        }
+        PluginCmd::DisableAll => {
+            let disabled = service.disable_all()?;
+            if json {
+                println!("{}", serde_json::json!({"disabled": disabled}));
+            } else {
+                println!("Disabled {disabled} plugin(s).");
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run_command(
     cli: Cli,
     paths: &agora_core::app_paths::AppPaths,
@@ -1215,6 +1559,10 @@ async fn run_command(
                 }
             }
         },
+        Commands::Plugin { action } => {
+            let service = plugin_service(ctx);
+            run_plugin_command(&service, action, output_fmt)?;
+        }
         Commands::Settings { action } => match action {
             SettingsCmd::List => {
                 let svc = SettingsService::new(ctx.clone());

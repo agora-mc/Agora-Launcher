@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "fixture.theme",
+  "name": "Declarative theme, no script at all",
+  "version": "2.3.1",
+  "license": "CC0-1.0",
+  "apiRange": ">=0.1, <0.2",
+  "contributions": {
+    "theme": {
+      "id": "dusk",
+      "title": "Dusk",
+      "dark": { "background": "#14161c", "foreground": "#e8eaf0" }
+    }
+  }
+}

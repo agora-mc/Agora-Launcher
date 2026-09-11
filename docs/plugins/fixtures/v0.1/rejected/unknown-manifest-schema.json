@@ -1,0 +1,9 @@
+{
+  "manifest": 2,
+  "id": "fixture.future",
+  "name": "Schema this host does not read",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js"
+}

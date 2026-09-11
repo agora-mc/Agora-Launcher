@@ -99,6 +99,8 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
         // after the core consent check. The empty list fails closed if the
         // category is ever reached through the generic Allowlist path.
         ClientCategory::ConsentedContent => &[],
+        // Authorized per-request from the plugin's manifest, never from here.
+        ClientCategory::Plugin => &[],
     }
 }
 
@@ -123,6 +125,11 @@ pub enum HostPolicy<'a> {
     /// core, so a frontend bug cannot widen it. Every other gate still
     /// applies, and the private/loopback/link-local DNS rejection is retained.
     UserConsented,
+    /// Hosts a plugin declared in its manifest and the user saw at install
+    /// time. A plugin holding the `network` capability does *not* get to reach
+    /// the whole internet: it reaches the hosts it told the user about, and
+    /// nothing else. Every other gate, including Lockdown, still applies.
+    PluginDeclared(&'a [String]),
 }
 
 /// Friendly name for each HTTP client category, used in logging and errors.
@@ -152,6 +159,11 @@ pub enum ClientCategory {
     /// Content the user explicitly opted into (Technic tiers S/Z). Reached
     /// only through the core consent-gated helpers via `HostPolicy::UserConsented`.
     ConsentedContent,
+    /// Outbound requests made on behalf of a community plugin. Has no
+    /// compile-time allowlist; authorization comes from the plugin's declared
+    /// hosts via `HostPolicy::PluginDeclared`, so the generic allowlist path
+    /// stays failed-closed.
+    Plugin,
 }
 
 /// How a category's requests are bounded in time.
@@ -193,7 +205,7 @@ impl ClientCategory {
     ///
     /// This is the single definition that client construction and
     /// [`Self::index`] are both derived from — see [`HttpClients`].
-    const ALL: [ClientCategory; 11] = [
+    const ALL: [ClientCategory; 12] = [
         ClientCategory::MojangMetadata,
         ClientCategory::MojangContent,
         ClientCategory::Loader,
@@ -205,6 +217,7 @@ impl ClientCategory {
         ClientCategory::JavaRuntime,
         ClientCategory::PinnedArtifact,
         ClientCategory::ConsentedContent,
+        ClientCategory::Plugin,
     ];
 
     /// Position of this category in [`Self::ALL`].
@@ -223,6 +236,7 @@ impl ClientCategory {
             ClientCategory::JavaRuntime => 8,
             ClientCategory::PinnedArtifact => 9,
             ClientCategory::ConsentedContent => 10,
+            ClientCategory::Plugin => 11,
         }
     }
 
@@ -587,6 +601,14 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
             // precedes this request. The empty ConsentedContent allowlist
             // keeps the generic Allowlist path failed-closed.
             category == ClientCategory::ConsentedContent
+        }
+        HostPolicy::PluginDeclared(hosts) => {
+            // Scoped to the plugin category so a bug elsewhere cannot pass a
+            // plugin's host list for, say, a Mojang download.
+            category == ClientCategory::Plugin
+                && hosts
+                    .iter()
+                    .any(|allowed| host_matches_domain(host, allowed))
         }
     }
 }

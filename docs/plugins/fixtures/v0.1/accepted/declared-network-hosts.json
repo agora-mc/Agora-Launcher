@@ -1,0 +1,11 @@
+{
+  "manifest": 1,
+  "id": "fixture.fetcher",
+  "name": "Plugin with a declared host allowlist",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "capabilities": { "required": ["network"] },
+  "network": { "hosts": ["api.example.com", "cdn.example.org"] }
+}

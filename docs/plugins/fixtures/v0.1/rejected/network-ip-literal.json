@@ -1,0 +1,11 @@
+{
+  "manifest": 1,
+  "id": "fixture.iplit",
+  "name": "IP literal sidesteps DNS range checks",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "capabilities": { "required": ["network"] },
+  "network": { "hosts": ["127.0.0.1"] }
+}

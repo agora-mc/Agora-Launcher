@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 agora-core = { path = "../agora-core" }
+agora-plugin-api = { path = "../agora-plugin-api" }
+agora-plugin-host = { path = "../agora-plugin-host" }
 clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true }
 serde = { workspace = true }

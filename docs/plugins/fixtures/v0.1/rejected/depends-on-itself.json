@@ -1,0 +1,10 @@
+{
+  "manifest": 1,
+  "id": "fixture.selfref",
+  "name": "Depends on itself",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "dependencies": { "fixture.selfref": ">=1.0" }
+}

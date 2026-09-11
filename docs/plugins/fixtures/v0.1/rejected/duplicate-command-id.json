@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "fixture.dupe",
+  "name": "Two commands claiming one id",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "contributions": {
+    "commands": [
+      { "id": "run", "title": "Run", "export": "a" },
+      { "id": "run", "title": "Run again", "export": "b" }
+    ]
+  }
+}

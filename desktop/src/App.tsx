@@ -47,6 +47,10 @@ import { AmbienceCoordinator } from './components/ambience-coordinator';
 import { PresentationMotionCoordinator } from './components/presentation-motion-coordinator';
 import type { InstallIntent } from './lib/installFlow';
 import { TourProvider, TourOverlay, consumeQueuedTourStart, useTour } from './features/tour';
+import { PluginProvider, usePlugins } from './features/plugins/PluginProvider';
+import { PluginPage } from './features/plugins/PluginSurfaces';
+import { PluginTheme } from './features/plugins/PluginTheme';
+import { usePluginLaunchGate } from './features/plugins/usePluginLaunchGate';
 import { useController } from './features/controller/ControllerProvider';
 import { ControllerRootBindings, cycleTab } from './features/controller/ControllerRootBindings';
 import { focusMemoryKey, useFocusMemory } from './features/controller/useFocusMemory';
@@ -190,6 +194,8 @@ function BrandedSplash() {
 function destToTab(dest: Destination): Tab {
   if (dest.type === 'tab') return dest.tab;
   if (dest.type === 'instance-detail') return 'instances';
+  // A plugin page is not one of the built-in tabs, so none of them is
+  // highlighted while it is open; the sidebar marks the plugin entry instead.
   return 'home'; // mod-detail doesn't change the tab
 }
 
@@ -223,7 +229,7 @@ function NotFoundView({ canGoBack, onGoHome, onGoBack }: { canGoBack: boolean; o
 }
 
 /** The three known destination types used for validation. */
-const KNOWN_DEST_TYPES = new Set(['tab', 'mod-detail', 'instance-detail']);
+const KNOWN_DEST_TYPES = new Set(['tab', 'mod-detail', 'instance-detail', 'plugin-page']);
 
 interface PendingControlifyLaunch {
   instanceId: string;
@@ -238,6 +244,11 @@ interface ControlifyInstallRequest {
 }
 
 export default function App() {
+  return <PluginProvider><PluginTheme /><AppContent /></PluginProvider>;
+}
+
+function AppContent() {
+  const { ofKind: pluginContributions } = usePlugins();
   const {
     destination,
     canGoBack,
@@ -245,10 +256,12 @@ export default function App() {
     navigateToBrowse,
     navigateToModDetail,
     navigateToInstanceDetail,
+    navigateToPluginPage,
     goBack,
   } = useDestination();
 
-  const processController = useProcessController();
+  const pluginLaunchGate = usePluginLaunchGate();
+  const processController = useProcessController(pluginLaunchGate.check);
   const { connected: gamepadConnected } = useController();
   const mainRef = useRef<HTMLElement>(null);
   const appShellRef = useRef<HTMLDivElement>(null);
@@ -764,6 +777,7 @@ export default function App() {
 
   return (
     <PackInstallProvider>
+      {pluginLaunchGate.dialog}
       {controlifyOffer && (
         <ControlifyOfferDialog
           offer={controlifyOffer}
@@ -798,6 +812,9 @@ export default function App() {
         <OfflineBanner />
         <SandboxBanner />
         <Sidebar
+          pluginPages={pluginContributions('page').map((page) => ({ id: page.id, label: page.title }))}
+          activePluginPage={destination.type === 'plugin-page' ? destination.contributionId : null}
+          onSelectPluginPage={navigateToPluginPage}
           tabs={tabs}
           activeTab={effectiveTab}
           onSelectTab={navigateToTab}
@@ -872,6 +889,8 @@ export default function App() {
                 onGoHome={() => navigateToTab('home')}
                 onGoBack={goBack}
               />
+            ) : destination.type === 'plugin-page' ? (
+              <PluginPage contributionId={destination.contributionId} onGoHome={() => navigateToTab('home')} />
             ) : showModDetail ? (
               <ModDetail
                 itemId={destination.itemId}

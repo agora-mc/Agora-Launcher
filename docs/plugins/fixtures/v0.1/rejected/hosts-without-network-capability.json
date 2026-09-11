@@ -1,0 +1,10 @@
+{
+  "manifest": 1,
+  "id": "fixture.unasked",
+  "name": "Names hosts the user was never asked about",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "network": { "hosts": ["api.example.com"] }
+}

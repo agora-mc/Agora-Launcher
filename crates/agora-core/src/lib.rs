@@ -88,6 +88,7 @@ pub mod pack_inventory;
 pub mod pack_merge;
 pub mod pack_update;
 pub mod paths;
+pub mod plugins;
 pub mod process_identity;
 pub mod process_session_manager;
 pub mod prune_service;

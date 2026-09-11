@@ -73,6 +73,7 @@ import { TemplateSettings } from './settings/TemplateSettings';
 import { RuntimeReclaim } from './settings/RuntimeReclaim';
 import { DegradedCredentialNotice } from './settings/DegradedCredentialNotice';
 import { SettingsSection } from './settings/SettingsSection';
+import { PluginManager } from '../features/plugins/PluginManager';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
@@ -2240,6 +2241,7 @@ export function Settings({
       pages: [
         { id: 'sources', label: 'Content sources', content: gate(contentSourcesCard) },
         { id: 'ai', label: 'AI & MCP', content: gate(aiCard) },
+        { id: 'plugins', label: 'Plugins', content: <PluginManager /> },
       ],
     },
     ...(advancedMode

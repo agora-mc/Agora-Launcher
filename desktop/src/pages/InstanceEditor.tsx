@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
+import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -2698,6 +2699,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         <div className="space-y-4">
           <InstanceIntegrationPanel instanceId={instanceId} displayName={detail?.row.name ?? instanceId} />
           <LaunchHistoryPanel instanceId={instanceId} />
+          <PluginInstancePanels instanceId={instanceId} />
         </div>
       )}
 

@@ -1,0 +1,39 @@
+{
+  "manifest": 1,
+  "id": "fixture.kitchen-sink",
+  "name": "One of every contribution surface",
+  "description": "Exercises every contribution kind the 0.1 manifest accepts.",
+  "version": "1.4.2",
+  "license": "GPL-3.0-only",
+  "source": "https://github.com/example/fixture-kitchen-sink",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "dist/main.js",
+  "activation": ["onStartup", "onView:overview", "onCommand:tidy", "onEvent:content.installed", "onInstanceOpened"],
+  "capabilities": {
+    "required": ["instance:read", "content:read"],
+    "optional": ["content:write", "launch:read", "launch:prepare", "diagnostics:publish"]
+  },
+  "dependencies": { "other.library": ">=1.2, <2" },
+  "dataVersion": 3,
+  "contributions": {
+    "pages": [
+      { "id": "overview", "title": "Overview", "icon": "LayoutDashboard", "view": { "kind": "host", "export": "overview" } },
+      { "id": "custom", "title": "Custom", "view": { "kind": "custom", "html": "views/custom.html" } }
+    ],
+    "instancePanels": [
+      { "id": "panel", "title": "Instance panel", "view": { "kind": "host", "export": "panel" } }
+    ],
+    "commands": [
+      { "id": "tidy", "title": "Tidy up", "export": "tidy", "surfaces": ["palette", "instance-context"] }
+    ],
+    "settings": [
+      { "key": "enabled", "title": "Enabled", "type": "boolean", "default": true },
+      { "key": "label", "title": "Label", "type": "string", "default": "hi", "maxLength": 40 },
+      { "key": "limit", "title": "Limit", "type": "number", "default": 5, "min": 1, "max": 10 },
+      { "key": "density", "title": "Density", "type": "enum", "default": "compact",
+        "options": [{ "value": "compact", "label": "Compact" }, { "value": "roomy", "label": "Roomy" }] }
+    ],
+    "diagnostics": [{ "id": "check", "title": "Check things", "export": "check" }],
+    "launchChecks": [{ "id": "preflight", "title": "Preflight", "export": "preflight", "timeoutMs": 1500, "onFailure": "prompt" }]
+  }
+}

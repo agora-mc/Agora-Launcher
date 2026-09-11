@@ -193,6 +193,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "export",
     "loadout",
     "lockfile",
+    "plugin",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -243,6 +244,14 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["lockfile", "verify"],
     &["lockfile", "repair"],
     &["lockfile", "import"],
+    &["plugin", "list"],
+    &["plugin", "preview"],
+    &["plugin", "install"],
+    &["plugin", "enable"],
+    &["plugin", "disable"],
+    &["plugin", "remove"],
+    &["plugin", "log"],
+    &["plugin", "disable-all"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -2873,5 +2882,113 @@ fn migrate_data_empty_source_execute_succeeds() {
         output.status.success(),
         "execute on empty source should succeed:\n{}",
         String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plugin management
+// ---------------------------------------------------------------------------
+
+/// `--yes` is the scripting escape hatch for capability consent, and it has to
+/// parse wherever someone naturally writes it. Clap would otherwise accept it
+/// only before the `package` / `development` subcommand, which is not the form
+/// `docs/CLI.md` shows and not the form a person reaches for.
+#[test]
+fn the_consent_flag_parses_on_either_side_of_the_source_subcommand() {
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/dashboard");
+    let example = example.to_string_lossy().to_string();
+
+    for args in [
+        vec![
+            "plugin",
+            "install",
+            "--yes",
+            "development",
+            example.as_str(),
+        ],
+        vec![
+            "plugin",
+            "install",
+            "development",
+            example.as_str(),
+            "--yes",
+        ],
+    ] {
+        let data_dir = tempdir();
+        let output = run_agora(data_dir.path(), &args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "`{}` failed:
+stdout: {stdout}
+stderr: {stderr}",
+            args.join(" ")
+        );
+        assert!(
+            stdout.contains("agora.dashboard"),
+            "`{}` did not report the installed plugin: {stdout}",
+            args.join(" ")
+        );
+    }
+}
+
+/// Installing something that wants capabilities must not succeed just because
+/// nobody was there to say no. The refusal comes from core, not from the CLI.
+#[test]
+fn a_non_interactive_install_without_consent_is_refused() {
+    let data_dir = tempdir();
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/dashboard");
+    let example = example.to_string_lossy().to_string();
+
+    let output = run_agora(
+        data_dir.path(),
+        &["plugin", "install", "development", example.as_str()],
+    );
+    assert!(
+        !output.status.success(),
+        "an unconsented install should fail"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("--yes"),
+        "the refusal should tell a script how to proceed: {combined}"
+    );
+
+    // And nothing was installed.
+    let listed = run_agora(data_dir.path(), &["plugin", "list"]);
+    assert!(!String::from_utf8_lossy(&listed.stdout).contains("agora.dashboard"));
+}
+
+/// Removing a plugin keeps its data unless asked otherwise, and says which it did.
+#[test]
+fn removal_reports_whether_stored_data_was_kept() {
+    let data_dir = tempdir();
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins/dashboard");
+    let example = example.to_string_lossy().to_string();
+
+    run_agora(
+        data_dir.path(),
+        &[
+            "plugin",
+            "install",
+            "--yes",
+            "development",
+            example.as_str(),
+        ],
+    );
+    let output = run_agora(data_dir.path(), &["plugin", "remove", "agora.dashboard"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.to_lowercase().contains("kept"),
+        "removal should state that data was kept: {stdout}"
     );
 }

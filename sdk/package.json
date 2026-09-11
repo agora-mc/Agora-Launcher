@@ -1,0 +1,11 @@
+{
+  "name": "agora",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "index.d.ts",
+  "main": "index.js",
+  "description": "TypeScript contract for the experimental Agora community plugin host",
+  "license": "MIT",
+  "files": ["index.d.ts", "index.js", "README.md"]
+}

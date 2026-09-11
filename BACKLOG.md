@@ -503,3 +503,61 @@ Tracking packages A1 through D5 from `Agora Desktop Upgrade.md`. Packages are co
     `depends` / `breaks` / `conflicts` sections through the existing
     Fabric `extract_fabric_deps` helper (which already handles object /
     array / string forms). Quilt-only mods are no longer `UnknownMod`.
+
+---
+
+## Community Plugins (P0–P3)
+
+Milestones from `Agora-Plugin-Implementation-Plan.md`. Design rationale is in
+`MASTER_SPEC.md` §19.24; layer boundaries are in `docs/architecture/layer-ownership.md`.
+
+Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
+
+- [x] **P0** — Script-host spike and runtime selection ✅
+  - QuickJS via `rquickjs` 0.13, chosen on measurement: builds on MSVC in ~15s with no
+    external toolchain; a full release binary with tokio + `serde_json` + the engine is
+    2 MB against tens of MB for a V8-based host.
+  - All five gates proven in `crates/agora-plugin-host/tests/host.rs` (21 tests): async
+    host calls, ES module loading confined to the package, cancellation of a runaway
+    plugin, error isolation between plugins, and a per-plugin memory ceiling.
+  - Interrupt handler *and* Tokio timeout, because neither alone covers both the
+    spinning case and the awaiting case.
+
+- [x] **P1** — Host and management ✅
+  - `crates/agora-plugin-api` — manifest schema + validation, capabilities,
+    contributions, DTOs, diagnostics, host-call protocol, `ScriptHost`/`HostBridge`
+    traits. No engine, no transport, no `agora-core` dependency.
+  - `crates/agora-core/src/plugins/` — store (schema v14), registry resolution with
+    dependency ordering and cycle detection, install/replace/rollback, capability
+    checks, service dispatch, event bus, per-plugin logs.
+  - Install from a package or a development folder; enable/disable; uninstall with
+    data retention as a *separate* decision; `disable_all` recovery that does not need
+    plugin cooperation.
+  - Activation events gate activation: `onStartup` (or no declaration) starts at launch,
+    `onView:`/`onCommand:` start on demand, `onEvent:` starts when the event fires, and
+    `onInstanceOpened` starts when an instance is opened.
+
+- [x] **P2** — Extension surfaces ✅
+  - Pages, instance panels, palette and context commands, themes, settings,
+    diagnostics with typed repair proposals, and bounded pre-launch checks.
+  - Host-rendered `ViewModel` path is the supported one. A `data:`-iframe custom view
+    with a narrow `postMessage` bridge exists as a prototype.
+  - 27 end-to-end tests in `crates/agora-core/tests/plugins_end_to_end.rs` run against
+    the real QuickJS host and assert against instance state on disk.
+
+- [x] **P3** — First public release materials
+  - [x] SDK (`sdk/`), runnable examples (`examples/plugins/`), author guide
+        (`docs/plugins/`)
+  - [x] CLI surface (`agora plugin …`) so all three frontends reach the same core
+  - [x] Compatibility fixtures pinning the shipped manifest surface
+  - [ ] Verify in the packaged desktop app, not only in tests. The browser-level e2e
+        proves the custom-frame boundary but mocks the Tauri bridge around it.
+
+- [ ] **P4** — Ecosystem expansion — hosted packages and update, optional curated
+      catalog, developer tooling, a content-source example. Not started.
+
+- [ ] **P5** — Deeper customization — replacement views, richer sources and hooks.
+      Native companions only if a concrete plugin justifies them. Not started.
+
+**Explicitly out of scope for v1:** MO2 integration, Steam discovery, generic
+game adapters. These are a separate initiative and block none of the above.

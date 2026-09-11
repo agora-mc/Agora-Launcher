@@ -11,6 +11,10 @@ import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import type { InstanceRow } from '@/lib/tauri';
 import type { Tab } from '@/lib/useDestination';
+import { usePlugins } from '@/features/plugins/PluginProvider';
+import { runPluginCommand } from '@/features/plugins/api';
+import { showToast } from './Toast';
+import { formatError } from '@/lib/tauri';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -31,9 +35,11 @@ const SETTINGS_ITEMS: { label: string; tab: Tab; icon: string }[] = [
 type ResultItem =
   | { __section: string }
   | { __type: 'instance'; instance_id: string; name: string; loader: string; loader_version: string; minecraft_version: string }
-  | { __type: 'setting'; label: string; tab: Tab; icon: string };
+  | { __type: 'setting'; label: string; tab: Tab; icon: string }
+  | { __type: 'plugin'; id: string; pluginId: string; label: string; exportName: string };
 
 export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPaletteProps) {
+  const { plugins, ofKind } = usePlugins();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [instances, setInstances] = useState<InstanceRow[]>([]);
@@ -97,8 +103,16 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
         r.push({ __type: 'setting', ...s });
       }
     }
+    const commands: ResultItem[] = ofKind('command').flatMap((contribution) => {
+      const command = plugins.find((plugin) => plugin.id === contribution.pluginId)
+        ?.definitions?.commands.find((entry) => entry.id === contribution.localId);
+      if (!command?.surfaces.includes('palette') || !command.title.toLowerCase().includes(query.toLowerCase())) return [];
+      return [{ __type: 'plugin' as const, id: contribution.id, pluginId: contribution.pluginId,
+        label: command.title, exportName: command.export }];
+    });
+    if (commands.length) r.push({ __section: 'Plugin commands' }, ...commands);
     return r;
-  }, [query, instances]);
+  }, [query, instances, ofKind, plugins]);
 
   // Indices into `results` that point to actionable (non-section) items.
   const actionableIndices = useMemo(
@@ -179,6 +193,11 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
     } else if (item.__type === 'setting') {
       onOpenChange(false);
       onNavigate(item.tab);
+    } else if (item.__type === 'plugin') {
+      onOpenChange(false);
+      void runPluginCommand(item.pluginId, item.exportName)
+        .then(() => showToast(`${item.label} completed.`))
+        .catch((error: unknown) => showToast(formatError(error), 'error'));
     }
   };
 
@@ -259,6 +278,13 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
                 );
               }
 
+              if (item.__type === 'plugin') {
+                return <button key={item.id} role="option" aria-selected={isItemSelected(index)}
+                  onClick={() => activateItem(index)}
+                  className={cn('w-full rounded-lg px-3 py-2.5 text-left text-sm', isItemSelected(index) && 'bg-accent text-accent-foreground')}>
+                  {item.label}<span className="ml-2 text-xs text-muted-foreground">{item.pluginId}</span>
+                </button>;
+              }
               if (item.__type === 'setting') {
                 return (
                   <button

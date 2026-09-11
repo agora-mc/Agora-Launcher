@@ -1,0 +1,11 @@
+{
+  "manifest": 1,
+  "id": "fixture.noentry",
+  "name": "Contributes a command but has no script",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "contributions": {
+    "commands": [{ "id": "run", "title": "Run", "export": "run" }]
+  }
+}

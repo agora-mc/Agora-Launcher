@@ -10,11 +10,17 @@ export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide
  * - `tab` — one of the sidebar tabs (home, browse, instances, governance, ai, guide, settings).
  * - `mod-detail` — browsing a specific curated item.
  * - `instance-detail` — editing a specific instance.
+ * - `plugin-page` — a page contributed by a community plugin, identified by its
+ *   namespaced contribution id (`publisher.plugin/local`). Namespaced rather
+ *   than a bare id so a saved destination always says which plugin owned it,
+ *   and so a page whose plugin has since been removed can be recognised as
+ *   such instead of silently matching someone else's.
  */
 export type Destination =
   | { type: 'tab'; tab: Tab; browseInstanceId?: string; browseContentType?: string }
   | { type: 'mod-detail'; itemId: string; browseInstanceId?: string }
-  | { type: 'instance-detail'; instanceId: string };
+  | { type: 'instance-detail'; instanceId: string }
+  | { type: 'plugin-page'; contributionId: string };
 
 export interface UseDestinationReturn {
   destination: Destination;
@@ -25,6 +31,7 @@ export interface UseDestinationReturn {
   navigateToBrowse: (instanceId?: string, contentType?: string) => void;
   navigateToModDetail: (itemId: string, browseInstanceId?: string) => void;
   navigateToInstanceDetail: (instanceId: string) => void;
+  navigateToPluginPage: (contributionId: string) => void;
 }
 
 function isValidDestination(d: unknown): d is Destination {
@@ -40,6 +47,7 @@ function isValidDestination(d: unknown): d is Destination {
       && (dest.browseInstanceId === undefined || typeof dest.browseInstanceId === 'string');
   }
   if (dest.type === 'instance-detail') return typeof dest.instanceId === 'string';
+  if (dest.type === 'plugin-page') return typeof dest.contributionId === 'string';
   return false;
 }
 
@@ -136,6 +144,10 @@ export function useDestination(): UseDestinationReturn {
     (instanceId: string) => push({ type: 'instance-detail', instanceId }),
     [push],
   );
+  const navigateToPluginPage = useCallback(
+    (contributionId: string) => push({ type: 'plugin-page', contributionId }),
+    [push],
+  );
 
   return {
     destination,
@@ -146,5 +158,6 @@ export function useDestination(): UseDestinationReturn {
     navigateToBrowse,
     navigateToModDetail,
     navigateToInstanceDetail,
+    navigateToPluginPage,
   };
 }

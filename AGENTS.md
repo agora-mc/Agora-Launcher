@@ -23,7 +23,10 @@ Core values:
 | `.github/` | Workflows, issue templates, and governance forms |
 | `.kilo/` | Kilo AI tooling configuration, agent profiles, commands, and skills |
 | `.kilo/plans/MASTER_SPEC.md` | Authoritative engineering blueprint (read-only for agents) |
-| crates/ | Shared Rust workspace (agora-core shared lib, agora CLI binary) |
+| crates/ | Shared Rust workspace (agora-core shared lib, agora CLI binary, plugin API + host) |
+| `sdk/` | TypeScript declarations for the `agora` module community plugins import |
+| `examples/plugins/` | Runnable example plugins, exercised by the core end-to-end tests |
+| `docs/plugins/` | Plugin author guide, honest implementation status, and compatibility fixtures |
 | BACKLOG.md | Phase-by-phase task tracker |
 | CODE_OF_ENGAGEMENT.md | Canonical review-conduct rules |
 | REGISTRY_CURATION_REFERENCE.md | Self-contained catalog manifest-authoring reference |

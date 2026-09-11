@@ -170,7 +170,9 @@ interface GameLogBatchEvent {
   instance_id: string;
 }
 
-export function useProcessController(): ProcessController {
+export function useProcessController(beforeLaunch?: (instanceId: string) => Promise<boolean>): ProcessController {
+  const beforeLaunchRef = useRef(beforeLaunch);
+  beforeLaunchRef.current = beforeLaunch;
   const [state, setState] = useState<ProcessState>(INITIAL_STATE);
   /**
    * Every direct-launch session the backend is tracking. `state` describes the
@@ -507,6 +509,10 @@ export function useProcessController(): ProcessController {
       try {
         // Core owns health analysis; React only decides whether to present
         // the returned findings and ask the user for approval.
+        if (beforeLaunchRef.current && !await beforeLaunchRef.current(instanceId)) {
+          setState((previous) => ({ ...previous, phase: 'idle', error: null }));
+          return 'failed' as const;
+        }
         const healthReport = await checkInstanceHealth(instanceId);
         healthReport.recommendations ??= [];
         const preferences = await loadHealthPreferences(healthReport.warnings);

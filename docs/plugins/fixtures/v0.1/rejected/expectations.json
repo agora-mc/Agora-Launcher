@@ -1,0 +1,107 @@
+{
+  "$comment": [
+    "Every file in this directory must keep being refused by plugin API 0.1.",
+    "`stage` records WHERE the refusal happens, because that distinction is part of the",
+    "contract: `manifest` means PluginManifest::parse rejects it outright, while",
+    "`capability-grant` means the manifest is well-formed but CapabilitySet::resolve refuses",
+    "it at install time. An author debugging the second one is not looking at a syntax error.",
+    "`messageContains` is asserted case-insensitively so wording can be improved without",
+    "breaking the fixture; the code and the stage are the parts that must not drift."
+  ],
+  "activation-names-nothing.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "names no page",
+    "why": "An activation event pointing at a missing contribution never fires, which reads to the author as 'my plugin does nothing'."
+  },
+  "contribution-id-with-separator.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "must not contain",
+    "why": "`/` is the namespace separator the host adds; an author using one produces an id that cannot be parsed back into (plugin, local)."
+  },
+  "depends-on-itself.json": {
+    "stage": "manifest",
+    "code": "DEPENDENCY_CYCLE",
+    "messageContains": "depends on itself",
+    "why": "The shortest possible cycle, caught before resolution ever runs."
+  },
+  "duplicate-command-id.json": {
+    "stage": "manifest",
+    "code": "DUPLICATE_CONTRIBUTION",
+    "messageContains": "declared twice",
+    "why": "A plugin colliding with itself is an author mistake worth naming precisely."
+  },
+  "entrypoint-escapes-package.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "climbs out of the package",
+    "why": "Path traversal is refused in the contract, so the same rule holds for a development folder that is never extracted from anything."
+  },
+  "entrypoint-is-typescript.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "bundled JavaScript",
+    "why": "TypeScript is compiled at packaging time; the launcher is not a build tool."
+  },
+  "hosts-without-network-capability.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "without requesting",
+    "why": "Hosts with no capability is a permission the user was never asked about."
+  },
+  "id-without-publisher.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "publisher.plugin",
+    "why": "The publisher segment is the namespace that lets two people both write `dashboard` with no registry to arbitrate."
+  },
+  "insecure-source-url.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "https",
+    "why": "The manager shows this link prominently; a plaintext one is worth refusing."
+  },
+  "misspelled-field.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "entryPoint",
+    "why": "`deny_unknown_fields`, so a typo fails loudly instead of producing a plugin that mysteriously does nothing."
+  },
+  "network-capability-without-hosts.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "network.hosts",
+    "why": "A network capability with no hosts can never do anything, so it is a mistake rather than a minimal request."
+  },
+  "network-ip-literal.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "IP address",
+    "why": "An IP literal sidesteps DNS, and with it the private-range rejection that protects the user's own network."
+  },
+  "network-wildcard-host.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "wildcard",
+    "why": "`*.example.com` is not something a user can evaluate at an install prompt."
+  },
+  "script-contribution-without-entrypoint.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "no `entrypoint`",
+    "why": "A command with nothing to call into would be dead on arrival."
+  },
+  "unknown-manifest-schema.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "schema 2",
+    "why": "A manifest for a schema this host does not know is refused rather than guessed at."
+  },
+  "unknown-required-capability.json": {
+    "stage": "capability-grant",
+    "code": "INCOMPATIBLE_API",
+    "messageContains": "world:teleport",
+    "why": "Well-formed, but asks for something this API version cannot provide. The honest answer is 'this Agora is too old', not 'permission denied' — so it is an API incompatibility, and it surfaces at grant time rather than at parse time."
+  }
+}

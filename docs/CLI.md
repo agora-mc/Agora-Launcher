@@ -1,6 +1,6 @@
 # Agora CLI reference
 
-The `agora` binary exposes the same core instance, catalog, health, launch, snapshot, runtime, and install services used by the desktop application. It is intended for advanced users, support diagnostics, scripting, and local AI/MCP integrations.
+The `agora` binary exposes the same core instance, catalog, health, launch, snapshot, runtime, install, and community-plugin services used by the desktop application. It is intended for advanced users, support diagnostics, scripting, and local AI/MCP integrations.
 
 The CLI can modify the same data used by the desktop application. Read the safety section before experimenting.
 
@@ -134,6 +134,14 @@ Check health and launch:
 ```bash
 agora health <INSTANCE_ID>
 agora launch <INSTANCE_ID> --timings
+```
+
+Inspect and install a community plugin:
+
+```bash
+agora plugin list
+agora plugin preview package ./example-plugin.zip
+agora plugin install package ./example-plugin.zip
 ```
 
 ## Command map
@@ -297,6 +305,38 @@ agora loader install <LOADER> <MC_VERSION> <LOADER_VERSION>
 Loader installation is restricted to Agora's pinned catalog. `--force` reinstalls a verified profile.
 
 Instance health can identify enabled mods whose loader-version requirements are not satisfied. The desktop app provides the richest interactive candidate-selection flow; the CLI should be used with explicit versions and a follow-up health check.
+
+### Community plugins
+
+```text
+agora plugin list
+agora plugin status                         # alias for list
+agora plugin preview package <PATH>
+agora plugin preview development <PATH>
+agora plugin install package <PATH>
+agora plugin install development <PATH>
+agora plugin enable <PLUGIN_ID>
+agora plugin disable <PLUGIN_ID>
+agora plugin remove <PLUGIN_ID>
+agora plugin remove <PLUGIN_ID> --purge-data
+agora plugin log <PLUGIN_ID> --lines 200
+agora plugin disable-all
+```
+
+`plugin list` reads the core-resolved install state without starting plugins. Its status column explains why an installed plugin is not runnable, including disabled plugins, incompatible host APIs, dependency problems, cycles, and recorded activation failures. `plugin status` is a convenience alias.
+
+`plugin preview` validates a package or development folder and prints the same install preview used by the install flow. It does not install or activate anything. A package is copied into Agora's managed plugin directory; a development folder is registered in place so edits remain visible to the author.
+
+An install that requests capabilities prints each required or optional capability, its user-facing explanation, and whether it can change data, then asks for consent. Answer `y` or `yes` to continue. `--yes` skips this prompt for a deliberately scripted invocation:
+
+```bash
+agora plugin install package ./example-plugin.zip --yes
+agora plugin install development ./example-plugin --yes
+```
+
+Without `--yes`, a non-interactive invocation cannot grant capabilities. The CLI shows the preview and passes a negative consent answer to core, so `PluginService` refuses the install. This keeps scripting fail-closed; do not use `--yes` unless the package's preview is trusted. In JSON mode, a pending interactive preview and prompt are written to standard error; the completed plugin summary is the single JSON value on standard output.
+
+`plugin enable` and `plugin disable` change only the installed plugin's enabled state. `plugin remove` removes the plugin and its log while keeping plugin data by default; add `--purge-data` only when that separate data-removal decision is intended. Removing a development plugin never deletes its source folder. `plugin log` reads the requested number of recent lines, defaulting to 200. `plugin disable-all` is the recovery path: it stops and disables every currently enabled plugin without removing installations or stored data.
 
 ### Launching
 

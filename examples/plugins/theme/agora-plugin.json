@@ -1,0 +1,16 @@
+{
+  "manifest": 1,
+  "id": "agora.forest",
+  "name": "Forest accents",
+  "version": "0.1.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "contributions": {
+    "theme": {
+      "id": "forest",
+      "title": "Forest accents",
+      "light": { "primary": "#246340", "primary-foreground": "#ffffff" },
+      "dark": { "primary": "#70c695", "primary-foreground": "#112619" }
+    }
+  }
+}

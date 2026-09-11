@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "agora.diagnostics",
+  "name": "Disabled content check",
+  "version": "0.1.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "activation": ["onStartup"],
+  "capabilities": { "required": ["content:read", "content:write", "launch:prepare"] },
+  "contributions": {
+    "diagnostics": [{ "id": "disabled", "title": "Check disabled mods", "export": "check" }],
+    "launchChecks": [{ "id": "readiness", "title": "Disabled mod reminder", "export": "check" }]
+  }
+}

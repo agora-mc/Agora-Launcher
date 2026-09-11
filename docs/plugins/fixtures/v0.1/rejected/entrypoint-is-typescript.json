@@ -1,0 +1,9 @@
+{
+  "manifest": 1,
+  "id": "fixture.typescript",
+  "name": "Entrypoint is not bundled JavaScript",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "src/main.ts"
+}

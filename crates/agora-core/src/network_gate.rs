@@ -94,6 +94,10 @@ fn endpoint_setting(category: ClientCategory) -> Option<&'static str> {
         ClientCategory::JavaRuntime => Some("network_adoptium_enabled"),
         ClientCategory::Registry => Some("network_registry_sync_enabled"),
         ClientCategory::GitHub => Some("network_github_oauth_enabled"),
+        // Plugins reach the network only when the user turns it on. Unlike
+        // the first-party categories this defaults to *off*: a community
+        // plugin getting outbound access should be a decision, not a default.
+        ClientCategory::Plugin => Some("network_plugins_enabled"),
         // These carry content the user has separately consented to; the
         // consent check lives at the call site. Lockdown still applies.
         ClientCategory::PinnedArtifact | ClientCategory::ConsentedContent => None,
