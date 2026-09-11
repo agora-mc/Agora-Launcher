@@ -43,6 +43,7 @@ pub mod logs;
 pub mod registry;
 pub mod service;
 pub mod store;
+pub mod updates;
 
 pub use dispatch::{MethodRequirement, NoopUiSink, PluginUiSink};
 pub use events::{EventSubscriptions, PluginEventBus};
@@ -53,3 +54,4 @@ pub use service::{
     RepairConflict, RepairOutcome, PLUGINS_ENABLED_SETTING,
 };
 pub use store::{PluginRecord, PluginSource, StorageKind};
+pub use updates::{PinnedTrust, UpdateVerdict};

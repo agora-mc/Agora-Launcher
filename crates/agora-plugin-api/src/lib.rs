@@ -27,6 +27,7 @@
 pub mod capability;
 pub mod contributions;
 pub mod diagnostics;
+pub mod distribution;
 pub mod dto;
 pub mod error;
 pub mod host;
