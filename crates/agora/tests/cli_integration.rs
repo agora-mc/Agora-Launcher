@@ -252,6 +252,10 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plugin", "remove"],
     &["plugin", "log"],
     &["plugin", "disable-all"],
+    &["plugin", "check-update"],
+    &["plugin", "update"],
+    &["plugin", "keygen"],
+    &["plugin", "sign"],
 ];
 
 // ---------------------------------------------------------------------------

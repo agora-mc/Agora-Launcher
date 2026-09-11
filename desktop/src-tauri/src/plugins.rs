@@ -10,6 +10,7 @@
 use agora_core::error::{LauncherError, LauncherResult};
 use agora_core::plugins::{
     InstallPreview, LaunchCheckOutcome, PluginService, PluginSummary, PluginUiSink, RepairOutcome,
+    UpdateOutcome, UpdateVerdict,
 };
 use agora_plugin_api::diagnostics::{DiagnosticReport, RepairProposal};
 use agora_plugin_api::dto::{Tone, ViewModel};
@@ -198,6 +199,23 @@ pub async fn install_plugin_package(
     accept_capabilities: bool,
 ) -> LauncherResult<PluginSummary> {
     service(&app)?.install_package(&PathBuf::from(path), accept_capabilities)
+}
+
+#[tauri::command]
+pub async fn plugin_check_update(
+    app: AppHandle,
+    plugin_id: String,
+) -> LauncherResult<UpdateVerdict> {
+    service(&app)?.check_update(&parse_id(&plugin_id)?)
+}
+
+#[tauri::command]
+pub async fn plugin_apply_update(
+    app: AppHandle,
+    plugin_id: String,
+    accept_capabilities: bool,
+) -> LauncherResult<UpdateOutcome> {
+    service(&app)?.apply_update(&parse_id(&plugin_id)?, accept_capabilities)
 }
 
 #[tauri::command]

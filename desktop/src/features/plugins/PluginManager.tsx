@@ -16,6 +16,8 @@ import { showToast } from '@/components/Toast';
 import { formatError, getSetting, setSetting } from '@/lib/tauri';
 import {
   addPluginDevelopmentFolder,
+  applyPluginUpdate,
+  checkPluginUpdate,
   disableAllPlugins,
   installPluginPackage,
   previewPluginFolder,
@@ -27,7 +29,16 @@ import {
 import { usePlugins } from './PluginProvider';
 import { PluginSettingsForm } from './PluginSettingsForm';
 import { PluginThemeSelect } from './PluginTheme';
-import type { InstallPreview, PluginSummary } from './types';
+import type {
+  CapabilityDescription,
+  InstallPreview,
+  KeyFingerprint,
+  PluginSummary,
+  UpdateCheckRecord,
+  UpdateOutcome,
+  UpdateSourceSummary,
+  UpdateVerdict,
+} from './types';
 
 /**
  * Settings → Plugins.
@@ -40,11 +51,114 @@ import type { InstallPreview, PluginSummary } from './types';
 
 const PLUGINS_ENABLED = 'plugins_enabled';
 const NETWORK_PLUGINS_ENABLED = 'network_plugins_enabled';
+const PLUGIN_UPDATES_ENABLED = 'plugin_updates_enabled';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isPluginSummary(value: unknown): value is PluginSummary {
+  return isRecord(value) && typeof value.id === 'string';
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function isCapabilityDescription(value: unknown): value is CapabilityDescription {
+  return (
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    typeof value.summary === 'string' &&
+    typeof value.isMutating === 'boolean'
+  );
+}
+
+function isKeyFingerprint(value: unknown): value is KeyFingerprint {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.fingerprint === 'string';
+}
+
+function isUpdateSourceSummary(value: unknown): value is UpdateSourceSummary {
+  return (
+    isRecord(value) &&
+    typeof value.url === 'string' &&
+    typeof value.host === 'string' &&
+    Array.isArray(value.keys) &&
+    value.keys.every(isKeyFingerprint)
+  );
+}
+
+function updateSourceForDisplay(value: unknown): UpdateSourceSummary | null {
+  return isUpdateSourceSummary(value) ? value : null;
+}
+
+function isUpdateCheckRecord(value: unknown): value is UpdateCheckRecord {
+  return isRecord(value) && typeof value.at === 'string' && typeof value.result === 'string';
+}
+
+function lastUpdateCheckForDisplay(value: unknown): UpdateCheckRecord | null {
+  return isUpdateCheckRecord(value) ? value : null;
+}
+
+function isInstallPreview(value: unknown): value is InstallPreview {
+  if (!isRecord(value) || !isRecord(value.manifest)) return false;
+  return (
+    typeof value.manifest.name === 'string' &&
+    typeof value.manifest.version === 'string' &&
+    typeof value.manifest.license === 'string' &&
+    Array.isArray(value.requiredCapabilities) &&
+    value.requiredCapabilities.every(isCapabilityDescription) &&
+    Array.isArray(value.optionalCapabilities) &&
+    value.optionalCapabilities.every(isCapabilityDescription) &&
+    Array.isArray(value.unsupportedCapabilities) &&
+    value.unsupportedCapabilities.every((item) => typeof item === 'string') &&
+    (value.replacesVersion === null || value.replacesVersion === undefined || typeof value.replacesVersion === 'string') &&
+    Array.isArray(value.addedCapabilities) &&
+    value.addedCapabilities.every((item) => typeof item === 'string') &&
+    Array.isArray(value.addedHosts) &&
+    value.addedHosts.every((item) => typeof item === 'string') &&
+    (value.updateSource === null || value.updateSource === undefined || isUpdateSourceSummary(value.updateSource)) &&
+    typeof value.migratesData === 'boolean' &&
+    typeof value.fileCount === 'number' &&
+    typeof value.uncompressedBytes === 'number'
+  );
+}
+
+function isUpdateVerdict(value: unknown): value is UpdateVerdict {
+  if (!isRecord(value) || typeof value.state !== 'string') return false;
+  if (value.state === 'upToDate' || value.state === 'noReleases') return true;
+  if (value.state === 'available') {
+    return (
+      typeof value.from === 'string' &&
+      typeof value.to === 'string' &&
+      (value.notes === null || typeof value.notes === 'string') &&
+      typeof value.url === 'string' &&
+      typeof value.sha256 === 'string' &&
+      typeof value.size === 'number'
+    );
+  }
+  if (value.state === 'needsNewerHost') {
+    return typeof value.latest === 'string' && typeof value.requires === 'string';
+  }
+  if (value.state === 'installedIsNewer') {
+    return typeof value.installed === 'string' && typeof value.latest === 'string';
+  }
+  return false;
+}
+
+function isUpdateOutcome(value: unknown): value is UpdateOutcome {
+  if (!isRecord(value) || typeof value.outcome !== 'string') return false;
+  if (value.outcome === 'installed') return isRecord(value.plugin);
+  if (value.outcome === 'needsConsent') return isInstallPreview(value.preview);
+  return false;
+}
 
 export function PluginManager() {
   const { plugins, refresh, ready } = usePlugins();
+  const safePlugins = Array.isArray(plugins) ? plugins.filter(isPluginSummary) : [];
   const [systemEnabled, setSystemEnabled] = useState(false);
   const [networkEnabled, setNetworkEnabled] = useState(false);
+  const [updatesEnabled, setUpdatesEnabled] = useState(false);
   const [preview, setPreview] = useState<{ preview: InstallPreview; path: string; development: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [logFor, setLogFor] = useState<{ id: string; lines: string[] } | null>(null);
@@ -53,6 +167,7 @@ export function PluginManager() {
     void (async () => {
       setSystemEnabled((await getSetting(PLUGINS_ENABLED)) === true);
       setNetworkEnabled((await getSetting(NETWORK_PLUGINS_ENABLED)) === true);
+      setUpdatesEnabled((await getSetting(PLUGIN_UPDATES_ENABLED)) === true);
     })();
   }, []);
 
@@ -88,6 +203,15 @@ export function PluginManager() {
     }
   }, []);
 
+  const toggleUpdates = useCallback(async (next: boolean) => {
+    try {
+      await setSetting(PLUGIN_UPDATES_ENABLED, next);
+      setUpdatesEnabled(next);
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    }
+  }, []);
+
   const choosePackage = useCallback(async () => {
     try {
       const path = await invoke<string | null>('pick_open_file', {
@@ -95,7 +219,12 @@ export function PluginManager() {
         extensions: ['zip'],
       });
       if (!path) return;
-      setPreview({ preview: await previewPluginPackage(path), path, development: false });
+      const nextPreview = await previewPluginPackage(path);
+      if (!isInstallPreview(nextPreview)) {
+        showToast('Agora did not return a usable plugin preview.', 'error');
+        return;
+      }
+      setPreview({ preview: nextPreview, path, development: false });
     } catch (e) {
       showToast(formatError(e), 'error');
     }
@@ -107,7 +236,12 @@ export function PluginManager() {
         title: 'Choose a plugin folder',
       });
       if (!path) return;
-      setPreview({ preview: await previewPluginFolder(path), path, development: true });
+      const nextPreview = await previewPluginFolder(path);
+      if (!isInstallPreview(nextPreview)) {
+        showToast('Agora did not return a usable plugin preview.', 'error');
+        return;
+      }
+      setPreview({ preview: nextPreview, path, development: true });
     } catch (e) {
       showToast(formatError(e), 'error');
     }
@@ -120,6 +254,10 @@ export function PluginManager() {
       const summary = preview.development
         ? await addPluginDevelopmentFolder(preview.path, true)
         : await installPluginPackage(preview.path, true);
+      if (!isRecord(summary) || typeof summary.name !== 'string' || typeof summary.version !== 'string') {
+        showToast('Agora did not return a usable installed plugin.', 'error');
+        return;
+      }
       setPreview(null);
       await refresh();
       showToast(`${summary.name} ${summary.version} installed. Restart Agora to start it.`);
@@ -166,7 +304,8 @@ export function PluginManager() {
 
   const showLog = useCallback(async (plugin: PluginSummary) => {
     try {
-      setLogFor({ id: plugin.id, lines: await readPluginLog(plugin.id, 200) });
+      const lines = await readPluginLog(plugin.id, 200);
+      setLogFor({ id: plugin.id, lines: stringArray(lines) });
     } catch (e) {
       showToast(formatError(e), 'error');
     }
@@ -204,19 +343,37 @@ export function PluginManager() {
         </div>
 
         {systemEnabled ? (
-          <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 px-4 py-3">
-            <div>
-              <div className="text-sm font-medium">Let plugins reach the internet</div>
-              <p className="text-xs text-muted-foreground">
-                Only to the hosts a plugin listed in its manifest and you approved at install
-                time. Lockdown Mode blocks this regardless.
-              </p>
+          <div className="space-y-2">
+            <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Check for plugin updates automatically</div>
+                <p className="text-xs text-muted-foreground">
+                  Controls background checks for signed plugin update documents. A manual check
+                  remains available per plugin.
+                </p>
+              </div>
+              <Switch
+                checked={updatesEnabled}
+                onCheckedChange={(checked) => void toggleUpdates(checked)}
+                aria-label="Check for plugin updates automatically"
+              />
             </div>
-            <Switch
-              checked={networkEnabled}
-              onCheckedChange={(checked) => void toggleNetwork(checked)}
-              aria-label="Allow plugin network access"
-            />
+
+            <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/30 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Let plugins reach the network</div>
+                <p className="text-xs text-muted-foreground">
+                  Controls network access from plugin code, limited to the hosts a plugin listed
+                  in its manifest and you approved at install time. Lockdown Mode blocks this
+                  regardless.
+                </p>
+              </div>
+              <Switch
+                checked={networkEnabled}
+                onCheckedChange={(checked) => void toggleNetwork(checked)}
+                aria-label="Let plugins reach the network"
+              />
+            </div>
           </div>
         ) : null}
       </section>
@@ -234,7 +391,7 @@ export function PluginManager() {
             <Button variant="ghost" size="sm" onClick={() => void refresh()}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
-            {plugins.length > 0 ? (
+            {safePlugins.length > 0 ? (
               <Button variant="ghost" size="sm" onClick={() => void panic()}>
                 <PowerOff className="h-4 w-4" /> Turn all off
               </Button>
@@ -253,17 +410,18 @@ export function PluginManager() {
 
           {!ready ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : plugins.length === 0 ? (
+          ) : safePlugins.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
               No plugins installed. Install one from a file, or point Agora at a folder you are
               working in.
             </p>
           ) : (
             <ul className="space-y-3">
-              {plugins.map((plugin) => (
+              {safePlugins.map((plugin) => (
                 <PluginRow
                   key={plugin.id}
                   plugin={plugin}
+                  onRefresh={refresh}
                   onToggle={(next) => void toggle(plugin, next)}
                   onRemove={() => void remove(plugin)}
                   onShowLog={() => void showLog(plugin)}
@@ -296,31 +454,97 @@ export function PluginManager() {
 
 function PluginRow({
   plugin,
+  onRefresh,
   onToggle,
   onRemove,
   onShowLog,
 }: {
   plugin: PluginSummary;
+  onRefresh: () => Promise<void>;
   onToggle: (next: boolean) => void;
   onRemove: () => void;
   onShowLog: () => void;
 }) {
   const [showSettings, setShowSettings] = useState(false);
-  const hasSettings = plugin.contributions.some((c) => c.kind === 'setting');
-  const broken = plugin.status.state !== 'ready' && plugin.status.state !== 'disabled';
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateVerdict, setUpdateVerdict] = useState<UpdateVerdict | null>(null);
+  const [updatePreview, setUpdatePreview] = useState<InstallPreview | null>(null);
+  const pluginId = typeof plugin.id === 'string' ? plugin.id : 'unknown-plugin';
+  const pluginName = typeof plugin.name === 'string' ? plugin.name : 'Unnamed plugin';
+  const pluginVersion = typeof plugin.version === 'string' ? plugin.version : 'unknown version';
+  const pluginDescription = typeof plugin.description === 'string' ? plugin.description : null;
+  const pluginLicense = typeof plugin.license === 'string' ? plugin.license : 'Unknown license';
+  const pluginSource = typeof plugin.sourceUrl === 'string' ? plugin.sourceUrl : null;
+  const pluginStatusText = typeof plugin.statusText === 'string' ? plugin.statusText : 'Status unavailable.';
+  const contributions = Array.isArray(plugin.contributions) ? plugin.contributions : [];
+  const capabilities = stringArray(plugin.capabilities);
+  const declaredHosts = stringArray(plugin.declaredHosts);
+  const updateSource = updateSourceForDisplay(plugin.updateSource);
+  const lastUpdateCheck = lastUpdateCheckForDisplay(plugin.lastUpdateCheck);
+  const hasSettings = contributions.some((contribution) => contribution?.kind === 'setting');
+  const statusState = isRecord(plugin.status) ? plugin.status.state : null;
+  const broken = statusState !== 'ready' && statusState !== 'disabled';
+  const droppedEvents = typeof plugin.droppedEvents === 'number' ? plugin.droppedEvents : 0;
+
+  const checkForUpdate = useCallback(async () => {
+    setUpdateBusy(true);
+    setUpdateVerdict(null);
+    setUpdatePreview(null);
+    try {
+      const result = await checkPluginUpdate(pluginId);
+      if (!isUpdateVerdict(result)) {
+        showToast('Agora did not return a usable update result.', 'error');
+        return;
+      }
+      setUpdateVerdict(result);
+      await onRefresh();
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, [onRefresh, pluginId]);
+
+  const applyUpdate = useCallback(
+    async (acceptCapabilities: boolean) => {
+      setUpdateBusy(true);
+      try {
+        const result = await applyPluginUpdate(pluginId, acceptCapabilities);
+        if (!isUpdateOutcome(result)) {
+          showToast('Agora did not return a usable update outcome.', 'error');
+          return;
+        }
+        if (result.outcome === 'needsConsent') {
+          setUpdatePreview(result.preview);
+          return;
+        }
+        if (result.outcome === 'installed') {
+          setUpdatePreview(null);
+          setUpdateVerdict(null);
+          await onRefresh();
+          showToast('Plugin update installed.');
+        }
+      } catch (e) {
+        showToast(formatError(e), 'error');
+      } finally {
+        setUpdateBusy(false);
+      }
+    },
+    [onRefresh, pluginId],
+  );
 
   return (
     <li className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{plugin.name}</span>
-            <span className="text-xs text-muted-foreground">{plugin.version}</span>
-            {plugin.development ? <Badge variant="outline">Development</Badge> : null}
-            {plugin.running ? <Badge variant="secondary">Running</Badge> : null}
+            <span className="font-medium">{pluginName}</span>
+            <span className="text-xs text-muted-foreground">{pluginVersion}</span>
+            {plugin.development === true ? <Badge variant="outline">Development</Badge> : null}
+            {plugin.running === true ? <Badge variant="secondary">Running</Badge> : null}
           </div>
-          {plugin.description ? (
-            <p className="text-sm text-muted-foreground">{plugin.description}</p>
+          {pluginDescription ? (
+            <p className="text-sm text-muted-foreground">{pluginDescription}</p>
           ) : null}
           <p
             className={
@@ -330,38 +554,86 @@ function PluginRow({
             }
           >
             {broken ? <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden /> : null}
-            {plugin.statusText}
+            {pluginStatusText}
           </p>
           <div className="flex flex-wrap gap-1.5 pt-1">
-            {plugin.capabilities.map((capability) => (
+            {capabilities.map((capability) => (
               <Badge key={capability} variant="outline" className="font-mono text-[10px]">
                 {capability}
               </Badge>
             ))}
           </div>
-          {plugin.declaredHosts.length > 0 ? (
+          {declaredHosts.length > 0 ? (
             <p className="text-xs text-muted-foreground">
-              Reaches: {plugin.declaredHosts.join(', ')}
+              Reaches: {declaredHosts.join(', ')}
             </p>
           ) : null}
-          {plugin.droppedEvents > 0 ? (
+          {updateSource ? (
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p>Checks updates at: {updateSource.host}</p>
+              {updateSource.keys.length > 0 ? (
+                <div>
+                  <div>Publisher key fingerprints:</div>
+                  <ul className="list-inside list-disc">
+                    {updateSource.keys.map((key) => (
+                      <li key={`${key.id}:${key.fingerprint}`}>
+                        {key.id}: <span className="font-mono">{key.fingerprint}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p>No pinned publisher key fingerprints are recorded.</p>
+              )}
+              <p>
+                A fingerprint means something only if compared against a key the author published
+                somewhere you already trust. It is not by itself a verification step.
+              </p>
+            </div>
+          ) : null}
+          {lastUpdateCheck ? (
             <p className="text-xs text-muted-foreground">
-              Missed {plugin.droppedEvents} event(s) because it could not keep up.
+              Last update check: {lastUpdateCheck.at} — {lastUpdateCheck.result}
+            </p>
+          ) : null}
+          {droppedEvents > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Missed {droppedEvents} event(s) because it could not keep up.
             </p>
           ) : null}
           <p className="text-xs text-muted-foreground">
-            {plugin.license}
-            {plugin.sourceUrl ? ` · ${plugin.sourceUrl}` : ' · no source link given'}
+            {pluginLicense}
+            {pluginSource ? ` · ${pluginSource}` : ' · no source link given'}
           </p>
         </div>
 
         <div className="flex shrink-0 flex-col items-end gap-2">
           <Switch
-            checked={plugin.enabled}
+            checked={plugin.enabled === true}
             onCheckedChange={onToggle}
-            aria-label={`Enable ${plugin.name}`}
+            aria-label={`Enable ${pluginName}`}
           />
           <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void checkForUpdate()}
+              disabled={
+                updateBusy ||
+                updatePreview !== null ||
+                plugin.development === true ||
+                updateSource === null
+              }
+              title={
+                plugin.development === true
+                  ? 'Development folders are not updated.'
+                  : updateSource === null
+                    ? 'This plugin has no pinned update source.'
+                    : undefined
+              }
+            >
+              {updateBusy ? 'Checking…' : 'Check for updates'}
+            </Button>
             {hasSettings ? (
               <Button variant="ghost" size="sm" onClick={() => setShowSettings((v) => !v)}>
                 Settings
@@ -379,47 +651,141 @@ function PluginRow({
 
       {showSettings ? (
         <div className="mt-4 border-t border-border pt-4">
-          <PluginSettingsForm pluginId={plugin.id} />
+          <PluginSettingsForm pluginId={pluginId} />
+        </div>
+      ) : null}
+
+      {updateVerdict ? (
+        <UpdateResult
+          verdict={updateVerdict}
+          busy={updateBusy}
+          onApply={() => void applyUpdate(false)}
+        />
+      ) : null}
+
+      {updatePreview ? (
+        <div className="mt-4 border-t border-border pt-4">
+          <InstallPrompt
+            preview={updatePreview}
+            development={false}
+            busy={updateBusy}
+            confirmLabel="Update"
+            busyLabel="Updating…"
+            onCancel={() => setUpdatePreview(null)}
+            onConfirm={() => void applyUpdate(true)}
+          />
         </div>
       ) : null}
     </li>
   );
 }
 
+function UpdateResult({
+  verdict,
+  busy,
+  onApply,
+}: {
+  verdict: UpdateVerdict;
+  busy: boolean;
+  onApply: () => void;
+}) {
+  if (verdict.state === 'upToDate') {
+    return <p className="mt-3 text-sm text-muted-foreground">Up to date</p>;
+  }
+  if (verdict.state === 'available') {
+    return (
+      <div className="mt-3 space-y-2 rounded-md border border-border bg-muted/20 p-3 text-sm">
+        <p>
+          Version {verdict.to} is available (installed version {verdict.from}).
+        </p>
+        {verdict.notes ? (
+          <p className="whitespace-pre-wrap text-muted-foreground">Release notes: {verdict.notes}</p>
+        ) : null}
+        <Button size="sm" onClick={onApply} disabled={busy}>
+          Update to {verdict.to}
+        </Button>
+      </div>
+    );
+  }
+  if (verdict.state === 'needsNewerHost') {
+    return (
+      <p className="mt-3 text-sm text-amber-700 dark:text-amber-400">
+        Version {verdict.latest} is available, but it needs a newer version of Agora ({verdict.requires}).
+      </p>
+    );
+  }
+  if (verdict.state === 'installedIsNewer') {
+    return (
+      <p className="mt-3 text-sm text-muted-foreground">
+        Installed version {verdict.installed} is newer than the publisher&apos;s latest listed version {verdict.latest}.
+      </p>
+    );
+  }
+  if (verdict.state === 'noReleases') {
+    return <p className="mt-3 text-sm text-muted-foreground">The publisher lists no releases.</p>;
+  }
+  return null;
+}
+
 function InstallPrompt({
   preview,
   development,
   busy,
+  confirmLabel = 'Install',
+  busyLabel = 'Installing…',
   onCancel,
   onConfirm,
 }: {
   preview: InstallPreview;
   development: boolean;
   busy: boolean;
+  confirmLabel?: string;
+  busyLabel?: string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const blocked = preview.unsupportedCapabilities.length > 0;
+  const requiredCapabilities = Array.isArray(preview.requiredCapabilities)
+    ? preview.requiredCapabilities.filter(isCapabilityDescription)
+    : [];
+  const optionalCapabilities = Array.isArray(preview.optionalCapabilities)
+    ? preview.optionalCapabilities.filter(isCapabilityDescription)
+    : [];
+  const unsupportedCapabilities = stringArray(preview.unsupportedCapabilities);
   // Coerced: an older backend that predates this field would otherwise put
   // `undefined` where a list is expected, in a component whose whole job is
   // telling the user what they are agreeing to.
   const newlyRequested = Array.isArray(preview.addedCapabilities)
-    ? preview.addedCapabilities
+    ? stringArray(preview.addedCapabilities)
     : [];
-  const newHosts = Array.isArray(preview.addedHosts) ? preview.addedHosts : [];
+  const newHosts = Array.isArray(preview.addedHosts) ? stringArray(preview.addedHosts) : [];
+  const manifestName = typeof preview.manifest?.name === 'string' ? preview.manifest.name : 'Plugin';
+  const manifestVersion =
+    typeof preview.manifest?.version === 'string' ? preview.manifest.version : 'unknown version';
+  const manifestDescription =
+    typeof preview.manifest?.description === 'string'
+      ? preview.manifest.description
+      : 'No description given.';
+  const manifestLicense =
+    typeof preview.manifest?.license === 'string' ? preview.manifest.license : 'Unknown license';
+  const manifestSource = typeof preview.manifest?.source === 'string' ? preview.manifest.source : null;
+  const manifestNetworkValue: unknown = preview.manifest?.network;
+  const manifestNetwork = isRecord(manifestNetworkValue)
+    ? stringArray(manifestNetworkValue.hosts)
+    : [];
+  const blocked = unsupportedCapabilities.length > 0;
 
   return (
     <div className="rounded-lg border border-border bg-muted/30 p-4">
       <div className="space-y-1">
         <div className="font-medium">
-          {preview.manifest.name} {preview.manifest.version}
+          {manifestName} {manifestVersion}
         </div>
         <p className="text-sm text-muted-foreground">
-          {preview.manifest.description ?? 'No description given.'}
+          {manifestDescription}
         </p>
         <p className="text-xs text-muted-foreground">
-          {preview.manifest.license}
-          {preview.manifest.source ? ` · ${preview.manifest.source}` : ' · no source link given'}
+          {manifestLicense}
+          {manifestSource ? ` · ${manifestSource}` : ' · no source link given'}
           {development ? ' · loaded from a folder you are editing' : ''}
         </p>
       </div>
@@ -446,11 +812,11 @@ function InstallPrompt({
         </p>
       ) : null}
 
-      {preview.requiredCapabilities.length > 0 ? (
+      {requiredCapabilities.length > 0 ? (
         <div className="mt-3">
           <div className="text-sm font-medium">It needs permission to:</div>
           <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
-            {preview.requiredCapabilities.map((capability) => (
+            {requiredCapabilities.map((capability) => (
               <li key={capability.name}>
                 {capability.summary}
                 {capability.isMutating ? (
@@ -468,11 +834,11 @@ function InstallPrompt({
         the user "it asks for no permissions" while handing over the optional
         ones, which is the one sentence this dialog must never get wrong.
       */}
-      {preview.optionalCapabilities.length > 0 ? (
+      {optionalCapabilities.length > 0 ? (
         <div className="mt-3">
           <div className="text-sm font-medium">It will also use, if allowed:</div>
           <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
-            {preview.optionalCapabilities.map((capability) => (
+            {optionalCapabilities.map((capability) => (
               <li key={capability.name}>
                 {capability.summary}
                 {capability.isMutating ? (
@@ -484,14 +850,13 @@ function InstallPrompt({
         </div>
       ) : null}
 
-      {preview.requiredCapabilities.length === 0 &&
-      preview.optionalCapabilities.length === 0 ? (
+      {requiredCapabilities.length === 0 && optionalCapabilities.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">It asks for no permissions.</p>
       ) : null}
 
-      {preview.manifest.network?.hosts?.length ? (
+      {manifestNetwork.length > 0 ? (
         <p className="mt-2 text-sm text-muted-foreground">
-          It may contact: {preview.manifest.network.hosts.join(', ')}
+          It may contact: {manifestNetwork.join(', ')}
         </p>
       ) : null}
 
@@ -499,13 +864,13 @@ function InstallPrompt({
         <p className="mt-3 flex items-start gap-2 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           This plugin needs something this version of Agora does not provide:{' '}
-          {preview.unsupportedCapabilities.join(', ')}. Check for an Agora update.
+          {unsupportedCapabilities.join(', ')}. Check for an Agora update.
         </p>
       ) : null}
 
       <div className="mt-4 flex gap-2">
         <Button size="sm" onClick={onConfirm} disabled={busy || blocked}>
-          {busy ? 'Installing…' : 'Install'}
+          {busy ? busyLabel : confirmLabel}
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel} disabled={busy}>
           Cancel

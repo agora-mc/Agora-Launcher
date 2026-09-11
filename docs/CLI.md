@@ -321,6 +321,11 @@ agora plugin remove <PLUGIN_ID>
 agora plugin remove <PLUGIN_ID> --purge-data
 agora plugin log <PLUGIN_ID> --lines 200
 agora plugin disable-all
+agora plugin check-update [PLUGIN_ID]
+agora plugin update <PLUGIN_ID>
+agora plugin update <PLUGIN_ID> --yes
+agora plugin keygen --out <PATH> --key-id <ID>
+agora plugin sign <DOCUMENT> --key <PATH> --key-id <ID>
 ```
 
 `plugin list` reads the core-resolved install state without starting plugins. Its status column explains why an installed plugin is not runnable, including disabled plugins, incompatible host APIs, dependency problems, cycles, and recorded activation failures. `plugin status` is a convenience alias.
@@ -335,6 +340,32 @@ agora plugin install development ./example-plugin --yes
 ```
 
 Without `--yes`, a non-interactive invocation cannot grant capabilities. The CLI shows the preview and passes a negative consent answer to core, so `PluginService` refuses the install. This keeps scripting fail-closed; do not use `--yes` unless the package's preview is trusted. In JSON mode, a pending interactive preview and prompt are written to standard error; the completed plugin summary is the single JSON value on standard output.
+
+### Updates
+
+`plugin check-update` fetches a plugin's signed update document and reports what it means. It downloads only the metadata, never a package. With no plugin id it checks everything installed, and reports plugins with no update source rather than skipping them silently. The result distinguishes cases that a single "up to date" would blur together: a newer release that needs a newer Agora is reported as exactly that, and an installed version ahead of what the publisher lists is reported rather than downgraded.
+
+`plugin update` applies what the publisher is offering. It re-checks rather than trusting an earlier result, downloads the package, verifies it against the size and SHA-256 in the signed document, and then goes through the same install path a manual install uses. A release asking for capabilities or network hosts the installed version was not granted stops and prints what is new; `--yes` accepts that. Development folders are never updated.
+
+Both require the plugin system to be on. Nothing contacts a publisher until you ask it to, or until you turn on automatic checking, which is off by default.
+
+### Publishing
+
+`plugin keygen` and `plugin sign` are author tooling. The launcher never holds a private key.
+
+```bash
+agora plugin keygen --out ./signing.key --key-id 2026-09
+```
+
+writes an Ed25519 private key and prints the public half as a ready-to-paste `agora-plugin-update.json`. It refuses to overwrite an existing file, because a signing key cannot be regenerated and overwriting one destroys the only copy. Keep it out of your repository: losing it means you cannot ship updates to existing installs, and nothing can restore that.
+
+```bash
+agora plugin sign ./updates.json --key ./signing.key --key-id 2026-09
+```
+
+signs an update document in place. The document does not need a `signatures` block beforehand — requiring a valid signature in order to produce one is a requirement nobody can meet — but everything else about it is validated first, so a bad release fails here rather than at every user who later fetches it.
+
+See `docs/plugins/publishing.md` for what the signature does and does not prove.
 
 `plugin enable` and `plugin disable` change only the installed plugin's enabled state. `plugin remove` removes the plugin and its log while keeping plugin data by default; add `--purge-data` only when that separate data-removal decision is intended. Removing a development plugin never deletes its source folder. `plugin log` reads the requested number of recent lines, defaulting to 200. `plugin disable-all` is the recovery path: it stops and disables every currently enabled plugin without removing installations or stored data.
 

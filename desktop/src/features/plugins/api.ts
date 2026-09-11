@@ -16,6 +16,8 @@ import type {
   PluginSummary,
   RepairOutcome,
   RepairProposal,
+  UpdateOutcome,
+  UpdateVerdict,
   ViewModel,
 } from './types';
 
@@ -36,6 +38,12 @@ export const previewPluginFolder = (path: string) =>
 
 export const installPluginPackage = (path: string, acceptCapabilities: boolean) =>
   invoke<PluginSummary>('install_plugin_package', { path, acceptCapabilities });
+
+export const checkPluginUpdate = (pluginId: string) =>
+  invoke<UpdateVerdict | null>('plugin_check_update', { pluginId });
+
+export const applyPluginUpdate = (pluginId: string, acceptCapabilities: boolean) =>
+  invoke<UpdateOutcome | null>('plugin_apply_update', { pluginId, acceptCapabilities });
 
 export const addPluginDevelopmentFolder = (path: string, acceptCapabilities: boolean) =>
   invoke<PluginSummary>('add_plugin_development_folder', { path, acceptCapabilities });

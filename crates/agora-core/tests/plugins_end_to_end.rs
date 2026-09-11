@@ -1444,7 +1444,7 @@ fn a_verified_update_that_widens_capabilities_is_still_refused_without_consent()
     package_with_source(&update, &second, Some(&update_source()));
     let bytes = std::fs::read(&update).unwrap();
 
-    let error = world
+    let outcome = world
         .service
         .install_downloaded_update(
             &id("acme.dashboard"),
@@ -1454,8 +1454,19 @@ fn a_verified_update_that_widens_capabilities_is_still_refused_without_consent()
             &bytes,
             false,
         )
-        .unwrap_err();
-    assert!(error.to_string().contains("content:write"), "{error}");
+        .unwrap();
+
+    // Not an error: "this version wants more than you granted" is a question,
+    // and the answer needs the same preview the install prompt shows rather
+    // than a sentence the UI would have to parse.
+    let agora_core::plugins::UpdateOutcome::NeedsConsent { preview } = outcome else {
+        panic!("a widening update must stop and ask");
+    };
+    assert_eq!(
+        preview.added_capabilities,
+        vec!["content:write".to_string()]
+    );
+    assert_eq!(preview.replaces_version.as_deref(), Some("1.0.0"));
 
     let record = world.service.list();
     assert_eq!(
@@ -1464,8 +1475,26 @@ fn a_verified_update_that_widens_capabilities_is_still_refused_without_consent()
             .find(|p| p.id == "acme.dashboard")
             .unwrap()
             .version,
-        "1.0.0"
+        "1.0.0",
+        "and must not have applied anything while asking"
     );
+
+    // Saying yes is what applies it.
+    let outcome = world
+        .service
+        .install_downloaded_update(
+            &id("acme.dashboard"),
+            "2.0.0",
+            &sha256_of(&bytes),
+            bytes.len() as u64,
+            &bytes,
+            true,
+        )
+        .unwrap();
+    let agora_core::plugins::UpdateOutcome::Installed { plugin } = outcome else {
+        panic!("consent given, so it should install");
+    };
+    assert_eq!(plugin.version, "2.0.0");
 }
 
 /// And the ordinary case: verified bytes asking for nothing new just install,
@@ -1484,7 +1513,7 @@ fn a_verified_update_asking_for_nothing_new_installs_and_leaves_no_download() {
     package_with_source(&update, &second, Some(&update_source()));
     let bytes = std::fs::read(&update).unwrap();
 
-    let summary = world
+    let outcome = world
         .service
         .install_downloaded_update(
             &id("acme.dashboard"),
@@ -1495,7 +1524,10 @@ fn a_verified_update_asking_for_nothing_new_installs_and_leaves_no_download() {
             false,
         )
         .unwrap();
-    assert_eq!(summary.version, "1.1.0");
+    let agora_core::plugins::UpdateOutcome::Installed { plugin } = outcome else {
+        panic!("an update asking for nothing new should just install");
+    };
+    assert_eq!(plugin.version, "1.1.0");
 
     let downloads = world.ctx.paths.plugin_rollback_root().join("downloads");
     assert!(

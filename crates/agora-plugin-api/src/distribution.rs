@@ -245,6 +245,11 @@ pub struct UpdateDocument {
     pub releases: Vec<Release>,
     /// Detached signatures over this document. One is enough; the list exists
     /// so rotation and future thresholds do not need a new schema.
+    ///
+    /// Defaulted so an author can write a document without one and have
+    /// `agora plugin sign` fill it in. [`Self::parse`] still refuses an empty
+    /// list, so nothing unsigned reaches a client.
+    #[serde(default)]
     pub signatures: Vec<Signature>,
 }
 
@@ -309,34 +314,34 @@ impl UpdateDocument {
         Ok(document)
     }
 
+    /// Parse a document that has not been signed yet.
+    ///
+    /// For authoring tools only. Everything except the signature block is
+    /// checked, so `agora plugin sign` still refuses a document with a bad
+    /// release in it — but an author does not have to supply a valid signature
+    /// in order to produce one, which is a requirement that cannot be met.
+    ///
+    /// A client must never use this. Signature checking is the whole point on
+    /// the reading side, which is why the lenient path is a separate,
+    /// differently named function rather than a flag on [`Self::parse`].
+    pub fn parse_draft(json: &str) -> PluginResult<Self> {
+        let document: UpdateDocument = serde_json::from_str(json).map_err(|e| {
+            PluginError::new(
+                PluginErrorCode::InvalidManifest,
+                format!("the update document is not valid: {e}"),
+            )
+        })?;
+        document.validate_except_signatures()?;
+        Ok(document)
+    }
+
     pub fn validate(&self) -> PluginResult<()> {
-        if self.schema != DISTRIBUTION_SCHEMA_VERSION {
-            return Err(invalid(format!(
-                "update schema {} is not supported; this Agora reads schema {}",
-                self.schema, DISTRIBUTION_SCHEMA_VERSION
-            )));
-        }
-        if self.releases.len() > MAX_RELEASES {
-            return Err(invalid(format!(
-                "the document lists {} releases, past the {MAX_RELEASES} allowed",
-                self.releases.len()
-            )));
-        }
+        self.validate_except_signatures()?;
         if self.signatures.is_empty() {
             return Err(invalid("the document carries no signature"));
         }
         if self.signatures.len() > MAX_KEYS {
             return Err(invalid("the document carries implausibly many signatures"));
-        }
-        let mut versions = std::collections::BTreeSet::new();
-        for release in &self.releases {
-            release.validate()?;
-            if !versions.insert(release.version.to_string()) {
-                return Err(invalid(format!(
-                    "version {} is listed twice; a version must name exactly one set of bytes",
-                    release.version
-                )));
-            }
         }
         for signature in &self.signatures {
             if !signature.algorithm.eq_ignore_ascii_case("ed25519") {
@@ -349,6 +354,32 @@ impl UpdateDocument {
                 return Err(invalid(format!(
                     "the signature from key `{}` is not 64 bytes of standard base64",
                     signature.key_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_except_signatures(&self) -> PluginResult<()> {
+        if self.schema != DISTRIBUTION_SCHEMA_VERSION {
+            return Err(invalid(format!(
+                "update schema {} is not supported; this Agora reads schema {}",
+                self.schema, DISTRIBUTION_SCHEMA_VERSION
+            )));
+        }
+        if self.releases.len() > MAX_RELEASES {
+            return Err(invalid(format!(
+                "the document lists {} releases, past the {MAX_RELEASES} allowed",
+                self.releases.len()
+            )));
+        }
+        let mut versions = std::collections::BTreeSet::new();
+        for release in &self.releases {
+            release.validate()?;
+            if !versions.insert(release.version.to_string()) {
+                return Err(invalid(format!(
+                    "version {} is listed twice; a version must name exactly one set of bytes",
+                    release.version
                 )));
             }
         }

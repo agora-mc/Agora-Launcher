@@ -15,6 +15,7 @@
 //! visible in review as exactly that.
 
 use agora_plugin_api::capability::CapabilitySet;
+use agora_plugin_api::distribution::UpdateSource;
 use agora_plugin_api::{PluginErrorCode, PluginManifest};
 use std::path::{Path, PathBuf};
 
@@ -208,6 +209,108 @@ fn every_rejection_expectation_explains_why_the_rule_exists() {
             "`{key}` needs a `why` saying what the rule protects against"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Distribution
+// ---------------------------------------------------------------------------
+//
+// The same discipline, applied to the other half of the public contract. How a
+// plugin is published and what a plugin may do are separate agreements that
+// change on separate schedules, so they get separate fixture sets rather than
+// one that has to be edited whenever either moves.
+
+fn distribution_root() -> PathBuf {
+    fixtures_root().join("distribution")
+}
+
+#[test]
+fn every_accepted_update_source_still_loads() {
+    let dir = distribution_root().join("accepted");
+    let files = json_files(&dir);
+    assert!(
+        !files.is_empty(),
+        "there should be accepted distribution fixtures in {}",
+        dir.display()
+    );
+    for path in files {
+        let json = std::fs::read_to_string(&path).unwrap();
+        if let Err(error) = UpdateSource::parse(&json) {
+            panic!(
+                "`{}` is a published example and must keep loading, but was refused: {}",
+                name_of(&path),
+                error.message
+            );
+        }
+    }
+}
+
+#[test]
+fn every_rejected_update_source_is_still_refused_for_the_same_reason() {
+    let dir = distribution_root().join("rejected");
+    let expectations: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("expectations.json")).unwrap())
+            .unwrap();
+
+    let files = json_files(&dir);
+    assert!(!files.is_empty(), "there should be rejected fixtures");
+
+    for path in files {
+        let name = name_of(&path);
+        let expected = &expectations[&name];
+        assert!(
+            !expected.is_null(),
+            "`{name}` has no entry in expectations.json. Every rejected fixture has to say \
+             what it is pinning, or a refusal that changes reason silently still passes."
+        );
+        let json = std::fs::read_to_string(&path).unwrap();
+        let error = match UpdateSource::parse(&json) {
+            Ok(_) => panic!("`{name}` must keep being refused, but it loaded"),
+            Err(error) => error,
+        };
+        let needle = expected["messageContains"].as_str().unwrap_or_default();
+        assert!(
+            error
+                .message
+                .to_lowercase()
+                .contains(&needle.to_lowercase()),
+            "`{name}` is still refused, but for a different reason.\n  expected to mention: \
+             {needle}\n  actual: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn every_distribution_rejection_explains_why_the_rule_exists() {
+    let dir = distribution_root().join("rejected");
+    let expectations: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("expectations.json")).unwrap())
+            .unwrap();
+
+    for (key, value) in expectations.as_object().expect("object") {
+        if key.starts_with('$') {
+            continue;
+        }
+        let why = value["why"].as_str().unwrap_or("");
+        assert!(
+            why.len() > 30,
+            "`{key}` needs a `why` saying what the rule protects against"
+        );
+    }
+}
+
+/// A key set with two entries is the shape a rotation takes, so it has to keep
+/// being accepted — refusing it would strand every author mid-rotation.
+#[test]
+fn a_source_may_pin_more_than_one_key() {
+    let json =
+        std::fs::read_to_string(distribution_root().join("accepted/source-mid-rotation.json"))
+            .unwrap();
+    let source = UpdateSource::parse(&json).expect("a rotating source must load");
+    assert_eq!(source.keys.len(), 2);
+    assert!(source.key("2026-03").is_some());
+    assert!(source.key("2026-09").is_some());
 }
 
 #[test]

@@ -47,11 +47,14 @@ pub mod updates;
 
 pub use dispatch::{MethodRequirement, NoopUiSink, PluginUiSink};
 pub use events::{EventSubscriptions, PluginEventBus};
-pub use install::{added_capabilities, CapabilityDescription, ExistingInstall, InstallPreview};
+pub use install::{
+    added_capabilities, CapabilityDescription, ExistingInstall, InstallPreview, KeyFingerprint,
+    UpdateSourceSummary,
+};
 pub use registry::{NamespacedContribution, PluginStatus, Resolution};
 pub use service::{
     LaunchCheckOutcome, LaunchCheckResult, PluginService, PluginSettingsView, PluginSummary,
-    RepairConflict, RepairOutcome, PLUGINS_ENABLED_SETTING,
+    RepairConflict, RepairOutcome, UpdateCheckRecord, UpdateOutcome, PLUGINS_ENABLED_SETTING,
 };
 pub use store::{PluginRecord, PluginSource, StorageKind};
 pub use updates::{PinnedTrust, UpdateVerdict};

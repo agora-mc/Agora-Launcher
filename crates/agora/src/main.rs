@@ -397,6 +397,52 @@ enum PluginCmd {
     /// Disable every installed plugin as a recovery action.
     #[command(name = "disable-all")]
     DisableAll,
+    /// Ask a plugin's publisher whether there is a newer release.
+    ///
+    /// Fetches only the signed metadata, never a package. With no id, checks
+    /// every plugin that came with an update source.
+    #[command(name = "check-update")]
+    CheckUpdate {
+        /// Plugin id. Omit to check all of them.
+        id: Option<String>,
+    },
+    /// Download and install the release the publisher is offering.
+    Update {
+        id: String,
+        #[arg(
+            long,
+            help = "Accept capabilities the installed version was not granted"
+        )]
+        yes: bool,
+    },
+    /// Generate an Ed25519 signing key for publishing updates.
+    ///
+    /// Author tooling. The private key is written to a file you keep; Agora
+    /// never stores it, never reads it again, and cannot recover it.
+    #[command(name = "keygen")]
+    Keygen {
+        /// Where to write the private key. The public half is printed.
+        #[arg(long)]
+        out: PathBuf,
+        /// Label recorded alongside the key, echoed by signatures.
+        #[arg(long, default_value = "default")]
+        key_id: String,
+    },
+    /// Sign an update document in place.
+    ///
+    /// Reads the document, signs the canonical form, and writes it back with
+    /// the signature attached.
+    Sign {
+        /// The update document to sign.
+        document: PathBuf,
+        /// Private key file produced by `keygen`.
+        #[arg(long)]
+        key: PathBuf,
+        /// Key id to record in the signature. Defaults to the one the
+        /// document already names, if it names one.
+        #[arg(long)]
+        key_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -975,6 +1021,151 @@ fn run_data_migration(
     Ok(())
 }
 
+/// One line for a verdict, from its serialised form.
+///
+/// Reads the JSON rather than the enum so the CLI prints exactly the shape it
+/// would emit under `--json`; a divergence between the two is the kind of bug
+/// nobody notices until someone scripts against it.
+fn describe_verdict(verdict: &serde_json::Value) -> String {
+    let state = verdict["state"].as_str().unwrap_or("");
+    let text = |key: &str| verdict[key].as_str().unwrap_or("?").to_string();
+    match state {
+        "upToDate" => "up to date".into(),
+        "available" => {
+            let notes = verdict["notes"].as_str().unwrap_or("");
+            let line = format!("{} -> {} available", text("from"), text("to"));
+            if notes.is_empty() {
+                line
+            } else {
+                format!("{line} — {notes}")
+            }
+        }
+        // Deliberately not folded into "up to date": a plugin held back by the
+        // host version is a thing the user can act on, and saying it is
+        // current would stop them looking.
+        "needsNewerHost" => format!(
+            "{} is available but needs an Agora matching {}",
+            text("latest"),
+            text("requires")
+        ),
+        "installedIsNewer" => format!(
+            "installed {} is newer than the published {}",
+            text("installed"),
+            text("latest")
+        ),
+        "noReleases" => "the publisher lists no releases".into(),
+        other => format!("unrecognised result `{other}`"),
+    }
+}
+
+/// Write a new Ed25519 private key and return its public half as a
+/// `PublicKey` ready to paste into a package.
+///
+/// Refuses to overwrite an existing file. Overwriting a signing key is never
+/// what someone meant, and doing it silently would destroy the only copy of
+/// something that cannot be regenerated.
+fn generate_signing_key(out: &Path, key_id: &str) -> anyhow::Result<serde_json::Value> {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+
+    if out.exists() {
+        anyhow::bail!(
+            "{} already exists. Refusing to overwrite a signing key.",
+            out.display()
+        );
+    }
+    let mut seed = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let engine = base64::engine::general_purpose::STANDARD;
+
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    // The file is the secret, so it is written once, with a trailing newline
+    // and nothing else — no id, no comment, nothing that invites someone to
+    // paste the whole file somewhere thinking it is the public half.
+    std::fs::write(out, format!("{}\n", engine.encode(signing.to_bytes())))?;
+    restrict_to_owner(out);
+
+    Ok(serde_json::json!({
+        "id": key_id,
+        "algorithm": "ed25519",
+        "publicKey": engine.encode(signing.verifying_key().to_bytes()),
+    }))
+}
+
+/// Best-effort: make a private key file readable only by its owner.
+///
+/// On Windows the meaningful control is the directory ACL, which is not ours
+/// to change, so this is a no-op there rather than a false assurance.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) {}
+
+/// Sign an update document in place, returning the key id used.
+fn sign_update_document(
+    document: &Path,
+    key: &Path,
+    key_id: Option<&str>,
+) -> anyhow::Result<String> {
+    use agora_plugin_api::distribution::{Signature, UpdateDocument};
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+
+    let engine = base64::engine::general_purpose::STANDARD;
+    let key_text = std::fs::read_to_string(key)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", key.display()))?;
+    let raw = engine
+        .decode(key_text.trim())
+        .map_err(|_| anyhow::anyhow!("{} is not a base64 private key", key.display()))?;
+    let raw: [u8; 32] = raw
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{} is not a 32-byte Ed25519 key", key.display()))?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&raw);
+
+    let text = std::fs::read_to_string(document)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", document.display()))?;
+    // Parsed as a draft: requiring a valid signature in order to produce one
+    // is a requirement nobody can meet. Everything else about the document is
+    // still checked, so signing one with a bad release in it fails here rather
+    // than at every user who later fetches it.
+    let mut parsed =
+        UpdateDocument::parse_draft(&text).map_err(|e| anyhow::anyhow!("{}", e.message))?;
+
+    let key_id = match key_id {
+        Some(explicit) => explicit.to_string(),
+        None => parsed
+            .signatures
+            .first()
+            .map(|signature| signature.key_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "this document does not say which key signs it. Pass --key-id, or add a \
+                     `signatures` entry naming one."
+                )
+            })?,
+    };
+
+    // Signed over the document with `signatures` removed, so whatever
+    // placeholder was in there cannot affect the result.
+    let signature = signing.sign(&parsed.signing_bytes());
+    parsed.signatures = vec![Signature {
+        key_id: key_id.clone(),
+        algorithm: "ed25519".into(),
+        value: engine.encode(signature.to_bytes()),
+    }];
+    std::fs::write(document, serde_json::to_string_pretty(&parsed)?)?;
+    Ok(key_id)
+}
+
 fn plugin_service(ctx: &agora_core::ctx::Ctx) -> PluginService {
     let host: Arc<dyn agora_plugin_api::host::ScriptHost> =
         Arc::new(agora_plugin_host::QuickJsHost::new());
@@ -1255,6 +1446,112 @@ fn run_plugin_command(
                 for line in log_lines {
                     println!("{line}");
                 }
+            }
+        }
+        PluginCmd::CheckUpdate { id } => {
+            let targets = match &id {
+                Some(id) => vec![parse_plugin_id(id)?],
+                // Everything installed. Plugins with no update source report
+                // that rather than being silently skipped, because "nothing
+                // happened" is indistinguishable from "nothing to do".
+                None => service
+                    .list()
+                    .into_iter()
+                    .filter_map(|plugin| parse_plugin_id(&plugin.id).ok())
+                    .collect(),
+            };
+            let mut results = Vec::new();
+            for plugin_id in targets {
+                let outcome = match service.check_update(&plugin_id) {
+                    Ok(verdict) => serde_json::json!({
+                        "id": plugin_id.as_str(),
+                        "verdict": verdict,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "id": plugin_id.as_str(),
+                        "error": error.to_string(),
+                    }),
+                };
+                results.push(outcome);
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            } else {
+                for result in &results {
+                    let id = result["id"].as_str().unwrap_or("?");
+                    if let Some(error) = result["error"].as_str() {
+                        println!("{id}: {error}");
+                    } else {
+                        println!("{id}: {}", describe_verdict(&result["verdict"]));
+                    }
+                }
+            }
+        }
+        PluginCmd::Update { id, yes } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            let outcome = service.apply_update(&plugin_id, yes)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                match outcome {
+                    agora_core::plugins::UpdateOutcome::Installed { plugin } => {
+                        println!("Updated plugin {} to v{}.", plugin.id, plugin.version);
+                    }
+                    // Deliberately not applied and deliberately not an error:
+                    // the release is fine, it just wants something the user
+                    // has not agreed to, and they are the one who decides.
+                    agora_core::plugins::UpdateOutcome::NeedsConsent { preview } => {
+                        println!(
+                            "Not updated. Version {} asks for more than {id} was granted:",
+                            preview.manifest.version
+                        );
+                        for capability in &preview.added_capabilities {
+                            println!("  - {capability}");
+                        }
+                        for host in &preview.added_hosts {
+                            println!("  - may contact {host}");
+                        }
+                        println!();
+                        println!("Re-run with --yes to accept.");
+                    }
+                }
+            }
+        }
+        PluginCmd::Keygen { out, key_id } => {
+            let public = generate_signing_key(&out, &key_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&public)?);
+            } else {
+                println!("Private key written to {}.", out.display());
+                println!(
+                    "Keep it safe and out of your repository. If you lose it you cannot ship \
+                     updates to existing installs, and nothing can restore that."
+                );
+                println!();
+                println!("Put this in your package as agora-plugin-update.json:");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema": 1,
+                        "url": "https://example.com/your-plugin.json",
+                        "keys": [public],
+                    }))?
+                );
+            }
+        }
+        PluginCmd::Sign {
+            document,
+            key,
+            key_id,
+        } => {
+            let signed = sign_update_document(&document, &key, key_id.as_deref())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "signed": document, "keyId": signed })
+                );
+            } else {
+                println!("Signed {} with key `{signed}`.", document.display());
             }
         }
         PluginCmd::DisableAll => {

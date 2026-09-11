@@ -73,6 +73,24 @@ pub struct KeyFingerprint {
 }
 
 impl UpdateSourceSummary {
+    /// Build from a stored trust record rather than a package.
+    ///
+    /// The manager shows what was *pinned*, which is not necessarily what the
+    /// currently installed package would declare if it were read again.
+    pub fn from_parts(url: &str, keys: &[agora_plugin_api::distribution::PublicKey]) -> Self {
+        UpdateSourceSummary {
+            url: url.to_string(),
+            host: host_of(url),
+            keys: keys
+                .iter()
+                .map(|key| KeyFingerprint {
+                    id: key.id.clone(),
+                    fingerprint: key.fingerprint(),
+                })
+                .collect(),
+        }
+    }
+
     fn of(source: &UpdateSource) -> Self {
         UpdateSourceSummary {
             url: source.url.clone(),

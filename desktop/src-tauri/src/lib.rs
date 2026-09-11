@@ -160,6 +160,8 @@ pub fn run() {
             plugins::preview_plugin_package,
             plugins::preview_plugin_folder,
             plugins::install_plugin_package,
+            plugins::plugin_check_update,
+            plugins::plugin_apply_update,
             plugins::add_plugin_development_folder,
             plugins::set_plugin_enabled,
             plugins::uninstall_plugin,

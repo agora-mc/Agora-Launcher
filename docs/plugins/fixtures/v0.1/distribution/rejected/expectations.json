@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "Every file here must keep being refused by the distribution schema 1 reader.",
+    "These pin the *shape* of an author's update source. They are separate from the",
+    "manifest fixtures because distribution is a separate contract: a plugin may change",
+    "how it is published without changing what it is allowed to do, and vice versa.",
+    "`messageContains` is asserted case-insensitively so wording can improve; the fact",
+    "of the refusal is what must not drift."
+  ],
+  "source-over-http.json": {
+    "messageContains": "https",
+    "why": "An update source reached over plain HTTP can be replaced in transit by anyone on the path. The signature would still be checked, but the URL is pinned at install and a downgrade to HTTP is not something an author should be able to ship."
+  },
+  "source-with-no-keys.json": {
+    "messageContains": "at least one key",
+    "why": "A source with no key can never have an update verified against it, so accepting one would create a plugin that appears to have updates and can never take one."
+  },
+  "source-key-wrong-length.json": {
+    "messageContains": "32 bytes",
+    "why": "A malformed key must fail when the file is read, in front of the user at install time, rather than months later when an update fails for a reason nobody can act on."
+  },
+  "source-unsupported-algorithm.json": {
+    "messageContains": "ed25519",
+    "why": "Naming an algorithm this build cannot verify must be refused rather than ignored. Silently skipping the key would leave the plugin looking signed while nothing checked it."
+  },
+  "source-duplicate-key-id.json": {
+    "messageContains": "share the id",
+    "why": "The key id selects which key verifies a signature. Two keys sharing one makes that selection ambiguous, and an ambiguous verification step is one nobody can reason about."
+  }
+}

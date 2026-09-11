@@ -553,8 +553,27 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
   - [ ] Verify in the packaged desktop app, not only in tests. The browser-level e2e
         proves the custom-frame boundary but mocks the Tauri bridge around it.
 
-- [ ] **P4** — Ecosystem expansion — hosted packages and update, optional curated
-      catalog, developer tooling, a content-source example. Not started.
+- [~] **P4** — Author-hosted signed updates
+  - [x] Distribution format: `agora-plugin-update.json` in the package pins the update URL and
+        Ed25519 keys; the author hosts a signed document listing releases, each carrying the
+        SHA-256 that authenticates its package. Deliberately a separate file from the manifest so
+        the fixture-pinned manifest contract does not move when distribution grows.
+  - [x] Trust on first install: keys recorded at the moment of consent and read only from the
+        database afterwards, like the capability grants. A package that ships no update source
+        clears any previous pin rather than inheriting it.
+  - [x] Replay defence: documents carry a monotonic sequence, authenticity is verified before
+        freshness, and a document that fails to verify cannot move the recorded sequence.
+  - [x] Applying an update goes through the ordinary install path — same capability comparison,
+        same data checkpoint, same staging and rollback. A widening release returns a preview to
+        consent to rather than an error.
+  - [x] Author tooling: `agora plugin keygen`, `agora plugin sign`, and a round-trip test that
+        drives the real binary and verifies its output with the real verifier.
+  - [x] `agora plugin check-update` / `agora plugin update`, and the desktop equivalents.
+  - [ ] A real publish-and-update cycle against an author-hosted file. The network gate rejects
+        loopback by design, so this cannot be proven locally.
+  - [ ] Revocation, or an explicit decision that there will not be one.
+  - [ ] Optional curated catalog, and a content-source example. Not started; installing needs
+        neither.
 
 - [ ] **P5** — Deeper customization — replacement views, richer sources and hooks.
       Native companions only if a concrete plugin justifies them. Not started.

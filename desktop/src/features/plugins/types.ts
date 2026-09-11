@@ -39,6 +39,22 @@ export type PluginStatus =
   | { state: 'dependencyCycle'; detail: { cycle: string[] } }
   | { state: 'failed'; detail: { message: string } };
 
+export interface KeyFingerprint {
+  id: string;
+  fingerprint: string;
+}
+
+export interface UpdateSourceSummary {
+  url: string;
+  host: string;
+  keys: KeyFingerprint[];
+}
+
+export interface UpdateCheckRecord {
+  at: string;
+  result: string;
+}
+
 export interface PluginSummary {
   id: string;
   name: string;
@@ -58,6 +74,8 @@ export interface PluginSummary {
   definitions: PluginDefinitions;
   installedAt: string;
   updatedAt: string;
+  updateSource: UpdateSourceSummary | null;
+  lastUpdateCheck: UpdateCheckRecord | null;
   droppedEvents: number;
 }
 
@@ -81,10 +99,30 @@ export interface InstallPreview {
   addedCapabilities: string[];
   /** Hosts this package would reach that the installed version could not. */
   addedHosts: string[];
+  updateSource: UpdateSourceSummary | null;
   migratesData: boolean;
   fileCount: number;
   uncompressedBytes: number;
 }
+
+export type UpdateVerdict =
+  | { state: 'upToDate' }
+  | {
+      state: 'available';
+      from: string;
+      to: string;
+      notes: string | null;
+      url: string;
+      sha256: string;
+      size: number;
+    }
+  | { state: 'needsNewerHost'; latest: string; requires: string }
+  | { state: 'installedIsNewer'; installed: string; latest: string }
+  | { state: 'noReleases' };
+
+export type UpdateOutcome =
+  | { outcome: 'installed'; plugin: PluginSummary }
+  | { outcome: 'needsConsent'; preview: InstallPreview };
 
 export interface SettingDefinition {
   key: string;

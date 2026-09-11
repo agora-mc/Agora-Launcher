@@ -70,8 +70,38 @@ pub struct PluginSummary {
     pub definitions: agora_plugin_api::contributions::Contributions,
     pub installed_at: String,
     pub updated_at: String,
+    /// Where this plugin checks for updates, and the keys pinned when it was
+    /// installed. `None` means it did not come with an update source.
+    ///
+    /// Read from the trust record rather than the manifest, because the
+    /// manifest is whatever the *current* package says and the pin is what the
+    /// user actually agreed to.
+    pub update_source: Option<install::UpdateSourceSummary>,
+    /// What the last update check concluded, and when.
+    pub last_update_check: Option<UpdateCheckRecord>,
     /// Events this plugin missed because it could not keep up.
     pub dropped_events: u64,
+}
+
+/// The outcome of the most recent update check, for display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckRecord {
+    pub at: String,
+    pub result: String,
+}
+
+/// What applying an update did, or what it needs first.
+///
+/// A separate case rather than an error, because "this version wants more than
+/// you granted" is a question to put to the user, not a failure. An error
+/// carries a sentence; this carries the same preview the install prompt shows,
+/// so the two paths look identical to someone deciding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum UpdateOutcome {
+    Installed { plugin: Box<PluginSummary> },
+    NeedsConsent { preview: Box<InstallPreview> },
 }
 
 /// What `apply_repair` actually did.
@@ -307,6 +337,10 @@ impl PluginService {
         let Ok(resolution) = self.inner.resolution.read() else {
             return Vec::new();
         };
+        // Read once for the whole list rather than per plugin: this runs on
+        // every refresh of the manager, and a query per row would be a query
+        // per row for information that changes only on install or check.
+        let (trust, checks) = self.trust_for_display();
         resolution
             .plugins
             .iter()
@@ -341,10 +375,48 @@ impl PluginService {
                         .collect(),
                     installed_at: resolved.record.installed_at.clone(),
                     updated_at: resolved.record.updated_at.clone(),
+                    update_source: trust.get(id.as_str()).cloned(),
+                    last_update_check: checks.get(id.as_str()).cloned(),
                     dropped_events: self.bus.dropped_count(&id),
                 }
             })
             .collect()
+    }
+
+    /// Pinned update sources and last check results, keyed by plugin id.
+    ///
+    /// Failure is silent and empty: a plugin manager that will not render
+    /// because the trust table could not be read is worse than one that does
+    /// not show where updates come from.
+    #[allow(clippy::type_complexity)]
+    fn trust_for_display(
+        &self,
+    ) -> (
+        BTreeMap<String, install::UpdateSourceSummary>,
+        BTreeMap<String, UpdateCheckRecord>,
+    ) {
+        let mut sources = BTreeMap::new();
+        let mut checks = BTreeMap::new();
+        let Ok(conn) = self.inner.conn() else {
+            return (sources, checks);
+        };
+        let Ok(resolution) = self.inner.resolution.read() else {
+            return (sources, checks);
+        };
+        for resolved in &resolution.plugins {
+            let id = resolved.id();
+            let Ok(Some(record)) = store::get_trust(&conn, id) else {
+                continue;
+            };
+            sources.insert(
+                id.to_string(),
+                install::UpdateSourceSummary::from_parts(&record.url, &record.keys),
+            );
+            if let (Some(at), Some(result)) = (record.last_checked_at, record.last_result) {
+                checks.insert(id.to_string(), UpdateCheckRecord { at, result });
+            }
+        }
+        (sources, checks)
     }
 
     /// Contributions from every plugin that is currently runnable.
@@ -578,7 +650,7 @@ impl PluginService {
         &self,
         plugin_id: &PluginId,
         accept_capabilities: bool,
-    ) -> LauncherResult<PluginSummary> {
+    ) -> LauncherResult<UpdateOutcome> {
         let verdict = self.check_update(plugin_id)?;
         let UpdateVerdict::Available {
             to,
@@ -621,7 +693,7 @@ impl PluginService {
         size: u64,
         bytes: &[u8],
         accept_capabilities: bool,
-    ) -> LauncherResult<PluginSummary> {
+    ) -> LauncherResult<UpdateOutcome> {
         // The signed document said what these bytes must be. The host that
         // served them is trusted for nothing else: it may refuse, and it may
         // serve something different, but something different fails here.
@@ -659,6 +731,22 @@ impl PluginService {
             message: format!("could not write the downloaded package: {e}"),
         })?;
 
+        // Asked before installing, so that a release wanting more permission
+        // can be *described* rather than merely refused. The adapter needs the
+        // same preview the install prompt uses; discovering the refusal from
+        // an error string would leave it with nothing to show.
+        let preview = self.preview_package(&archive);
+        let needs_consent = preview
+            .as_ref()
+            .map(|preview| preview.requires_capability_consent())
+            .unwrap_or(false);
+        if needs_consent && !accept_capabilities {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Ok(UpdateOutcome::NeedsConsent {
+                preview: Box::new(preview.expect("checked above")),
+            });
+        }
+
         // Deliberately the same call a manual install makes. An update is not
         // a privileged path: it gets the same capability comparison, the same
         // data checkpoint, the same staging and rollback, and the same refusal
@@ -670,7 +758,9 @@ impl PluginService {
         // copy of something already on disk, with no way to re-verify it later
         // once the signed document that described it has moved on.
         let _ = std::fs::remove_dir_all(&staging);
-        result
+        result.map(|summary| UpdateOutcome::Installed {
+            plugin: Box::new(summary),
+        })
     }
 
     /// The record and trust for a plugin that can meaningfully be updated.
