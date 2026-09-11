@@ -17,11 +17,13 @@ use super::install::{self, InstallPreview};
 use super::logs;
 use super::registry::{self, NamespacedContribution, PluginStatus, Resolution};
 use super::store::{self, PluginRecord, PluginSource, StorageKind};
+use super::updates::{self, UpdateVerdict};
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
 use agora_plugin_api::capability::CapabilitySet;
 use agora_plugin_api::contributions::{LaunchCheckFailure, SettingDefinition, MAX_LAUNCH_CHECK_MS};
 use agora_plugin_api::diagnostics::{DiagnosticReport, RepairAction, RepairProposal, Severity};
+use agora_plugin_api::distribution::{Release, UpdateDocument};
 use agora_plugin_api::dto::ViewModel;
 use agora_plugin_api::error::{PluginError, PluginErrorCode};
 use agora_plugin_api::host::{ActivationRequest, HostBridge, ScriptHost};
@@ -410,7 +412,8 @@ impl PluginService {
         archive: &Path,
         accept_capabilities: bool,
     ) -> LauncherResult<PluginSummary> {
-        let (manifest, _, _) = install::read_package_manifest(archive)?;
+        let contents = install::read_package_manifest(archive)?;
+        let manifest = contents.manifest;
 
         let destination =
             install::package_dir(&self.inner.ctx.paths.plugin_packages_root(), &manifest.id);
@@ -493,8 +496,258 @@ impl PluginService {
         }
         let _ = std::fs::remove_dir_all(&rollback);
 
+        // Pinned at the moment consent was given, and only then. A package
+        // that declares no update source clears any previous pin rather than
+        // inheriting it, so a plugin cannot acquire an update channel by
+        // shipping a version that simply omits the file.
+        match &contents.update_source {
+            Some(source) => store::put_trust(&conn, &manifest.id, &source.url, &source.keys)?,
+            None => store::clear_trust(&conn, &manifest.id)?,
+        }
+
         self.reload()?;
         self.summary(&manifest.id)
+    }
+
+    // -- updating ----------------------------------------------------------
+
+    /// Fetch this plugin's update document, verify it, and say what it means.
+    ///
+    /// Does not install anything and does not download a package. The only
+    /// bytes fetched are the small signed JSON document, so a check is cheap,
+    /// and a check that fails leaves nothing behind but a recorded reason.
+    pub fn check_update(&self, plugin_id: &PluginId) -> LauncherResult<UpdateVerdict> {
+        let (record, trust) = self.update_subject(plugin_id)?;
+
+        let body = self.fetch_update_document(&trust.url)?;
+        let text = String::from_utf8(body).map_err(|_| LauncherError::Generic {
+            code: "ERR_PLUGIN_UPDATE_REFUSED".into(),
+            message: "the update document is not text".into(),
+        })?;
+        let document = UpdateDocument::parse(&text).map_err(|error| LauncherError::Generic {
+            code: "ERR_PLUGIN_UPDATE_REFUSED".into(),
+            message: error.message,
+        })?;
+
+        let pinned = updates::PinnedTrust {
+            keys: trust.keys.clone(),
+            highest_sequence: trust.highest_sequence,
+        };
+
+        // Verification first, always. Nothing below this line may run against a
+        // document that has not been vouched for by a pinned key, which is why
+        // `decide` is a separate function taking an already-checked one.
+        let conn = self.inner.conn()?;
+        let verified = updates::verify_document(&pinned, plugin_id, &document);
+        if let Err(error) = &verified {
+            // Recorded but the sequence is left where it was: a document that
+            // did not verify must not be able to raise the replay floor and
+            // lock the user out of the real one.
+            store::record_check(
+                &conn,
+                plugin_id,
+                trust.highest_sequence,
+                &now(&self.inner.ctx),
+                &error.to_string(),
+            )?;
+        }
+        verified?;
+
+        let verdict = updates::decide(
+            &record.manifest.version,
+            &agora_plugin_api::HOST_API_VERSION,
+            &document,
+        );
+        store::record_check(
+            &conn,
+            plugin_id,
+            document.sequence,
+            &now(&self.inner.ctx),
+            &verdict_summary(&verdict),
+        )?;
+        Ok(verdict)
+    }
+
+    /// Download and install the release [`Self::check_update`] offered.
+    ///
+    /// Re-checks rather than trusting a verdict handed back in. Between the
+    /// check and the click the publisher may have published again, and the
+    /// decision about which bytes to fetch has to come from a document
+    /// verified during this call.
+    pub fn apply_update(
+        &self,
+        plugin_id: &PluginId,
+        accept_capabilities: bool,
+    ) -> LauncherResult<PluginSummary> {
+        let verdict = self.check_update(plugin_id)?;
+        let UpdateVerdict::Available {
+            to,
+            url,
+            sha256,
+            size,
+            ..
+        } = &verdict
+        else {
+            return Err(LauncherError::Generic {
+                code: "ERR_PLUGIN_UPDATE_NONE".into(),
+                message: format!(
+                    "`{plugin_id}` has no update to apply ({})",
+                    verdict_summary(&verdict)
+                ),
+            });
+        };
+
+        let bytes = self.fetch_update_package(url, *size)?;
+        self.install_downloaded_update(plugin_id, to, sha256, *size, &bytes, accept_capabilities)
+    }
+
+    /// Check downloaded bytes against the signed release and install them.
+    ///
+    /// Split from [`Self::apply_update`] so that everything after the fetch —
+    /// which is all of the logic worth being sure about — can be tested
+    /// against real bytes without a server. That is not merely convenient:
+    /// the network gate rejects loopback addresses by design, so a test that
+    /// stood up a local HTTP server would be testing the gate refusing it.
+    ///
+    /// Public because it is also the honest shape of an offline update: bytes
+    /// obtained some other way, checked against the hash and size a signed
+    /// release declared. It grants nothing on its own — the capability
+    /// comparison still happens inside `install_package`.
+    pub fn install_downloaded_update(
+        &self,
+        plugin_id: &PluginId,
+        version: &str,
+        sha256: &str,
+        size: u64,
+        bytes: &[u8],
+        accept_capabilities: bool,
+    ) -> LauncherResult<PluginSummary> {
+        // The signed document said what these bytes must be. The host that
+        // served them is trusted for nothing else: it may refuse, and it may
+        // serve something different, but something different fails here.
+        let release = Release {
+            version: version.parse().map_err(|_| LauncherError::Generic {
+                code: "ERR_PLUGIN_UPDATE_REFUSED".into(),
+                message: format!("`{version}` is not a version"),
+            })?,
+            url: String::new(),
+            sha256: sha256.to_string(),
+            size,
+            // Compatibility was already decided by `decide`, which only offers
+            // a release whose range matches this host.
+            api_range: semver::VersionReq::STAR,
+            notes: None,
+            published: None,
+        };
+        updates::verify_package_bytes(&release, bytes)?;
+
+        // Staged inside Agora's own directory rather than a system temp dir,
+        // so a crash leaves the debris somewhere the launcher already owns.
+        let staging = self
+            .inner
+            .ctx
+            .paths
+            .plugin_rollback_root()
+            .join("downloads");
+        std::fs::create_dir_all(&staging).map_err(|e| LauncherError::Generic {
+            code: "ERR_PLUGIN_IO".into(),
+            message: format!("could not prepare {}: {e}", staging.display()),
+        })?;
+        let archive = staging.join(format!("{plugin_id}-{version}.zip"));
+        std::fs::write(&archive, bytes).map_err(|e| LauncherError::Generic {
+            code: "ERR_PLUGIN_IO".into(),
+            message: format!("could not write the downloaded package: {e}"),
+        })?;
+
+        // Deliberately the same call a manual install makes. An update is not
+        // a privileged path: it gets the same capability comparison, the same
+        // data checkpoint, the same staging and rollback, and the same refusal
+        // when it asks for more than was granted.
+        let result = self.install_package(&archive, accept_capabilities);
+        let _ = std::fs::remove_file(&archive);
+
+        // The downloaded bytes are not kept. Retaining them would be a second
+        // copy of something already on disk, with no way to re-verify it later
+        // once the signed document that described it has moved on.
+        let _ = std::fs::remove_dir_all(&staging);
+        result
+    }
+
+    /// The record and trust for a plugin that can meaningfully be updated.
+    fn update_subject(
+        &self,
+        plugin_id: &PluginId,
+    ) -> LauncherResult<(store::PluginRecord, store::TrustRecord)> {
+        if !self.is_enabled() {
+            return Err(LauncherError::Generic {
+                code: "ERR_PLUGINS_DISABLED".into(),
+                message: "the plugin system is switched off".into(),
+            });
+        }
+        let conn = self.inner.conn()?;
+        let record = store::get(&conn, plugin_id)?
+            .filter(|record| !store::is_tombstone(record))
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_PLUGIN_NOT_FOUND".into(),
+                message: format!("`{plugin_id}` is not installed"),
+            })?;
+        if record.source.is_development() {
+            return Err(LauncherError::Generic {
+                code: "ERR_PLUGIN_UPDATE_NONE".into(),
+                message: format!(
+                    "`{plugin_id}` is a development folder you are editing; Agora will not \
+                     overwrite your working copy"
+                ),
+            });
+        }
+        let trust = store::get_trust(&conn, plugin_id)?.ok_or_else(|| LauncherError::Generic {
+            code: "ERR_PLUGIN_UPDATE_NONE".into(),
+            message: format!(
+                "`{plugin_id}` did not come with an update source, so there is nowhere to check \
+                 and no key to check it against"
+            ),
+        })?;
+        Ok((record, trust))
+    }
+
+    /// Fetch the signed document. Small, so it is read whole.
+    fn fetch_update_document(&self, url: &str) -> LauncherResult<Vec<u8>> {
+        let host = [host_of(url)];
+        crate::http_client::blocking_checked_get_bytes_with_policy(
+            &self.inner.ctx.http_clients,
+            crate::http_client::ClientCategory::PluginUpdate,
+            url,
+            // The host was pinned when the user installed this plugin, so it is
+            // authorisation the user actually gave rather than a list this build
+            // compiled in. Every other gate — Lockdown, HTTPS, the private and
+            // loopback address rejection — still applies on top of it.
+            crate::http_client::HostPolicy::PluginDeclared(&host),
+        )
+    }
+
+    /// Fetch package bytes named by an already-verified document.
+    fn fetch_update_package(&self, url: &str, expected: u64) -> LauncherResult<Vec<u8>> {
+        if expected > install::MAX_TOTAL_BYTES {
+            return Err(LauncherError::Generic {
+                code: "ERR_PLUGIN_UPDATE_REFUSED".into(),
+                message: format!(
+                    "the signed release declares {expected} bytes, past the {} a plugin \
+                     package may be",
+                    install::MAX_TOTAL_BYTES
+                ),
+            });
+        }
+        let host = [host_of(url)];
+        crate::http_client::blocking_checked_get_bytes_with_policy(
+            &self.inner.ctx.http_clients,
+            crate::http_client::ClientCategory::PluginPackage,
+            url,
+            // Authorisation here comes from the signature over the document
+            // that named this URL *and* its hash, so the host allowlist is a
+            // formality by comparison. It is still routed through the gate so
+            // Lockdown and the address checks apply.
+            crate::http_client::HostPolicy::PluginDeclared(&host),
+        )
     }
 
     /// Load a folder the author is working in, without copying it.
@@ -1414,7 +1667,7 @@ fn now(ctx: &Ctx) -> String {
 fn archive_id(archive: &Path) -> Option<PluginId> {
     install::read_package_manifest(archive)
         .ok()
-        .map(|(manifest, _, _)| manifest.id)
+        .map(|contents| contents.manifest.id)
 }
 
 /// Capabilities a stored grant covers, for display.
@@ -1435,6 +1688,33 @@ impl ExistingRecord {
             hosts: &self.hosts,
         }
     }
+}
+
+/// One line describing a verdict, for the trust record and for an error.
+fn verdict_summary(verdict: &UpdateVerdict) -> String {
+    match verdict {
+        UpdateVerdict::UpToDate => "up to date".into(),
+        UpdateVerdict::Available { from, to, .. } => format!("{from} -> {to} available"),
+        UpdateVerdict::NeedsNewerHost { latest, requires } => {
+            format!("{latest} needs a host matching {requires}")
+        }
+        UpdateVerdict::InstalledIsNewer { installed, latest } => {
+            format!("installed {installed} is newer than the published {latest}")
+        }
+        UpdateVerdict::NoReleases => "the publisher lists no releases".into(),
+    }
+}
+
+/// Host part of an https URL, for the network policy.
+///
+/// String work rather than a URL parser because the value has already been
+/// validated as starting with `https://`, and because the authoritative host
+/// check happens inside the network layer, which parses it properly.
+fn host_of(url: &str) -> String {
+    url.strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .map(|host| host.split('@').next_back().unwrap_or(host).to_string())
+        .unwrap_or_default()
 }
 
 pub fn granted_names(granted: &CapabilitySet) -> Vec<String> {

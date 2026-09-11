@@ -94,10 +94,18 @@ fn endpoint_setting(category: ClientCategory) -> Option<&'static str> {
         ClientCategory::JavaRuntime => Some("network_adoptium_enabled"),
         ClientCategory::Registry => Some("network_registry_sync_enabled"),
         ClientCategory::GitHub => Some("network_github_oauth_enabled"),
-        // Plugins reach the network only when the user turns it on. Unlike
-        // the first-party categories this defaults to *off*: a community
-        // plugin getting outbound access should be a decision, not a default.
+        // `network_plugins_enabled` is standing permission for a plugin's own
+        // JavaScript to reach the network. Fetching an update is the launcher
+        // acting on the user's behalf, for a plugin that may hold no network
+        // capability at all. Welding the two together would mean someone who
+        // never wants plugins touching the network also could not update them.
+        //
+        // `None` means Lockdown alone governs update fetches, which is right
+        // because a button press is not standing permission. The automatic
+        // sweep consults `plugin_updates_enabled` at the service layer.
+        // Plugin JavaScript itself still requires the explicit opt-in below.
         ClientCategory::Plugin => Some("network_plugins_enabled"),
+        ClientCategory::PluginUpdate | ClientCategory::PluginPackage => None,
         // These carry content the user has separately consented to; the
         // consent check lives at the call site. Lockdown still applies.
         ClientCategory::PinnedArtifact | ClientCategory::ConsentedContent => None,
@@ -230,5 +238,15 @@ mod tests {
         // toggle rather than slipping past it.
         assert!(gate.check(ClientCategory::Modpack).is_err());
         assert!(gate.check(ClientCategory::MojangContent).is_ok());
+    }
+
+    #[test]
+    fn plugin_updates_use_lockdown_without_reusing_plugin_javascript_permission() {
+        assert_eq!(
+            endpoint_setting(ClientCategory::Plugin),
+            Some("network_plugins_enabled")
+        );
+        assert_eq!(endpoint_setting(ClientCategory::PluginUpdate), None);
+        assert_eq!(endpoint_setting(ClientCategory::PluginPackage), None);
     }
 }

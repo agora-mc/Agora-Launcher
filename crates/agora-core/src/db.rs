@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 14;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 15;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -77,6 +77,9 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
         // extension system is a default-on attack surface.
         "plugins_enabled",
         "network_plugins_enabled",
+        // This governs automatic background checking only. A manual check
+        // works whenever plugins are on.
+        "plugin_updates_enabled",
     ] {
         if get_setting(&conn, key).ok().flatten().is_none() {
             set_setting(&conn, key, &serde_json::Value::Bool(false))?;
@@ -568,6 +571,24 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (14)",
+            [],
+        )?;
+    }
+
+    if current < 15 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugin_trust (
+                 plugin_id TEXT PRIMARY KEY,
+                 update_url TEXT NOT NULL,
+                 keys_json TEXT NOT NULL,
+                 highest_sequence INTEGER NOT NULL DEFAULT 0,
+                 last_checked_at TEXT,
+                 last_result TEXT,
+                 FOREIGN KEY (plugin_id) REFERENCES plugin_installs(plugin_id) ON DELETE CASCADE
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (15)",
             [],
         )?;
     }
@@ -1740,6 +1761,17 @@ mod tests {
                 Some(serde_json::json!(false))
             );
         }
+    }
+
+    #[test]
+    fn automatic_plugin_update_checks_default_to_disabled() {
+        let (conn, _path) = test_db();
+        // Background checks are an extra source of traffic; a manual check is
+        // still available when the user has enabled the plugin system.
+        assert_eq!(
+            get_setting(&conn, "plugin_updates_enabled").unwrap(),
+            Some(serde_json::json!(false))
+        );
     }
 
     #[test]

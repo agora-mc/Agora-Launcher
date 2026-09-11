@@ -1192,6 +1192,319 @@ fn a_first_install_is_enabled() {
 }
 
 // ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+/// A package carrying an `agora-plugin-update.json` alongside its manifest.
+fn package_with_source(
+    archive: &Path,
+    manifest: &serde_json::Value,
+    source: Option<&serde_json::Value>,
+) {
+    use std::io::Write;
+    let file = std::fs::File::create(archive).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("agora-plugin.json", options).unwrap();
+    zip.write_all(serde_json::to_string(manifest).unwrap().as_bytes())
+        .unwrap();
+    if let Some(source) = source {
+        zip.start_file("agora-plugin-update.json", options).unwrap();
+        zip.write_all(serde_json::to_string(source).unwrap().as_bytes())
+            .unwrap();
+    }
+    zip.start_file("main.js", options).unwrap();
+    zip.write_all(DASHBOARD_MAIN.as_bytes()).unwrap();
+    zip.finish().unwrap();
+}
+
+/// A syntactically valid update source. The key is never used to verify
+/// anything in these tests; what is under test is that it is *recorded*.
+fn update_source() -> serde_json::Value {
+    serde_json::json!({
+        "schema": 1,
+        "url": "https://plugins.example.com/acme.dashboard.json",
+        "keys": [{
+            "id": "2026-09",
+            "algorithm": "ed25519",
+            "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+        }]
+    })
+}
+
+fn sha256_of(bytes: &[u8]) -> String {
+    agora_core::download::sha256_hex(bytes)
+}
+
+/// Installing is the moment the publisher key is pinned, and the preview is
+/// what lets the user see it before agreeing.
+#[test]
+fn installing_a_package_with_an_update_source_shows_it_and_records_it() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &manifest, Some(&update_source()));
+
+    let preview = world.service.preview_package(&archive).unwrap();
+    let source = preview.update_source.expect("the preview names the source");
+    assert_eq!(source.host, "plugins.example.com");
+    assert_eq!(source.keys.len(), 1);
+    assert_eq!(source.keys[0].id, "2026-09");
+    // A fingerprint is only useful if it is comparable, so it has to be
+    // something short and stable rather than the raw key.
+    assert!(source.keys[0].fingerprint.contains(':'));
+
+    world.service.install_package(&archive, true).unwrap();
+
+    // Asserted against the record rather than by calling `check_update`: that
+    // would reach the network to establish a fact about the database, and a
+    // test that depends on a DNS failure arriving promptly is a test that
+    // hangs on the one machine where it does not.
+    let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
+    let trust = agora_core::plugins::store::get_trust(&conn, &id("acme.dashboard"))
+        .unwrap()
+        .expect("installing pins the publisher key");
+    assert_eq!(trust.url, "https://plugins.example.com/acme.dashboard.json");
+    assert_eq!(trust.keys.len(), 1);
+    assert_eq!(trust.keys[0].id, "2026-09");
+    // Nothing has been checked yet, so there is no replay floor to clear.
+    assert_eq!(trust.highest_sequence, 0);
+}
+
+/// A plugin that ships no distribution block simply has no updates, and says
+/// so in a way that tells the user it is not a failure.
+#[test]
+fn a_plugin_without_an_update_source_says_there_is_nowhere_to_check() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &manifest, None);
+    world.service.install_package(&archive, true).unwrap();
+
+    let error = world
+        .service
+        .check_update(&id("acme.dashboard"))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("did not come with an update source"),
+        "{error}"
+    );
+}
+
+/// A plugin cannot acquire an update channel by shipping a version that drops
+/// the file — the pin is cleared rather than inherited.
+#[test]
+fn replacing_a_package_with_one_that_has_no_source_clears_the_pin() {
+    let world = world();
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &first, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    let update = world._dir.path().join("v2.zip");
+    package_with_source(&update, &second, None);
+    world.service.install_package(&update, false).unwrap();
+
+    let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
+    assert!(
+        agora_core::plugins::store::get_trust(&conn, &id("acme.dashboard"))
+            .unwrap()
+            .is_none(),
+        "a version that drops the file must not inherit the previous pin"
+    );
+
+    let error = world
+        .service
+        .check_update(&id("acme.dashboard"))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("did not come with an update source"),
+        "{error}"
+    );
+}
+
+/// The author is the one editing a development folder. Overwriting their
+/// working copy with a published release would be the opposite of helpful.
+#[test]
+fn a_development_folder_is_never_updated() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let folder = plugin_folder(world._dir.path(), "dashboard", manifest, DASHBOARD_MAIN);
+    world.service.add_development_folder(&folder, true).unwrap();
+
+    let error = world
+        .service
+        .check_update(&id("acme.dashboard"))
+        .unwrap_err();
+    assert!(error.to_string().contains("working copy"), "{error}");
+}
+
+#[test]
+fn nothing_checks_for_updates_while_the_plugin_system_is_switched_off() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &manifest, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+
+    let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
+    agora_core::db::set_setting(&conn, PLUGINS_ENABLED_SETTING, &serde_json::json!(false)).unwrap();
+    let error = world
+        .service
+        .check_update(&id("acme.dashboard"))
+        .unwrap_err();
+    assert!(error.to_string().contains("switched off"), "{error}");
+}
+
+/// Bytes that do not match the signed hash are refused, and refused *before*
+/// anything on disk is touched.
+#[test]
+fn downloaded_bytes_that_do_not_match_the_signed_hash_are_refused() {
+    let world = world();
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &first, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    let update = world._dir.path().join("v2.zip");
+    package_with_source(&update, &second, Some(&update_source()));
+    let bytes = std::fs::read(&update).unwrap();
+
+    // The right length, so this is the hash check doing the work rather than
+    // the cheaper size check in front of it.
+    let error = world
+        .service
+        .install_downloaded_update(
+            &id("acme.dashboard"),
+            "2.0.0",
+            &"f".repeat(64),
+            bytes.len() as u64,
+            &bytes,
+            true,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("SHA-256"), "{error}");
+
+    let record = world.service.list();
+    let installed = record.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert_eq!(
+        installed.version, "1.0.0",
+        "nothing should have been applied"
+    );
+}
+
+#[test]
+fn a_download_of_the_wrong_length_is_refused_before_it_is_hashed() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &manifest, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+    let bytes = std::fs::read(&archive).unwrap();
+
+    let error = world
+        .service
+        .install_downloaded_update(
+            &id("acme.dashboard"),
+            "2.0.0",
+            &sha256_of(&bytes),
+            bytes.len() as u64 + 1,
+            &bytes,
+            true,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("bytes"), "{error}");
+}
+
+/// The whole point of routing updates through the ordinary install: bytes that
+/// verify perfectly still do not get more permission than was granted.
+#[test]
+fn a_verified_update_that_widens_capabilities_is_still_refused_without_consent() {
+    let world = world();
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &first, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["capabilities"] = serde_json::json!({
+        "required": ["instance:read", "content:write"]
+    });
+    let update = world._dir.path().join("v2.zip");
+    package_with_source(&update, &second, Some(&update_source()));
+    let bytes = std::fs::read(&update).unwrap();
+
+    let error = world
+        .service
+        .install_downloaded_update(
+            &id("acme.dashboard"),
+            "2.0.0",
+            &sha256_of(&bytes),
+            bytes.len() as u64,
+            &bytes,
+            false,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("content:write"), "{error}");
+
+    let record = world.service.list();
+    assert_eq!(
+        record
+            .iter()
+            .find(|p| p.id == "acme.dashboard")
+            .unwrap()
+            .version,
+        "1.0.0"
+    );
+}
+
+/// And the ordinary case: verified bytes asking for nothing new just install,
+/// leaving no downloaded copy behind.
+#[test]
+fn a_verified_update_asking_for_nothing_new_installs_and_leaves_no_download() {
+    let world = world();
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_with_source(&archive, &first, Some(&update_source()));
+    world.service.install_package(&archive, true).unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("1.1.0");
+    let update = world._dir.path().join("v11.zip");
+    package_with_source(&update, &second, Some(&update_source()));
+    let bytes = std::fs::read(&update).unwrap();
+
+    let summary = world
+        .service
+        .install_downloaded_update(
+            &id("acme.dashboard"),
+            "1.1.0",
+            &sha256_of(&bytes),
+            bytes.len() as u64,
+            &bytes,
+            false,
+        )
+        .unwrap();
+    assert_eq!(summary.version, "1.1.0");
+
+    let downloads = world.ctx.paths.plugin_rollback_root().join("downloads");
+    assert!(
+        !downloads.exists() || std::fs::read_dir(&downloads).unwrap().next().is_none(),
+        "a second copy of the package should not be left on disk"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Activation events actually gate activation
 // ---------------------------------------------------------------------------
 

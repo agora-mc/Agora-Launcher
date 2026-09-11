@@ -16,6 +16,7 @@
 use super::store::PluginSource;
 use crate::error::{LauncherError, LauncherResult};
 use agora_plugin_api::capability::{CapabilityRequest, CapabilitySet};
+use agora_plugin_api::distribution::{UpdateSource, UPDATE_SOURCE_FILENAME};
 use agora_plugin_api::manifest::{PluginManifest, MANIFEST_FILENAME};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -47,6 +48,57 @@ fn io_error(message: impl Into<String>) -> LauncherError {
         code: "ERR_PLUGIN_IO".into(),
         message: message.into(),
     }
+}
+
+/// The distribution block, reduced to what a person can act on.
+///
+/// The raw key bytes are not useful in a dialog; the host it will contact and
+/// a comparable fingerprint are.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSourceSummary {
+    pub url: String,
+    /// Host part of `url`, so the prompt can name it without the reader
+    /// parsing a URL themselves.
+    pub host: String,
+    /// One entry per pinned key: its id and short fingerprint.
+    pub keys: Vec<KeyFingerprint>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyFingerprint {
+    pub id: String,
+    pub fingerprint: String,
+}
+
+impl UpdateSourceSummary {
+    fn of(source: &UpdateSource) -> Self {
+        UpdateSourceSummary {
+            url: source.url.clone(),
+            host: host_of(&source.url),
+            keys: source
+                .keys
+                .iter()
+                .map(|key| KeyFingerprint {
+                    id: key.id.clone(),
+                    fingerprint: key.fingerprint(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Host part of an https URL, or the whole URL if it cannot be read as one.
+///
+/// Deliberately string work rather than a URL parser: this is for display, the
+/// URL has already been checked to start with `https://`, and the authoritative
+/// host check happens in the network layer where it belongs.
+fn host_of(url: &str) -> String {
+    url.strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .map(|host| host.split('@').next_back().unwrap_or(host).to_string())
+        .unwrap_or_else(|| url.to_string())
 }
 
 /// The install already on record for a plugin id, as the preview needs it.
@@ -99,6 +151,12 @@ pub struct InstallPreview {
     /// to the list has widened its reach just as surely as one that asked for
     /// a new capability, and is treated the same way.
     pub added_hosts: Vec<String>,
+    /// Where this package says its updates will come from, if anywhere.
+    ///
+    /// Shown at install time because pinning a publisher key is part of what
+    /// is being agreed to, and because it is the only moment at which the key
+    /// can be compared against something the author published elsewhere.
+    pub update_source: Option<UpdateSourceSummary>,
     /// True when the upgrade changes the plugin's stored data shape.
     pub migrates_data: bool,
     pub file_count: usize,
@@ -222,8 +280,22 @@ pub fn read_folder_manifest(folder: &Path) -> LauncherResult<PluginManifest> {
     Ok(manifest)
 }
 
+/// Everything reading a package tells us, without extracting it.
+#[derive(Debug)]
+pub struct PackageContents {
+    pub manifest: PluginManifest,
+    /// Where this plugin says its updates come from, if it says at all.
+    ///
+    /// Optional on purpose. A plugin that is only ever installed by hand has
+    /// nothing to declare, and requiring a distribution block would make the
+    /// simplest case carry the most complicated file.
+    pub update_source: Option<UpdateSource>,
+    pub file_count: usize,
+    pub uncompressed_bytes: u64,
+}
+
 /// Read and validate a package without extracting it.
-pub fn read_package_manifest(archive: &Path) -> LauncherResult<(PluginManifest, usize, u64)> {
+pub fn read_package_manifest(archive: &Path) -> LauncherResult<PackageContents> {
     let file = std::fs::File::open(archive)
         .map_err(|e| io_error(format!("could not open {}: {e}", archive.display())))?;
     let compressed = file.metadata().map(|meta| meta.len()).unwrap_or(0).max(1);
@@ -239,6 +311,7 @@ pub fn read_package_manifest(archive: &Path) -> LauncherResult<(PluginManifest, 
 
     let mut total = 0u64;
     let mut manifest_text: Option<String> = None;
+    let mut source_text: Option<String> = None;
     for index in 0..zip.len() {
         let mut entry = zip
             .by_index(index)
@@ -266,6 +339,12 @@ pub fn read_package_manifest(archive: &Path) -> LauncherResult<(PluginManifest, 
                 .read_to_string(&mut text)
                 .map_err(|e| invalid_package(format!("could not read {MANIFEST_FILENAME}: {e}")))?;
             manifest_text = Some(text);
+        } else if name == UPDATE_SOURCE_FILENAME {
+            let mut text = String::new();
+            entry.read_to_string(&mut text).map_err(|e| {
+                invalid_package(format!("could not read {UPDATE_SOURCE_FILENAME}: {e}"))
+            })?;
+            source_text = Some(text);
         }
     }
 
@@ -298,7 +377,20 @@ pub fn read_package_manifest(archive: &Path) -> LauncherResult<(PluginManifest, 
         }
     }
 
-    Ok((manifest, zip.len(), total))
+    // A malformed distribution block fails the install rather than being
+    // ignored. Silently dropping it would leave a plugin that looks like it
+    // has updates, has none, and gives nobody a reason why.
+    let update_source = match source_text {
+        Some(text) => Some(UpdateSource::parse(&text).map_err(|e| invalid_package(e.message))?),
+        None => None,
+    };
+
+    Ok(PackageContents {
+        manifest,
+        update_source,
+        file_count: zip.len(),
+        uncompressed_bytes: total,
+    })
 }
 
 /// Describe what installing a package would do.
@@ -306,12 +398,13 @@ pub fn preview_package(
     archive: &Path,
     existing: Option<&ExistingInstall<'_>>,
 ) -> LauncherResult<InstallPreview> {
-    let (manifest, file_count, uncompressed_bytes) = read_package_manifest(archive)?;
+    let contents = read_package_manifest(archive)?;
     Ok(build_preview(
-        manifest,
+        contents.manifest,
+        contents.update_source,
         existing,
-        file_count,
-        uncompressed_bytes,
+        contents.file_count,
+        contents.uncompressed_bytes,
     ))
 }
 
@@ -321,11 +414,15 @@ pub fn preview_folder(
     existing: Option<&ExistingInstall<'_>>,
 ) -> LauncherResult<InstallPreview> {
     let manifest = read_folder_manifest(folder)?;
-    Ok(build_preview(manifest, existing, 0, 0))
+    // A development folder is never enrolled for updates: the author is the
+    // one editing it, and an update that overwrote their working copy would be
+    // the opposite of helpful.
+    Ok(build_preview(manifest, None, existing, 0, 0))
 }
 
 fn build_preview(
     manifest: PluginManifest,
+    update_source: Option<UpdateSource>,
     existing: Option<&ExistingInstall<'_>>,
     file_count: usize,
     uncompressed_bytes: u64,
@@ -335,6 +432,7 @@ fn build_preview(
         replaces_version: existing.map(|current| current.version.to_string()),
         added_capabilities: added_capabilities(existing.map(|current| current.granted), &manifest),
         added_hosts: added_hosts(existing.map(|current| current.hosts), &manifest),
+        update_source: update_source.as_ref().map(UpdateSourceSummary::of),
         // Only a *change* is a migration. A first install has nothing to
         // migrate, and a reinstall of the same data version does not either.
         migrates_data: existing
@@ -595,7 +693,12 @@ mod tests {
             (MANIFEST_FILENAME, manifest_json("acme.one").as_bytes()),
             ("main.js", b"export function run() {}"),
         ]);
-        let (manifest, count, bytes) = read_package_manifest(&path).unwrap();
+        let contents = read_package_manifest(&path).unwrap();
+        let (manifest, count, bytes) = (
+            contents.manifest,
+            contents.file_count,
+            contents.uncompressed_bytes,
+        );
         assert_eq!(manifest.id.as_str(), "acme.one");
         assert_eq!(count, 2);
         assert!(bytes > 0);
@@ -790,7 +893,7 @@ mod tests {
     #[test]
     fn a_first_install_is_not_a_data_migration() {
         let manifest: PluginManifest = serde_json::from_str(&manifest_json("acme.one")).unwrap();
-        let preview = build_preview(manifest, None, 2, 100);
+        let preview = build_preview(manifest, None, None, 2, 100);
         assert!(!preview.migrates_data);
         assert!(preview.replaces_version.is_none());
     }
@@ -805,6 +908,7 @@ mod tests {
         let granted = CapabilitySet::resolve(&CapabilityRequest::default()).unwrap();
         let preview = build_preview(
             manifest,
+            None,
             Some(&ExistingInstall {
                 version: &installed,
                 data_version: 1,
@@ -847,7 +951,7 @@ mod tests {
             "capabilities": { "required": ["instance:read"] }
         }))
         .unwrap();
-        let preview = build_preview(same, Some(&existing), 2, 100);
+        let preview = build_preview(same, None, Some(&existing), 2, 100);
         assert!(
             !preview.requires_capability_consent(),
             "re-granting what is already granted is not a new decision"
@@ -864,7 +968,7 @@ mod tests {
             "capabilities": { "required": ["instance:read", "content:write"] }
         }))
         .unwrap();
-        let preview = build_preview(wider, Some(&existing), 2, 100);
+        let preview = build_preview(wider, None, Some(&existing), 2, 100);
         assert_eq!(
             preview.added_capabilities,
             vec!["content:write".to_string()]
@@ -887,7 +991,7 @@ mod tests {
             "capabilities": { "required": ["instance:read"], "optional": ["content:read"] }
         }))
         .unwrap();
-        let preview = build_preview(manifest, None, 2, 100);
+        let preview = build_preview(manifest, None, None, 2, 100);
         assert_eq!(
             preview.added_capabilities,
             vec!["instance:read".to_string(), "content:read".to_string()]

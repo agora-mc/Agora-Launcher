@@ -18,6 +18,7 @@
 
 use crate::error::{LauncherError, LauncherResult};
 use agora_plugin_api::capability::CapabilitySet;
+use agora_plugin_api::distribution::PublicKey;
 use agora_plugin_api::manifest::{PluginId, PluginManifest};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -82,6 +83,17 @@ pub struct PluginRecord {
     pub data_version: u32,
     /// Why this plugin is not working, if it is not.
     pub last_error: Option<String>,
+}
+
+/// The publisher URL, keys, and anti-replay state recorded for an installed
+/// plugin's update channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustRecord {
+    pub url: String,
+    pub keys: Vec<PublicKey>,
+    pub highest_sequence: u64,
+    pub last_checked_at: Option<String>,
+    pub last_result: Option<String>,
 }
 
 impl PluginRecord {
@@ -264,6 +276,94 @@ pub fn set_last_error(
     conn.execute(
         "UPDATE plugin_installs SET last_error = ?2 WHERE plugin_id = ?1",
         params![plugin_id.as_str(), error],
+    )
+    .map_err(db_error)?;
+    Ok(())
+}
+
+/// Read the update source and anti-replay state for one plugin.
+type TrustRow = (String, String, i64, Option<String>, Option<String>);
+
+pub fn get_trust(conn: &Connection, plugin_id: &PluginId) -> LauncherResult<Option<TrustRecord>> {
+    let row: Option<TrustRow> = conn
+        .query_row(
+            "SELECT update_url, keys_json, highest_sequence, last_checked_at, last_result
+             FROM plugin_trust WHERE plugin_id = ?1",
+            params![plugin_id.as_str()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some((url, keys_json, highest_sequence, last_checked_at, last_result)) = row else {
+        return Ok(None);
+    };
+    let keys = serde_json::from_str(&keys_json).map_err(db_error)?;
+    let highest_sequence = u64::try_from(highest_sequence)
+        .map_err(|error| db_error(format!("invalid stored plugin update sequence: {error}")))?;
+    Ok(Some(TrustRecord {
+        url,
+        keys,
+        highest_sequence,
+        last_checked_at,
+        last_result,
+    }))
+}
+
+/// Store a plugin's update source without disturbing its anti-replay floor.
+pub fn put_trust(
+    conn: &Connection,
+    plugin_id: &PluginId,
+    url: &str,
+    keys: &[PublicKey],
+) -> LauncherResult<()> {
+    let keys_json = serde_json::to_string(keys).map_err(db_error)?;
+    conn.execute(
+        "INSERT INTO plugin_trust (plugin_id, update_url, keys_json)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(plugin_id) DO UPDATE SET
+             update_url = excluded.update_url,
+             keys_json = excluded.keys_json",
+        params![plugin_id.as_str(), url, keys_json],
+    )
+    .map_err(db_error)?;
+    Ok(())
+}
+
+/// Record the result of a check while preserving the greatest sequence seen.
+pub fn record_check(
+    conn: &Connection,
+    plugin_id: &PluginId,
+    sequence: u64,
+    at: &str,
+    result: &str,
+) -> LauncherResult<()> {
+    let sequence = i64::try_from(sequence)
+        .map_err(|error| db_error(format!("plugin update sequence is out of range: {error}")))?;
+    conn.execute(
+        "UPDATE plugin_trust
+         SET highest_sequence = MAX(highest_sequence, ?2),
+             last_checked_at = ?3,
+             last_result = ?4
+         WHERE plugin_id = ?1",
+        params![plugin_id.as_str(), sequence, at, result],
+    )
+    .map_err(db_error)?;
+    Ok(())
+}
+
+/// Remove the update source and its anti-replay state.
+pub fn clear_trust(conn: &Connection, plugin_id: &PluginId) -> LauncherResult<()> {
+    conn.execute(
+        "DELETE FROM plugin_trust WHERE plugin_id = ?1",
+        params![plugin_id.as_str()],
     )
     .map_err(db_error)?;
     Ok(())
@@ -629,4 +729,96 @@ pub fn restore_latest_checkpoint(
     }
     tx.commit().map_err(db_error)?;
     Ok(Some(entries.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+    use tempfile::TempDir;
+
+    fn installed_plugin() -> (TempDir, Connection, PluginId) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("local_state.db");
+        crate::db::init_local_state_db(&path).unwrap();
+        let conn = crate::db::local_state_connection(&path).unwrap();
+        let plugin_id = PluginId::parse("acme.trust").unwrap();
+        conn.execute(
+            "INSERT INTO plugin_installs
+                 (plugin_id, version, manifest_json, source_kind, install_dir,
+                  installed_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                plugin_id.as_str(),
+                "1.0.0",
+                "{}",
+                "package",
+                "plugin",
+                "now",
+                "now"
+            ],
+        )
+        .unwrap();
+        (temp, conn, plugin_id)
+    }
+
+    fn key(id: &str) -> PublicKey {
+        PublicKey {
+            id: id.into(),
+            algorithm: "ed25519".into(),
+            public_key: format!("{id}-public-key"),
+        }
+    }
+
+    #[test]
+    fn replacing_trust_preserves_the_highest_sequence_already_seen() {
+        let (_temp, conn, plugin_id) = installed_plugin();
+        let first_key = key("first");
+        let second_key = key("second");
+
+        put_trust(
+            &conn,
+            &plugin_id,
+            "https://updates.example.com/first.json",
+            &[first_key],
+        )
+        .unwrap();
+        record_check(&conn, &plugin_id, 9, "first-check", "available").unwrap();
+
+        // Key rotation changes who may sign future documents, but must not make
+        // an already rejected old document acceptable again.
+        put_trust(
+            &conn,
+            &plugin_id,
+            "https://updates.example.com/second.json",
+            std::slice::from_ref(&second_key),
+        )
+        .unwrap();
+
+        let trust = get_trust(&conn, &plugin_id).unwrap().unwrap();
+        assert_eq!(trust.url, "https://updates.example.com/second.json");
+        assert_eq!(trust.keys, vec![second_key]);
+        assert_eq!(trust.highest_sequence, 9);
+    }
+
+    #[test]
+    fn recording_an_older_check_never_lowers_the_replay_floor() {
+        let (_temp, conn, plugin_id) = installed_plugin();
+        let trusted_key = key("publisher");
+        put_trust(
+            &conn,
+            &plugin_id,
+            "https://updates.example.com/update.json",
+            &[trusted_key],
+        )
+        .unwrap();
+
+        record_check(&conn, &plugin_id, 11, "newer-check", "up to date").unwrap();
+        record_check(&conn, &plugin_id, 4, "older-check", "stale response").unwrap();
+
+        let trust = get_trust(&conn, &plugin_id).unwrap().unwrap();
+        assert_eq!(trust.highest_sequence, 11);
+        assert_eq!(trust.last_checked_at.as_deref(), Some("older-check"));
+        assert_eq!(trust.last_result.as_deref(), Some("stale response"));
+    }
 }
