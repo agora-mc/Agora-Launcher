@@ -104,6 +104,30 @@ impl AppPaths {
         Self::platform_default_with_override(portable)
     }
 
+    /// Whether the data root is the platform convention rather than a
+    /// relocated one.
+    ///
+    /// Mirrors the precedence in [`Self::platform_default`]: false when
+    /// `AGORA_DATA_DIR` is set or a `portable.txt` marker sits beside the
+    /// executable, true otherwise.
+    ///
+    /// This exists for credential storage, which is the one subsystem that
+    /// cannot simply follow the root wherever it goes. A relocated root is the
+    /// only signal available that the profile may be carried to another machine
+    /// or opened by another user, and OS-bound protection (DPAPI) produces
+    /// ciphertext that is undecryptable in exactly that case. Callers that
+    /// merely need the path should use [`Self::platform_default`].
+    pub fn data_root_is_platform_default() -> bool {
+        if std::env::var_os("AGORA_DATA_DIR").is_some() {
+            return false;
+        }
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .and_then(|dir| Self::portable_root_for(&dir))
+            .is_none()
+    }
+
     // ------------------------------------------------------------------
     // Top-level paths (no user-controlled input — infallible)
     // ------------------------------------------------------------------

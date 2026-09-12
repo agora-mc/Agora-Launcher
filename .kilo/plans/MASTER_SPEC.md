@@ -2935,6 +2935,76 @@ have to be justified by the runtime, and QuickJS-in-process does not justify the
 is never told about its own effects, and a chain of plugin-caused events stops at
 `MAX_EVENT_DEPTH`. The alternative — hoping plugin authors are careful — is not a design.
 
+### 19.25 DPAPI Holds the Windows Fallback Key (supersedes 19.23 on Windows)
+
+19.23 replaced a hard-coded key derivation with a random per-profile secret and was explicit
+about the limit it did not clear: the key lives in the same directory as the ciphertext it
+protects, so file permissions -- not AES -- are the boundary. It named the fix in passing:
+"Real machine binding needs DPAPI, a TPM, or an OS credential service, which is the thing
+whose absence puts us on this path in the first place." On Windows that last clause turned
+out to be wrong, and this subsection acts on it.
+
+**The keyring is not absent on Windows; it is too small.** Windows Credential Manager caps a
+generic credential at `CRED_MAX_CREDENTIAL_BLOB_SIZE` = 2560 bytes, and `keyring` encodes the
+secret as UTF-16, so the real ceiling is 1280 ASCII characters. `MsaCredentials` carries a
+Minecraft access-token JWT *and* an Entra refresh token; Microsoft's own guidance is to budget
+2 KB for the refresh token alone. Every Microsoft sign-in therefore exceeds the cap and lands
+on the fallback -- not on a broken machine, but on every Windows machine. Measured directly
+against the live store: 1280 characters succeed, 1281 return `TooLong`. A GitHub token, at
+roughly 80 characters, stores in the keyring normally, which is how the two cases were told
+apart.
+
+Nothing in the credential is waste. No profile blob, no skin or entitlement data, no Xbox or
+XSTS tokens, and the Entra *access* token is deliberately not persisted -- only the refresh
+token. Trimming the Minecraft access token is the one reduction available, and it would cost
+the full XBL -> XSTS -> Minecraft chain on every start while still not reliably fitting under
+1280 characters. Slimming is not a fix.
+
+**So the Windows fallback is now DPAPI-protected, which is what Microsoft does.** The
+`msal-extensions` libraries persist a token cache with DPAPI on Windows, the Keychain on
+macOS and LibSecret on Linux; on Windows they do not use Credential Manager at all. Agora now
+matches that split. There is no key file: `CryptProtectData` with `CRYPTPROTECT_UI_FORBIDDEN`
+binds the ciphertext to the Windows account, and the per-credential key context is passed as
+optional entropy so a blob protected for one purpose cannot be unprotected for another.
+
+Be precise about what this buys. Credential Manager is itself DPAPI plus a storage service,
+and any process running as the user can read it back through `CredRead`. A DPAPI file and a
+Credential Manager entry therefore sit at the same threat model; neither defends against code
+already running as the user. What changes is the comparison against 19.23's scheme, where
+copying the profile directory yields both the ciphertext and the key. That specific weakness
+is gone. This is also why chunking the credential across several Credential Manager entries
+was rejected: it buys reassembly, partial-write recovery and cleanup code in exchange for no
+security.
+
+**A relocated data root keeps the old scheme, deliberately.** DPAPI ciphertext is
+undecryptable on another machine or under another Windows account -- the same property that
+makes it worth having. `AGORA_DATA_DIR` and a `portable.txt` marker are the only available
+signal that a profile may travel, so either one disqualifies OS protection and the device-key
+scheme applies instead. A portable install keeps a weaker credential that works when the stick
+is moved, rather than a stronger one that silently stops working.
+`AppPaths::data_root_is_platform_default()` is that predicate, and it mirrors
+`platform_default()`'s precedence exactly so the two cannot drift.
+
+**The file says which scheme wrote it.** An eight-byte header marks an OS-protected file;
+legacy files are a bare nonce and ciphertext, and a read that finds the header but fails to
+unprotect falls through to the device-key path anyway, so a chance collision is unreachable
+rather than merely improbable. 19.23 accepted a forced re-authentication when the key input
+changed; this change does not need one, because both formats remain readable and a credential
+is only rewritten in the new format when it is next stored.
+
+**The Settings warning now distinguishes three states, not two.** `CredentialBackend` gains
+`OsProtectedFile`, and the degraded notice does not render for it. 19.23 established that a
+warning overstating the protection is worse than none; the converse holds too. "Anyone who can
+read that folder can read your sign-in" is false once the OS holds the key, and a warning a
+user cannot act on is the kind they learn to dismiss. The warning still fires, unchanged, for
+the device-key scheme -- including on a portable install, where it is exactly true.
+
+**What this does not do.** It does not put Microsoft credentials in the Windows keyring; they
+do not fit, and no keyring version changes that. It does not protect against malware running
+as the signed-in user. It does not apply to macOS or Linux, where the keyring has no
+comparable ceiling and is still the primary path. And deleting a local credential is still not
+revocation: no provider request is made.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

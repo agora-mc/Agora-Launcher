@@ -626,8 +626,7 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
         })?;
     }
 
-    let key = derive_fallback_key()?;
-    let encrypted = encrypt_token(&json, &key)?;
+    let encrypted = encrypt_fallback(&json, TOKEN_KEY_CONTEXT)?;
     atomic_write_private(
         &path,
         &encrypted,
@@ -663,7 +662,7 @@ pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
         // key we merely failed to read are the same `None` here, so deleting
         // would turn a transient read error into permanent credential loss. An
         // undecryptable file is inert, and the next store overwrites it.
-        existing_fallback_key_for(TOKEN_KEY_CONTEXT).and_then(|key| decrypt_token(&data, &key))
+        decrypt_fallback(&data, TOKEN_KEY_CONTEXT)
     });
 
     let raw = raw?;
@@ -1168,8 +1167,227 @@ fn existing_fallback_key_for(context: &[u8]) -> Option<Vec<u8>> {
 
 const TOKEN_KEY_CONTEXT: &[u8] = b"agora-mcp-keyring-fallback";
 
-fn derive_fallback_key() -> LauncherResult<Vec<u8>> {
-    derive_fallback_key_for(TOKEN_KEY_CONTEXT)
+// ---------------------------------------------------------------------------
+// OS-bound protection for the fallback file
+// ---------------------------------------------------------------------------
+
+/// Windows DPAPI, the protection Microsoft's own `msal-extensions` uses for a
+/// persisted token cache on this platform. No-op everywhere else, where the
+/// keyring backends (Keychain, Secret Service) do not have the size ceiling
+/// that puts Windows on the fallback path to begin with.
+#[cfg(windows)]
+mod os_protection {
+    use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows_sys::Win32::Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    pub(super) const AVAILABLE: bool = true;
+
+    /// Borrow `bytes` as a DPAPI blob descriptor.
+    ///
+    /// The `*mut` is what the binding asks for; neither call mutates its input,
+    /// and the borrow keeps the buffer alive across the call.
+    fn blob(bytes: &[u8]) -> CRYPT_INTEGER_BLOB {
+        CRYPT_INTEGER_BLOB {
+            cbData: bytes.len() as u32,
+            pbData: bytes.as_ptr() as *mut u8,
+        }
+    }
+
+    /// Copy an output blob out of the buffer DPAPI allocated, then release it.
+    ///
+    /// # Safety
+    /// `out` must be an output blob that `CryptProtectData`/`CryptUnprotectData`
+    /// filled in after returning success, and must not be used afterwards.
+    unsafe fn take(out: &CRYPT_INTEGER_BLOB) -> Option<Vec<u8>> {
+        if out.pbData.is_null() {
+            return None;
+        }
+        let copied = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+        LocalFree(out.pbData as HLOCAL);
+        Some(copied)
+    }
+
+    /// `entropy` must be non-empty: an empty slice yields a dangling pointer
+    /// with a zero length, and the key-context separation it provides is the
+    /// point. Every caller passes a compile-time constant.
+    pub(super) fn protect(plaintext: &[u8], entropy: &[u8]) -> Option<Vec<u8>> {
+        debug_assert!(!entropy.is_empty(), "key context must not be empty");
+        let input = blob(plaintext);
+        let entropy = blob(entropy);
+        let mut out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        // UI_FORBIDDEN: this runs on a background path and must fail rather
+        // than block on a prompt the user has no context for.
+        let ok = unsafe {
+            CryptProtectData(
+                &input,
+                std::ptr::null(),
+                &entropy,
+                std::ptr::null(),
+                std::ptr::null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        };
+        (ok != 0).then(|| unsafe { take(&out) }).flatten()
+    }
+
+    /// See [`protect`] on the `entropy` invariant.
+    pub(super) fn unprotect(ciphertext: &[u8], entropy: &[u8]) -> Option<Vec<u8>> {
+        debug_assert!(!entropy.is_empty(), "key context must not be empty");
+        let input = blob(ciphertext);
+        let entropy = blob(entropy);
+        let mut out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+        let ok = unsafe {
+            CryptUnprotectData(
+                &input,
+                std::ptr::null_mut(),
+                &entropy,
+                std::ptr::null(),
+                std::ptr::null(),
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut out,
+            )
+        };
+        (ok != 0).then(|| unsafe { take(&out) }).flatten()
+    }
+}
+
+#[cfg(not(windows))]
+mod os_protection {
+    pub(super) const AVAILABLE: bool = false;
+
+    pub(super) fn protect(_plaintext: &[u8], _entropy: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+
+    pub(super) fn unprotect(_ciphertext: &[u8], _entropy: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// Marks a fallback file protected by the OS rather than by the device key.
+///
+/// Legacy files are a bare `nonce || ciphertext`, so the prefix is what tells
+/// the two apart on read. A random 12-byte nonce beginning with these exact
+/// eight bytes has probability 2^-64, and [`decrypt_fallback`] retries the
+/// device-key path anyway, so the collision is unreachable rather than merely
+/// unlikely.
+const OS_PROTECTED_MAGIC: &[u8; 8] = b"AGORAOS1";
+
+#[cfg(test)]
+thread_local! {
+    /// Forces [`os_protection_eligible`] on for this thread, so a test can
+    /// exercise the real DPAPI path under a temp directory that would
+    /// otherwise disqualify it.
+    static FORCE_OS_PROTECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn forcing_os_protection() -> bool {
+    FORCE_OS_PROTECTION.with(std::cell::Cell::get)
+}
+
+/// Opt this thread into OS protection regardless of data root, so a test can
+/// drive the real DPAPI path under a temp directory. Restores on drop.
+#[cfg(test)]
+fn force_os_protection() -> ForceOsProtectionGuard {
+    ForceOsProtectionGuard(FORCE_OS_PROTECTION.with(|cell| cell.replace(true)))
+}
+
+#[cfg(test)]
+struct ForceOsProtectionGuard(bool);
+
+#[cfg(test)]
+impl Drop for ForceOsProtectionGuard {
+    fn drop(&mut self) {
+        let previous = self.0;
+        FORCE_OS_PROTECTION.with(|cell| cell.set(previous));
+    }
+}
+
+#[cfg(not(test))]
+fn forcing_os_protection() -> bool {
+    false
+}
+
+/// Whether a newly written fallback file should be OS-protected.
+///
+/// Requires a platform that has it *and* a data root at the platform default.
+/// A relocated root — `AGORA_DATA_DIR` or a `portable.txt` marker — is the only
+/// signal that the profile may be opened on another machine or by another user,
+/// and a DPAPI blob is undecryptable in exactly that case. A portable install
+/// keeps the device-key scheme, whose key travels in the same directory: weaker,
+/// and deliberately so, because the alternative is a credential that silently
+/// stops working the moment the stick is moved.
+fn os_protection_eligible() -> bool {
+    if forcing_os_protection() {
+        return true;
+    }
+    if !os_protection::AVAILABLE {
+        return false;
+    }
+    if real_fallback_dir().is_some() {
+        return false;
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if std::env::var_os("AGORA_TEST_SECRET_DIR").is_some()
+            || std::env::var_os("AGORA_TEST_TOKEN_DIR").is_some()
+        {
+            return false;
+        }
+    }
+    crate::app_paths::AppPaths::data_root_is_platform_default()
+}
+
+/// Encrypt a credential for the fallback file, preferring OS protection.
+///
+/// Falls back to the device-key scheme when the platform has no OS protection,
+/// when the data root is relocated, or when the OS call itself fails — a
+/// credential that is stored less well is better than one that is not stored.
+fn encrypt_fallback(value: &str, key_context: &[u8]) -> LauncherResult<Vec<u8>> {
+    if os_protection_eligible() {
+        if let Some(protected) = os_protection::protect(value.as_bytes(), key_context) {
+            let mut out = Vec::with_capacity(OS_PROTECTED_MAGIC.len() + protected.len());
+            out.extend_from_slice(OS_PROTECTED_MAGIC);
+            out.extend_from_slice(&protected);
+            return Ok(out);
+        }
+    }
+    encrypt_token(value, &derive_fallback_key_for(key_context)?)
+}
+
+/// Decrypt a fallback file written by either scheme.
+///
+/// Never creates a device key: a caller reading a DPAPI file must not leave a
+/// key file behind for a credential that does not use one.
+fn decrypt_fallback(data: &[u8], key_context: &[u8]) -> Option<String> {
+    if let Some(body) = data.strip_prefix(OS_PROTECTED_MAGIC.as_slice()) {
+        if let Some(plaintext) = os_protection::unprotect(body, key_context) {
+            if let Ok(value) = String::from_utf8(plaintext) {
+                return Some(value);
+            }
+        }
+    }
+    existing_fallback_key_for(key_context).and_then(|key| decrypt_token(data, &key))
+}
+
+/// Whether an on-disk fallback file is OS-protected, judged by its header.
+fn file_is_os_protected(path: &std::path::Path) -> bool {
+    let mut header = [0u8; OS_PROTECTED_MAGIC.len()];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    use std::io::Read;
+    file.read_exact(&mut header).is_ok() && &header == OS_PROTECTED_MAGIC
 }
 
 /// Encrypt the token using AES-256-GCM with a random 12-byte nonce.
@@ -1283,7 +1501,7 @@ pub(crate) fn store_secret(
             message: "Failed to create encrypted credential directory.".into(),
         })?;
     }
-    let encrypted = encrypt_token(value, &derive_fallback_key_for(key_context)?)?;
+    let encrypted = encrypt_fallback(value, key_context)?;
     atomic_write_private(
         &path,
         &encrypted,
@@ -1326,9 +1544,7 @@ pub(crate) fn load_secret(
             // leave the file alone. A missing device key and a device key we
             // merely failed to read are indistinguishable here, so deleting
             // would turn a transient read error into permanent credential loss.
-            if let Some(value) = existing_fallback_key_for(key_context)
-                .and_then(|key| decrypt_token(&encrypted, &key))
-            {
+            if let Some(value) = decrypt_fallback(&encrypted, key_context) {
                 return Ok(Some(value));
             }
         }
@@ -1387,8 +1603,14 @@ pub enum CredentialBackend {
     /// The OS keyring: Credential Manager, Keychain, or Secret Service.
     Keyring,
     /// The degraded encrypted-file fallback, used when the keyring is
-    /// unavailable. Protected by file permissions rather than by the OS.
+    /// unavailable. Protected by file permissions rather than by the OS:
+    /// the key sits in the same directory as the ciphertext.
     EncryptedFile,
+    /// A file the OS itself protects — DPAPI on Windows — used when the keyring
+    /// is unavailable but the data root is the platform default. There is no
+    /// key file to steal: only this Windows account on this machine can decrypt
+    /// it. Not the keyring, but not the degraded path either.
+    OsProtectedFile,
 }
 
 /// Report which backend currently holds this credential.
@@ -1411,7 +1633,7 @@ pub(crate) fn credential_backend(
         }
     }
     match fallback_secret_path(fallback_file) {
-        Some(path) if path.is_file() => CredentialBackend::EncryptedFile,
+        Some(path) if path.is_file() => stored_file_backend(&path),
         _ => CredentialBackend::None,
     }
 }
@@ -1426,8 +1648,20 @@ pub fn github_credential_backend() -> CredentialBackend {
         }
     }
     match fallback_token_path() {
-        Some(path) if path.is_file() => CredentialBackend::EncryptedFile,
+        Some(path) if path.is_file() => stored_file_backend(&path),
         _ => CredentialBackend::None,
+    }
+}
+
+/// Classify an existing fallback file by how it is actually protected.
+///
+/// Reads the header rather than re-deriving eligibility, so a file written
+/// before a move to a portable root is still described accurately.
+fn stored_file_backend(path: &std::path::Path) -> CredentialBackend {
+    if file_is_os_protected(path) {
+        CredentialBackend::OsProtectedFile
+    } else {
+        CredentialBackend::EncryptedFile
     }
 }
 
@@ -2470,6 +2704,137 @@ mod tests {
             mode & 0o777,
             0o600,
             "credentials must not be readable by others"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // OS-bound protection (DPAPI)
+    // -----------------------------------------------------------------
+
+    #[cfg(windows)]
+    #[test]
+    fn os_protected_credentials_round_trip_and_carry_the_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _fallback = use_real_fallback_dir(dir.path());
+        let _os = force_os_protection();
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "a-long-secret").expect("store");
+
+        let stored = std::fs::read(dir.path().join("creds.enc")).expect("read");
+        assert!(
+            stored.starts_with(OS_PROTECTED_MAGIC.as_slice()),
+            "an OS-protected file must be self-describing on disk"
+        );
+
+        let loaded = load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load");
+        assert_eq!(loaded.as_deref(), Some("a-long-secret"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn os_protection_writes_no_device_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _fallback = use_real_fallback_dir(dir.path());
+        let _os = force_os_protection();
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        load_secret("svc", "acct", "creds.enc", MSA_CONTEXT).expect("load");
+
+        assert!(
+            !dir.path().join(DEVICE_KEY_FILE).exists(),
+            "DPAPI holds the key; leaving a device key beside the ciphertext              would reintroduce exactly the weakness this replaces"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn os_protection_is_bound_to_the_key_context() {
+        let protected = os_protection::protect(b"secret", MSA_CONTEXT).expect("protect");
+        assert!(
+            os_protection::unprotect(&protected, TOKEN_KEY_CONTEXT).is_none(),
+            "a credential protected for one purpose must not unprotect under another"
+        );
+        assert_eq!(
+            os_protection::unprotect(&protected, MSA_CONTEXT).as_deref(),
+            Some(b"secret".as_slice())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn os_protected_backend_is_reported_separately_from_the_degraded_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _fallback = use_real_fallback_dir(dir.path());
+
+        {
+            let _os = force_os_protection();
+            store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+            assert_eq!(
+                credential_backend("svc", "acct", "creds.enc"),
+                CredentialBackend::OsProtectedFile,
+                "the OS holds this key, so the degraded warning must not fire"
+            );
+        }
+
+        // Same directory, device-key scheme: the warning *should* fire.
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::EncryptedFile
+        );
+    }
+
+    #[test]
+    fn a_relocated_data_root_keeps_the_portable_device_key_scheme() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _fallback = use_real_fallback_dir(dir.path());
+
+        // `use_real_fallback_dir` stands in for a relocated root, which is the
+        // condition that disqualifies OS protection.
+        assert!(!os_protection_eligible());
+
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "value").expect("store");
+        let stored = std::fs::read(dir.path().join("creds.enc")).expect("read");
+        assert!(
+            !stored.starts_with(OS_PROTECTED_MAGIC.as_slice()),
+            "a portable profile must stay readable on another machine"
+        );
+        assert!(
+            dir.path().join(DEVICE_KEY_FILE).exists(),
+            "the portable scheme needs its travelling key"
+        );
+        assert_eq!(
+            load_secret("svc", "acct", "creds.enc", MSA_CONTEXT)
+                .expect("load")
+                .as_deref(),
+            Some("value")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn device_key_credentials_written_before_the_switch_still_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _fallback = use_real_fallback_dir(dir.path());
+
+        // Written the old way, with OS protection unavailable...
+        store_secret("svc", "acct", "creds.enc", MSA_CONTEXT, "legacy-value").expect("store");
+        assert!(dir.path().join(DEVICE_KEY_FILE).exists());
+
+        // ...and read back on a build that now prefers DPAPI. Forcing a silent
+        // re-sign-in on every existing install would be a regression, not a
+        // migration.
+        let _os = force_os_protection();
+        assert_eq!(
+            load_secret("svc", "acct", "creds.enc", MSA_CONTEXT)
+                .expect("load")
+                .as_deref(),
+            Some("legacy-value")
+        );
+        assert_eq!(
+            credential_backend("svc", "acct", "creds.enc"),
+            CredentialBackend::EncryptedFile,
+            "still device-key protected until it is next written"
         );
     }
 

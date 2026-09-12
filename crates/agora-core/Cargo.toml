@@ -57,6 +57,16 @@ flate2 = "1"
 [target.'cfg(windows)'.dependencies]
 junction = "2"
 
+# DPAPI for the credential fallback. Windows Credential Manager caps a secret at
+# CRED_MAX_CREDENTIAL_BLOB_SIZE (2560 bytes, so 1280 chars once keyring encodes
+# UTF-16), which a Minecraft access token plus an Entra refresh token exceeds on
+# every sign-in. DPAPI has no such ceiling and is what Microsoft's own
+# msal-extensions uses to persist a token cache on Windows.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 # Test-only. The shipped dependency graph keeps the JS engine out of core —

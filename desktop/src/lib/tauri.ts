@@ -1906,9 +1906,18 @@ export interface MsaLoginPrompt {
   interval_secs: number;
 }
 
-/// Where a stored credential actually lives. `encrypted-file` is the degraded
-/// fallback used when no OS keyring was available.
-export type CredentialBackend = 'none' | 'keyring' | 'encrypted-file';
+/// Where a stored credential actually lives.
+///
+/// `encrypted-file` is the degraded fallback: the key sits beside the
+/// ciphertext, so file permissions are the boundary. `os-protected-file` is the
+/// keyring being unavailable but the OS still holding the key (DPAPI on
+/// Windows) -- not the keyring, but not degraded either, and deliberately not
+/// warned about.
+export type CredentialBackend =
+  | 'none'
+  | 'keyring'
+  | 'encrypted-file'
+  | 'os-protected-file';
 
 export interface CredentialStorageStatus {
   microsoft: CredentialBackend;

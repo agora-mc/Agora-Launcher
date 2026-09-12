@@ -1530,7 +1530,7 @@ export function Settings({
   const microsoftCard = (
     <SettingsSection
       icon={UserRound}
-      title="Microsoft Account (temporarily not available)"
+      title="Microsoft Account"
     >
       {msaLoading ? (
         <p className="text-xs text-muted-foreground">Checking connection…</p>

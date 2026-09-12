@@ -17,6 +17,14 @@ describe('DegradedCredentialNotice', () => {
     expect(screen.queryByTestId('degraded-credential-storage')).toBeNull();
   });
 
+  // DPAPI holds the key, so "anyone who can read that folder can read your
+  // sign-in" would be false here. The keyring is not in use, but the protection
+  // is the same one Credential Manager itself relies on.
+  it('says nothing when the OS protects the file itself', () => {
+    render(<DegradedCredentialNotice backend="os-protected-file" />);
+    expect(screen.queryByTestId('degraded-credential-storage')).toBeNull();
+  });
+
   it('says nothing when no credential is stored', () => {
     render(<DegradedCredentialNotice backend="none" />);
     expect(screen.queryByTestId('degraded-credential-storage')).toBeNull();

@@ -99,6 +99,7 @@ dependencies = [
  "toml 0.8.2",
  "urlencoding",
  "uuid",
+ "windows-sys 0.59.0",
  "zip 0.6.6",
 ]
 

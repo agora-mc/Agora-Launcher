@@ -9,6 +9,11 @@ import type { CredentialBackend } from '@/lib/tauri';
  * warning tells users their credentials are less protected than they are, and
  * teaches them to ignore the real one.
  *
+ * `os-protected-file` deliberately shows nothing. The keyring is not in use
+ * there either, but the OS holds the key (DPAPI on Windows), which is the same
+ * protection Credential Manager itself provides -- the sentence below would be
+ * false, and a warning a user cannot act on is the kind they learn to dismiss.
+ *
  * The wording avoids calling the key "machine-bound". It is a random per-profile
  * secret guarded by file permissions -- it protects against a single leaked file,
  * not against anyone who can read the profile directory. Saying otherwise would
