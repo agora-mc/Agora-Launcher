@@ -1464,6 +1464,14 @@ async fn run_plugin_command(
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
+
+    // Belt and braces. `main` dispatches these before core starts, so they do
+    // not arrive here — but a future caller that reaches this function by some
+    // other route should get a working command rather than a panic.
+    if let Some(result) = run_offline_plugin_command(&action, output_fmt) {
+        return result;
+    }
+
     match action {
         PluginCmd::List => {
             service.reload()?;
@@ -1669,10 +1677,9 @@ async fn run_plugin_command(
                 println!("Restored {restored} stored entries for {id}.");
             }
         }
-        // Handled before core initialisation, so they never arrive here.
-        PluginCmd::Keygen { .. } | PluginCmd::Sign { .. } => {
-            unreachable!("offline author tooling is dispatched before core starts")
-        }
+        // Handled by the guard directly above, and by `main` before core even
+        // starts. Unreachable in both senses, and harmless if it ever is not.
+        PluginCmd::Keygen { .. } | PluginCmd::Sign { .. } => {}
         PluginCmd::DisableAll => {
             let disabled = service.disable_all()?;
             if json {
