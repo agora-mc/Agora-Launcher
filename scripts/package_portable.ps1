@@ -10,7 +10,7 @@ if ($Version -notmatch '^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') {
 $binary = Get-Item -LiteralPath $Executable
 $signature = Get-AuthenticodeSignature -LiteralPath $binary.FullName
 if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
-    throw 'The portable executable must have valid timestamped Authenticode signing.'
+    throw "The portable executable must have valid timestamped Authenticode signing. Status: $($signature.Status); timestamp present: $([bool]$signature.TimeStamperCertificate); file: $($binary.FullName)"
 }
 $tag = 'v' + $Version.TrimStart('v')
 $name = "agora-desktop-$tag-windows-x86_64-portable"

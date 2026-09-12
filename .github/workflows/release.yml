@@ -224,6 +224,13 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }} ${{ runner.os == 'Windows' && format('--config "{0}"', env.AGORA_WINDOWS_SIGNING_CONFIG) || '' }}
 
+      # Tauri restores the unsigned main binary after creating signed installers.
+      # Sign the standalone executable separately before the portable ZIP is made.
+      - name: Sign and verify Windows portable desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '& ./scripts/sign-windows.ps1 -FilePath "target/release/agora-desktop.exe"'
+
       - name: Package and upload Windows portable desktop
         if: runner.os == 'Windows'
         shell: pwsh

@@ -72,7 +72,11 @@ authenticate again and acquire a fresh service token immediately before packagin
 
 For desktop builds, a temporary Tauri configuration supplies a custom signing hook.
 Tauri signs the application and installer executables during packaging, before
-creating updater signatures. Each hook invocation verifies Authenticode and requires
+creating updater signatures. Tauri restores the original unsigned main executable
+after bundling, so the workflow separately signs and verifies
+`target/release/agora-desktop.exe` before creating the portable ZIP. The portable
+packager still rejects invalid signatures or missing timestamps.
+Each hook invocation verifies Authenticode and requires
 a timestamp. The Windows CLI is signed and verified before its ZIP is created, so
 the release checksums cover the signed binary. Signing or verification failure fails
 the job; it never falls back to an unsigned Windows release. Local development builds
