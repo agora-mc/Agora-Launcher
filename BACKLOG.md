@@ -573,7 +573,9 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
         at the same speed whether or not a publisher is reachable.
   - [ ] A real publish-and-update cycle against an author-hosted file. The network gate rejects
         loopback by design, so this cannot be proven locally.
-  - [ ] Revocation, or an explicit decision that there will not be one.
+  - [x] Revocation: **decided out of scope.** None exists and none is planned. Nowhere to publish
+        a list, no authority to sign one, and the cost outweighs what it protects at this size.
+        Documented for authors rather than left as an open question.
   - [ ] Optional curated catalog, and a content-source example. Not started; installing needs
         neither.
 

@@ -150,8 +150,8 @@ pub async fn start_plugins(
     // whether or not a publisher's host is reachable. Core decides whether it
     // happens at all; this only decides where it runs.
     let background = service.clone();
-    std::thread::spawn(move || {
-        for (plugin_id, outcome) in background.check_all_updates() {
+    tauri::async_runtime::spawn(async move {
+        for (plugin_id, outcome) in background.check_all_updates().await {
             if let Err(reason) = outcome {
                 // Recorded on the trust record by core already; this is the
                 // developer-facing trail for a check nobody asked to see.
@@ -222,7 +222,7 @@ pub async fn plugin_check_update(
     app: AppHandle,
     plugin_id: String,
 ) -> LauncherResult<UpdateVerdict> {
-    service(&app)?.check_update(&parse_id(&plugin_id)?)
+    service(&app)?.check_update(&parse_id(&plugin_id)?).await
 }
 
 #[tauri::command]
@@ -231,7 +231,9 @@ pub async fn plugin_apply_update(
     plugin_id: String,
     accept_capabilities: bool,
 ) -> LauncherResult<UpdateOutcome> {
-    service(&app)?.apply_update(&parse_id(&plugin_id)?, accept_capabilities)
+    service(&app)?
+        .apply_update(&parse_id(&plugin_id)?, accept_capabilities)
+        .await
 }
 
 #[tauri::command]

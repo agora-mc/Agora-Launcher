@@ -129,6 +129,25 @@ standing one in for a built-in is exactly the thing "do not build a product on i
 there has not yet been anything to deprecate. Before v1 is advertised as stable, the items
 under "Remaining before a stable v1" must be resolved.
 
+## Changing the API
+
+The plugin API version (`0.1`) is not the launcher's version. They move independently: Agora can
+ship 1.0 with a plugin API still at 0.2, and a plugin declares which *API* range it supports.
+
+While the plugin API is `0.x`:
+
+- Breaking changes are allowed, and named in the release notes.
+- A withdrawn or changed contract keeps working for **one further Agora release** before it is
+  refused, and is refused **by name** with a message saying what replaced it — not as a parse
+  error. The custom-view withdrawal is the worked example: the variant still deserialises purely
+  so the refusal can explain itself.
+- The `v0.1` fixtures are the check. When `0.2` lands, every accepted fixture must still load or
+  the break is deliberate and reviewed as such.
+
+At `1.0` the one-release grace becomes a commitment rather than a convention, and the support
+window gets a stated length. Promising one now, for an API with no published plugins, would be
+theatre.
+
 ## Compatibility fixtures
 
 `docs/plugins/fixtures/v0.1/` pins the shipped surface: manifests that must keep loading, and
@@ -144,13 +163,19 @@ deliberate compatibility decision and should be reviewed as exactly that.
 ## Remaining before a stable v1
 
 - [ ] Verified behaviour in the packaged desktop app on macOS and Linux, not only Windows.
-- [ ] A real deprecation and support-window policy, tested by running v0.1 fixtures against a
-      v0.2 host.
+- [ ] Apply the deprecation policy at the first breaking change — see "Changing the API" below.
+      The fixtures are in place; there is no v0.2 yet to run them against.
 - [x] ~~Honest, complete update rollback — or documentation that stops implying one exists.~~
       Plugin *data* can be restored from the pre-migration copy, on the user's say-so. Package
       bytes are still not retained, and the docs say so rather than implying otherwise.
 - [ ] A real publish-and-update cycle against an author-hosted static file, not only tests.
-- [ ] A revocation story, or an explicit decision that there will not be one.
+- [x] ~~A revocation story, or an explicit decision that there will not be one.~~ **Decided: out
+      of scope.** There is no revocation and none is planned. With no servers there is nowhere to
+      publish a revocation list and no authority to sign one, and building an infrastructure to
+      carry it would cost more than the ecosystem it protects is currently worth. If a key is
+      stolen, the author's recourse is to tell their users through whatever channel they have; the
+      user's recourse is to uninstall. `publishing.md` says this to authors in those words.
+      Revisit if a plugin ecosystem large enough to be worth attacking actually appears.
 - [ ] A curated catalog, if there is ever to be one. There is none today and installing does not
       need one.
 - [x] ~~A decision on whether the custom-view prototype becomes supported or is withdrawn.~~

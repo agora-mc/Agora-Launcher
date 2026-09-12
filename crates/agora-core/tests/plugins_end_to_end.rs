@@ -1278,8 +1278,8 @@ fn installing_a_package_with_an_update_source_shows_it_and_records_it() {
 
 /// A plugin that ships no distribution block simply has no updates, and says
 /// so in a way that tells the user it is not a failure.
-#[test]
-fn a_plugin_without_an_update_source_says_there_is_nowhere_to_check() {
+#[tokio::test]
+async fn a_plugin_without_an_update_source_says_there_is_nowhere_to_check() {
     let world = world();
     let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let archive = world._dir.path().join("v1.zip");
@@ -1289,6 +1289,7 @@ fn a_plugin_without_an_update_source_says_there_is_nowhere_to_check() {
     let error = world
         .service
         .check_update(&id("acme.dashboard"))
+        .await
         .unwrap_err();
     assert!(
         error
@@ -1300,8 +1301,8 @@ fn a_plugin_without_an_update_source_says_there_is_nowhere_to_check() {
 
 /// A plugin cannot acquire an update channel by shipping a version that drops
 /// the file — the pin is cleared rather than inherited.
-#[test]
-fn replacing_a_package_with_one_that_has_no_source_clears_the_pin() {
+#[tokio::test]
+async fn replacing_a_package_with_one_that_has_no_source_clears_the_pin() {
     let world = world();
     let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let archive = world._dir.path().join("v1.zip");
@@ -1325,6 +1326,7 @@ fn replacing_a_package_with_one_that_has_no_source_clears_the_pin() {
     let error = world
         .service
         .check_update(&id("acme.dashboard"))
+        .await
         .unwrap_err();
     assert!(
         error
@@ -1336,8 +1338,8 @@ fn replacing_a_package_with_one_that_has_no_source_clears_the_pin() {
 
 /// The author is the one editing a development folder. Overwriting their
 /// working copy with a published release would be the opposite of helpful.
-#[test]
-fn a_development_folder_is_never_updated() {
+#[tokio::test]
+async fn a_development_folder_is_never_updated() {
     let world = world();
     let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let folder = plugin_folder(world._dir.path(), "dashboard", manifest, DASHBOARD_MAIN);
@@ -1346,12 +1348,13 @@ fn a_development_folder_is_never_updated() {
     let error = world
         .service
         .check_update(&id("acme.dashboard"))
+        .await
         .unwrap_err();
     assert!(error.to_string().contains("working copy"), "{error}");
 }
 
-#[test]
-fn nothing_checks_for_updates_while_the_plugin_system_is_switched_off() {
+#[tokio::test]
+async fn nothing_checks_for_updates_while_the_plugin_system_is_switched_off() {
     let world = world();
     let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let archive = world._dir.path().join("v1.zip");
@@ -1363,6 +1366,7 @@ fn nothing_checks_for_updates_while_the_plugin_system_is_switched_off() {
     let error = world
         .service
         .check_update(&id("acme.dashboard"))
+        .await
         .unwrap_err();
     assert!(error.to_string().contains("switched off"), "{error}");
 }
@@ -1543,8 +1547,8 @@ fn a_verified_update_asking_for_nothing_new_installs_and_leaves_no_download() {
 /// The automatic-check setting has to actually gate something. A toggle that
 /// changes no behaviour is worse than no toggle: it tells the user they have
 /// made a decision they have not made.
-#[test]
-fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
+#[tokio::test]
+async fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
     let world = world();
     let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let archive = world._dir.path().join("v1.zip");
@@ -1555,7 +1559,7 @@ fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
     // network at all — which is also why this test is fast.
     assert!(!world.service.automatic_updates_enabled());
     assert!(
-        world.service.check_all_updates().is_empty(),
+        world.service.check_all_updates().await.is_empty(),
         "with the setting off, nothing should be checked"
     );
 
@@ -1572,15 +1576,15 @@ fn nothing_is_checked_automatically_unless_the_user_asked_for_it() {
     .unwrap();
     assert!(world.service.automatic_updates_enabled());
 
-    let results = world.service.check_all_updates();
+    let results = world.service.check_all_updates().await;
     assert_eq!(results.len(), 1, "the installed plugin is a candidate");
     assert_eq!(results[0].0, "acme.dashboard");
 }
 
 /// A plugin with nowhere to check is not a candidate, so a sweep does not
 /// produce a row of failures for plugins that were never going to update.
-#[test]
-fn a_plugin_without_an_update_source_is_not_swept() {
+#[tokio::test]
+async fn a_plugin_without_an_update_source_is_not_swept() {
     let world = world();
     let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
     let archive = world._dir.path().join("v1.zip");
@@ -1595,7 +1599,7 @@ fn a_plugin_without_an_update_source_is_not_swept() {
     )
     .unwrap();
 
-    assert!(world.service.check_all_updates().is_empty());
+    assert!(world.service.check_all_updates().await.is_empty());
 }
 
 // ---------------------------------------------------------------------------

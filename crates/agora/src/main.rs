@@ -1362,7 +1362,7 @@ fn accept_plugin_capabilities(
     ))
 }
 
-fn run_plugin_command(
+async fn run_plugin_command(
     service: &PluginService,
     action: PluginCmd,
     output_fmt: OutputFormat,
@@ -1491,7 +1491,7 @@ fn run_plugin_command(
             };
             let mut results = Vec::new();
             for plugin_id in targets {
-                let outcome = match service.check_update(&plugin_id) {
+                let outcome = match service.check_update(&plugin_id).await {
                     Ok(verdict) => serde_json::json!({
                         "id": plugin_id.as_str(),
                         "verdict": verdict,
@@ -1518,7 +1518,7 @@ fn run_plugin_command(
         }
         PluginCmd::Update { id, yes } => {
             let plugin_id = parse_plugin_id(&id)?;
-            let outcome = service.apply_update(&plugin_id, yes)?;
+            let outcome = service.apply_update(&plugin_id, yes).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
@@ -1926,7 +1926,7 @@ async fn run_command(
         },
         Commands::Plugin { action } => {
             let service = plugin_service(ctx);
-            run_plugin_command(&service, action, output_fmt)?;
+            run_plugin_command(&service, action, output_fmt).await?;
         }
         Commands::Settings { action } => match action {
             SettingsCmd::List => {

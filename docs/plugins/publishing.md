@@ -135,8 +135,9 @@ a real cost of the $0.00/month design, and it is why rotating *early* — publis
 before you need it — is worth the five minutes.
 
 **Theft.** Same answer, and it is worse: someone with your key can publish anything to anyone who
-has your plugin installed. There is no revocation. Tell your users through whatever channel you
-have, and expect that some of them will not hear you.
+has your plugin installed. **There is no revocation, and none is planned** — with no servers there
+is nowhere to publish a revocation list and no authority to sign one. Tell your users through
+whatever channel you have, and expect that some of them will not hear you.
 
 If those consequences are unacceptable for what your plugin does, do not ship an update source.
 Distribute by hand, and let each install be a deliberate decision.

@@ -823,10 +823,10 @@ impl PluginService {
     /// Does not install anything and does not download a package. The only
     /// bytes fetched are the small signed JSON document, so a check is cheap,
     /// and a check that fails leaves nothing behind but a recorded reason.
-    pub fn check_update(&self, plugin_id: &PluginId) -> LauncherResult<UpdateVerdict> {
+    pub async fn check_update(&self, plugin_id: &PluginId) -> LauncherResult<UpdateVerdict> {
         let (record, trust) = self.update_subject(plugin_id)?;
 
-        let body = self.fetch_update_document(&trust.url)?;
+        let body = self.fetch_update_document(&trust.url).await?;
         let text = String::from_utf8(body).map_err(|_| LauncherError::Generic {
             code: "ERR_PLUGIN_UPDATE_REFUSED".into(),
             message: "the update document is not text".into(),
@@ -951,7 +951,7 @@ impl PluginService {
     /// Best effort by design. A publisher being unreachable is not a launcher
     /// failure, so the reason is recorded on the trust record for the manager
     /// to show and nothing is raised at the user.
-    pub fn check_all_updates(&self) -> Vec<(String, Result<UpdateVerdict, String>)> {
+    pub async fn check_all_updates(&self) -> Vec<(String, Result<UpdateVerdict, String>)> {
         if !self.automatic_updates_enabled() || !self.is_enabled() {
             return Vec::new();
         }
@@ -966,15 +966,18 @@ impl PluginService {
             .collect();
         drop(conn);
 
-        candidates
-            .into_iter()
-            .map(|plugin_id| {
-                let outcome = self
-                    .check_update(&plugin_id)
-                    .map_err(|error| error.to_string());
-                (plugin_id.to_string(), outcome)
-            })
-            .collect()
+        // Sequential on purpose. A sweep is background work nobody is waiting
+        // on, and firing every publisher at once would turn "check for
+        // updates" into a burst of connections at launch.
+        let mut results = Vec::new();
+        for plugin_id in candidates {
+            let outcome = self
+                .check_update(&plugin_id)
+                .await
+                .map_err(|error| error.to_string());
+            results.push((plugin_id.to_string(), outcome));
+        }
+        results
     }
 
     /// Download and install the release [`Self::check_update`] offered.
@@ -983,12 +986,12 @@ impl PluginService {
     /// check and the click the publisher may have published again, and the
     /// decision about which bytes to fetch has to come from a document
     /// verified during this call.
-    pub fn apply_update(
+    pub async fn apply_update(
         &self,
         plugin_id: &PluginId,
         accept_capabilities: bool,
     ) -> LauncherResult<UpdateOutcome> {
-        let verdict = self.check_update(plugin_id)?;
+        let verdict = self.check_update(plugin_id).await?;
         let UpdateVerdict::Available {
             to,
             url,
@@ -1006,7 +1009,7 @@ impl PluginService {
             });
         };
 
-        let bytes = self.fetch_update_package(url, *size)?;
+        let bytes = self.fetch_update_package(url, *size).await?;
         self.install_downloaded_update(plugin_id, to, sha256, *size, &bytes, accept_capabilities)
     }
 
@@ -1138,9 +1141,16 @@ impl PluginService {
     }
 
     /// Fetch the signed document. Small, so it is read whole.
-    fn fetch_update_document(&self, url: &str) -> LauncherResult<Vec<u8>> {
+    ///
+    /// Async, on the shared client, rather than the blocking helper. Every
+    /// caller of this — the CLI, a Tauri command, the startup sweep — is
+    /// already inside a Tokio runtime, and the blocking client builds a
+    /// runtime of its own that panics when it is dropped in an async context.
+    /// The blocking helpers exist for the synchronous import workers, which
+    /// run on dedicated threads; this is not one of those.
+    async fn fetch_update_document(&self, url: &str) -> LauncherResult<Vec<u8>> {
         let host = [host_of(url)];
-        crate::http_client::blocking_checked_get_bytes_with_policy(
+        crate::http_client::checked_get_bytes_with_policy(
             &self.inner.ctx.http_clients,
             crate::http_client::ClientCategory::PluginUpdate,
             url,
@@ -1150,10 +1160,11 @@ impl PluginService {
             // loopback address rejection — still applies on top of it.
             crate::http_client::HostPolicy::PluginDeclared(&host),
         )
+        .await
     }
 
     /// Fetch package bytes named by an already-verified document.
-    fn fetch_update_package(&self, url: &str, expected: u64) -> LauncherResult<Vec<u8>> {
+    async fn fetch_update_package(&self, url: &str, expected: u64) -> LauncherResult<Vec<u8>> {
         if expected > install::MAX_TOTAL_BYTES {
             return Err(LauncherError::Generic {
                 code: "ERR_PLUGIN_UPDATE_REFUSED".into(),
@@ -1165,7 +1176,7 @@ impl PluginService {
             });
         }
         let host = [host_of(url)];
-        crate::http_client::blocking_checked_get_bytes_with_policy(
+        crate::http_client::checked_get_bytes_with_policy(
             &self.inner.ctx.http_clients,
             crate::http_client::ClientCategory::PluginPackage,
             url,
@@ -1175,6 +1186,7 @@ impl PluginService {
             // Lockdown and the address checks apply.
             crate::http_client::HostPolicy::PluginDeclared(&host),
         )
+        .await
     }
 
     /// Load a folder the author is working in, without copying it.
