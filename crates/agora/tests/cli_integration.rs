@@ -833,7 +833,13 @@ fn import_twice_reuses_name_with_suffix() {
     std::fs::create_dir_all(inst1.join("mods")).unwrap();
     std::fs::write(inst1.join("mods").join("a.jar"), b"mod").unwrap();
     let out1 = run_agora(&data_dir, &["import", &inst1.to_string_lossy()]);
-    assert!(out1.status.success(), "first import should succeed");
+    assert!(
+        out1.status.success(),
+        "first import should succeed (status: {}):\nstdout:\n{}\nstderr:\n{}",
+        out1.status,
+        String::from_utf8_lossy(&out1.stdout),
+        String::from_utf8_lossy(&out1.stderr),
+    );
 
     let src2 = tempdir();
     let inst2 = src2.path().join("duplicate-name");

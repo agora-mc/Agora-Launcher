@@ -14,6 +14,17 @@ use std::os::windows::fs::MetadataExt;
 pub(crate) const RESTORE_MARKER: &str = ".agora_restore_in_progress";
 const SNAPSHOT_PENDING_MARKER: &str = ".agora_snapshot_pending";
 const SNAPSHOT_FAILED_MARKER: &str = ".agora_snapshot_failed";
+// Marker reads and transitions must not overlap within the owning process.
+// On Windows, deleting a marker during a read can return PermissionDenied as
+// well as NotFound. Keep this lock scoped to the tiny state-file operations.
+static SNAPSHOT_MARKER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn snapshot_marker_guard() -> std::sync::MutexGuard<'static, ()> {
+    SNAPSHOT_MARKER_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// v4 added the explicit `scope` field. Before it, restore inferred which
 /// roots it was allowed to replace from the *current* build's tracked-entry
 /// list, which meant a pre-launch snapshot (no `saves/`) moved the player's
@@ -115,20 +126,27 @@ impl SnapshotReadiness {
 }
 
 pub fn snapshot_readiness(instance_dir: &Path) -> SnapshotReadiness {
-    if instance_dir.join(SNAPSHOT_PENDING_MARKER).is_file() {
-        let owner = fs::read_to_string(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
-        let current_process = std::process::id().to_string();
-        if owner.as_deref() == Some(current_process.as_str()) {
-            SnapshotReadiness::Pending
-        } else {
+    let _guard = snapshot_marker_guard();
+    // Read directly: the worker can remove the marker when it finishes. An
+    // existence check followed by a read could mistake that removal for a
+    // dead owner and report a failed import after a successful snapshot.
+    let pending = instance_dir.join(SNAPSHOT_PENDING_MARKER);
+    match fs::read_to_string(&pending) {
+        Ok(owner) if owner == std::process::id().to_string() => SnapshotReadiness::Pending,
+        Ok(_) => {
             // A previous process died while the background task was running.
             // Do not leave the instance permanently stuck in a pending state.
             SnapshotReadiness::Failed
         }
-    } else if instance_dir.join(SNAPSHOT_FAILED_MARKER).is_file() {
-        SnapshotReadiness::Failed
-    } else {
-        SnapshotReadiness::Ready
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if instance_dir.join(SNAPSHOT_FAILED_MARKER).is_file() {
+                SnapshotReadiness::Failed
+            } else {
+                SnapshotReadiness::Ready
+            }
+        }
+        // An unreadable marker is not proof that the snapshot completed.
+        Err(_) => SnapshotReadiness::Failed,
     }
 }
 
@@ -149,6 +167,7 @@ pub fn snapshot_readiness_error(instance_dir: &Path) -> Option<String> {
 }
 
 pub fn mark_snapshot_pending(instance_dir: &Path) -> Result<(), String> {
+    let _guard = snapshot_marker_guard();
     fs::remove_file(instance_dir.join(SNAPSHOT_FAILED_MARKER)).ok();
     fs::write(
         instance_dir.join(SNAPSHOT_PENDING_MARKER),
@@ -158,12 +177,14 @@ pub fn mark_snapshot_pending(instance_dir: &Path) -> Result<(), String> {
 }
 
 pub fn mark_snapshot_ready(instance_dir: &Path) -> Result<(), String> {
+    let _guard = snapshot_marker_guard();
     fs::remove_file(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
     fs::remove_file(instance_dir.join(SNAPSHOT_FAILED_MARKER)).ok();
     Ok(())
 }
 
 pub fn mark_snapshot_failed(instance_dir: &Path, error: &str) -> Result<(), String> {
+    let _guard = snapshot_marker_guard();
     fs::remove_file(instance_dir.join(SNAPSHOT_PENDING_MARKER)).ok();
     fs::write(instance_dir.join(SNAPSHOT_FAILED_MARKER), error.as_bytes())
         .map_err(|e| format!("failed to record snapshot failure: {e}"))
@@ -2775,6 +2796,56 @@ mod tests {
         );
         mark_snapshot_ready(&inst).unwrap();
         assert_eq!(snapshot_readiness(&inst), SnapshotReadiness::Ready);
+    }
+
+    #[test]
+    fn snapshot_completion_does_not_report_a_failed_worker() {
+        let tmp = TempDir::new().unwrap();
+        let inst = tmp.path();
+        let boundary = std::sync::Barrier::new(2);
+        let observations = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut observations = Vec::new();
+                for _ in 0..1024 {
+                    boundary.wait();
+                    observations.push(snapshot_readiness(inst));
+                    boundary.wait();
+                }
+                observations
+            });
+            for _ in 0..1024 {
+                mark_snapshot_pending(inst).unwrap();
+                boundary.wait();
+                mark_snapshot_ready(inst).unwrap();
+                // Do not publish another pending marker while the reader is
+                // still observing this completion.
+                boundary.wait();
+            }
+            reader.join().unwrap()
+        });
+        assert!(
+            observations
+                .iter()
+                .all(|state| *state != SnapshotReadiness::Failed),
+            "a live worker finishing its snapshot must remain Pending or become Ready"
+        );
+        assert_eq!(snapshot_readiness(inst), SnapshotReadiness::Ready);
+    }
+
+    #[test]
+    fn snapshot_readiness_rejects_invalid_or_unreadable_pending_markers() {
+        let tmp = TempDir::new().unwrap();
+        let marker = tmp.path().join(SNAPSHOT_PENDING_MARKER);
+        for owner in ["0", "", "invalid-owner"] {
+            fs::write(&marker, owner).unwrap();
+            assert_eq!(snapshot_readiness(tmp.path()), SnapshotReadiness::Failed);
+        }
+
+        fs::remove_file(&marker).unwrap();
+        // A directory at the marker path makes read_to_string fail on every
+        // platform, including test environments running as an administrator.
+        fs::create_dir(&marker).unwrap();
+        assert_eq!(snapshot_readiness(tmp.path()), SnapshotReadiness::Failed);
     }
 
     #[test]
