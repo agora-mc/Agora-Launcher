@@ -15,7 +15,7 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
 | **P1** — host, management, recovery | Done | `crates/agora-core/src/plugins/` + 63 unit tests |
 | **P2** — extension surfaces | Done | `crates/agora-core/tests/plugins_end_to_end.rs` (27 tests) against the real QuickJS host |
 | **P3** — first public release materials | Mostly done; see gaps below | `sdk/`, `examples/plugins/`, `docs/plugins/`, `fixtures/` |
-| **P4** — author-hosted signed updates | Built; unexercised against a real host | `crates/agora-plugin-api/src/distribution.rs`, `crates/agora-core/src/plugins/updates.rs`, `crates/agora/tests/signing_round_trip.rs` |
+| **P4** — author-hosted signed updates | Done, and exercised against a real host | `crates/agora-plugin-api/src/distribution.rs`, `crates/agora-core/src/plugins/updates.rs`, `crates/agora/tests/signing_round_trip.rs` |
 | **P5** — deeper customization | Closed: home replacement built, the rest declined with reasons | `crates/agora-core/tests/plugins_end_to_end.rs`, `desktop/src/features/plugins/PluginSurface.test.tsx`, `BACKLOG.md` |
 
 ## What works
@@ -88,12 +88,16 @@ author who loses theirs cannot ship to existing installs again. `docs/plugins/pu
 this to authors in the same words. Replay is handled — a document carries a monotonic sequence and
 an older one is refused — but that is a narrower guarantee than it sounds.
 
-**Nothing about the update path has been exercised against a real host.** The format, the
-verifier, the trust store and the install path are covered by tests, and a document signed by the
-CLI is proven to verify in the launcher. What has *not* happened is a real fetch over the real
-network from a real static host: the network gate rejects loopback by design, so a local server
-would only prove the gate refusing it. Treat "it works end to end" as unproven until someone
-publishes a plugin and updates it.
+**The update path has now run against a real host, and doing it found a bug no test could.**
+Every real call panicked — `Cannot drop a runtime in a context where blocking is not allowed` —
+because both fetches used the blocking HTTP helper from inside an async caller. The format, the
+verifier, the trust store and the install path were all covered by tests, and a CLI-signed
+document provably verified in the launcher; none of that exercised a socket, because the network
+gate rejects loopback by design and a local server would only prove the gate refusing it.
+
+Fixed, and the full cycle is now demonstrated: publish, install, check, update, and a tampered
+package refused because it did not match the hash in the signed document. Treat this as one
+verified run rather than a guarantee — it has been done once, by hand, on Windows.
 
 **Custom views were withdrawn, not deferred.** The `data:`-iframe prototype is gone: renderer,
 bridge, read command, example and manifest support. A manifest declaring one is refused by name
@@ -168,7 +172,12 @@ deliberate compatibility decision and should be reviewed as exactly that.
 - [x] ~~Honest, complete update rollback — or documentation that stops implying one exists.~~
       Plugin *data* can be restored from the pre-migration copy, on the user's say-so. Package
       bytes are still not retained, and the docs say so rather than implying otherwise.
-- [ ] A real publish-and-update cycle against an author-hosted static file, not only tests.
+- [x] ~~A real publish-and-update cycle against an author-hosted static file, not only tests.~~
+      Done on 2026-09-11 against `agora-mc/governance-sandbox-testing`: published a signed
+      document and two packages, installed 1.0.0, fetched the real document over HTTPS, verified
+      the signature against the pinned key, downloaded and installed 1.1.0. Then republished a
+      package that did not match its signed hash and confirmed the update was refused. It found a
+      panic on the first real call — see below.
 - [x] ~~A revocation story, or an explicit decision that there will not be one.~~ **Decided: out
       of scope.** There is no revocation and none is planned. With no servers there is nowhere to
       publish a revocation list and no authority to sign one, and building an infrastructure to

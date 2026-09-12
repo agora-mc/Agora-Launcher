@@ -571,8 +571,9 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
   - [x] `agora plugin check-update` / `agora plugin update`, and the desktop equivalents.
   - [x] Automatic checking behind its own opt-in, run off the startup path so the launcher opens
         at the same speed whether or not a publisher is reachable.
-  - [ ] A real publish-and-update cycle against an author-hosted file. The network gate rejects
-        loopback by design, so this cannot be proven locally.
+  - [x] A real publish-and-update cycle against an author-hosted file, done against
+        `agora-mc/governance-sandbox-testing`. It found a panic on the first real call: both
+        fetches used the blocking HTTP helper from inside an async caller.
   - [x] Revocation: **decided out of scope.** None exists and none is planned. Nowhere to publish
         a list, no authority to sign one, and the cost outweighs what it protects at this size.
         Documented for authors rather than left as an open question.
