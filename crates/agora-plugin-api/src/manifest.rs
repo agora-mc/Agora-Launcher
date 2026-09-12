@@ -473,28 +473,40 @@ impl PluginManifest {
             ));
         }
 
-        for page in &self.contributions.pages {
-            if let crate::contributions::ViewSource::Custom { html } = &page.view {
-                validate_package_path("page view html", html)?;
-            }
-        }
-        for panel in &self.contributions.instance_panels {
-            if let crate::contributions::ViewSource::Custom { html } = &panel.view {
-                validate_package_path("instance panel view html", html)?;
-            }
+        // The custom-view prototype was withdrawn in 0.1. Refused here, by
+        // name, so an author who wrote against it is told what happened and
+        // what to use instead — letting serde report "unknown variant" would
+        // tell them only that their manifest is broken.
+        let has_custom = self
+            .contributions
+            .pages
+            .iter()
+            .map(|page| &page.view)
+            .chain(
+                self.contributions
+                    .instance_panels
+                    .iter()
+                    .map(|panel| &panel.view),
+            )
+            .any(|view| matches!(view, crate::contributions::ViewSource::Custom { .. }));
+        if has_custom {
+            return Err(PluginError::invalid_manifest(
+                "`view: { kind: \"custom\" }` was withdrawn in plugin API 0.1. Script in that \
+                 frame ran outside the limits the plugin runtime exists to impose, and \
+                 accessibility and controller support were left to the plugin author. Use \
+                 `{ kind: \"host\", export: \"...\" }` and return a view model instead; see \
+                 docs/plugins/README.md",
+            ));
         }
         for replacement in &self.contributions.replacements {
-            // A replacement is the whole screen. The host-rendered path is the
-            // one that is themed, accessible and controller-navigable by
-            // construction, and a custom frame is still a prototype — putting
-            // an unproven one where the home page used to be is precisely
-            // "building a product on it".
+            // A replacement is the whole screen, so it has to be the path that
+            // is themed, accessible and controller-navigable by construction.
             if !matches!(
                 replacement.view,
                 crate::contributions::ViewSource::Host { .. }
             ) {
                 return Err(PluginError::invalid_manifest(format!(
-                    "replacement `{}` must use a host-rendered view; a custom frame may add a                      page but may not stand in for a built-in surface",
+                    "replacement `{}` must use a host-rendered view",
                     replacement.id
                 )));
             }

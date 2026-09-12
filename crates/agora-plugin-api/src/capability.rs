@@ -30,8 +30,13 @@ pub enum Capability {
     /// Read installed content: mods, packs, shaders, resource packs.
     #[serde(rename = "content:read")]
     ContentRead,
-    /// Submit supported content operations: enable, disable, and install a
-    /// resolved plan the user has approved.
+    /// Enable, disable and pin installed content.
+    ///
+    /// Deliberately *not* installation. There is no `content.install` method,
+    /// so a plugin holding this cannot introduce new executable content into
+    /// an instance by any route — which is what keeps the launcher's
+    /// provenance story ("every artifact came through the verified install
+    /// pipeline") true in the presence of plugins.
     #[serde(rename = "content:write")]
     ContentWrite,
     /// Read launch state and launch history.

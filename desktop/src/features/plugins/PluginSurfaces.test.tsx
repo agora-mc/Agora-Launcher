@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginPage } from './PluginSurfaces';
 import { themeDeclarations } from './PluginTheme';
-import { customViewDocument } from './PluginCustomView';
 
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown>, render: vi.fn(), run: vi.fn() }));
 vi.mock('./PluginProvider', () => ({ usePlugins: () => mocks.state }));
@@ -43,9 +42,3 @@ it('theme values cannot add CSS rules or remote resources', () => {
     .toBe('--primary:0.00 0.00% 100.00% !important;');
 });
 
-it('places restrictive custom-document policy before all plugin markup', () => {
-  const document = customViewDocument('<script>parent.postMessage({}, "*")</script>');
-  expect(document.indexOf('Content-Security-Policy')).toBeLessThan(document.indexOf('<script>'));
-  expect(document).toContain("connect-src 'none'");
-  expect(document).toContain("form-action 'none'");
-});

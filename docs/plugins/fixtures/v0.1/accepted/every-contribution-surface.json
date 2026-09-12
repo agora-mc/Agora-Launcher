@@ -18,7 +18,10 @@
   "contributions": {
     "pages": [
       { "id": "overview", "title": "Overview", "icon": "LayoutDashboard", "view": { "kind": "host", "export": "overview" } },
-      { "id": "custom", "title": "Custom", "view": { "kind": "custom", "html": "views/custom.html" } }
+      { "id": "second", "title": "Second page", "view": { "kind": "host", "export": "second" } }
+    ],
+    "replacements": [
+      { "id": "home", "title": "Compact", "description": "A denser first screen.", "surface": "home", "view": { "kind": "host", "export": "home" } }
     ],
     "instancePanels": [
       { "id": "panel", "title": "Instance panel", "view": { "kind": "host", "export": "panel" } }

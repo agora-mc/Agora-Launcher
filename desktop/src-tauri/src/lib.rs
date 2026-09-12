@@ -169,7 +169,6 @@ pub fn run() {
             plugins::uninstall_plugin,
             plugins::disable_all_plugins,
             plugins::render_plugin_view,
-            plugins::read_plugin_custom_view,
             plugins::run_plugin_command,
             plugins::run_plugin_diagnostic,
             plugins::apply_plugin_repair,

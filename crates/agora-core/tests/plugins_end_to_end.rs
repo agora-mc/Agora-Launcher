@@ -826,13 +826,7 @@ fn nothing_activates_while_the_plugin_system_is_switched_off() {
 fn shipped_examples_install_and_run_using_the_public_contract() {
     let world = world();
     let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
-    for name in [
-        "dashboard",
-        "diagnostics",
-        "theme",
-        "custom-dashboard",
-        "home-replacement",
-    ] {
+    for name in ["dashboard", "diagnostics", "theme", "home-replacement"] {
         world
             .service
             .add_development_folder(&examples.join(name), true)
@@ -854,15 +848,6 @@ fn shipped_examples_install_and_run_using_the_public_contract() {
         .contributions()
         .iter()
         .any(|entry| entry.id == "agora.forest/forest"));
-    let html = world
-        .service
-        .custom_view_html(&id("agora.custom-dashboard"), "dashboard")
-        .unwrap();
-    assert!(html.contains("agora:command"));
-    assert!(world
-        .service
-        .custom_view_html(&id("agora.custom-dashboard"), "../main.js")
-        .is_err());
     // The replacement example renders through the same path a page does, and
     // — the point of the surface design — offers rather than takes.
     world
@@ -883,15 +868,6 @@ fn shipped_examples_install_and_run_using_the_public_contract() {
         home.effective.is_none(),
         "a shipped example must not seize the home screen by being installed"
     );
-
-    world
-        .service
-        .set_enabled(&id("agora.custom-dashboard"), false)
-        .unwrap();
-    assert!(world
-        .service
-        .custom_view_html(&id("agora.custom-dashboard"), "dashboard")
-        .is_err());
 }
 
 #[test]

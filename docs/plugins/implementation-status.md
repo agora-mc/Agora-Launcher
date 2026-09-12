@@ -88,13 +88,24 @@ network from a real static host: the network gate rejects loopback by design, so
 would only prove the gate refusing it. Treat "it works end to end" as unproven until someone
 publishes a plugin and updates it.
 
-**Custom views are a prototype.** The supported path is the host-rendered `ViewModel`.
-`desktop/e2e/plugins.spec.ts` drives the `data:`-iframe custom view in a real browser and
-confirms it cannot reach parent IPC or the network — that is the browser enforcing its own
-sandbox, not a mock — but the Tauri bridge around it in that test *is* mocked, so it is
-evidence about the frame boundary rather than about the packaged app. The frame also has no
-asset loading, no remote resources, a 512 KiB single-file limit, and plugin authors own
-accessibility and controller usability inside it. Do not build a product on it yet.
+**Custom views were withdrawn, not deferred.** The `data:`-iframe prototype is gone: renderer,
+bridge, read command, example and manifest support. A manifest declaring one is refused by name
+with a migration message, pinned by a compatibility fixture.
+
+The decisive reason was not the accessibility cost, which was known. It was that the script in
+that frame ran in the WebView, outside every bound the plugin runtime exists to impose — no memory
+ceiling, no interrupt handler, no deadline — so a 512 KiB document could hang the launcher with a
+loop while the QuickJS budget it was supposedly subject to looked on. Two further gaps: the frame's
+isolation could not be demonstrated for the packaged app (Tauri documents that on some platforms
+IPC from an embedded frame is indistinguishable from IPC from its window), and accessibility and
+controller behaviour inside the frame were the author's problem in an app where controller support
+is first-class.
+
+It was removed rather than repaired because repairing it buys a feature with no demonstrated user
+and a permanent compatibility obligation. API 0.1 is experimental, unreleased and off by default,
+so withdrawing now cost one example; withdrawing later would have been a breaking change. The
+design history is in the commit that removed it. Reconsider only when a specific plugin needs an
+interaction a reasonable host-rendered component cannot provide.
 
 **Windows/MSVC is the only platform actually exercised.** The runtime is portable in principle
 and `rquickjs` builds cleanly elsewhere, but macOS and Linux packaging of the plugin host has
@@ -133,4 +144,4 @@ deliberate compatibility decision and should be reviewed as exactly that.
 - [ ] A revocation story, or an explicit decision that there will not be one.
 - [ ] A curated catalog, if there is ever to be one. There is none today and installing does not
       need one.
-- [ ] A decision on whether the custom-view prototype becomes supported or is withdrawn.
+- [x] ~~A decision on whether the custom-view prototype becomes supported or is withdrawn.~~ Withdrawn.

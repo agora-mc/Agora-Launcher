@@ -1,0 +1,14 @@
+{
+  "manifest": 1,
+  "id": "acme.legacy",
+  "name": "Legacy custom view",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "contributions": {
+    "pages": [
+      { "id": "dashboard", "title": "Dashboard", "view": { "kind": "custom", "html": "view.html" } }
+    ]
+  }
+}

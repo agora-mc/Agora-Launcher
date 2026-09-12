@@ -9,7 +9,6 @@ Build the desktop application, open **Settings → Services → Plugins**, and e
 - `dashboard`: reads real instances, renders a host-owned table, and saves a count to plugin storage from a button.
 - `diagnostics`: lists disabled mods in an instance and proposes enabling one. The instance's integration area shows findings and a repair review; no repair runs until the user approves it. Its launch reminder feeds into the normal launch flow.
 - `theme`: adds selectable Forest accents. Choose it in the Plugins page. Built-in appearance preferences remain stored and resume when the plugin is disabled.
-- `custom-dashboard`: an isolated HTML panel calls a declared command that reads instances and saves the count. This is the custom-view prototype, not a general webview hosting API.
 - `home-replacement`: offers to render Agora's home screen instead of adding a page. Installing it changes nothing until you choose it under **Who draws each screen**, and Agora's own screen comes back the moment you disable it.
 
 The same operations exist in the standalone CLI, which is usually faster while iterating:
@@ -96,14 +95,25 @@ its own screen and tells the user why; the choice is remembered, so fixing the p
 `examples/plugins/home-replacement/` is a working example, including how to handle an optional
 capability the user declined.
 
-## Custom-view prototype
+## Custom views were withdrawn
 
-This adds a page or an instance panel; it cannot replace a built-in screen. Declare
-`view: { kind: "custom", html: "view.html" }`. Bundle into one UTF-8 HTML file of at most 512 KiB, with inline CSS/JavaScript and data-URL images/fonts. Relative and remote asset loading is deliberately unavailable in this prototype. The core only reads manifest-declared views inside the package.
+`view: { kind: "custom", html: "..." }` shipped as a prototype in an early 0.1 build and has been
+**removed**. A manifest still declaring one is refused with a message pointing here.
 
-The frame has an opaque origin and `sandbox="allow-scripts"`. Its CSP disables network, child frames, objects, forms and base URLs. It cannot read parent DOM or Tauri IPC. Do not request additional sandbox permissions.
+It was withdrawn rather than finished because the script inside that frame ran in the WebView,
+outside every bound the plugin runtime exists to impose. A QuickJS plugin gets a memory ceiling, an
+interrupt handler and a deadline; a 512 KiB HTML document got none of them and could hang the
+launcher with `while (true) {}`. A bounded file and a throttled command bridge do not make a
+bounded view. Accessibility and controller navigation were also the author's problem inside the
+frame, in an application where controller support is first-class — and the frame's isolation could
+not be demonstrated for the packaged app, because Tauri documents that on some platforms it cannot
+distinguish IPC from an embedded frame from IPC from the window containing it.
 
-Send `{ type: "agora:command", requestId: "unique-id", commandId: "manifest-command-id", args: {} }` to `parent.postMessage(..., '*')`. Replies are `{ type: "agora:result", requestId, value }` or `{ type: "agora:result", requestId, error }`. Check `event.source === parent`. Only commands declared by that same plugin are accepted. The bridge accepts one request at a time, at most ten per second, and at most 64 KiB of JSON arguments. Instance panels supply their current instance ID. Plugin authors own accessibility and controller usability inside custom frames.
+Use `{ kind: "host", export: "..." }` and return a view model. If you have an interaction the view
+model genuinely cannot express — a graph, a map, a spatial editor — that is a good reason to open
+an issue asking for a new block type. It is not a reason to reintroduce a second renderer: the
+right fix adds a component every plugin can use, themed and navigable, rather than one plugin's
+private HTML.
 
 ## Recovery and compatibility
 

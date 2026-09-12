@@ -155,9 +155,28 @@ pub enum ViewSource {
         /// Name of the exported function on the plugin's entrypoint module.
         export: String,
     },
-    /// The plugin ships its own HTML/CSS/JS, rendered in an isolated frame
-    /// with no launcher IPC of its own. It talks to the plugin's script over a
-    /// narrow postMessage bridge and to nothing else.
+    /// **Withdrawn in API 0.1.** Kept only so that a manifest written against
+    /// the prototype is refused with an explanation rather than an
+    /// "unknown variant" parse error.
+    ///
+    /// This shipped a plugin's own HTML in a `data:` iframe. It was removed
+    /// rather than finished, for a reason worth recording: the script inside
+    /// that frame ran in the WebView, outside every bound the plugin runtime
+    /// exists to impose. QuickJS plugins get a memory ceiling, an interrupt
+    /// handler and a deadline; a 512 KiB HTML document got none of them and
+    /// could hang the launcher with `while (true) {}`. A bounded file and a
+    /// throttled command bridge do not make a bounded view.
+    ///
+    /// Accessibility and controller navigation were the author's problem
+    /// inside the frame, in an application where controller support is a
+    /// first-class feature. And the isolation it did provide could not be
+    /// proven for the packaged app: Tauri documents that on some platforms it
+    /// cannot distinguish IPC from an embedded frame from IPC from the window
+    /// containing it.
+    ///
+    /// The host-rendered path exists precisely so none of that is an author's
+    /// problem. If a real plugin needs an interaction `ViewModel` cannot
+    /// express, the answer is a new block type, not a second renderer.
     Custom {
         /// Package-relative path to the entry HTML file.
         html: String,

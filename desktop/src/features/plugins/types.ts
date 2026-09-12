@@ -188,7 +188,8 @@ export interface PluginManifest {
   };
 }
 
-export type ViewSource = { kind: 'host'; export: string } | { kind: 'custom'; html: string };
+/** Host-rendered only. The custom-HTML prototype was withdrawn in API 0.1. */
+export type ViewSource = { kind: 'host'; export: string };
 export interface PluginDefinitions {
   pages: { id: string; title: string; view: ViewSource }[];
   instancePanels: { id: string; title: string; view: ViewSource }[];

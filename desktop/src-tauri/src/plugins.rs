@@ -335,27 +335,6 @@ pub async fn run_plugin_launch_checks(
     Ok(service(&app)?.run_launch_checks(&instance_id))
 }
 
-/// Read the HTML of a manifest-declared custom view, from inside the package.
-///
-/// Core resolves `local_id` against the plugin's declared contributions, so a
-/// path that was not declared — or that points outside the package — is
-/// refused rather than read.
-#[tauri::command]
-pub async fn read_plugin_custom_view(
-    app: AppHandle,
-    plugin_id: String,
-    local_id: String,
-) -> LauncherResult<String> {
-    let service = service(&app)?;
-    let id = parse_id(&plugin_id)?;
-    tauri::async_runtime::spawn_blocking(move || service.custom_view_html(&id, &local_id))
-        .await
-        .map_err(|error| LauncherError::Generic {
-            code: "ERR_PLUGIN_VIEW".into(),
-            message: error.to_string(),
-        })?
-}
-
 /// Forward core events without constructing or starting the plugin service.
 struct PluginEventSink<R: Runtime> {
     app: AppHandle<R>,

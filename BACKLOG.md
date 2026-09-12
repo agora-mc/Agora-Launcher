@@ -585,9 +585,19 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
   - [ ] More surfaces. The instance overview is next and needs extracting from `InstanceEditor`
         first — it is an inline region rather than a component, and a surface a plugin can declare
         but never render is worse than one that is not offered.
-  - [ ] Richer sources, import/export and install hooks. Not started.
-  - [ ] A decision on whether the custom-view prototype becomes supported or is withdrawn.
-        Replacements already rule it out for whole surfaces.
+  - [x] The custom-view prototype is **withdrawn**, not deferred. Its script ran in the WebView,
+        outside every bound the plugin runtime imposes, so a 512 KiB document could hang the
+        launcher. Removed while API 0.1 is unreleased and the cost was one example.
+  - [x] Content-source providers, install hooks and generic import/export hooks: **declined** for
+        this milestone, not deferred. An extension point earns its cost by enabling something the
+        existing API cannot express, and none of the three has a plugin that needs it. Install
+        *observation* is already served by the ten lifecycle events; install *participation* is a
+        transaction problem (ordering, veto, rollback, crash recovery) that should not be invented
+        speculatively. A content source must never be able to certify its own artifacts, so it
+        needs a provenance design before an interface.
+  - [ ] Revisit when a real plugin demonstrates the need. Import/export is the strongest
+        candidate — as bounded plugin data the host carries through an archive, not as execution
+        hooks. Host-rendered forms are worth considering ahead of all three.
         Native companions only if a concrete plugin justifies them.
 
 **Explicitly out of scope for v1:** MO2 integration, Steam discovery, generic

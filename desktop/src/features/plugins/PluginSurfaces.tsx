@@ -5,16 +5,12 @@ import { formatError } from '@/lib/tauri';
 import { pluginInstanceOpened, runPluginCommand } from './api';
 import { usePlugins } from './PluginProvider';
 import { PluginView } from './PluginView';
-import { PluginCustomView } from './PluginCustomView';
 import { PluginDiagnostic } from './PluginDiagnostics';
 import type { ViewSource } from './types';
 
-function ContributedView({ pluginId, localId, title, view, instanceId }: {
-  pluginId: string; localId: string; title: string; view: ViewSource; instanceId?: string;
+function ContributedView({ pluginId, title, view, instanceId }: {
+  pluginId: string; title: string; view: ViewSource; instanceId?: string;
 }) {
-  if (view.kind === 'custom') {
-    return <PluginCustomView pluginId={pluginId} localId={localId} title={title} instanceId={instanceId} />;
-  }
   return <PluginView pluginId={pluginId} title={title} exportName={view.export}
     args={instanceId ? { instanceId } : undefined} />;
 }
@@ -31,7 +27,7 @@ export function PluginPage({ contributionId, onGoHome }: { contributionId: strin
     <Button onClick={onGoHome}>Go home</Button>
   </div>;
   return <ContributedView key={contributionId} pluginId={contribution.pluginId}
-    localId={contribution.localId} title={definition.title} view={definition.view} />;
+    title={definition.title} view={definition.view} />;
 }
 
 export function PluginCommandButton({ pluginId, title, exportName, instanceId }: {
@@ -73,7 +69,7 @@ export function PluginInstancePanels({ instanceId }: { instanceId: string }) {
         ?.definitions?.instancePanels.find((entry) => entry.id === panel.localId);
       return definition ? <section key={panel.id} className="rounded-lg border border-border p-4">
         <h3 className="font-semibold">{panel.title}</h3>
-        <ContributedView pluginId={panel.pluginId} localId={panel.localId} title={panel.title} view={definition.view} instanceId={instanceId} />
+        <ContributedView pluginId={panel.pluginId} title={panel.title} view={definition.view} instanceId={instanceId} />
       </section> : null;
     })}
     {commands.map((command) => {

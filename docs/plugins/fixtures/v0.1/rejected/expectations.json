@@ -8,6 +8,12 @@
     "`messageContains` is asserted case-insensitively so wording can be improved without",
     "breaking the fixture; the code and the stage are the parts that must not drift."
   ],
+  "withdrawn-custom-view.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "withdrawn in plugin api 0.1",
+    "why": "The custom-HTML prototype was withdrawn rather than finished: its script ran in the WebView, outside every bound the plugin runtime exists to impose, and accessibility and controller support were the author's problem. A manifest written against it must be told what happened and what to use instead, not merely told that `custom` is an unknown variant."
+  },
   "replacement-uses-a-custom-frame.json": {
     "stage": "manifest",
     "code": "INVALID_MANIFEST",
