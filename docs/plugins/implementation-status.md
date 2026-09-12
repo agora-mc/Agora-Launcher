@@ -16,7 +16,7 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
 | **P2** — extension surfaces | Done | `crates/agora-core/tests/plugins_end_to_end.rs` (27 tests) against the real QuickJS host |
 | **P3** — first public release materials | Mostly done; see gaps below | `sdk/`, `examples/plugins/`, `docs/plugins/`, `fixtures/` |
 | **P4** — author-hosted signed updates | Built; unexercised against a real host | `crates/agora-plugin-api/src/distribution.rs`, `crates/agora-core/src/plugins/updates.rs`, `crates/agora/tests/signing_round_trip.rs` |
-| **P5** — replacement views, richer hooks | Home only; see below | `crates/agora-core/tests/plugins_end_to_end.rs`, `desktop/src/features/plugins/PluginSurface.test.tsx` |
+| **P5** — deeper customization | Closed: home replacement built, the rest declined with reasons | `crates/agora-core/tests/plugins_end_to_end.rs`, `desktop/src/features/plugins/PluginSurface.test.tsx`, `BACKLOG.md` |
 
 ## What works
 
@@ -144,4 +144,14 @@ deliberate compatibility decision and should be reviewed as exactly that.
 - [ ] A revocation story, or an explicit decision that there will not be one.
 - [ ] A curated catalog, if there is ever to be one. There is none today and installing does not
       need one.
-- [x] ~~A decision on whether the custom-view prototype becomes supported or is withdrawn.~~ Withdrawn.
+- [x] ~~A decision on whether the custom-view prototype becomes supported or is withdrawn.~~
+      Withdrawn.
+
+Content-source providers, install hooks and generic import/export hooks were **declined** rather
+than deferred; `BACKLOG.md` records why. The short version: an extension point earns its
+maintenance cost by enabling something the existing API cannot express, and none of the three has
+a plugin that needs it. Install *observation* is already served by the ten lifecycle events;
+install *participation* is a transaction problem — ordering, veto, rollback, crash recovery — that
+should not be invented speculatively. A content source must never be able to certify its own
+artifacts, so it needs a provenance design before it needs an interface: a matching SHA-256 proves
+the bytes match an expected digest, and says nothing about whether that digest was trustworthy.
