@@ -19,6 +19,15 @@ runs:
         tenant-id: 4e53f04d-d68e-48f4-b965-e9eb54497a43
         subscription-id: 969df700-10bf-453f-9fcb-64454362c6d0
 
+    - name: Cache Artifact Signing access token before compilation
+      shell: pwsh
+      run: |
+        # azure/login caches an ARM token, not the signing-service token.
+        # Exchange the short-lived GitHub assertion now; after the Rust build
+        # it may have expired (AADSTS700024). AzureCliCredential reuses this cache.
+        az account get-access-token --scope https://codesigning.azure.net/.default --output none
+        if ($LASTEXITCODE -ne 0) { throw 'Could not acquire the Artifact Signing access token.' }
+
     - name: Prepare signing tools and Tauri hook
       shell: pwsh
       run: '& "$env:GITHUB_WORKSPACE/scripts/setup-windows-signing.ps1"'

@@ -61,6 +61,15 @@ No client secret or exported code-signing private key is required. The setup dow
 a version- and SHA-256-pinned Microsoft signing client and verifies its NuGet signature.
 It uses the signed Windows SDK SignTool installed on the hosted Windows runner.
 
+Immediately after Azure login, the shared action obtains an access token for
+`https://codesigning.azure.net/.default` and leaves it in Azure CLI's runner-local
+cache, with token output suppressed. This exchange must happen while the GitHub
+OIDC assertion is still valid: waiting until the first signing call after Rust
+compilation caused `AADSTS700024` because the assertion had already expired.
+The signing hook's `AzureCliCredential` then uses the cached service access token.
+That access token also has a finite lifetime; if a much longer build outlasts it,
+authenticate again and acquire a fresh service token immediately before packaging.
+
 For desktop builds, a temporary Tauri configuration supplies a custom signing hook.
 Tauri signs the application and installer executables during packaging, before
 creating updater signatures. Each hook invocation verifies Authenticode and requires
