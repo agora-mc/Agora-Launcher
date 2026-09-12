@@ -100,7 +100,9 @@ jobs:
         include:
           - platform: windows-latest
             target: ""
-            args: ""
+            # Tauri only logs custom sign-command stdout/stderr at debug level.
+            # Keep the real signing error visible instead of just "failed to run pwsh".
+            args: "--verbose"
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"

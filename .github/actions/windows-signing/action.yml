@@ -13,7 +13,7 @@ runs:
         dotnet-version: '8.0.x'
 
     - name: Authenticate to Azure
-      uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+      uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2 (Node 24)
       with:
         client-id: aadd6b45-bc51-4274-ab0a-d31f7e9d91e6
         tenant-id: 4e53f04d-d68e-48f4-b965-e9eb54497a43
