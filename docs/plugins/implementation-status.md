@@ -118,9 +118,15 @@ so withdrawing now cost one example; withdrawing later would have been a breakin
 design history is in the commit that removed it. Reconsider only when a specific plugin needs an
 interaction a reasonable host-rendered component cannot provide.
 
-**Windows/MSVC is the only platform actually exercised.** The runtime is portable in principle
-and `rquickjs` builds cleanly elsewhere, but macOS and Linux packaging of the plugin host has
-not been verified here. Treat cross-platform as an open gate, not a claim.
+**The plugin host builds and passes on all three platforms; the packaged app is still unproven.**
+CI runs `cargo test -p agora-core --lib --tests` on Windows, Linux and macOS, and `agora-plugin-host`
+is a dev-dependency of core — so all 58 plugin end-to-end tests run against the real QuickJS host on
+each. They pass. `rquickjs` needs no external toolchain anywhere.
+
+What that does *not* cover is the packaged desktop bundle with plugins enabled, on any platform
+including Windows. The browser end-to-end suite mocks the Tauri bridge; the Rust suite has no
+frontend. Nobody has yet launched a built `.msi`/`.dmg`/`.AppImage`, turned plugins on and watched a
+view render.
 
 **Replacement views cover two surfaces.** `home` and `instance-overview`, and nothing else. The
 set is closed so that renaming an internal component is not a breaking change for plugins, and a

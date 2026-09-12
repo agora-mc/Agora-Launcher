@@ -16,16 +16,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn binary() -> PathBuf {
-    // The integration-test binary sits next to the one under test.
-    let mut path = std::env::current_exe().expect("test binary path");
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.join(format!("agora{}", std::env::consts::EXE_SUFFIX))
+    // Cargo's own path to the binary under test. It also guarantees the binary
+    // is built before this test runs, which walking up from `current_exe` did
+    // not: CI builds the CLI *after* testing it.
+    PathBuf::from(env!("CARGO_BIN_EXE_agora"))
 }
 
 fn run(args: &[&str]) -> String {
+    // `keygen` and `sign` touch no launcher state, which is the property this
+    // asserts by omission: no `--data-dir`, and four of these run in parallel.
+    // Before they were split out of the core-backed dispatcher they opened the
+    // real `local_state.db` and deadlocked each other on it.
     let output = Command::new(binary())
         .args(args)
         .output()

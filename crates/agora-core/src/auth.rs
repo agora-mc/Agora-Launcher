@@ -1297,15 +1297,20 @@ fn forcing_os_protection() -> bool {
 
 /// Opt this thread into OS protection regardless of data root, so a test can
 /// drive the real DPAPI path under a temp directory. Restores on drop.
-#[cfg(test)]
+///
+/// Windows-only, because every caller is: DPAPI is the only OS protection that
+/// exists, so forcing the flag anywhere else would drive a path that is not
+/// there. Gated to match, or these are dead code on Linux and macOS and
+/// `-D warnings` fails the build there and only there.
+#[cfg(all(test, windows))]
 fn force_os_protection() -> ForceOsProtectionGuard {
     ForceOsProtectionGuard(FORCE_OS_PROTECTION.with(|cell| cell.replace(true)))
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 struct ForceOsProtectionGuard(bool);
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 impl Drop for ForceOsProtectionGuard {
     fn drop(&mut self) {
         let previous = self.0;

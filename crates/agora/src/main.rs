@@ -878,6 +878,34 @@ async fn main() {
         None => OutputFormat::Human,
     };
     let json = output_fmt.is_json_output();
+
+    // Author tooling, handled before anything touches the launcher's state.
+    //
+    // `keygen` writes a key file and `sign` rewrites a JSON document; neither
+    // reads an instance, a setting or the database. Initialising core for them
+    // is not merely wasteful — it opens `local_state.db`, so signing a release
+    // while Agora is running fails on a lock, and two concurrent invocations
+    // contend over a database neither wants. Short-circuited for the same
+    // reason `MigrateData` is below.
+    if let Commands::Plugin { action } = &cli.command {
+        if let Some(result) = run_offline_plugin_command(action, output_fmt) {
+            if let Err(error) = result {
+                let code = exit_code_from_error(&error);
+                if json {
+                    let value = serde_json::json!({
+                        "error": error.to_string(),
+                        "exitCode": code,
+                    });
+                    eprintln!("{}", serde_json::to_string_pretty(&value).unwrap());
+                } else {
+                    eprintln!("Error: {error}");
+                }
+                std::process::exit(code);
+            }
+            return;
+        }
+    }
+
     // `--data-dir` still wins outright. Without it, defer to the same resolver
     // the desktop uses so a portable install's bundled CLI lands on the pack of
     // instances sitting next to it, rather than in the platform app-data dir.
@@ -1366,6 +1394,70 @@ fn accept_plugin_capabilities(
     ))
 }
 
+/// Plugin subcommands that need no launcher state at all.
+///
+/// `None` for anything that does, so the caller falls through to the ordinary
+/// core-backed path. The split is explicit rather than incidental: these two
+/// write a key file and rewrite a JSON document, and making them open
+/// `local_state.db` first is what would stop an author signing a release while
+/// Agora is running.
+fn run_offline_plugin_command(
+    action: &PluginCmd,
+    output_fmt: OutputFormat,
+) -> Option<anyhow::Result<()>> {
+    let json = output_fmt.is_json_output();
+    match action {
+        PluginCmd::Keygen { out, key_id } => Some(offline_keygen(out, key_id, json)),
+        PluginCmd::Sign {
+            document,
+            key,
+            key_id,
+        } => Some(offline_sign(document, key, key_id.as_deref(), json)),
+        _ => None,
+    }
+}
+
+fn offline_keygen(out: &Path, key_id: &str, json: bool) -> anyhow::Result<()> {
+    let public = generate_signing_key(out, key_id)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&public)?);
+    } else {
+        println!("Private key written to {}.", out.display());
+        println!(
+            "Keep it safe and out of your repository. If you lose it you cannot ship              updates to existing installs, and nothing can restore that."
+        );
+        println!();
+        println!("Put this in your package as agora-plugin-update.json:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": 1,
+                "url": "https://example.com/your-plugin.json",
+                "keys": [public],
+            }))?
+        );
+    }
+    Ok(())
+}
+
+fn offline_sign(
+    document: &Path,
+    key: &Path,
+    key_id: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let signed = sign_update_document(document, key, key_id)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "signed": document, "keyId": signed })
+        );
+    } else {
+        println!("Signed {} with key `{signed}`.", document.display());
+    }
+    Ok(())
+}
+
 async fn run_plugin_command(
     service: &PluginService,
     action: PluginCmd,
@@ -1577,42 +1669,9 @@ async fn run_plugin_command(
                 println!("Restored {restored} stored entries for {id}.");
             }
         }
-        PluginCmd::Keygen { out, key_id } => {
-            let public = generate_signing_key(&out, &key_id)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&public)?);
-            } else {
-                println!("Private key written to {}.", out.display());
-                println!(
-                    "Keep it safe and out of your repository. If you lose it you cannot ship \
-                     updates to existing installs, and nothing can restore that."
-                );
-                println!();
-                println!("Put this in your package as agora-plugin-update.json:");
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "schema": 1,
-                        "url": "https://example.com/your-plugin.json",
-                        "keys": [public],
-                    }))?
-                );
-            }
-        }
-        PluginCmd::Sign {
-            document,
-            key,
-            key_id,
-        } => {
-            let signed = sign_update_document(&document, &key, key_id.as_deref())?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "signed": document, "keyId": signed })
-                );
-            } else {
-                println!("Signed {} with key `{signed}`.", document.display());
-            }
+        // Handled before core initialisation, so they never arrive here.
+        PluginCmd::Keygen { .. } | PluginCmd::Sign { .. } => {
+            unreachable!("offline author tooling is dispatched before core starts")
         }
         PluginCmd::DisableAll => {
             let disabled = service.disable_all()?;

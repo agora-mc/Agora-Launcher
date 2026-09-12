@@ -550,9 +550,10 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
         (`docs/plugins/`)
   - [x] CLI surface (`agora plugin …`) so all three frontends reach the same core
   - [x] Compatibility fixtures pinning the shipped manifest surface
-  - [ ] Verify in the packaged desktop app, not only in tests. The browser-level e2e
-        proves the custom-frame boundary but mocks the Tauri bridge around it.
-
+  - [x] Cross-platform: CI runs the 58 plugin end-to-end tests against the real QuickJS host on
+        Windows, Linux and macOS. All green — `rquickjs` needs no external toolchain anywhere.
+  - [ ] Verify in the packaged desktop app, not only in tests. Still open on every platform: the
+        browser e2e mocks the Tauri bridge and the Rust suite has no frontend.
 - [~] **P4** — Author-hosted signed updates
   - [x] Distribution format: `agora-plugin-update.json` in the package pins the update URL and
         Ed25519 keys; the author hosts a signed document listing releases, each carrying the
