@@ -52,7 +52,13 @@ ROOT = Path(__file__).resolve().parent.parent
 # Keep this strict rather than discovering it at package time on a tagged run.
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
-WORKSPACE_MEMBERS = ("agora-core", "agora-cli", "agora-desktop")
+WORKSPACE_MEMBERS = (
+    "agora-core",
+    "agora-cli",
+    "agora-desktop",
+    "agora-plugin-api",
+    "agora-plugin-host",
+)
 
 
 def _section_version(text: str, section: str) -> tuple[str | None, re.Pattern[str]]:
