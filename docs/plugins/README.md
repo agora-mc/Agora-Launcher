@@ -82,9 +82,12 @@ list of two, not a race decided by install order, and the user can always go bac
 `title` to say what your version *is* rather than repeating the surface name — it appears beside
 Agora's own entry.
 
-`surface` is a closed set, currently `home` alone. A surface joins it when the launcher can
+`surface` is a closed set: `home` and `instance-overview`. A surface joins it when the launcher can
 genuinely hand it over; naming one a plugin can declare but never render would be worse than not
 offering it. Adding a surface later is additive, so a manifest written today keeps working.
+
+`instance-overview` receives `{ instanceId }`, so one view serves every instance rather than the
+plugin having to work out which is open.
 
 Only `kind: "host"` may replace a surface. A replacement is the whole screen, and the host-rendered
 path is themed, accessible and controller-navigable by construction. Declare `onView:<id>` with the

@@ -1599,6 +1599,129 @@ fn a_plugin_without_an_update_source_is_not_swept() {
 }
 
 // ---------------------------------------------------------------------------
+// Getting plugin data back
+// ---------------------------------------------------------------------------
+
+/// A checkpoint is taken when an update changes how a plugin stores its data,
+/// and restoring it is offered rather than done. Doing it automatically after
+/// a failed migration sounds right until you notice it would also discard
+/// everything the plugin wrote since — which a half-succeeded migration makes
+/// real. The launcher cannot tell those apart; the user can.
+#[test]
+fn a_data_version_change_leaves_a_copy_the_user_can_choose_to_restore() {
+    let world = world();
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+
+    // Something worth losing.
+    world
+        .service
+        .set_setting(
+            &id("acme.dashboard"),
+            "density",
+            &serde_json::json!("roomy"),
+        )
+        .unwrap();
+
+    assert!(
+        world
+            .service
+            .restorable_data(&id("acme.dashboard"))
+            .is_none(),
+        "nothing has migrated, so there is nothing to go back to"
+    );
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["dataVersion"] = serde_json::json!(2);
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+    world.service.install_package(&update, false).unwrap();
+
+    let checkpoint = world
+        .service
+        .restorable_data(&id("acme.dashboard"))
+        .expect("the update changed dataVersion, so a copy was kept");
+    assert_eq!(checkpoint.from_version, "1.0.0");
+    assert_eq!(checkpoint.data_version, 1);
+    assert!(checkpoint.entry_count > 0);
+
+    // The plugin then mangles its own settings, as a bad migration would.
+    world
+        .service
+        .set_setting(
+            &id("acme.dashboard"),
+            "density",
+            &serde_json::json!("compact"),
+        )
+        .unwrap();
+
+    let restored = world.service.restore_data(&id("acme.dashboard")).unwrap();
+    assert!(restored > 0);
+    let settings = world.service.settings(&id("acme.dashboard")).unwrap();
+    let density = settings
+        .values
+        .get("density")
+        .and_then(|value| value.as_str());
+    assert_eq!(density, Some("roomy"), "the pre-update value came back");
+}
+
+/// Offering a restore that does not exist would be a button that reports
+/// failure, so the absence is reported as its own state.
+#[test]
+fn restoring_with_no_saved_copy_says_so_rather_than_pretending() {
+    let world = world();
+    let manifest = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &manifest);
+    world.service.install_package(&archive, true).unwrap();
+
+    let error = world
+        .service
+        .restore_data(&id("acme.dashboard"))
+        .unwrap_err();
+    assert!(error.to_string().contains("no saved copy"), "{error}");
+}
+
+#[test]
+fn restoring_data_for_a_plugin_that_is_not_installed_is_refused() {
+    let world = world();
+    let error = world.service.restore_data(&id("acme.nothing")).unwrap_err();
+    assert!(error.to_string().contains("not installed"), "{error}");
+}
+
+/// The manager needs to know a copy exists without asking per plugin.
+#[test]
+fn the_plugin_list_reports_what_could_be_restored() {
+    let world = world();
+    let first = dashboard_manifest(serde_json::json!({ "required": ["instance:read"] }));
+    let archive = world._dir.path().join("v1.zip");
+    package_at(&archive, &first);
+    world.service.install_package(&archive, true).unwrap();
+    world
+        .service
+        .set_setting(
+            &id("acme.dashboard"),
+            "density",
+            &serde_json::json!("roomy"),
+        )
+        .unwrap();
+
+    let mut second = first.clone();
+    second["version"] = serde_json::json!("2.0.0");
+    second["dataVersion"] = serde_json::json!(2);
+    let update = world._dir.path().join("v2.zip");
+    package_at(&update, &second);
+    world.service.install_package(&update, false).unwrap();
+
+    let listed = world.service.list();
+    let plugin = listed.iter().find(|p| p.id == "acme.dashboard").unwrap();
+    assert!(plugin.restorable_data.is_some());
+}
+
+// ---------------------------------------------------------------------------
 // Replaceable surfaces
 // ---------------------------------------------------------------------------
 

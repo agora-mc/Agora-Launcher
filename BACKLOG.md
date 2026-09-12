@@ -582,9 +582,9 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
         own view is the default and the fallback. Two plugins offering the same surface is a list,
         not a race. Host-rendered only.
         Example: `examples/plugins/home-replacement/`. Fixtures pin the contract.
-  - [ ] More surfaces. The instance overview is next and needs extracting from `InstanceEditor`
-        first — it is an inline region rather than a component, and a surface a plugin can declare
-        but never render is worse than one that is not offered.
+  - [x] The instance overview, receiving `{ instanceId }` so one view serves every instance. No
+        extraction was needed after all: `PluginSurface` takes the built-in as a `fallback` child,
+        so the existing inline region became the fallback where it stood.
   - [x] The custom-view prototype is **withdrawn**, not deferred. Its script ran in the WebView,
         outside every bound the plugin runtime imposes, so a 512 KiB document could hang the
         launcher. Removed while API 0.1 is unreleased and the cost was one example.

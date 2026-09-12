@@ -58,5 +58,5 @@ pub use service::{
     UpdateOutcome, PLUGINS_ENABLED_SETTING, PLUGIN_UPDATES_ENABLED_SETTING,
     SURFACE_SELECTIONS_SETTING,
 };
-pub use store::{PluginRecord, PluginSource, StorageKind};
+pub use store::{CheckpointSummary, PluginRecord, PluginSource, StorageKind};
 pub use updates::{PinnedTrust, UpdateVerdict};

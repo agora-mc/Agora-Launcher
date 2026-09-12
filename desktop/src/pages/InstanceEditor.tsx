@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
+import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -1656,252 +1657,267 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       </div>
 
       {/* Header */}
-      <section className="rounded-xl border border-border bg-card p-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="flex items-start gap-4">
-            {row?.is_locked ? headerIcon : (
-              <button
-                type="button"
-                onClick={handleSetInstanceIcon}
-                disabled={recoveryBlocked}
-                className="instance-icon-button shrink-0"
-                title={headerIconSrc ? 'Change instance image' : 'Set a custom instance image'}
-                aria-label={headerIconSrc ? 'Change instance image' : 'Set instance image'}
-              >
-                {headerIcon}
-                <span className="instance-icon-button__overlay">
-                  <ImagePlus className="h-5 w-5" aria-hidden="true" />
-                </span>
-              </button>
-            )}
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-2xl font-bold">
-                {row?.name}
-                {' '}
-                <button
-                  onClick={handleRename}
-                  disabled={recoveryBlocked}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
-                >
-                  Rename
-                </button>
-              </h2>
-
-            </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {manifest?.loader && (
-                <LoaderChip loader={manifest.loader} loaderVersion={manifest.loader_version} />
-              )}
-              <MetaChip>MC {row?.minecraft_version}</MetaChip>
-            </div>
-            {manifest?.loader && manifest.loader !== 'vanilla' && (
-              <p className="text-xs text-muted-foreground mt-1.5">
-                <button
-                  type="button"
-                  onClick={openLoaderChooser}
-                  disabled={recoveryBlocked || Boolean(row?.is_locked)}
-                  className="underline text-primary hover:text-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
-                  title={recoveryBlocked
-                    ? 'Wait for the recovery snapshot to finish.'
-                    : row?.is_locked
-                      ? 'Unlock the instance to change the loader version.'
-                      : 'Change the loader version for this instance.'}
-                >
-                  Change loader version
-                </button>
-              </p>
-            )}
-            {healthReport && healthIssueCount > 0 && (
-              <div
-                className={`mt-3 flex max-w-md items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${
-                  healthBlocked
-                    ? 'border-destructive/60 bg-destructive/10'
-                    : 'border-amber-500/60 bg-amber-500/10'
-                }`}
-                role="alert"
-                aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
-              >
-                <div className="min-w-0">
-                  <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
-                    {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
-                  </p>
-                  <p className="truncate text-muted-foreground">
-                    {healthBlocked
-                      ? 'Review before launching. You can continue after confirming risk.'
-                      : 'Review recommended before launch.'}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onReviewHealth?.(instanceId, row?.name ?? 'Instance', healthReport)}
-                  className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
-                >
-                  Review & repair
-                </button>
-              </div>
-            )}
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span>{row?.is_locked ? '🔒 Locked' : '🔓 Unlocked'}</span>
-              {row?.is_locked ? (
-                <button
-                  onClick={handleUnlock}
-                  disabled={recoveryBlocked}
-                  className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                >
-                  Unlock
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={handleLock}
-                    disabled={recoveryBlocked}
-                    className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                  >
-                    Lock
-                  </button>
-                  <button
-                    onClick={handleRevert}
-                    disabled={recoveryBlocked}
-                    className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                  >
-                    Revert
-                  </button>
-                </>
-              )}
-              {row?.last_launched_at && (
-                <span className="ml-2">· Last launched {formatInstalledDate(row.last_launched_at)}</span>
-              )}
-              {!row?.is_locked && (
+      {/*
+        A plugin the user chose in Settings may render this summary instead.
+        Anything uncertain — no choice, a disabled plugin, an unreachable
+        backend — falls through to Agora's own header rather than to an
+        empty page. The instance id goes with it so one view serves every
+        instance.
+      */}
+      <PluginSurface
+        surface="instance-overview"
+        args={{ instanceId }}
+        fallback={
+        <>
+        <section className="rounded-xl border border-border bg-card p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex items-start gap-4">
+              {row?.is_locked ? headerIcon : (
                 <button
                   type="button"
                   onClick={handleSetInstanceIcon}
                   disabled={recoveryBlocked}
-                  className="inline-flex items-center gap-1 rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                  title="Set a custom instance image"
+                  className="instance-icon-button shrink-0"
+                  title={headerIconSrc ? 'Change instance image' : 'Set a custom instance image'}
+                  aria-label={headerIconSrc ? 'Change instance image' : 'Set instance image'}
                 >
-                  <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
-                  Set image
+                  {headerIcon}
+                  <span className="instance-icon-button__overlay">
+                    <ImagePlus className="h-5 w-5" aria-hidden="true" />
+                  </span>
                 </button>
               )}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-3">
+                <h2 className="text-2xl font-bold">
+                  {row?.name}
+                  {' '}
+                  <button
+                    onClick={handleRename}
+                    disabled={recoveryBlocked}
+                    className="text-xs text-muted-foreground hover:text-foreground underline"
+                  >
+                    Rename
+                  </button>
+                </h2>
+
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                {manifest?.loader && (
+                  <LoaderChip loader={manifest.loader} loaderVersion={manifest.loader_version} />
+                )}
+                <MetaChip>MC {row?.minecraft_version}</MetaChip>
+              </div>
+              {manifest?.loader && manifest.loader !== 'vanilla' && (
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  <button
+                    type="button"
+                    onClick={openLoaderChooser}
+                    disabled={recoveryBlocked || Boolean(row?.is_locked)}
+                    className="underline text-primary hover:text-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={recoveryBlocked
+                      ? 'Wait for the recovery snapshot to finish.'
+                      : row?.is_locked
+                        ? 'Unlock the instance to change the loader version.'
+                        : 'Change the loader version for this instance.'}
+                  >
+                    Change loader version
+                  </button>
+                </p>
+              )}
+              {healthReport && healthIssueCount > 0 && (
+                <div
+                  className={`mt-3 flex max-w-md items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${
+                    healthBlocked
+                      ? 'border-destructive/60 bg-destructive/10'
+                      : 'border-amber-500/60 bg-amber-500/10'
+                  }`}
+                  role="alert"
+                  aria-label={`${healthIssueCount} health issue${healthIssueCount === 1 ? '' : 's'} detected`}
+                >
+                  <div className="min-w-0">
+                    <p className={healthBlocked ? 'font-medium text-destructive' : 'font-medium text-amber-700 dark:text-amber-300'}>
+                      {healthIssueCount} health issue{healthIssueCount === 1 ? '' : 's'} detected
+                    </p>
+                    <p className="truncate text-muted-foreground">
+                      {healthBlocked
+                        ? 'Review before launching. You can continue after confirming risk.'
+                        : 'Review recommended before launch.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onReviewHealth?.(instanceId, row?.name ?? 'Instance', healthReport)}
+                    className="shrink-0 rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
+                  >
+                    Review & repair
+                  </button>
+                </div>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span>{row?.is_locked ? '🔒 Locked' : '🔓 Unlocked'}</span>
+                {row?.is_locked ? (
+                  <button
+                    onClick={handleUnlock}
+                    disabled={recoveryBlocked}
+                    className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                  >
+                    Unlock
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleLock}
+                      disabled={recoveryBlocked}
+                      className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                    >
+                      Lock
+                    </button>
+                    <button
+                      onClick={handleRevert}
+                      disabled={recoveryBlocked}
+                      className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                    >
+                      Revert
+                    </button>
+                  </>
+                )}
+                {row?.last_launched_at && (
+                  <span className="ml-2">· Last launched {formatInstalledDate(row.last_launched_at)}</span>
+                )}
+                {!row?.is_locked && (
+                  <button
+                    type="button"
+                    onClick={handleSetInstanceIcon}
+                    disabled={recoveryBlocked}
+                    className="inline-flex items-center gap-1 rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                    title="Set a custom instance image"
+                  >
+                    <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                    Set image
+                  </button>
+                )}
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex flex-col items-end gap-3 self-end xl:self-end">
-            <div className="flex flex-wrap justify-end gap-2">
-            <button
-              onClick={() => {
-                setPackInstallOpen(true);
-                setPackIdInput('');
-                setPackProgress(null);
-                setError(null);
-              }}
-              disabled={recoveryBlocked}
-              className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
-            >
-              📦 Install all mods from pack
-            </button>
-            <button
-              onClick={handleImportPack}
-              disabled={recoveryBlocked}
-              className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
-            >
-              📥 Import Pack
-            </button>
-            <button
-              onClick={() => openInstanceFolder(instanceId)}
-              className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
-              title="Open instance folder in file explorer"
-            >
-              📂 Open in Folder
-            </button>
-            <button
-              onClick={() => onInvestigate?.(instanceId)}
-              className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
-              title="Analyze the latest instance logs"
-            >
-              Investigate
-            </button>
-            </div>
-            {processRunning ? (
+            <div className="flex flex-col items-end gap-3 self-end xl:self-end">
+              <div className="flex flex-wrap justify-end gap-2">
               <button
-                type="button"
-                onClick={() => { void onKillProcess?.(); }}
-                disabled={!onKillProcess || processStopping}
-                className="inline-flex items-center gap-2 rounded-lg bg-destructive px-5 py-3 text-base font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label={`Kill ${row?.name ?? 'instance'}`}
+                onClick={() => {
+                  setPackInstallOpen(true);
+                  setPackIdInput('');
+                  setPackProgress(null);
+                  setError(null);
+                }}
+                disabled={recoveryBlocked}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
               >
-                Kill
+                📦 Install all mods from pack
               </button>
-            ) : (
+              <button
+                onClick={handleImportPack}
+                disabled={recoveryBlocked}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+              >
+                📥 Import Pack
+              </button>
+              <button
+                onClick={() => openInstanceFolder(instanceId)}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+                title="Open instance folder in file explorer"
+              >
+                📂 Open in Folder
+              </button>
+              <button
+                onClick={() => onInvestigate?.(instanceId)}
+                className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
+                title="Analyze the latest instance logs"
+              >
+                Investigate
+              </button>
+              </div>
+              {processRunning ? (
+                <button
+                  type="button"
+                  onClick={() => { void onKillProcess?.(); }}
+                  disabled={!onKillProcess || processStopping}
+                  className="inline-flex items-center gap-2 rounded-lg bg-destructive px-5 py-3 text-base font-semibold text-destructive-foreground shadow-sm hover:bg-destructive/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={`Kill ${row?.name ?? 'instance'}`}
+                >
+                  Kill
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!onLaunch || playDisabled) return;
+                    setPlayBusy(true);
+                    setError(null);
+                    try {
+                      await onLaunch(instanceId);
+                    } catch (cause) {
+                      setError(formatError(cause));
+                    } finally {
+                      setPlayBusy(false);
+                    }
+                  }}
+                  disabled={!onLaunch || playDisabled}
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={`Play ${row?.name ?? 'instance'}`}
+                >
+                  <Play className="h-5 w-5 fill-current" aria-hidden="true" />
+                  {processLaunching || playBusy ? 'Starting…' : processStopping ? 'Stopping…' : processDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Play'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {packInstall && <PackInstallProgressBar task={packInstall} />}
+
+          {detail?.snapshot_readiness === 'pending' && (
+            <div className="mt-4 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm" role="status">
+              <p className="font-medium text-amber-700 dark:text-amber-300">Finalizing recovery snapshot…</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                You can inspect this instance while the snapshot builds. Launching and changes are temporarily disabled.
+              </p>
+            </div>
+          )}
+          {detail?.snapshot_readiness === 'failed' && (
+            <div className="mt-4 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm" role="alert">
+              <p className="font-medium text-destructive">Recovery snapshot failed</p>
+              <p className="mt-1 text-xs text-muted-foreground">{detail.snapshot_error ?? 'Create a new snapshot before changing or launching this instance.'}</p>
               <button
                 type="button"
                 onClick={async () => {
-                  if (!onLaunch || playDisabled) return;
-                  setPlayBusy(true);
-                  setError(null);
                   try {
-                    await onLaunch(instanceId);
+                    await createSnapshot(instanceId, 'Initial import retry');
+                    setDetail(await getInstanceDetail(instanceId));
+                    setStatus('Recovery snapshot ready.');
                   } catch (cause) {
                     setError(formatError(cause));
-                  } finally {
-                    setPlayBusy(false);
                   }
                 }}
-                disabled={!onLaunch || playDisabled}
-                className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                aria-label={`Play ${row?.name ?? 'instance'}`}
+                className="mt-2 rounded-lg border border-destructive/50 px-3 py-1.5 text-xs font-medium hover:bg-destructive/10"
               >
-                <Play className="h-5 w-5 fill-current" aria-hidden="true" />
-                {processLaunching || playBusy ? 'Starting…' : processStopping ? 'Stopping…' : processDelegated ? 'Running via Mojang' : anotherProcessActive ? 'Game already running' : 'Play'}
+                Retry recovery snapshot
               </button>
-            )}
-          </div>
-        </div>
+            </div>
+          )}
 
-        {packInstall && <PackInstallProgressBar task={packInstall} />}
-
-        {detail?.snapshot_readiness === 'pending' && (
-          <div className="mt-4 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm" role="status">
-            <p className="font-medium text-amber-700 dark:text-amber-300">Finalizing recovery snapshot…</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              You can inspect this instance while the snapshot builds. Launching and changes are temporarily disabled.
-            </p>
-          </div>
-        )}
-        {detail?.snapshot_readiness === 'failed' && (
-          <div className="mt-4 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm" role="alert">
-            <p className="font-medium text-destructive">Recovery snapshot failed</p>
-            <p className="mt-1 text-xs text-muted-foreground">{detail.snapshot_error ?? 'Create a new snapshot before changing or launching this instance.'}</p>
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  await createSnapshot(instanceId, 'Initial import retry');
-                  setDetail(await getInstanceDetail(instanceId));
-                  setStatus('Recovery snapshot ready.');
-                } catch (cause) {
-                  setError(formatError(cause));
-                }
-              }}
-              className="mt-2 rounded-lg border border-destructive/50 px-3 py-1.5 text-xs font-medium hover:bg-destructive/10"
-            >
-              Retry recovery snapshot
-            </button>
-          </div>
-        )}
-
-        {error && (
-          <div className="mt-4 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
-            {error}
-          </div>
-        )}
-        {status && (
-          <div className="mt-4 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
-            {status}
-          </div>
-        )}
-      </section>
+          {error && (
+            <div className="mt-4 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
+              {error}
+            </div>
+          )}
+          {status && (
+            <div className="mt-4 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
+              {status}
+            </div>
+          )}
+        </section>
+        </>
+        }
+      />
 
       {/* Sub-sidebar tabs */}
       <div className="agora-tabbar">

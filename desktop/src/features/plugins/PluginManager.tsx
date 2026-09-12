@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { showToast } from '@/components/Toast';
+import { useConfirm } from '@/components/ui/confirm';
 import { formatError, getSetting, setSetting } from '@/lib/tauri';
 import {
   addPluginDevelopmentFolder,
@@ -23,6 +24,7 @@ import {
   previewPluginFolder,
   previewPluginPackage,
   readPluginLog,
+  restorePluginData,
   setPluginEnabled,
   uninstallPlugin,
 } from './api';
@@ -32,6 +34,7 @@ import { PluginThemeSelect } from './PluginTheme';
 import { PluginSurfacePicker } from './PluginSurfacePicker';
 import type {
   CapabilityDescription,
+  CheckpointSummary,
   InstallPreview,
   KeyFingerprint,
   PluginSummary,
@@ -483,10 +486,49 @@ function PluginRow({
   const declaredHosts = stringArray(plugin.declaredHosts);
   const updateSource = updateSourceForDisplay(plugin.updateSource);
   const lastUpdateCheck = lastUpdateCheckForDisplay(plugin.lastUpdateCheck);
+  // Coerced, like everything else arriving from a command that an older
+  // backend answers with `null`.
+  const restorable =
+    isRecord(plugin.restorableData) && typeof plugin.restorableData.entryCount === 'number'
+      ? (plugin.restorableData as unknown as CheckpointSummary)
+      : null;
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const { confirm } = useConfirm();
   const hasSettings = contributions.some((contribution) => contribution?.kind === 'setting');
   const statusState = isRecord(plugin.status) ? plugin.status.state : null;
   const broken = statusState !== 'ready' && statusState !== 'disabled';
   const droppedEvents = typeof plugin.droppedEvents === 'number' ? plugin.droppedEvents : 0;
+
+  // Never automatic. A saved copy is taken when an update changes how a plugin
+  // stores data; going back to it also discards whatever the plugin has
+  // written since, and only the user knows whether that is a loss. So the
+  // launcher offers, names what it would put back, and asks.
+  const restoreData = useCallback(async () => {
+    if (!restorable) return;
+    const agreed = await confirm({
+      title: `Restore saved data for ${plugin.name}?`,
+      body: (
+        <>
+          This puts back the {restorable.entryCount} stored{' '}
+          {restorable.entryCount === 1 ? 'entry' : 'entries'} saved before version{' '}
+          {restorable.fromVersion}. Anything {plugin.name} has stored since then is discarded.
+        </>
+      ),
+      confirmLabel: 'Restore',
+      tone: 'danger',
+    });
+    if (!agreed) return;
+    setRestoreBusy(true);
+    try {
+      const restored = await restorePluginData(plugin.id);
+      showToast(`Restored ${restored} stored entries for ${plugin.name}.`);
+      await onRefresh();
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    } finally {
+      setRestoreBusy(false);
+    }
+  }, [restorable, plugin.id, plugin.name, confirm, onRefresh]);
 
   const checkForUpdate = useCallback(async () => {
     setUpdateBusy(true);
@@ -636,6 +678,16 @@ function PluginRow({
             >
               {updateBusy ? 'Checking…' : 'Check for updates'}
             </Button>
+            {restorable ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={restoreBusy}
+                onClick={() => void restoreData()}
+              >
+                {restoreBusy ? 'Restoring…' : 'Restore saved data'}
+              </Button>
+            ) : null}
             {hasSettings ? (
               <Button variant="ghost" size="sm" onClick={() => setShowSettings((v) => !v)}>
                 Settings

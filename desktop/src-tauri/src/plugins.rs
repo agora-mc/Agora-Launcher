@@ -434,3 +434,13 @@ pub async fn plugin_set_surface(
         })?;
     service(&app)?.set_surface(surface, contribution_id.as_deref())
 }
+
+/// Put a plugin's stored data back to the copy kept before its last
+/// data-shape change.
+///
+/// The confirmation belongs to the adapter in front of the user; core does
+/// this when asked and never on its own.
+#[tauri::command]
+pub async fn restore_plugin_data(app: AppHandle, plugin_id: String) -> LauncherResult<usize> {
+    service(&app)?.restore_data(&parse_id(&plugin_id)?)
+}

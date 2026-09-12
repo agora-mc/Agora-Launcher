@@ -415,6 +415,18 @@ enum PluginCmd {
         )]
         yes: bool,
     },
+    /// Put a plugin's stored data back to the copy kept before its last
+    /// data-shape change.
+    ///
+    /// Never runs on its own. A copy is kept when an update changes how a
+    /// plugin stores data; going back to it also discards anything written
+    /// since, so it is always a decision.
+    #[command(name = "restore-data")]
+    RestoreData {
+        id: String,
+        #[arg(long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
     /// Generate an Ed25519 signing key for publishing updates.
     ///
     /// Author tooling. The private key is written to a file you keep; Agora
@@ -1166,6 +1178,23 @@ fn sign_update_document(
     Ok(key_id)
 }
 
+/// Ask before discarding data. Returns false in a non-interactive session,
+/// where a silent yes would be the worst possible default.
+fn confirm_restore(id: &str) -> anyhow::Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        eprintln!("Restoring plugin data needs an interactive terminal; rerun with --yes.");
+        return Ok(false);
+    }
+    print!("Restore the saved copy of {id} data? [y/N]: ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 fn plugin_service(ctx: &agora_core::ctx::Ctx) -> PluginService {
     let host: Arc<dyn agora_plugin_api::host::ScriptHost> =
         Arc::new(agora_plugin_host::QuickJsHost::new());
@@ -1515,6 +1544,33 @@ fn run_plugin_command(
                         println!("Re-run with --yes to accept.");
                     }
                 }
+            }
+        }
+        PluginCmd::RestoreData { id, yes } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            let Some(checkpoint) = service.restorable_data(&plugin_id) else {
+                anyhow::bail!(
+                    "There is no saved copy of `{id}` data to go back to. A copy is kept only \
+                     when an update changes how the plugin stores its data."
+                );
+            };
+            if !yes {
+                println!(
+                    "This puts `{id}` back to the {} entries saved before version {} \
+                     (captured {}).",
+                    checkpoint.entry_count, checkpoint.from_version, checkpoint.captured_at
+                );
+                println!("Anything the plugin has stored since then is discarded.");
+                if !confirm_restore(&id)? {
+                    println!("Left as it is.");
+                    return Ok(());
+                }
+            }
+            let restored = service.restore_data(&plugin_id)?;
+            if json {
+                println!("{}", serde_json::json!({ "id": id, "restored": restored }));
+            } else {
+                println!("Restored {restored} stored entries for {id}.");
             }
         }
         PluginCmd::Keygen { out, key_id } => {

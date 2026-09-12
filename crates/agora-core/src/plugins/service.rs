@@ -95,6 +95,9 @@ pub struct PluginSummary {
     pub update_source: Option<install::UpdateSourceSummary>,
     /// What the last update check concluded, and when.
     pub last_update_check: Option<UpdateCheckRecord>,
+    /// A saved copy of this plugin's data that could be put back, if one was
+    /// taken. Restoring is always the user's decision, never automatic.
+    pub restorable_data: Option<store::CheckpointSummary>,
     /// Events this plugin missed because it could not keep up.
     pub dropped_events: u64,
 }
@@ -396,6 +399,7 @@ impl PluginService {
         // every refresh of the manager, and a query per row would be a query
         // per row for information that changes only on install or check.
         let (trust, checks) = self.trust_for_display();
+        let checkpoints = self.checkpoints_for_display();
         resolution
             .plugins
             .iter()
@@ -432,6 +436,7 @@ impl PluginService {
                     updated_at: resolved.record.updated_at.clone(),
                     update_source: trust.get(id.as_str()).cloned(),
                     last_update_check: checks.get(id.as_str()).cloned(),
+                    restorable_data: checkpoints.get(id.as_str()).cloned(),
                     dropped_events: self.bus.dropped_count(&id),
                 }
             })
@@ -627,6 +632,26 @@ impl PluginService {
         // Deterministic, so the picker does not reorder itself between reads.
         offers.sort_by(|a, b| a.id.cmp(&b.id));
         offers
+    }
+
+    /// Restorable data copies, keyed by plugin id.
+    ///
+    /// Silent on failure for the same reason as the trust read: a manager that
+    /// will not render is worse than one missing a recovery affordance.
+    fn checkpoints_for_display(&self) -> BTreeMap<String, store::CheckpointSummary> {
+        let mut out = BTreeMap::new();
+        let Ok(conn) = self.inner.conn() else {
+            return out;
+        };
+        let Ok(resolution) = self.inner.resolution.read() else {
+            return out;
+        };
+        for resolved in &resolution.plugins {
+            if let Ok(Some(summary)) = store::latest_checkpoint(&conn, resolved.id()) {
+                out.insert(resolved.id().to_string(), summary);
+            }
+        }
+        out
     }
 
     /// Contributions from every plugin that is currently runnable.
@@ -848,6 +873,53 @@ impl PluginService {
             &verdict_summary(&verdict),
         )?;
         Ok(verdict)
+    }
+
+    // -- data recovery -----------------------------------------------------
+
+    /// The data copy that could be put back, if there is one.
+    ///
+    /// A checkpoint is taken automatically before an update that changes a
+    /// plugin's `dataVersion`, because that is the moment a plugin is about to
+    /// migrate its own stored settings and possibly get it wrong.
+    pub fn restorable_data(&self, plugin_id: &PluginId) -> Option<store::CheckpointSummary> {
+        let conn = self.inner.conn().ok()?;
+        store::latest_checkpoint(&conn, plugin_id).ok().flatten()
+    }
+
+    /// Put a plugin's stored data back to its most recent checkpoint.
+    ///
+    /// Never automatic, and deliberately so. Restoring after a failed
+    /// migration sounds obviously right until you notice it throws away
+    /// everything the plugin wrote *since* the checkpoint — which, if the
+    /// migration half-succeeded, is real data the user would rather keep. The
+    /// launcher cannot tell those apart, so it offers and the user decides.
+    ///
+    /// Returns how many stored entries were put back.
+    pub fn restore_data(&self, plugin_id: &PluginId) -> LauncherResult<usize> {
+        let conn = self.inner.conn()?;
+        if store::get(&conn, plugin_id)?.is_none() {
+            return Err(LauncherError::Generic {
+                code: "ERR_PLUGIN_NOT_FOUND".into(),
+                message: format!("`{plugin_id}` is not installed"),
+            });
+        }
+        // Stopped first. A running plugin holds no lock on its storage, so a
+        // restore underneath one would leave it acting on data that no longer
+        // exists — and the next thing it writes would overwrite the restore.
+        let _ = self.deactivate(plugin_id);
+
+        let restored = store::restore_latest_checkpoint(&conn, plugin_id)?.ok_or_else(|| {
+            LauncherError::Generic {
+                code: "ERR_PLUGIN_NO_CHECKPOINT".into(),
+                message: format!(
+                    "there is no saved copy of `{plugin_id}` data to go back to. A copy is kept \\
+                     only when an update changes how the plugin stores its data."
+                ),
+            }
+        })?;
+        self.reload()?;
+        Ok(restored)
     }
 
     /// Whether the user asked for update checks to happen on their own.

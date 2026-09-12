@@ -50,10 +50,10 @@ API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
   reach the network (`network_plugins_enabled`, off). Neither implies the other. With it off,
   nothing contacts a publisher unless you press the button.
 
-- A plugin can offer to render Agora's **home screen**. Offering is not taking: the offer joins a
-  list in Settings and Agora's own screen renders until someone chooses otherwise. A chosen plugin
-  that is disabled, removed or unable to run falls back to the built-in and says why, and the
-  choice survives so re-enabling restores it.
+- A plugin can offer to render Agora's **home screen** or an **instance overview**. Offering is not
+  taking: the offer joins a list in Settings and Agora's own screen renders until someone chooses
+  otherwise. A chosen plugin that is disabled, removed or unable to run falls back to the built-in
+  and says why, and the choice survives so re-enabling restores it.
 
 ## Known limits — read before relying on any of this
 
@@ -64,13 +64,20 @@ checks. A plugin you granted `content:write` can disable your mods, because that
 agreed to. **The install prompt is the real control.** Nothing here protects against a defect
 in the engine itself.
 
-**Rollback is partial, and only covers the install itself.** During a replacement the previous
-package is set aside and restored if *extraction* fails, so a failed install never leaves you
-with a broken plugin. Once the new package is in place the old bytes are deleted — there is no
-"go back to the previous version" command. When `dataVersion` changes, the plugin's stored data
-is checkpointed first, and `restore_latest_checkpoint` exists, but nothing currently invokes it
-automatically after a plugin's own migration goes wrong. Restoring package bytes would not undo
-writes a plugin already made anyway; that is what the data checkpoint is for.
+**There is no "go back to the previous version" for package bytes.** During a replacement the
+previous package is set aside and restored if *extraction* or the database write fails, so a
+failed install never leaves you with a broken plugin. Once the new package is in place the old
+bytes are deleted.
+
+**Plugin data is a different story, and recoverable.** When an update changes `dataVersion` — the
+moment a plugin is about to migrate its own stored settings and possibly get it wrong — the
+launcher keeps a copy first. **Restore saved data** in the plugin manager, or
+`agora plugin restore-data <id>`, puts it back. Both name what they would restore and ask first.
+
+Restoring is deliberately never automatic. Doing it on a plugin's behalf after a failed migration
+sounds obviously right until you notice it also discards everything the plugin wrote *since* the
+copy was taken — which, if the migration half-succeeded, is real data. The launcher cannot tell a
+corrupt migration from a partial one; the person using it can.
 
 **Signatures prove continuity, not identity, and there is no revocation.** A verified update came
 from whoever published the version you already have — nothing more. Whoever hands you the *first*
@@ -111,10 +118,10 @@ interaction a reasonable host-rendered component cannot provide.
 and `rquickjs` builds cleanly elsewhere, but macOS and Linux packaging of the plugin host has
 not been verified here. Treat cross-platform as an open gate, not a claim.
 
-**Replacement views cover one surface.** `home`, and nothing else. The instance overview is the
-obvious next one and is deliberately not offered: it is an inline region inside `InstanceEditor`
-rather than a component, and naming a surface a plugin can declare but never render would be worse
-than not offering it. Only host-rendered views may replace a surface — a replacement is the whole
+**Replacement views cover two surfaces.** `home` and `instance-overview`, and nothing else. The
+set is closed so that renaming an internal component is not a breaking change for plugins, and a
+surface joins it only when the launcher can genuinely hand it over. Only host-rendered views may
+replace a surface — a replacement is the whole
 screen, and the custom-frame prototype owns its own accessibility and controller behaviour, so
 standing one in for a built-in is exactly the thing "do not build a product on it" rules out.
 
@@ -139,7 +146,9 @@ deliberate compatibility decision and should be reviewed as exactly that.
 - [ ] Verified behaviour in the packaged desktop app on macOS and Linux, not only Windows.
 - [ ] A real deprecation and support-window policy, tested by running v0.1 fixtures against a
       v0.2 host.
-- [ ] Honest, complete update rollback — or documentation that stops implying one exists.
+- [x] ~~Honest, complete update rollback — or documentation that stops implying one exists.~~
+      Plugin *data* can be restored from the pre-migration copy, on the user's say-so. Package
+      bytes are still not retained, and the docs say so rather than implying otherwise.
 - [ ] A real publish-and-update cycle against an author-hosted static file, not only tests.
 - [ ] A revocation story, or an explicit decision that there will not be one.
 - [ ] A curated catalog, if there is ever to be one. There is none today and installing does not

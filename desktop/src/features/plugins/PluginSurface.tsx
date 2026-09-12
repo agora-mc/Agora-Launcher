@@ -23,9 +23,15 @@ import type { SurfaceChoice } from './types';
 export function PluginSurface({
   surface,
   fallback,
+  args,
 }: {
   surface: string;
   fallback: ReactNode;
+  /**
+   * Passed to the plugin's export. The instance overview sends
+   * `{ instanceId }` so one view serves every instance.
+   */
+  args?: Record<string, unknown>;
 }) {
   const { enabled, ready, refreshToken } = usePlugins();
   const [choice, setChoice] = useState<SurfaceChoice | null>(null);
@@ -68,6 +74,7 @@ export function PluginSurface({
       pluginId={effective.pluginId}
       exportName={effective.export}
       title={effective.title}
+      args={args}
     />
   );
 }

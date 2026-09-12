@@ -220,12 +220,18 @@ pub struct InstancePanelContribution {
 pub enum ReplaceableSurface {
     /// The first screen: what the launcher shows with nothing else selected.
     Home,
+    /// The summary at the top of an opened instance, above its editor tabs.
+    ///
+    /// The replacement receives `{ instanceId }`, so one view serves every
+    /// instance rather than the plugin having to guess which is open.
+    InstanceOverview,
 }
 
 impl ReplaceableSurface {
     pub fn as_str(self) -> &'static str {
         match self {
             ReplaceableSurface::Home => "home",
+            ReplaceableSurface::InstanceOverview => "instance-overview",
         }
     }
 
@@ -233,18 +239,20 @@ impl ReplaceableSurface {
     pub fn title(self) -> &'static str {
         match self {
             ReplaceableSurface::Home => "Home",
+            ReplaceableSurface::InstanceOverview => "Instance overview",
         }
     }
 
     /// Every surface, for a settings page that lists them.
     ///
-    /// One, for now. A surface belongs here when the launcher can actually
-    /// hand it over — the instance overview is next, and is not listed because
-    /// it is currently an inline region rather than a component, and naming a
-    /// surface a plugin can declare but never render would be worse than not
-    /// offering it. Adding one later is additive: an author gains an option
-    /// and nothing they wrote stops working.
-    pub const ALL: [ReplaceableSurface; 1] = [ReplaceableSurface::Home];
+    /// A surface belongs here only when the launcher can actually hand it
+    /// over. Naming one a plugin could declare but never render would be
+    /// worse than not offering it. Adding one is additive: an author gains an
+    /// option and nothing already written stops working.
+    pub const ALL: [ReplaceableSurface; 2] = [
+        ReplaceableSurface::Home,
+        ReplaceableSurface::InstanceOverview,
+    ];
 }
 
 impl std::fmt::Display for ReplaceableSurface {
@@ -259,6 +267,7 @@ impl std::str::FromStr for ReplaceableSurface {
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw {
             "home" => Ok(ReplaceableSurface::Home),
+            "instance-overview" => Ok(ReplaceableSurface::InstanceOverview),
             _ => Err(()),
         }
     }

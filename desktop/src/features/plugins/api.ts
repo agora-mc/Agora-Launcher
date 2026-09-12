@@ -87,3 +87,7 @@ export const pluginSurfaces = () => invoke<SurfaceChoice[]>('plugin_surfaces');
 /** `contributionId: null` restores Agora's own view for that surface. */
 export const setPluginSurface = (surface: string, contributionId: string | null) =>
   invoke<void>('plugin_set_surface', { surface, contributionId });
+
+/** Returns how many stored entries were put back. */
+export const restorePluginData = (pluginId: string) =>
+  invoke<number>('restore_plugin_data', { pluginId });

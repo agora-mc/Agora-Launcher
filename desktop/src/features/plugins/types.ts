@@ -69,6 +69,13 @@ export interface SurfaceChoice {
   fallbackReason: string | null;
 }
 
+export interface CheckpointSummary {
+  fromVersion: string;
+  dataVersion: number;
+  capturedAt: string;
+  entryCount: number;
+}
+
 export interface KeyFingerprint {
   id: string;
   fingerprint: string;
@@ -106,6 +113,8 @@ export interface PluginSummary {
   updatedAt: string;
   updateSource: UpdateSourceSummary | null;
   lastUpdateCheck: UpdateCheckRecord | null;
+  /** A saved copy of this plugin's data that could be put back, if any. */
+  restorableData: CheckpointSummary | null;
   droppedEvents: number;
 }
 
