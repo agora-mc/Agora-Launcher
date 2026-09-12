@@ -503,3 +503,105 @@ Tracking packages A1 through D5 from `Agora Desktop Upgrade.md`. Packages are co
     `depends` / `breaks` / `conflicts` sections through the existing
     Fabric `extract_fabric_deps` helper (which already handles object /
     array / string forms). Quilt-only mods are no longer `UnknownMod`.
+
+---
+
+## Community Plugins (P0–P3)
+
+Milestones from `Agora-Plugin-Implementation-Plan.md`. Design rationale is in
+`MASTER_SPEC.md` §19.24; layer boundaries are in `docs/architecture/layer-ownership.md`.
+
+Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
+
+- [x] **P0** — Script-host spike and runtime selection ✅
+  - QuickJS via `rquickjs` 0.13, chosen on measurement: builds on MSVC in ~15s with no
+    external toolchain; a full release binary with tokio + `serde_json` + the engine is
+    2 MB against tens of MB for a V8-based host.
+  - All five gates proven in `crates/agora-plugin-host/tests/host.rs` (21 tests): async
+    host calls, ES module loading confined to the package, cancellation of a runaway
+    plugin, error isolation between plugins, and a per-plugin memory ceiling.
+  - Interrupt handler *and* Tokio timeout, because neither alone covers both the
+    spinning case and the awaiting case.
+
+- [x] **P1** — Host and management ✅
+  - `crates/agora-plugin-api` — manifest schema + validation, capabilities,
+    contributions, DTOs, diagnostics, host-call protocol, `ScriptHost`/`HostBridge`
+    traits. No engine, no transport, no `agora-core` dependency.
+  - `crates/agora-core/src/plugins/` — store (schema v14), registry resolution with
+    dependency ordering and cycle detection, install/replace/rollback, capability
+    checks, service dispatch, event bus, per-plugin logs.
+  - Install from a package or a development folder; enable/disable; uninstall with
+    data retention as a *separate* decision; `disable_all` recovery that does not need
+    plugin cooperation.
+  - Activation events gate activation: `onStartup` (or no declaration) starts at launch,
+    `onView:`/`onCommand:` start on demand, `onEvent:` starts when the event fires, and
+    `onInstanceOpened` starts when an instance is opened.
+
+- [x] **P2** — Extension surfaces ✅
+  - Pages, instance panels, palette and context commands, themes, settings,
+    diagnostics with typed repair proposals, and bounded pre-launch checks.
+  - Host-rendered `ViewModel` path is the supported one. A `data:`-iframe custom view
+    with a narrow `postMessage` bridge exists as a prototype.
+  - 27 end-to-end tests in `crates/agora-core/tests/plugins_end_to_end.rs` run against
+    the real QuickJS host and assert against instance state on disk.
+
+- [x] **P3** — First public release materials
+  - [x] SDK (`sdk/`), runnable examples (`examples/plugins/`), author guide
+        (`docs/plugins/`)
+  - [x] CLI surface (`agora plugin …`) so all three frontends reach the same core
+  - [x] Compatibility fixtures pinning the shipped manifest surface
+  - [ ] Verify in the packaged desktop app, not only in tests. The browser-level e2e
+        proves the custom-frame boundary but mocks the Tauri bridge around it.
+
+- [~] **P4** — Author-hosted signed updates
+  - [x] Distribution format: `agora-plugin-update.json` in the package pins the update URL and
+        Ed25519 keys; the author hosts a signed document listing releases, each carrying the
+        SHA-256 that authenticates its package. Deliberately a separate file from the manifest so
+        the fixture-pinned manifest contract does not move when distribution grows.
+  - [x] Trust on first install: keys recorded at the moment of consent and read only from the
+        database afterwards, like the capability grants. A package that ships no update source
+        clears any previous pin rather than inheriting it.
+  - [x] Replay defence: documents carry a monotonic sequence, authenticity is verified before
+        freshness, and a document that fails to verify cannot move the recorded sequence.
+  - [x] Applying an update goes through the ordinary install path — same capability comparison,
+        same data checkpoint, same staging and rollback. A widening release returns a preview to
+        consent to rather than an error.
+  - [x] Author tooling: `agora plugin keygen`, `agora plugin sign`, and a round-trip test that
+        drives the real binary and verifies its output with the real verifier.
+  - [x] `agora plugin check-update` / `agora plugin update`, and the desktop equivalents.
+  - [x] Automatic checking behind its own opt-in, run off the startup path so the launcher opens
+        at the same speed whether or not a publisher is reachable.
+  - [x] A real publish-and-update cycle against an author-hosted file, done against
+        `agora-mc/governance-sandbox-testing`. It found a panic on the first real call: both
+        fetches used the blocking HTTP helper from inside an async caller.
+  - [x] Revocation: **decided out of scope.** None exists and none is planned. Nowhere to publish
+        a list, no authority to sign one, and the cost outweighs what it protects at this size.
+        Documented for authors rather than left as an open question.
+  - [ ] Optional curated catalog, and a content-source example. Not started; installing needs
+        neither.
+
+- [ ] **P5** — Deeper customization
+  - [x] Replacement views for the **home screen**. A plugin *offers*; the user chooses; Agora's
+        own view is the default and the fallback. Two plugins offering the same surface is a list,
+        not a race. Host-rendered only.
+        Example: `examples/plugins/home-replacement/`. Fixtures pin the contract.
+  - [x] The instance overview, receiving `{ instanceId }` so one view serves every instance. No
+        extraction was needed after all: `PluginSurface` takes the built-in as a `fallback` child,
+        so the existing inline region became the fallback where it stood.
+  - [x] The custom-view prototype is **withdrawn**, not deferred. Its script ran in the WebView,
+        outside every bound the plugin runtime imposes, so a 512 KiB document could hang the
+        launcher. Removed while API 0.1 is unreleased and the cost was one example.
+  - [x] Content-source providers, install hooks and generic import/export hooks: **declined** for
+        this milestone, not deferred. An extension point earns its cost by enabling something the
+        existing API cannot express, and none of the three has a plugin that needs it. Install
+        *observation* is already served by the ten lifecycle events; install *participation* is a
+        transaction problem (ordering, veto, rollback, crash recovery) that should not be invented
+        speculatively. A content source must never be able to certify its own artifacts, so it
+        needs a provenance design before an interface.
+  - [ ] Revisit when a real plugin demonstrates the need. Import/export is the strongest
+        candidate — as bounded plugin data the host carries through an archive, not as execution
+        hooks. Host-rendered forms are worth considering ahead of all three.
+        Native companions only if a concrete plugin justifies them.
+
+**Explicitly out of scope for v1:** MO2 integration, Steam discovery, generic
+game adapters. These are a separate initiative and block none of the above.

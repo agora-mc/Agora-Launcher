@@ -1,0 +1,9 @@
+{
+  "manifest": 1,
+  "id": "fixture.typo",
+  "name": "A typo must not be silently ignored",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entryPoint": "main.js"
+}

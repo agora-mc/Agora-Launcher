@@ -118,7 +118,7 @@ export function FieldGuide() {
   const earnedCount = ACHIEVEMENTS.filter((a) => earned.has(a.key)).length;
 
   // Interaction achievements (the High Interaction instance editor's toasts):
-  // same persisted store the WorldEditor writes, so each is earned exactly once.
+  // same persisted store the LiveInstanceEditor writes, so each is earned exactly once.
   const [interactionEarned, setInteractionEarned] = useState<Set<string>>(() => loadEarnedInteraction());
   useEffect(() => { setInteractionEarned(loadEarnedInteraction()); }, [saved]);
   const interactionCount = INTERACTION_ACHIEVEMENTS.filter((a) => interactionEarned.has(a.key)).length;

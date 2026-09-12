@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { ChevronLeft, ChevronRight, Command } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Command, Puzzle } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import type { Tab } from '../lib/useDestination';
 import type { RegistryStatus } from '../lib/tauri';
@@ -16,6 +16,15 @@ interface SidebarProps {
   onWidthChange: (width: number) => void;
   onWidthCommit: (width: number) => void;
   registryStatus?: RegistryStatus | null;
+  /**
+   * Pages contributed by community plugins, in their own group below the
+   * built-in navigation. Kept separate rather than merged into `tabs` so the
+   * launcher's own destinations never move as plugins come and go, and so it
+   * is always obvious which entries are not part of Agora itself.
+   */
+  pluginPages?: { id: string; label: string }[];
+  activePluginPage?: string | null;
+  onSelectPluginPage?: (id: string) => void;
 }
 
 const MIN_WIDTH = 180;
@@ -53,6 +62,9 @@ export function Sidebar({
   onWidthChange,
   onWidthCommit,
   registryStatus,
+  pluginPages = [],
+  activePluginPage = null,
+  onSelectPluginPage,
 }: SidebarProps) {
   const latestWidth = useRef(width);
 
@@ -108,7 +120,7 @@ export function Sidebar({
 
       <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3" aria-label="Main navigation">
         {tabs.map((tab) => {
-          const isActive = activeTab === tab.id;
+          const isActive = !activePluginPage && activeTab === tab.id;
           const Icon = tab.icon;
           return (
             <button
@@ -130,6 +142,39 @@ export function Sidebar({
             </button>
           );
         })}
+
+        {pluginPages.length > 0 && (
+          <div className="pt-2">
+            {!collapsed && (
+              <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Plugins
+              </div>
+            )}
+            {pluginPages.map((page) => {
+              const isActive = activePluginPage === page.id;
+              return (
+                <button
+                  key={page.id}
+                  onClick={() => onSelectPluginPage?.(page.id)}
+                  aria-current={isActive ? 'page' : undefined}
+                  title={collapsed ? page.label : undefined}
+                  className={[
+                    'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors',
+                    collapsed ? 'px-0 justify-center' : '',
+                    isActive
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  ].join(' ')}
+                >
+                  <Puzzle className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                  {!collapsed && (
+                    <span className="min-w-0 flex-1 truncate text-left leading-snug">{page.label}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </nav>
 
       {!collapsed && (

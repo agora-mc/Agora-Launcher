@@ -1,0 +1,9 @@
+{
+  "manifest": 1,
+  "id": "fixture.escape",
+  "name": "Entrypoint climbs out of the package",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "../../../etc/evil.js"
+}

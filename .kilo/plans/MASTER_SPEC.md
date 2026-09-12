@@ -2825,6 +2825,116 @@ which is honest, because local deletion never revokes a token an attacker alread
 If that promise ever changes, the right unit is an explicit all-credentials reset plus
 provider-revocation guidance, not opportunistic deletion inside a per-credential sign-out.
 
+### 19.24 Community Plugins: Core Owns Policy, an Adapter Owns the Engine
+
+Agora is extensible: a community author can add pages, instance panels, commands, themes,
+diagnostics and pre-launch checks without rebuilding the launcher. The design choices below
+are the ones that are *not* recoverable from reading the code.
+
+**QuickJS, chosen on a measurement rather than a preference.** The runtime question was
+settled by a spike before any of the surrounding system was written. `rquickjs` 0.13 built
+clean on MSVC in 15 seconds with no external toolchain, and a full release binary carrying
+tokio, `serde_json` and the engine came to 2 MB. A V8-based host (`deno_core`) would have
+added tens of megabytes to a launcher whose stated position is that it costs nothing to run,
+and Agora's `$0.00/month` ethos extends to what the user downloads. The spike also had to
+prove async host calls, ES module loading, cancellation, error isolation and a memory
+ceiling; all five hold, and `crates/agora-plugin-host/tests/host.rs` is those gates in
+executable form.
+
+**The engine is deliberately not in core.** `agora-core` holds an `Arc<dyn ScriptHost>`
+defined in `agora-plugin-api`, the same way it holds a `dyn Clock`. Core decides what may run
+and what it may do; an adapter supplies the thing that runs it. This is not ceremony — it is
+what makes a second runtime (a companion process speaking C#, Python or Rust) a matter of
+writing a new `ScriptHost` rather than reworking plugin policy, and it keeps the contract
+crate depending on nothing but `serde`, `semver` and `thiserror`.
+
+**A plugin proposes; core disposes.** Plugins never perform operations. A diagnostic returns
+findings plus a `RepairProposal` drawn from a **closed set** of `RepairAction` variants, each
+mapping onto an existing core service. The user approves, core re-validates the world *as it
+is now*, and then calls the same service the GUI would have called — same locks, same
+operation state, same recovery. The closed set is the point: if a plugin could return "run
+this command", the repair path would be an arbitrary-execution API wearing a diagnostic's
+clothes. Adding a variant is an API change reviewed on its own merits, which is exactly the
+friction that should exist before plugins gain a new way to change someone's game.
+
+**Capability grants are stored, not re-read.** The set of capabilities a plugin holds is
+recorded in `plugin_installs` alongside the manifest at the moment the user consented. It is
+not re-derived from the manifest on load. An update that asks for more permission therefore
+does not silently receive it; `widens_capabilities` detects the difference and the user has
+to be asked again.
+
+**Plugin UI is data, not markup.** A host-rendered view is a `ViewModel` — stats, tables,
+lists, status callouts, actions — that React draws with Agora's own components. There is no
+HTML string anywhere in that path, so there is nothing for `dangerouslySetInnerHTML` to
+receive and no sanitiser to get wrong, and plugin views inherit theming, accessibility and
+controller navigation for free. A plugin picks a semantic `Tone`, never a colour, so it
+cannot produce unreadable contrast or ignore the user's theme.
+
+A prototype **custom view** exists for authors who need their own HTML/CSS/JS: an
+opaque-origin `data:` iframe with `sandbox="allow-scripts"`, its own `default-src 'none';
+connect-src 'none'` CSP, and a narrow `postMessage` bridge that can only invoke commands the
+plugin declared in its manifest. It has no launcher IPC of its own. Treat it as experimental.
+`desktop/e2e/plugins.spec.ts` drives the frame in a real browser and confirms it cannot reach
+parent IPC or the network -- that part is the browser's own sandbox enforcement, not a mock --
+but the Tauri bridge around it in that test *is* mocked, so it is evidence about the frame
+boundary rather than about the packaged desktop app. The host-rendered path is the supported
+one.
+
+This required widening the application CSP in `tauri.conf.json` by exactly one directive,
+`frame-src data:` — enough for an opaque-origin document and nothing else. It does not permit
+`'self'` frames or remote ones, so the only thing that can be framed is a document the host
+itself constructed from a manifest-declared file inside the plugin's own package.
+
+**Network access is an allowlist, not a switch.** Holding the `network` capability is not
+permission to reach the internet; it is permission to reach the hosts the plugin *declared in
+its manifest* and the user saw at install time. `HostPolicy::PluginDeclared` enforces that
+list on the initial request and on every redirect hop. Wildcards, IP literals, ports and
+loopback names are rejected at manifest-validation time — a user cannot meaningfully consent
+to `*.example.com`, and an IP literal would sidestep the DNS checks that protect the user's
+own network. `network_plugins_enabled` defaults to **off**, and Lockdown Mode overrides
+everything regardless.
+
+**Both switches are opt-in.** `plugins_enabled` defaults to off. A user who never opts in
+never has a plugin runtime in their process. This is the whitelist-over-denylist rule from
+`AGENTS.md` applied to the extension system itself: a default-on extension surface is a
+default-on attack surface.
+
+**Activation events gate activation, and are not decorative.** `activate_all` starts only the
+plugins that asked for startup — `onStartup`, or a manifest declaring no activation at all,
+since that has no lazy path that could ever start it. A plugin contributing only a page or a
+command is started the moment something needs it; one declaring `onEvent:` is started when
+that event first fires, which is why adapters publish through `PluginService::publish_event`
+rather than straight to the bus. A plugin that has not run has not subscribed to anything, so
+going directly to the bus would deliver to nobody and the declaration would silently never
+fire. Without this, a dozen installed plugins would be a dozen runtimes at boot and the
+manifest's activation list would be documentation of an intention rather than a mechanism.
+
+**Be precise about what the isolation buys.** Each plugin gets its own OS thread, its own
+QuickJS runtime, its own heap and stack ceiling, and its own interrupt flag. Two mechanisms
+stop a misbehaving plugin, and both are needed: a QuickJS **interrupt handler** stops
+JavaScript that is *running* (the `while (true) {}` case), and a Tokio **timeout** stops a
+task that is *awaiting* (a slow host call). Neither alone suffices — the interrupt never
+fires while the engine is parked on a future, and the timeout never fires while the engine is
+in a tight loop that yields to nothing.
+
+| Failure | Contained? | How |
+|---|---|---|
+| Plugin throws on activation | Yes | Recorded as `last_error`, held back next start, other plugins unaffected |
+| Plugin loops forever | Yes | Interrupt handler; the call returns `Timeout` and the plugin stays usable |
+| Plugin exhausts its heap | Yes | Per-runtime memory limit; returns `ResourceExhausted` |
+| Plugin floods events | Yes | Bounded per-plugin queue; events are dropped and counted, never back-pressured onto the emitting operation |
+| Plugin refuses to shut down | Yes | `disable_all` interrupts rather than asking politely, so recovery does not need plugin cooperation |
+| Plugin is simply malicious within its granted capabilities | **No** | Capabilities are the boundary. A plugin granted `content:write` may disable mods; that is what the user agreed to |
+
+That last row is the honest limit. This is a **capability** boundary enforced by the method
+table in `agora-core/src/plugins/dispatch.rs`, not a security sandbox against hostile native
+code, and the install prompt is therefore load-bearing. Claims of stronger isolation would
+have to be justified by the runtime, and QuickJS-in-process does not justify them.
+
+**Event loops are broken structurally.** Every event carries an origin and a depth. A plugin
+is never told about its own effects, and a chain of plugin-caused events stops at
+`MAX_EVENT_DEPTH`. The alternative — hoping plugin authors are careful — is not a design.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

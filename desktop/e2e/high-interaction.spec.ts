@@ -225,8 +225,8 @@ test('approved remove through InstallFlow: Stage remove re-resolves and opens th
   // The installed mod renders on the shelf; selecting it opens the detail
   // drawer with the approved remove action.
   await page.getByRole('button', { name: /example\.jar/ }).click();
-  await expect(page.getByRole('button', { name: 'Remove from this world' })).toBeVisible();
-  await page.getByRole('button', { name: 'Remove from this world' }).click();
+  await expect(page.getByRole('button', { name: 'Remove from this instance' })).toBeVisible();
+  await page.getByRole('button', { name: 'Remove from this instance' }).click();
 
   // The bridge re-resolves per route and opens the canonical InstallFlow,
   // which resolves a remove plan.

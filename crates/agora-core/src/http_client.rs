@@ -101,6 +101,10 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
         // after the core consent check. The empty list fails closed if the
         // category is ever reached through the generic Allowlist path.
         ClientCategory::ConsentedContent => &[],
+        // Authorized per-request from the plugin's manifest, never from here.
+        ClientCategory::Plugin | ClientCategory::PluginUpdate | ClientCategory::PluginPackage => {
+            &[]
+        }
     }
 }
 
@@ -125,6 +129,11 @@ pub enum HostPolicy<'a> {
     /// core, so a frontend bug cannot widen it. Every other gate still
     /// applies, and the private/loopback/link-local DNS rejection is retained.
     UserConsented,
+    /// Hosts a plugin declared in its manifest and the user saw at install
+    /// time. A plugin holding the `network` capability does *not* get to reach
+    /// the whole internet: it reaches the hosts it told the user about, and
+    /// nothing else. Every other gate, including Lockdown, still applies.
+    PluginDeclared(&'a [String]),
 }
 
 /// Friendly name for each HTTP client category, used in logging and errors.
@@ -154,6 +163,17 @@ pub enum ClientCategory {
     /// Content the user explicitly opted into (Technic tiers S/Z). Reached
     /// only through the core consent-gated helpers via `HostPolicy::UserConsented`.
     ConsentedContent,
+    /// Outbound requests made on behalf of a community plugin. Has no
+    /// compile-time allowlist; authorization comes from the plugin's declared
+    /// hosts via `HostPolicy::PluginDeclared`, so the generic allowlist path
+    /// stays failed-closed.
+    Plugin,
+    /// Signed update metadata fetched on the user's behalf. Host authorization
+    /// still comes from `HostPolicy::PluginDeclared`, not a built-in list.
+    PluginUpdate,
+    /// Plugin update packages. The response is streamed and bounded by the
+    /// installer's package-size limit.
+    PluginPackage,
 }
 
 /// How a category's requests are bounded in time.
@@ -195,7 +215,7 @@ impl ClientCategory {
     ///
     /// This is the single definition that client construction and
     /// [`Self::index`] are both derived from — see [`HttpClients`].
-    const ALL: [ClientCategory; 11] = [
+    const ALL: [ClientCategory; 14] = [
         ClientCategory::MojangMetadata,
         ClientCategory::MojangContent,
         ClientCategory::Loader,
@@ -207,6 +227,9 @@ impl ClientCategory {
         ClientCategory::JavaRuntime,
         ClientCategory::PinnedArtifact,
         ClientCategory::ConsentedContent,
+        ClientCategory::Plugin,
+        ClientCategory::PluginUpdate,
+        ClientCategory::PluginPackage,
     ];
 
     /// Position of this category in [`Self::ALL`].
@@ -225,6 +248,9 @@ impl ClientCategory {
             ClientCategory::JavaRuntime => 8,
             ClientCategory::PinnedArtifact => 9,
             ClientCategory::ConsentedContent => 10,
+            ClientCategory::Plugin => 11,
+            ClientCategory::PluginUpdate => 12,
+            ClientCategory::PluginPackage => 13,
         }
     }
 
@@ -239,6 +265,7 @@ impl ClientCategory {
                 | ClientCategory::Modpack
                 | ClientCategory::PinnedArtifact
                 | ClientCategory::ConsentedContent
+                | ClientCategory::PluginPackage
         )
     }
 
@@ -279,6 +306,13 @@ impl ClientCategory {
             ClientCategory::JavaRuntime => Some(512 * 1024 * 1024),
             ClientCategory::PinnedArtifact => Some(100 * 1024 * 1024),
             ClientCategory::ConsentedContent => Some(500 * 1024 * 1024),
+            // A signed update document is bounded by its own schema: at most
+            // 200 releases of a few hundred bytes each. 1 MiB is an order of
+            // magnitude of headroom over any real one, and the point of a
+            // tight cap is that a hostile host cannot make the launcher read
+            // megabytes before it gives up on a file that should be tiny.
+            ClientCategory::PluginUpdate => Some(1024 * 1024),
+            ClientCategory::PluginPackage => Some(crate::plugins::install::MAX_TOTAL_BYTES),
             _ => Some(10 * 1024 * 1024),
         }
     }
@@ -589,6 +623,18 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
             // precedes this request. The empty ConsentedContent allowlist
             // keeps the generic Allowlist path failed-closed.
             category == ClientCategory::ConsentedContent
+        }
+        HostPolicy::PluginDeclared(hosts) => {
+            // Scoped to the plugin category so a bug elsewhere cannot pass a
+            // plugin's host list for, say, a Mojang download.
+            matches!(
+                category,
+                ClientCategory::Plugin
+                    | ClientCategory::PluginUpdate
+                    | ClientCategory::PluginPackage
+            ) && hosts
+                .iter()
+                .any(|allowed| host_matches_domain(host, allowed))
         }
     }
 }
@@ -1364,6 +1410,61 @@ mod tests {
             ClientCategory::Modpack.max_response_bytes()
                 > ClientCategory::Modrinth.max_response_bytes()
         );
+    }
+
+    #[test]
+    fn plugin_update_documents_use_a_small_total_request_budget() {
+        assert_eq!(
+            ClientCategory::PluginUpdate.max_response_bytes(),
+            Some(1024 * 1024)
+        );
+        // The relationship is the part worth pinning: a document is metadata
+        // and a package is a download, so reading the first must never be
+        // allowed to cost what reading the second does.
+        assert!(
+            ClientCategory::PluginUpdate.max_response_bytes()
+                < ClientCategory::PluginPackage.max_response_bytes()
+        );
+        assert_eq!(
+            ClientCategory::PluginUpdate.time_budget(),
+            TimeBudget::Request {
+                total: Duration::from_secs(30)
+            }
+        );
+        assert!(!ClientCategory::PluginUpdate.is_bulk_transfer());
+    }
+
+    #[test]
+    fn plugin_packages_use_the_install_cap_and_a_streaming_budget() {
+        assert_eq!(
+            ClientCategory::PluginPackage.max_response_bytes(),
+            Some(crate::plugins::install::MAX_TOTAL_BYTES)
+        );
+        assert!(ClientCategory::PluginPackage.is_bulk_transfer());
+        assert!(matches!(
+            ClientCategory::PluginPackage.time_budget(),
+            TimeBudget::Transfer { .. }
+        ));
+    }
+
+    #[test]
+    fn plugin_declared_hosts_authorize_all_plugin_fetch_categories_without_allowlists() {
+        let hosts = vec!["updates.example.com".to_string()];
+        for category in [
+            ClientCategory::Plugin,
+            ClientCategory::PluginUpdate,
+            ClientCategory::PluginPackage,
+        ] {
+            assert!(category_allowlist(category).is_empty(), "{category:?}");
+            assert!(
+                host_authorized(
+                    category,
+                    "cdn.updates.example.com",
+                    HostPolicy::PluginDeclared(&hosts)
+                ),
+                "{category:?}"
+            );
+        }
     }
 
     // ------------------------------------------------------------------

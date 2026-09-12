@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Expected schema version for the mutable local SQLite database.
 /// Migrations are applied sequentially on startup.
-pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 13;
+pub const LOCAL_STATE_SCHEMA_VERSION: i64 = 15;
 
 /// Open a read-write connection to the local state database.
 ///
@@ -72,6 +72,14 @@ pub fn init_local_state_db(db_path: &std::path::PathBuf) -> anyhow::Result<()> {
         "ai_mcp_enabled",
         "install_auto_confirm_clean",
         "install_always_auto_confirm",
+        // Community plugins, and their outbound network access, are both
+        // opt-in. Neither is a prerequisite for using Agora, and a default-on
+        // extension system is a default-on attack surface.
+        "plugins_enabled",
+        "network_plugins_enabled",
+        // This governs automatic background checking only. A manual check
+        // works whenever plugins are on.
+        "plugin_updates_enabled",
     ] {
         if get_setting(&conn, key).ok().flatten().is_none() {
             set_setting(&conn, key, &serde_json::Value::Bool(false))?;
@@ -508,6 +516,79 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (13)",
+            [],
+        )?;
+    }
+
+    if current < 14 {
+        // Community plugins. `plugin_installs` is the record of what the user
+        // consented to: which plugins exist, which are switched on, and which
+        // capabilities they were granted at install time. Capabilities are
+        // stored alongside the manifest rather than re-read from it on every
+        // load, so a plugin cannot quietly widen its own permissions by
+        // shipping an update that asks for more — the grant has to be renewed.
+        //
+        // `plugin_storage` holds both halves of a plugin's state, split by
+        // `kind` so that plugin-written `data` can never overwrite a `setting`
+        // the host declared and validates.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugin_installs (
+                 plugin_id TEXT PRIMARY KEY,
+                 version TEXT NOT NULL,
+                 manifest_json TEXT NOT NULL,
+                 granted_capabilities TEXT NOT NULL DEFAULT '[]',
+                 source_kind TEXT NOT NULL,
+                 source_path TEXT,
+                 install_dir TEXT NOT NULL,
+                 enabled INTEGER NOT NULL DEFAULT 0,
+                 installed_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 data_version INTEGER NOT NULL DEFAULT 1,
+                 last_error TEXT
+             );
+
+             CREATE TABLE IF NOT EXISTS plugin_storage (
+                 plugin_id TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 instance_id TEXT NOT NULL DEFAULT '',
+                 key TEXT NOT NULL,
+                 value_json TEXT NOT NULL,
+                 PRIMARY KEY (plugin_id, kind, instance_id, key),
+                 FOREIGN KEY (plugin_id) REFERENCES plugin_installs(plugin_id) ON DELETE CASCADE
+             );
+
+             CREATE TABLE IF NOT EXISTS plugin_data_checkpoints (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 plugin_id TEXT NOT NULL,
+                 from_version TEXT NOT NULL,
+                 data_version INTEGER NOT NULL,
+                 captured_at TEXT NOT NULL,
+                 payload_json TEXT NOT NULL,
+                 FOREIGN KEY (plugin_id) REFERENCES plugin_installs(plugin_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_plugin_checkpoints
+                 ON plugin_data_checkpoints (plugin_id, captured_at DESC);",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (14)",
+            [],
+        )?;
+    }
+
+    if current < 15 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugin_trust (
+                 plugin_id TEXT PRIMARY KEY,
+                 update_url TEXT NOT NULL,
+                 keys_json TEXT NOT NULL,
+                 highest_sequence INTEGER NOT NULL DEFAULT 0,
+                 last_checked_at TEXT,
+                 last_result TEXT,
+                 FOREIGN KEY (plugin_id) REFERENCES plugin_installs(plugin_id) ON DELETE CASCADE
+             );",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (15)",
             [],
         )?;
     }
@@ -1680,6 +1761,17 @@ mod tests {
                 Some(serde_json::json!(false))
             );
         }
+    }
+
+    #[test]
+    fn automatic_plugin_update_checks_default_to_disabled() {
+        let (conn, _path) = test_db();
+        // Background checks are an extra source of traffic; a manual check is
+        // still available when the user has enabled the plugin system.
+        assert_eq!(
+            get_setting(&conn, "plugin_updates_enabled").unwrap(),
+            Some(serde_json::json!(false))
+        );
     }
 
     #[test]

@@ -1,0 +1,10 @@
+{
+  "manifest": 1,
+  "id": "fixture.ghostview",
+  "name": "Activation points at a page that does not exist",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "activation": ["onView:nowhere"]
+}

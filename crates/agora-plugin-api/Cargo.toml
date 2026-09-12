@@ -1,0 +1,16 @@
+[package]
+name = "agora-plugin-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Public contract between Agora and community plugins: manifest, capabilities, contributions, DTOs and the host-call protocol."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

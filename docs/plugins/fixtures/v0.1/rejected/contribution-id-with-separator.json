@@ -1,0 +1,12 @@
+{
+  "manifest": 1,
+  "id": "fixture.slash",
+  "name": "Contribution id contains the namespace separator",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "contributions": {
+    "commands": [{ "id": "fixture.slash/run", "title": "Run", "export": "run" }]
+  }
+}

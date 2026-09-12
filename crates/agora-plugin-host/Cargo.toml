@@ -1,0 +1,17 @@
+[package]
+name = "agora-plugin-host"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "QuickJS implementation of the Agora plugin script host."
+
+[dependencies]
+agora-plugin-api = { path = "../agora-plugin-api" }
+rquickjs = { version = "0.13", features = ["futures", "macro", "loader", "parallel"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

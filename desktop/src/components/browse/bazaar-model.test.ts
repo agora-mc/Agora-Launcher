@@ -6,7 +6,9 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  bagItems,
   categoryTags,
+  clearBag,
   crank,
   fitFor,
   hashOf,
@@ -16,6 +18,7 @@ import {
   sortedShelf,
   stageItem,
   topVibe,
+  unstageItem,
   vibeBarWidths,
   vibesFor,
   vote,
@@ -153,6 +156,39 @@ describe('bazaar fit line', () => {
     const un = { ...st };
     delete un.staged.a;
     expect(isOwned(un, 'a')).toBe(false);
+  });
+});
+
+describe('the bag outlives the shelf that filled it', () => {
+  it('keeps a snapshot so a pick survives a stall change', () => {
+    // Changing stalls refetches Browse with another content type: the staged
+    // item is simply gone from `items`, so a bag derived from `items` would
+    // appear to empty itself and could not be emptied on purpose either.
+    const st = stageItem(initialBazaarState(), item({ id: 'a', name: 'Sodium' }));
+    expect(bagItems(st).map((it) => it.name)).toEqual(['Sodium']);
+  });
+
+  it('drops the snapshot when the pick is taken back out', () => {
+    let st = stageItem(initialBazaarState(), item({ id: 'a' }));
+    st = unstageItem(st, 'a');
+    expect(bagItems(st)).toEqual([]);
+    expect(st.bag).toEqual({});
+  });
+
+  it('empties the picks and nothing else', () => {
+    let st = stageItem(initialBazaarState(), item({ id: 'a' }));
+    st = stageItem(st, item({ id: 'b' }));
+    st = { ...st, owned: { installed: true } };
+    const empty = clearBag(st);
+    expect(bagItems(empty)).toEqual([]);
+    // Already-installed content is not a pick and is not ours to drop.
+    expect(empty.owned).toEqual({ installed: true });
+  });
+
+  it('still lists a bag written before snapshots existed', () => {
+    const legacy = { ...initialBazaarState(), staged: { a: true }, bag: {} };
+    expect(bagItems(legacy).map((it) => it.id)).toEqual(['a']);
+    expect(clearBag(legacy).staged).toEqual({});
   });
 });
 

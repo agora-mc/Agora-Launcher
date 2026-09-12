@@ -5,6 +5,8 @@
 #
 # Members:
 #   - crates/agora-core : shared library, all business logic, no tauri/clap/MCP types
+#   - crates/agora-plugin-api  : the public plugin contract (no engine, no transport)
+#   - crates/agora-plugin-host : QuickJS implementation of the plugin script host
 #   - desktop           : the Tauri GUI binary (`agora-desktop`), thin facades over agora-core
 #
 # Phase 9 member: crates/agora (standalone `agora` CLI binary).
@@ -14,7 +16,13 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/agora-core", "desktop/src-tauri", "crates/agora"]
+members = [
+    "crates/agora-core",
+    "crates/agora-plugin-api",
+    "crates/agora-plugin-host",
+    "desktop/src-tauri",
+    "crates/agora",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -46,6 +54,9 @@ base64 = "0.22"
 uuid = { version = "1", features = ["v4", "serde"] }
 sysinfo = "0.30"
 rand = "0.8"
+semver = { version = "1", features = ["serde"] }
+walkdir = "2"
+tempfile = "3"
 
 [profile.release]
 panic = "abort"

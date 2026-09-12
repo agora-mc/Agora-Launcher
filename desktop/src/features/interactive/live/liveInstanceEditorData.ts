@@ -1,5 +1,5 @@
 /**
- * WorldEditor data mapping — turns the live `VisualScene` into the v4-world
+ * LiveInstanceEditor data mapping — turns the live `VisualScene` into the v4-world
  * foreground's item model (name/kind/needs/neededBy/missing/rarity). Pure.
  *
  * The prototype's shelf derived rarity from `neededBy` count; here that is

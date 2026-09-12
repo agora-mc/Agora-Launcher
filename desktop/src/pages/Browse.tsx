@@ -1306,7 +1306,6 @@ function BrowseContent({
           items={bazaarItems}
           instanceVersion={bazaarInstanceVersion}
           ownedIds={bazaarOwnedIds}
-          onAdd={(item) => handleSelectItem(item.id)}
           onOpenMod={(item) => handleSelectItem(item.id)}
           onExit={() => setBazaarMode(false)}
           hasMore={hasMore && !searchLoading}

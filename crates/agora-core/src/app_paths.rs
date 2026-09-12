@@ -191,6 +191,34 @@ impl AppPaths {
         self.root.join("screenshots")
     }
 
+    /// Root directory for community plugins (`plugins/`).
+    pub fn plugins_root(&self) -> PathBuf {
+        self.root.join("plugins")
+    }
+
+    /// Where installed plugin packages are unpacked (`plugins/installed/`).
+    ///
+    /// Package bytes live here and nowhere else. A plugin's *data* lives in
+    /// `local_state.db`, so replacing a package never touches user data and
+    /// removing a package never silently discards it.
+    pub fn plugin_packages_root(&self) -> PathBuf {
+        self.plugins_root().join("installed")
+    }
+
+    /// Retained previous package bytes for rollback (`plugins/previous/`).
+    pub fn plugin_rollback_root(&self) -> PathBuf {
+        self.plugins_root().join("previous")
+    }
+
+    /// Per-plugin log files (`plugins/logs/`).
+    ///
+    /// A separate file per plugin so "which plugin did this?" is answerable
+    /// without reading the launcher's own log, and so a chatty plugin cannot
+    /// bury a launcher diagnostic.
+    pub fn plugin_logs_root(&self) -> PathBuf {
+        self.plugins_root().join("logs")
+    }
+
     // ------------------------------------------------------------------
     // Validated helpers (user-controlled input — may return Err)
     // ------------------------------------------------------------------

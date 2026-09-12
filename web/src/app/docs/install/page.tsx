@@ -30,7 +30,7 @@ const STEPS = [
   },
   {
     title: 'Review health findings, then play for at least 60 seconds',
-    body: 'A session that lasts a minute is what lets Agora promote the setup to Last Known Good — the recovery point you will want later.',
+    body: 'A session that lasts a minute is what lets Agora promote the instance to Last Known Good — the recovery point you will want later.',
   },
 ];
 

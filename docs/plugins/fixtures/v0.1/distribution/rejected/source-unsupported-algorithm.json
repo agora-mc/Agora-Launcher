@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "url": "https://plugins.example.com/acme.dashboard.json",
+  "keys": [
+    {
+      "id": "2026-09",
+      "algorithm": "rsa-2048",
+      "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+    }
+  ]
+}

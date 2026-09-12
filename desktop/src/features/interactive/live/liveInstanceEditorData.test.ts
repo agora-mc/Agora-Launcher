@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { contentToVisual } from './readAdapters';
-import { buildEditorData } from './worldEditorData';
+import { buildEditorData } from './liveInstanceEditorData';
 import type { DependencyEdge, InstalledMod, InstanceDetail } from '@/lib/tauri';
 
 function mod(filename: string): InstalledMod {

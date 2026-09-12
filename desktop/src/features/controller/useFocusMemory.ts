@@ -74,9 +74,11 @@ export function focusMemoryKey(destination: {
   tab?: string;
   itemId?: string;
   instanceId?: string;
+  contributionId?: string;
 }): string {
   if (destination.type === 'tab') return `tab:${destination.tab ?? ''}`;
   if (destination.type === 'mod-detail') return `mod:${destination.itemId ?? ''}`;
   if (destination.type === 'instance-detail') return `instance:${destination.instanceId ?? ''}`;
+  if (destination.type === 'plugin-page') return `plugin:${destination.contributionId ?? ''}`;
   return destination.type;
 }

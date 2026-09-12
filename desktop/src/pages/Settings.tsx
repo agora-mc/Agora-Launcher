@@ -76,6 +76,7 @@ import { TemplateSettings } from './settings/TemplateSettings';
 import { RuntimeReclaim } from './settings/RuntimeReclaim';
 import { DegradedCredentialNotice } from './settings/DegradedCredentialNotice';
 import { SettingsSection } from './settings/SettingsSection';
+import { PluginManager } from '../features/plugins/PluginManager';
 import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
@@ -198,7 +199,7 @@ export function Settings({
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [portableUpdateNotice, setPortableUpdateNotice] = useState(false);
   useEffect(() => {
-    void isPortableMode().then((portable) => setPortableUpdateNotice(portable === true)).catch(() => {});
+    void isPortableMode().then((portable) => setPortableUpdateNotice(portable === true)).catch(() => { });
   }, []);
   const [dataFolderOpening, setDataFolderOpening] = useState(false);
 
@@ -478,7 +479,7 @@ export function Settings({
       if (isStale()) return;
       // Authorization happened in the browser, which now has focus. Take it
       // back so the user sees the signed-in state they just produced.
-      focusMainWindow().catch(() => {});
+      focusMainWindow().catch(() => { });
       if (token) {
         setGhResult('Signed in successfully.');
         setGithubAuth(true);
@@ -496,7 +497,7 @@ export function Settings({
       if (!isStale()) {
         setGhError(`Sign-in failed: ${msg}`);
         // Same reason as the success path: the error is here, not in the browser.
-        focusMainWindow().catch(() => {});
+        focusMainWindow().catch(() => { });
       }
     } finally {
       if (!isStale()) setGhPolling(false);
@@ -1820,9 +1821,13 @@ export function Settings({
         </p>
         <p className="text-xs text-muted-foreground">
           <strong>MCP Server</strong> — Lets your external AI tool (Claude
-          Desktop, Kilo Code, Opencode, etc.) control Agora directly. The agent
-          can list instances, disable mods, and analyze crashes on its own. No
-          cost — it uses your agent&apos;s AI provider.
+          Code, Codex, Opencode, Kilo code, Github Copilot, etc.) control Agora directly. The agent
+          can list instances, disable mods, and analyze crashes on its own. Price is set by the tool/provider, not Agora.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          If you're looking for a place to start, try <a href="https://opencode.ai/" target="_blank" rel="noopener noreferrer" className="underline">
+            Opencode.ai
+          </a> — there are a few free models you can use, or the chatgpt app is also a decent option with a bit of free usage.
         </p>
       </div>
 
@@ -1843,7 +1848,7 @@ export function Settings({
       )}
 
 
-      {advancedMode && aiMcp && (
+      {aiMcp && (
         <div className="pt-2 border-t border-border space-y-3">
           {/* MCP Status */}
           <div className="rounded-lg bg-muted px-3 py-2.5 space-y-2">
@@ -1977,27 +1982,10 @@ export function Settings({
           {/* Connect your AI tool */}
           <details className="rounded-lg bg-muted px-3 py-2.5 space-y-3">
             <summary className="text-sm font-semibold cursor-pointer select-none">Connect your AI tool</summary>
-
-            {/* Section 1: Kilo Code */}
-            <div className="space-y-1.5">
-              <h5 className="text-xs font-semibold">Kilo Code (VS Code extension)</h5>
-              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
-                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded">~/.config/kilo/kilo.json</code>).</li>
-                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
-                <li>Restart VS Code.</li>
-              </ol>
-              <div className="relative">
-                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcp\": {\n    \"agora-mc\": {\n      \"type\": \"remote\",\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"enabled\": true\n    }\n  }\n}"}</pre>
-                <div className="absolute top-2 right-2">
-                  <CopyButton
-                    text={`{\n  "mcp": {\n    "agora-mc": {\n      "type": "remote",\n      "url": "http://127.0.0.1:39741/sse",\n      "enabled": true\n    }\n  }\n}`}
-                    label="Copy"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Section 2: Opencode */}
+            <p className="text-xs text-muted-foreground">
+              If you're unsure, try asking the agent itself to help configure it.
+            </p>
+            {/* Section 1: Opencode */}
             <div className="space-y-1.5 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Opencode</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
@@ -2026,7 +2014,7 @@ export function Settings({
               </div>
             </div>
 
-            {/* Section 3: Claude Desktop */}
+            {/* Section 2: Claude Desktop */}
             <div className="space-y-1.5 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Claude Desktop</h5>
               <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
@@ -2052,7 +2040,88 @@ export function Settings({
               </div>
             </div>
 
-            {/* Section 4: Other MCP clients */}
+            {/* Section 3: Codex */}
+            <div className="space-y-1.5 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">Codex</h5>
+              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
+                <li>
+                  Set <code className="bg-muted px-1 py-0.5 rounded">AGORA_MCP_TOKEN</code> to the Bearer token shown above.
+                </li>
+                <li>
+                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded">~/.codex/config.toml</code>, then restart Codex.
+                </li>
+              </ol>
+              <div className="relative">
+                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"[mcp_servers.agora]\nurl = \"http://127.0.0.1:39741/mcp\"\nbearer_token_env_var = \"AGORA_MCP_TOKEN\""}</pre>
+                <div className="absolute top-2 right-2">
+                  <CopyButton
+                    text={`[mcp_servers.agora]\nurl = "http://127.0.0.1:39741/mcp"\nbearer_token_env_var = "AGORA_MCP_TOKEN"`}
+                    label="Copy"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 4: GitHub Copilot */}
+            <div className="space-y-1.5 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">GitHub Copilot (VS Code)</h5>
+              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
+                <li>
+                  Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.vscode/mcp.json</code>.
+                </li>
+                <li>
+                  When Copilot prompts for the token, enter the Bearer token shown above, then start the server from the MCP controls.
+                </li>
+              </ol>
+              <div className="relative">
+                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"inputs\": [\n    {\n      \"type\": \"promptString\",\n      \"id\": \"agora-mcp-token\",\n      \"description\": \"Agora MCP Bearer token\",\n      \"password\": true\n    }\n  ],\n  \"servers\": {\n    \"agora\": {\n      \"type\": \"http\",\n      \"url\": \"http://127.0.0.1:39741/mcp\",\n      \"headers\": {\n        \"Authorization\": \"Bearer ${input:agora-mcp-token}\"\n      }\n    }\n  }\n}"}</pre>
+                <div className="absolute top-2 right-2">
+                  <CopyButton
+                    text={`{
+                      "inputs": [
+                        {
+                          "type": "promptString",
+                          "id": "agora-mcp-token",
+                          "description": "Agora MCP Bearer token",
+                          "password": true
+                        }
+                      ],
+                      "servers": {
+                        "agora": {
+                          "type": "http",
+                          "url": "http://127.0.0.1:39741/mcp",
+                          "headers": {
+                            "Authorization": "Bearer \${input:agora-mcp-token}"
+                          }
+                        }
+                      }
+                    }`}
+                    label="Copy"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 5: Kilo Code */}
+            <div className="space-y-1.5 pt-2 border-t border-border">
+              <h5 className="text-xs font-semibold">Kilo Code (VS Code extension)</h5>
+              <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-0.5">
+                <li>Add the config below to <code className="bg-muted px-1 py-0.5 rounded">.kilo/kilo.json</code> (project root or <code className="bg-muted px-1 py-0.5 rounded">~/.config/kilo/kilo.json</code>).</li>
+                <li>Copy the skill (button below) to <code className="bg-muted px-1 py-0.5 rounded">.kilo/skills/agora-mcp/SKILL.md</code>.</li>
+                <li>Restart VS Code.</li>
+              </ol>
+              <div className="relative">
+                <pre className="text-xs bg-muted rounded-lg p-3 overflow-x-auto text-muted-foreground">{"{\n  \"mcp\": {\n    \"agora-mc\": {\n      \"type\": \"remote\",\n      \"url\": \"http://127.0.0.1:39741/sse\",\n      \"enabled\": true\n    }\n  }\n}"}</pre>
+                <div className="absolute top-2 right-2">
+                  <CopyButton
+                    text={`{\n  "mcp": {\n    "agora-mc": {\n      "type": "remote",\n      "url": "http://127.0.0.1:39741/sse",\n      "enabled": true\n    }\n  }\n}`}
+                    label="Copy"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 6: Other MCP clients */}
             <div className="space-y-1 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Other MCP clients</h5>
               <div className="text-xs text-muted-foreground space-y-0.5">
@@ -2063,7 +2132,7 @@ export function Settings({
               </div>
             </div>
 
-            {/* Section 5: Skill content */}
+            {/* Section 7: Skill content */}
             <div className="space-y-1.5 pt-2 border-t border-border">
               <h5 className="text-xs font-semibold">Skill content</h5>
               <p className="text-xs text-muted-foreground">
@@ -2228,6 +2297,7 @@ export function Settings({
       pages: [
         { id: 'sources', label: 'Content sources', content: gate(contentSourcesCard) },
         { id: 'ai', label: 'AI & MCP', content: gate(aiCard) },
+        { id: 'plugins', label: 'Plugins', content: <PluginManager /> },
       ],
     },
     ...(advancedMode

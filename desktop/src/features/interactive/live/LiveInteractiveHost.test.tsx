@@ -250,7 +250,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         />,
       );
       await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-      const bench = screen.getByTestId('world-editor');
+      const bench = screen.getByTestId('live-instance-editor');
       expect(bench).toHaveAttribute('data-launch-state', c.launch);
       expect(bench).toHaveAttribute('data-lock-state', c.busy ? 'busy' : 'editable');
       unmount();
@@ -268,7 +268,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    const bench = screen.getByTestId('world-editor');
+    const bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
   });
 
@@ -385,7 +385,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    expect(screen.getByRole('button', { name: 'Play this world' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Play this instance' })).toBeEnabled();
   });
 
   it('canonical busy is reversible: idle -> launching -> idle clears busy (never sticky)', async () => {
@@ -399,7 +399,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    let bench = screen.getByTestId('world-editor');
+    let bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
 
@@ -411,7 +411,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         processState={{ phase: 'launching', instanceId: 'inst-1' }}
       />,
     );
-    bench = screen.getByTestId('world-editor');
+    bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'starting');
     expect(bench).toHaveAttribute('data-lock-state', 'busy');
 
@@ -424,7 +424,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         processState={{ phase: 'idle', instanceId: 'inst-1' }}
       />,
     );
-    bench = screen.getByTestId('world-editor');
+    bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'idle');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
   });
@@ -442,7 +442,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
         processState={{ phase, instanceId: 'inst-1' }}
       />
     );
-    const play = () => screen.getByRole('button', { name: 'Play this world' });
+    const play = () => screen.getByRole('button', { name: 'Play this instance' });
 
     const { rerender } = render(host('idle'));
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
@@ -485,7 +485,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
 
     // The world is on screen while the expensive reads are still running...
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    expect(screen.getByTestId('world-editor')).toHaveAttribute('data-source', 'live');
+    expect(screen.getByTestId('live-instance-editor')).toHaveAttribute('data-source', 'live');
     // ...and it says so, rather than claiming the health scan failed.
     expect(screen.getByText('Checking things over…')).toBeInTheDocument();
     expect(screen.queryByText('Health could not be verified')).not.toBeInTheDocument();
@@ -569,11 +569,11 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
       <LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} installActive />,
     );
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
-    let bench = screen.getByTestId('world-editor');
+    let bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-lock-state', 'busy');
 
     rerender(<LiveInteractiveHost instanceId="inst-1" onUseStandardView={() => undefined} load={load} installActive={false} />);
-    bench = screen.getByTestId('world-editor');
+    bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-lock-state', 'editable');
   });
 
@@ -602,7 +602,7 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
     // The accepted read is projected with the LATEST canonical state, not the
     // stale idle captured when the read started.
-    const bench = screen.getByTestId('world-editor');
+    const bench = screen.getByTestId('live-instance-editor');
     expect(bench).toHaveAttribute('data-launch-state', 'running');
     expect(bench).toHaveAttribute('data-lock-state', 'busy');
   });

@@ -207,9 +207,9 @@ function explainStep(host: HTMLElement, html: string, onDone: () => void, guideT
   host.appendChild(row);
 }
 
-/* ── Build it: worldBench ── */
+/* ── Build it: instanceBench ── */
 
-interface WorldCfg {
+interface InstanceCfg {
   slotLabel?: string;
   goal?: { name: string; note: string; art: ArtFn };
   needVersion?: string;
@@ -218,7 +218,7 @@ interface WorldCfg {
   win: (sp: { id: string; name: string }) => string;
 }
 
-function worldBench(host: HTMLElement, cfg: WorldCfg, onWin: () => void): void {
+function instanceBench(host: HTMLElement, cfg: InstanceCfg, onWin: () => void): void {
   const state: { version: string | null; loader: string | null } = { version: null, loader: null };
   const wrap = document.createElement('div');
   wrap.className = 'ws-row';
@@ -229,7 +229,7 @@ function worldBench(host: HTMLElement, cfg: WorldCfg, onWin: () => void): void {
   wrap.appendChild(tray);
   const slot = document.createElement('div');
   slot.className = 'ws-slotbig';
-  slot.innerHTML = '<h4>' + (cfg.slotLabel || 'Your world') + '</h4>';
+  slot.innerHTML = '<h4>' + (cfg.slotLabel || 'Your instance') + '</h4>';
   wrap.appendChild(slot);
   if (cfg.goal) {
     const g = document.createElement('div');
@@ -331,7 +331,7 @@ function modBench(host: HTMLElement, opt: { mode: 'basic' | 'shared' }, onWin: (
   wrap.appendChild(tray);
   const slot = document.createElement('div');
   slot.className = 'ws-slotbig';
-  slot.innerHTML = '<h4>Your world' + (shared ? ' — click anything in here to take it out' : '') + '</h4>';
+  slot.innerHTML = '<h4>Your instance' + (shared ? ' — click anything in here to take it out' : '') + '</h4>';
   wrap.appendChild(slot);
   const out = sayEl(host);
   tell(out, shared ? 'Add both cave mods. Then take them out one at a time.' : 'Drag Better Caves in. Watch what comes with it.');
@@ -684,7 +684,7 @@ function healthBench(host: HTMLElement, onWin: () => void, reduce: boolean): voi
     if (!picked) return;
     applyBtn.disabled = true;
     if (picked.right) {
-      tell(out, 'Green — no blockers. Loader A is proven for every installed mod. A kept warning would stay, but this setup is clean.', 'good');
+      tell(out, 'Green — no blockers. Loader A is proven for every installed mod. A kept warning would stay, but this instance is clean.', 'good');
       blip(880, 0.14);
       const c = centerOf(applyBtn);
       burst(c[0], c[1], '#8BE24F', 34, 11);
@@ -835,20 +835,20 @@ const BENCHES: WorkshopBenchWithBuild[] = [
     steps: [
       {
         id: 'do', kind: 'do', title: 'Try it',
-        lead: 'Drag a game version into your world, then try a loader on top. Try a wrong one on purpose — it\'s the fastest way to see the rule.',
+        lead: 'Drag a game version into your instance, then try a loader on top. Try a wrong one on purpose — it\'s the fastest way to see the rule.',
         build: (host, done) => {
-          worldBench(host, {
+          instanceBench(host, {
             hint: 'Start with a game version.',
             win: (sp) => sp.id === 'none'
               ? 'That works. No loader means no add-ons — a plain game. Perfectly fine.'
-              : 'Snap! ' + sp.name + ' agrees with this version. Now your world can take add-ons.',
+              : 'Snap! ' + sp.name + ' agrees with this version. Now your instance can take add-ons.',
           }, done);
-          moreInfo(host, 'A world is an <code>instance</code>. The game version and the <code>mod loader</code> have to match.');
+          moreInfo(host, 'One setup of the game is an <code>instance</code>. The game version and the <code>mod loader</code> inside it have to match.');
         },
       },
       {
         id: 'predict', kind: 'predict', title: 'Guess first',
-        lead: 'Your world is Game 1.20.1 with Loader A. A friend sends you a mod built for Game 1.21.',
+        lead: 'Your instance is Game 1.20.1 with Loader A. A friend sends you a mod built for Game 1.21.',
         build: (host, done) => {
           askStep(host, {
             options: [
@@ -861,10 +861,10 @@ const BENCHES: WorkshopBenchWithBuild[] = [
       },
       {
         id: 'transfer', kind: 'transfer', title: 'Work backwards',
-        lead: 'Harder: you\'re handed the mod first. Build a world that fits it — you\'ll have to figure out which version to start from.',
+        lead: 'Harder: you\'re handed the mod first. Build an instance that fits it — you\'ll have to figure out which version to start from.',
         build: (host, done) => {
-          worldBench(host, {
-            slotLabel: 'Build a world for this mod',
+          instanceBench(host, {
+            slotLabel: 'Build an instance for this mod',
             goal: { name: 'Notebot', note: 'built for Game 1.21', art: ART.box('#B48CF2', 'tab') },
             needVersion: 'v121',
             needLoaderNotNone: true,

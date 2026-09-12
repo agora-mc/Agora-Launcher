@@ -1,0 +1,10 @@
+{
+  "manifest": 1,
+  "id": "fixture.needy",
+  "name": "Requires something this API version has no concept of",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "capabilities": { "required": ["world:teleport"] }
+}

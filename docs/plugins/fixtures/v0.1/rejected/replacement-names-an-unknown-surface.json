@@ -1,0 +1,19 @@
+{
+  "manifest": 1,
+  "id": "acme.everything",
+  "name": "Everything",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "contributions": {
+    "replacements": [
+      {
+        "id": "all",
+        "title": "All of it",
+        "surface": "the-entire-launcher",
+        "view": { "kind": "host", "export": "all" }
+      }
+    ]
+  }
+}

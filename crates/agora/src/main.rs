@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,6 +10,7 @@ use agora_core::crash_service::CrashService;
 use agora_core::install_service::InstallService;
 use agora_core::instance_service::{CreateInstanceRequest, InstanceService};
 use agora_core::loader_service::LoaderService;
+use agora_core::plugins::{CapabilityDescription, InstallPreview, PluginService, PluginSummary};
 use agora_core::registry::RegistryService;
 use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
@@ -107,8 +108,8 @@ impl OutputFormat {
 #[command(
     name = "agora",
     version,
-    about = "Manage Agora instances, content, recovery, and direct launches",
-    long_about = "Agora's standalone command-line interface uses the same core services as the desktop application. It can synchronize the signed registry, create and inspect instances, resolve content changes, run health checks, manage snapshots and lockfiles, investigate crashes, and launch Minecraft directly.",
+    about = "Manage Agora instances, content, plugins, recovery, and direct launches",
+    long_about = "Agora's standalone command-line interface uses the same core services as the desktop application. It can synchronize the signed registry, create and inspect instances, resolve content changes, manage community plugins, run health checks, manage snapshots and lockfiles, investigate crashes, and launch Minecraft directly.",
     after_help = "Start with `agora paths`, `agora registry status`, and `agora list-instances`. Use `--data-dir` for an isolated test profile. See docs/CLI.md for safety guidance, examples, structured output, and exit codes.",
     arg_required_else_help = true
 )]
@@ -214,6 +215,11 @@ enum Commands {
     Loader {
         #[command(subcommand)]
         action: LoaderCmd,
+    },
+    /// Install, inspect, and recover community plugins.
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCmd,
     },
     /// Read or write Agora settings.
     Settings {
@@ -343,6 +349,120 @@ enum LoaderCmd {
         #[arg(long, help = "Reinstall even when a verified profile exists")]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List installed plugins, including the core-resolved status and reason.
+    #[command(visible_alias = "status")]
+    List,
+    /// Preview a package or development folder without installing it.
+    Preview {
+        #[command(subcommand)]
+        source: PluginSourceCmd,
+    },
+    /// Install a package or register a development folder.
+    Install {
+        #[command(subcommand)]
+        source: PluginSourceCmd,
+        /// Accept the manifest's requested capabilities without prompting.
+        ///
+        /// `global` so it is accepted on either side of the `package` /
+        /// `development` subcommand. Both readings are natural, and a consent
+        /// flag that silently fails to parse is the wrong thing to be strict
+        /// about.
+        #[arg(
+            long,
+            global = true,
+            help = "Accept requested plugin capabilities without prompting"
+        )]
+        yes: bool,
+    },
+    /// Enable a previously disabled plugin.
+    Enable { id: String },
+    /// Disable a plugin without removing it.
+    Disable { id: String },
+    /// Remove a plugin; keep its stored data unless --purge-data is given.
+    Remove {
+        id: String,
+        #[arg(long, help = "Also discard the plugin's stored data")]
+        purge_data: bool,
+    },
+    /// Read the most recent lines from a plugin's log.
+    Log {
+        id: String,
+        #[arg(long, default_value_t = 200, help = "Number of log lines to read")]
+        lines: usize,
+    },
+    /// Disable every installed plugin as a recovery action.
+    #[command(name = "disable-all")]
+    DisableAll,
+    /// Ask a plugin's publisher whether there is a newer release.
+    ///
+    /// Fetches only the signed metadata, never a package. With no id, checks
+    /// every plugin that came with an update source.
+    #[command(name = "check-update")]
+    CheckUpdate {
+        /// Plugin id. Omit to check all of them.
+        id: Option<String>,
+    },
+    /// Download and install the release the publisher is offering.
+    Update {
+        id: String,
+        #[arg(
+            long,
+            help = "Accept capabilities the installed version was not granted"
+        )]
+        yes: bool,
+    },
+    /// Put a plugin's stored data back to the copy kept before its last
+    /// data-shape change.
+    ///
+    /// Never runs on its own. A copy is kept when an update changes how a
+    /// plugin stores data; going back to it also discards anything written
+    /// since, so it is always a decision.
+    #[command(name = "restore-data")]
+    RestoreData {
+        id: String,
+        #[arg(long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
+    /// Generate an Ed25519 signing key for publishing updates.
+    ///
+    /// Author tooling. The private key is written to a file you keep; Agora
+    /// never stores it, never reads it again, and cannot recover it.
+    #[command(name = "keygen")]
+    Keygen {
+        /// Where to write the private key. The public half is printed.
+        #[arg(long)]
+        out: PathBuf,
+        /// Label recorded alongside the key, echoed by signatures.
+        #[arg(long, default_value = "default")]
+        key_id: String,
+    },
+    /// Sign an update document in place.
+    ///
+    /// Reads the document, signs the canonical form, and writes it back with
+    /// the signature attached.
+    Sign {
+        /// The update document to sign.
+        document: PathBuf,
+        /// Private key file produced by `keygen`.
+        #[arg(long)]
+        key: PathBuf,
+        /// Key id to record in the signature. Defaults to the one the
+        /// document already names, if it names one.
+        #[arg(long)]
+        key_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginSourceCmd {
+    /// Inspect or install a packaged plugin archive.
+    Package { path: PathBuf },
+    /// Inspect or register a plugin development folder in place.
+    Development { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -917,6 +1037,595 @@ fn run_data_migration(
     Ok(())
 }
 
+/// One line for a verdict, from its serialised form.
+///
+/// Reads the JSON rather than the enum so the CLI prints exactly the shape it
+/// would emit under `--json`; a divergence between the two is the kind of bug
+/// nobody notices until someone scripts against it.
+fn describe_verdict(verdict: &serde_json::Value) -> String {
+    let state = verdict["state"].as_str().unwrap_or("");
+    let text = |key: &str| verdict[key].as_str().unwrap_or("?").to_string();
+    match state {
+        "upToDate" => "up to date".into(),
+        "available" => {
+            let notes = verdict["notes"].as_str().unwrap_or("");
+            let line = format!("{} -> {} available", text("from"), text("to"));
+            if notes.is_empty() {
+                line
+            } else {
+                format!("{line} — {notes}")
+            }
+        }
+        // Deliberately not folded into "up to date": a plugin held back by the
+        // host version is a thing the user can act on, and saying it is
+        // current would stop them looking.
+        "needsNewerHost" => format!(
+            "{} is available but needs an Agora matching {}",
+            text("latest"),
+            text("requires")
+        ),
+        "installedIsNewer" => format!(
+            "installed {} is newer than the published {}",
+            text("installed"),
+            text("latest")
+        ),
+        "noReleases" => "the publisher lists no releases".into(),
+        other => format!("unrecognised result `{other}`"),
+    }
+}
+
+/// Write a new Ed25519 private key and return its public half as a
+/// `PublicKey` ready to paste into a package.
+///
+/// Refuses to overwrite an existing file. Overwriting a signing key is never
+/// what someone meant, and doing it silently would destroy the only copy of
+/// something that cannot be regenerated.
+fn generate_signing_key(out: &Path, key_id: &str) -> anyhow::Result<serde_json::Value> {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+
+    if out.exists() {
+        anyhow::bail!(
+            "{} already exists. Refusing to overwrite a signing key.",
+            out.display()
+        );
+    }
+    let mut seed = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let engine = base64::engine::general_purpose::STANDARD;
+
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    // The file is the secret, so it is written once, with a trailing newline
+    // and nothing else — no id, no comment, nothing that invites someone to
+    // paste the whole file somewhere thinking it is the public half.
+    std::fs::write(out, format!("{}\n", engine.encode(signing.to_bytes())))?;
+    restrict_to_owner(out);
+
+    Ok(serde_json::json!({
+        "id": key_id,
+        "algorithm": "ed25519",
+        "publicKey": engine.encode(signing.verifying_key().to_bytes()),
+    }))
+}
+
+/// Best-effort: make a private key file readable only by its owner.
+///
+/// On Windows the meaningful control is the directory ACL, which is not ours
+/// to change, so this is a no-op there rather than a false assurance.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) {}
+
+/// Sign an update document in place, returning the key id used.
+fn sign_update_document(
+    document: &Path,
+    key: &Path,
+    key_id: Option<&str>,
+) -> anyhow::Result<String> {
+    use agora_plugin_api::distribution::{Signature, UpdateDocument};
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+
+    let engine = base64::engine::general_purpose::STANDARD;
+    let key_text = std::fs::read_to_string(key)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", key.display()))?;
+    let raw = engine
+        .decode(key_text.trim())
+        .map_err(|_| anyhow::anyhow!("{} is not a base64 private key", key.display()))?;
+    let raw: [u8; 32] = raw
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{} is not a 32-byte Ed25519 key", key.display()))?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&raw);
+
+    let text = std::fs::read_to_string(document)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", document.display()))?;
+    // Parsed as a draft: requiring a valid signature in order to produce one
+    // is a requirement nobody can meet. Everything else about the document is
+    // still checked, so signing one with a bad release in it fails here rather
+    // than at every user who later fetches it.
+    let mut parsed =
+        UpdateDocument::parse_draft(&text).map_err(|e| anyhow::anyhow!("{}", e.message))?;
+
+    let key_id = match key_id {
+        Some(explicit) => explicit.to_string(),
+        None => parsed
+            .signatures
+            .first()
+            .map(|signature| signature.key_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "this document does not say which key signs it. Pass --key-id, or add a \
+                     `signatures` entry naming one."
+                )
+            })?,
+    };
+
+    // Signed over the document with `signatures` removed, so whatever
+    // placeholder was in there cannot affect the result.
+    let signature = signing.sign(&parsed.signing_bytes());
+    parsed.signatures = vec![Signature {
+        key_id: key_id.clone(),
+        algorithm: "ed25519".into(),
+        value: engine.encode(signature.to_bytes()),
+    }];
+    std::fs::write(document, serde_json::to_string_pretty(&parsed)?)?;
+    Ok(key_id)
+}
+
+/// Ask before discarding data. Returns false in a non-interactive session,
+/// where a silent yes would be the worst possible default.
+fn confirm_restore(id: &str) -> anyhow::Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        eprintln!("Restoring plugin data needs an interactive terminal; rerun with --yes.");
+        return Ok(false);
+    }
+    print!("Restore the saved copy of {id} data? [y/N]: ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn plugin_service(ctx: &agora_core::ctx::Ctx) -> PluginService {
+    let host: Arc<dyn agora_plugin_api::host::ScriptHost> =
+        Arc::new(agora_plugin_host::QuickJsHost::new());
+    PluginService::headless(ctx.clone(), host)
+}
+
+fn parse_plugin_id(raw: &str) -> anyhow::Result<agora_plugin_api::manifest::PluginId> {
+    agora_plugin_api::manifest::PluginId::parse(raw).map_err(|error| {
+        anyhow::Error::from(agora_core::error::LauncherError::Generic {
+            code: "ERR_PLUGIN_ID_INVALID".into(),
+            message: error.message,
+        })
+    })
+}
+
+fn preview_plugin_source(
+    service: &PluginService,
+    source: &PluginSourceCmd,
+) -> anyhow::Result<InstallPreview> {
+    Ok(match source {
+        PluginSourceCmd::Package { path } => service.preview_package(path)?,
+        PluginSourceCmd::Development { path } => service.preview_folder(path)?,
+    })
+}
+
+fn install_plugin_source(
+    service: &PluginService,
+    source: PluginSourceCmd,
+    accept_capabilities: bool,
+) -> anyhow::Result<PluginSummary> {
+    Ok(match source {
+        PluginSourceCmd::Package { path } => service.install_package(&path, accept_capabilities)?,
+        PluginSourceCmd::Development { path } => {
+            service.add_development_folder(&path, accept_capabilities)?
+        }
+    })
+}
+
+fn print_plugin_preview(
+    preview: &InstallPreview,
+    json: bool,
+    to_stderr: bool,
+) -> anyhow::Result<()> {
+    if json {
+        let rendered = serde_json::to_string_pretty(preview)?;
+        if to_stderr {
+            eprintln!("{rendered}");
+        } else {
+            println!("{rendered}");
+        }
+        return Ok(());
+    }
+
+    println!(
+        "Plugin: {} ({})",
+        preview.manifest.name, preview.manifest.id
+    );
+    println!("Version: {}", preview.manifest.version);
+    println!("License: {}", preview.manifest.license);
+    println!("API: {}", preview.manifest.api_range);
+    if let Some(description) = &preview.manifest.description {
+        println!("Description: {description}");
+    }
+    if let Some(source) = &preview.manifest.source {
+        println!("Source: {source}");
+    }
+    if preview.file_count > 0 {
+        println!(
+            "Package: {} file(s), {} uncompressed bytes",
+            preview.file_count, preview.uncompressed_bytes
+        );
+    } else {
+        println!("Source: development folder (loaded in place)");
+    }
+    if let Some(version) = &preview.replaces_version {
+        println!("Replaces installed version: {version}");
+    }
+    if preview.migrates_data {
+        println!("Data: the installed data shape would be migrated");
+    }
+
+    fn print_capabilities(label: &str, capabilities: &[CapabilityDescription]) {
+        if capabilities.is_empty() {
+            return;
+        }
+        println!("{label}:");
+        for capability in capabilities {
+            let mut suffix = String::new();
+            if capability.is_mutating {
+                suffix.push_str(" [can change data]");
+            }
+            println!("  - {}: {}{}", capability.name, capability.summary, suffix);
+        }
+    }
+
+    print_capabilities("Required capabilities", &preview.required_capabilities);
+    print_capabilities("Optional capabilities", &preview.optional_capabilities);
+    if !preview.unsupported_capabilities.is_empty() {
+        println!(
+            "Unsupported capabilities: {}",
+            preview.unsupported_capabilities.join(", ")
+        );
+    }
+    if preview.required_capabilities.is_empty() && preview.optional_capabilities.is_empty() {
+        println!("Capabilities: none");
+    } else if preview.replaces_version.is_some() {
+        // On a replacement the whole list is not the decision; the difference
+        // is. Saying so is what lets someone approve a bugfix quickly and
+        // still notice the release that started asking for more.
+        if preview.added_capabilities.is_empty() {
+            println!("New capabilities: none beyond what is already granted");
+        } else {
+            println!(
+                "New capabilities not previously granted: {}",
+                preview.added_capabilities.join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn accept_plugin_capabilities(
+    preview: &InstallPreview,
+    json: bool,
+    skip_prompt: bool,
+) -> anyhow::Result<bool> {
+    if skip_prompt || !preview.requires_capability_consent() {
+        return Ok(skip_prompt);
+    }
+
+    // A preview is a diagnostic while an install is pending. Keep it off
+    // stdout in JSON mode so a successful command still emits one value.
+    print_plugin_preview(preview, json, json)?;
+    if !std::io::stdin().is_terminal() {
+        if json {
+            eprintln!(
+                "Capability consent was not granted in a non-interactive session; rerun with --yes."
+            );
+        } else {
+            eprintln!(
+                "Capability consent requires an interactive terminal; rerun with --yes for scripting."
+            );
+        }
+        // Passing false through to core preserves PluginService's consent
+        // check and its error instead of recreating that policy here.
+        return Ok(false);
+    }
+
+    let prompt = format!(
+        "Accept the requested capabilities for {}? [y/N]: ",
+        preview.manifest.id
+    );
+    if json {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+    } else {
+        print!("{prompt}");
+        std::io::stdout().flush()?;
+    }
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+async fn run_plugin_command(
+    service: &PluginService,
+    action: PluginCmd,
+    output_fmt: OutputFormat,
+) -> anyhow::Result<()> {
+    let json = output_fmt.is_json_output();
+    match action {
+        PluginCmd::List => {
+            service.reload()?;
+            let plugins = service.list();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&plugins)?);
+            } else {
+                let rows: Vec<Vec<String>> = plugins
+                    .iter()
+                    .map(|plugin| {
+                        vec![
+                            plugin.id.clone(),
+                            plugin.name.clone(),
+                            plugin.version.clone(),
+                            if plugin.development {
+                                "development".into()
+                            } else {
+                                "package".into()
+                            },
+                            if plugin.enabled { "yes" } else { "no" }.into(),
+                            if plugin.running { "yes" } else { "no" }.into(),
+                            plugin.status_text.clone(),
+                        ]
+                    })
+                    .collect();
+                print_table(
+                    &[
+                        "ID",
+                        "Name",
+                        "Version",
+                        "Source",
+                        "Enabled",
+                        "Running",
+                        "Status / reason",
+                    ],
+                    &rows,
+                );
+            }
+        }
+        PluginCmd::Preview { source } => {
+            let preview = preview_plugin_source(service, &source)?;
+            print_plugin_preview(&preview, json, false)?;
+        }
+        PluginCmd::Install { source, yes } => {
+            let preview = preview_plugin_source(service, &source)?;
+            let accepted = accept_plugin_capabilities(&preview, json, yes)?;
+            let summary = install_plugin_source(service, source, accepted)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            } else {
+                println!(
+                    "Installed plugin {} v{} ({}).",
+                    summary.id,
+                    summary.version,
+                    if summary.development {
+                        "development folder"
+                    } else {
+                        "package"
+                    }
+                );
+            }
+        }
+        PluginCmd::Enable { id } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            service.set_enabled(&plugin_id, true)?;
+            if json {
+                println!("{}", serde_json::json!({"id": id, "enabled": true}));
+            } else {
+                println!("Enabled plugin {id}.");
+            }
+        }
+        PluginCmd::Disable { id } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            service.set_enabled(&plugin_id, false)?;
+            if json {
+                println!("{}", serde_json::json!({"id": id, "enabled": false}));
+            } else {
+                println!("Disabled plugin {id}.");
+            }
+        }
+        PluginCmd::Remove { id, purge_data } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            service.uninstall(&plugin_id, purge_data)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "id": id,
+                        "removed": true,
+                        "purgedData": purge_data,
+                    })
+                );
+            } else if purge_data {
+                println!("Removed plugin {id} and discarded its stored data.");
+            } else {
+                println!("Removed plugin {id}; stored data was kept.");
+            }
+        }
+        PluginCmd::Log { id, lines } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            let log_lines = service.logs(&plugin_id, lines);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&log_lines)?);
+            } else {
+                for line in log_lines {
+                    println!("{line}");
+                }
+            }
+        }
+        PluginCmd::CheckUpdate { id } => {
+            let targets = match &id {
+                Some(id) => vec![parse_plugin_id(id)?],
+                // Everything installed. Plugins with no update source report
+                // that rather than being silently skipped, because "nothing
+                // happened" is indistinguishable from "nothing to do".
+                None => service
+                    .list()
+                    .into_iter()
+                    .filter_map(|plugin| parse_plugin_id(&plugin.id).ok())
+                    .collect(),
+            };
+            let mut results = Vec::new();
+            for plugin_id in targets {
+                let outcome = match service.check_update(&plugin_id).await {
+                    Ok(verdict) => serde_json::json!({
+                        "id": plugin_id.as_str(),
+                        "verdict": verdict,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "id": plugin_id.as_str(),
+                        "error": error.to_string(),
+                    }),
+                };
+                results.push(outcome);
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            } else {
+                for result in &results {
+                    let id = result["id"].as_str().unwrap_or("?");
+                    if let Some(error) = result["error"].as_str() {
+                        println!("{id}: {error}");
+                    } else {
+                        println!("{id}: {}", describe_verdict(&result["verdict"]));
+                    }
+                }
+            }
+        }
+        PluginCmd::Update { id, yes } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            let outcome = service.apply_update(&plugin_id, yes).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                match outcome {
+                    agora_core::plugins::UpdateOutcome::Installed { plugin } => {
+                        println!("Updated plugin {} to v{}.", plugin.id, plugin.version);
+                    }
+                    // Deliberately not applied and deliberately not an error:
+                    // the release is fine, it just wants something the user
+                    // has not agreed to, and they are the one who decides.
+                    agora_core::plugins::UpdateOutcome::NeedsConsent { preview } => {
+                        println!(
+                            "Not updated. Version {} asks for more than {id} was granted:",
+                            preview.manifest.version
+                        );
+                        for capability in &preview.added_capabilities {
+                            println!("  - {capability}");
+                        }
+                        for host in &preview.added_hosts {
+                            println!("  - may contact {host}");
+                        }
+                        println!();
+                        println!("Re-run with --yes to accept.");
+                    }
+                }
+            }
+        }
+        PluginCmd::RestoreData { id, yes } => {
+            let plugin_id = parse_plugin_id(&id)?;
+            let Some(checkpoint) = service.restorable_data(&plugin_id) else {
+                anyhow::bail!(
+                    "There is no saved copy of `{id}` data to go back to. A copy is kept only \
+                     when an update changes how the plugin stores its data."
+                );
+            };
+            if !yes {
+                println!(
+                    "This puts `{id}` back to the {} entries saved before version {} \
+                     (captured {}).",
+                    checkpoint.entry_count, checkpoint.from_version, checkpoint.captured_at
+                );
+                println!("Anything the plugin has stored since then is discarded.");
+                if !confirm_restore(&id)? {
+                    println!("Left as it is.");
+                    return Ok(());
+                }
+            }
+            let restored = service.restore_data(&plugin_id)?;
+            if json {
+                println!("{}", serde_json::json!({ "id": id, "restored": restored }));
+            } else {
+                println!("Restored {restored} stored entries for {id}.");
+            }
+        }
+        PluginCmd::Keygen { out, key_id } => {
+            let public = generate_signing_key(&out, &key_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&public)?);
+            } else {
+                println!("Private key written to {}.", out.display());
+                println!(
+                    "Keep it safe and out of your repository. If you lose it you cannot ship \
+                     updates to existing installs, and nothing can restore that."
+                );
+                println!();
+                println!("Put this in your package as agora-plugin-update.json:");
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema": 1,
+                        "url": "https://example.com/your-plugin.json",
+                        "keys": [public],
+                    }))?
+                );
+            }
+        }
+        PluginCmd::Sign {
+            document,
+            key,
+            key_id,
+        } => {
+            let signed = sign_update_document(&document, &key, key_id.as_deref())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "signed": document, "keyId": signed })
+                );
+            } else {
+                println!("Signed {} with key `{signed}`.", document.display());
+            }
+        }
+        PluginCmd::DisableAll => {
+            let disabled = service.disable_all()?;
+            if json {
+                println!("{}", serde_json::json!({"disabled": disabled}));
+            } else {
+                println!("Disabled {disabled} plugin(s).");
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run_command(
     cli: Cli,
     paths: &agora_core::app_paths::AppPaths,
@@ -1219,6 +1928,10 @@ async fn run_command(
                 }
             }
         },
+        Commands::Plugin { action } => {
+            let service = plugin_service(ctx);
+            run_plugin_command(&service, action, output_fmt).await?;
+        }
         Commands::Settings { action } => match action {
             SettingsCmd::List => {
                 let svc = SettingsService::new(ctx.clone());

@@ -1,5 +1,5 @@
 /**
- * Interaction achievements — the WorldEditor's toast achievements (Searcher,
+ * Interaction achievements — the LiveInstanceEditor's toast achievements (Searcher,
  * Curious, Rearrange, …). These are now PERSISTED (localStorage) so each is
  * earned once, and the Field Guide page displays them alongside the ambience
  * milestones. The interactive layer stays pure (no ambience, no tauri); this
@@ -17,7 +17,7 @@ export const INTERACTION_ACHIEVEMENTS: InteractionAchievement[] = [
   { key: 'searcher', icon: '🔎', name: 'Searcher', detail: 'Used the search box' },
   { key: 'curious', icon: '🔍', name: 'Curious', detail: 'Looked closer at something' },
   { key: 'rearrange', icon: '🧩', name: 'Rearranger', detail: 'Rearranged the shelf' },
-  { key: 'tidied-up', icon: '🧹', name: 'Tidy', detail: 'Removed something from the world' },
+  { key: 'tidied-up', icon: '🧹', name: 'Tidy', detail: 'Removed something from the instance' },
   { key: 'second-thoughts', icon: '↩️', name: 'Second Thoughts', detail: 'Put something back' },
   { key: 'sorted-it-out', icon: '🗂️', name: 'Organiser', detail: 'Filtered the shelf' },
   { key: 'all-clear', icon: '✅', name: 'All Clear', detail: 'Pre-flight check passed' },

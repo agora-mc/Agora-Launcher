@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "acme.compact",
+  "name": "Compact home",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "contributions": {
+    "replacements": [
+      { "id": "compact", "title": "Compact", "surface": "home", "view": { "kind": "host", "export": "a" } },
+      { "id": "roomy", "title": "Roomy", "surface": "home", "view": { "kind": "host", "export": "b" } }
+    ]
+  }
+}

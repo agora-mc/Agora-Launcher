@@ -44,9 +44,9 @@ export interface InstanceBenchProps {
  * here: TERRA-5 found it ambiguous next to confident data.
  */
 const LOADER_COMPATIBILITY_HINT: Record<Compatibility, { text: string; tone: 'muted' | 'bad' | 'caution' }> = {
-  compatible: { text: 'Fits this setup', tone: 'muted' },
-  incompatible: { text: 'Does not fit this setup', tone: 'bad' },
-  indeterminate: { text: 'Needs review — not proven for this setup', tone: 'caution' },
+  compatible: { text: 'Fits this instance', tone: 'muted' },
+  incompatible: { text: 'Does not fit this instance', tone: 'bad' },
+  indeterminate: { text: 'Needs review — not proven for this instance', tone: 'caution' },
   unknown: { text: 'Not verified', tone: 'muted' },
 };
 

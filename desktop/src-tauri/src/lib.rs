@@ -15,6 +15,7 @@ pub mod mojang;
 pub use agora_core::override_sanitizer;
 pub mod mcp;
 pub mod paths;
+pub mod plugins;
 pub mod registry;
 pub mod registry_sync;
 pub use agora_core::state;
@@ -32,12 +33,13 @@ pub fn core_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> agora_core::error::LauncherResult<agora_core::ctx::Ctx> {
     if let Some(state) = app.try_state::<ManagedCoreContext>() {
-        return state.lock().map(|ctx| ctx.clone()).map_err(|_| {
-            agora_core::error::LauncherError::Generic {
+        return state
+            .lock()
+            .map(|ctx| plugins::with_events(app, ctx.clone()))
+            .map_err(|_| agora_core::error::LauncherError::Generic {
                 code: "ERR_CORE_CONTEXT_LOCK".into(),
                 message: "Core context is unavailable.".into(),
-            }
-        });
+            });
     }
     let paths = crate::paths::app_paths(app).map_err(|error| {
         agora_core::error::LauncherError::Generic {
@@ -45,7 +47,7 @@ pub fn core_context<R: tauri::Runtime>(
             message: error.to_string(),
         }
     })?;
-    agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| ctx)
+    agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| plugins::with_events(app, ctx))
 }
 
 /// Pull the instance id out of a `--launch <id>` / `--launch=<id>` argv.
@@ -114,6 +116,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(LauncherState::default())
         .manage(mcp::McpServerManager::default())
+        .manage(plugins::ManagedPlugins::default())
         .manage(pending_cli_launch)
         .plugin(tauri_plugin_shell::init())
         // Deliberately no `tauri_plugin_sql` or `tauri_plugin_store`. Every
@@ -150,6 +153,31 @@ pub fn run() {
             }
         }))
         .invoke_handler(tauri::generate_handler![
+            plugins::plugins_enabled,
+            plugins::start_plugins,
+            plugins::list_plugins,
+            plugins::list_plugin_contributions,
+            plugins::preview_plugin_package,
+            plugins::preview_plugin_folder,
+            plugins::install_plugin_package,
+            plugins::plugin_check_update,
+            plugins::plugin_apply_update,
+            plugins::plugin_surfaces,
+            plugins::plugin_set_surface,
+            plugins::restore_plugin_data,
+            plugins::add_plugin_development_folder,
+            plugins::set_plugin_enabled,
+            plugins::uninstall_plugin,
+            plugins::disable_all_plugins,
+            plugins::render_plugin_view,
+            plugins::run_plugin_command,
+            plugins::run_plugin_diagnostic,
+            plugins::apply_plugin_repair,
+            plugins::run_plugin_launch_checks,
+            plugins::plugin_instance_opened,
+            plugins::get_plugin_settings,
+            plugins::set_plugin_setting,
+            plugins::read_plugin_log,
             commands::take_pending_cli_launch,
             commands::browse_items,
             commands::for_you_items,

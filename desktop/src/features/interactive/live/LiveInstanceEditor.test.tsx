@@ -1,5 +1,5 @@
 /**
- * WorldEditor — dependency curves.
+ * LiveInstanceEditor — dependency curves.
  *
  * The "bounded neighbourhood diagram on selection (real curves, capped node
  * count)" the plan calls for. It shipped with no SVG overlay at all, so there
@@ -13,7 +13,7 @@
 
 import { render, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { WorldEditor } from './WorldEditor';
+import { LiveInstanceEditor } from './LiveInstanceEditor';
 import type { LiveHostData } from './LiveSceneView';
 import type { VisualScene } from '../domain/models';
 
@@ -68,7 +68,7 @@ function hostData(scene: VisualScene): LiveHostData {
 
 function renderEditor(scene: VisualScene) {
   return render(
-    <WorldEditor
+    <LiveInstanceEditor
       data={hostData(scene)}
       capabilities={{} as never}
       selection={null}
@@ -80,31 +80,31 @@ function renderEditor(scene: VisualScene) {
 }
 
 const slotNamed = (name: string) =>
-  document.querySelector(`.we-slot[data-name="${name}"]`) as HTMLElement;
+  document.querySelector(`.inst-slot[data-name="${name}"]`) as HTMLElement;
 
-describe('WorldEditor dependency curves', () => {
+describe('LiveInstanceEditor dependency curves', () => {
   it('draws nothing until something is selected', () => {
     renderEditor(sceneWith('lib.jar', ['a.jar', 'b.jar']));
-    expect(document.querySelectorAll('.we-link').length).toBe(0);
+    expect(document.querySelectorAll('.inst-link').length).toBe(0);
   });
 
   it('draws one curve per neighbour when an item is selected', async () => {
     renderEditor(sceneWith('lib.jar', ['a.jar', 'b.jar', 'c.jar']));
     fireEvent.click(slotNamed('lib.jar'));
-    await waitFor(() => expect(document.querySelectorAll('.we-link').length).toBe(3));
+    await waitFor(() => expect(document.querySelectorAll('.inst-link').length).toBe(3));
   });
 
   it('encodes direction: inbound needs are solid, outbound dashed', async () => {
     renderEditor(sceneWith('lib.jar', ['a.jar']));
     // Selecting the library: something else needs IT → inbound.
     fireEvent.click(slotNamed('lib.jar'));
-    await waitFor(() => expect(document.querySelector('.we-link.needs')).not.toBeNull());
-    expect(document.querySelectorAll('.we-link.needed').length).toBe(0);
+    await waitFor(() => expect(document.querySelector('.inst-link.needs')).not.toBeNull());
+    expect(document.querySelectorAll('.inst-link.needed').length).toBe(0);
 
     // Selecting the dependent: IT needs something → outbound.
     fireEvent.click(slotNamed('lib.jar'));           // deselect
     fireEvent.click(slotNamed('a.jar'));
-    await waitFor(() => expect(document.querySelector('.we-link.needed')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('.inst-link.needed')).not.toBeNull());
   });
 
   it('draws every connection for a hub, up to a generous bound', async () => {
@@ -114,28 +114,28 @@ describe('WorldEditor dependency curves', () => {
     const many = Array.from({ length: 20 }, (_, i) => `dep${i}.jar`);
     renderEditor(sceneWith('lib.jar', many));
     fireEvent.click(slotNamed('lib.jar'));
-    await waitFor(() => expect(document.querySelectorAll('.we-link').length).toBe(20));
+    await waitFor(() => expect(document.querySelectorAll('.inst-link').length).toBe(20));
   });
 
   it('still bounds a pathological hub', async () => {
     const huge = Array.from({ length: 90 }, (_, i) => `dep${i}.jar`);
     renderEditor(sceneWith('lib.jar', huge));
     fireEvent.click(slotNamed('lib.jar'));
-    await waitFor(() => expect(document.querySelectorAll('.we-link').length).toBeGreaterThan(0));
-    expect(document.querySelectorAll('.we-link').length).toBeLessThanOrEqual(40);
+    await waitFor(() => expect(document.querySelectorAll('.inst-link').length).toBeGreaterThan(0));
+    expect(document.querySelectorAll('.inst-link').length).toBeLessThanOrEqual(40);
   });
 
   it('clears the curves when the selection is dropped', async () => {
     renderEditor(sceneWith('lib.jar', ['a.jar']));
     fireEvent.click(slotNamed('lib.jar'));
-    await waitFor(() => expect(document.querySelectorAll('.we-link').length).toBe(1));
+    await waitFor(() => expect(document.querySelectorAll('.inst-link').length).toBe(1));
     fireEvent.click(slotNamed('lib.jar'));
-    await waitFor(() => expect(document.querySelectorAll('.we-link').length).toBe(0));
+    await waitFor(() => expect(document.querySelectorAll('.inst-link').length).toBe(0));
   });
 
   it('the overlay never intercepts pointer events', () => {
     renderEditor(sceneWith('lib.jar', ['a.jar']));
-    const svg = document.querySelector('.we-links');
+    const svg = document.querySelector('.inst-links');
     expect(svg).not.toBeNull();
     expect(svg?.getAttribute('aria-hidden')).toBe('true');
   });
@@ -144,7 +144,7 @@ describe('WorldEditor dependency curves', () => {
     const scene = sceneWith('icon-mod.jar', ['other.jar']);
     scene.content[0].iconUrl = 'https://cdn.example.test/icon.png';
     renderEditor(scene);
-    const icon = document.querySelector('.we-slot[data-name="icon-mod.jar"] img');
+    const icon = document.querySelector('.inst-slot[data-name="icon-mod.jar"] img');
     expect(icon).not.toBeNull();
     expect(icon).toHaveAttribute('src', 'https://cdn.example.test/icon.png');
     expect(icon?.parentElement).toHaveClass('tile-art');

@@ -1,5 +1,5 @@
 /**
- * WorldEditor — the High Interaction instance view, and the Simple one.
+ * LiveInstanceEditor — the High Interaction instance view, and the Simple one.
  *
  * Hero + shelf + pre-flight health check + crash doctor + advanced drawer +
  * Field Journal. The background ambience is a separate global layer; this
@@ -22,12 +22,12 @@ import { createPortal } from 'react-dom';
 import type { CapabilityFlags, VisualCrashEvidence, VisualId } from '../domain/models';
 import type { VisualIntent } from '../domain/intents';
 import type { LiveHostData } from './LiveSceneView';
-import { buildEditorData, KIND_LABEL, monoOf, tileBackground, type EditorItem } from './worldEditorData';
+import { buildEditorData, KIND_LABEL, monoOf, tileBackground, type EditorItem } from './liveInstanceEditorData';
 import { tryEarnInteraction } from './interactionAchievements';
 import { EMPTY_CONTENT_DETAIL, type ContentDetail } from './readAdapters';
-import './world-editor.css';
+import './live-instance-editor.css';
 
-export interface WorldEditorProps {
+export interface LiveInstanceEditorProps {
   data: LiveHostData;
   capabilities: CapabilityFlags;
   selection: VisualId | null;
@@ -107,10 +107,10 @@ function gaugeLabel(conf: number): string {
   return conf > 0.66 ? 'likely' : conf > 0.35 ? 'maybe' : 'unlikely';
 }
 function gaugeColor(conf: number): string {
-  return conf > 0.66 ? 'var(--we-danger)' : conf > 0.35 ? 'var(--we-attention)' : 'var(--we-rare)';
+  return conf > 0.66 ? 'var(--inst-danger)' : conf > 0.35 ? 'var(--inst-attention)' : 'var(--inst-rare)';
 }
 
-export function WorldEditor({
+export function LiveInstanceEditor({
   data,
   capabilities,
   onSelect,
@@ -123,7 +123,7 @@ export function WorldEditor({
   pending = false,
   onTrialSuspect,
   onUndoTrial,
-}: WorldEditorProps) {
+}: LiveInstanceEditorProps) {
   /**
    * What Simple mode drops, in one place.
    *
@@ -313,7 +313,7 @@ export function WorldEditor({
     const box = wrap.getBoundingClientRect();
     svg.setAttribute('viewBox', `0 0 ${Math.round(box.width)} ${Math.round(box.height)}`);
     const centreOf = (name: string) => {
-      const el = wrap.querySelector(`.we-slot[data-name="${CSS.escape(name)}"] .tile`) as HTMLElement | null;
+      const el = wrap.querySelector(`.inst-slot[data-name="${CSS.escape(name)}"] .tile`) as HTMLElement | null;
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return { x: r.left - box.left + r.width / 2 + wrap.scrollLeft, y: r.top - box.top + r.height / 2 + wrap.scrollTop };
@@ -347,13 +347,13 @@ export function WorldEditor({
 
       const path = document.createElementNS(NS, 'path');
       path.setAttribute('d', d);
-      path.setAttribute('class', dependentFirst ? 'we-link needs' : 'we-link needed');
+      path.setAttribute('class', dependentFirst ? 'inst-link needs' : 'inst-link needed');
       svg.appendChild(path);
 
       if (!reduce) {
         const dot = document.createElementNS(NS, 'circle');
         dot.setAttribute('r', '3');
-        dot.setAttribute('class', 'we-link-dot');
+        dot.setAttribute('class', 'inst-link-dot');
         const motion = document.createElementNS(NS, 'animateMotion');
         motion.setAttribute('dur', '1.9s');
         motion.setAttribute('repeatCount', 'indefinite');
@@ -448,13 +448,13 @@ export function WorldEditor({
   const onDragMove = useCallback((e: PointerEvent) => {
     const drag = dragState.current;
     if (!drag) return;
-    const ghost = document.querySelector('.we-ghost') as HTMLElement | null;
+    const ghost = document.querySelector('.inst-ghost') as HTMLElement | null;
     if (ghost) {
       ghost.style.left = `${e.clientX - 42}px`;
       ghost.style.top = `${e.clientY - 42}px`;
     }
     const over = document.elementFromPoint(e.clientX, e.clientY);
-    const target = over?.closest?.('.we-slot') as HTMLElement | null;
+    const target = over?.closest?.('.inst-slot') as HTMLElement | null;
     if (!target || target === drag.el) return;
     const targetName = target.dataset.name ?? '';
     const targetItem = editor.byId.get(targetName);
@@ -472,7 +472,7 @@ export function WorldEditor({
     if (!drag) return;
     drag.el.classList.remove('dragging');
     gridRef.current?.classList.remove('arranging');
-    const ghost = document.querySelector('.we-ghost') as HTMLElement | null;
+    const ghost = document.querySelector('.inst-ghost') as HTMLElement | null;
     ghost?.classList.remove('on');
     dragState.current = null;
     justDragged.current = Date.now();
@@ -480,7 +480,7 @@ export function WorldEditor({
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0 || reduce || !decor.drag) return;
-    const slot = (e.target as HTMLElement).closest?.('.we-slot') as HTMLElement | null;
+    const slot = (e.target as HTMLElement).closest?.('.inst-slot') as HTMLElement | null;
     if (!slot) return;
     const name = slot.dataset.name ?? '';
     const item = editor.byId.get(name);
@@ -498,7 +498,7 @@ export function WorldEditor({
         window.clearTimeout(timer);
         timer = null;
       }
-      const ghost = document.querySelector('.we-ghost') as HTMLElement | null;
+      const ghost = document.querySelector('.inst-ghost') as HTMLElement | null;
       if (ghost) {
         ghost.style.background = tileBackground(name);
         ghost.textContent = monoOf(name);
@@ -529,7 +529,7 @@ export function WorldEditor({
     const onUp = (ev: PointerEvent) => {
       cleanup();
       if (!hasStarted) return;
-      const ghost = document.querySelector('.we-ghost') as HTMLElement | null;
+      const ghost = document.querySelector('.inst-ghost') as HTMLElement | null;
       if (ghost) {
         ghost.style.left = `${ev.clientX - 42}px`;
         ghost.style.top = `${ev.clientY - 42}px`;
@@ -580,7 +580,7 @@ export function WorldEditor({
     const stepEls = STEPS.map((_, i) => document.querySelector(`[data-pf-step="${i}"]`));
     const scanAt = (i: number, k: number) => {
       const name = order[Math.floor(i * order.length / 3) + k]?.name;
-      const slot = name ? document.querySelector(`.we-slot[data-name="${CSS.escape(name)}"]`) : null;
+      const slot = name ? document.querySelector(`.inst-slot[data-name="${CSS.escape(name)}"]`) : null;
       if (!slot || reduce) return;
       slot.classList.add('scanned');
       window.setTimeout(() => slot.classList.remove('scanned'), 450);
@@ -601,7 +601,7 @@ export function WorldEditor({
           if (mark) mark.textContent = '!';
           const missing = editor.missingItem;
           if (missing) {
-            const slot = document.querySelector(`.we-slot[data-name="${CSS.escape(missing.name)}"]`);
+            const slot = document.querySelector(`.inst-slot[data-name="${CSS.escape(missing.name)}"]`);
             if (slot) {
               slot.classList.add('shake');
               slot.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
@@ -635,7 +635,7 @@ export function WorldEditor({
     setQuery('');
     if (editor.missingItem) {
       const name = editor.missingItem.name;
-      const el = document.querySelector(`.we-slot[data-name="${CSS.escape(name)}"]`);
+      const el = document.querySelector(`.inst-slot[data-name="${CSS.escape(name)}"]`);
       el?.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
       selectItem(name);
     }
@@ -700,7 +700,7 @@ export function WorldEditor({
 
   const playClick = useCallback(() => {
     if (playDisabled) return;
-    const btn = reduce ? null : (document.querySelector('.we-play') as HTMLElement | null);
+    const btn = reduce ? null : (document.querySelector('.inst-play') as HTMLElement | null);
     if (btn) {
       btn.classList.remove('squash');
       void btn.offsetWidth;
@@ -723,13 +723,13 @@ export function WorldEditor({
   }, [editor]);
 
   return (
-    <div className="world-editor" data-testid="world-editor" data-source={scene.source.kind} data-presentation={presentation} data-launch-state={launchState} data-lock-state={instance?.lockState ?? 'editable'}>
+    <div className="live-instance-editor" data-testid="live-instance-editor" data-source={scene.source.kind} data-presentation={presentation} data-launch-state={launchState} data-lock-state={instance?.lockState ?? 'editable'}>
       {/* ── hero ── */}
-      <section className="we-panel we-hero">
-        <div className="we-logo-hold">
-          {decor.meter ? <div className="we-ring" aria-hidden="true" /> : null}
+      <section className="inst-panel inst-hero">
+        <div className="inst-logo-hold">
+          {decor.meter ? <div className="inst-ring" aria-hidden="true" /> : null}
           <div
-            className="we-logo"
+            className="inst-logo"
             style={{ background: instance?.name ? tileBackground(instance.name) : 'linear-gradient(160deg,hsl(174 52% 48%),hsl(190 71% 28%))' }}
             aria-hidden="true"
           >
@@ -737,45 +737,45 @@ export function WorldEditor({
           </div>
         </div>
         <div>
-          <h1 className="we-title">{instance?.name ?? 'Untitled'}</h1>
-          <div className="we-meta">
-            <span className="we-chip">Minecraft {instance?.gameVersion && instance.gameVersion !== '—' ? instance.gameVersion : '—'}</span>
-            <span className="we-chip tab-num">{editor.total} thing{editor.total === 1 ? '' : 's'} inside</span>
-            <span className="we-chip">
+          <h1 className="inst-title">{instance?.name ?? 'Untitled'}</h1>
+          <div className="inst-meta">
+            <span className="inst-chip">Minecraft {instance?.gameVersion && instance.gameVersion !== '—' ? instance.gameVersion : '—'}</span>
+            <span className="inst-chip tab-num">{editor.total} thing{editor.total === 1 ? '' : 's'} inside</span>
+            <span className="inst-chip">
               {instance?.loader.current.family && instance.loader.current.family !== '—' ? instance.loader.current.family : 'No loader'}
             </span>
-            {operationBusy ? <span className="we-chip">Busy</span> : playerLocked ? <span className="we-chip">Locked</span> : null}
+            {operationBusy ? <span className="inst-chip">Busy</span> : playerLocked ? <span className="inst-chip">Locked</span> : null}
           </div>
           {/* The collection meter is a score, not a fact — the chip above already
               says how many things are inside — so Simple mode drops it. */}
           {decor.meter ? (
-            <div className="we-xp">
-              <div className="we-xp-top">
+            <div className="inst-xp">
+              <div className="inst-xp-top">
                 <span>Collection · {editor.total} {editor.total === 1 ? 'item' : 'items'}</span>
                 <span className="tab-num">{editor.total} / {COLLECTION_SCALE}</span>
               </div>
-              <div className="we-xp-bar">
+              <div className="inst-xp-bar">
                 <div
-                  className="we-xp-fill"
+                  className="inst-xp-fill"
                   style={{ width: `${Math.min(100, (editor.total / COLLECTION_SCALE) * 100).toFixed(1)}%` }}
                 />
               </div>
             </div>
           ) : null}
-          <button type="button" className={`we-status ${statusOk ? 'ok' : ''}`} onClick={statusClick}>
+          <button type="button" className={`inst-status ${statusOk ? 'ok' : ''}`} onClick={statusClick}>
             <span className="orb" />
             <span>{statusText}</span>
           </button>
           {findings.length > 0 ? (
-            <ul className="we-findings" data-testid="we-findings" style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'grid', gap: 6, maxWidth: 420 }}>
+            <ul className="inst-findings" data-testid="inst-findings" style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'grid', gap: 6, maxWidth: 420 }}>
               {findings.map((f) => (
                 <li key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'calc(12.5px * var(--font-scale))', color: 'hsl(var(--muted-foreground))' }}>
-                  <span className={`we-finding-dot`} style={{ width: 8, height: 8, borderRadius: '50%', background: f.severity === 'blocker' ? 'var(--we-danger)' : f.severity === 'warning' ? 'var(--we-attention)' : 'hsl(174 52% 48%)', flex: 'none' }} aria-hidden="true" />
+                  <span className={`inst-finding-dot`} style={{ width: 8, height: 8, borderRadius: '50%', background: f.severity === 'blocker' ? 'var(--inst-danger)' : f.severity === 'warning' ? 'var(--inst-attention)' : 'hsl(174 52% 48%)', flex: 'none' }} aria-hidden="true" />
                   <span>{f.title}</span>
                   {f.reviewIntent ? (
                     <button
                       type="button"
-                      className="we-mini"
+                      className="inst-mini"
                       onClick={() => onIntent(f.reviewIntent!)}
                       disabled={f.reviewIntent.kind === 'review-health' ? !capabilities.canReviewHealth : !capabilities.canReviewLoader}
                     >
@@ -787,7 +787,7 @@ export function WorldEditor({
             </ul>
           ) : null}
         </div>
-        <button type="button" className="we-play" onClick={playClick} disabled={playDisabled} aria-label="Play this world">
+        <button type="button" className="inst-play" onClick={playClick} disabled={playDisabled} aria-label="Play this instance">
           {decor.meter ? <span className="shine" aria-hidden="true" /> : null}
           <span className="tri" aria-hidden="true" />
           {runningState ? (launchState === 'delegated' ? 'Delegated' : launchState === 'running' ? 'Running' : 'Starting…') : 'Play'}
@@ -795,44 +795,44 @@ export function WorldEditor({
       </section>
 
       {/* ── shelf ── */}
-      <section className="we-panel">
-        <div className="we-shelf-head">
-          <h2 className="we-shelf-title">What's inside</h2>
+      <section className="inst-panel">
+        <div className="inst-shelf-head">
+          <h2 className="inst-shelf-title">What's inside</h2>
           <input
-            className="we-find"
+            className="inst-find"
             type="search"
             placeholder="Find something…"
-            aria-label="Find something inside this world"
+            aria-label="Find something inside this instance"
             value={query}
             onChange={(e) => { setQuery(e.target.value); if (e.target.value) achieve('🔎', 'Searcher', 'Found it', 'searcher'); }}
           />
           {optionalCount > 0 ? (
             <button
               type="button"
-              className="we-optional-btn"
+              className="inst-optional-btn"
               onClick={() => setOptionalOpen(true)}
-              data-testid="we-optional-btn"
+              data-testid="inst-optional-btn"
             >
               Optional dependencies ({optionalCount})
             </button>
           ) : (
             <button
               type="button"
-              className="we-optional-btn"
+              className="inst-optional-btn"
               onClick={() => setOptionalOpen(true)}
-              data-testid="we-optional-btn"
+              data-testid="inst-optional-btn"
             >
               Optional dependencies
             </button>
           )}
-          <div className="we-tabs" role="tablist" aria-label="Filter contents">
+          <div className="inst-tabs" role="tablist" aria-label="Filter contents">
             {([['all', 'All'], ['mod', 'Mods'], ['look', 'Looks'], ['world', 'Worlds']] as Array<[Filter, string]>).map(([k, label]) => (
               <button
                 key={k}
                 type="button"
                 role="tab"
                 aria-selected={filter === k}
-                className="we-tab"
+                className="inst-tab"
                 onClick={() => { setFilter(k); achieve('🗂️', 'Sorted it out', label, 'sorted-it-out'); selectItem(null); }}
               >
                 {label}<span className="n">{editor.counts[k] ?? 0}</span>
@@ -840,17 +840,17 @@ export function WorldEditor({
             ))}
           </div>
         </div>
-        <div className={`we-gridwrap ${focused ? 'focusing' : ''}`} ref={gridRef} onPointerLeave={() => setPeek(null)}>
+        <div className={`inst-gridwrap ${focused ? 'focusing' : ''}`} ref={gridRef} onPointerLeave={() => setPeek(null)}>
           {/* Dependency curves are drawn here, above the tiles but click-through.
               Populated imperatively by the effect below because the endpoints are
               measured from laid-out DOM, which React cannot express declaratively.
               Simple mode has no curves, so it has no canvas for them either. */}
-          {decor.diagram ? <svg className="we-links" ref={linksRef} aria-hidden="true" /> : null}
+          {decor.diagram ? <svg className="inst-links" ref={linksRef} aria-hidden="true" /> : null}
           <div
-            className="we-grid"
+            className="inst-grid"
             onPointerDown={onPointerDown}
             onDragStart={(e) => e.preventDefault()}
-            data-testid="we-grid"
+            data-testid="inst-grid"
           >
             {visible.map((it, idx) => {
               const lit = focused && relatedIds.has(it.id);
@@ -860,12 +860,12 @@ export function WorldEditor({
                   key={it.id}
                   role="button"
                   tabIndex={0}
-                  className={`we-slot ${focused ? (lit ? 'lit' : '') : ''}`}
+                  className={`inst-slot ${focused ? (lit ? 'lit' : '') : ''}`}
                   style={{ ['--i' as string]: Math.min(idx, 70) }}
                   aria-pressed={pressed}
                   aria-label={`${it.name}${it.missing ? ' — missing its file' : ''}`}
                   data-name={it.name}
-                  data-testid="we-slot"
+                  data-testid="inst-slot"
                   onClick={() => onSlotClick(it.name)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSlotClick(it.name); } }}
                   onMouseMove={(e) => onTileMove(e, it, e.currentTarget.querySelector('.tile') as HTMLElement)}
@@ -879,7 +879,7 @@ export function WorldEditor({
                   {it.presence === 'not-installed' && capabilities.canProposeInstall ? (
                     <button
                       type="button"
-                      className="we-stage"
+                      className="inst-stage"
                       onClick={(e) => { e.stopPropagation(); onIntent({ kind: 'propose-install', contentId: it.id }); }}
                     >
                       Stage install: {it.name}
@@ -900,7 +900,7 @@ export function WorldEditor({
       {/* ── field journal moved to its own page (Field Guide) ── */}
 
       {/* ── hover peek ── */}
-      <div className={`we-peek ${peek ? 'show' : ''}`} style={peek ? { left: peek.x, top: peek.y } : undefined}>
+      <div className={`inst-peek ${peek ? 'show' : ''}`} style={peek ? { left: peek.x, top: peek.y } : undefined}>
         {peek && (
           <>
             <div className="pn">{peek.item.name}</div>
@@ -919,46 +919,46 @@ export function WorldEditor({
           this drawer behaved like an absolutely-positioned child of the scroll
           container and slid away with the page instead of staying in view. */}
       {selectedItem && createPortal(
-        <aside className={`we-detail ${selectedItem ? 'open' : ''}`} aria-live="polite" data-testid="we-detail">
-          <button className="we-closeX" aria-label="Close" onClick={() => selectItem(null)}>×</button>
-          <div className="we-bigtile" style={{ background: tileBackground(selectedItem.name) }}>
+        <aside className={`inst-detail ${selectedItem ? 'open' : ''}`} aria-live="polite" data-testid="inst-detail">
+          <button className="inst-closeX" aria-label="Close" onClick={() => selectItem(null)}>×</button>
+          <div className="inst-bigtile" style={{ background: tileBackground(selectedItem.name) }}>
             <TileArtwork name={selectedItem.name} iconUrl={selectedItem.kind === 'mod' ? selectedItem.iconUrl : undefined} />
           </div>
           <h3>{selectedItem.name}</h3>
           {/* Categories first: what KIND of thing this is answers the question a
               player actually opened the panel with. */}
           {selectedDetail.categories.length > 0 ? (
-            <div className="we-cats">
+            <div className="inst-cats">
               {selectedDetail.categories.map((c) => (
-                <span key={c} className="we-cat">{c.replace(/[-_]/g, ' ')}</span>
+                <span key={c} className="inst-cat">{c.replace(/[-_]/g, ' ')}</span>
               ))}
             </div>
           ) : null}
           <p className="kind">{KIND_LABEL[selectedItem.kind]}</p>
           {selectedDetail.description ? (
-            <p className="we-desc">
+            <p className="inst-desc">
               {selectedDetail.description}
-              <span className="we-desc-src">
+              <span className="inst-desc-src">
                 {selectedDetail.source === 'agora' ? 'from Agora' : 'from Modrinth'}
               </span>
             </p>
           ) : null}
           {selectedItem.missing ? (
-            <div className="we-warnbox">This mod's file is missing, so it will not load. Reinstalling the pack puts it back.</div>
+            <div className="inst-warnbox">This mod's file is missing, so it will not load. Reinstalling the pack puts it back.</div>
           ) : null}
           {selectedItem.needs.length > 0 ? (
-            <div className="we-rel">
+            <div className="inst-rel">
               <h4>Needs</h4>
               <ul>{selectedItem.needs.map((n) => <li key={n}>{n}</li>)}</ul>
             </div>
           ) : null}
           {selectedItem.neededBy.length > 0 ? (
-            <div className="we-rel">
-              <h4>Needed by <span className="we-rel-count">{selectedItem.neededBy.length}</span></h4>
+            <div className="inst-rel">
+              <h4>Needed by <span className="inst-rel-count">{selectedItem.neededBy.length}</span></h4>
               {/* A library like Fabric API is needed by most of the pack; showing
                   8 of 40 hides exactly the fact that makes it important. The list
                   scrolls instead of truncating. */}
-              <ul className="we-rel-scroll">
+              <ul className="inst-rel-scroll">
                 {selectedItem.neededBy.map((n) => <li key={n}>{n}</li>)}
               </ul>
             </div>
@@ -967,7 +967,7 @@ export function WorldEditor({
           <div className="spacer" />
           <button
             type="button"
-            className="we-btn"
+            className="inst-btn"
             onClick={() => {
               if (selectedDetailId) onIntent({ kind: 'open-standard', destination: { type: 'mod-detail', itemId: selectedDetailId } });
             }}
@@ -975,8 +975,8 @@ export function WorldEditor({
           >
             Open full details
           </button>
-          <button type="button" className="we-btn danger" onClick={removeItem} disabled={!capabilities.canProposeRemove}>
-            {capabilities.canProposeRemove ? 'Remove from this world' : 'Removal opens the Standard screen'}
+          <button type="button" className="inst-btn danger" onClick={removeItem} disabled={!capabilities.canProposeRemove}>
+            {capabilities.canProposeRemove ? 'Remove from this instance' : 'Removal opens the Standard screen'}
           </button>
         </aside>,
         document.body,
@@ -987,7 +987,7 @@ export function WorldEditor({
           backdrop-filtered scroll container is not actually fixed. */}
       {createPortal(
       <div
-        className={`we-scrim ${optionalOpen ? 'show' : ''}`}
+        className={`inst-scrim ${optionalOpen ? 'show' : ''}`}
         // Claims controller input while open. An attribute rather than an
         // import: this area may not depend on app-level modules.
         data-controller-dialog={optionalOpen ? '' : undefined}
@@ -995,27 +995,27 @@ export function WorldEditor({
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setOptionalOpen(false); }}
       >
-        <div className="we-doc we-optional" role="dialog" aria-modal="true" aria-label="Optional dependencies">
+        <div className="inst-doc inst-optional" role="dialog" aria-modal="true" aria-label="Optional dependencies">
           <h3>Optional dependencies</h3>
           <p className="sub">A few things in here can use extra add-ons. They're never required — add the ones you want.</p>
           {optionalRows.length === 0 ? (
             <p className="sub">Nothing optional right now.</p>
           ) : (
-            <div className="we-optional-list">
+            <div className="inst-optional-list">
               {optionalRows.map(({ owner, options }) => (
-                <div key={owner.id} className="we-optional-group">
+                <div key={owner.id} className="inst-optional-group">
                   <h4>{owner.name} <span className="sub">recommends</span></h4>
                   <ul>
                     {options.map((name) => {
                       const opt = editor.byId.get(name);
                       const already = opt && opt.presence === 'installed';
                       return (
-                        <li key={name} className="we-opt-row">
-                          <span>{name}{already ? ' ✓ in this world' : ''}</span>
+                        <li key={name} className="inst-opt-row">
+                          <span>{name}{already ? ' ✓ in this instance' : ''}</span>
                           {opt && opt.presence === 'not-installed' && capabilities.canProposeInstall ? (
                             <button
                               type="button"
-                              className="we-opt-add"
+                              className="inst-opt-add"
                               onClick={() => onIntent({ kind: 'propose-install', contentId: opt.id })}
                             >
                               Add to list
@@ -1029,8 +1029,8 @@ export function WorldEditor({
               ))}
             </div>
           )}
-          <div className="we-pf-actions">
-            <button type="button" className="we-btn" onClick={() => setOptionalOpen(false)}>Done</button>
+          <div className="inst-pf-actions">
+            <button type="button" className="inst-btn" onClick={() => setOptionalOpen(false)}>Done</button>
           </div>
         </div>
       </div>,
@@ -1039,30 +1039,30 @@ export function WorldEditor({
 
       {/* ── preflight ── */}
       <div
-        className={`we-scrim ${preflightOpen ? 'show' : ''}`}
+        className={`inst-scrim ${preflightOpen ? 'show' : ''}`}
         data-controller-dialog={preflightOpen ? '' : undefined}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setPreflightOpen(false); }}
       >
-        <div className="we-preflight" role="dialog" aria-modal="true" aria-label="Getting ready">
+        <div className="inst-preflight" role="dialog" aria-modal="true" aria-label="Getting ready">
           <h3>{preflightResult.ok ? 'Ready to play!' : 'Getting ready…'}</h3>
           <p className="sub">A quick look before you play.</p>
-          <ul className="we-steps">
+          <ul className="inst-steps">
             {STEPS.map((s, i) => (
-              <li key={s} className="we-step" data-pf-step={i}>
+              <li key={s} className="inst-step" data-pf-step={i}>
                 <span className="mark">{i + 1}</span>
                 {s}
               </li>
             ))}
           </ul>
-          <div className="we-pf-actions">
+          <div className="inst-pf-actions">
             {preflightResult.running ? null : preflightResult.ok ? (
-              <button type="button" className="we-btn go" onClick={launch}>Launch Minecraft</button>
+              <button type="button" className="inst-btn go" onClick={launch}>Launch Minecraft</button>
             ) : (
               <>
-                <button type="button" className="we-btn" onClick={showMe}>Show me</button>
-                <button type="button" className="we-btn go" onClick={launch}>Play anyway</button>
+                <button type="button" className="inst-btn" onClick={showMe}>Show me</button>
+                <button type="button" className="inst-btn go" onClick={launch}>Play anyway</button>
               </>
             )}
           </div>
@@ -1071,13 +1071,13 @@ export function WorldEditor({
 
       {/* ── crash doctor ── */}
       <div
-        className={`we-scrim ${doctorOpen ? 'show' : ''}`}
+        className={`inst-scrim ${doctorOpen ? 'show' : ''}`}
         data-controller-dialog={doctorOpen ? '' : undefined}
         // controller-exempt: click-outside backdrop, not a control; the dialog
         // carries its own dismiss control.
         onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}
       >
-        <div className="we-doc" role="dialog" aria-modal="true" aria-label="Crash Doctor">
+        <div className="inst-doc" role="dialog" aria-modal="true" aria-label="Crash Doctor">
           <h3>Your game stopped</h3>
           <p className="sub">
             {doctorTrial
@@ -1089,14 +1089,14 @@ export function WorldEditor({
           ) : null}
           {!doctorTrial && suspects.length > 0 ? (
             <>
-              <div className="we-suspects">
+              <div className="inst-suspects">
                 {suspects.map((s, i) => {
                   const c = 2 * Math.PI * 20;
                   return (
                     <button
                       key={s.name}
                       type="button"
-                      className="we-susp"
+                      className="inst-susp"
                       aria-pressed={pickedSuspect === i}
                       onClick={() => { setPickedSuspect(i); achieve('🕵️', 'Detective', 'Picked a crash suspect', 'suspect'); }}
                     >
@@ -1105,7 +1105,7 @@ export function WorldEditor({
                         <span className="sn">{s.name}</span><br />
                         <span className="sw">{s.why}</span>
                       </span>
-                      <span className="we-gauge">
+                      <span className="inst-gauge">
                         <svg width="52" height="52" aria-hidden="true">
                           <circle cx="26" cy="26" r="20" fill="none" stroke="hsl(var(--border))" strokeWidth="5" />
                           <circle cx="26" cy="26" r="20" fill="none" stroke={gaugeColor(s.conf)} strokeWidth="5" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - s.conf)} />
@@ -1117,23 +1117,23 @@ export function WorldEditor({
                 })}
               </div>
               <p className="sub" style={{ fontSize: 'calc(11px * var(--font-scale))', marginBottom: 12 }}>A return point is saved first — you can always undo.</p>
-              <div className="we-pf-actions">
+              <div className="inst-pf-actions">
                 {pickedSuspect === null ? null : (
                   <>
-                    <button type="button" className="we-btn" onClick={() => setPickedSuspect(null)}>Pick another</button>
-                    <button type="button" className="we-btn go" onClick={doctorTry}>Turn it off and try</button>
+                    <button type="button" className="inst-btn" onClick={() => setPickedSuspect(null)}>Pick another</button>
+                    <button type="button" className="inst-btn go" onClick={doctorTry}>Turn it off and try</button>
                   </>
                 )}
                 {!onTrialSuspect ? (
-                  <button type="button" className="we-btn" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }} style={{ marginLeft: 'auto', fontSize: 'calc(11px * var(--font-scale))', padding: '6px 10px' }}>Open full doctor</button>
+                  <button type="button" className="inst-btn" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }} style={{ marginLeft: 'auto', fontSize: 'calc(11px * var(--font-scale))', padding: '6px 10px' }}>Open full doctor</button>
                 ) : null}
               </div>
             </>
           ) : null}
           {doctorTrial?.phase === 'working' ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', color: 'hsl(var(--muted-foreground))', fontSize: 'calc(13px * var(--font-scale))' }}>
-              <span className="we-step">
-                <span className="mark" style={{ borderColor: 'var(--we-accent)', borderRightColor: 'transparent', animation: 'we-spin 0.7s linear infinite', width: 18, height: 18, display: 'inline-grid' }} />
+              <span className="inst-step">
+                <span className="mark" style={{ borderColor: 'var(--inst-accent)', borderRightColor: 'transparent', animation: 'inst-spin 0.7s linear infinite', width: 18, height: 18, display: 'inline-grid' }} />
               </span>
               {doctorTrial.message}
             </div>
@@ -1141,26 +1141,26 @@ export function WorldEditor({
           {doctorTrial?.phase === 'done' ? (
             <div style={{ marginTop: 8 }}>
               <p style={{ fontSize: 'calc(13.5px * var(--font-scale))', fontWeight: 600, marginBottom: 12 }}>{doctorTrial.message}</p>
-              <div className="we-pf-actions">
-                <button type="button" className="we-btn" onClick={() => setDoctorTrial(null)}>Pick another</button>
+              <div className="inst-pf-actions">
+                <button type="button" className="inst-btn" onClick={() => setDoctorTrial(null)}>Pick another</button>
                 {doctorTrial.snapshotId && onUndoTrial ? (
-                  <button type="button" className="we-btn" onClick={async () => { if (!doctorTrial.snapshotId) return; await onUndoTrial(doctorTrial.snapshotId); setDoctorTrial(null); setDoctorOpen(false); }}>Undo and put it back</button>
+                  <button type="button" className="inst-btn" onClick={async () => { if (!doctorTrial.snapshotId) return; await onUndoTrial(doctorTrial.snapshotId); setDoctorTrial(null); setDoctorOpen(false); }}>Undo and put it back</button>
                 ) : null}
                 {onLaunch ? (
-                  <button type="button" className="we-btn go" onClick={() => { setDoctorOpen(false); void onLaunch(); }}>Play to test</button>
+                  <button type="button" className="inst-btn go" onClick={() => { setDoctorOpen(false); void onLaunch(); }}>Play to test</button>
                 ) : null}
-                <button type="button" className="we-btn" onClick={() => setDoctorOpen(false)}>Close</button>
+                <button type="button" className="inst-btn" onClick={() => setDoctorOpen(false)}>Close</button>
               </div>
             </div>
           ) : null}
           {doctorTrial?.phase === 'error' ? (
             <div style={{ marginTop: 8 }}>
               <p style={{ fontSize: 'calc(13px * var(--font-scale))', color: 'hsl(var(--destructive))', marginBottom: 12 }}>{doctorTrial.message}</p>
-              <div className="we-pf-actions">
-                <button type="button" className="we-btn" onClick={() => setDoctorTrial(null)}>Try again</button>
-                <button type="button" className="we-btn" onClick={() => setDoctorOpen(false)}>Close</button>
+              <div className="inst-pf-actions">
+                <button type="button" className="inst-btn" onClick={() => setDoctorTrial(null)}>Try again</button>
+                <button type="button" className="inst-btn" onClick={() => setDoctorOpen(false)}>Close</button>
                 {!onTrialSuspect ? (
-                  <button type="button" className="we-btn go" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }}>Open full doctor</button>
+                  <button type="button" className="inst-btn go" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }}>Open full doctor</button>
                 ) : null}
               </div>
             </div>
@@ -1171,9 +1171,9 @@ export function WorldEditor({
       {/* ── toasts + undo ──
           The achievement stack is empty in Simple mode (nothing is ever
           earned); the remove/undo toast below is not decoration and stays. */}
-      <div className="we-toasts" aria-live="polite">
+      <div className="inst-toasts" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className="we-ach" role="status">
+          <div key={t.id} className="inst-ach" role="status">
             <span className="ico">{t.icon}</span>
             <span>
               <span className="t">{t.title}</span>
@@ -1183,11 +1183,11 @@ export function WorldEditor({
           </div>
         ))}
       </div>
-      <div className={`we-toast ${removed ? 'show' : ''}`} data-testid="we-remove-toast">
+      <div className={`inst-toast ${removed ? 'show' : ''}`} data-testid="inst-remove-toast">
         <span>Removed {removed?.name}</span>
         <button type="button" onClick={undoRemove}>Undo</button>
       </div>
-      <div className="we-ghost" aria-hidden="true" />
+      <div className="inst-ghost" aria-hidden="true" />
     </div>
   );
 }

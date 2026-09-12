@@ -19,7 +19,7 @@ const ROUTES = [
   {
     href: '/docs/guides',
     heading: 'I want step-by-step guides for everything',
-    body: 'Step-by-step guides for common tasks, from installing mods to sharing setups.',
+    body: 'Step-by-step guides for common tasks, from installing mods to sharing instances.',
     cta: 'Task guides',
   },
   {
@@ -72,7 +72,7 @@ const COMMON_QUESTIONS = [
   { href: '/docs/guides/crash-recovery', label: 'Minecraft crashed — how do I find the cause?' },
   { href: '/docs/guides/snapshots-loadouts', label: 'What does a snapshot actually protect?' },
   { href: '/docs/guides/privacy-offline', label: 'What does Agora send, and how do I play offline?' },
-  { href: '/docs/guides/packs-sharing', label: 'How do I move a setup to another machine?' },
+  { href: '/docs/guides/packs-sharing', label: 'How do I move an instance to another machine?' },
   { href: '/docs/guides/java-performance', label: 'How much memory should I give Minecraft?' },
   { href: '/docs/guides/controller-handheld', label: 'Can I use Agora with a controller?' },
 ];

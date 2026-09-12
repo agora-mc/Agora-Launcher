@@ -31,12 +31,33 @@ Canonical reference for which code belongs where.
 | Locks / operation state | `agora-core` | Per-instance mutex, catalog read-writer lock, operation state machine |
 | Process identity verification | `agora-core` | PID → executable path → start-time verification; os-identifier abstraction behind a core trait |
 | Controller support policy | `agora-core` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
+| Plugin policy | `agora-core` | What is installed, what is enabled, which capabilities were granted, what order plugins activate in, which host method each call maps to, and what happens when a plugin misbehaves. Core does **not** own the script engine — see below |
+
+### Plugin Layer — `agora-plugin-api` / `agora-plugin-host`
+
+Community plugins add two crates that sit *beside* core rather than inside it.
+
+| Crate | Owns | Must NOT own |
+|---|---|---|
+| `agora-plugin-api` | The public contract: manifest schema and validation, capability set, contribution types, DTOs, diagnostics and repair actions, the host-call protocol, and the `ScriptHost` / `HostBridge` traits | Any policy decision, any service call, any engine. It depends on `serde`, `semver` and `thiserror` and nothing else |
+| `agora-plugin-host` | Running plugin JavaScript: QuickJS runtimes, module resolution confined to the package, deadlines, interrupts, memory ceilings, event queues | Anything about instances, mods, launching or the registry. It moves JSON between a plugin and a `HostBridge` |
+
+`agora-core` holds an `Arc<dyn ScriptHost>` that an adapter supplies, exactly the way it holds a
+`dyn Clock` or a `dyn EventSink`. **The engine is a mechanism the adapter provides; the policy is
+core's.** This is the same trait-in-core rule applied one level out, and it is what keeps
+"another runtime later" — a companion process speaking another language — a matter of writing a
+new `ScriptHost` rather than reworking plugin policy.
+
+The method table in `agora-core/src/plugins/dispatch.rs` is the **entire** surface a plugin can
+reach. Every arm names its required capability next to its implementation, and calls the same
+service the GUI and CLI call. A plugin cannot reach a code path the user could not reach
+themselves.
 
 ### Adapter Layer — Tauri / CLI / MCP transport
 
 | Adapter | Owns | Must NOT own |
 |---|---|---|
-| Desktop Rust (`desktop/src-tauri/`) | Tauri command registration, IPC event emission, DTO mapping, OS integration (file dialog, system tray, window), platform-specific launcher discovery behind core trait | Loader installation, launch command construction, process classification, MCP tool behavior, dependency resolution, any SQL queries |
+| Desktop Rust (`desktop/src-tauri/`) | Tauri command registration, IPC event emission, DTO mapping, OS integration (file dialog, system tray, window), platform-specific launcher discovery behind core trait, **supplying the `ScriptHost` implementation** | Loader installation, launch command construction, process classification, MCP tool behavior, dependency resolution, any SQL queries, **any plugin policy** |
 | CLI (`crates/agora/`) | Clap argument parsing, stdout/stderr formatting, `Ctrl+C` handling, progress reporter for terminal | Building its own install/launch plans, executing transactions directly, duplicating core domain logic |
 | MCP transport (stdio/HTTP) | JSON-RPC framing and parsing, transport-level authorization, forwarding to core dispatcher | Any duplicate business logic, tool-specific validation beyond what the core dispatcher requires |
 
@@ -57,17 +78,27 @@ This ensures the core owns the **interface and policy** while the adapter provid
 | User decisions | React | `onConfirm`/`onCancel` callbacks only — never executes business operations |
 | IPC calls to backend | React | `invoke()` calls Tauri commands — no direct SQL, filesystem, or MCP HTTP |
 | MCP HTTP from browser | **FORBIDDEN** | React must NOT call `localhost:39741` directly. All MCP operations go through the core dispatcher via Tauri IPC |
+| Rendering plugin views | React | A plugin returns a `ViewModel` — data, never markup — and React draws it with Agora's own components. There is deliberately no HTML string to hand to `dangerouslySetInnerHTML` |
+| Plugin themes | React | Applies the semantic tokens a theme declares. A theme names a token, never arbitrary CSS |
 
 ## Dependency Direction
 
 ```
-agora-core  ←  agora-cli (crates/agora/)
-agora-core  ←  agora-desktop (desktop/src-tauri/)
-agora-core  ←  MCP dispatcher (future agora serve or desktop adapter)
+agora-plugin-api  ←  agora-core
+agora-plugin-api  ←  agora-plugin-host
+agora-core        ←  agora-cli (crates/agora/)
+agora-core        ←  agora-desktop (desktop/src-tauri/)
+agora-plugin-host ←  agora-desktop (supplies the ScriptHost)
+agora-core        ←  MCP dispatcher (future agora serve or desktop adapter)
 ```
 
 - `agora-core` MUST NOT depend on `tauri`, `clap`, or any MCP-protocol crate.
 - `agora-core` MUST NOT depend on `desktop/src-tauri/` or `crates/agora/`.
+- `agora-core` MUST NOT depend on `agora-plugin-host` outside `[dev-dependencies]`. Core owns
+  plugin policy and reaches the engine only through `dyn ScriptHost`; the dev-dependency exists
+  so the end-to-end tests run against the runtime that actually ships.
+- `agora-plugin-api` MUST NOT depend on a script engine, a transport, or `agora-core`. It is the
+  contract both sides agree on, and adding anything to it is an API change with a version bump.
 - Desktop adapter MAY depend on `tauri` and `serde` for command interfaces.
 - CLI adapter MAY depend on `clap` and `serde` for CLI interfaces.
 

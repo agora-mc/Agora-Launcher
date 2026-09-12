@@ -33,7 +33,7 @@ export const GUIDE_CATEGORY_ORDER: GuideTopic['category'][] = [
 export const GUIDE_CATEGORY_BLURBS: Record<GuideTopic['category'], string> = {
   Start: 'Set Agora up and learn the vocabulary before you change anything.',
   Play: 'Build instances, find content, install it safely, and launch.',
-  Manage: 'Keep an instance organized, and move setups between machines.',
+  Manage: 'Keep an instance organized, and move instances between machines.',
   Recover: 'Diagnose crashes and roll back to a state that worked.',
   Customize: 'Tune Java, appearance, accessibility, privacy, and offline use.',
   Connect: 'Optional accounts, community governance, and AI integrations.',

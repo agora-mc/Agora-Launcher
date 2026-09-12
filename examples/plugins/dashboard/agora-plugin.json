@@ -1,0 +1,15 @@
+{
+  "manifest": 1,
+  "id": "agora.dashboard",
+  "name": "Instance dashboard",
+  "version": "0.1.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "activation": ["onView:overview"],
+  "capabilities": { "required": ["instance:read"] },
+  "contributions": {
+    "pages": [{ "id": "overview", "title": "Instance dashboard", "view": { "kind": "host", "export": "dashboard" } }],
+    "commands": [{ "id": "remember", "title": "Remember current instance count", "export": "remember" }]
+  }
+}

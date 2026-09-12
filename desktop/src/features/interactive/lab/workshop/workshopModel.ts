@@ -31,7 +31,7 @@ export interface WorkshopBench {
 }
 
 export const STATIONS: WorkshopStation[] = [
-  { id: 'build', title: 'Build it', badge: '🔨', blurb: "Make a world from scratch. Some pieces fit together, some don't.", why: 'Two pieces have to agree before anything works. You can see it when they snap.' },
+  { id: 'build', title: 'Build it', badge: '🔨', blurb: "Make an instance from scratch. Some pieces fit together, some don't.", why: 'Two pieces have to agree before anything works. You can see it when they snap.' },
   { id: 'mod', title: 'Add stuff', badge: '🧩', blurb: 'Drop in a new thing. Watch what it drags along with it.', why: 'Some add-ons need a friend to work, and some refuse to sit next to each other.' },
   { id: 'fix', title: 'Something broke', badge: '🔍', blurb: 'Read the clues, pick a suspect, test it safely.', why: "You don't guess. You try one thing at a time, and you can always undo it." },
   { id: 'heal', title: 'Health check', badge: '💚', blurb: 'Scan for problems before they bite.', why: 'Catching it early is easier than fixing it later.' },

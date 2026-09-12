@@ -1,0 +1,23 @@
+{
+  "manifest": 1,
+  "id": "agora.compact-home",
+  "name": "Compact home",
+  "version": "0.1.0",
+  "description": "Replaces Agora's home screen with a denser one: what you played last, and everything else in one list.",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "activation": ["onView:home"],
+  "capabilities": { "required": ["instance:read"], "optional": ["launch:read"] },
+  "contributions": {
+    "replacements": [
+      {
+        "id": "home",
+        "title": "Compact",
+        "description": "One dense list instead of cards. Shows the instance you played most recently first.",
+        "surface": "home",
+        "view": { "kind": "host", "export": "home" }
+      }
+    ]
+  }
+}
