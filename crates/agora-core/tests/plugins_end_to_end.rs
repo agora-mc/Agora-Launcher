@@ -850,10 +850,25 @@ fn shipped_examples_install_and_run_using_the_public_contract() {
         .any(|entry| entry.id == "agora.forest/forest"));
     // The replacement example renders through the same path a page does, and
     // — the point of the surface design — offers rather than takes.
-    world
+    //
+    // The rendered model is inspected, not just awaited. Unknown fields in a
+    // block are ignored rather than rejected, so an example with a misspelled
+    // field renders "successfully" while silently dropping what it meant to
+    // say — which is exactly what this example did until it was checked.
+    let rendered = world
         .service
         .render_view(&id("agora.compact-home"), "home", serde_json::Value::Null)
         .unwrap();
+    let model = serde_json::to_value(&rendered).unwrap();
+    let blocks = model["blocks"].as_array().expect("blocks");
+    assert!(
+        blocks.iter().any(|block| block["type"] == "table"),
+        "the example promises a table of instances"
+    );
+    assert!(
+        blocks.iter().any(|block| block["type"] == "stats"),
+        "and a row of headline numbers"
+    );
     let home = world
         .service
         .surfaces()

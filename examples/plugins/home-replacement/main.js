@@ -44,7 +44,7 @@ export async function home() {
       type: 'status',
       tone: 'info',
       title: `Last played: ${newest.instanceName}`,
-      detail: newest.startedAt,
+      message: newest.startedAt,
     });
   }
 
