@@ -438,7 +438,9 @@ jobs:
             --pattern latest.json \
             --dir "$RUNNER_TEMP/agora-updater-check" \
             --clobber
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+          # The release is deliberately a draft; the REST tag endpoint only
+          # resolves published releases. The CLI also finds accessible drafts.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             >"$RUNNER_TEMP/agora-updater-check/release.json"
 
           python - "$RUNNER_TEMP/agora-updater-check" <<'PY'
