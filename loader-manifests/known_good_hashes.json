@@ -1058,7 +1058,17 @@
       "fabric-loader-0.19.2-26.2.json": "sha256:93ba63b342595a083e6f6851e9006cdfdb76217571f9bbfbac38a211eb3309dc",
       "fabric-loader-0.19.3-26.2.json": "sha256:04ac688ca4706b28ec322795999ae5c90093cc498463ff61501438a418394f42",
       "fabric-loader-0.19.4-26.2.json": "sha256:0c46c26216ce7f6209187c56850c1e449bd89ee86bb2b617ba509b67be431904",
-      "fabric-loader-0.19.5-26.2.json": "sha256:03d7afb12e337e85f922a7eb8b7e355e55272c1ac96529b3e5da5a0d52406d88"
+      "fabric-loader-0.19.5-26.2.json": "sha256:03d7afb12e337e85f922a7eb8b7e355e55272c1ac96529b3e5da5a0d52406d88",
+      "fabric-loader-0.18.3-26.3.json": "sha256:6ad6a9ef53d252453fb939a3209d2fd46fa3de1029486e4a66f3beaae8307741",
+      "fabric-loader-0.18.4-26.3.json": "sha256:f4951b493246189f354a87bddefc4c16ff33f3d57beabe8c3b789e0a4b263461",
+      "fabric-loader-0.18.5-26.3.json": "sha256:50f4d109947ac5adfd6f806e9b5654e767899fcc0653221fbe7a0ab4cb25022a",
+      "fabric-loader-0.18.6-26.3.json": "sha256:83c35811adc4b3b45bd44d6723d376a8157d2d9d508bd7c917277fa4f5d215de",
+      "fabric-loader-0.19.0-26.3.json": "sha256:c1cea51e41c52688af66bcb0517c63640ceb8f41fe54614698a01b656b87f840",
+      "fabric-loader-0.19.1-26.3.json": "sha256:a6e2a43a684000c42b4e4d7a4d0ac2ce35b275d372e27e5ccc940ba704f0b74f",
+      "fabric-loader-0.19.2-26.3.json": "sha256:dc5ca6562d0b6b691cf44ac07270ab3be2127f96304ae9667912a5e7724f1e5d",
+      "fabric-loader-0.19.3-26.3.json": "sha256:b3996849ecde3042935de0d4dbf99fde163385d89e2937629eec47bf5ab20d67",
+      "fabric-loader-0.19.4-26.3.json": "sha256:acd6f1a8cede4546148e2d8a8c639ee54601b877c323066ecd6584e741091917",
+      "fabric-loader-0.19.5-26.3.json": "sha256:ea2f10e3e3ed283c2792e72a1ed8e17c54b18a700f9029056763086f722767c6"
     },
     "quilt": {
       "quilt-loader-0.30.0-beta.0-1.14.4.json": "sha256:0f970d71875118f55e9be0c22ba1ef1dbbf07a9eb6e2f0908919175fc0c28909",
