@@ -2422,7 +2422,17 @@
       "quilt-loader-0.31.0-beta.1-26.2.json": "sha256:c544bffc105314c94c42f232d509f27e3d023d2c70507b1832c6d375027f7e3a",
       "quilt-loader-0.31.0-beta.2-26.2.json": "sha256:ad60ada4492f390323889f635c446523b2e0d14ebf0ff51b66c118832346f23c",
       "quilt-loader-0.31.0-beta.3-26.2.json": "sha256:7cd706b04431e2cad57c8a8bd1958b4f26d5b5862af6839554961c17ef361c12",
-      "quilt-loader-0.31.0-beta.4-26.2.json": "sha256:e5254f0417d0124ec10656a0fb830c4dcd04226c6ca542309595925ccc48313d"
+      "quilt-loader-0.31.0-beta.4-26.2.json": "sha256:e5254f0417d0124ec10656a0fb830c4dcd04226c6ca542309595925ccc48313d",
+      "quilt-loader-0.30.1-26.3.json": "sha256:ddf36f139748ee467de7074a4126a1eb140225b36fb64a012a1cbdfa1e213a8e",
+      "quilt-loader-0.30.1-beta.1-26.3.json": "sha256:5384fdcb34e453e1983b864ee9a128ff894f5410c02f0d6616753067edc3603f",
+      "quilt-loader-0.30.1-beta.2-26.3.json": "sha256:ec0f9f7f1d68429161fd458e2bfd063d9ce3250d29f0982e396c8f874df3b534",
+      "quilt-loader-0.30.1-beta.3-26.3.json": "sha256:5585d8c84141ed1b70853bb6794ce81ac79e43820c343412f9ac311d5fed24b7",
+      "quilt-loader-0.30.1-beta.4-26.3.json": "sha256:514e736031a19a3abccb5cc0480578049e5297a6d0104abb6c2fb1a5ad9ff204",
+      "quilt-loader-0.30.2-beta.1-26.3.json": "sha256:8b813896635ea3dd01a10b48fffc865f0948931cbec2504b2aa6d9fd201e4317",
+      "quilt-loader-0.31.0-beta.1-26.3.json": "sha256:ea292af908de5947ea06edced0fd10edea8189b4a98ba6d884c813480bd6864a",
+      "quilt-loader-0.31.0-beta.2-26.3.json": "sha256:2e4a12e4f3342c2a980ce41517ef826da3fa30af9a2b20d38aead6bb8e6e9a85",
+      "quilt-loader-0.31.0-beta.3-26.3.json": "sha256:1d1841b80e052b44e449d5033e630d4ca7d25c6227f1b48378ba1aa6ccba41c6",
+      "quilt-loader-0.31.0-beta.4-26.3.json": "sha256:dc4899e305e2e1504ed1b7f8e5ea2fc9abbf6a31e79544c34b5005c1cd657aa0"
     },
     "neoforge": {
       "neoforge-20.2.83-beta-installer.jar": "sha256:d3effb80edd7bf44bff3f282c4853dd5c5b9efb8d019f1323c9385a365eededa",
@@ -2726,6 +2736,7 @@
       "neoforge-21.1.248-installer.jar": "sha256:68eeab77059ba53df1812f1afa5bf530ab2566a3cdcd5f924aa6e71be42e410c",
       "neoforge-21.1.249-installer.jar": "sha256:d88b448eab73cd65bdf1720844a4828262de30a15fc71bd04dd81acc61c5399a",
       "neoforge-21.1.250-installer.jar": "sha256:0e47a91ba2139a8db4bf7627af081f7b5789b508bb039ee8dea1272b79693d60",
+      "neoforge-21.1.251-installer.jar": "sha256:f63d9011b89aa5db0f5cbe437bb21b2f8c2182ff0c6ac329b7bbf6c9b19bc741",
       "neoforge-21.2.0-beta-installer.jar": "sha256:6e01c9c724522a5c61e8eff47a5d5f5f52fff2e79c5b81ee5caf183be72959b5",
       "neoforge-21.2.1-beta-installer.jar": "sha256:e4b6e64c9192e3baacb6223bfaa65ce2d677b4f4ad74ac051335681fd6a70e34",
       "neoforge-21.3.88-installer.jar": "sha256:644977bba3f21f9b5eea112a94da44884ac14b5f05757333043a811528af73a1",
@@ -3573,7 +3584,9 @@
       "forge-26.2-65.1.0-installer.jar": "sha256:d23291591ee03408e39549d5509772f6c46280fef51044e1a706dd3da455dd74",
       "forge-26.2-65.1.1-installer.jar": "sha256:12def7525963a3769b59fbcbc969232d1ab17a5f69267029737103c5c5925a2e",
       "forge-26.2-65.1.2-installer.jar": "sha256:cc5a711ce9ef65a988131fc01a17ca257f9a264c0b111460ef2727ca4a77b8c9",
-      "forge-26.2-65.1.3-installer.jar": "sha256:57dc567dc125d963f352fcb38136ba171326cc0b9516e6f7f6b2ef05251ccc33"
+      "forge-26.2-65.1.3-installer.jar": "sha256:57dc567dc125d963f352fcb38136ba171326cc0b9516e6f7f6b2ef05251ccc33",
+      "forge-26.3-66.0.0-installer.jar": "sha256:3c06a28f76faf54982f745fa24c060f8205dd92bd6754e09231b52cf2cf4ea35",
+      "forge-26.3-66.0.2-installer.jar": "sha256:654a9924aa7c1a8e4b38df8f58babf1de090eb4ad7855fc0bbb6df5dfa0210fd"
     }
   },
   "_source": "Generated from loader_manifests.json by scripts/fetch_loader_manifests.py. Do not edit manually."
