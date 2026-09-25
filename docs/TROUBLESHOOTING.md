@@ -84,14 +84,15 @@ navigates Agora will not move your character.
 - If you declined the offer earlier, it is remembered for that instance and will
   not be shown again; install it from Browse instead.
 
-### A controller does not put Agora into handheld mode
+### A controller does not resize or drive Agora
 
 - Press a button on the pad while the Agora window is focused. Agora is only told
   a controller exists once you use it, so one sitting connected and idle is not
   enough.
-- If you left handheld mode with **B** or **Escape**, Agora deliberately does not
-  pull you back in while the pad stays connected. Press **Start**, or unplug and
-  reconnect.
+- The larger controller layout stays on while the pad is connected, even if you
+  switch to the mouse for a moment. Disconnect the pad to return to the normal size.
+- **Start** opens the command palette; **B** goes back. Neither leaves controller
+  mode — there is no separate handheld screen any more.
 - There is no setting to enable. If pressing buttons does nothing at all, confirm
   the controller works elsewhere on the system first.
 

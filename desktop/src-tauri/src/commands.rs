@@ -261,6 +261,40 @@ pub async fn list_pack_mods(
     })?
 }
 
+/// A curated pack's locked releases, newest first.
+#[tauri::command]
+pub async fn list_pack_versions(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    pack_id: String,
+) -> LauncherResult<Vec<agora_core::registry::PackVersionRow>> {
+    tokio::task::spawn_blocking(move || {
+        let ctx = crate::core_context(&app)?;
+        agora_core::curated_pack::CuratedPackService::new(ctx).versions(&pack_id)
+    })
+    .await
+    .map_err(|_| LauncherError::Generic {
+        code: "ERR_REGISTRY_QUERY".to_string(),
+        message: "Pack versions query task failed.".to_string(),
+    })?
+}
+
+/// Resolve a curated pack (a locked release or the flexible recipe) into the
+/// mods to install, plus any that were dropped or that block the install.
+/// Read-only: the returned plan feeds a normal batch-install review.
+#[tauri::command]
+pub async fn plan_curated_pack(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    pack_id: String,
+    selection: agora_core::curated_pack::CuratedPackSelection,
+) -> LauncherResult<agora_core::curated_pack::CuratedPackPlan> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::curated_pack::CuratedPackService::new(ctx)
+        .plan(&pack_id, &selection)
+        .await
+}
+
 /// List audit log entries from the registry DB (§4.6).
 #[tauri::command]
 pub async fn list_audit_log(

@@ -21,8 +21,10 @@ executable, `portable.txt`, and instructions; extract it into a writable folder 
 installers remain installed applications; portable mode is distributed separately.
 
 Data and WebView preferences live in the adjacent `data` folder unless `AGORA_DATA_DIR`
-overrides it. Installed data is not automatically moved into a portable copy. Credentials
-stored in the OS keyring remain on that machine. Close any other running Agora copy
+overrides it. Installed data is not automatically moved into a portable copy. A portable
+copy never uses the OS keyring: Microsoft and GitHub sign-ins are encrypted in the `data`
+folder so they travel with it, which means anyone who can read that folder can read them.
+Close any other running Agora copy
 before starting the portable one (the application enforces a single instance).
 
 To update, close Agora, replace the executable from the next portable ZIP, and keep

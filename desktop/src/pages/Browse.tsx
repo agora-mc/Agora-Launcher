@@ -21,6 +21,7 @@ import {
   type InstanceDetail,
   type InstanceRow,
 } from '../lib/tauri';
+import { takeOfferedBrowseContext } from '../lib/browseContextHandoff';
 import { useRegistryState } from '../lib/useRegistryState';
 import { loadPreference } from '../features/interactive/live/presentationPreference';
 import { RegistryStatusView } from '../components/registry-status-view';
@@ -757,7 +758,16 @@ function BrowseContent({
   useEffect(() => {
     let cancelled = false;
     void listInstances()
-      .then((result) => { if (!cancelled) setInstances(result); })
+      .then((result) => {
+        if (cancelled) return;
+        setInstances(result);
+        // Taken only on the live run, so StrictMode's discarded first effect
+        // cannot consume the hand-off. An explicit instance in the route wins.
+        const offered = takeOfferedBrowseContext();
+        if (offered && !initialInstanceId && result.some((row) => row.instance_id === offered)) {
+          void selectInstanceContext(offered);
+        }
+      })
       .catch((cause) => { if (!cancelled) setContextError(formatError(cause)); });
     return () => { cancelled = true; };
   }, []);

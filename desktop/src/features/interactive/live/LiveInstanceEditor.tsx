@@ -1078,14 +1078,26 @@ export function LiveInstanceEditor({
         onClick={(e) => { if (e.target === e.currentTarget) setDoctorOpen(false); }}
       >
         <div className="inst-doc" role="dialog" aria-modal="true" aria-label="Crash Doctor">
+          <button type="button" className="inst-closeX" aria-label="Close" onClick={() => setDoctorOpen(false)}>×</button>
           <h3>Your game stopped</h3>
           <p className="sub">
             {doctorTrial
               ? (doctorTrial.phase === 'working' ? 'Trying one thing at a time…' : doctorTrial.phase === 'done' ? 'We turned it off — you can test it.' : 'Something didn’t work.')
-              : 'Let’s work out which mod did it. Pick the one you want to test first.'}
+              : suspects.length > 0
+                ? 'Let’s work out which mod did it. Pick the one you want to test first.'
+                : 'The last launch didn’t finish cleanly.'}
           </p>
           {!doctorTrial && suspects.length === 0 ? (
-            <p className="sub" style={{ marginTop: 8 }}>We couldn’t tell which mod caused this. It might not be a mod issue — try the Standard view for the full logs.</p>
+            <>
+              <p className="sub" style={{ marginTop: 8 }}>
+                We didn’t spot a likely cause automatically, but let’s diagnose it. The full doctor reads
+                every log, takes crash text you paste in, and can narrow things down one mod at a time.
+              </p>
+              <div className="inst-pf-actions">
+                <button type="button" className="inst-btn" onClick={() => setDoctorOpen(false)}>Close</button>
+                <button type="button" className="inst-btn go" onClick={() => { setDoctorOpen(false); onIntent({ kind: 'open-crash-doctor' }); }}>Open full doctor</button>
+              </div>
+            </>
           ) : null}
           {!doctorTrial && suspects.length > 0 ? (
             <>

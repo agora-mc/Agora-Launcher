@@ -22,6 +22,7 @@ import { TourStartButton } from '../features/tour';
 import { ArrowRight, BookOpen, GraduationCap, HeartHandshake, MessagesSquare } from 'lucide-react';
 import { agoraDiscordUrl, agoraSponsorsUrl } from '../lib/brandConfig';
 import { useConfirm } from '@/components/ui/confirm';
+import { GUIDE_TOPICS } from '../data/guideContent';
 
 // ---------------------------------------------------------------------------
 // D1: Action-oriented Home
@@ -511,7 +512,8 @@ function GuideCard({ onOpenGuide }: { onOpenGuide: () => void }) {
             <h3 className="font-semibold">Learn Agora at your level</h3>
             <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[11px] font-semibold text-secondary-foreground">
               <GraduationCap className="h-3 w-3" aria-hidden="true" />
-              36 guide pages
+              {/* Counted the way Help & Guide counts: a basic and an advanced page per topic. */}
+              {GUIDE_TOPICS.length * 2} guide pages
             </span>
           </div>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">

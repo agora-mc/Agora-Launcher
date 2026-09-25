@@ -603,7 +603,7 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
         return Ok(());
     }
 
-    if !using_test_token_store() {
+    if keyring_for_token() {
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
             if entry.set_password(&json).is_ok() {
                 if let Some(path) = fallback_token_path() {
@@ -644,7 +644,7 @@ pub fn store_token_bundle(bundle: &GitHubTokenBundle) -> LauncherResult<()> {
 pub fn load_token_bundle() -> Option<GitHubTokenBundle> {
     let raw = if let Some(stored) = load_test_token() {
         stored
-    } else if !using_test_token_store() {
+    } else if keyring_for_token() {
         keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
             .ok()
             .and_then(|entry| entry.get_password().ok())
@@ -689,7 +689,7 @@ pub fn clear_token_bundle() -> Result<(), String> {
         return Ok(());
     }
     let mut keyring_error = None;
-    if !using_test_token_store() {
+    if keyring_for_token() {
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
             match entry.delete_password() {
                 Ok(()) | Err(keyring::Error::NoEntry) => {}
@@ -1459,6 +1459,39 @@ fn fallback_secret_path(file_name: &str) -> Option<std::path::PathBuf> {
     Some(fallback_data_dir()?.join(file_name))
 }
 
+/// Whether the OS keyring may be used for the GitHub token.
+fn keyring_for_token() -> bool {
+    !using_test_token_store() && !portable_credentials()
+}
+
+/// Whether the OS keyring may be used for a secret (Microsoft sign-in).
+fn keyring_for_secret() -> bool {
+    !using_test_secret_store() && !portable_credentials()
+}
+
+/// A portable copy keeps every credential in its own data folder.
+///
+/// The OS keyring belongs to one machine and one account, so a sign-in stored
+/// there does not travel with the copy — the one thing a portable install is
+/// for. It is also shared with an installed copy on the same machine (same
+/// service and account names), so a portable sign-out would otherwise sign the
+/// installed copy out too. Portable roots therefore never read, write, or clear
+/// the keyring, and the fallback file (device-key scheme, see
+/// [`os_protection_eligible`]) is the only store.
+fn portable_credentials() -> bool {
+    #[cfg(test)]
+    if FORCE_PORTABLE_CREDENTIALS.with(std::cell::Cell::get) {
+        return true;
+    }
+    crate::app_paths::AppPaths::data_root_is_portable()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Forces [`portable_credentials`] on for this thread.
+    static FORCE_PORTABLE_CREDENTIALS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn using_test_token_store() -> bool {
     real_fallback_dir().is_some()
         || (cfg!(any(test, feature = "test-support"))
@@ -1485,7 +1518,7 @@ pub(crate) fn store_secret(
     if store_test_secret(service, account, value) {
         return Ok(());
     }
-    if !using_test_secret_store() {
+    if keyring_for_secret() {
         if let Ok(entry) = keyring::Entry::new(service, account) {
             if entry.set_password(value).is_ok() {
                 if let Some(path) = fallback_secret_path(fallback_file) {
@@ -1525,7 +1558,7 @@ pub(crate) fn load_secret(
         return Ok(stored);
     }
     let mut keyring_error = None;
-    if !using_test_secret_store() {
+    if keyring_for_secret() {
         match keyring::Entry::new(service, account) {
             Ok(entry) => match entry.get_password() {
                 Ok(value) => return Ok(Some(value)),
@@ -1573,7 +1606,7 @@ pub(crate) fn clear_secret(
         return Ok(());
     }
     let mut keyring_error = None;
-    if !using_test_secret_store() {
+    if keyring_for_secret() {
         if let Ok(entry) = keyring::Entry::new(service, account) {
             match entry.delete_password() {
                 Ok(()) | Err(keyring::Error::NoEntry) => {}
@@ -1630,7 +1663,7 @@ pub(crate) fn credential_backend(
     account: &str,
     fallback_file: &str,
 ) -> CredentialBackend {
-    if !using_test_secret_store() {
+    if keyring_for_secret() {
         if let Ok(entry) = keyring::Entry::new(service, account) {
             if entry.get_password().is_ok() {
                 return CredentialBackend::Keyring;
@@ -1645,7 +1678,7 @@ pub(crate) fn credential_backend(
 
 /// Which backend holds the GitHub token.
 pub fn github_credential_backend() -> CredentialBackend {
-    if !using_test_token_store() {
+    if keyring_for_token() {
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
             if entry.get_password().is_ok() {
                 return CredentialBackend::Keyring;
@@ -2786,6 +2819,18 @@ mod tests {
         assert_eq!(
             credential_backend("svc", "acct", "creds.enc"),
             CredentialBackend::EncryptedFile
+        );
+    }
+
+    #[test]
+    fn a_portable_root_never_uses_the_keyring() {
+        let previous = FORCE_PORTABLE_CREDENTIALS.with(|cell| cell.replace(true));
+        let token = keyring_for_token();
+        let secret = keyring_for_secret();
+        FORCE_PORTABLE_CREDENTIALS.with(|cell| cell.set(previous));
+        assert!(
+            !token && !secret,
+            "a portable copy's sign-ins must stay in its own data folder"
         );
     }
 

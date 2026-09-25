@@ -664,6 +664,28 @@ enum PackCmd {
         /// Target instance ID.
         instance: String,
     },
+    /// List a curated registry pack's locked releases, newest first.
+    Versions {
+        /// Curated pack ID.
+        pack: String,
+    },
+    /// Install a curated registry pack into an existing instance.
+    ///
+    /// With --release, installs that locked release (the instance must be on
+    /// its Minecraft version and loader). Without it, installs the flexible
+    /// recipe against the instance's own version: each mod gets its newest
+    /// build that fits, recommended/optional mods with no build are left out,
+    /// and a missing required mod stops the install.
+    Curated {
+        /// Curated pack ID.
+        pack: String,
+        /// Target instance ID.
+        instance: String,
+        #[arg(long, help = "Locked release to install (default: flexible recipe)")]
+        release: Option<String>,
+        #[arg(long, help = "Print the plan without installing")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3484,6 +3506,136 @@ async fn run_command(
                     );
                 }
             }
+            PackCmd::Versions { pack } => {
+                let releases = agora_core::curated_pack::CuratedPackService::new(ctx.clone())
+                    .versions(&pack)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&releases)?);
+                } else if releases.is_empty() {
+                    println!("'{pack}' has no locked releases; it installs in flexible mode only.");
+                } else {
+                    let rows: Vec<Vec<String>> = releases
+                        .iter()
+                        .map(|release| {
+                            vec![
+                                release.version.clone(),
+                                release.minecraft_version.clone(),
+                                format!("{} {}", release.loader, release.loader_version),
+                            ]
+                        })
+                        .collect();
+                    print_table(&["Release", "Minecraft", "Loader"], &rows);
+                }
+            }
+            PackCmd::Curated {
+                pack,
+                instance,
+                release,
+                dry_run,
+            } => {
+                use agora_core::curated_pack::{CuratedPackSelection, CuratedPackService};
+                let detail = InstanceService::new(ctx.clone())
+                    .get(&instance)?
+                    .ok_or_else(|| anyhow::anyhow!("Instance '{}' not found", instance))?;
+                let selection = match release {
+                    Some(pack_version) => CuratedPackSelection::Locked { pack_version },
+                    None => CuratedPackSelection::Flexible {
+                        minecraft_version: detail.row.minecraft_version.clone(),
+                        loader: detail.row.loader.clone(),
+                    },
+                };
+                let plan = CuratedPackService::new(ctx.clone())
+                    .plan(&pack, &selection)
+                    .await?;
+                if plan.target.minecraft_version != detail.row.minecraft_version
+                    || plan.target.loader != detail.row.loader
+                {
+                    anyhow::bail!(
+                        "Release {} targets Minecraft {} with {}, but '{}' is on {} with {}.",
+                        plan.pack_version.as_deref().unwrap_or("?"),
+                        plan.target.minecraft_version,
+                        plan.target.loader,
+                        instance,
+                        detail.row.minecraft_version,
+                        detail.row.loader
+                    );
+                }
+
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&plan)?);
+                } else {
+                    println!(
+                        "{} mod(s) resolved for Minecraft {} with {}.",
+                        plan.mods.len(),
+                        plan.target.minecraft_version,
+                        plan.target.loader
+                    );
+                    for dropped in &plan.dropped {
+                        println!(
+                            "  [LEFT OUT] {} ({}): {}",
+                            dropped.mod_id, dropped.status, dropped.reason
+                        );
+                    }
+                    for blocking in &plan.blocking {
+                        eprintln!(
+                            "  [BLOCK] {} (required): {}",
+                            blocking.mod_id, blocking.reason
+                        );
+                    }
+                }
+                if !plan.can_install() {
+                    anyhow::bail!("Pack '{}' cannot be installed on this instance.", pack);
+                }
+                if dry_run {
+                    return Ok(());
+                }
+
+                let svc = InstallService::new(ctx.clone());
+                let intent = agora_core::install_pipeline::InstallIntent {
+                    action: agora_core::install_pipeline::InstallAction::BatchInstall {
+                        items: plan.batch_items(),
+                    },
+                    target_instance: instance.clone(),
+                    // The pack names its mods explicitly; a CLI run cannot answer a
+                    // prompt for extra optional dependencies, so it takes none.
+                    optional_deps: agora_core::install_pipeline::OptionalDepsPolicy::ExcludeAll,
+                    requested_by: agora_core::install_pipeline::RequestSource::CLI,
+                    overrides: agora_core::install_pipeline::PlanOverrides::default(),
+                };
+                let reporter = SilentReporter;
+                let cancel = agora_core::install_pipeline::CancellationToken::new();
+                let resolved = svc.resolve(intent, &reporter).await?;
+                if !resolved.is_fully_resolved() {
+                    report_unresolved_plan(&resolved, json);
+                    anyhow::bail!(
+                        "Install blocked: unresolved errors, conflicts, or pending choices"
+                    );
+                }
+                match svc.execute(&resolved, &reporter, &cancel).await {
+                    agora_core::install_pipeline::InstallOutcome::Success { .. } => {
+                        if !json {
+                            println!("Installed pack '{}' into '{}'.", pack, instance);
+                        }
+                    }
+                    agora_core::install_pipeline::InstallOutcome::HealthRollback {
+                        health_report,
+                        snapshot_id,
+                        ..
+                    } => {
+                        anyhow::bail!(
+                            "Install has {} health blocker(s) (install kept; snapshot {} available for rollback)",
+                            health_report.blockers.len(),
+                            snapshot_id
+                        );
+                    }
+                    agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
+                        anyhow::bail!("Install was cancelled during {}.", phase);
+                    }
+                    agora_core::install_pipeline::InstallOutcome::Failed { error, .. } => {
+                        anyhow::bail!("Install failed and rolled back: {}", error);
+                    }
+                }
+            }
         },
         Commands::Export { instance, dest } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
@@ -5274,6 +5426,52 @@ mod tests {
             cli.command,
             Commands::Pack {
                 action: PackCmd::Install { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn pack_curated_parses_release_and_flexible() {
+        let cli = Cli::try_parse_from([
+            "agora",
+            "pack",
+            "curated",
+            "optimized-survival",
+            "my-instance",
+            "--release",
+            "1.0.0",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Pack {
+                action:
+                    PackCmd::Curated {
+                        release, dry_run, ..
+                    },
+            } => {
+                assert_eq!(release.as_deref(), Some("1.0.0"));
+                assert!(!dry_run);
+            }
+            _ => panic!("expected pack curated"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "agora",
+            "pack",
+            "curated",
+            "optimized-survival",
+            "my-instance",
+            "--dry-run",
+        ])
+        .expect("should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Pack {
+                action: PackCmd::Curated {
+                    release: None,
+                    dry_run: true,
+                    ..
+                }
             }
         ));
     }

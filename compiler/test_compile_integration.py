@@ -248,6 +248,34 @@ class TestPackIdentity(_CompileFixtures):
             conn.close()
 
 
+class TestPackVersions(_CompileFixtures):
+    def test_locked_release_rows_are_compiled(self):
+        conn = self._open_db()
+        try:
+            releases = conn.execute(
+                "SELECT version, minecraft_version, loader FROM pack_versions WHERE pack_id = ?",
+                ("optimized-survival",),
+            ).fetchall()
+            self.assertGreater(len(releases), 0)
+            unpinned = conn.execute(
+                "SELECT COUNT(*) FROM pack_version_mods WHERE pack_id = ? AND version = ''",
+                ("optimized-survival",),
+            ).fetchone()[0]
+            self.assertEqual(unpinned, 0)
+        finally:
+            conn.close()
+
+    def test_modrinth_sourced_entries_keep_their_project_id(self):
+        conn = self._open_db()
+        try:
+            missing = conn.execute(
+                "SELECT COUNT(*) FROM pack_mods WHERE source = 'modrinth_id' AND modrinth_id IS NULL"
+            ).fetchone()[0]
+            self.assertEqual(missing, 0)
+        finally:
+            conn.close()
+
+
 class TestFabricApiAliases(_CompileFixtures):
     """Test 11: fabric-api has both 'fabric' and 'fabric_api' aliases."""
 

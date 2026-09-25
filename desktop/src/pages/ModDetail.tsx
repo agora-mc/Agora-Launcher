@@ -28,7 +28,8 @@ import {
   listModReviews,
   listModVersions,
   listModVersionsLoadMore,
-  listPackMods,
+  listPackVersions,
+  planCuratedPack,
   listRawModrinthVersions,
   setItemVote,
   createInstance,
@@ -45,7 +46,9 @@ import {
   type ModReview,
   type ModrinthProjectFull,
   type ModVersionCandidate,
-  type PackModRow,
+  type CuratedPackPlan,
+  type CuratedPackSelection,
+  type PackVersionRow,
   type RegistryItem,
   type RawModrinthVersionCandidate,
 } from '../lib/tauri';
@@ -83,7 +86,7 @@ function externalLinkLabel(url: string): string {
 }
 import { formatDate, sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
-import type { BatchInstallItem, InstallIntent, SourceType } from '../lib/installFlow';
+import type { InstallIntent, SourceType } from '../lib/installFlow';
 
 // Whether a candidate version is a pre-release (alpha/beta/rc/snapshot) —
 // mirrors `agora_core::models::is_prerelease_version` and the backend
@@ -1446,7 +1449,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                           {createLoaderVersions.length === 0 && <option value="">Loading…</option>}
                           {createLoaderVersions.map((v) => (
                             <option key={v.loader_version} value={v.loader_version}>
-                              {v.loader_version} ({v.file_type})
+                              {v.loader_version}
                             </option>
                           ))}
                         </select>
@@ -1557,7 +1560,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                                 {cand.mc_versions.join(', ') || '—'}
                                 {' · '}
                                 {cand.loaders.join(', ') || '—'}
-                                {cand.release_date ? ` · ${cand.release_date.slice(0, 10)}` : ''}
+                                {cand.release_date ? ` · ${formatDate(cand.release_date)}` : ''}
                               </p>
                               {cand.sha1 ? (
                                 <p className="text-[10px] text-green-600 dark:text-green-400 mt-0.5">
@@ -1646,7 +1649,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                               <p className="text-xs text-muted-foreground mt-0.5 truncate">{cand.filename}</p>
                               <p className="text-xs text-muted-foreground mt-0.5">
                                 {[cand.mc_version, cand.loader].filter(Boolean).join(' · ')}
-                                {cand.release_date ? ` · ${cand.release_date}` : ''}
+                                {cand.release_date ? ` · ${formatDate(cand.release_date)}` : ''}
                               </p>
                             </li>
                           );
@@ -1859,7 +1862,9 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         <section className="rounded-xl border border-border bg-card p-4">
           <h3 className="font-semibold text-sm mb-3">Versions</h3>
 
-          {canShowModrinthVersions ? (
+          {item.content_type === 'pack' && !isModrinthPack(item) ? (
+            <CuratedPackReleases packId={item.id} />
+          ) : canShowModrinthVersions ? (
             versionsLoading ? (
               <p className="text-sm text-muted-foreground">Loading versions…</p>
             ) : versionsError ? (
@@ -2484,11 +2489,137 @@ function BackButton({ onBack }: { onBack: () => void }) {
   );
 }
 
-type PackInstallModProgress = {
-  modId: string;
-  status: 'pending' | 'installing' | 'done' | 'failed';
-  error?: string;
-};
+/** A curated pack's locked releases, for its Versions tab. */
+function CuratedPackReleases({ packId }: { packId: string }) {
+  const [releases, setReleases] = useState<PackVersionRow[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    listPackVersions(packId)
+      .then((rows) => { if (!cancelled) setReleases(rows); })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [packId]);
+
+  if (failed) return <p className="text-sm text-muted-foreground">Could not load this pack&apos;s releases.</p>;
+  if (releases === null) return <p className="text-sm text-muted-foreground">Loading versions…</p>;
+  if (releases.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        This pack has no locked releases yet. It installs in flexible mode: you pick the Minecraft
+        version, and each mod gets its newest build that fits.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border text-left text-xs text-muted-foreground">
+            <th className="py-2 pr-3 font-medium">Release</th>
+            <th className="py-2 pr-3 font-medium">Minecraft</th>
+            <th className="py-2 pr-3 font-medium">Loader</th>
+            <th className="py-2 font-medium">Changes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {releases.map((release, index) => (
+            <tr key={release.version} className="border-b border-border/50 align-top">
+              <td className="py-2 pr-3 font-medium">
+                {release.version}
+                {index === 0 && <span className="ml-2 text-xs text-primary">latest</span>}
+              </td>
+              <td className="py-2 pr-3">{release.minecraft_version}</td>
+              <td className="py-2 pr-3">{release.loader} {release.loader_version}</td>
+              <td className="py-2 whitespace-pre-line text-xs text-muted-foreground">{release.changelog ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * What a curated pack will actually install, before anything is created.
+ *
+ * Required mods that cannot be found block the install outright (a pack
+ * without its core mod is not that pack); recommended and optional ones are
+ * listed as left out so the user knows exactly what they are getting.
+ */
+function CuratedPackPlanSummary({ plan }: { plan: CuratedPackPlan }) {
+  const count = plan.mods.length;
+  const fallbacks = plan.mods.filter((mod) => !mod.pinned).length;
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-sm" role="status" data-testid="curated-pack-plan">
+      <p className="font-medium">
+        {plan.blocking.length > 0
+          ? `Nothing will be installed on Minecraft ${plan.target.minecraftVersion} with ${plan.target.loader}.`
+          : `${count} mod${count === 1 ? '' : 's'} will be installed on Minecraft ${plan.target.minecraftVersion} with ${plan.target.loader}.`}
+        {plan.blocking.length === 0 && plan.packVersion === null && fallbacks > 0 && (
+          <span className="block text-xs font-normal text-muted-foreground">
+            {fallbacks} use the newest build that fits, not the pack&apos;s pinned one.
+          </span>
+        )}
+      </p>
+      {plan.blocking.length > 0 && (
+        <div className="rounded border-2 border-destructive/70 bg-destructive/15 p-2 text-xs text-foreground">
+          <p className="font-semibold">
+            Can&apos;t install: {plan.blocking.length === 1 ? 'a required mod is' : 'required mods are'} missing.
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {plan.blocking.map((mod) => (
+              <li key={mod.modId}>• {mod.modId} — {mod.reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {plan.dropped.length > 0 && (
+        <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+          <p className="font-semibold">Left out ({plan.dropped.length}):</p>
+          <ul className="mt-1 space-y-0.5">
+            {plan.dropped.map((mod) => (
+              <li key={mod.modId}>• {mod.modId} ({mod.status}) — {mod.reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {count > 0 && (
+        <details>
+          <summary className="cursor-pointer text-xs text-muted-foreground">Mods and versions</summary>
+          <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto text-xs">
+            {plan.mods.map((mod) => (
+              <li key={mod.modId}>
+                {mod.modId} <span className="text-muted-foreground">{mod.displayVersion}</span>
+                {!mod.pinned && <span className="text-muted-foreground"> (newest that fits)</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Minecraft version and loader a curated pack was built for.
+ *
+ * A curated pack declares exactly one target, and its mods are resolved per
+ * instance, so picking a different version can silently leave the pack without
+ * builds for some of its mods. Null when the registry row carries no usable
+ * target (older registries, or a malformed row).
+ */
+function curatedPackTarget(item: RegistryItem): { mcVersion: string; loader: string } | null {
+  if (!item.compatible_versions_json) return null;
+  try {
+    const parsed: unknown = JSON.parse(item.compatible_versions_json);
+    const first = Array.isArray(parsed) ? parsed[0] as { mc_version?: unknown; loader?: unknown } : null;
+    if (typeof first?.mc_version !== 'string' || typeof first.loader !== 'string') return null;
+    return { mcVersion: first.mc_version, loader: first.loader };
+  } catch {
+    return null;
+  }
+}
 
 const isModrinthPack = (item: RegistryItem): boolean =>
   hasDownloadSource(item, 'modrinth_id') || !!item.modrinth_id;
@@ -2507,19 +2638,51 @@ function PackCreateDialog({
   const isModrinth = isModrinthPack(item);
   const packName = item.name;
   const { startModrinthPack, startPlan } = usePackInstall();
+  const packTarget = isModrinth ? null : curatedPackTarget(item);
   const [name, setName] = useState(packName);
-  const [mcVersion, setMcVersion] = useState('');
+  const [mcVersion, setMcVersion] = useState(packTarget?.mcVersion ?? '');
   const [availableLoaders, setAvailableLoaders] = useState<string[]>([]);
   const [availableMcVersions, setAvailableMcVersions] = useState<string[]>([]);
-  const [loader, setLoader] = useState('fabric');
+  const [loader, setLoader] = useState(packTarget?.loader ?? 'fabric');
   const [loaderVersions, setLoaderVersions] = useState<import('../lib/tauri').LoaderVersionSummary[]>([]);
   const [loaderVersion, setLoaderVersion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [installPhase, setInstallPhase] = useState<'form' | 'installing' | 'done'>('form');
-  const [modProgress, setModProgress] = useState<PackInstallModProgress[]>([]);
+  const [installPhase, setInstallPhase] = useState<'form' | 'installing'>('form');
   const [createdInstanceId, setCreatedInstanceId] = useState<string | null>(null);
   const [canonicalInstall, setCanonicalInstall] = useState<InstallIntent | null>(null);
+
+  // Curated packs come in two shapes: a locked release (exact target, pinned
+  // mods — the build the curator tested) and the flexible recipe, aimed at any
+  // target. Planning happens in core; this only asks and shows the answer.
+  const [packVersions, setPackVersions] = useState<PackVersionRow[]>([]);
+  const [packMode, setPackMode] = useState<'locked' | 'flexible'>('flexible');
+  const [packVersion, setPackVersion] = useState('');
+  const [packPlan, setPackPlan] = useState<CuratedPackPlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const selectedRelease = packMode === 'locked'
+    ? packVersions.find((release) => release.version === packVersion) ?? null
+    : null;
+
+  useEffect(() => {
+    if (isModrinth) return;
+    let cancelled = false;
+    listPackVersions(item.id)
+      .then((releases) => {
+        if (cancelled || releases.length === 0) return;
+        setPackVersions(releases);
+        setPackMode('locked');
+        setPackVersion(releases[0].version);
+      })
+      // An older registry has no releases: the flexible recipe is all there is.
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isModrinth, item.id]);
+
+  // A plan answers one exact question; changing the question discards it.
+  useEffect(() => {
+    setPackPlan(null);
+  }, [packMode, packVersion, mcVersion, loader]);
 
   // Modrinth pack version selection
   const [modrinthVersions, setModrinthVersions] = useState<RawModrinthVersionCandidate[]>([]);
@@ -2605,64 +2768,23 @@ function PackCreateDialog({
     return () => { cancelled = true; };
   }, [loader]);
 
-  const submitCurated = async (instanceId: string) => {
-    const mods: PackModRow[] = await listPackMods(item.id);
-    if (mods.length === 0) {
-      throw new Error('No mods found for this pack in the catalog.');
-    }
-    setModProgress(mods.map((mod) => ({ modId: mod.mod_id, status: 'pending' as const })));
-    const items: BatchInstallItem[] = [];
+  const packSelection = (): CuratedPackSelection => (selectedRelease
+    ? { mode: 'locked', packVersion: selectedRelease.version }
+    : { mode: 'flexible', minecraftVersion: mcVersion, loader });
 
-    for (let index = 0; index < mods.length; index += 1) {
-      const mod = mods[index];
-      setModProgress((previous) =>
-        previous.map((progress, current) =>
-          current === index ? { ...progress, status: 'installing' as const } : progress
-        )
-      );
-      try {
-        const page = await listModVersions(instanceId, mod.mod_id);
-        const candidate =
-          page.items.find((version) => version.version_compat === 'compatible')
-          ?? page.items.find((version) => version.version_compat === 'major_match')
-          ?? page.items[0];
-        if (!candidate) throw new Error('No compatible verified version is available.');
-        items.push({
-          sourceType: 'curated',
-          itemId: mod.mod_id,
-          candidateVersion: candidate.version,
-        });
-        setModProgress((previous) =>
-          previous.map((progress, current) =>
-            current === index ? { ...progress, status: 'done' as const } : progress
-          )
-        );
-      } catch (cause) {
-        setModProgress((previous) =>
-          previous.map((progress, current) =>
-            current === index
-              ? { ...progress, status: 'failed' as const, error: formatError(cause) }
-              : progress
-          )
-        );
-        throw new Error(
-          `Could not resolve every pack item. No pack files were installed: ${formatError(cause)}`,
-        );
-      }
+  const checkPack = async () => {
+    setPlanning(true);
+    setError(null);
+    try {
+      setPackPlan(await planCuratedPack(item.id, packSelection()));
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setPlanning(false);
     }
-
-    setCanonicalInstall({
-      action: { type: 'batch-install', items },
-      targetInstance: instanceId,
-      optionalDeps: { type: 'prompt' },
-      requestedBy: 'interactive',
-      overrides: {
-        allowReplace: false,
-        skipHealthScan: false,
-        forceConflictResolution: {},
-      },
-    });
   };
+
+  const packPlanInstallable = !!packPlan && packPlan.blocking.length === 0 && packPlan.mods.length > 0;
 
   const submitModrinth = async () => {
     if (selectedVersionIdx < 0) {
@@ -2691,14 +2813,16 @@ function PackCreateDialog({
           .replace(/[^a-z0-9-_]+/g, '-')
           .replace(/^-+|-+$/g, '');
         if (!instanceId) throw new Error('Enter a valid instance name.');
-        if (!loaderVersion) throw new Error('No pinned loader version selected.');
+        if (!packPlan || !packPlanInstallable) throw new Error('Check the pack first.');
+        const targetLoaderVersion = packPlan.target.loaderVersion ?? loaderVersion;
+        if (!targetLoaderVersion) throw new Error('No pinned loader version selected.');
 
         const request: CreateInstanceRequest = {
           name,
           instance_id: instanceId,
-          minecraft_version: mcVersion,
-          loader,
-          loader_version: loaderVersion,
+          minecraft_version: packPlan.target.minecraftVersion,
+          loader: packPlan.target.loader,
+          loader_version: targetLoaderVersion,
           jvm_memory_mb: 4096,
           is_modpack: true,
           pack_icon_url: packIconUrl,
@@ -2706,7 +2830,24 @@ function PackCreateDialog({
         const result = await createInstance(request);
         const createdId = result.instance_id;
         setCreatedInstanceId(createdId);
-        await submitCurated(createdId);
+        setCanonicalInstall({
+          action: {
+            type: 'batch-install',
+            items: packPlan.mods.map((mod) => ({
+              sourceType: mod.sourceType,
+              itemId: mod.itemId,
+              candidateVersion: mod.version,
+            })),
+          },
+          targetInstance: createdId,
+          optionalDeps: { type: 'prompt' },
+          requestedBy: 'interactive',
+          overrides: {
+            allowReplace: false,
+            skipHealthScan: false,
+            forceConflictResolution: {},
+          },
+        });
       }
     } catch (e) {
       setError(formatError(e));
@@ -2715,17 +2856,16 @@ function PackCreateDialog({
     }
   };
 
-  const handleDone = () => {
-    if (createdInstanceId) {
-      onCreated(createdInstanceId);
-    }
-  };
-
   const selectedModrinthVer = selectedVersionIdx >= 0 ? modrinthVersions[selectedVersionIdx] : null;
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${isModrinth ? 'Install Modrinth Pack' : 'Create Instance from Pack'}: ${packName}`}
+        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-xl"
+      >
         {installPhase === 'form' && (
           <>
             <h3 className="text-lg font-bold mb-4">
@@ -2765,49 +2905,130 @@ function PackCreateDialog({
                     />
                   </label>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <label className="block">
-                      <span className="text-sm font-medium">Minecraft version</span>
-                      <select
-                        value={mcVersion}
-                        onChange={(e) => setMcVersion(e.target.value)}
-                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      >
-                        {availableMcVersions.map((v) => (
-                          <option key={v} value={v}>{v}</option>
-                        ))}
-                      </select>
-                    </label>
+                  {packVersions.length > 0 && (
+                    <fieldset className="space-y-2">
+                      <legend className="text-sm font-medium">How to install</legend>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="radio"
+                          name="pack-mode"
+                          checked={packMode === 'locked'}
+                          onChange={() => setPackMode('locked')}
+                          className="mt-1"
+                        />
+                        <span>
+                          <span className="font-medium">Pack release</span> (recommended)
+                          <span className="block text-xs text-muted-foreground">
+                            The exact mod builds the curator tested, on the Minecraft version they chose.
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="radio"
+                          name="pack-mode"
+                          checked={packMode === 'flexible'}
+                          onChange={() => setPackMode('flexible')}
+                          className="mt-1"
+                        />
+                        <span>
+                          <span className="font-medium">Flexible</span>
+                          <span className="block text-xs text-muted-foreground">
+                            Pick any Minecraft version. Each mod gets its newest build that fits; optional
+                            extras without one are left out, and a missing required mod stops the install.
+                          </span>
+                        </span>
+                      </label>
+                    </fieldset>
+                  )}
 
-                    <label className="block">
-                      <span className="text-sm font-medium">Loader</span>
-                      <select
-                        value={loader}
-                        onChange={(e) => setLoader(e.target.value)}
-                        className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                      >
-                        {availableLoaders.map((l) => (
-                          <option key={l} value={l}>{l}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
+                  {selectedRelease ? (
+                    <>
+                      <label className="block">
+                        <span className="text-sm font-medium">Release</span>
+                        <select
+                          value={packVersion}
+                          onChange={(e) => setPackVersion(e.target.value)}
+                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        >
+                          {packVersions.map((release) => (
+                            <option key={release.version} value={release.version}>
+                              {release.version} — Minecraft {release.minecraft_version} · {release.loader}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        Minecraft {selectedRelease.minecraft_version} · {selectedRelease.loader}{' '}
+                        {selectedRelease.loader_version}
+                      </p>
+                      {selectedRelease.changelog && (
+                        <p className="whitespace-pre-line text-xs text-muted-foreground">{selectedRelease.changelog}</p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {packTarget && (
+                        <p className="text-xs text-muted-foreground">
+                          Built for Minecraft {packTarget.mcVersion} with {packTarget.loader}.
+                        </p>
+                      )}
+                      <div className="grid grid-cols-2 gap-4">
+                        <label className="block">
+                          <span className="text-sm font-medium">Minecraft version</span>
+                          <select
+                            aria-label="Minecraft version"
+                            value={mcVersion}
+                            onChange={(e) => setMcVersion(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                          >
+                            {availableMcVersions.map((v) => (
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                          </select>
+                        </label>
 
-                  <label className="block">
-                    <span className="text-sm font-medium">Loader version</span>
-                    <select
-                      value={loaderVersion}
-                      onChange={(e) => setLoaderVersion(e.target.value)}
-                      className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                    >
-                      {loaderVersions.length === 0 && <option value="">No pinned versions</option>}
-                      {loaderVersions.map((v) => (
-                        <option key={v.loader_version} value={v.loader_version}>
-                          {v.loader_version} ({v.file_type})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                        <label className="block">
+                          <span className="text-sm font-medium">Loader</span>
+                          <select
+                            value={loader}
+                            onChange={(e) => setLoader(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                          >
+                            {availableLoaders.map((l) => (
+                              <option key={l} value={l}>{l}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
+                      {packTarget && (mcVersion !== packTarget.mcVersion || loader !== packTarget.loader) && (
+                        <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+                          This pack was built for {packTarget.mcVersion} with {packTarget.loader}. On{' '}
+                          {mcVersion || 'another version'} with {loader}, some of its mods may have no
+                          matching build, and the pack may not start.
+                        </p>
+                      )}
+
+                      <label className="block">
+                        <span className="text-sm font-medium">Loader version</span>
+                        <select
+                          value={loaderVersion}
+                          onChange={(e) => setLoaderVersion(e.target.value)}
+                          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        >
+                          {loaderVersions.length === 0 && <option value="">No pinned versions</option>}
+                          {loaderVersions.map((v) => (
+                            <option key={v.loader_version} value={v.loader_version}>
+                              {v.loader_version}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </>
+                  )}
+
+                  {packPlan && <CuratedPackPlanSummary plan={packPlan} />}
                 </>
               )}
             </div>
@@ -2824,13 +3045,23 @@ function PackCreateDialog({
               >
                 Cancel
               </button>
-              <button
-                onClick={submit}
-                disabled={busy}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              >
-                {busy ? 'Installing…' : isModrinth ? 'Install' : 'Create'}
-              </button>
+              {!isModrinth && !packPlan ? (
+                <button
+                  onClick={() => { void checkPack(); }}
+                  disabled={planning || busy || (!selectedRelease && (!mcVersion || !loader))}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {planning ? 'Checking…' : 'Check pack'}
+                </button>
+              ) : (
+                <button
+                  onClick={submit}
+                  disabled={busy || (!isModrinth && !packPlanInstallable)}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {busy ? 'Installing…' : isModrinth ? 'Install' : 'Create'}
+                </button>
+              )}
             </div>
           </>
         )}
@@ -2840,36 +3071,9 @@ function PackCreateDialog({
             <div className="flex items-center justify-center gap-3">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <p className="text-lg font-medium">
-                Installing pack mods…
+                Preparing the install review…
               </p>
             </div>
-            {modProgress.length > 0 && (
-              <div className="mt-4 space-y-1 max-h-64 overflow-y-auto text-left">
-                {modProgress.map((p, idx) => {
-                  const icon =
-                    p.status === 'done' ? '✓'
-                    : p.status === 'failed' ? '✗'
-                    : p.status === 'installing' ? '⏳'
-                    : '○';
-                  const statusText =
-                    p.status === 'done' ? 'installed'
-                    : p.status === 'failed' ? p.error ?? 'failed'
-                    : p.status === 'installing' ? 'installing…'
-                    : 'pending';
-                  const lineColor =
-                    p.status === 'done' ? 'text-green-600 dark:text-green-400'
-                    : p.status === 'failed' ? 'text-destructive'
-                    : p.status === 'installing' ? 'text-yellow-600 dark:text-yellow-400'
-                    : 'text-muted-foreground';
-                  return (
-                    <div key={idx} className={`text-sm ${lineColor}`}>
-                      <span className="inline-block w-5 text-center">{icon}</span>{' '}
-                      <span className="font-medium">{p.modId}</span> — {statusText}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
 
@@ -2886,47 +3090,6 @@ function PackCreateDialog({
           </div>
         )}
 
-        {installPhase === 'done' && (
-          <>
-            <h3 className="text-lg font-bold mb-4">Installation Complete: {packName}</h3>
-            {modProgress.length > 0 ? (
-              (() => {
-                const done = modProgress.filter((p) => p.status === 'done').length;
-                const failed = modProgress.filter((p) => p.status === 'failed');
-                if (failed.length === 0) {
-                  return <p className="text-sm text-green-600 dark:text-green-400">Installed {done} mod{done !== 1 ? 's' : ''} successfully.</p>;
-                }
-                return (
-                  <>
-                    <p className="text-sm text-yellow-600 dark:text-yellow-400">
-                      Installed {done} of {modProgress.length} mods. {failed.length} failed:
-                    </p>
-                    <ul className="mt-1 text-xs text-destructive space-y-0.5">
-                      {failed.map((f, idx) => (
-                        <li key={idx}>• {f.modId}: {f.error}</li>
-                      ))}
-                    </ul>
-                  </>
-                );
-              })()
-            ) : (
-              <p className="text-sm text-green-600 dark:text-green-400">Pack installed successfully.</p>
-            )}
-
-            {error && (
-              <p className="mt-4 text-sm text-destructive">{error}</p>
-            )}
-
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                onClick={handleDone}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                Open Instance Editor
-              </button>
-            </div>
-          </>
-        )}
       </div>
       {canonicalInstall && createdInstanceId && (
         <InstallFlow
@@ -2935,6 +3098,7 @@ function PackCreateDialog({
           instanceName={name || createdInstanceId}
           background
           onBackgroundStart={(plan) => startPlan(plan, `Installing ${packName}`, name || createdInstanceId)}
+          onOpenInstance={onCreated}
           onClose={() => {
             setCanonicalInstall(null);
             onCancel();

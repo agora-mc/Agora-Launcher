@@ -288,10 +288,12 @@ test.describe('CrashInvestigator', () => {
     await expect(page.getByText('NullPointerException in rendering')).toBeVisible();
   });
 
-  test('no-suspects message when none identified', async ({ page }) => {
+  test('nothing-detected wording when the logs show no crash', async ({ page }) => {
     await installMock(page, { noSuspects: true });
     await openDialog(page);
-    await expect(page.getByText(/We couldn’t tell which mod caused this/)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/We didn’t detect a problem automatically, but let’s diagnose it/)).toBeVisible({ timeout: 10000 });
+    // The generic "couldn't tell" card would only repeat the header.
+    await expect(page.getByText(/We couldn’t tell which mod caused this/)).toHaveCount(0);
   });
 
   test('ruled-out absent initially, appears after still-crashing', async ({ page }) => {

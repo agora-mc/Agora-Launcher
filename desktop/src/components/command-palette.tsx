@@ -211,7 +211,9 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
           Search and navigate across instances, settings, and the catalog.
         </DialogDescription>
 
-        <div className="flex items-center gap-3 px-4 border-b border-gray-200 dark:border-gray-700">
+        {/* pr-12 keeps the Esc hint clear of the dialog's own close button,
+            which is absolutely positioned in the top-right corner. */}
+        <div className="flex items-center gap-3 pl-4 pr-12 border-b border-gray-200 dark:border-gray-700">
           <span className="text-[rgb(var(--muted))] text-lg" aria-hidden="true">⌕</span>
           <Input
             ref={searchRef}
@@ -224,9 +226,10 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
             placeholder="Type a command or search…"
             className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 h-12 text-base bg-transparent placeholder:text-[rgb(var(--muted))]"
           />
-          <kbd className="ml-auto text-xs text-[rgb(var(--muted))] border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5">
-            ESC
-          </kbd>
+          <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-[rgb(var(--muted))]">
+            <kbd className="border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5">Esc</kbd>
+            {' '}to close
+          </span>
         </div>
 
         <div

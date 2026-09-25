@@ -78,8 +78,9 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'For the easiest start, choose a curated pack that matches a current Minecraft version. Packs select a tested group of mods for you and reduce the number of compatibility decisions you need to make.',
           steps: [
             'Open Browse and filter the content type to Pack.',
-            'Open a pack, read its description and supported Minecraft versions, then choose Create Instance from Pack.',
-            'Keep the suggested loader and memory unless the pack says otherwise.',
+            'Open a pack, read its description and its Versions tab, then choose Create Instance from Pack.',
+            'Keep Pack release selected: it installs the exact mod builds the curator tested. Flexible lets you pick another Minecraft version, but mods without a build for it are left out, and the install stops if a required one is missing.',
+            'Choose Check pack to see exactly what will be installed before anything is created.',
             'Launch the new instance. Resolve any health warnings before selecting Launch Anyway.',
             'Play for at least 60 seconds so Agora can establish a Last Known Good recovery point.',
           ],
@@ -1448,7 +1449,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Portable installs',
-          body: 'A file named portable.txt beside the executable makes Agora keep its data next to itself instead of in your user profile. Empty means a data folder alongside the executable; otherwise its first line names the folder, resolved relative to the executable rather than wherever you happened to run it from.',
+          body: 'A file named portable.txt beside the executable makes Agora keep its data next to itself instead of in your user profile. Empty means a data folder alongside the executable; otherwise its first line names the folder, resolved relative to the executable rather than wherever you happened to run it from. Sign-ins travel with it too: a portable copy never uses your computer’s credential store, and keeps Microsoft and GitHub sign-ins encrypted in its data folder instead — so anyone who can read that folder can read them.',
           callout: {
             tone: 'note',
             title: 'The environment variable still wins',
@@ -1528,7 +1529,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
     },
     advanced: {
-      summary: 'Handheld mode is a separate shell rather than gamepad navigation bolted onto every page. Knowing what it deliberately does not cover, and when the Controlify offer stays silent, explains most of its behaviour.',
+      summary: 'Controller support is the whole app resized for a pad, not a separate screen with its own set of destinations. Knowing what it deliberately does not cover, and when the Controlify offer stays silent, explains most of its behaviour.',
       outcomes: [
         'Know how far controller support reaches, and where it does not.',
         'Predict when the Controlify offer appears and when it does not.',
@@ -1537,7 +1538,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'The whole app, not a separate mode',
-          body: 'A controller drives Agora itself rather than a cut-down copy of it. Focus moves by geometry, so the stick and D-pad go where you are looking; A activates, B goes back, the shoulder buttons move between sections, and Y opens the command palette to jump anywhere. Dropdowns and sliders change in place instead of opening a system menu a controller cannot enter, and selecting a text box raises an on-screen keyboard. Handheld mode is still the quickest way from a controller to a running game, but it is no longer the only part of Agora a controller can use.'
+          body: 'A controller drives Agora itself rather than a cut-down copy of it. Focus moves by geometry, so the stick and D-pad go where you are looking; A activates, B goes back, the shoulder buttons move between sections, and Start opens the command palette to jump anywhere. Dropdowns and sliders change in place instead of opening a system menu a controller cannot enter, and selecting a text box raises an on-screen keyboard. An earlier version had a separate handheld screen that could only list and launch instances; it has been replaced by this, so every page a mouse can reach, a controller can too.'
         },
         {
           title: 'Where coverage still stops',
@@ -1545,7 +1546,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Launching behaves identically',
-          body: 'A launch from handheld mode resolves direct or delegated the same way the Play button does for that instance, and it runs the same pre-launch health checks. Handheld mode is a different way to reach the same action, not a different action.',
+          body: 'Pressing Play with a controller is the same Play button, so it resolves direct or delegated launch the same way for that instance and runs the same pre-launch health checks. A controller is a different way to reach the same action, not a different action.',
         },
         {
           title: 'When the Controlify offer stays quiet',

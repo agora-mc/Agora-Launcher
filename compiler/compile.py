@@ -1906,8 +1906,40 @@ def create_tables(conn: sqlite3.Connection) -> None:
             version TEXT,
             status TEXT,
             description TEXT,
+            modrinth_id TEXT,
             PRIMARY KEY (pack_id, mod_id),
             FOREIGN KEY (mod_id) REFERENCES registry_items(id)
+        )
+    """)
+
+    # Locked pack releases. A pack's top-level `mods` list is its flexible
+    # recipe (any Minecraft version, newest compatible build of each mod); each
+    # row here is one exact release with a fixed target and pinned mod versions.
+    # Additive tables, so older clients that never query them keep working and
+    # the schema version does not need to move.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pack_versions (
+            pack_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            minecraft_version TEXT NOT NULL,
+            loader TEXT NOT NULL,
+            loader_version TEXT NOT NULL,
+            changelog TEXT,
+            PRIMARY KEY (pack_id, version)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pack_version_mods (
+            pack_id TEXT NOT NULL,
+            pack_version TEXT NOT NULL,
+            mod_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            modrinth_id TEXT,
+            version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            description TEXT,
+            PRIMARY KEY (pack_id, pack_version, mod_id)
         )
     """)
 
@@ -2292,7 +2324,32 @@ def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def default_compatible_versions(item: dict[str, Any]) -> list[dict[str, str]]:
-    """Return a sensible compatibility fallback when none is provided."""
+    """Return a sensible compatibility fallback when none is provided.
+
+    A curated pack already declares what it was built for: its locked
+    ``versions`` when it has them, otherwise the one Minecraft version and
+    loader of its flexible recipe. The desktop defaults a new pack instance to
+    the first entry. Falling through to the generic 1.21/fabric guess would
+    advertise every pack as a 1.21 Fabric pack whatever it actually targets.
+    """
+    if item.get("content_type") == "pack" and item.get("versions"):
+        # Locked releases, newest first; the desktop defaults to the first.
+        return [
+            {
+                "mc_version": str(release["minecraft_version"]),
+                "loader": str(release["loader"]),
+                "mod_version": str(release["version"]),
+            }
+            for release in item["versions"]
+        ]
+    if item.get("content_type") == "pack" and item.get("minecraft_version"):
+        return [
+            {
+                "mc_version": str(item["minecraft_version"]),
+                "loader": str(item.get("loader") or "fabric"),
+                "mod_version": "latest",
+            }
+        ]
     return [
         {
             "mc_version": "1.21",
@@ -3076,19 +3133,99 @@ def _insert_version_changelogs(conn: sqlite3.Connection, rows: list[dict[str, An
     return len(rows)
 
 
+PACK_MOD_STATUSES = ("required", "recommended", "optional")
+PACK_MOD_SOURCES = ("manifest", "modrinth_id", "github_release")
+PACK_LOADERS = ("fabric", "quilt", "forge", "neoforge")
+
+
+def _validate_pack_mod_entries(where: str, mods: Any, *, require_version: bool) -> None:
+    if not isinstance(mods, list) or not mods:
+        raise SystemExit(f"{where}: mods must be a non-empty list")
+    seen: set[str] = set()
+    for entry in mods:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
+            raise SystemExit(f"{where}: every mods entry needs a string id, got {entry!r}")
+        mod_id = entry["id"]
+        if mod_id in seen:
+            raise SystemExit(f"{where}: {mod_id} is listed twice")
+        seen.add(mod_id)
+        status = entry.get("status", "required")
+        if status not in PACK_MOD_STATUSES:
+            raise SystemExit(
+                f"{where}: {mod_id} has status {status!r}; "
+                f"expected one of {', '.join(PACK_MOD_STATUSES)}"
+            )
+        source = entry.get("source", "manifest")
+        if source not in PACK_MOD_SOURCES:
+            raise SystemExit(
+                f"{where}: {mod_id} has source {source!r}; "
+                f"expected one of {', '.join(PACK_MOD_SOURCES)}"
+            )
+        if source == "modrinth_id" and not entry.get("modrinth_id"):
+            raise SystemExit(f"{where}: {mod_id} uses source modrinth_id but has no modrinth_id")
+        version = entry.get("version")
+        if require_version and (
+            not isinstance(version, str)
+            or not version.strip()
+            or version.strip() in ("latest", "available")
+        ):
+            raise SystemExit(
+                f"{where}: {mod_id} needs an exact version; "
+                "every mod in a locked pack version is pinned"
+            )
+
+
+def validate_pack_manifest(item: dict[str, Any]) -> None:
+    """Validate a curated pack's flexible recipe and its locked versions.
+
+    The top-level ``mods`` list is the flexible recipe, where pins are optional.
+    Each ``versions`` entry is a locked release, so every mod in it must carry
+    an exact version and the target must be fully specified.
+    """
+    pack_id = item.get("id", "<pack>")
+    _validate_pack_mod_entries(pack_id, item.get("mods"), require_version=False)
+    versions = item.get("versions")
+    if versions is None:
+        return
+    if not isinstance(versions, list):
+        raise SystemExit(f"{pack_id}: versions must be a list")
+    seen: set[str] = set()
+    for release in versions:
+        if not isinstance(release, dict):
+            raise SystemExit(f"{pack_id}: every versions entry must be an object")
+        version = release.get("version")
+        if not isinstance(version, str) or not version.strip():
+            raise SystemExit(f"{pack_id}: every versions entry needs a version string")
+        if version in seen:
+            raise SystemExit(f"{pack_id}: version {version} is listed twice")
+        seen.add(version)
+        where = f"{pack_id}@{version}"
+        for field in ("minecraft_version", "loader", "loader_version"):
+            value = release.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise SystemExit(f"{where}: {field} is required")
+        if release["loader"] not in PACK_LOADERS:
+            raise SystemExit(
+                f"{where}: loader {release['loader']!r} is not one of {', '.join(PACK_LOADERS)}"
+            )
+        _validate_pack_mod_entries(where, release.get("mods"), require_version=True)
+
+
 def insert_pack_mods(conn: sqlite3.Connection, pack_id: str, mods: list[dict[str, Any]]) -> None:
-    """Insert pack membership rows into pack_mods."""
+    """Insert pack membership rows into pack_mods (the flexible recipe)."""
     cursor = conn.cursor()
     for entry in mods:
         cursor.execute(
             """
-            INSERT INTO pack_mods (pack_id, mod_id, source, version, status, description)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO pack_mods
+                (pack_id, mod_id, source, version, status, description, modrinth_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(pack_id, mod_id) DO UPDATE SET
                 source=excluded.source,
                 version=excluded.version,
                 status=excluded.status,
-                description=excluded.description
+                description=excluded.description,
+                modrinth_id=excluded.modrinth_id
             """,
             (
                 pack_id,
@@ -3097,8 +3234,52 @@ def insert_pack_mods(conn: sqlite3.Connection, pack_id: str, mods: list[dict[str
                 entry.get("version"),
                 entry.get("status", "required"),
                 entry.get("description"),
+                entry.get("modrinth_id"),
             ),
         )
+
+
+def insert_pack_versions(
+    conn: sqlite3.Connection, pack_id: str, versions: list[dict[str, Any]]
+) -> None:
+    """Insert a pack's locked releases, keeping manifest order (newest first)."""
+    cursor = conn.cursor()
+    for position, release in enumerate(versions):
+        cursor.execute(
+            """
+            INSERT INTO pack_versions
+                (pack_id, version, position, minecraft_version, loader, loader_version, changelog)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pack_id,
+                release["version"],
+                position,
+                release["minecraft_version"],
+                release["loader"],
+                release["loader_version"],
+                release.get("changelog"),
+            ),
+        )
+        for entry in release["mods"]:
+            cursor.execute(
+                """
+                INSERT INTO pack_version_mods
+                    (pack_id, pack_version, mod_id, source, modrinth_id,
+                     version, status, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pack_id,
+                    release["version"],
+                    entry["id"],
+                    entry.get("source", "manifest"),
+                    entry.get("modrinth_id"),
+                    entry["version"].strip(),
+                    entry.get("status", "required"),
+                    entry.get("description"),
+                ),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3677,8 +3858,10 @@ def compile_registry(
             pack.setdefault("community_categories", [])
             pack.setdefault("icon_url", None)
             pack.setdefault("gallery_urls", [])
+            validate_pack_manifest(pack)
             insert_registry_item(conn, pack, path)
             insert_pack_mods(conn, pack["id"], pack.get("mods", []))
+            insert_pack_versions(conn, pack["id"], pack.get("versions") or [])
             pack_count += 1
         else:
             insert_registry_item(conn, data, path)

@@ -879,6 +879,11 @@ export function CrashInvestigator({
   if (!result) return null;
 
   const { fingerprint, signature_name, suspects, suggested_action, ruled_out } = result;
+  // Crash Doctor is always opened by the user (Troubleshoot / Investigate), so
+  // it regularly finds nothing to go on. Say that plainly rather than opening
+  // with copy that assumes a crash was found.
+  const nothingDetected = !fingerprint && !signature_name && suspects.length === 0
+    && ruled_out.length === 0 && !evidence?.triage.matched;
 
   // Determine the action card for the top suspect
   let actionCard: SuggestedAction | undefined;
@@ -896,7 +901,9 @@ export function CrashInvestigator({
           <div className="flex-1 min-w-0">
             <DialogTitle>Crash Doctor</DialogTitle>
             <DialogDescription>
-              We look for clues in your logs and test likely causes one at a time. Anything we change can be undone.
+              {nothingDetected
+                ? 'We didn’t detect a problem automatically, but let’s diagnose it. Choose a crash file or paste the crash text below, or narrow it down one mod at a time.'
+                : 'We look for clues in your logs and test likely causes one at a time. Anything we change can be undone.'}
             </DialogDescription>
             {fingerprint && (
               <p className="text-sm text-muted-foreground mt-1 truncate" title={fingerprint.exception_class}>
@@ -1117,7 +1124,7 @@ export function CrashInvestigator({
               )}
 
               {/* No suspects */}
-              {suggested_action.kind === 'NoSuspects' && (
+              {suggested_action.kind === 'NoSuspects' && !nothingDetected && (
                 <div className="rounded-xl border border-border bg-card p-4">
                   <p className="text-sm text-muted-foreground">
                     We couldn’t tell which mod caused this. It might not be a mod issue at all. Try choosing a different crash file or pasting your crash text directly.

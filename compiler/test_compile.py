@@ -72,6 +72,94 @@ class TestNormalizePackIdentity(unittest.TestCase):
 # validate_sha256
 # ---------------------------------------------------------------------------
 
+class TestDefaultCompatibleVersions(unittest.TestCase):
+    def test_pack_defaults_to_its_declared_target(self):
+        pack = {"content_type": "pack", "minecraft_version": "1.20.1", "loader": "forge"}
+        self.assertEqual(
+            _compile.default_compatible_versions(pack),
+            [{"mc_version": "1.20.1", "loader": "forge", "mod_version": "latest"}],
+        )
+
+    def test_non_pack_keeps_generic_fallback(self):
+        mod = {"content_type": "mod", "minecraft_version": "1.20.1", "loader": "forge"}
+        self.assertEqual(
+            _compile.default_compatible_versions(mod)[0]["mc_version"], "1.21"
+        )
+
+
+class TestValidatePackManifest(unittest.TestCase):
+    def _pack(self, **extra):
+        pack = {
+            "id": "p",
+            "content_type": "pack",
+            "minecraft_version": "1.21",
+            "loader": "fabric",
+            "mods": [{"id": "sodium", "status": "required"}],
+        }
+        pack.update(extra)
+        return pack
+
+    def _release(self, **extra):
+        release = {
+            "version": "1.0.0",
+            "minecraft_version": "1.21",
+            "loader": "fabric",
+            "loader_version": "0.19.5",
+            "mods": [{"id": "sodium", "version": "0.6.0", "status": "required"}],
+        }
+        release.update(extra)
+        return release
+
+    def test_flexible_only_pack_is_valid(self):
+        _compile.validate_pack_manifest(self._pack())
+
+    def test_locked_release_is_valid(self):
+        _compile.validate_pack_manifest(self._pack(versions=[self._release()]))
+
+    def test_locked_release_requires_every_mod_pinned(self):
+        release = self._release(mods=[{"id": "sodium", "status": "required"}])
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(self._pack(versions=[release]))
+
+    def test_latest_is_not_a_pin(self):
+        release = self._release(mods=[{"id": "sodium", "version": "latest"}])
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(self._pack(versions=[release]))
+
+    def test_duplicate_release_versions_are_rejected(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(
+                self._pack(versions=[self._release(), self._release()])
+            )
+
+    def test_unknown_status_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(
+                self._pack(mods=[{"id": "sodium", "status": "must-have"}])
+            )
+
+    def test_modrinth_source_needs_a_project_id(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(
+                self._pack(mods=[{"id": "x", "source": "modrinth_id"}])
+            )
+
+    def test_release_needs_a_known_loader(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(
+                self._pack(versions=[self._release(loader="rift")])
+            )
+
+    def test_locked_releases_become_compatible_versions(self):
+        pack = self._pack(
+            versions=[self._release(version="2.0.0", minecraft_version="1.21.1"), self._release()]
+        )
+        self.assertEqual(
+            [entry["mod_version"] for entry in _compile.default_compatible_versions(pack)],
+            ["2.0.0", "1.0.0"],
+        )
+
+
 class TestValidateSha256(unittest.TestCase):
     """Tests for validate_sha256."""
 

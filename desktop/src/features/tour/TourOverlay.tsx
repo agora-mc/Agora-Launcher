@@ -85,6 +85,12 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
     anchorDisabled: false,
   });
 
+  // The card can be tucked away when it covers what the step is explaining —
+  // at large text scales a dialog like the install review fills the window and
+  // no placement leaves it clear. Every new step starts expanded again.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { setCollapsed(false); }, [step.id]);
+
   // One measurement drives everything on screen: where the spotlight goes,
   // which side the card sits on, whether the step's surface is still open, and
   // whether the anchor this step is waiting for has turned up. It runs once
@@ -193,7 +199,8 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
     const types = ['pointerdown', 'mousedown', 'focusin'] as const;
     types.forEach((type) => element.addEventListener(type, stop));
     return () => types.forEach((type) => element.removeEventListener(type, stop));
-  }, []);
+    // Collapsing swaps the card element, so the guard must follow it.
+  }, [collapsed]);
 
   const offTrack = !layout.gateMet;
   const canContinue = acceptsContinue(step) && !offTrack;
@@ -244,6 +251,25 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
         />
       ))}
 
+      {collapsed ? (
+        <div
+          ref={cardRef}
+          className={`tour-card tour-card-collapsed tour-card-${layout.side}`}
+          role="dialog"
+          aria-label="Guided tour"
+        >
+          <span className="min-w-0 truncate text-xs font-medium text-foreground">
+            Tour · Step {tour.stepNumber} of {tour.totalSteps}: {step.title}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCollapsed(false)}
+            className="shrink-0 rounded-lg bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+          >
+            Show
+          </button>
+        </div>
+      ) : (
       <div
         ref={cardRef}
         className={`tour-card tour-card-${layout.side}`}
@@ -256,8 +282,16 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
           <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
             Guided tour
           </span>
-          <span className="text-[11px] font-medium text-muted-foreground">
+          <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
             Step {tour.stepNumber} of {tour.totalSteps}
+            <button
+              type="button"
+              onClick={() => setCollapsed(true)}
+              title="Hide the tour card so you can see what's behind it"
+              className="rounded px-1.5 py-0.5 font-semibold hover:bg-accent hover:text-accent-foreground"
+            >
+              Hide
+            </button>
           </span>
         </div>
         <div
@@ -339,6 +373,7 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -269,14 +269,19 @@ export const TOUR_STEPS: readonly TourStep[] = [
     },
     waitingHint: 'Confirm the install to continue.',
     offTrackHint: 'Run the install again to continue, or skip this step.',
+    // The review dialog is tall; centering the card on its confirm button put
+    // the card over the dependency list the step asks the user to read.
+    cardEdge: 'bottom',
   },
   {
     id: 'open-instance',
     title: 'Open the instance',
-    body: 'The mod is in. Let’s look at the instance you just changed.',
-    anchors: ['install-open-instance', 'nav-instances'],
+    // Worded so it stays true when the install step was skipped: the tour
+    // cannot assume anything was actually installed.
+    body: 'Let’s look at the instance itself. Anything you installed shows up in its list.',
+    anchors: ['install-open-instance', 'instance-edit', 'nav-instances'],
     advance: { kind: 'appear', anchor: 'page-instance-editor' },
-    waitingHint: 'Open the instance to continue.',
+    waitingHint: 'Click “Open Instance”, or open My Instances and click Edit on your instance.',
   },
   {
     id: 'instance-editor',

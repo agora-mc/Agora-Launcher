@@ -54,7 +54,7 @@ Keep these rules in mind:
 - Use disposable instances when learning destructive commands.
 - `instance delete`, `snapshots restore`, `snapshots delete`, `lockfile import`, and some install conflict choices can replace or remove files.
 - Never place access tokens or account codes in command history, log files, or bug reports.
-- `--data-dir` isolates files under the Agora data root, but Microsoft credentials use the operating-system credential store. `auth status`, `auth login`, and `auth logout` therefore inspect or change the same credential entry used by the desktop app.
+- `--data-dir` isolates files under the Agora data root, but Microsoft credentials use the operating-system credential store. `auth status`, `auth login`, and `auth logout` therefore inspect or change the same credential entry used by the desktop app. The exception is a portable copy (a `portable.txt` beside the executable, with no `AGORA_DATA_DIR` override), which never uses the operating-system store and keeps its credentials encrypted in its own data folder.
 
 ## Global syntax
 
@@ -229,11 +229,16 @@ The default source is Agora's curated strategy. Use `--source modrinth` only whe
 | `agora import <PATH>` | Import a supported local pack |
 | `agora import --url <MRPACK_URL>` | Download and import a Modrinth pack URL |
 | `agora pack install <PATH> <INSTANCE>` | Install an Agora pack manifest into an existing instance |
+| `agora pack versions <PACK>` | List a curated registry pack's locked releases, newest first |
+| `agora pack curated <PACK> <INSTANCE> --release <VERSION>` | Install a locked release (the instance must be on its Minecraft version and loader) |
+| `agora pack curated <PACK> <INSTANCE>` | Install the pack's flexible recipe against the instance's own Minecraft version |
 | `agora export <INSTANCE> <DEST>` | Export a standalone server environment |
 | `agora migrate-data --from <PATH>` | Plan migration from an older CLI data root |
 | `agora migrate-data --from <PATH> --yes` | Execute the migration |
 
 `migrate-data` is a dry-run unless `--yes` is supplied. Read every reported conflict before executing it.
+
+`pack curated` plans first and installs nothing if a mod marked `required` has no build for the target; recommended and optional mods without one are listed as left out. Add `--dry-run` to print the plan without installing. Optional dependencies of the pack's mods are not added, because a CLI run cannot answer that prompt.
 
 `--symlink-saves` makes imported saves depend on the original path. It is not a copy or backup.
 

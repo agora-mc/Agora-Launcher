@@ -184,6 +184,8 @@ pub fn run() {
             commands::get_registry_item,
             commands::list_categories,
             commands::list_pack_mods,
+            commands::list_pack_versions,
+            commands::plan_curated_pack,
             commands::list_audit_log,
             commands::check_registry_update,
             commands::get_registry_status,

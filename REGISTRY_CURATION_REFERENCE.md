@@ -263,7 +263,24 @@ Custom or non-open-source licenses MUST use the `LicenseRef-*` prefix. Do NOT in
 
 ## 4. Modpack manifest schema (`registry/packs/<id>.json`)
 
-Packs reference mods by ID and declare which loader + MC version the pack targets. A pack can mix mods from the curated catalog, Modrinth (referenced by ID), and GitHub releases.
+A curated pack has two parts, and players choose between them when they install:
+
+- **Locked releases** (`versions`, optional but recommended): each one is an exact Minecraft version,
+  loader, loader version, and a pinned version of every mod — the build you tested. Players get this by
+  default whenever a pack has at least one release, and it is what the pack's Versions tab lists.
+- **The flexible recipe** (top-level `mods`, required): mod names with optional pins that a player can
+  aim at *any* Minecraft version and loader. Each mod uses its pin when that build fits the chosen
+  target, otherwise the newest compatible build.
+
+In both, `status` decides what happens when a mod cannot be resolved:
+
+| `status` | If no build can be found |
+|---|---|
+| `required` | **The install stops before anything is created.** Use it for the mods the pack cannot exist without (for a Create pack, Create). |
+| `recommended` | Left out, and listed in the install review. |
+| `optional` | Left out, and listed in the install review. |
+
+A pack can mix mods from the curated catalog and Modrinth (referenced by project ID).
 
 ### Full example
 
@@ -274,11 +291,10 @@ Packs reference mods by ID and declare which loader + MC version the pack target
   "name": "Community Optimized Survival",
   "minecraft_version": "1.21",
   "loader": "fabric",
-  "loader_version": "0.15.11",
+  "loader_version": "0.19.5",
   "mods": [
     { "id": "sodium", "source": "manifest", "status": "required" },
     { "id": "lithium", "source": "manifest", "status": "required" },
-    { "id": "starlight", "source": "manifest", "status": "required" },
     { "id": "fabric-api", "source": "manifest", "status": "required" },
     {
       "id": "iris",
@@ -290,9 +306,30 @@ Packs reference mods by ID and declare which loader + MC version the pack target
       "id": "xaeros-minimap",
       "source": "modrinth_id",
       "modrinth_id": "1bokaNcj",
-      "version": "24.2.0",
       "status": "optional",
       "description": "Client-side minimap. Disable for a pure vanilla feel."
+    }
+  ],
+  "versions": [
+    {
+      "version": "1.0.0",
+      "minecraft_version": "1.21",
+      "loader": "fabric",
+      "loader_version": "0.19.5",
+      "changelog": "First locked release.",
+      "mods": [
+        { "id": "sodium", "source": "manifest", "status": "required", "version": "mc1.21.1-0.6.13-fabric" },
+        { "id": "lithium", "source": "manifest", "status": "required", "version": "mc1.21.1-0.15.2-fabric" },
+        { "id": "fabric-api", "source": "manifest", "status": "required", "version": "0.102.0+1.21" },
+        { "id": "iris", "source": "manifest", "status": "recommended", "version": "1.8.8+1.21.1-fabric" },
+        {
+          "id": "xaeros-minimap",
+          "source": "modrinth_id",
+          "modrinth_id": "1bokaNcj",
+          "status": "optional",
+          "version": "25.3.2_Fabric_1.21"
+        }
+      ]
     }
   ],
   "override_url": null,
@@ -312,24 +349,41 @@ Packs reference mods by ID and declare which loader + MC version the pack target
 |---|---|---|---|
 | `id` | string | Yes | Unique slug for the pack. |
 | `content_type` | string | Yes | Must be `pack`. |
-| `minecraft_version` | string | Yes | Target Minecraft version. |
-| `loader` | string | Yes | Target loader: `fabric`, `quilt`, `forge`, `neoforge`. |
-| `loader_version` | string | Yes | Pinned loader version. |
-| `mods` | array | Yes | List of mod entries (see below). |
+| `minecraft_version` | string | Yes | The flexible recipe's suggested Minecraft version (used as the default when the pack has no releases). |
+| `loader` | string | Yes | The flexible recipe's suggested loader: `fabric`, `quilt`, `forge`, `neoforge`. |
+| `loader_version` | string | Yes | Suggested loader version. |
+| `mods` | array | Yes | The flexible recipe (see mod-entry fields below). Pins are optional here. |
+| `versions` | array | Optional | Locked releases, **newest first**. See below. |
 | `override_url` | string\|null | Optional | URL to a zip of configs / resourcepacks / shaderpacks to apply as overrides when installing the pack. Set to `null` if the pack has no overrides. |
 | `sha256` | string | Optional | Hash of the override zip (if `override_url` is set). |
 
-### Pack mod-entry fields
+### Locked release fields
 
-Each entry in `mods[]`:
+Each entry in `versions[]`:
 
 | Field | Type | Required? | Description |
 |---|---|---|---|
-| `id` | string | Yes | Mod catalog ID (if `source: "manifest"`) or display ID. |
-| `source` | string | Yes | `manifest` (lookup in registry.db), `modrinth_id` (query Modrinth API directly), or `github_release`. |
+| `version` | string | Yes | The release's own version (e.g. `1.0.0`). Unique within the pack. |
+| `minecraft_version` | string | Yes | Exact Minecraft version. |
+| `loader` | string | Yes | `fabric`, `quilt`, `forge`, or `neoforge`. |
+| `loader_version` | string | Yes | Exact loader version. Must be one Agora has pinned in `loader-manifests/` for that Minecraft version. |
+| `changelog` | string | Optional | Shown as plain text on the Versions tab and in the install dialog. |
+| `mods` | array | Yes | Mod entries as below, **every one with an exact `version`** (`latest` is rejected). |
+
+Add a new release at the top of the list rather than editing an old one: players who installed the old
+release keep an accurate record of what they got.
+
+### Pack mod-entry fields
+
+Each entry in `mods[]` (top level or inside a release):
+
+| Field | Type | Required? | Description |
+|---|---|---|---|
+| `id` | string | Yes | Mod catalog ID (if `source` is `manifest` or `github_release`) or display ID. Unique within its list. |
+| `source` | string | No (default `manifest`) | `manifest` or `github_release` (look up in registry.db), or `modrinth_id` (query Modrinth directly). |
 | `modrinth_id` | string | Required when `source: "modrinth_id"` | The Modrinth project ID. |
-| `version` | string | Optional | Exact version string. If omitted, the launcher defaults to the latest version compatible with the pack's `minecraft_version` + `loader`. |
-| `status` | string | Yes | `required`, `recommended`, or `optional`. Drives the UI badge and whether the pack install flow aborts on failure. |
+| `version` | string | Required in a release; optional at top level | Exact version string (Modrinth version number or ID, or the catalog version). At top level it is a preference: used when it fits the chosen target, otherwise the newest compatible build is used. |
+| `status` | string | No (default `required`) | `required`, `recommended`, or `optional` — see the table at the top of this section. |
 | `description` | string | Optional | Tooltip shown next to the mod in the pack install UI. |
 
 ---

@@ -3005,6 +3005,73 @@ as the signed-in user. It does not apply to macOS or Linux, where the keyring ha
 comparable ceiling and is still the primary path. And deleting a local credential is still not
 revocation: no provider request is made.
 
+### 19.26 A Portable Copy Never Uses the OS Keyring (refines 19.25)
+
+19.25 kept the keyring as the first stop everywhere and only changed what happens when a write
+does not fit. On a portable copy that left the two sign-ins behaving differently for no reason a
+player could see: the Microsoft credential overflows Credential Manager and lands in the portable
+data folder, so it travels with the stick, while the roughly 80-character GitHub token fits and
+stays on whichever machine it was entered on. The portable README then told people they might
+need to sign in again on another computer, which is the opposite of what a portable build is for.
+
+**When the data root is the one a `portable.txt` marker names, `auth.rs` does not read, write,
+report or clear the keyring at all.** Every credential goes to the device-key file in the portable
+data folder, the same scheme 19.25 already chose for relocated roots.
+`AppPaths::data_root_is_portable()` is the predicate. It is true only when the marker is present
+*and* `AGORA_DATA_DIR` does not override it, so it describes the root actually in use, matching
+`platform_default()`'s precedence. `AGORA_DATA_DIR` on its own does not trigger this: it is also
+the disposable-profile mechanism for development, where sharing the keyring is the documented
+behaviour.
+
+Two consequences are deliberate. Signing out of a portable copy no longer deletes the shared
+keyring entry, which would otherwise have signed an installed copy on the same machine out as
+well. And a portable copy that previously stored its GitHub token in the keyring asks for one
+new sign-in; importing it from the keyring was rejected because that import would then repeat
+after every portable sign-out. The Settings notice names portable mode as the reason for the
+degraded storage, because on a portable copy it is the reason.
+
+### 19.27 Curated Packs Have Locked Releases and a Flexible Recipe
+
+§2.3 gave a curated pack one Minecraft version and a mod list with optional pins, and the desktop
+resolved that list itself in React: it ignored the pins, ignored `status`, and silently fell
+back to the newest build of a mod whether or not it fit. A pack could be installed on any
+Minecraft version with no signal about what would break. This subsection replaces that with two
+explicit shapes, planned in core.
+
+**Locked releases.** A manifest's optional `versions` array, newest first, lists releases. Each
+has an exact Minecraft version, loader and loader version, and a pinned `version` for every mod;
+the compiler rejects a release with an unpinned mod. They compile into `pack_versions` and
+`pack_version_mods`, and they are the default install whenever a pack has any. This is what a
+pack's Versions tab lists, and it matches what players expect from Modrinth and CurseForge.
+
+**The flexible recipe.** The top-level `mods` list keeps working unchanged and can be aimed at
+any Minecraft version and loader. Each mod takes its pin while that build fits the chosen target,
+otherwise the newest compatible build. This keeps the old behaviour as a feature rather than an
+accident: an older pack, or a newer Minecraft version the curator has not released for yet,
+still installs.
+
+**`status` finally decides failure handling, in both modes.** A `required` mod that cannot be
+resolved blocks the install before an instance is created; a Create pack without Create is not
+that pack. `recommended` and `optional` mods with no build are left out and listed in the review.
+An unrecognised status is treated as required, so the default fails closed.
+
+**Core owns the plan.** `curated_pack::CuratedPackService::plan` resolves a selection (a release,
+or the recipe plus a target) through the existing `Resolver`, returning the planned mods with
+their resolved versions, the dropped mods and the blocking mods. Planning writes nothing. The
+desktop only asks for a plan, shows it, creates the instance, and hands the planned mods to a
+normal `batch-install` review, so snapshots, hash verification and the health gate all apply as
+before. The CLI uses the same planner (`agora pack versions`, `agora pack curated`).
+
+**The storage change is additive.** `pack_versions` and `pack_version_mods` are new tables, and
+`pack_mods` gains a `modrinth_id` column so Modrinth-sourced entries keep their project id. The
+schema version does not move: clients refuse a registry whose schema is newer than they support,
+so a bump would lock every older client out of catalog updates for a change they can ignore.
+New clients check for the tables and columns and treat their absence as "flexible only".
+
+**Not yet covered.** Moving an instance created from one release to a newer release of the same
+pack is left to the pack-update flow (§6.5a) and is not implemented here. The flexible recipe
+does not yet let a player untick optional mods before installing.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

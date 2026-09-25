@@ -583,10 +583,61 @@ export interface PackModRow {
   version: string | null;
   status: string;
   description: string | null;
+  /** Modrinth project id for `source === 'modrinth_id'` entries. */
+  modrinth_id?: string | null;
 }
 
 export const listPackMods = (packId: string) =>
   invoke<PackModRow[]>('list_pack_mods', { packId });
+
+/** One locked release of a curated pack: exact target, pinned mods. */
+export interface PackVersionRow {
+  pack_id: string;
+  version: string;
+  minecraft_version: string;
+  loader: string;
+  loader_version: string;
+  changelog: string | null;
+}
+
+/** A curated pack's locked releases, newest first. */
+export const listPackVersions = (packId: string) =>
+  invoke<PackVersionRow[]>('list_pack_versions', { packId });
+
+export type CuratedPackSelection =
+  | { mode: 'locked'; packVersion: string }
+  | { mode: 'flexible'; minecraftVersion: string; loader: string };
+
+export interface PlannedPackMod {
+  modId: string;
+  status: string;
+  sourceType: 'curated' | 'modrinth' | 'manual';
+  itemId: string;
+  version: string;
+  displayVersion: string;
+  pinned: boolean;
+}
+
+export interface UnresolvedPackMod {
+  modId: string;
+  status: string;
+  reason: string;
+}
+
+export interface CuratedPackPlan {
+  packId: string;
+  packVersion: string | null;
+  target: { minecraftVersion: string; loader: string; loaderVersion: string | null };
+  mods: PlannedPackMod[];
+  /** Recommended/optional mods left out because nothing fits. */
+  dropped: UnresolvedPackMod[];
+  /** Required mods that could not be resolved; any entry blocks the install. */
+  blocking: UnresolvedPackMod[];
+}
+
+/** Resolve a curated pack into installable mods. Read-only. */
+export const planCuratedPack = (packId: string, selection: CuratedPackSelection) =>
+  invoke<CuratedPackPlan>('plan_curated_pack', { packId, selection });
 
 export const listInstances = () => invoke<InstanceRow[]>('list_instances');
 export const getInstanceDetail = (instanceId: string) =>

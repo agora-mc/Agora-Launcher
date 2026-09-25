@@ -27,8 +27,9 @@ Extract the entire ZIP to a writable folder, then run Agora Launcher.exe.
 No installer is needed. Microsoft Edge WebView2 Runtime must be installed.
 Agora keeps application data and browser preferences in the adjacent data folder.
 AGORA_DATA_DIR overrides this location if you have set that environment variable.
-Existing installed data is not automatically imported. OS credential-store sign-ins
-remain tied to your Windows account; you may need to sign in on another computer.
+Existing installed data is not automatically imported. Sign-ins are encrypted in the
+data folder rather than the Windows credential store, so they travel with this copy.
+Anyone who can read the data folder can read them; keep the drive safe.
 
 To update, close Agora and replace Agora Launcher.exe from the new portable ZIP.
 Keep portable.txt and your data folder. Do not run the MSI/EXE installer to update

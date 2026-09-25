@@ -4,7 +4,7 @@
   "name": "Community Optimized Survival",
   "minecraft_version": "1.21",
   "loader": "fabric",
-  "loader_version": "0.15.11",
+  "loader_version": "0.19.5",
   "mods": [
     {
       "id": "sodium",
@@ -34,6 +34,50 @@
       "version": "24.2.0",
       "status": "optional",
       "description": "Client-side minimap. Disable for a pure vanilla feel."
+    }
+  ],
+  "versions": [
+    {
+      "version": "1.0.0",
+      "minecraft_version": "1.21",
+      "loader": "fabric",
+      "loader_version": "0.19.5",
+      "changelog": "First locked release: the exact mod builds this pack was tested with on 1.21.",
+      "mods": [
+        {
+          "id": "sodium",
+          "source": "manifest",
+          "status": "required",
+          "version": "mc1.21.1-0.6.13-fabric"
+        },
+        {
+          "id": "lithium",
+          "source": "manifest",
+          "status": "required",
+          "version": "mc1.21.1-0.15.2-fabric"
+        },
+        {
+          "id": "fabric-api",
+          "source": "manifest",
+          "status": "required",
+          "version": "0.102.0+1.21"
+        },
+        {
+          "id": "iris",
+          "source": "manifest",
+          "status": "recommended",
+          "description": "Enable this if you want to use shader packs.",
+          "version": "1.8.8+1.21.1-fabric"
+        },
+        {
+          "id": "xaeros-minimap",
+          "source": "modrinth_id",
+          "modrinth_id": "1bokaNcj",
+          "status": "optional",
+          "description": "Client-side minimap. Disable for a pure vanilla feel.",
+          "version": "25.3.2_Fabric_1.21"
+        }
+      ]
     }
   ],
   "override_url": null,

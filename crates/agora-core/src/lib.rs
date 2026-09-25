@@ -19,6 +19,7 @@ pub mod crash_evidence;
 pub mod crash_export;
 pub mod crash_service;
 pub mod ctx;
+pub mod curated_pack;
 pub mod data_migration;
 pub mod db;
 pub mod dependency_ops;

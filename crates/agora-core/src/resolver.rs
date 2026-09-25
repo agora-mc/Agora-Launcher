@@ -1281,11 +1281,27 @@ impl Resolver {
         manifest: &InstanceManifest,
         project_id: &str,
     ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
+        self.list_raw_modrinth_versions_for(
+            project_id,
+            &manifest.minecraft_version,
+            &manifest.loader,
+        )
+        .await
+    }
+
+    /// [`Self::list_raw_modrinth_versions`] against an explicit target, for
+    /// planning content before the instance that will hold it exists.
+    pub async fn list_raw_modrinth_versions_for(
+        &self,
+        project_id: &str,
+        minecraft_version: &str,
+        loader: &str,
+    ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         let url = format!(
             "https://api.modrinth.com/v2/project/{pid}/version?game_versions=[\"{gv}\"]&loaders=[\"{ld}\"]",
             pid = urlencoding::encode(project_id),
-            gv = urlencoding::encode(&manifest.minecraft_version),
-            ld = urlencoding::encode(&manifest.loader),
+            gv = urlencoding::encode(minecraft_version),
+            ld = urlencoding::encode(loader),
         );
         self.fetch_raw_modrinth_versions_url(&url).await
     }

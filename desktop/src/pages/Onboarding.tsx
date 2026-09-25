@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   cancelJavaRuntime,
@@ -135,6 +135,13 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     }
   };
 
+  // Every step shares one scroll container, so without this a step opened
+  // scrolled wherever the previous one was left — often past its own heading.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [step]);
+
   // Java sits between Launch and GitHub only on the direct-launch path, so the
   // neighbours of that gap depend on the choice made on the Launch step.
   const afterLaunch: Step = directLaunch ? 'java' : 'github';
@@ -143,7 +150,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   return (
     <OnboardingFlowContext.Provider value={{ directLaunch }}>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-        <div className="w-[70vw] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
+        <div ref={scrollRef} className="w-[70vw] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-border bg-card shadow-xl">
           <div className="p-6 sm:p-8">
             {step === 'welcome' && <WelcomeStep onContinue={() => setStep('appearance')} />}
             {step === 'appearance' && (
@@ -427,7 +434,9 @@ function AppearanceStep({
         </label>
       </div>
 
-      <div className="mt-8 flex justify-between">
+      {/* Sticky: this step exists to enlarge the text, and at large scales
+          the controls above push Continue out of the first screenful. */}
+      <div className="sticky bottom-0 -mx-6 sm:-mx-8 -mb-6 sm:-mb-8 mt-8 flex justify-between border-t border-border bg-card px-6 sm:px-8 py-4">
         <button
           onClick={onBack}
           className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"

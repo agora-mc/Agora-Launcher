@@ -197,9 +197,9 @@ export function Settings({
   const [loading, setLoading] = useState(true);
   const [directLaunch, setDirectLaunch] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [portableUpdateNotice, setPortableUpdateNotice] = useState(false);
+  const [isPortable, setIsPortable] = useState(false);
   useEffect(() => {
-    void isPortableMode().then((portable) => setPortableUpdateNotice(portable === true)).catch(() => { });
+    void isPortableMode().then((portable) => setIsPortable(portable === true)).catch(() => { });
   }, []);
   const [dataFolderOpening, setDataFolderOpening] = useState(false);
 
@@ -1061,7 +1061,7 @@ export function Settings({
       icon={RefreshCw}
       title="Software Updates"
     >
-      {portableUpdateNotice && (
+      {isPortable && (
         <p role="status" className="text-sm text-muted-foreground">
           Portable mode: download the latest portable ZIP from GitHub Releases.
           Close Agora and replace the executable, keeping portable.txt and your data folder.
@@ -1077,7 +1077,7 @@ export function Settings({
           onClick={async () => {
             try {
               if (await isPortableMode()) {
-                setPortableUpdateNotice(true);
+                setIsPortable(true);
                 return;
               }
               const update = await check();
@@ -1125,7 +1125,7 @@ export function Settings({
         </button>
       </div>
       <p className="text-xs text-muted-foreground">
-        {portableUpdateNotice
+        {isPortable
           ? 'Portable copies are updated by replacing the executable from a new portable ZIP.'
           : 'Check for new versions published to GitHub Releases. Updates are downloaded and installed automatically.'}
       </p>
@@ -1576,7 +1576,7 @@ export function Settings({
           <p className="text-xs text-muted-foreground">
             Required for direct launch mode. Used to authenticate with Minecraft services.
           </p>
-          <DegradedCredentialNotice backend={credentialStorage?.microsoft} />
+          <DegradedCredentialNotice backend={credentialStorage?.microsoft} portable={isPortable} />
           <button
             onClick={handleMsaSignOut}
             className="text-xs text-muted-foreground hover:text-foreground underline"
@@ -1636,7 +1636,7 @@ export function Settings({
           <p className="text-xs text-muted-foreground">
             Used for community governance (voting, proposals).
           </p>
-          <DegradedCredentialNotice backend={credentialStorage?.github} />
+          <DegradedCredentialNotice backend={credentialStorage?.github} portable={isPortable} />
           <button
             onClick={handleGithubSignOut}
             className="text-xs text-muted-foreground hover:text-foreground underline"

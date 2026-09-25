@@ -12,6 +12,18 @@ describe('DegradedCredentialNotice', () => {
     expect(notice.textContent).toContain('less secure than OS keychain storage');
   });
 
+  it('names portable mode when the copy is portable', () => {
+    render(<DegradedCredentialNotice backend="encrypted-file" portable />);
+    const text = screen.getByTestId('degraded-credential-storage').textContent ?? '';
+    expect(text).toContain('Portable mode is active');
+    expect(text).toContain('less secure than OS keychain storage');
+  });
+
+  it('says nothing about portable mode on a standard install', () => {
+    render(<DegradedCredentialNotice backend="encrypted-file" />);
+    expect(screen.getByTestId('degraded-credential-storage').textContent).not.toContain('Portable');
+  });
+
   it('says nothing when the OS keyring is holding the credential', () => {
     render(<DegradedCredentialNotice backend="keyring" />);
     expect(screen.queryByTestId('degraded-credential-storage')).toBeNull();

@@ -62,6 +62,17 @@
 .tour-card-right { right: 1.25rem; }
 .tour-card-left { left: 1.25rem; }
 
+/* Tucked-away card: a single line pinned to the bottom corner. */
+.tour-card-collapsed {
+  bottom: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: auto;
+  max-width: min(23rem, calc(100vw - 2.5rem));
+  padding: 0.5rem 0.6rem 0.5rem 0.9rem;
+}
+
 /* Motion follows the app's own rule (index.css): the appearance setting wins,
  * and the OS preference applies unless the user explicitly asked for full. */
 @media (prefers-reduced-motion: reduce) {

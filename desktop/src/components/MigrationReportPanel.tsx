@@ -11,6 +11,7 @@ import {
   type ModMigrationEntry,
 } from '@/lib/tauri';
 import { useConfirm } from '@/components/ui/confirm';
+import { compareVersionsDescending } from '@/lib/utils';
 
 const STATUS_LABEL: Record<MigrationStatus, string> = {
   ready: 'Ready',
@@ -155,13 +156,26 @@ export function MigrationReportPanel({
   const byStatus = (status: MigrationStatus): ModMigrationEntry[] =>
     (report?.mods ?? []).filter((entry) => entry.status === status);
 
+  // Both directions are supported, so split the list rather than hide one of
+  // them — an instance on the newest release otherwise showed only older
+  // versions under a heading that promised newer ones.
+  const newer = versions.filter((version) => compareVersionsDescending(version, currentVersion) < 0);
+  const older = versions.filter((version) => compareVersionsDescending(version, currentVersion) > 0);
+
+  const isEmpty = report !== null && report.summary.total === 0;
+  // The plan carries the report's warnings too, so printing both lists showed
+  // every report warning twice. An empty instance's "nothing to migrate"
+  // warning is already the verdict line, so it is dropped here as well.
+  const warnings = [...new Set([...(report?.warnings ?? []), ...(plan?.warnings ?? [])])]
+    .filter((warning) => !(isEmpty && /no installed content/i.test(warning)));
+
   return (
     <section className="rounded-xl border border-border bg-card p-4 space-y-4">
       <div>
-        <h3 className="font-semibold text-sm">Move to a newer Minecraft version</h3>
+        <h3 className="font-semibold text-sm">Change Minecraft version</h3>
         <p className="mt-1 text-xs text-muted-foreground">
           Currently on {currentVersion}. Checking changes nothing — it reports whether every mod
-          has a build for the version you name. Moving is a separate, confirmed step.
+          has a build for the version you pick. Moving is a separate, confirmed step.
         </p>
       </div>
 
@@ -177,9 +191,16 @@ export function MigrationReportPanel({
           <option value="">
             {versions.length === 0 ? 'No other versions available' : 'Choose a version…'}
           </option>
-          {versions.map((version) => (
-            <option key={version} value={version}>{version}</option>
-          ))}
+          {newer.length > 0 && (
+            <optgroup label="Newer">
+              {newer.map((version) => <option key={version} value={version}>{version}</option>)}
+            </optgroup>
+          )}
+          {older.length > 0 && (
+            <optgroup label="Older">
+              {older.map((version) => <option key={version} value={version}>{version}</option>)}
+            </optgroup>
+          )}
         </select>
         <button
           type="button"
@@ -196,7 +217,11 @@ export function MigrationReportPanel({
 
       {report && (
         <div className="space-y-3">
-          <p className="text-sm">{VERDICT_TEXT[report.verdict]}</p>
+          <p className="text-sm">
+            {isEmpty
+              ? `Nothing is installed yet, so there is nothing to check. Moving only changes the Minecraft and loader version.`
+              : VERDICT_TEXT[report.verdict]}
+          </p>
           {/* Only worth printing when it is a genuine breakdown. When every mod
               is ready the verdict above already says so, and the disclosure
               below already carries the count — saying "3 ready of 3" between
@@ -213,11 +238,7 @@ export function MigrationReportPanel({
             </p>
           )}
 
-          {report.warnings.map((warning) => (
-            <p key={warning} className="text-xs text-muted-foreground">{warning}</p>
-          ))}
-
-          {plan && plan.warnings.map((warning) => (
+          {warnings.map((warning) => (
             <p key={warning} className="text-xs text-muted-foreground">{warning}</p>
           ))}
 

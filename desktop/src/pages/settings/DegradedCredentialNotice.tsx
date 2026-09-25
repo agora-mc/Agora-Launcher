@@ -26,8 +26,21 @@ import type { CredentialBackend } from '@/lib/tauri';
  * AGORA_DATA_DIR and portable roots -- which can be a removable drive with no
  * per-user permissions at all. "Anyone who can read that folder" is true
  * everywhere, and is the sentence a user can actually act on.
+ *
+ * In portable mode the notice names portable mode as the reason, because it
+ * is: a portable copy never uses the OS keyring, and is disqualified from OS
+ * file protection (DPAPI), since both belong to one machine and one account
+ * and a portable copy exists to be carried between them. The folder is the
+ * portable copy's own, often on a removable drive, so "whoever has the drive"
+ * is the concrete risk.
  */
-export function DegradedCredentialNotice({ backend }: { backend: CredentialBackend | undefined }) {
+export function DegradedCredentialNotice({
+  backend,
+  portable = false,
+}: {
+  backend: CredentialBackend | undefined;
+  portable?: boolean;
+}) {
   if (backend !== 'encrypted-file') return null;
 
   return (
@@ -37,9 +50,20 @@ export function DegradedCredentialNotice({ backend }: { backend: CredentialBacke
       className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3"
     >
       <p className="text-xs text-amber-700 dark:text-amber-400">
-        <strong>Credential store unavailable.</strong> Your sign-in is encrypted in a file
-        in Agora's data folder instead. This is less secure than OS keychain storage —
-        anyone who can read that folder can read your sign-in.
+        {portable ? (
+          <>
+            <strong>Portable mode is active, so this computer's credential store is not used.</strong>{' '}
+            Your sign-in is encrypted in a file in this portable copy's data folder instead, so it
+            travels with the copy. This is less secure than OS keychain storage — anyone who can
+            read that folder (including whoever has the drive it is on) can read your sign-in.
+          </>
+        ) : (
+          <>
+            <strong>Credential store unavailable.</strong> Your sign-in is encrypted in a file
+            in Agora's data folder instead. This is less secure than OS keychain storage —
+            anyone who can read that folder can read your sign-in.
+          </>
+        )}
       </p>
     </div>
   );

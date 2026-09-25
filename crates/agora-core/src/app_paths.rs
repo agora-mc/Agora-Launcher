@@ -128,6 +128,31 @@ impl AppPaths {
             .is_none()
     }
 
+    /// Whether the data root in effect is a portable copy's own root.
+    ///
+    /// True only when a `portable.txt` marker sits beside the executable *and*
+    /// `AGORA_DATA_DIR` does not override it — the same precedence as
+    /// [`Self::platform_default`], so this answers "is the data root the one the
+    /// marker names" rather than merely "is there a marker".
+    ///
+    /// Credential storage keys off this: a portable copy keeps its sign-ins in
+    /// its own data folder and never in the OS keyring, which belongs to one
+    /// machine and one account and would not travel with the copy.
+    pub fn data_root_is_portable() -> bool {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        Self::data_root_is_portable_for(
+            std::env::var_os("AGORA_DATA_DIR").is_some(),
+            exe_dir.as_deref(),
+        )
+    }
+
+    /// Pure form of [`Self::data_root_is_portable`], for tests.
+    pub fn data_root_is_portable_for(data_dir_overridden: bool, exe_dir: Option<&Path>) -> bool {
+        !data_dir_overridden && exe_dir.and_then(Self::portable_root_for).is_some()
+    }
+
     // ------------------------------------------------------------------
     // Top-level paths (no user-controlled input — infallible)
     // ------------------------------------------------------------------
@@ -758,6 +783,21 @@ mod tests {
     fn no_marker_means_not_a_portable_install() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(AppPaths::portable_root_for(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn the_data_root_is_portable_only_when_the_marker_is_in_effect() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!AppPaths::data_root_is_portable_for(
+            false,
+            Some(tmp.path())
+        ));
+
+        std::fs::write(tmp.path().join("portable.txt"), "").unwrap();
+        assert!(AppPaths::data_root_is_portable_for(false, Some(tmp.path())));
+        // AGORA_DATA_DIR outranks the marker, so the root is not the portable one.
+        assert!(!AppPaths::data_root_is_portable_for(true, Some(tmp.path())));
+        assert!(!AppPaths::data_root_is_portable_for(false, None));
     }
 
     #[test]

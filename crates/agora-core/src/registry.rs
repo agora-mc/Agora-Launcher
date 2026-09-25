@@ -428,6 +428,24 @@ impl RegistryService {
         pack_mods_for_pack(&conn, pack_id)
     }
 
+    /// A curated pack's locked releases, newest first. Empty for a pack that
+    /// only has a flexible recipe, and for registries compiled before locked
+    /// releases existed.
+    pub fn pack_versions_for_pack(&self, pack_id: &str) -> LauncherResult<Vec<PackVersionRow>> {
+        let conn = self.connection()?;
+        pack_versions_for_pack(&conn, pack_id)
+    }
+
+    /// The pinned mods of one locked pack release, ordered by mod_id.
+    pub fn pack_version_mods(
+        &self,
+        pack_id: &str,
+        pack_version: &str,
+    ) -> LauncherResult<Vec<PackModRow>> {
+        let conn = self.connection()?;
+        pack_version_mods(&conn, pack_id, pack_version)
+    }
+
     /// List audit log entries (newest first); defensively returns `[]` if the
     /// `audit_log` table does not exist in older registry builds.
     pub fn list_audit_log(&self, limit: i64) -> LauncherResult<Vec<AuditLogEntry>> {
@@ -1030,7 +1048,8 @@ pub fn list_categories(conn: &Connection) -> LauncherResult<Vec<CategoryInfo>> {
     Ok(out)
 }
 
-/// A row from the `pack_mods` table.
+/// A row from the `pack_mods` table (a pack's flexible recipe) or from
+/// `pack_version_mods` (one locked release, where `version` is always set).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackModRow {
     pub pack_id: String,
@@ -1039,44 +1058,115 @@ pub struct PackModRow {
     pub version: Option<String>,
     pub status: String,
     pub description: Option<String>,
+    /// Modrinth project id for `source = "modrinth_id"` entries. Absent on
+    /// registries compiled before the column existed.
+    #[serde(default)]
+    pub modrinth_id: Option<String>,
+}
+
+/// One locked release of a curated pack: an exact target and pinned mods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackVersionRow {
+    pub pack_id: String,
+    pub version: String,
+    pub minecraft_version: String,
+    pub loader: String,
+    pub loader_version: String,
+    pub changelog: Option<String>,
+}
+
+fn query_error(e: rusqlite::Error) -> LauncherError {
+    LauncherError::Generic {
+        code: "ERR_INVALID_QUERY".to_string(),
+        message: e.to_string(),
+    }
+}
+
+fn pack_mod_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackModRow> {
+    Ok(PackModRow {
+        pack_id: row.get(0)?,
+        mod_id: row.get(1)?,
+        source: row.get(2)?,
+        version: row.get(3)?,
+        status: row.get(4)?,
+        description: row.get(5)?,
+        modrinth_id: row.get(6)?,
+    })
 }
 
 /// List all mods in a pack, ordered by mod_id.
 pub fn pack_mods_for_pack(conn: &Connection, pack_id: &str) -> LauncherResult<Vec<PackModRow>> {
+    // Registries compiled before `modrinth_id` existed still load; those
+    // entries simply carry no project id.
+    let modrinth_column = if table_has_column(conn, "pack_mods", "modrinth_id") {
+        "modrinth_id"
+    } else {
+        "NULL"
+    };
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT pack_id, mod_id, source, version, status, description, {modrinth_column} \
+             FROM pack_mods WHERE pack_id = ?1 ORDER BY mod_id ASC"
+        ))
+        .map_err(query_error)?;
+    let rows = stmt
+        .query_map([pack_id], pack_mod_row)
+        .map_err(query_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(query_error)
+}
+
+/// A pack's locked releases, newest first (manifest order).
+///
+/// Returns an empty list when the `pack_versions` table is missing, so a
+/// registry compiled before locked releases reads as "flexible only".
+pub fn pack_versions_for_pack(
+    conn: &Connection,
+    pack_id: &str,
+) -> LauncherResult<Vec<PackVersionRow>> {
+    if !table_has_column(conn, "pack_versions", "version") {
+        return Ok(Vec::new());
+    }
     let mut stmt = conn
         .prepare(
-            "SELECT pack_id, mod_id, source, version, status, description \
-             FROM pack_mods WHERE pack_id = ?1 ORDER BY mod_id ASC",
+            "SELECT pack_id, version, minecraft_version, loader, loader_version, changelog \
+             FROM pack_versions WHERE pack_id = ?1 ORDER BY position ASC",
         )
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_INVALID_QUERY".to_string(),
-            message: e.to_string(),
-        })?;
-
+        .map_err(query_error)?;
     let rows = stmt
         .query_map([pack_id], |row| {
-            Ok(PackModRow {
+            Ok(PackVersionRow {
                 pack_id: row.get(0)?,
-                mod_id: row.get(1)?,
-                source: row.get(2)?,
-                version: row.get(3)?,
-                status: row.get(4)?,
-                description: row.get(5)?,
+                version: row.get(1)?,
+                minecraft_version: row.get(2)?,
+                loader: row.get(3)?,
+                loader_version: row.get(4)?,
+                changelog: row.get(5)?,
             })
         })
-        .map_err(|e| LauncherError::Generic {
-            code: "ERR_INVALID_QUERY".to_string(),
-            message: e.to_string(),
-        })?;
+        .map_err(query_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(query_error)
+}
 
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| LauncherError::Generic {
-            code: "ERR_INVALID_QUERY".to_string(),
-            message: e.to_string(),
-        })?);
+/// The pinned mods of one locked pack release, ordered by mod_id.
+pub fn pack_version_mods(
+    conn: &Connection,
+    pack_id: &str,
+    pack_version: &str,
+) -> LauncherResult<Vec<PackModRow>> {
+    if !table_has_column(conn, "pack_version_mods", "pack_version") {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    let mut stmt = conn
+        .prepare(
+            "SELECT pack_id, mod_id, source, version, status, description, modrinth_id \
+             FROM pack_version_mods WHERE pack_id = ?1 AND pack_version = ?2 \
+             ORDER BY mod_id ASC",
+        )
+        .map_err(query_error)?;
+    let rows = stmt
+        .query_map([pack_id, pack_version], pack_mod_row)
+        .map_err(query_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(query_error)
 }
 
 /// A row from the `audit_log` transparency table (§4.6).
@@ -2347,6 +2437,64 @@ mod tests {
         let mods = pack_mods_for_pack(&conn, "test-pack").unwrap();
         assert_eq!(mods.len(), 1);
         assert_eq!(mods[0].mod_id, "test-mod-1");
+    }
+
+    #[test]
+    fn pack_mods_from_an_older_registry_have_no_modrinth_id() {
+        let dir = temp_registry_db();
+        let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
+        let mods = pack_mods_for_pack(&conn, "test-pack").unwrap();
+        assert_eq!(mods[0].modrinth_id, None);
+    }
+
+    #[test]
+    fn an_older_registry_has_no_locked_pack_releases() {
+        let dir = temp_registry_db();
+        let conn = registry_connection(&dir.path().join("registry.db")).unwrap();
+        assert!(pack_versions_for_pack(&conn, "test-pack")
+            .unwrap()
+            .is_empty());
+        assert!(pack_version_mods(&conn, "test-pack", "1.0.0")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn locked_pack_releases_read_newest_first_with_pinned_mods() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pack_versions (
+                pack_id TEXT, version TEXT, position INTEGER, minecraft_version TEXT,
+                loader TEXT, loader_version TEXT, changelog TEXT
+            );
+            CREATE TABLE pack_version_mods (
+                pack_id TEXT, pack_version TEXT, mod_id TEXT, source TEXT,
+                modrinth_id TEXT, version TEXT, status TEXT, description TEXT
+            );
+            INSERT INTO pack_versions VALUES ('p', '1.0.0', 1, '1.21', 'fabric', '0.19.5', NULL);
+            INSERT INTO pack_versions VALUES ('p', '2.0.0', 0, '1.21.1', 'fabric', '0.19.5', 'New');
+            INSERT INTO pack_version_mods VALUES
+                ('p', '2.0.0', 'sodium', 'manifest', NULL, '0.6.13', 'required', NULL);
+            INSERT INTO pack_version_mods VALUES
+                ('p', '2.0.0', 'xaero', 'modrinth_id', '1bokaNcj', '25.3.2', 'optional', NULL);
+            INSERT INTO pack_version_mods VALUES
+                ('p', '1.0.0', 'sodium', 'manifest', NULL, '0.6.0', 'required', NULL);",
+        )
+        .unwrap();
+
+        let releases = pack_versions_for_pack(&conn, "p").unwrap();
+        assert_eq!(
+            releases
+                .iter()
+                .map(|r| r.version.as_str())
+                .collect::<Vec<_>>(),
+            ["2.0.0", "1.0.0"]
+        );
+
+        let mods = pack_version_mods(&conn, "p", "2.0.0").unwrap();
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].version.as_deref(), Some("0.6.13"));
+        assert_eq!(mods[1].modrinth_id.as_deref(), Some("1bokaNcj"));
     }
 
     #[test]

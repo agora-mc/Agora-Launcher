@@ -30,6 +30,7 @@ import {
 } from '../lib/tauri';
 import { sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { emitTourSignal } from '../features/tour/tourSignals';
+import { offerBrowseContext } from '../lib/browseContextHandoff';
 import { type ProcessState } from '../lib/useProcessController';
 import { type RunningProcess } from '../lib/tauri';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
@@ -943,6 +944,7 @@ function InstanceCard({
         )}
         <button
           onClick={onEdit}
+          data-tour="instance-edit"
           disabled={effectiveBusy || recoveryBlocked}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
@@ -1143,10 +1145,11 @@ function CreateInstanceDialog({
         // user's explicit choice in this dialog.
         template_id: templateId || null,
       };
-      await createInstance(request);
+      const created = await createInstance(request);
       // A closing dialog alone cannot tell the walkthrough whether the user
       // created the instance or cancelled; this can.
       emitTourSignal('instance-created');
+      offerBrowseContext(created.instance_id);
       onCreated();
     } catch (e) {
       setError(formatError(e));
@@ -1170,9 +1173,15 @@ function CreateInstanceDialog({
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Optimized Survival"
-              className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+              placeholder="e.g. Optimized Survival"
+              aria-describedby={name.trim() ? undefined : "create-instance-name-hint"}
+              className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:italic placeholder:text-muted-foreground/70"
             />
+            {!name.trim() && (
+              <span id="create-instance-name-hint" className="mt-1 block text-xs text-muted-foreground">
+                Type a name to enable Create.
+              </span>
+            )}
           </label>
 
           <div className="grid grid-cols-2 gap-4">
@@ -1218,7 +1227,7 @@ function CreateInstanceDialog({
                 {loaderVersions.length === 0 && <option value="">No pinned versions</option>}
                 {loaderVersions.map((v) => (
                   <option key={v.loader_version} value={v.loader_version}>
-                    {v.loader_version} ({v.file_type})
+                    {v.loader_version}
                   </option>
                 ))}
               </select>
