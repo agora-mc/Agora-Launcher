@@ -307,6 +307,7 @@ mod tests {
 
     fn manifest_entry(filename: &str, content_type: &str, enabled: bool) -> InstalledMod {
         InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,

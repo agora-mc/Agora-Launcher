@@ -592,7 +592,10 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
   - [x] The custom-view prototype is **withdrawn**, not deferred. Its script ran in the WebView,
         outside every bound the plugin runtime imposes, so a 512 KiB document could hang the
         launcher. Removed while API 0.1 is unreleased and the cost was one example.
-  - [x] Content-source providers, install hooks and generic import/export hooks: **declined** for
+  - [x] Content-source providers: **built** after all (API 0.1.1), once a provenance design existed
+        — see `docs/plugins/providers.md` and MASTER_SPEC §19.28. The migration debt it leaves
+        (Modrinth single-file install, mrpack, Technic tiers) is tracked in that document.
+  - [x] Install hooks and generic import/export hooks: **declined** for
         this milestone, not deferred. An extension point earns its cost by enabling something the
         existing API cannot express, and none of the three has a plugin that needs it. Install
         *observation* is already served by the ten lifecycle events; install *participation* is a

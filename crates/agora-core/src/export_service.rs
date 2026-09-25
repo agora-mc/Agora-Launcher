@@ -245,6 +245,7 @@ mod tests {
             loader_version: "0.16".into(),
             is_locked: false,
             mods: vec![crate::models::InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,

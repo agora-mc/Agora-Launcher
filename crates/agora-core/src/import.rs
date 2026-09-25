@@ -257,6 +257,7 @@ fn inventory_pack_content(
             None
         };
         installed.push(InstalledMod {
+            provider: None,
             update_pinned: false,
             // Inventoried from the .mrpack index: contributed by the pack.
             pack_managed: true,
@@ -2885,5 +2886,186 @@ mod tests {
             origin.pack_content_hash.as_deref(),
             Some(crate::pack_inventory::pack_content_hash(&inv).as_str())
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Content-provider packs
+// ---------------------------------------------------------------------------
+
+/// A provider's pack plan, validated and authorized, ready to import.
+///
+/// Built only by `crate::providers::install`, never deserialised from a
+/// frontend: the plan came from the provider through core, and the download
+/// scope and unverified-content verdict came from core's own judgement.
+#[derive(Debug, Clone)]
+pub struct ProviderPackImport {
+    pub provider_id: String,
+    pub provider_title: String,
+    pub project_id: String,
+    pub plan: agora_plugin_api::provider::PackPlan,
+    /// Hosts in the provider's declared download scope.
+    pub download_hosts: Vec<String>,
+    /// Whether core accepted out-of-scope or weakly hashed files in this plan
+    /// under the user's `allow_unverified_packs` consent.
+    pub unverified_accepted: bool,
+}
+
+/// Fetch one planned file on a blocking worker, under the same host policy
+/// split as `providers::download_planned`, and verify it.
+fn fetch_provider_file(
+    clients: &crate::http_client::HttpClients,
+    download: &agora_plugin_api::provider::PlannedDownload,
+    pack: &ProviderPackImport,
+) -> LauncherResult<Vec<u8>> {
+    use crate::http_client::{ClientCategory, HostPolicy};
+    let in_scope = crate::providers::url_in_scope(&download.url, &pack.download_hosts);
+    let policy = if in_scope {
+        HostPolicy::ProviderDeclared(&pack.download_hosts)
+    } else if pack.unverified_accepted {
+        HostPolicy::UserConsented
+    } else {
+        return Err(import_error(
+            "ERR_UNVERIFIED_CONTENT_DISABLED",
+            format!(
+                "{} is outside {}'s declared download hosts.",
+                download.filename, pack.provider_title
+            ),
+        ));
+    };
+    let bytes = crate::http_client::blocking_checked_get_bytes_with_policy(
+        clients,
+        ClientCategory::ConsentedContent,
+        &download.url,
+        policy,
+    )?;
+    crate::providers::verify_planned(&bytes, download)?;
+    Ok(bytes)
+}
+
+/// Create a new instance from a provider's pack plan.
+///
+/// Every file lands under one of the contract's pack roots (re-checked here,
+/// not only when the plan was validated), and the optional overrides archive
+/// goes through the same sanitiser `.mrpack` overrides do. The instance is
+/// stamped with the provider's identity so that where it came from stays
+/// visible after the fact.
+pub fn import_provider_pack(
+    pack: &ProviderPackImport,
+    instances_root: &Path,
+) -> LauncherResult<ImportResult> {
+    let plan = &pack.plan;
+    let clients = crate::http_client::HttpClients::new().map_err(|e| LauncherError::Generic {
+        code: "ERR_HTTP_CLIENT_INIT".into(),
+        message: format!("Failed to initialize HTTP clients: {e}"),
+    })?;
+    let target = prepare_import_target(instances_root, &plan.name)?;
+
+    let result = (|| -> LauncherResult<usize> {
+        let mut imported = 0usize;
+        for file in &plan.files {
+            agora_plugin_api::provider::validate_pack_path(&file.path)
+                .map_err(|e| import_error("ERR_PROVIDER_PACK_PATH", e.message))?;
+            let bytes = fetch_provider_file(&clients, &file.download, pack)?;
+            let dest = file
+                .path
+                .split('/')
+                .fold(target.staging_dir.clone(), |dir, segment| dir.join(segment));
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    import_error("ERR_IMPORT_MKDIR", format!("Cannot create folder: {e}"))
+                })?;
+            }
+            fs::write(&dest, &bytes).map_err(|e| {
+                import_error(
+                    "ERR_IMPORT_WRITE",
+                    format!("Cannot write {}: {e}", file.path),
+                )
+            })?;
+            imported += usize::from(file.path.starts_with("mods/"));
+        }
+
+        if let Some(overrides) = &plan.overrides {
+            let bytes = fetch_provider_file(&clients, overrides, pack)?;
+            let archive = target.staging_dir.join(".agora-provider-overrides.zip");
+            fs::write(&archive, &bytes).map_err(|e| {
+                import_error("ERR_IMPORT_WRITE", format!("Cannot stage overrides: {e}"))
+            })?;
+            let extracted =
+                crate::override_sanitizer::extract_overrides(&archive, &target.staging_dir);
+            let _ = fs::remove_file(&archive);
+            extracted?;
+        }
+
+        let non_empty = |value: &str| Some(value.to_string()).filter(|v| !v.trim().is_empty());
+        let mut pack_origin = PackOrigin {
+            platform: PackPlatform::Provider,
+            pack_name: plan.name.clone(),
+            project_id: non_empty(&pack.project_id),
+            version_id: non_empty(&plan.version_id),
+            version_number: plan.version_number.clone(),
+            origin_url: None,
+            pack_content_hash: None,
+            pack_minecraft_version: non_empty(&plan.minecraft_version),
+            pack_loader: non_empty(&plan.loader),
+            pack_loader_version: non_empty(&plan.loader_version),
+            launcher_kind: None,
+            installation_key: None,
+            source_key: Some(pack.provider_id.clone()),
+            cloned_from: None,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let pack_files =
+            crate::pack_inventory::collect_pack_inventory(&target.staging_dir).unwrap_or_default();
+        if !pack_files.is_empty() {
+            pack_origin.pack_content_hash =
+                Some(crate::pack_inventory::pack_content_hash(&pack_files));
+        }
+        let manifest = InstanceManifest {
+            manifest_version: CURRENT_MANIFEST_VERSION,
+            pack_origin: Some(pack_origin),
+            instance_id: target.instance_id.clone(),
+            name: plan.name.clone(),
+            minecraft_version: plan.minecraft_version.clone(),
+            loader: plan.loader.clone(),
+            loader_version: plan.loader_version.clone(),
+            is_locked: false,
+            created_from_pack: Some(plan.name.clone()),
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            user_preferences: serde_json::json!({}),
+        };
+        let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
+            import_error(
+                "ERR_IMPORT_SERIALIZE",
+                format!("Cannot serialize manifest: {e}"),
+            )
+        })?;
+        fs::write(
+            target.staging_dir.join("instance_manifest.json"),
+            manifest_json,
+        )
+        .map_err(|e| import_error("ERR_IMPORT_WRITE", format!("Cannot write manifest: {e}")))?;
+        finalize_import(&target)?;
+        Ok(imported)
+    })();
+
+    match result {
+        Ok(imported_mods) => Ok(ImportResult {
+            instance_id: target.instance_id,
+            name: plan.name.clone(),
+            minecraft_version: plan.minecraft_version.clone(),
+            loader: plan.loader.clone(),
+            loader_version: plan.loader_version.clone(),
+            imported_mods,
+            linked_saves: false,
+        }),
+        Err(error) => {
+            cleanup_staging(&target);
+            Err(error)
+        }
     }
 }

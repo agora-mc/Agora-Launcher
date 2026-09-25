@@ -6,7 +6,7 @@ import { sourceLabel } from './sourceLabel';
 import { downloadSourceLabel, downloadSourcesOf, openExternalUrl } from '../../lib/tauri';
 
 function sourceSummary(item: BrowseCardProps['item']): string {
-  const source = sourceLabel(item.source);
+  const source = sourceLabel(item);
   if (item.author) return `by ${item.author} · ${source}`;
   if (item.registryItem?.download_strategy) {
     // Name the preferred source, and say how many fallbacks stand behind it

@@ -281,3 +281,141 @@ export interface DiagnosticReport {
 export interface InstanceScope {
   instanceId: string;
 }
+
+// ---------------------------------------------------------------------------
+// Content providers (API 0.1.1) — the shapes a `contentProviders` export
+// receives and must return. Agora validates every answer against these before
+// using it, and installs nothing itself on a provider's say-so: it downloads,
+// checks the digests you publish, snapshots the instance and records your
+// provider id on what it installed.
+// ---------------------------------------------------------------------------
+
+/** Agora's content types. `pack` creates an instance; `server` is browse-only. */
+export type ProviderContentType = 'mod' | 'pack' | 'resourcepack' | 'shader' | 'datapack' | 'server';
+export type ProviderSort = 'relevance' | 'downloads' | 'follows' | 'newest' | 'updated';
+
+export interface SearchRequest {
+  query: string;
+  contentType?: ProviderContentType;
+  minecraftVersion?: string;
+  loader?: string;
+  /** Browse's shared category picker. Ignore values you do not recognise. */
+  category?: string;
+  sort: ProviderSort;
+  offset: number;
+  /** At most 50. */
+  limit: number;
+  /** Your own declared filters, by filter id. Only declared values arrive. */
+  filters: Record<string, string[]>;
+}
+
+export interface ProjectSummary {
+  /** Your id for the project. Agora namespaces it; it never becomes a path. */
+  id: string;
+  title: string;
+  description?: string;
+  author?: string;
+  /** HTTPS only; anything else is dropped before display. */
+  iconUrl?: string;
+  contentType: ProviderContentType;
+  categories?: string[];
+  downloads?: number;
+  follows?: number;
+  pageUrl?: string;
+  minecraftVersions?: string[];
+  loaders?: string[];
+  heroImageUrl?: string;
+}
+
+export interface SearchResponse {
+  items: ProjectSummary[];
+  total?: number;
+  hasMore?: boolean;
+}
+
+export interface ProjectDetail {
+  project: ProjectSummary;
+  /** Plain text or Markdown. Raw HTML is not rendered. */
+  body?: string;
+  gallery?: string[];
+  license?: string;
+  updated?: string;
+  links?: { label: string; url: string }[];
+}
+
+export interface ProviderDependency {
+  /** A project id in *your* provider. */
+  projectId: string;
+  versionId?: string;
+  kind: 'required' | 'optional' | 'incompatible' | 'embedded';
+}
+
+export interface ProjectVersion {
+  id: string;
+  name: string;
+  versionNumber: string;
+  channel?: 'release' | 'beta' | 'alpha';
+  minecraftVersions?: string[];
+  loaders?: string[];
+  published?: string;
+  dependencies?: ProviderDependency[];
+  changelog?: string;
+}
+
+export interface VersionsResponse {
+  versions: ProjectVersion[];
+}
+
+export interface ResolveRequest {
+  projectId: string;
+  versionId?: string;
+  /** Empty when resolving a pack, which brings its own. */
+  minecraftVersion: string;
+  loader: string;
+}
+
+/**
+ * Every digest you supply is checked. SHA-512 or SHA-256 on an HTTPS host you
+ * declared in `network.hosts` is "verified"; anything else is unverified
+ * content and installs only if the user allows that in Settings.
+ */
+export interface FileHashes {
+  sha512?: string;
+  sha256?: string;
+  sha1?: string;
+  md5?: string;
+}
+
+export interface PlannedDownload {
+  url: string;
+  /** A single, ordinary file name. */
+  filename: string;
+  size?: number;
+  hashes: FileHashes;
+}
+
+export type InstallPlan =
+  | {
+      kind: 'file';
+      versionId: string;
+      versionNumber: string;
+      contentType: Exclude<ProviderContentType, 'pack' | 'server'>;
+      file: PlannedDownload;
+      dependencies?: ProviderDependency[];
+    }
+  | {
+      kind: 'pack';
+      name: string;
+      versionId: string;
+      versionNumber?: string;
+      minecraftVersion: string;
+      loader?: string;
+      loaderVersion?: string;
+      /**
+       * `path` is instance-relative and must start with mods/, config/,
+       * defaultconfigs/, resourcepacks/, shaderpacks/, datapacks/ or kubejs/.
+       */
+      files: { path: string; download: PlannedDownload }[];
+      /** A zip laid over the instance, through the same sanitiser as mrpack overrides. */
+      overrides?: PlannedDownload;
+    };

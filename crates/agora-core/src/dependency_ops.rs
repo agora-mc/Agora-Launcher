@@ -1102,6 +1102,7 @@ mod tests {
         opt_deps: &[&str],
     ) -> InstalledMod {
         InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             filename: filename.to_string(),
@@ -1133,6 +1134,7 @@ mod tests {
         opt_deps: &[&str],
     ) -> InstalledMod {
         InstalledMod {
+            provider: None,
             installed_as_dependency: true,
             ..installed(filename, jar_id, deps, opt_deps)
         }

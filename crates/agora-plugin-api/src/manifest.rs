@@ -465,7 +465,8 @@ impl PluginManifest {
                 .instance_panels
                 .iter()
                 .any(|p| matches!(p.view, crate::contributions::ViewSource::Host { .. }))
-            || !self.contributions.replacements.is_empty();
+            || !self.contributions.replacements.is_empty()
+            || !self.contributions.content_providers.is_empty();
         if needs_script && self.entrypoint.is_none() {
             return Err(PluginError::invalid_manifest(
                 "this plugin contributes something that has to call into script, \
@@ -531,6 +532,8 @@ impl PluginManifest {
             }
         }
 
+        self.validate_providers()?;
+
         for check in &self.contributions.launch_checks {
             if check.timeout_ms == 0 {
                 return Err(PluginError::invalid_manifest(format!(
@@ -538,6 +541,39 @@ impl PluginManifest {
                     check.id
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_providers(&self) -> PluginResult<()> {
+        let requests_provide = self
+            .capabilities
+            .required
+            .iter()
+            .chain(self.capabilities.optional.iter())
+            .any(|name| name == "content:provide");
+        let provides = !self.contributions.content_providers.is_empty();
+        // Same two-way agreement as `network`: a provider the user was never
+        // asked about must not appear, and a permission with nothing behind it
+        // is a prompt the user cannot evaluate.
+        if provides
+            && !self
+                .capabilities
+                .required
+                .iter()
+                .any(|n| n == "content:provide")
+        {
+            return Err(PluginError::invalid_manifest(
+                "`contentProviders` requires the `content:provide` capability under                  `capabilities.required`",
+            ));
+        }
+        if requests_provide && !provides {
+            return Err(PluginError::invalid_manifest(
+                "`content:provide` was requested but no `contentProviders` were declared",
+            ));
+        }
+        for provider in &self.contributions.content_providers {
+            provider.validate()?;
         }
         Ok(())
     }

@@ -102,9 +102,25 @@ fn default_mod_content_type() -> String {
     "mod".to_string()
 }
 
+/// Where a provider-installed file came from: which provider, and which of
+/// its projects and versions. Recorded at install time so the choice to trust
+/// that provider stays visible afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderOrigin {
+    /// `modrinth`, `technic`, or `<plugin-id>/<provider-id>`.
+    pub provider_id: String,
+    pub project_id: String,
+    pub version_id: String,
+}
+
 /// An installed mod tracked by `instance_manifest.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledMod {
+    /// Which content provider this file came from, for anything installed
+    /// through a provider plugin. Absent for curated, Modrinth-legacy, manual
+    /// and pack-managed content, which carry their provenance in `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderOrigin>,
     pub filename: String,
     pub registry_id: Option<String>,
     pub modrinth_id: Option<String>,
@@ -246,6 +262,9 @@ pub enum PackPlatform {
     /// A local artifact with no upstream identity: `.agora-pack.json`, a Prism
     /// zip, or a directory import.
     LocalFile,
+    /// Installed from a content provider's pack plan. `source_key` names the
+    /// provider; `project_id` and `version_id` are the provider's own ids.
+    Provider,
     #[default]
     Unknown,
 }
@@ -512,6 +531,7 @@ mod tests {
             loader_version: "52.0.0".to_string(),
             is_locked: true,
             mods: vec![InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,

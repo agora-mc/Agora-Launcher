@@ -7,13 +7,16 @@ import {
   formatError,
   getInstanceDetail,
   getSetting,
+  isProviderItemId,
   listCategories,
+  listContentProviders,
   listInstances,
   listManifestLoaders,
   listManifestMcVersions,
   listModrinthCategories,
   type BrowseItemCached,
   type CategoryInfo,
+  type ProviderFailure,
   type RegistryItem,
   type SortOption,
   type ModrinthSearchResult,
@@ -77,7 +80,8 @@ async function modrinthEffectivelyEnabled(): Promise<boolean> {
 }
 
 /**
- * Whether any live third-party browse source (Modrinth, Technic) is enabled.
+ * Whether any content provider (Modrinth, Technic, or a plugin's) can be
+ * browsed right now. Core decides; this only asks.
  *
  * `null` means "not read yet". Callers must not choose between the browse UI
  * and the catalog-recovery shell until this resolves, or the wrong one flashes.
@@ -87,14 +91,14 @@ function useLiveSourcesEnabled(): boolean | null {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [modrinth, technic] = await Promise.allSettled([
-        modrinthEffectivelyEnabled(),
-        getSetting('technic_enabled'),
-      ]);
+      const providers = await listContentProviders().catch(() => null);
       if (cancelled) return;
+      // Anything but a list — an error, an older backend — means "no live
+      // source", so a missing catalog still reaches the recovery shell
+      // instead of leaving the page blank.
       setEnabled(
-        (modrinth.status === 'fulfilled' && modrinth.value === true)
-        || (technic.status === 'fulfilled' && parseBool(technic.value)),
+        Array.isArray(providers)
+          && providers.some((provider) => provider.enabled && !provider.unavailableReason),
       );
     })();
     return () => {
@@ -536,6 +540,8 @@ function BrowseContent({
   const [metaError, setMetaError] = useState<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(true);
   const [searchError, setSearchError] = useState<string | null>(null);
+  // Sources that failed this query. Browse still shows everyone else.
+  const [providerFailures, setProviderFailures] = useState<ProviderFailure[]>([]);
   const [loadMoreLoading, setLoadMoreLoading] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   // Tracks the 0-indexed page displayed. Starts at 0; incremented after each
@@ -620,7 +626,12 @@ function BrowseContent({
 
   const buildBatchInstallIntent = (instanceId: string, items: Iterable<BrowseItem>): InstallIntent => {
     const batchItems: BatchInstallItem[] = [...items].map((item) => ({
-      sourceType: item.source === 'curated' ? 'curated' : 'modrinth',
+      // Modrinth items still resolve through the older Modrinth install path
+      // (see docs/plugins/providers.md, "Migration debt"); every other
+      // provider's items are `provider:` ids and resolve through the provider.
+      sourceType: item.source === 'curated'
+        ? 'curated'
+        : isProviderItemId(item.id) ? 'provider' : 'modrinth',
       itemId: item.id,
     }));
     return {
@@ -1061,6 +1072,7 @@ function BrowseContent({
           if (!cancelled && inFlightSearchRef.current === generation) {
             setItems(curatedOnlyItems(registryItems));
             setHasMore(false);
+            setProviderFailures([]);
           }
         } else {
           const page = await browseSearch(
@@ -1076,6 +1088,7 @@ function BrowseContent({
           if (!cancelled && inFlightSearchRef.current === generation) {
             setItems(page.items);
             setHasMore(page.hasMore);
+            setProviderFailures(page.providerFailures ?? []);
           }
         }
       } catch (e) {
@@ -1589,6 +1602,24 @@ function BrowseContent({
       {metaError && (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-3 text-xs text-destructive">
           Could not load categories: {metaError}
+        </div>
+      )}
+
+      {providerFailures.length > 0 && (
+        <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <p className="font-medium">
+            {providerFailures.length === 1
+              ? `${providerFailures[0].title} could not be searched.`
+              : `${providerFailures.length} sources could not be searched.`}{' '}
+            Showing results from everywhere else.
+          </p>
+          <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+            {providerFailures.map((failure) => (
+              <li key={failure.providerId}>
+                {failure.title}: {failure.message}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

@@ -1,0 +1,40 @@
+{
+  "manifest": 1,
+  "id": "fixture.provider-without-capability",
+  "name": "Content provider",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1.1, <0.2",
+  "entrypoint": "main.js",
+  "capabilities": { "required": ["network"] },
+  "network": { "hosts": ["api.example.com", "cdn.example.com"] },
+  "contributions": {
+    "contentProviders": [
+      {
+        "id": "example",
+        "title": "Example Source",
+        "description": "Mods and packs from example.com",
+        "contentTypes": ["mod", "pack"],
+        "sorts": ["relevance", "downloads", "updated"],
+        "paginates": true,
+        "filters": [
+          {
+            "id": "side",
+            "title": "Side",
+            "multiple": false,
+            "options": [
+              { "value": "client", "label": "Client" },
+              { "value": "server", "label": "Server" }
+            ]
+          }
+        ],
+        "exports": {
+          "search": "search",
+          "project": "project",
+          "versions": "versions",
+          "resolve": "resolve"
+        }
+      }
+    ]
+  }
+}

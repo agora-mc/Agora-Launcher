@@ -270,6 +270,7 @@ pub struct Resolver {
     ctx: Ctx,
     github_token: Option<String>,
     clear_stored_github_token_on_unauthorized: bool,
+    providers: Option<crate::providers::ProviderRegistry>,
 }
 
 impl Resolver {
@@ -278,7 +279,67 @@ impl Resolver {
             ctx,
             github_token: None,
             clear_stored_github_token_on_unauthorized: false,
+            providers: None,
         }
+    }
+
+    /// Content providers `SourceType::Provider` items resolve against.
+    pub fn with_providers(mut self, providers: crate::providers::ProviderRegistry) -> Self {
+        self.providers = Some(providers);
+        self
+    }
+
+    fn provider_registry(&self) -> LauncherResult<&crate::providers::ProviderRegistry> {
+        self.providers
+            .as_ref()
+            .ok_or_else(|| LauncherError::Generic {
+                code: "ERR_PROVIDERS_UNAVAILABLE".into(),
+                message: "Content providers are not available to this install.".into(),
+            })
+    }
+
+    /// Resolve a provider item as a single install or update.
+    async fn resolve_provider_install(
+        &self,
+        manifest: &InstanceManifest,
+        item_id: &str,
+        version: Option<&str>,
+        registry_revision: String,
+        update: bool,
+    ) -> LauncherResult<PreparedPlan> {
+        let resolution = crate::providers::install::resolve_item(
+            &self.ctx,
+            self.provider_registry()?,
+            manifest,
+            item_id,
+            version,
+        )
+        .await?;
+        let operation = if update {
+            let installed = find_installed_by_identity(manifest, item_id).ok_or_else(|| {
+                LauncherError::Generic {
+                    code: "ERR_UPDATE_TARGET_MISSING".into(),
+                    message: format!("{item_id} is not installed."),
+                }
+            })?;
+            ResolvedOperation::Update {
+                old_version_id: installed
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".into()),
+                new_artifact: resolution.artifact,
+            }
+        } else {
+            ResolvedOperation::Install {
+                artifact: resolution.artifact,
+            }
+        };
+        Ok(PreparedPlan {
+            operation,
+            dependencies: resolution.dependencies,
+            conflicts: resolution.conflicts,
+            registry_revision,
+        })
     }
 
     pub fn with_github_token(mut self, token: String) -> Self {
@@ -337,6 +398,16 @@ impl Resolver {
                 SourceType::Manual => {
                     resolve_manual_install(item_id, candidate_version.as_deref(), revision)
                 }
+                SourceType::Provider => {
+                    self.resolve_provider_install(
+                        manifest,
+                        item_id,
+                        candidate_version.as_deref(),
+                        revision,
+                        false,
+                    )
+                    .await
+                }
             },
             InstallAction::Update {
                 item_id,
@@ -348,7 +419,18 @@ impl Resolver {
                         message: format!("{item_id} is not installed in this instance."),
                     }
                 })?;
-                if installed.source == "modrinth_raw" {
+                if let Some(origin) = &installed.provider {
+                    let item_id =
+                        crate::providers::item_id(&origin.provider_id, &origin.project_id);
+                    self.resolve_provider_install(
+                        manifest,
+                        &item_id,
+                        normalize_requested_version(Some(target_version)),
+                        revision,
+                        true,
+                    )
+                    .await
+                } else if installed.source == "modrinth_raw" {
                     let project_id = installed.modrinth_id.as_deref().unwrap_or(item_id);
                     self.resolve_raw_modrinth_install(
                         manifest,
@@ -1950,6 +2032,10 @@ impl Resolver {
                 message: "No batch items remain after skipping incompatible items.".into(),
             });
         }
+        // A provider resolves an item and its dependencies in one pass; the
+        // dependencies wait here for phase 2.
+        let mut provider_extras: BTreeMap<String, (Vec<ResolvedDep>, Vec<DepConflict>)> =
+            BTreeMap::new();
         for item in active_items {
             let root_result = async {
                 Ok::<_, LauncherError>(match item.source_type {
@@ -1988,6 +2074,21 @@ impl Resolver {
                         };
                         (artifact, None)
                     }
+                    SourceType::Provider => {
+                        let resolution = crate::providers::install::resolve_item(
+                            &self.ctx,
+                            self.provider_registry()?,
+                            manifest,
+                            &item.item_id,
+                            item.candidate_version.as_deref(),
+                        )
+                        .await?;
+                        provider_extras.insert(
+                            item.item_id.clone(),
+                            (resolution.dependencies, resolution.conflicts),
+                        );
+                        (resolution.artifact, None)
+                    }
                 })
             }
             .await;
@@ -1998,6 +2099,7 @@ impl Resolver {
                         SourceType::Curated => "curated",
                         SourceType::Modrinth => "Modrinth",
                         SourceType::Manual => "manual",
+                        SourceType::Provider => "provider",
                     };
                     let closest = self
                         .closest_version_summary(manifest, item.source_type.clone(), &item.item_id)
@@ -2056,6 +2158,7 @@ impl Resolver {
                     (dependencies, Vec::new())
                 }
                 SourceType::Manual => (Vec::new(), Vec::new()),
+                SourceType::Provider => provider_extras.remove(&item.item_id).unwrap_or_default(),
             };
             operations.push(ResolvedOperation::Install { artifact });
             merge_deps(&mut deps_map, dependencies);
@@ -2119,6 +2222,9 @@ impl Resolver {
         item_id: &str,
     ) -> Option<String> {
         match source_type {
+            // A provider decides its own version choice; there is no closest-
+            // version fallback to offer on its behalf.
+            SourceType::Provider => None,
             SourceType::Modrinth => {
                 let candidates = self
                     .list_raw_modrinth_versions_closest(manifest, item_id)
@@ -3093,6 +3199,7 @@ fn curated_artifact(
         size: candidate.size.unwrap_or(0),
         filename: candidate.filename.clone(),
         metadata: ArtifactMetadata {
+            provider: None,
             source_type: SourceType::Curated,
             registry_id: Some(item.id.clone()),
             modrinth_id: item.modrinth_id.clone(),
@@ -3232,6 +3339,7 @@ fn raw_modrinth_artifact(
         size: candidate.size.unwrap_or(0),
         filename: candidate.filename.clone(),
         metadata: ArtifactMetadata {
+            provider: None,
             source_type: SourceType::Modrinth,
             registry_id: None,
             modrinth_id: Some(project_id.to_string()),
@@ -3289,6 +3397,7 @@ fn resolve_manual_install(
                 size: bytes.len() as u64,
                 filename: filename.to_string(),
                 metadata: ArtifactMetadata {
+                    provider: None,
                     source_type: SourceType::Manual,
                     registry_id: None,
                     modrinth_id: None,
@@ -3405,6 +3514,11 @@ fn find_installed_by_identity<'a>(
                 .as_deref()
                 .map(|id| id.eq_ignore_ascii_case(identity))
                 .unwrap_or(false)
+            // Provider project ids are case-sensitive and only meaningful
+            // with their provider, so they match on the full item id.
+            || item.provider.as_ref().is_some_and(|origin| {
+                crate::providers::item_id(&origin.provider_id, &origin.project_id) == identity
+            })
     })
 }
 
@@ -4251,6 +4365,7 @@ mod tests {
             loader_version: "0.15.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,
@@ -4272,6 +4387,7 @@ mod tests {
                 incompatible_deps: vec![],
             }],
             resourcepacks: vec![InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,
@@ -4637,6 +4753,7 @@ mod tests {
             size: 100,
             filename: "TerraBlender-fabric-3.3.0.10.jar".into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: SourceType::Curated,
                 registry_id: Some("terrablender".into()),
                 modrinth_id: Some("terrablender".into()),
@@ -4672,6 +4789,7 @@ mod tests {
             size: 100,
             filename: "TerraBlender-fabric.jar".into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: SourceType::Modrinth,
                 registry_id: None,
                 modrinth_id: Some("TerraBlender-Project".into()),
@@ -4769,6 +4887,7 @@ mod tests {
                             size: 1,
                             filename: "GlitchCore.jar".into(),
                             metadata: ArtifactMetadata {
+                                provider: None,
                                 source_type: SourceType::Modrinth,
                                 registry_id: None,
                                 modrinth_id: Some("s3dmwKy5".into()),

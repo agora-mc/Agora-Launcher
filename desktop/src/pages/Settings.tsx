@@ -81,6 +81,8 @@ import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
 import { useConfirm } from '@/components/ui/confirm';
+import { ContentProvidersList } from '../components/ContentProvidersList';
+import { UpdateCenter } from '../features/updates/UpdateCenter';
 
 /** One sub-page of a settings section. */
 interface SettingsPage {
@@ -1124,6 +1126,7 @@ export function Settings({
           {dataFolderOpening ? 'Opening...' : 'Open application data folder'}
         </button>
       </div>
+      <UpdateCenter />
       <p className="text-xs text-muted-foreground">
         {isPortable
           ? 'Portable copies are updated by replacing the executable from a new portable ZIP.'
@@ -1790,6 +1793,7 @@ export function Settings({
             <span className="text-sm">Allow unverified zip packs</span>
             <p className="text-xs text-muted-foreground mt-0.5">
               More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
+              This also covers plugin content sources: anything from a host the source did not declare, or with only an MD5 or SHA-1 digest.
             </p>
           </div>
           <input
@@ -1801,6 +1805,8 @@ export function Settings({
           />
         </label>
       </div>
+
+      <ContentProvidersList />
     </SettingsSection>
   );
 

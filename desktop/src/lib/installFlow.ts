@@ -21,7 +21,11 @@ export type InstallAction =
 export interface BatchUpdateItem { itemId: string; targetVersion: string; }
 export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; }
 
-export type SourceType = 'curated' | 'modrinth' | 'manual';
+/**
+ * `provider` is any content provider — Agora's official ones or a plugin's.
+ * Its item id is `provider:<provider-id>:<project-id>`.
+ */
+export type SourceType = 'curated' | 'modrinth' | 'manual' | 'provider';
 export type OptionalDepsPolicy = { type: 'include'; deps: string[] }
   | { type: 'exclude-all' }
   | { type: 'prompt' };

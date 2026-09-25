@@ -428,8 +428,8 @@ pub(crate) struct ModrinthVersionFile {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ModrinthFileHashes {
     pub(crate) sha1: Option<String>,
-    /// Modrinth also publishes sha512; retained for documentation / future use.
-    #[allow(dead_code)]
+    /// Modrinth also publishes sha512. The provider path prefers it, since it
+    /// is the digest that actually resists tampering.
     pub(crate) sha512: Option<String>,
 }
 
@@ -459,9 +459,9 @@ pub(crate) struct ModrinthVersionRaw {
 /// Internal API dependency type (snake_case, matching Modrinth v2 API).
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ModrinthApiDep {
-    project_id: Option<String>,
-    version_id: Option<String>,
-    dependency_type: String,
+    pub(crate) project_id: Option<String>,
+    pub(crate) version_id: Option<String>,
+    pub(crate) dependency_type: String,
 }
 
 /// A dependency declared in a raw Modrinth version.
@@ -1050,6 +1050,7 @@ pub async fn install_raw_modrinth(
     let sha256 = crate::download::sha256_hex(&bytes);
     let metadata = parse_jar_metadata(&mod_path);
     let installed_mod = InstalledMod {
+        provider: None,
         update_pinned: false,
         pack_managed: false,
         installed_as_dependency: false,

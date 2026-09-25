@@ -1327,6 +1327,7 @@ fn build_future_manifest(
         };
         let entry_filename = base_filename(&swap.new_filename).to_string();
         let installed = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: old.installed_as_dependency,
@@ -1917,6 +1918,7 @@ mod tests {
                 std::fs::write(dir.join(subdir).join(seed.filename), &seed.bytes).unwrap();
             }
             let entry = InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,

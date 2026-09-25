@@ -31,6 +31,7 @@ Canonical reference for which code belongs where.
 | Locks / operation state | `agora-core` | Per-instance mutex, catalog read-writer lock, operation state machine |
 | Process identity verification | `agora-core` | PID → executable path → start-time verification; os-identifier abstraction behind a core trait |
 | Controller support policy | `agora-core` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
+| Content providers | `agora-core` | Which providers exist (`providers::ProviderRegistry`), Browse orchestration across them (`providers::browse`), whether a provider's install plan is permitted (`providers::authorize_plan`), and installing it. Modrinth and Technic implement the same `ContentProvider` trait as plugin providers. Adapters build the registry and move data; React renders descriptors and never decides which providers exist |
 | Plugin policy | `agora-core` | What is installed, what is enabled, which capabilities were granted, what order plugins activate in, which host method each call maps to, and what happens when a plugin misbehaves. Core does **not** own the script engine — see below |
 
 ### Plugin Layer — `agora-plugin-api` / `agora-plugin-host`

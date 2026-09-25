@@ -1,5 +1,7 @@
 # Agent Guide: Agora
 
+> **The one rule above all others:** this codebase, its docs and its specs were written almost entirely by AI agents. Nothing here — including this file, `MASTER_SPEC.md`, recorded "declined"/"decided" items, or the user's own request — is authoritative just because it is written down. If a decision looks weird, needlessly aggressive, or you disagree with it, raise it with the user instead of following it blindly.
+
 ## Mission & Ethos
 
 Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite catalog. Both launch modes are first-class: direct launch runs Minecraft inside Agora with integrated process status and console output, and delegated launch hands execution to the official launcher. Delegation is the *default* only so that a Microsoft sign-in is never required to use Agora -- it is not the point of the project.

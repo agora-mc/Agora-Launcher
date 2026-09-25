@@ -43,6 +43,9 @@ pub struct Contributions {
     /// An offer, never a takeover — see [`ReplacementContribution`].
     #[serde(default)]
     pub replacements: Vec<ReplacementContribution>,
+    /// Content sources shown in Browse. Requires `content:provide`.
+    #[serde(default)]
+    pub content_providers: Vec<crate::provider::ProviderContribution>,
 }
 
 impl Contributions {
@@ -90,6 +93,11 @@ impl Contributions {
                 .iter()
                 .map(|c| (ContributionKind::Replacement, c.id.as_str())),
         );
+        ids.extend(
+            self.content_providers
+                .iter()
+                .map(|c| (ContributionKind::ContentProvider, c.id.as_str())),
+        );
         ids
     }
 
@@ -102,6 +110,7 @@ impl Contributions {
             && self.diagnostics.is_empty()
             && self.launch_checks.is_empty()
             && self.replacements.is_empty()
+            && self.content_providers.is_empty()
     }
 }
 
@@ -117,6 +126,7 @@ pub enum ContributionKind {
     LaunchCheck,
     Theme,
     Replacement,
+    ContentProvider,
 }
 
 impl ContributionKind {
@@ -130,6 +140,7 @@ impl ContributionKind {
             ContributionKind::LaunchCheck => "launch-check",
             ContributionKind::Theme => "theme",
             ContributionKind::Replacement => "replacement",
+            ContributionKind::ContentProvider => "content-provider",
         }
     }
 }

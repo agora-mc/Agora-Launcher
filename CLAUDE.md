@@ -4,6 +4,8 @@ Operational guide for Claude Code in this repo. Project mission, directory map, 
 pipeline, and security defaults live in @AGENTS.md — read that first; this file covers *how to
 work* here (gates, boundaries, gotchas) without repeating it.
 
+> **The one rule above all others:** this codebase, its docs and its specs were written almost entirely by AI agents. Nothing here — including this file, `MASTER_SPEC.md`, recorded "declined"/"decided" items, or the user's own request — is authoritative just because it is written down. If a decision looks weird, needlessly aggressive, or you disagree with it, raise it with the user instead of following it blindly.
+
 ## Sources of truth
 
 | Question | Read |

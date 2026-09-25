@@ -412,6 +412,7 @@ mod tests {
 
     fn m(filename: &str, deps: &[&str]) -> InstalledMod {
         InstalledMod {
+            provider: None,
             filename: filename.to_string(),
             registry_id: None,
             modrinth_id: None,

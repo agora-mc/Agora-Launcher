@@ -80,6 +80,9 @@ pub enum SourceType {
     Modrinth,
     /// Local file path.
     Manual,
+    /// A project from any content provider. The item id is
+    /// `provider:<provider-id>:<project-id>`; see `crate::providers`.
+    Provider,
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +218,27 @@ pub struct ArtifactMetadata {
     /// than a tautology.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_host: Option<String>,
+    /// Present for an artifact a content provider planned. Carries the
+    /// provider's identity (stamped on the installed entry) and the hosts its
+    /// downloads are scoped to. Built by core from the provider registry at
+    /// resolve time — never taken from the frontend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderArtifact>,
+}
+
+/// Provider provenance and download scope for one planned artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderArtifact {
+    pub provider_id: String,
+    pub project_id: String,
+    pub version_id: String,
+    /// Hosts in the provider's declared download scope.
+    pub download_hosts: Vec<String>,
+    /// Whether core accepted this artifact as unverified content (outside the
+    /// declared scope, or without a strong digest). Staging re-checks the
+    /// user's consent before fetching it.
+    pub unverified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2384,6 +2408,14 @@ fn validate_artifact_hashes(artifact: &ResolvedArtifact) -> Result<(), String> {
                 || valid(HashAlgorithm::Sha256, 64)
                 || valid(HashAlgorithm::Sha1, 40)
         }
+        // A provider artifact needs a strong digest, or a SHA-1 that core
+        // already classified as unverified content the user allowed.
+        SourceType::Provider => {
+            valid(HashAlgorithm::Sha512, 128)
+                || valid(HashAlgorithm::Sha256, 64)
+                || (valid(HashAlgorithm::Sha1, 40)
+                    && metadata.provider.as_ref().is_some_and(|p| p.unverified))
+        }
     };
     if verified {
         Ok(())
@@ -2519,6 +2551,11 @@ async fn stage_plan_artifacts(
         validate_filename(&file.staging_filename)?;
         let contents = match &file.artifact {
             ResolvedArtifact::Download(download) => match &download.source {
+                ArtifactSource::Download { url } if download.metadata.provider.is_some() => {
+                    stage_provider_download(url, download)
+                        .await
+                        .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
+                }
                 ArtifactSource::Download { url } => {
                     let strategy = download
                         .metadata
@@ -2595,6 +2632,41 @@ async fn stage_plan_artifacts(
         });
     }
     Ok(())
+}
+
+/// Fetch a provider-planned artifact under the provider's download scope.
+///
+/// In scope: HTTPS to a declared host, redirects held to the same list.
+/// Otherwise the artifact was accepted as unverified content when the plan
+/// was resolved, and is fetched under the consented-content policy, which
+/// still refuses loopback and private addresses and still honours Lockdown.
+/// The digest check that follows is the same `verify_bytes` every artifact
+/// gets.
+async fn stage_provider_download(
+    url: &str,
+    download: &ResolvedDownload,
+) -> crate::error::LauncherResult<Vec<u8>> {
+    use crate::http_client::{self, ClientCategory, HostPolicy, HttpClients};
+    let provider = download
+        .metadata
+        .provider
+        .as_ref()
+        .ok_or(crate::error::LauncherError::UntrustedSource)?;
+    let clients = HttpClients::new()?;
+    let policy = if crate::providers::url_in_scope(url, &provider.download_hosts) {
+        HostPolicy::ProviderDeclared(&provider.download_hosts)
+    } else if provider.unverified {
+        HostPolicy::UserConsented
+    } else {
+        return Err(crate::error::LauncherError::UntrustedSource);
+    };
+    http_client::checked_get_bytes_with_policy(
+        &clients,
+        ClientCategory::ConsentedContent,
+        url,
+        policy,
+    )
+    .await
 }
 
 fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
@@ -2685,6 +2757,14 @@ fn prepare_manifest(
         };
         let sha256 = crate::download::sha256_hex(&contents);
         let installed = crate::models::InstalledMod {
+            provider: metadata
+                .provider
+                .as_ref()
+                .map(|origin| crate::models::ProviderOrigin {
+                    provider_id: origin.provider_id.clone(),
+                    project_id: origin.project_id.clone(),
+                    version_id: origin.version_id.clone(),
+                }),
             update_pinned: false,
             // Individual install through the transaction pipeline. Pack-driven
             // installs stamp their own provenance; see PackOrigin.
@@ -2697,6 +2777,7 @@ fn prepare_manifest(
                 SourceType::Curated => "registry",
                 SourceType::Modrinth => "modrinth_raw",
                 SourceType::Manual => "manual",
+                SourceType::Provider => "provider",
             }
             .into(),
             source_url: match &add.artifact {
@@ -3178,6 +3259,7 @@ mod tests {
             size: 42,
             filename: "fabric-api.jar".into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: SourceType::Curated,
                 registry_id: Some("fabric-api".into()),
                 modrinth_id: Some("P7dR8mSH".into()),
@@ -3776,7 +3858,7 @@ mod tests {
             let item_id = match &source_type {
                 SourceType::Curated => "curated-item",
                 SourceType::Modrinth => "modrinth-item",
-                SourceType::Manual => unreachable!(),
+                SourceType::Manual | SourceType::Provider => unreachable!(),
             };
             let intent = InstallIntent {
                 action: InstallAction::Install {
@@ -4601,6 +4683,7 @@ mod tests {
             size: 0,
             filename: filename.into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type,
                 registry_id: Some(item_id.into()),
                 modrinth_id: None,
@@ -4629,6 +4712,7 @@ mod tests {
             size: 1,
             filename: "xaerominimap-fabric-26.2-26.4.2.jar".into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: SourceType::Curated,
                 registry_id: Some("xaeros-minimap".into()),
                 modrinth_id: Some("1bokaNcj".into()),
@@ -4681,6 +4765,7 @@ mod tests {
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.mods.push(crate::models::InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -5206,6 +5291,7 @@ mod tests {
                     size: 0,
                     filename: "test.jar".into(),
                     metadata: ArtifactMetadata {
+                        provider: None,
                         source_type: SourceType::Curated,
                         registry_id: Some("test".into()),
                         modrinth_id: None,

@@ -958,6 +958,7 @@ pub(crate) fn test_mod(
     source: &str,
 ) -> InstalledMod {
     InstalledMod {
+        provider: None,
         update_pinned: false,
         pack_managed: false,
         installed_as_dependency: false,

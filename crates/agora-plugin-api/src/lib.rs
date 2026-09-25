@@ -33,6 +33,7 @@ pub mod error;
 pub mod host;
 pub mod manifest;
 pub mod protocol;
+pub mod provider;
 
 pub use capability::{Capability, CapabilitySet};
 pub use error::{PluginError, PluginErrorCode};
@@ -40,11 +41,16 @@ pub use manifest::{PluginId, PluginManifest, MANIFEST_SCHEMA_VERSION};
 
 /// Semantic version of the plugin contract implemented by this build.
 ///
+/// `0.1.1` added content providers (`contentProviders`, `content:provide`).
+/// Additive only: every `0.1.0` manifest still loads. A provider plugin should
+/// declare `>=0.1.1, <0.2` so an older launcher refuses it by range rather
+/// than by an unknown-field parse error.
+///
 /// Bump the minor while the contract is additive; bump the major only with a
 /// documented deprecation window. `0.x` means the surface is still allowed to
 /// change, and the compatibility fixtures under `docs/plugins/fixtures/` are
 /// the record of what has actually shipped.
-pub const HOST_API_VERSION: semver::Version = semver::Version::new(0, 1, 0);
+pub const HOST_API_VERSION: semver::Version = semver::Version::new(0, 1, 1);
 
 /// The `api` the host reports to plugins at runtime, as a string.
 pub fn host_api_version_string() -> String {

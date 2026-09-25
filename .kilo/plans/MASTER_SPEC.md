@@ -3072,6 +3072,58 @@ New clients check for the tables and columns and treat their absence as "flexibl
 pack is left to the pack-update flow (§6.5a) and is not implemented here. The flexible recipe
 does not yet let a player untick optional mods before installing.
 
+### 19.28 Content Providers: One Interface for Every Source Outside the Catalog
+
+Agora's position is that it does not structurally depend on any one hosting platform. Modrinth
+held a special place because the curated registry is still small and a practical fallback was
+needed, and Technic was added the same way: each as its own branch through Browse, the adapter
+and the frontend. That made "which platforms exist" a property of Agora's source code. It is now a
+property of what is installed.
+
+**The interface.** `agora_core::providers::ContentProvider` answers `search`, `project`,
+`versions` and `resolve`. The vocabulary — projects, versions, dependencies, filter definitions,
+and an `InstallPlan` that is either a single `File` or a `Pack` — lives in
+`agora_plugin_api::provider`, so a plugin and Agora's own code speak exactly the same types.
+Modrinth and Technic implement the trait in Rust; `PluginProvider` implements it by calling a
+plugin's exports through the script host. A plugin contributes one with a `contentProviders`
+manifest entry and the `content:provide` capability (plugin API 0.1.1, additive).
+
+**Official is not privileged.** The official providers stay compiled in rather than being
+rewritten as JavaScript plugins. The property "just another plugin" was meant to buy — no
+capability a community provider lacks — holds structurally through the shared trait and plan
+type, without paying for a rewrite, a mandatory plugin runtime for Modrinth users, or an
+official signing key. A later port is a registration change.
+
+**Provenance, which is why providers were first declined.** A provider supplies both URL and
+digest, so a matching hash proves integrity, never trustworthiness. The design therefore makes
+trust an explicit, recorded user decision: `content:provide` is granted at install time
+alongside the plugin's declared hosts; every provider-installed file records
+`ProviderOrigin { provider_id, project_id, version_id }` in the instance manifest, and packs
+record `PackPlatform::Provider` with the provider in `source_key`. One rule then applies to every
+provider without exception: HTTPS from a declared host with SHA-256/512 is verified; anything
+else is unverified content and requires `allow_unverified_packs`, the setting Technic's bare
+zips already used. Downloads use `ClientCategory::ConsentedContent` with the new
+`HostPolicy::ProviderDeclared`, so Lockdown, the private-address floor and per-hop redirect
+checks all still apply.
+
+**Browse moved to core.** The merge, per-source paging and ranking that lived in the Tauri
+adapter's `browse_search` are now `providers::browse`, with a cursor per provider instead of
+Modrinth- and Technic-named fields. A provider that fails is reported in `providerFailures` and
+the rest of Browse still renders; previously a Modrinth error failed the whole page while a
+Technic error was silently swallowed.
+
+**Switches.** The Modrinth and Technic toggles remain the entry points for the official
+providers. A plugin provider's switch is its plugin's enable state, so there is one switch rather
+than two that can disagree. Plugin updates stay with the plugin updater; Settings gains a single
+"Check everything / Update all" view that asks the updater and the plugin subsystem and never
+accepts a capability widening on the user's behalf.
+
+**Not done, and listed rather than hidden** (`docs/plugins/providers.md`, *Migration debt*):
+Modrinth single-file installs still use the Modrinth resolver (jar-level dependency data has no
+provider equivalent yet); `.mrpack` stays with the mrpack importer (its file list is inside the
+archive); and Technic installs keep their consent tiers, because under the shared rule every
+Technic pack is unverified content, which is stricter than today and is a product decision.
+
 ---
 
 **This MASTER_SPEC.md is the single authoritative spec. The previously-separate plan files (1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, dependency-aware-mod-ops-plan.md) have been deleted; their key decisions are captured in section 19 above. BACKLOG.md remains the canonical per-phase task tracker.**

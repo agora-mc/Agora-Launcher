@@ -239,6 +239,7 @@ mod tests {
         let mods: Vec<InstalledMod> = mod_files
             .iter()
             .map(|f| InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,
@@ -485,6 +486,7 @@ mod tests {
 
         let mut manifest = make_manifest(&dir, &["sodium.jar"]);
         manifest.shaders.push(InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,

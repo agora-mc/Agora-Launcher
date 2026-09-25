@@ -238,6 +238,7 @@ mod tests {
 
     fn a_mod(filename: &str, jar_id: Option<&str>) -> InstalledMod {
         InstalledMod {
+            provider: None,
             filename: filename.into(),
             registry_id: None,
             modrinth_id: None,

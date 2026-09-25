@@ -134,6 +134,12 @@ pub enum HostPolicy<'a> {
     /// the whole internet: it reaches the hosts it told the user about, and
     /// nothing else. Every other gate, including Lockdown, still applies.
     PluginDeclared(&'a [String]),
+    /// Hosts a content provider declared for its downloads: a plugin
+    /// provider's manifest `network.hosts`, or a built-in provider's fixed
+    /// list. Valid only for `ConsentedContent`, the category provider
+    /// downloads travel in, so the list cannot authorize anything else.
+    /// Enabling the provider is the consent; its declared hosts are the scope.
+    ProviderDeclared(&'a [String]),
 }
 
 /// Friendly name for each HTTP client category, used in logging and errors.
@@ -623,6 +629,12 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
             // precedes this request. The empty ConsentedContent allowlist
             // keeps the generic Allowlist path failed-closed.
             category == ClientCategory::ConsentedContent
+        }
+        HostPolicy::ProviderDeclared(hosts) => {
+            category == ClientCategory::ConsentedContent
+                && hosts
+                    .iter()
+                    .any(|allowed| host_matches_domain(host, allowed))
         }
         HostPolicy::PluginDeclared(hosts) => {
             // Scoped to the plugin category so a bug elsewhere cannot pass a

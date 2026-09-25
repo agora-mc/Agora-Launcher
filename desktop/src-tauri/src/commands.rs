@@ -16,14 +16,13 @@ use crate::modrinth_raw;
 use crate::mojang;
 use crate::paths;
 use crate::registry::{
-    self, AuditLogEntry, CategoryInfo, CuratedAnnotation, ModReview, PackModRow, RegistryItem,
+    AuditLogEntry, CategoryInfo, CuratedAnnotation, ModReview, PackModRow, RegistryItem,
     SortOption, UnderReviewItem,
 };
 use crate::state::LauncherState;
 use crate::version_cache::{self, ModVersionPage, SharedVersionCache};
-use agora_core::browse_cache::{self, BrowseFilters, BrowsePage};
+use agora_core::browse_cache::{self, BrowsePage};
 use agora_core::installed_content::{InstalledContentMetadata, InstalledContentRow};
-use agora_core::modrinth::{ModrinthSearchParams, ModrinthSort};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -91,25 +90,18 @@ static VERSION_CACHE: LazyLock<SharedVersionCache> = LazyLock::new(version_cache
 ///
 /// Kept small on purpose: Technic's search returns only names, so each hit costs
 /// an extra detail round-trip to get its install/rating counts and tier.
-const TECHNIC_BROWSE_LIMIT: u32 = 30;
-
 /// Curated download strategies the user has enabled (Axis A: curated content,
 /// opt-out per source). A missing setting defaults to ON so curated content
 /// never silently vanishes. Separate from live third-party browsing settings.
 fn curated_strategies_from_settings(app: &tauri::AppHandle) -> Vec<String> {
-    agora_core::registry::CURATED_DOWNLOAD_STRATEGIES
-        .iter()
-        .map(|strategy| strategy.to_string())
-        .filter(|strategy| {
-            crate::core_context(app)
-                .map(|ctx| {
-                    agora_core::settings::SettingsService::new(ctx)
-                        .get_bool_or(&format!("curated_source_{strategy}_enabled"), true)
-                        .unwrap_or(true)
-                })
-                .unwrap_or(true)
+    crate::core_context(app)
+        .map(|ctx| agora_core::providers::browse::enabled_curated_strategies(&ctx))
+        .unwrap_or_else(|_| {
+            agora_core::registry::CURATED_DOWNLOAD_STRATEGIES
+                .iter()
+                .map(|strategy| strategy.to_string())
+                .collect()
         })
-        .collect()
 }
 
 /// Browse registry items with typed filters (replaces raw-SQL queryRegistry).
@@ -5069,15 +5061,11 @@ mod windows_accent_tests {
 // Phase: Rust-backed browse cache (Modrinth + registry, paginated)
 // ---------------------------------------------------------------------------
 
-fn modrinth_project_type(content_type: &str) -> &str {
-    match content_type {
-        "pack" => "modpack",
-        "server" => "minecraft_java_server",
-        other => other,
-    }
-}
-
-/// Search browse items — fetches registry + first Modrinth page, merges, caches in Rust, returns first page.
+/// Search browse items — the curated catalog plus every usable content
+/// provider, merged, ranked and cached in core. Returns the first page.
+///
+/// The orchestration lives in `agora_core::providers::browse`; this command
+/// only supplies the provider registry and the shared cache.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn browse_search(
@@ -5090,153 +5078,33 @@ pub async fn browse_search(
     sort: Option<String>,
     mc_version: Option<String>,
     loader: Option<String>,
-) -> LauncherResult<BrowsePage> {
+    provider_filters: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
+    >,
+) -> LauncherResult<agora_core::providers::browse::BrowseResult> {
+    let ctx = crate::core_context(&app)?;
+    let registry = crate::providers::registry(&app)?;
     let s = state.lock().await;
-    let (
-        modrinth_api_allowed,
-        technic_allowed,
-        allow_unverified_packs,
-        mean_approval,
-        registry_items,
-    ) = {
-        let ctx = crate::core_context(&app)?;
-        let svc = agora_core::settings::SettingsService::new(ctx.clone());
-        // Live third-party browsing is opt-in per source and off by default, so
-        // each source's own toggle is the whole story: curated-only *is* the
-        // default state, not a mode to switch into.
-        let me = svc.get_bool("modrinth_enabled").unwrap_or(false);
-        let net_mr = svc
-            .get("network_modrinth_enabled")
-            .ok()
-            .flatten()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let api_ok = me && net_mr;
-        // Tier Z packs stay hidden until unverified packs are allowed too.
-        let technic_ok = svc.get_bool("technic_enabled").unwrap_or(false);
-        let allow_unverified = svc.get_bool("allow_unverified_packs").unwrap_or(false);
-        let curated_strategies = curated_strategies_from_settings(&app);
-        let svc = agora_core::registry::RegistryService::new(ctx);
-        let mean_approval = svc.mean_approval();
-        let sort_enum = to_sort_option(sort.as_deref().unwrap_or("net_score"));
-        let items = match svc.browse_items(
-            content_type.as_deref(),
-            category.as_deref(),
-            &sort_enum,
-            &curated_strategies,
-            mc_version.as_deref(),
-            loader.as_deref(),
-            query.as_deref(),
-            100,
-        ) {
-            Ok(items) => items,
-            // No catalog database on disk yet. When the user has a live source
-            // enabled, browsing degrades to that source rather than failing:
-            // an absent catalog is a missing *ingredient* here, not a broken
-            // query. With no live source there is nothing to show, so the
-            // error still surfaces.
-            Err(LauncherError::RegistryMissing) if api_ok || technic_ok => Vec::new(),
-            Err(e) => {
-                return Err(LauncherError::Generic {
-                    code: "ERR_REGISTRY".into(),
-                    message: e.to_string(),
-                })
-            }
-        };
-        (api_ok, technic_ok, allow_unverified, mean_approval, items)
-    };
-
-    let (modrinth_results, total_hits) = if modrinth_api_allowed {
-        let modrinth_pt = content_type
-            .as_deref()
-            .map(modrinth_project_type)
-            .map(str::to_string);
-        let params = ModrinthSearchParams {
-            query: query.clone(),
-            categories: category.clone().map(|c| vec![c]),
-            loaders: loader.clone().map(|l| vec![l]),
-            game_versions: mc_version.clone().map(|v| vec![v]),
-            sort: Some(to_modrinth_sort(sort.as_deref().unwrap_or("net_score"))),
-            limit: Some(browse_cache::PAGE_SIZE as u32),
-            offset: Some(0),
-            project_type: modrinth_pt,
-        };
-        // Connection only needed for sync DB check — drop before async HTTP
-        match agora_core::modrinth::search_modrinth_http(&params).await {
-            Ok(page) => (page.results, page.total_hits as usize),
-            Err(e) => return Err(e),
-        }
-    } else {
-        (vec![], 0usize)
-    };
-
-    // Technic only distributes modpacks, so it is skipped unless the user is
-    // looking at packs. Its search API ignores `offset`, so this is the only
-    // fetch for the whole query — the results drain through the buffer.
-    let wants_packs = content_type
-        .as_deref()
-        .map(|ct| ct == "pack")
-        .unwrap_or(true);
-    let technic_results = if technic_allowed && wants_packs {
-        let ctx = crate::core_context(&app)?;
-        match agora_core::technic::search_technic_http(
-            &ctx.http_clients,
-            query.as_deref().unwrap_or(""),
-            TECHNIC_BROWSE_LIMIT,
-        )
-        .await
-        {
-            Ok(results) => results
-                .into_iter()
-                // Tier Z has no integrity information at all; it stays hidden
-                // until the user explicitly accepts unverified packs.
-                .filter(|r| {
-                    allow_unverified_packs || r.tier == agora_core::technic::TechnicTier::Solder
-                })
-                .collect(),
-            // Technic being down must not break the whole browse list.
-            Err(_) => Vec::new(),
-        }
-    } else {
-        Vec::new()
-    };
-
-    let offset = browse_cache::PAGE_SIZE;
-    let has_more_modrinth = total_hits > offset;
-
-    browse_cache::load_initial(
+    agora_core::providers::browse::search(
+        &ctx,
+        &registry,
         &s.browse_cache,
-        query_key,
-        registry_items,
-        modrinth_results,
-        technic_results,
-        BrowseFilters {
-            query: query.unwrap_or_default(),
+        agora_core::providers::browse::BrowseRequest {
+            query_key,
+            query,
             content_type,
             category,
-            sort: sort.unwrap_or_else(|| "net_score".to_string()),
+            sort,
             mc_version,
             loader,
-            modrinth_enabled: modrinth_api_allowed,
+            provider_filters: provider_filters.unwrap_or_default(),
         },
-        offset,
-        has_more_modrinth, // stored separately for load-more use
-        mean_approval,
     )
-    .await;
-
-    let mut result = browse_cache::get_page(&s.browse_cache, 0).await;
-    // has_more is true when there are more cached items than one page
-    // OR more Modrinth results to fetch.
-    let more_cached = result.has_more;
-    let more_modrinth = has_more_modrinth;
-    result.has_more = more_cached || more_modrinth;
-
-    Ok(result)
+    .await
 }
 
-/// Load a specific page from the browse cache, fetching additional Modrinth
-/// data when the requested page is not yet cached.
+/// Load a specific page from the browse cache, asking providers for more
+/// when the requested page is not yet cached.
 #[tauri::command]
 pub async fn browse_load_more(
     app: tauri::AppHandle,
@@ -5244,109 +5112,18 @@ pub async fn browse_load_more(
     query_key: String,
     // The 0-indexed page the frontend wants to display next.
     page_index: usize,
-) -> LauncherResult<BrowsePage> {
+) -> LauncherResult<agora_core::providers::browse::BrowseResult> {
+    let ctx = crate::core_context(&app)?;
+    let registry = crate::providers::registry(&app)?;
     let s = state.lock().await;
-    let required_end = (page_index + 1) * browse_cache::PAGE_SIZE;
-    let mean_approval = {
-        let ctx = crate::core_context(&app)?;
-        agora_core::registry::RegistryService::new(ctx).mean_approval()
-    };
-
-    // Fill the requested page. A fetched Modrinth page can contain duplicates,
-    // so continue until the cache contains a full requested page or the remote
-    // source is exhausted.
-    loop {
-        let (filters, modrinth_offset, should_fetch) = {
-            let cache = s.browse_cache.read().await;
-            if cache.query_key != query_key {
-                return Err(LauncherError::Generic {
-                    code: "ERR_BROWSE_STALE".into(),
-                    message: "Browse query changed before pagination completed.".into(),
-                });
-            }
-            // The carry-forward buffer may already cover the requested page —
-            // curated is fetched in full up front, and Technic arrives in one
-            // shot, so both can fill several pages with no further network use.
-            let should_fetch = cache.items.len() + cache.buffer.len() < required_end
-                && cache.has_more_modrinth
-                && cache.filters.modrinth_enabled;
-            (cache.filters.clone(), cache.modrinth_offset, should_fetch)
-        };
-
-        if !should_fetch {
-            break;
-        }
-
-        let modrinth_pt = filters
-            .content_type
-            .as_deref()
-            .map(modrinth_project_type)
-            .map(str::to_string);
-        let params = ModrinthSearchParams {
-            query: Some(filters.query.clone()),
-            categories: filters.category.clone().map(|c| vec![c]),
-            loaders: filters.loader.clone().map(|l| vec![l]),
-            game_versions: filters.mc_version.clone().map(|v| vec![v]),
-            sort: Some(to_modrinth_sort(&filters.sort)),
-            limit: Some(browse_cache::PAGE_SIZE as u32),
-            offset: Some(modrinth_offset as u32),
-            project_type: modrinth_pt,
-        };
-
-        let modrinth_page = agora_core::modrinth::search_modrinth_http(&params)
-            .await
-            .map_err(|e| LauncherError::Generic {
-                code: "ERR_MODRINTH".into(),
-                message: e.to_string(),
-            })?;
-        let new_offset = modrinth_offset + browse_cache::PAGE_SIZE;
-        let has_more_modrinth = (modrinth_page.total_hits as usize) > new_offset;
-        let new_items: Vec<browse_cache::BrowseItem> = modrinth_page
-            .results
-            .into_iter()
-            .map(browse_cache::item_from_modrinth)
-            .collect();
-
-        if !browse_cache::append_items(
-            &s.browse_cache,
-            &query_key,
-            new_items,
-            new_offset,
-            has_more_modrinth,
-            mean_approval,
-        )
-        .await
-        {
-            return Err(LauncherError::Generic {
-                code: "ERR_BROWSE_STALE".into(),
-                message: "Browse query changed before pagination completed.".into(),
-            });
-        }
-    }
-
-    // Promote buffered items into the displayed list before slicing the page.
-    if !browse_cache::drain_buffer(&s.browse_cache, &query_key, required_end).await {
-        return Err(LauncherError::Generic {
-            code: "ERR_BROWSE_STALE".into(),
-            message: "Browse query changed before pagination completed.".into(),
-        });
-    }
-
-    let mut page = browse_cache::get_page(&s.browse_cache, page_index).await;
-    let cache = s.browse_cache.read().await;
-    if cache.query_key != query_key {
-        return Err(LauncherError::Generic {
-            code: "ERR_BROWSE_STALE".into(),
-            message: "Browse query changed before pagination completed.".into(),
-        });
-    }
-    // `get_page` already accounts for the carry-forward buffer; ORing the
-    // upstream flag on top only adds the "more to fetch" case. Recomputing the
-    // cached half from `items.len()` alone would ignore buffered items and
-    // strand them — curated and Technic are one-shot fetches, so once Modrinth
-    // is exhausted (or disabled) the buffer is the only thing left to serve.
-    page.has_more = page.has_more || (cache.has_more_modrinth && cache.filters.modrinth_enabled);
-    Ok(page)
+    agora_core::providers::browse::load_more(
+        &ctx,
+        &registry,
+        &s.browse_cache,
+        &query_key,
+        page_index,
+    )
+    .await
 }
 
 /// Get a specific page from the browse cache.
@@ -5416,7 +5193,8 @@ pub async fn resolve_install_plan(
     intent: agora_core::install_pipeline::InstallIntent,
 ) -> LauncherResult<agora_core::install_pipeline::ResolvedInstallPlan> {
     let ctx = crate::core_context(&app)?;
-    let service = agora_core::install_service::InstallService::new(ctx.clone());
+    let service = agora_core::install_service::InstallService::new(ctx.clone())
+        .with_providers(crate::providers::registry(&app)?);
     let reporter = InstallProgressEmitter { app };
     let target_instance = intent.target_instance.clone();
     let action_debug = format!("{:?}", intent.action);
@@ -6209,6 +5987,7 @@ pub async fn import_lockfile(
             size: 0,
             filename: artifact.filename.clone(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: source_type.clone(),
                 registry_id: artifact.registry_id.clone(),
                 modrinth_id: artifact.modrinth_id.clone(),
@@ -6498,6 +6277,7 @@ fn resolved_lockfile_artifact(
         size: 0,
         filename: artifact.filename.clone(),
         metadata: ArtifactMetadata {
+            provider: None,
             source_type,
             registry_id: artifact.registry_id.clone(),
             modrinth_id: artifact.modrinth_id.clone(),
@@ -7179,35 +6959,6 @@ pub async fn recommend_instance_memory(
     agora_core::instance_service::InstanceService::new(ctx).memory_recommendation(&instance_id)
 }
 
-/// Pick the upstream Modrinth ordering that best matches our blended score.
-///
-/// Chunks are sorted only within themselves, so the closer Modrinth's order is
-/// to ours, the smaller the inversions across a chunk boundary. Measured,
-/// `index=follows` returns sodium -> fabric-api -> iris -> modmenu, which
-/// tracks our formula far better than `downloads` (which leads with fabric-api,
-/// a library we deliberately demote).
-fn to_modrinth_sort(sort: &str) -> ModrinthSort {
-    match sort {
-        "downloads" => ModrinthSort::Downloads,
-        "newest" => ModrinthSort::Newest,
-        "updated" | "velocity" => ModrinthSort::Updated,
-        // Every blended sort wants engagement-led ordering.
-        "net_score" | "most_upvoted" | "most_downvoted" | "follows" => ModrinthSort::Follows,
-        _ => ModrinthSort::Relevance,
-    }
-}
-
-fn to_sort_option(sort: &str) -> registry::SortOption {
-    match sort {
-        "net_score" => registry::SortOption::NetScore,
-        "velocity" => registry::SortOption::Velocity,
-        "most_downvoted" => registry::SortOption::MostDownvoted,
-        "newest" => registry::SortOption::Newest,
-        "most_upvoted" => registry::SortOption::MostUpvoted,
-        _ => registry::SortOption::NetScore,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -7848,6 +7599,7 @@ mod command_helper_tests {
 
     fn test_installed_mod(filename: &str, enabled: bool) -> agora_core::models::InstalledMod {
         agora_core::models::InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
