@@ -196,6 +196,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "loadout",
     "lockfile",
     "plugin",
+    "provider",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
