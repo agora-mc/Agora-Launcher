@@ -1162,7 +1162,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
             </button>
             {technicDetail.tier === 'zip' && !allowUnverifiedPacks && (
               <span className="text-xs text-muted-foreground">
-                Enable “Allow unverified zip packs” in Settings to install this.
+                Enable “Allow low security downloads” in Settings to install this.
               </span>
             )}
           </div>

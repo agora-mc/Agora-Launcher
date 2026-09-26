@@ -29,6 +29,7 @@ const CATALOG = [
     contentType: 'mod',
     side: 'client',
     downloads: 1200,
+    categories: ['lighting'],
     versions: [
       {
         id: 'lantern-2.0.0',
@@ -47,6 +48,9 @@ const CATALOG = [
     contentType: 'mod',
     side: 'both',
     downloads: 5000,
+    // Listed in `ranking.libraryCategories`, so Browse ranks it below content
+    // people seek out — it is popular because other things need it.
+    categories: ['library'],
     versions: [
       {
         id: 'lib-core-1.4.0',
@@ -65,6 +69,7 @@ const CATALOG = [
     contentType: 'pack',
     side: 'both',
     downloads: 300,
+    categories: ['cozy'],
     versions: [
       {
         id: 'cozy-1.0.0',
@@ -83,6 +88,7 @@ const summary = (p) => ({
   description: p.description,
   author: p.author,
   contentType: p.contentType,
+  categories: p.categories,
   downloads: p.downloads,
   pageUrl: `${HOST}/projects/${p.id}`,
   minecraftVersions: [...new Set(p.versions.flatMap((v) => v.minecraftVersions))],
@@ -105,6 +111,7 @@ export async function search(request) {
     (p) =>
       (!query || p.title.toLowerCase().includes(query)) &&
       (!request.contentType || p.contentType === request.contentType) &&
+      (!request.category || p.categories.includes(request.category)) &&
       (!side || p.side === side),
   );
   if (request.sort === 'downloads') hits = [...hits].sort((a, b) => b.downloads - a.downloads);

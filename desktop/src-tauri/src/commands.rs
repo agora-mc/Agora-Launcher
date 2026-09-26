@@ -5213,7 +5213,7 @@ pub async fn resolve_install_plan(
 }
 
 /// Atomic launch/process exclusion for install apply (SOL-2 §18.6 /
-/// MASTER_SPEC §19.15 / SAFETY_BOUNDARIES §6).
+/// MASTER_SPEC §23.3 / SAFETY_BOUNDARIES §6).
 ///
 /// MUST be called while holding the application state lock so a launch cannot
 /// race between this check and install registration. Rejects an install while

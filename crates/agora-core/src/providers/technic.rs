@@ -6,14 +6,10 @@
 //! carries both Technic and Modrinth, it is genuinely provider-neutral rather
 //! than "Modrinth's API with the names changed".
 //!
-//! Every Technic file is outside any declared scope, so under the shared rule
-//! in [`super::judge_plan`] every Technic pack is unverified content. That is
-//! an honest description of what Agora can check. It is stricter than
-//! Technic's historical consent tiers, which let Solder packs install with
-//! only `technic_enabled`; the install button therefore still uses the tiered
-//! path in `crate::technic` until that difference is decided, and
-//! [`TechnicProvider::resolve`] exists so the decision is a switch rather than
-//! a rewrite.
+//! Technic is also where the shared security tiers come from: a Solder pack
+//! publishes MD5 and installs after a warning; a bare zip publishes nothing
+//! and needs *Allow low security downloads*. [`super::judge_plan`] applies
+//! exactly that to every provider.
 
 use super::{
     network_unavailable_reason, ContentProvider, NativeHit, ProviderDescriptor, ProviderHit,
@@ -33,6 +29,20 @@ pub const PROVIDER_ID: &str = "technic";
 
 /// Technic's search ignores `offset`, so one fetch serves the whole query.
 const SEARCH_LIMIT: u32 = 30;
+
+/// Technic's popularity scale.
+///
+/// Technic ratings are far denser relative to installs than Modrinth follows
+/// (~0.11% vs ~0.02%), so the endorsement ceiling is proportionally lower.
+/// Without this a Technic pack's ratings would barely register beside
+/// Modrinth projects. Technic has no library category.
+pub fn ranking_profile() -> agora_plugin_api::provider::RankingProfile {
+    agora_plugin_api::provider::RankingProfile {
+        downloads_ceiling: 250_000_000,
+        endorsements_ceiling: 2_000,
+        library_categories: Vec::new(),
+    }
+}
 
 pub struct TechnicProvider {
     ctx: Ctx,
@@ -75,6 +85,8 @@ pub fn summary_from_search(hit: &TechnicSearchResult) -> ProjectSummary {
         minecraft_versions: Vec::new(),
         loaders: Vec::new(),
         hero_image_url: None,
+        // A bare zip carries no digest of any kind.
+        low_security: hit.tier == TechnicTier::Zip,
     }
 }
 
@@ -93,6 +105,7 @@ fn summary_from_detail(detail: &TechnicPackDetail) -> ProjectSummary {
         minecraft_versions: detail.minecraft.clone().into_iter().collect(),
         loaders: Vec::new(),
         hero_image_url: None,
+        low_security: detail.tier == TechnicTier::Zip,
     }
 }
 
@@ -153,6 +166,7 @@ impl ContentProvider for TechnicProvider {
             filters: Vec::new(),
             sorts: vec![ProviderSort::Relevance],
             paginates: false,
+            ranking: ranking_profile(),
             // Technic serves no files itself; every download is from wherever
             // the pack author hosted it, so nothing is in declared scope.
             download_hosts: Vec::new(),
@@ -163,7 +177,6 @@ impl ContentProvider for TechnicProvider {
 
     async fn search(&self, request: SearchRequest) -> LauncherResult<ProviderPage> {
         self.require_usable()?;
-        let allow_unverified = self.setting(super::UNVERIFIED_SETTING);
         let results = crate::technic::search_technic_http(
             &self.ctx.http_clients,
             &request.query,
@@ -175,9 +188,8 @@ impl ContentProvider for TechnicProvider {
             total: None,
             hits: results
                 .into_iter()
-                // A bare zip has no integrity information at all, so it stays
-                // out of Browse until unverified content is allowed.
-                .filter(|r| allow_unverified || r.tier == TechnicTier::Solder)
+                // Bare zips are marked low security in their summary; Browse
+                // decides whether to show them, the same way for every source.
                 .map(|hit| ProviderHit {
                     summary: summary_from_search(&hit),
                     native: Some(NativeHit::Technic(hit)),
@@ -261,7 +273,7 @@ mod tests {
     use agora_plugin_api::provider::Integrity;
 
     #[test]
-    fn a_solder_build_becomes_a_pack_plan_the_shared_rule_calls_unverified() {
+    fn a_solder_build_becomes_a_pack_plan_the_shared_rule_warns_about() {
         let pack = TechnicSolderPack {
             display_name: "Tekkit".into(),
             minecraft_version: "1.12.2".into(),
@@ -279,7 +291,15 @@ mod tests {
         let plan = plan_from_solder(&pack).unwrap();
         plan.validate().unwrap();
         assert_eq!(plan.integrity(), Integrity::Weak);
-        assert!(!super::super::judge_plan(&plan, &[]).is_verified());
+        let verdict = super::super::judge_plan(&plan, &[]);
+        assert!(
+            !verdict.warnings.is_empty(),
+            "MD5 from an undeclared host warns"
+        );
+        assert!(
+            !verdict.is_low_security(),
+            "but it does not need the toggle"
+        );
         let InstallPlan::Pack(pack_plan) = plan else {
             panic!("expected a pack plan");
         };

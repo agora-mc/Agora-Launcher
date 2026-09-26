@@ -64,6 +64,21 @@ fn modrinth_sort(sort: ProviderSort) -> ModrinthSort {
     }
 }
 
+/// `kitchen-sink` → `Kitchen Sink`, matching how Browse has always shown tags.
+fn title_case(raw: &str) -> String {
+    raw.split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn summary_from_search(hit: &ModrinthSearchResult) -> ProjectSummary {
     ProjectSummary {
         id: hit.project_id.clone(),
@@ -81,6 +96,8 @@ pub fn summary_from_search(hit: &ModrinthSearchResult) -> ProjectSummary {
         minecraft_versions: hit.versions.clone(),
         loaders: Vec::new(),
         hero_image_url: hit.featured_gallery.clone(),
+        // Modrinth publishes SHA-512 for every file.
+        low_security: false,
     }
 }
 
@@ -210,6 +227,11 @@ impl ContentProvider for ModrinthProvider {
                 ProviderSort::Updated,
             ],
             paginates: true,
+            // The default profile is Modrinth's own calibration: ~250M
+            // downloads, ~50k follows, and `library`/`api` as the library
+            // tags. Deliberately not `utility`, which also covers Create,
+            // JourneyMap and Mod Menu — content people browse for.
+            ranking: agora_plugin_api::provider::RankingProfile::default(),
             download_hosts: DOWNLOAD_HOSTS.iter().map(|h| h.to_string()).collect(),
             enabled: self.enabled(),
             unavailable_reason: network_unavailable_reason(
@@ -217,6 +239,38 @@ impl ContentProvider for ModrinthProvider {
                 Some("network_modrinth_enabled"),
             ),
         }
+    }
+
+    async fn categories(
+        &self,
+    ) -> LauncherResult<Vec<agora_plugin_api::provider::CategoryDefinition>> {
+        // Modrinth's tags live on Modrinth and change there, so they are
+        // fetched rather than declared.
+        let tags = crate::modrinth::ModrinthService::new(self.ctx.clone())
+            .list_modrinth_categories()
+            .await?;
+        let mut by_id: std::collections::BTreeMap<
+            String,
+            agora_plugin_api::provider::CategoryDefinition,
+        > = std::collections::BTreeMap::new();
+        for tag in tags {
+            let content_type =
+                crate::browse_cache::normalize_modrinth_content_type(&tag.project_type).to_string();
+            if !agora_plugin_api::provider::CONTENT_TYPES.contains(&content_type.as_str()) {
+                continue;
+            }
+            let entry = by_id.entry(tag.name.clone()).or_insert_with(|| {
+                agora_plugin_api::provider::CategoryDefinition {
+                    label: title_case(&tag.name),
+                    id: tag.name.clone(),
+                    content_types: Vec::new(),
+                }
+            });
+            if !entry.content_types.contains(&content_type) {
+                entry.content_types.push(content_type);
+            }
+        }
+        Ok(by_id.into_values().collect())
     }
 
     async fn search(&self, request: SearchRequest) -> LauncherResult<ProviderPage> {
@@ -273,6 +327,7 @@ impl ContentProvider for ModrinthProvider {
                 minecraft_versions: Vec::new(),
                 loaders: Vec::new(),
                 hero_image_url: full.gallery_urls.first().cloned(),
+                low_security: false,
             },
             body: full.body,
             gallery: full.gallery_urls,

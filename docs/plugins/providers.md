@@ -50,6 +50,13 @@ Browse and install resolution. Start from it.
 - `paginates: false` means your `search` ignores `offset`. Agora then asks once per query and
   pages through the answer itself.
 - `project` is optional. Without it, the detail page is built from the search result.
+- `categories` appear in Browse's category picker beside every other source's. The chosen id
+  comes back to you as `SearchRequest.category`; ignore ids you do not recognise.
+- `ranking` says where popularity saturates on *your* site (`downloadsCeiling`,
+  `endorsementsCeiling`) and which of your categories mark libraries. Browse merges every
+  source into one list, and a download on a small site should not always lose to one on a huge
+  site. It defaults to Modrinth's calibration; Technic declares a lower endorsement ceiling
+  because its ratings are denser. Curated content keeps its own band above every provider.
 
 The TypeScript shapes for every request and response are in `sdk/index.d.ts` under *Content
 providers*. The Rust definitions, with every bound, are in
@@ -87,19 +94,19 @@ provider off in Settings → Content sources. Every file a provider installs is 
 provider's id, project and version in the instance manifest, so the decision stays attributable
 after the fact.
 
-**One rule decides what counts as verified, for every provider:**
+**One rule, for every provider**, and it is the one Technic has always used:
 
-| A planned file… | Counts as |
+| A planned file… | What happens |
 |---|---|
-| over HTTPS, from a host the provider declared, with SHA-256 or SHA-512 | verified |
-| from any other host, over plain HTTP, with only MD5/SHA-1, or with no digest | **unverified content** |
+| over HTTPS, from a host the provider declared, with SHA-256 or SHA-512 | installs; nothing to warn about |
+| from another host, over plain HTTP, or with only MD5/SHA-1 | **reduced security**: the user is warned and may continue |
+| with no digest at all | **low security**: hidden and not installable unless the user turned on **Allow low security downloads** |
 
-Unverified content installs only when the user has turned on **Allow unverified zip packs**. It is
-the same setting Technic's bare-zip packs have always needed, because it is the same question.
-Downloads always go through Agora's network policy. Lockdown Mode still wins, private and loopback
-addresses are still refused, and redirects of in-scope downloads must stay on the declared hosts.
-A single `file` plan additionally needs at least SHA-1, since the install pipeline will not
-install one file it cannot re-check.
+Agora warns and asks; it does not decide for the user. A provider can mark a search result
+`lowSecurity: true` so it stays out of Browse for users who have not opted in, without filtering
+for them itself. Downloads always go through Agora's network policy: Lockdown Mode still wins,
+private and loopback addresses are still refused, and redirects of declared-host downloads must
+stay on the declared hosts. Every digest a provider publishes is checked, including MD5.
 
 ## Official providers are not privileged
 
@@ -120,7 +127,7 @@ These paths still name a source. Each is listed so it gets retired rather than f
 |---|---|---|
 | Modrinth single-file install (`resolver.rs`, `SourceType::Modrinth`) | Browse installs of Modrinth mods use the older Modrinth resolver, which reads dependency data from the downloaded jar | That jar-level dependency resolution has no provider-vocabulary equivalent yet. `ModrinthProvider::resolve` exists and is tested |
 | Modrinth modpacks (`.mrpack`) | Installed by the mrpack importer | A `.mrpack`'s file list is inside the archive, so a plan cannot be written without downloading it, which a provider must not do |
-| Technic pack install (`crate::technic`) | Uses Technic's consent tiers (Solder with `technic_enabled`, zip with `allow_unverified_packs`) | Under the shared rule every Technic pack is unverified content, which is stricter than today. `TechnicProvider::resolve` produces the plan; switching is one line once that is decided |
+| Technic pack install (`crate::technic`) | Still installs through its own importer | The rules now match (Solder warns, zip needs low security downloads); what remains is routing the button through `TechnicProvider::resolve` |
 | `ModDetail.tsx` | The Modrinth and Technic project pages are their own components | Plugin providers use the generic `ProviderDetail` page; the official ones keep their richer pages for now |
 | Browse category picker | Offers Modrinth's category tags when Modrinth is on | Presentation only; providers can already declare their own filters |
 | Ranking (`browse_cache::ranking_input`) | Technic's likes use a different ceiling than follows | Calibration data, not behaviour |
@@ -132,3 +139,62 @@ update document, with the same compatibility check and the same capability-widen
 Settings → Software updates → **Check everything** lists Agora and every plugin together, and
 **Update all** applies them. It never accepts a permission change on anyone's behalf: a plugin
 update that asks for more is left for review in Plugins.
+
+## Where this is going
+
+The direction agreed so far, with the decisions still open marked as such. Nothing here is built
+yet.
+
+### Plugins in any language, native plugins in Rust
+
+QuickJS stays for plugins that mostly shape UI. Backend-heavy plugins (providers especially) get a
+second runtime: a **companion process**. The plugin package ships a small executable per platform;
+Agora starts it and exchanges the same `HostRequest`/`HostResponse` messages the QuickJS host
+uses, as JSON lines over stdin/stdout. It implements the existing `ScriptHost` trait, so plugin
+policy, capabilities and the provider bridge do not change. Any language can speak it; a Rust
+plugin depends on `agora-plugin-api` directly and gets the exact same types core uses.
+
+Rejected alternatives: loading a native library into Agora's process (no stable Rust ABI, and a
+crash in the plugin is a crash in Agora), and WebAssembly (sandboxed and multi-language, but adds a
+10–20 MB engine; it can be a third `ScriptHost` later if wanted).
+
+A native plugin runs with the user's own permissions: it is not sandboxed. Per the project's
+principle that is allowed, behind a capability whose install prompt says exactly that.
+
+### Official providers become real plugins
+
+Once native plugins exist, the Modrinth and Technic providers move out of `agora-core` into their
+own Rust plugin crates. Agora ships signed copies; the existing toggles install and enable them.
+Technic installs then work only with the Technic plugin. Needs an official plugin signing key and a
+place to publish its update document (GitHub Releases).
+
+### One detail page
+
+`ModDetail` and `ProviderDetail` merge into a single page built from the provider vocabulary
+(project, versions, install), with Agora's curated layer (votes, curator notes, governance) added
+when a catalog entry exists, and a provider able to contribute extra blocks through the existing
+host-rendered view model.
+
+### Modrinth's single-file install on the provider path
+
+The older path downloads the jar while planning and reads the mod's own metadata
+(`fabric.mod.json` and friends), because Modrinth's declared dependencies are sometimes wrong for
+the chosen loader. It then maps the jar's mod ids back to Modrinth projects to find what is
+missing. Porting it means two things: jar-metadata checking becomes a core step for every
+provider's file plans (Agora verifying, which is provider-neutral), and providers gain an optional
+export to answer "which of your projects provides mod id X?".
+
+### `.mrpack` and curated content
+
+- An `.mrpack` lists its files with URLs and SHA-512 digests, so it is self-describing. Proposal:
+  install it without requiring the Modrinth plugin, substituting curated entries where possible,
+  and treat files from hosts no enabled provider declared as a warning, not a block.
+- Curated entries whose sources are Agora-native (`github_release`, `direct_hash`,
+  `curated_pack`) keep resolving in core. Entries sourced from a provider (`modrinth_id`,
+  `technic_pack`) resolve through that provider's plugin.
+- Open: whether to show curated entries whose only usable source needs a plugin the user does not
+  have. Proposal: shown by default when the plugin is official (with a button to turn it on),
+  behind a setting for community plugins.
+- There is no way today to curate an existing Modrinth or Technic-style modpack *as is*; curated
+  packs are Agora recipes listing mods. A generic `provider_pack` strategy (provider, project,
+  version, pinned digest) would allow it.

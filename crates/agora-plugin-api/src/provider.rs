@@ -119,7 +119,94 @@ pub struct ProviderContribution {
     /// asked once per query and drained locally.
     #[serde(default = "default_true")]
     pub paginates: bool,
+    /// Categories offered in Browse's category picker. The chosen id is sent
+    /// back as `SearchRequest::category`.
+    #[serde(default)]
+    pub categories: Vec<CategoryDefinition>,
+    /// How this provider's popularity numbers compare with everyone else's,
+    /// so Browse can rank its results fairly beside other sources.
+    #[serde(default)]
+    pub ranking: RankingProfile,
     pub exports: ProviderExports,
+}
+
+/// One entry in Browse's category picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CategoryDefinition {
+    pub id: String,
+    pub label: String,
+    /// Content types this category applies to. Empty means all of the
+    /// provider's content types.
+    #[serde(default)]
+    pub content_types: Vec<String>,
+}
+
+/// Where a provider's popularity signals saturate.
+///
+/// Browse merges several sources into one ranked list. A download on one
+/// site is not worth the same as a download on another — a site with a
+/// thousand users would otherwise always lose to one with a million — so each
+/// provider says what "as popular as it gets" looks like on its own site, and
+/// the ranker scales against that. Curated content keeps its own band above
+/// every provider regardless.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RankingProfile {
+    /// Downloads (or installs) at which popularity is considered maximal.
+    pub downloads_ceiling: u64,
+    /// Follows, likes or ratings at which endorsement is considered maximal.
+    pub endorsements_ceiling: u64,
+    /// Category ids marking libraries and APIs, which rank lower: they are
+    /// popular because other things depend on them, not because people seek
+    /// them out.
+    #[serde(default)]
+    pub library_categories: Vec<String>,
+}
+
+impl RankingProfile {
+    /// Smallest ceilings a provider may declare. Lower would saturate almost
+    /// everything and give every result the maximum uncurated score.
+    pub const MIN_DOWNLOADS_CEILING: u64 = 10_000;
+    pub const MIN_ENDORSEMENTS_CEILING: u64 = 100;
+
+    pub fn validate(&self) -> PluginResult<()> {
+        if self.downloads_ceiling < Self::MIN_DOWNLOADS_CEILING
+            || self.endorsements_ceiling < Self::MIN_ENDORSEMENTS_CEILING
+        {
+            return Err(PluginError::invalid_manifest(format!(
+                "ranking ceilings must be at least {} downloads and {} endorsements",
+                Self::MIN_DOWNLOADS_CEILING,
+                Self::MIN_ENDORSEMENTS_CEILING
+            )));
+        }
+        if self.library_categories.len() > 32 {
+            return Err(PluginError::invalid_manifest(
+                "ranking may name at most 32 library categories",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn is_library(&self, categories: &[String]) -> bool {
+        categories.iter().any(|category| {
+            self.library_categories
+                .iter()
+                .any(|library| library.eq_ignore_ascii_case(category))
+        })
+    }
+}
+
+impl Default for RankingProfile {
+    /// Calibrated against Modrinth, the largest source Agora has measured:
+    /// ~250M downloads and ~50k follows for the most popular projects.
+    fn default() -> Self {
+        Self {
+            downloads_ceiling: 250_000_000,
+            endorsements_ceiling: 50_000,
+            library_categories: vec!["library".into(), "api".into()],
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -194,6 +281,21 @@ impl ProviderContribution {
                 ));
             }
         }
+        if self.categories.len() > MAX_FILTER_OPTIONS {
+            return Err(PluginError::invalid_manifest(format!(
+                "provider `{}` declares {} categories; the limit is {MAX_FILTER_OPTIONS}",
+                self.id,
+                self.categories.len()
+            )));
+        }
+        for category in &self.categories {
+            short("category id", &category.id).map_err(to_manifest)?;
+            short("category label", &category.label).map_err(to_manifest)?;
+            for content_type in &category.content_types {
+                validate_content_type(content_type).map_err(to_manifest)?;
+            }
+        }
+        self.ranking.validate()?;
         if self.sorts.is_empty() {
             return Err(PluginError::invalid_manifest(format!(
                 "provider `{}` must support at least one sort",
@@ -384,6 +486,16 @@ pub struct ProjectSummary {
     /// A wide image for the card, when the provider has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hero_image_url: Option<String>,
+    /// Set when installing this would involve files with no integrity
+    /// information at all (a bare archive with no digest, say). Agora then
+    /// shows it only to users who allowed low security downloads, and a
+    /// provider need not filter for them itself.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub low_security: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -800,6 +912,11 @@ fn validate_dependencies(dependencies: &[ProviderDependency]) -> PluginResult<()
 // Primitive rules
 // ---------------------------------------------------------------------------
 
+/// A contract rule broken in a manifest rather than a response.
+fn to_manifest(error: PluginError) -> PluginError {
+    PluginError::invalid_manifest(error.message)
+}
+
 fn invalid_response(message: impl Into<String>) -> PluginError {
     PluginError::new(PluginErrorCode::InvalidResponse, message)
 }
@@ -978,6 +1095,7 @@ mod tests {
         .unwrap();
         contribution.validate().unwrap();
         assert!(contribution.paginates);
+        assert_eq!(contribution.ranking, RankingProfile::default());
         assert_eq!(contribution.sorts, vec![ProviderSort::Relevance]);
     }
 
@@ -991,6 +1109,17 @@ mod tests {
         }))
         .unwrap();
         assert!(contribution.validate().is_err());
+    }
+
+    #[test]
+    fn a_ranking_that_would_saturate_everything_is_refused() {
+        let ranking = RankingProfile {
+            downloads_ceiling: 10,
+            endorsements_ceiling: 1,
+            library_categories: vec![],
+        };
+        assert!(ranking.validate().is_err());
+        assert!(RankingProfile::default().is_library(&["Library".to_string()]));
     }
 
     #[test]

@@ -203,9 +203,10 @@ design before an interface". That was right, and the provenance design is now wr
 
 - A matching hash proves integrity, not trustworthiness. Trust is the user's grant of
   `content:provide`, and every installed file records the provider it came from.
-- One rule, applied to Agora's own providers and plugins alike, decides what counts as verified:
-  HTTPS from a declared host with SHA-256/512. Everything else is unverified content behind the
-  existing `allow_unverified_packs` consent.
+- One rule, applied to Agora's own providers and plugins alike, and taken from Technic: a strong
+  digest from a declared host installs quietly; weaker assurance (undeclared host, plain HTTP,
+  MD5/SHA-1) warns and lets the user continue; no digest at all needs *Allow low security
+  downloads*.
 - A provider returns data only. Core downloads, verifies, snapshots and records.
 
 Limits, bluntly:

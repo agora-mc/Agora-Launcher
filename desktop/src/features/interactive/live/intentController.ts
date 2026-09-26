@@ -179,7 +179,7 @@ export function routeLiveIntent(
 
   // Availability gate: player locks, pending/failed recovery, active
   // process/launch, and active installs each block review with their own
-  // explanation (SAFETY_BOUNDARIES gate + MASTER_SPEC §19.15). Selection and
+  // explanation (SAFETY_BOUNDARIES gate + MASTER_SPEC §23.3). Selection and
   // inspection remain available above.
   if (availability.locked) {
     return { status: 'blocked', reason: 'This instance is locked by another player.', gate: 'availability' };

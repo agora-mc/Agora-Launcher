@@ -325,6 +325,31 @@ export interface ProjectSummary {
   minecraftVersions?: string[];
   loaders?: string[];
   heroImageUrl?: string;
+  /**
+   * Set when installing this involves files with no digest at all. Agora then
+   * shows it only to users who turned on "Allow low security downloads".
+   */
+  lowSecurity?: boolean;
+}
+
+/** A category offered in Browse's picker, declared under `contentProviders[].categories`. */
+export interface CategoryDefinition {
+  id: string;
+  label: string;
+  /** Empty or absent means every content type the provider offers. */
+  contentTypes?: ProviderContentType[];
+}
+
+/**
+ * Declared under `contentProviders[].ranking`: where your site's popularity
+ * numbers saturate, so Browse ranks your results fairly beside other sources.
+ * Defaults to Modrinth's calibration (250M downloads, 50k follows).
+ */
+export interface RankingProfile {
+  downloadsCeiling: number;
+  endorsementsCeiling: number;
+  /** Category ids marking libraries/APIs, which rank lower. */
+  libraryCategories?: string[];
 }
 
 export interface SearchResponse {

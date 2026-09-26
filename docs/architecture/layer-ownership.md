@@ -271,3 +271,20 @@ MCP client (e.g., Claude Desktop)
 ```
 
 The transport adapter owns only framing (JSON-RPC parse/serialize) and transport-level authorization. The core dispatcher owns all tool behavior, approval policy, and system context generation. This prevents duplicate business logic when adding new transports (e.g., `agora serve` stdio mode later).
+
+## Interactive feature boundary (`desktop/src/features/interactive/`)
+
+A stricter allowlist on top of the rules above, enforced fail-closed by
+`desktop/scripts/check-interactive-boundaries.mjs`:
+
+- `domain/`, `visual/` and `lab/` must not import `@tauri-apps/*`, `@/lib/tauri`, `live/`, or
+  operation components. `live/` is the only app-boundary layer.
+- Within `live/`: the read layer (readAdapters, liveScene, freshness) may call only the
+  read-command allowlist; `core` may use Tauri *types* only; `operationBridges/` may host Standard
+  controllers but not invoke Tauri. Unclassified files fail.
+- Shared visuals are controlled components emitting `VisualIntent` only — no operation-shaped
+  callback props (checked via AST, property and method signatures).
+
+Every negative fixture in `desktop/scripts/boundary-fixtures/` must produce a violation:
+`node scripts/check-interactive-boundaries.mjs --root scripts/boundary-fixtures/interactive --fixtures`
+(from `desktop/`).

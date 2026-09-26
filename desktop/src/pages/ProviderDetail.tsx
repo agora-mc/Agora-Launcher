@@ -16,6 +16,7 @@ import {
   type InstanceRow,
   type ProviderDescriptor,
   type ProviderPlanPreview,
+  type ProviderSecurityNote,
   type ProviderProjectDetail,
   type ProviderProjectVersion,
 } from '../lib/tauri';
@@ -49,9 +50,30 @@ const SANITIZE_SCHEMA: Schema = {
 const https = (url: string | null | undefined) =>
   url && url.startsWith('https://') ? url : null;
 
+/** Whether this plan can be installed with the user's current settings. */
+const blockedByLowSecurity = (preview: ProviderPlanPreview | null) =>
+  !!preview && preview.lowSecurity.length > 0 && !preview.lowSecurityAllowed;
+
+function NoteList({ notes }: { notes: ProviderSecurityNote[] }) {
+  return (
+    <ul className="mt-1 list-disc pl-6 text-xs text-muted-foreground">
+      {notes.slice(0, 5).map((note, index) => (
+        <li key={`${note.urlHost}-${index}`}>
+          {note.urlHost || 'unknown host'}: {note.reason}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * What the user is agreeing to, in the same tiers Technic has always used:
+ * reduced assurance is a warning they can continue past; no integrity
+ * information at all needs *Allow low security downloads*.
+ */
 function IntegrityNote({ preview }: { preview: ProviderPlanPreview }) {
   const hosts = Object.entries(preview.hosts);
-  if (preview.unverified.length === 0) {
+  if (preview.warnings.length === 0 && preview.lowSecurity.length === 0) {
     return (
       <p className="flex items-start gap-2 text-sm text-muted-foreground">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" aria-hidden="true" />
@@ -64,28 +86,47 @@ function IntegrityNote({ preview }: { preview: ProviderPlanPreview }) {
     );
   }
   return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-      <p className="flex items-start gap-2 font-medium">
-        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
-        Agora cannot fully verify {preview.unverified.length === 1 ? 'one file' : `${preview.unverified.length} files`} in this install.
-      </p>
-      <ul className="mt-1 list-disc pl-6 text-xs text-muted-foreground">
-        {preview.unverified.slice(0, 5).map((reason, index) => (
-          <li key={`${reason.urlHost}-${index}`}>
-            {reason.urlHost || 'unknown host'}: {reason.reason}
-          </li>
-        ))}
-      </ul>
+    <div className="space-y-2">
+      {preview.lowSecurity.length > 0 && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm">
+          <p className="flex items-start gap-2 font-medium">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
+            {preview.lowSecurity.length === 1 ? 'One file has' : `${preview.lowSecurity.length} files have`}{' '}
+            no integrity information at all. Agora cannot detect a modified or swapped file.
+          </p>
+          <NoteList notes={preview.lowSecurity} />
+          {!preview.lowSecurityAllowed && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Turn on Allow low security downloads in Settings → Content sources to install it.
+            </p>
+          )}
+        </div>
+      )}
+      {preview.warnings.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <p className="flex items-start gap-2 font-medium">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+            Reduced security: you can continue, but know what you are accepting.
+          </p>
+          <NoteList notes={preview.warnings} />
+        </div>
+      )}
       {hosts.length > 0 && (
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Downloads from {hosts.map(([host, count]) => `${host} (${count})`).join(', ')}.
         </p>
       )}
-      <p className="mt-1 text-xs text-muted-foreground">
-        It installs only if you allow unverified content in Settings → Privacy.
-      </p>
     </div>
   );
+}
+
+/** Confirmation text for a plan with anything to warn about, or null. */
+function warningBody(preview: ProviderPlanPreview | null): string | null {
+  if (!preview || (preview.warnings.length === 0 && preview.lowSecurity.length === 0)) return null;
+  return [...preview.lowSecurity, ...preview.warnings]
+    .slice(0, 5)
+    .map((note) => `${note.urlHost || 'unknown host'}: ${note.reason}`)
+    .join('\n');
 }
 
 export function ProviderDetail({
@@ -195,8 +236,14 @@ export function ProviderDetail({
     };
   }, [detail, itemId, isPack, instance, versionId]);
 
-  const installIntoInstance = () => {
+  const installIntoInstance = async () => {
     if (!instance) return;
+    const warnings = warningBody(preview);
+    if (warnings && !await confirm({
+      title: 'Install with reduced security?',
+      body: warnings,
+      confirmLabel: 'Continue',
+    })) return;
     setInstallIntent({
       action: {
         type: 'install',
@@ -222,8 +269,8 @@ export function ProviderDetail({
       title: `Create a new instance from ${detail.project.title}?`,
       body: preview
         ? `${preview.fileCount} files from ${title}. ${
-            preview.unverified.length > 0
-              ? 'Some of them Agora cannot fully verify.'
+            warningBody(preview)
+              ? `Reduced security:\n${warningBody(preview)}`
               : 'Each is checked against the digest the provider published.'
           }`
         : `Files come from ${title}.`,
@@ -334,7 +381,7 @@ export function ProviderDetail({
               <button
                 type="button"
                 onClick={installPack}
-                disabled={busy}
+                disabled={busy || blockedByLowSecurity(preview)}
                 className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {busy ? 'Installing…' : 'Install as new instance'}
@@ -343,7 +390,7 @@ export function ProviderDetail({
               <button
                 type="button"
                 onClick={installIntoInstance}
-                disabled={!instance || instance.is_locked}
+                disabled={!instance || instance.is_locked || blockedByLowSecurity(preview)}
                 title={instance?.is_locked ? 'Unlock the instance to install content.' : undefined}
                 className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >

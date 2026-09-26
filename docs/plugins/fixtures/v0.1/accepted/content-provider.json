@@ -6,16 +6,33 @@
   "license": "MIT",
   "apiRange": ">=0.1.1, <0.2",
   "entrypoint": "main.js",
-  "capabilities": { "required": ["content:provide", "network"] },
-  "network": { "hosts": ["api.example.com", "cdn.example.com"] },
+  "capabilities": {
+    "required": [
+      "content:provide",
+      "network"
+    ]
+  },
+  "network": {
+    "hosts": [
+      "api.example.com",
+      "cdn.example.com"
+    ]
+  },
   "contributions": {
     "contentProviders": [
       {
         "id": "example",
         "title": "Example Source",
         "description": "Mods and packs from example.com",
-        "contentTypes": ["mod", "pack"],
-        "sorts": ["relevance", "downloads", "updated"],
+        "contentTypes": [
+          "mod",
+          "pack"
+        ],
+        "sorts": [
+          "relevance",
+          "downloads",
+          "updated"
+        ],
         "paginates": true,
         "filters": [
           {
@@ -23,11 +40,37 @@
             "title": "Side",
             "multiple": false,
             "options": [
-              { "value": "client", "label": "Client" },
-              { "value": "server", "label": "Server" }
+              {
+                "value": "client",
+                "label": "Client"
+              },
+              {
+                "value": "server",
+                "label": "Server"
+              }
             ]
           }
         ],
+        "categories": [
+          {
+            "id": "lighting",
+            "label": "Lighting",
+            "contentTypes": [
+              "mod"
+            ]
+          },
+          {
+            "id": "cozy",
+            "label": "Cozy"
+          }
+        ],
+        "ranking": {
+          "downloadsCeiling": 100000,
+          "endorsementsCeiling": 1000,
+          "libraryCategories": [
+            "library"
+          ]
+        },
         "exports": {
           "search": "search",
           "project": "project",

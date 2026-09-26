@@ -44,6 +44,14 @@ pub async fn list_content_providers(app: AppHandle) -> LauncherResult<Vec<Provid
     Ok(registry(&app)?.descriptors())
 }
 
+/// Categories every usable provider offers, for Browse's category picker.
+#[tauri::command]
+pub async fn list_provider_categories(
+    app: AppHandle,
+) -> LauncherResult<Vec<providers::ProviderCategories>> {
+    Ok(providers::categories(&registry(&app)?).await)
+}
+
 #[tauri::command]
 pub async fn set_content_provider_enabled(
     app: AppHandle,
@@ -93,7 +101,9 @@ pub async fn provider_install_preview(
     minecraft_version: Option<String>,
     loader: Option<String>,
 ) -> LauncherResult<install::PlanPreview> {
+    let ctx = crate::core_context(&app)?;
     install::preview(
+        &ctx,
         &registry(&app)?,
         &item_id,
         version_id.as_deref(),

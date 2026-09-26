@@ -17,14 +17,18 @@
 //! snapshots or records anything. [`authorize_plan`] judges every plan by the
 //! same rule whether it came from Agora's own Modrinth code or from a plugin:
 //!
-//! - a file fetched over HTTPS from a host the provider declared, with a
-//!   SHA-256 or SHA-512 digest, is **in scope**;
-//! - anything else — an undeclared host, plain HTTP, only MD5/SHA-1, no digest
-//!   at all — is **unverified content**, and needs the same
-//!   `allow_unverified_packs` consent Technic's bare zips have always needed.
+//! - a file over HTTPS from a host the provider declared, with SHA-256 or
+//!   SHA-512, needs no comment;
+//! - an undeclared host, plain HTTP, or only MD5/SHA-1 is **reduced
+//!   assurance**: the user is warned and may continue;
+//! - a file with no digest at all is **low security** and installs only with
+//!   *Allow low security downloads* on.
 //!
-//! Enabling a provider is the user's statement of trust in it; the provider id
-//! is stamped on everything it installs so that statement stays visible.
+//! That is Technic's long-standing model (Solder warns, bare zips need the
+//! toggle), generalised. Agora warns and asks; it does not decide for the
+//! user. Enabling a provider is the user's statement of trust in it, and the
+//! provider id is stamped on everything it installs so that statement stays
+//! visible.
 //!
 //! # Official providers are not privileged
 //!
@@ -48,17 +52,20 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub use agora_plugin_api::provider::{
-    FilterDefinition, InstallPlan, Integrity, ProjectDetail, ProjectSummary, ProviderSort,
-    ResolveRequest, SearchRequest, SearchResponse, VersionsRequest, VersionsResponse,
+    CategoryDefinition, FilterDefinition, InstallPlan, Integrity, ProjectDetail, ProjectSummary,
+    ProviderSort, RankingProfile, ResolveRequest, SearchRequest, SearchResponse, VersionsRequest,
+    VersionsResponse,
 };
 
 /// Prefix of a Browse/detail item id that belongs to a provider.
 pub const ITEM_PREFIX: &str = "provider:";
 
-/// Setting that permits content Agora cannot verify. Shared with Technic's
-/// bare-zip tier: it is one question ("install things Agora cannot check?")
-/// and asking it twice would let the answers drift.
-pub const UNVERIFIED_SETTING: &str = "allow_unverified_packs";
+/// **Allow low security downloads**: content with no integrity information
+/// at all. Shared with Technic's bare-zip tier, because it is one question
+/// ("install things Agora cannot check at all?") and asking it twice would let
+/// the answers drift. The key predates the label and is kept so existing
+/// choices carry over.
+pub const LOW_SECURITY_SETTING: &str = "allow_unverified_packs";
 
 /// Who ships a provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,7 +95,9 @@ pub struct ProviderDescriptor {
     pub filters: Vec<FilterDefinition>,
     pub sorts: Vec<ProviderSort>,
     pub paginates: bool,
-    /// Hosts downloads may come from without counting as unverified.
+    /// How this provider's popularity numbers compare with other sources'.
+    pub ranking: RankingProfile,
+    /// Hosts downloads may come from without a warning.
     pub download_hosts: Vec<String>,
     /// Whether the user has this provider switched on.
     pub enabled: bool,
@@ -133,6 +142,12 @@ pub struct ProviderPage {
 #[async_trait]
 pub trait ContentProvider: Send + Sync {
     fn descriptor(&self) -> ProviderDescriptor;
+
+    /// Categories for Browse's picker. Most providers declare a fixed list;
+    /// one whose categories live on its own site may fetch them.
+    async fn categories(&self) -> LauncherResult<Vec<CategoryDefinition>> {
+        Ok(Vec::new())
+    }
 
     async fn search(&self, request: SearchRequest) -> LauncherResult<ProviderPage>;
 
@@ -256,6 +271,42 @@ pub fn set_enabled(
     }
 }
 
+/// Every usable provider's categories, for Browse's category picker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCategories {
+    pub provider_id: String,
+    pub provider_title: String,
+    pub categories: Vec<CategoryDefinition>,
+}
+
+/// Ask every usable provider for its categories. A provider that fails is
+/// left out rather than failing the picker.
+pub async fn categories(registry: &ProviderRegistry) -> Vec<ProviderCategories> {
+    let mut all = Vec::new();
+    for (descriptor, provider) in registry.usable_providers() {
+        if let Ok(categories) = provider.categories().await {
+            // An empty `contentTypes` means every type the provider offers;
+            // expanded here so the frontend has one rule to apply.
+            let categories = categories
+                .into_iter()
+                .map(|mut category| {
+                    if category.content_types.is_empty() {
+                        category.content_types = descriptor.content_types.clone();
+                    }
+                    category
+                })
+                .collect();
+            all.push(ProviderCategories {
+                provider_id: descriptor.id,
+                provider_title: descriptor.title,
+                categories,
+            });
+        }
+    }
+    all
+}
+
 // ---------------------------------------------------------------------------
 // Item ids
 // ---------------------------------------------------------------------------
@@ -279,25 +330,38 @@ pub fn parse_item_id(item_id: &str) -> Option<(&str, &str)> {
 // Plan authorization — one rule for every provider
 // ---------------------------------------------------------------------------
 
-/// Why part of a plan counts as unverified.
+/// One thing about a plan the user should know before installing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UnverifiedReason {
+pub struct SecurityNote {
     pub url_host: String,
     pub reason: String,
 }
 
-/// Core's verdict on an install plan.
+/// Core's verdict on an install plan, in the two tiers the user sees.
+///
+/// This is the same model Technic has always used, applied to every
+/// provider: Solder packs publish MD5 and install after a warning; bare zips
+/// publish nothing and appear only with **Allow low security downloads** on.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanAuthorization {
-    /// Empty when every file is in scope.
-    pub unverified: Vec<UnverifiedReason>,
+    /// Reduced assurance the user is warned about and may continue past: a
+    /// host the provider did not declare, plain HTTP, only MD5/SHA-1.
+    pub warnings: Vec<SecurityNote>,
+    /// Files with no integrity information at all. These install only with
+    /// low security downloads allowed.
+    pub low_security: Vec<SecurityNote>,
 }
 
 impl PlanAuthorization {
-    pub fn is_verified(&self) -> bool {
-        self.unverified.is_empty()
+    /// Nothing to warn about.
+    pub fn is_clean(&self) -> bool {
+        self.warnings.is_empty() && self.low_security.is_empty()
+    }
+
+    pub fn is_low_security(&self) -> bool {
+        !self.low_security.is_empty()
     }
 }
 
@@ -323,10 +387,10 @@ pub fn url_in_scope(url: &str, hosts: &[String]) -> bool {
 
 /// Validate a plan and decide whether the user's settings permit it.
 ///
-/// Refuses outright when the plan is malformed. Refuses with
-/// `ERR_UNVERIFIED_CONTENT_DISABLED` when it contains unverified content and
-/// the user has not allowed that. Otherwise returns the verdict, which the
-/// install path carries so the download uses the matching host policy.
+/// Refuses a malformed plan. Refuses a plan containing files with no
+/// integrity information unless the user has allowed low security downloads.
+/// Everything else is permitted, with any warnings returned for the review
+/// screen: reduced assurance is the user's call, not Agora's.
 pub fn authorize_plan(
     ctx: &Ctx,
     plan: &InstallPlan,
@@ -337,13 +401,13 @@ pub fn authorize_plan(
         message: e.message,
     })?;
     let authorization = judge_plan(plan, declared_hosts);
-    if !authorization.is_verified() && !unverified_allowed(ctx) {
-        let first = &authorization.unverified[0];
+    if authorization.is_low_security() && !low_security_allowed(ctx) {
+        let first = &authorization.low_security[0];
         return Err(LauncherError::Generic {
-            code: "ERR_UNVERIFIED_CONTENT_DISABLED".into(),
+            code: "ERR_LOW_SECURITY_DISABLED".into(),
             message: format!(
-                "This install includes content Agora cannot verify ({}: {}). Allow unverified \
-                 content in Settings to install it anyway.",
+                "This install includes a file with no integrity information ({}: {}). Turn on \
+                 Allow low security downloads in Settings to install it anyway.",
                 first.url_host, first.reason
             ),
         });
@@ -354,28 +418,27 @@ pub fn authorize_plan(
 /// The pure half of [`authorize_plan`].
 pub fn judge_plan(plan: &InstallPlan, declared_hosts: &[String]) -> PlanAuthorization {
     use agora_plugin_api::provider::{InstallPlan as P, PlannedDownload};
-    let mut unverified = Vec::new();
+    let mut verdict = PlanAuthorization::default();
     let mut judge = |download: &PlannedDownload| {
         let host = reqwest::Url::parse(&download.url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
             .unwrap_or_default();
+        let note = |reason: &str| SecurityNote {
+            url_host: host.clone(),
+            reason: reason.into(),
+        };
         if !url_in_scope(&download.url, declared_hosts) {
-            unverified.push(UnverifiedReason {
-                url_host: host.clone(),
-                reason: "not an HTTPS host this provider declared".into(),
-            });
+            verdict
+                .warnings
+                .push(note("not an HTTPS host this provider declared"));
         }
         match download.hashes.integrity() {
             Integrity::Strong => {}
-            Integrity::Weak => unverified.push(UnverifiedReason {
-                url_host: host,
-                reason: "only an MD5 or SHA-1 digest was published".into(),
-            }),
-            Integrity::None => unverified.push(UnverifiedReason {
-                url_host: host,
-                reason: "no digest was published".into(),
-            }),
+            Integrity::Weak => verdict
+                .warnings
+                .push(note("only an MD5 or SHA-1 digest was published")),
+            Integrity::None => verdict.low_security.push(note("no digest was published")),
         }
     };
     match plan {
@@ -387,57 +450,14 @@ pub fn judge_plan(plan: &InstallPlan, declared_hosts: &[String]) -> PlanAuthoriz
             }
         }
     }
-    PlanAuthorization { unverified }
+    verdict
 }
 
-fn unverified_allowed(ctx: &Ctx) -> bool {
+/// Whether the user allows content with no integrity information.
+pub fn low_security_allowed(ctx: &Ctx) -> bool {
     crate::settings::SettingsService::new(ctx.clone())
-        .get_bool(UNVERIFIED_SETTING)
+        .get_bool(LOW_SECURITY_SETTING)
         .unwrap_or(false)
-}
-
-/// Fetch one planned file and check it against every digest the provider
-/// published.
-///
-/// In-scope files go through [`HostPolicy::ProviderDeclared`], which keeps
-/// every redirect hop on the declared hosts. Anything else was already
-/// accepted as unverified by [`authorize_plan`] and goes through the
-/// consented-content policy — still Lockdown-gated, still refusing private and
-/// loopback addresses — after re-checking that consent, because a plan can
-/// outlive a settings change.
-///
-/// [`HostPolicy::ProviderDeclared`]: crate::http_client::HostPolicy::ProviderDeclared
-pub async fn download_planned(
-    ctx: &Ctx,
-    download: &agora_plugin_api::provider::PlannedDownload,
-    declared_hosts: &[String],
-) -> LauncherResult<Vec<u8>> {
-    use crate::http_client::{self, ClientCategory, HostPolicy};
-    let bytes = if url_in_scope(&download.url, declared_hosts) {
-        http_client::checked_get_bytes_with_policy(
-            &ctx.http_clients,
-            ClientCategory::ConsentedContent,
-            &download.url,
-            HostPolicy::ProviderDeclared(declared_hosts),
-        )
-        .await?
-    } else {
-        if !unverified_allowed(ctx) {
-            return Err(LauncherError::Generic {
-                code: "ERR_UNVERIFIED_CONTENT_DISABLED".into(),
-                message: "Unverified content was turned off after this install was planned.".into(),
-            });
-        }
-        http_client::checked_get_bytes_with_policy(
-            &ctx.http_clients,
-            ClientCategory::ConsentedContent,
-            &download.url,
-            HostPolicy::UserConsented,
-        )
-        .await?
-    };
-    verify_planned(&bytes, download)?;
-    Ok(bytes)
 }
 
 /// A digest's name, the value the provider published, and how to compute it.
@@ -545,17 +565,17 @@ mod tests {
             &file_plan("https://cdn.example.com/a.jar", strong()),
             &hosts,
         );
-        assert!(verdict.is_verified());
+        assert!(verdict.is_clean());
         // Subdomains of a declared host are in scope, as for plugin fetches.
         let verdict = judge_plan(
             &file_plan("https://eu.cdn.example.com/a.jar", strong()),
             &hosts,
         );
-        assert!(verdict.is_verified());
+        assert!(verdict.is_clean());
     }
 
     #[test]
-    fn anything_outside_the_declaration_is_unverified() {
+    fn anything_outside_the_declaration_is_a_warning_not_a_block() {
         let hosts = vec!["cdn.example.com".to_string()];
         for url in [
             "http://cdn.example.com/a.jar",
@@ -564,28 +584,28 @@ mod tests {
             "https://notcdn.example.com/a.jar",
             "https://cdn.example.com:8443/a.jar",
         ] {
-            assert!(
-                !judge_plan(&file_plan(url, strong()), &hosts).is_verified(),
-                "{url} must not count as in scope"
-            );
+            let verdict = judge_plan(&file_plan(url, strong()), &hosts);
+            assert!(!verdict.is_clean(), "{url} must not count as in scope");
+            assert!(!verdict.is_low_security(), "{url} has a strong digest");
         }
     }
 
     #[test]
-    fn weak_or_missing_digests_are_unverified_even_on_a_declared_host() {
+    fn weak_digests_warn_and_missing_digests_are_low_security() {
         let hosts = vec!["cdn.example.com".to_string()];
         let weak = FileHashes {
             sha1: Some("b".repeat(40)),
             ..Default::default()
         };
-        assert!(
-            !judge_plan(&file_plan("https://cdn.example.com/a.jar", weak), &hosts).is_verified()
-        );
-        assert!(!judge_plan(
+        let verdict = judge_plan(&file_plan("https://cdn.example.com/a.jar", weak), &hosts);
+        assert_eq!(verdict.warnings.len(), 1);
+        assert!(!verdict.is_low_security());
+
+        let verdict = judge_plan(
             &file_plan("https://cdn.example.com/a.jar", FileHashes::default()),
-            &hosts
-        )
-        .is_verified());
+            &hosts,
+        );
+        assert!(verdict.is_low_security());
     }
 
     #[test]

@@ -193,6 +193,33 @@ async fn search_versions_and_detail_flow_through_the_real_script_host() {
 
     let detail = shelf.project("lantern").await.unwrap();
     assert_eq!(detail.license.as_deref(), Some("MIT"));
+
+    // Declared categories reach Browse's picker; one declared for "all
+    // types" is expanded to the provider's own content types by core.
+    let categories = agora_core::providers::categories(&registry).await;
+    let shelf_categories = categories
+        .iter()
+        .find(|c| c.provider_id == PROVIDER)
+        .expect("the example's categories are offered");
+    let cozy = shelf_categories
+        .categories
+        .iter()
+        .find(|c| c.id == "cozy")
+        .unwrap();
+    assert_eq!(cozy.content_types, vec!["mod", "pack"]);
+    let mut by_category = SearchRequest {
+        limit: 20,
+        category: Some("lighting".into()),
+        ..Default::default()
+    };
+    by_category.sort = agora_core::providers::ProviderSort::Relevance;
+    let page = shelf.search(by_category).await.unwrap();
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(page.hits[0].summary.id, "lantern");
+
+    // The provider's declared ranking travels with its descriptor.
+    let descriptor = registry.get(PROVIDER).unwrap().descriptor();
+    assert_eq!(descriptor.ranking.downloads_ceiling, 100_000);
 }
 
 #[tokio::test]
@@ -277,7 +304,10 @@ async fn a_file_install_resolves_through_the_provider_with_its_dependencies() {
     let origin = download.metadata.provider.as_ref().unwrap();
     assert_eq!(origin.provider_id, PROVIDER);
     assert_eq!(origin.project_id, "lantern");
-    assert!(!origin.unverified, "declared host + SHA-512 is in scope");
+    assert!(
+        !origin.low_security,
+        "declared host + SHA-512 needs no opt-in"
+    );
 
     // The required library is resolved through the same provider and offered
     // as an install candidate, not left for the user to find.
@@ -298,6 +328,7 @@ async fn a_pack_plan_is_previewed_with_where_its_files_come_from() {
     install_example(&world);
     set(&world.ctx, "network_plugins_enabled", true);
     let preview = install::preview(
+        &world.ctx,
         &registry(&world),
         "provider:agora.example-provider/shelf:cozy-pack",
         None,
@@ -308,52 +339,98 @@ async fn a_pack_plan_is_previewed_with_where_its_files_come_from() {
     .unwrap();
     assert_eq!(preview.kind, "pack");
     assert_eq!(preview.file_count, 2);
-    assert!(preview.unverified.is_empty());
+    assert!(preview.warnings.is_empty());
+    assert!(preview.low_security.is_empty());
     assert_eq!(preview.hosts.get("downloads.example.org"), Some(&2));
 }
 
 #[tokio::test]
-async fn an_out_of_scope_plan_needs_unverified_consent_and_says_why() {
+async fn reduced_assurance_warns_and_no_integrity_needs_low_security_downloads() {
     let world = world();
+    // `x` comes from a host the plugin never declared, with a strong digest.
+    // `bare` has no digest at all.
     install_misbehaving(
         &world,
         r#"
-        export async function search() { return { items: [] }; }
+        export async function search() {
+            return { items: [
+                { id: "x", title: "X", contentType: "mod" },
+                { id: "bare", title: "Bare", contentType: "mod", lowSecurity: true }
+            ] };
+        }
         export async function versions() { return { versions: [] }; }
-        export async function resolve() {
+        export async function resolve({ projectId }) {
+            const hashes = projectId === "bare" ? {} : { sha512: "a".repeat(128) };
             return {
                 kind: "file",
                 versionId: "1",
                 versionNumber: "1.0",
                 contentType: "mod",
-                file: {
-                    url: "https://somewhere-else.example/x.jar",
-                    filename: "x.jar",
-                    hashes: { sha512: "a".repeat(128) }
-                }
+                file: { url: "https://somewhere-else.example/x.jar", filename: "x.jar", hashes }
             };
         }
         "#,
     );
     set(&world.ctx, "network_plugins_enabled", true);
     let registry = registry(&world);
-    let item = "provider:acme.misbehaving/bad:x";
 
-    let refused = install::resolve_item(&world.ctx, &registry, &fabric_instance(), item, None)
+    // Reduced assurance is the user's call: it resolves, and the preview
+    // carries the warning the review screen shows.
+    install::resolve_item(
+        &world.ctx,
+        &registry,
+        &fabric_instance(),
+        "provider:acme.misbehaving/bad:x",
+        None,
+    )
+    .await
+    .expect("an undeclared host warns rather than blocks");
+    let preview = install::preview(
+        &world.ctx,
+        &registry,
+        "provider:acme.misbehaving/bad:x",
+        None,
+        "1.21.1",
+        "fabric",
+    )
+    .await
+    .unwrap();
+    assert_eq!(preview.warnings.len(), 1);
+    assert!(preview.low_security.is_empty());
+
+    // No integrity information at all needs the explicit opt-in...
+    let bare = "provider:acme.misbehaving/bad:bare";
+    let refused = install::resolve_item(&world.ctx, &registry, &fabric_instance(), bare, None)
         .await
         .err()
-        .expect("an undeclared host is refused without consent");
-    assert!(refused.to_string().contains("cannot verify"), "{refused}");
+        .expect("a file with no digest needs low security downloads");
+    assert!(refused.to_string().contains("low security"), "{refused}");
+
+    // ...and does not even appear in Browse without it.
+    let cache = agora_core::browse_cache::new_cache();
+    let request = || browse::BrowseRequest {
+        query_key: "q".into(),
+        ..Default::default()
+    };
+    let shown = browse::search(&world.ctx, &registry, &cache, request())
+        .await
+        .unwrap();
+    assert!(shown.page.items.iter().all(|i| i.name != "Bare"));
 
     set(&world.ctx, "allow_unverified_packs", true);
-    let accepted = install::resolve_item(&world.ctx, &registry, &fabric_instance(), item, None)
+    let shown = browse::search(&world.ctx, &registry, &cache, request())
         .await
-        .expect("allowed once the user accepts unverified content");
+        .unwrap();
+    assert!(shown.page.items.iter().any(|i| i.name == "Bare"));
+    let accepted = install::resolve_item(&world.ctx, &registry, &fabric_instance(), bare, None)
+        .await
+        .expect("allowed once the user opts into low security downloads");
     let agora_core::install_pipeline::ResolvedArtifact::Download(download) = accepted.artifact
     else {
         panic!("expected a download");
     };
-    assert!(download.metadata.provider.unwrap().unverified);
+    assert!(download.metadata.provider.unwrap().low_security);
+    assert!(download.hashes.values.is_empty());
 }
 
 #[tokio::test]

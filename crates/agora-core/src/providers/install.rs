@@ -53,23 +53,21 @@ fn installed<'a>(
         .find(|item| is_installed_from(item, provider_id, project_id))
 }
 
-/// A file plan as a pipeline artifact.
-///
-/// The pipeline accepts SHA-512, SHA-256 and SHA-1. A single file that
-/// publishes only MD5 is refused here rather than installed on the strength
-/// of a digest the executor cannot re-check.
+/// A file plan as a pipeline artifact, carrying every digest the provider
+/// published for the executor to re-check.
 fn artifact_from(
     provider_id: &str,
     project_id: &str,
     plan: &FilePlan,
     download_hosts: &[String],
-    unverified: bool,
+    low_security: bool,
 ) -> LauncherResult<ResolvedArtifact> {
     let hashes = &plan.file.hashes;
     let values: Vec<HashedValue> = [
         (HashAlgorithm::Sha512, &hashes.sha512),
         (HashAlgorithm::Sha256, &hashes.sha256),
         (HashAlgorithm::Sha1, &hashes.sha1),
+        (HashAlgorithm::Md5, &hashes.md5),
     ]
     .into_iter()
     .filter_map(|(algorithm, value)| {
@@ -79,16 +77,6 @@ fn artifact_from(
         })
     })
     .collect();
-    if values.is_empty() {
-        return Err(LauncherError::Generic {
-            code: "ERR_HASH_UNAVAILABLE".into(),
-            message: format!(
-                "{} published no SHA-1 or stronger digest for {}; Agora will not install a \
-                 single file it cannot check.",
-                provider_id, plan.file.filename
-            ),
-        });
-    }
     Ok(ResolvedArtifact::Download(ResolvedDownload {
         item_id: super::item_id(provider_id, project_id),
         version_id: plan.version_id.clone(),
@@ -104,7 +92,7 @@ fn artifact_from(
                 project_id: project_id.to_string(),
                 version_id: plan.version_id.clone(),
                 download_hosts: download_hosts.to_vec(),
-                unverified,
+                low_security,
             }),
             source_type: SourceType::Provider,
             registry_id: None,
@@ -151,7 +139,7 @@ async fn resolve_file(
         project_id,
         &file,
         &descriptor.download_hosts,
-        !authorization.is_verified(),
+        authorization.is_low_security(),
     )?;
     Ok((artifact, file))
 }
@@ -341,7 +329,7 @@ pub async fn install_pack(
                     project_id: project_id.to_string(),
                     plan: pack,
                     download_hosts: descriptor.download_hosts,
-                    unverified_accepted: !authorization.is_verified(),
+                    low_security_accepted: authorization.is_low_security(),
                 },
             ),
             symlink_saves: false,
@@ -361,13 +349,19 @@ pub struct PlanPreview {
     pub name: String,
     pub version: String,
     pub file_count: usize,
-    pub unverified: Vec<super::UnverifiedReason>,
+    /// Reduced assurance: shown as a warning the user can continue past.
+    pub warnings: Vec<super::SecurityNote>,
+    /// No integrity information at all: needs low security downloads on.
+    pub low_security: Vec<super::SecurityNote>,
+    /// Whether the user currently allows low security downloads.
+    pub low_security_allowed: bool,
     /// Download hosts by number of files, so the prompt can say where things
     /// come from rather than listing every URL.
     pub hosts: BTreeMap<String, usize>,
 }
 
 pub async fn preview(
+    ctx: &Ctx,
     registry: &ProviderRegistry,
     item_id: &str,
     version_id: Option<&str>,
@@ -391,6 +385,7 @@ pub async fn preview(
         message: e.message,
     })?;
     let verdict = super::judge_plan(&plan, &descriptor.download_hosts);
+    let low_security_allowed = super::low_security_allowed(ctx);
     let mut hosts = BTreeMap::new();
     for url in plan.urls() {
         let host = reqwest::Url::parse(url)
@@ -422,7 +417,9 @@ pub async fn preview(
         name,
         version,
         file_count,
-        unverified: verdict.unverified,
+        warnings: verdict.warnings,
+        low_security: verdict.low_security,
+        low_security_allowed,
         hosts,
     })
 }

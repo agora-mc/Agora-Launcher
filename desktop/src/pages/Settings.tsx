@@ -603,13 +603,13 @@ export function Settings({
   };
 
   const UNVERIFIED_PACKS_ENABLE_WARNING = {
-    title: 'Allow unverified zip packs?',
+    title: 'Allow low security downloads?',
     // Each point is a separate thing the user is agreeing to.
     // Kept as a list so that editing one cannot silently drop
     // another, which parsing a joined blob apart at the call
     // site could.
     body: [
-      'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+      'This lets you install content with NO integrity information at all — no hash of any kind — from any content source: Technic zip packs, or a plugin source that publishes no digest.',
       'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
       'Only enable this if you already trust the specific pack you are installing.',
     ].join('\n\n'),
@@ -623,12 +623,8 @@ export function Settings({
     setTechnic(value);
     try {
       await setSetting('technic_enabled', value);
-      // Turning Technic off must not leave the more permissive tier armed for
-      // the next time it is re-enabled.
-      if (!value && allowUnverifiedPacks) {
-        await setSetting('allow_unverified_packs', false);
-        setAllowUnverifiedPacks(false);
-      }
+      // Low security downloads is its own choice now and covers every
+      // source, so switching Technic off leaves it as the user set it.
     } catch (e) {
       setTechnic(!value);
       showToast(formatError(e), 'error');
@@ -1790,15 +1786,15 @@ export function Settings({
       <div className="rounded-lg border border-border bg-card p-3">
         <label className="flex items-center justify-between">
           <div>
-            <span className="text-sm">Allow unverified zip packs</span>
+            <span className="text-sm">Allow low security downloads</span>
             <p className="text-xs text-muted-foreground mt-0.5">
-              More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
-              This also covers plugin content sources: anything from a host the source did not declare, or with only an MD5 or SHA-1 digest.
+              Shows and installs content that has no integrity information at all — no hash of any kind — from any source, such as Technic zip packs. Agora cannot detect a modified or swapped file; you are taking it on the uploader's word.
+              Content with weaker checks (an MD5, or a host the source did not declare) does not need this: it installs after a warning.
             </p>
           </div>
           <input
             type="checkbox"
-            aria-label="Allow unverified zip packs"
+            aria-label="Allow low security downloads"
             checked={allowUnverifiedPacks}
             onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
             className="h-5 w-5 accent-primary"

@@ -2831,6 +2831,8 @@ export interface ProviderProjectSummary {
   minecraftVersions: string[];
   loaders: string[];
   heroImageUrl?: string | null;
+  /** Installing this involves files with no integrity information. */
+  lowSecurity?: boolean;
 }
 
 export interface ProviderProjectLink {
@@ -2866,7 +2868,7 @@ export interface ProviderProjectVersion {
   changelog?: string | null;
 }
 
-export interface ProviderUnverifiedReason {
+export interface ProviderSecurityNote {
   urlHost: string;
   reason: string;
 }
@@ -2878,8 +2880,11 @@ export interface ProviderPlanPreview {
   name: string;
   version: string;
   fileCount: number;
-  /** Empty when every file is from a declared host with a strong digest. */
-  unverified: ProviderUnverifiedReason[];
+  /** Reduced assurance (undeclared host, plain HTTP, MD5/SHA-1): warn, may continue. */
+  warnings: ProviderSecurityNote[];
+  /** No integrity information at all: installs only with low security downloads on. */
+  lowSecurity: ProviderSecurityNote[];
+  lowSecurityAllowed: boolean;
   /** Download host → number of files from it. */
   hosts: Record<string, number>;
 }
@@ -2896,6 +2901,22 @@ export function providerIdOf(itemId: string): string | null {
   const split = rest.indexOf(':');
   return split > 0 ? rest.slice(0, split) : null;
 }
+
+export interface ProviderCategory {
+  id: string;
+  label: string;
+  /** Content types the category applies to; core fills in "all of them". */
+  contentTypes: string[];
+}
+
+export interface ProviderCategories {
+  providerId: string;
+  providerTitle: string;
+  categories: ProviderCategory[];
+}
+
+export const listProviderCategories = () =>
+  invoke<ProviderCategories[]>('list_provider_categories');
 
 export const listContentProviders = () =>
   invoke<ProviderDescriptor[]>('list_content_providers');

@@ -359,6 +359,7 @@ pub fn run() {
             commands::browse_load_more,
             commands::browse_page,
             providers::list_content_providers,
+            providers::list_provider_categories,
             providers::set_content_provider_enabled,
             providers::provider_project,
             providers::provider_versions,

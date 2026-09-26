@@ -60,7 +60,7 @@ pub struct BrowseResult {
     pub provider_failures: Vec<ProviderFailure>,
 }
 
-/// Curated download strategies the user has left enabled (Axis A, §19.21).
+/// Curated download strategies the user has left enabled (Axis A, §20.2).
 /// A missing setting defaults to on, so curated content never silently
 /// disappears.
 pub fn enabled_curated_strategies(ctx: &Ctx) -> Vec<String> {
@@ -163,6 +163,7 @@ async fn fetch_round(
     registry: &ProviderRegistry,
     filters: &BrowseFilters,
     asks: Vec<(String, u32)>,
+    show_low_security: bool,
 ) -> (
     Vec<BrowseItem>,
     BTreeMap<String, ProviderCursor>,
@@ -201,9 +202,14 @@ async fn fetch_round(
                         has_more,
                     },
                 );
-                items.extend(page.hits.into_iter().map(|hit| {
-                    browse_cache::item_from_hit(&descriptor.id, &descriptor.title, hit)
-                }));
+                items.extend(
+                    page.hits
+                        .into_iter()
+                        // Content with no integrity information appears only
+                        // for users who allowed low security downloads.
+                        .filter(|hit| show_low_security || !hit.summary.low_security)
+                        .map(|hit| browse_cache::item_from_hit(&descriptor, hit)),
+                );
             }
             Err(error) => {
                 cursors.insert(
@@ -283,6 +289,7 @@ pub async fn search(
         registry,
         &filters,
         providers.into_iter().map(|id| (id, 0)).collect(),
+        super::low_security_allowed(ctx),
     )
     .await;
 
@@ -334,7 +341,8 @@ pub async fn load_more(
             break;
         }
         let asked: Vec<String> = asks.iter().map(|(id, _)| id.clone()).collect();
-        let (items, mut cursors, failures) = fetch_round(registry, &filters, asks).await;
+        let (items, mut cursors, failures) =
+            fetch_round(registry, &filters, asks, super::low_security_allowed(ctx)).await;
         // A provider that vanished since the query started (disabled, plugin
         // removed) is simply finished; it must not keep the loop alive.
         for id in asked {
@@ -402,6 +410,7 @@ mod tests {
                 filters: vec![],
                 sorts: vec![ProviderSort::Relevance],
                 paginates: self.paginates,
+                ranking: Default::default(),
                 download_hosts: vec![],
                 enabled: true,
                 unavailable_reason: None,

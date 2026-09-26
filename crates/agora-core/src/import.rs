@@ -2906,13 +2906,17 @@ pub struct ProviderPackImport {
     pub plan: agora_plugin_api::provider::PackPlan,
     /// Hosts in the provider's declared download scope.
     pub download_hosts: Vec<String>,
-    /// Whether core accepted out-of-scope or weakly hashed files in this plan
-    /// under the user's `allow_unverified_packs` consent.
-    pub unverified_accepted: bool,
+    /// Whether core accepted files with no integrity information under the
+    /// user's *Allow low security downloads* setting.
+    pub low_security_accepted: bool,
 }
 
-/// Fetch one planned file on a blocking worker, under the same host policy
-/// split as `providers::download_planned`, and verify it.
+/// Fetch one planned file on a blocking worker and verify it.
+///
+/// Declared hosts go through `ProviderDeclared`, which holds redirects to the
+/// same list; anything else was shown to the user as a warning and goes
+/// through the consented-content policy, which still honours Lockdown and
+/// refuses private and loopback addresses.
 fn fetch_provider_file(
     clients: &crate::http_client::HttpClients,
     download: &agora_plugin_api::provider::PlannedDownload,
@@ -2920,18 +2924,21 @@ fn fetch_provider_file(
 ) -> LauncherResult<Vec<u8>> {
     use crate::http_client::{ClientCategory, HostPolicy};
     let in_scope = crate::providers::url_in_scope(&download.url, &pack.download_hosts);
-    let policy = if in_scope {
-        HostPolicy::ProviderDeclared(&pack.download_hosts)
-    } else if pack.unverified_accepted {
-        HostPolicy::UserConsented
-    } else {
+    if download.hashes.integrity() == agora_plugin_api::provider::Integrity::None
+        && !pack.low_security_accepted
+    {
         return Err(import_error(
-            "ERR_UNVERIFIED_CONTENT_DISABLED",
+            "ERR_LOW_SECURITY_DISABLED",
             format!(
-                "{} is outside {}'s declared download hosts.",
+                "{} from {} has no integrity information; low security downloads are off.",
                 download.filename, pack.provider_title
             ),
         ));
+    }
+    let policy = if in_scope {
+        HostPolicy::ProviderDeclared(&pack.download_hosts)
+    } else {
+        HostPolicy::UserConsented
     };
     let bytes = crate::http_client::blocking_checked_get_bytes_with_policy(
         clients,

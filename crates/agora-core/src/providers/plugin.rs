@@ -113,6 +113,7 @@ impl ContentProvider for PluginProvider {
             filters: self.contribution.filters.clone(),
             sorts: self.contribution.sorts.clone(),
             paginates: self.contribution.paginates,
+            ranking: self.contribution.ranking.clone(),
             download_hosts: self.declared_hosts.clone(),
             // Switching a plugin provider off *is* disabling its plugin, so
             // there is one switch rather than two that can disagree.
@@ -125,6 +126,12 @@ impl ContentProvider for PluginProvider {
                 network_unavailable_reason(&self.ctx, Some("network_plugins_enabled"))
             },
         }
+    }
+
+    async fn categories(
+        &self,
+    ) -> LauncherResult<Vec<agora_plugin_api::provider::CategoryDefinition>> {
+        Ok(self.contribution.categories.clone())
     }
 
     async fn search(&self, mut request: SearchRequest) -> LauncherResult<ProviderPage> {

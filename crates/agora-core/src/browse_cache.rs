@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::modrinth::ModrinthSearchResult;
-use crate::ranking::{self, EndorsementScale, RankingInput, ScoreBreakdown};
+use crate::ranking::{self, RankingInput, RankingProfile, ScoreBreakdown};
 use crate::registry::RegistryItem;
 use crate::technic::TechnicSearchResult;
 
@@ -65,6 +65,10 @@ pub struct BrowseItem {
     /// explained without re-deriving the math by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score_breakdown: Option<ScoreBreakdown>,
+    /// The popularity scale of the provider this came from. `None` uses the
+    /// default profile, which is also what curated items are ranked on.
+    #[serde(skip)]
+    pub ranking_profile: Option<RankingProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +256,7 @@ pub fn item_from_modrinth(item: ModrinthSearchResult) -> BrowseItem {
         technic_result: None,
         score: 0.0,
         score_breakdown: None,
+        ranking_profile: None,
     }
 }
 
@@ -285,6 +290,7 @@ pub fn item_from_technic(item: TechnicSearchResult) -> BrowseItem {
         technic_result: Some(item),
         score: 0.0,
         score_breakdown: None,
+        ranking_profile: None,
     }
 }
 
@@ -295,11 +301,12 @@ pub fn item_from_technic(item: TechnicSearchResult) -> BrowseItem {
 /// provider's item is built from the provider vocabulary alone and gets a
 /// `provider:<provider>:<project>` id, which the detail page routes on.
 pub fn item_from_hit(
-    provider_id: &str,
-    provider_title: &str,
+    descriptor: &crate::providers::ProviderDescriptor,
     hit: crate::providers::ProviderHit,
 ) -> BrowseItem {
-    match hit.native {
+    let provider_id = descriptor.id.as_str();
+    let provider_title = descriptor.title.as_str();
+    let mut item = match hit.native {
         Some(crate::providers::NativeHit::Modrinth(result)) => item_from_modrinth(result),
         Some(crate::providers::NativeHit::Technic(result)) => item_from_technic(result),
         None => {
@@ -331,9 +338,13 @@ pub fn item_from_hit(
                 source_page_url: summary.page_url.and_then(|u| normalized_https_url(&u)),
                 score: 0.0,
                 score_breakdown: None,
+                ranking_profile: None,
             }
         }
-    }
+    };
+    // Every provider's items are ranked on the scale that provider declared.
+    item.ranking_profile = Some(descriptor.ranking.clone());
+    item
 }
 
 /// Collect the ranking signals for an already-assembled `BrowseItem`.
@@ -351,11 +362,7 @@ fn ranking_input(item: &BrowseItem) -> RankingInput {
     RankingInput {
         downloads: item.downloads,
         endorsements: item.follows,
-        endorsement_scale: Some(if item.source == "technic" {
-            EndorsementScale::Technic
-        } else {
-            EndorsementScale::Modrinth
-        }),
+        profile: item.ranking_profile.clone().unwrap_or_default(),
         categories,
         curated,
         upvotes: item.upvotes.unwrap_or(0),
@@ -430,6 +437,7 @@ pub fn merge_items(
                 technic_result: None,
                 score: 0.0,
                 score_breakdown: None,
+                ranking_profile: None,
             });
         } else {
             merged.push(provider_item);
@@ -463,6 +471,7 @@ pub fn merge_items(
                 technic_result: None,
                 score: 0.0,
                 score_breakdown: None,
+                ranking_profile: None,
             });
         }
     }
@@ -642,6 +651,26 @@ mod tests {
             technic_result: None,
             score: 0.0,
             score_breakdown: None,
+            ranking_profile: None,
+        }
+    }
+
+    fn test_descriptor() -> crate::providers::ProviderDescriptor {
+        crate::providers::ProviderDescriptor {
+            id: "acme.src/example".into(),
+            title: "Example".into(),
+            description: None,
+            origin: crate::providers::ProviderOrigin::Plugin {
+                plugin_id: "acme.src".into(),
+            },
+            content_types: vec!["mod".into()],
+            filters: vec![],
+            sorts: vec![],
+            paginates: true,
+            ranking: RankingProfile::default(),
+            download_hosts: vec![],
+            enabled: true,
+            unavailable_reason: None,
         }
     }
 
@@ -846,7 +875,7 @@ mod tests {
             vec![registry],
             vec![
                 item_from_modrinth(modrinth_item()),
-                item_from_hit("acme.src/example", "Example", plugin_hit),
+                item_from_hit(&test_descriptor(), plugin_hit),
             ],
             0.5,
         );
@@ -872,7 +901,7 @@ mod tests {
             },
             native: None,
         };
-        let item = item_from_hit("acme.src/example", "Example", hit);
+        let item = item_from_hit(&test_descriptor(), hit);
         assert!(item.icon_url.is_none());
         assert!(item.source_page_url.is_none());
     }

@@ -73,17 +73,21 @@ async function installBrowseMock(page: Page) {
             { id: 'visuals', display_name: 'Visuals', is_community: true, content_types: ['mod', 'shader'] },
           ]);
         }
-        if (command === 'list_modrinth_categories') {
-          return Promise.resolve([
-            { name: 'technology', project_type: 'mod', header: 'categories' },
-            { name: 'adventure', project_type: 'mod', header: 'categories' },
-            { name: 'adventure', project_type: 'modpack', header: 'categories' },
-            { name: 'kitchen-sink', project_type: 'modpack', header: 'categories' },
-            { name: 'realistic', project_type: 'shader', header: 'features' },
-            { name: 'audio', project_type: 'resourcepack', header: 'features' },
-            { name: 'worldgen', project_type: 'datapack', header: 'categories' },
-            { name: 'minigame', project_type: 'minecraft_java_server', header: 'minecraft_server_gameplay' },
-          ]);
+        if (command === 'list_provider_categories') {
+          // What core reports for Modrinth: its tags, keyed by Agora content type.
+          return Promise.resolve([{
+            providerId: 'modrinth',
+            providerTitle: 'Modrinth',
+            categories: [
+              { id: 'technology', label: 'Technology', contentTypes: ['mod'] },
+              { id: 'adventure', label: 'Adventure', contentTypes: ['mod', 'pack'] },
+              { id: 'kitchen-sink', label: 'Kitchen Sink', contentTypes: ['pack'] },
+              { id: 'realistic', label: 'Realistic', contentTypes: ['shader'] },
+              { id: 'audio', label: 'Audio', contentTypes: ['resourcepack'] },
+              { id: 'worldgen', label: 'Worldgen', contentTypes: ['datapack'] },
+              { id: 'minigame', label: 'Minigame', contentTypes: ['server'] },
+            ],
+          }]);
         }
         if (command === 'list_manifest_loaders' || command === 'list_manifest_mc_versions') {
           return Promise.resolve([]);
