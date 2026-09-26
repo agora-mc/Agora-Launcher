@@ -361,6 +361,63 @@ class TestValidateDownloadStrategy(unittest.TestCase):
                 self._technic_pack(compatible_versions=[{"mc_version": "1.21", "loader": "forge"}])
             )
 
+    @staticmethod
+    def _provider_pack(**overrides):
+        item = {
+            "id": "tekkit-classic",
+            "content_type": "pack",
+            "download_strategy": "provider_pack",
+            "source_identifier": "technic:tekkit@3.1.2",
+            "compatible_versions": [
+                {"mc_version": "1.2.5", "loader": "forge", "mod_version": "3.1.2"}
+            ],
+        }
+        item.update(overrides)
+        return item
+
+    def test_provider_pack_accepts_official_and_plugin_providers(self):
+        for identifier in (
+            "technic:tekkit@3.1.2",
+            "acme.packs/shelf:project:12@build-7",
+        ):
+            self.assertEqual(
+                _compile.validate_download_strategy(
+                    self._provider_pack(source_identifier=identifier)
+                ),
+                "provider_pack",
+            )
+
+    def test_provider_pack_requires_a_pinned_version(self):
+        for identifier in ("technic:tekkit", "tekkit@3.1.2", "technic:@1", "Technic:x@1"):
+            with self.assertRaises(SystemExit, msg=identifier):
+                _compile.validate_download_strategy(
+                    self._provider_pack(source_identifier=identifier)
+                )
+
+    def test_provider_pack_requires_explicit_compatible_versions(self):
+        with self.assertRaises(SystemExit):
+            _compile.validate_download_strategy(self._provider_pack(compatible_versions=[]))
+
+    def test_provider_pack_needs_no_recipe_and_accepts_none(self):
+        _compile.validate_pack_manifest(self._provider_pack())
+        with self.assertRaises(SystemExit):
+            _compile.validate_pack_manifest(self._provider_pack(mods=[{"id": "sodium"}]))
+
+    def test_provider_pack_is_only_for_packs_and_stands_alone(self):
+        with self.assertRaises(SystemExit):
+            _compile.normalize_download_sources(self._provider_pack(content_type="mod"))
+        combined = self._provider_pack()
+        combined["download_sources"] = [
+            {"strategy": "provider_pack", "identifier": "technic:tekkit@3.1.2"},
+            {"strategy": "modrinth_id", "identifier": "AANobbMI"},
+        ]
+        with self.assertRaises(SystemExit):
+            _compile.normalize_download_sources(combined)
+        self.assertEqual(
+            _compile.normalize_download_sources(self._provider_pack()),
+            [{"strategy": "provider_pack", "identifier": "technic:tekkit@3.1.2"}],
+        )
+
 
 # ---------------------------------------------------------------------------
 # _get_registry_repo

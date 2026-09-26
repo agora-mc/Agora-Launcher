@@ -365,6 +365,7 @@ pub fn run() {
             providers::provider_versions,
             providers::provider_install_preview,
             providers::provider_install_pack,
+            providers::install_catalog_provider_pack,
             commands::export_server_environment,
             commands::kill_process,
             commands::install_pack,

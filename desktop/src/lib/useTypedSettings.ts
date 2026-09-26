@@ -99,6 +99,7 @@ export const SETTINGS = {
   curatedSourceDirectHash: boolDef('curated_source_direct_hash_enabled'),
   curatedSourceCuratedPack: boolDef('curated_source_curated_pack_enabled'),
   curatedSourceTechnicPack: boolDef('curated_source_technic_pack_enabled'),
+  curatedSourceProviderPack: boolDef('curated_source_provider_pack_enabled'),
   technicEnabled: boolDef('technic_enabled'),
   allowUnverifiedPacks: boolDef('allow_unverified_packs'),
   aiMcpEnabled: boolDef('ai_mcp_enabled'),

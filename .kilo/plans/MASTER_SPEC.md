@@ -2397,7 +2397,8 @@ Where content comes from and how a request becomes a file: the curated catalog's
 A registry entry no longer names one place its file comes from. It carries an **ordered list** of
 download sources, `download_sources_json` in `registry_items` (registry schema v8), each entry a
 `{strategy, identifier}` pair drawn from the same strategy vocabulary as before
-(`github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`). Index 0 is the
+(`github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, and
+`provider_pack` from §21.2). Index 0 is the
 curator's preference; the rest are fallbacks in order.
 
 `download_strategy` and `source_identifier` remain in the schema and describe the *preferred*
@@ -2697,6 +2698,16 @@ list), merged into Browse's picker. Curated content keeps its own band above eve
 official providers. A plugin provider's switch is its plugin's enable state. Plugin updates stay
 with the plugin updater; Settings' "Check everything / Update all" asks the app updater and the
 plugin subsystem and never accepts a capability widening on the user's behalf.
+
+**Curated provider packs.** The catalog strategy `provider_pack` (identifier
+`<provider-id>:<project-id>@<version-id>`) lists a provider's pack as its author ships it. Its
+`sha256` is the *plan digest* — SHA-256 of the resolved plan's JSON, printed by
+`agora provider plan-digest` — so a version whose files change after review is caught at install
+(`ERR_PROVIDER_PACK_CHANGED`) and installs only if the user accepts it as uncurated. This is what
+makes Technic Solder packs curatable. It must be an entry's only source and is packs-only.
+
+**Native plugins are not planned.** Each would need a build per platform per plugin; providers
+gain nothing from native speed. Plugins stay on QuickJS; official providers stay Rust built-ins.
 
 **Still source-specific**, tracked in `docs/plugins/providers.md` (*Migration debt* and *Where
 this is going*): Modrinth's single-file install and the Modrinth and Technic detail pages still

@@ -350,6 +350,9 @@ enum ProviderCmd {
         #[arg(long)]
         content_type: Option<String>,
     },
+    /// Print the plan digest a curator pins as `sha256` for a `provider_pack`
+    /// catalog entry. IDENTIFIER is `<provider-id>:<project-id>@<version-id>`.
+    PlanDigest { identifier: String },
 }
 
 #[derive(Subcommand)]
@@ -2099,6 +2102,16 @@ async fn run_command(
                             "{provider_id} is now {}",
                             if enabled { "on" } else { "off" }
                         );
+                    }
+                }
+                ProviderCmd::PlanDigest { identifier } => {
+                    let digest =
+                        agora_core::providers::install::curated_pack_digest(&registry, identifier)
+                            .await?;
+                    if json {
+                        println!("{}", serde_json::json!({ "planDigest": digest }));
+                    } else {
+                        println!("{digest}");
                     }
                 }
                 ProviderCmd::Search {

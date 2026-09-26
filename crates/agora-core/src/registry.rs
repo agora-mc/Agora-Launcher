@@ -35,12 +35,13 @@ use std::collections::{HashMap, HashSet};
 /// is hidden — fail closed, never fail open. An entry carrying several
 /// download sources stays visible while *any* of them is enabled, because it
 /// is still installable from the ones that are.
-pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 5] = [
+pub const CURATED_DOWNLOAD_STRATEGIES: [&str; 6] = [
     "modrinth_id",
     "github_release",
     "direct_hash",
     "curated_pack",
     "technic_pack",
+    "provider_pack",
 ];
 
 /// SQL expression yielding an item's download sources as a JSON array.
@@ -83,7 +84,8 @@ pub struct DownloadSource {
     pub strategy: String,
     /// What the strategy resolves: a `owner/repo` for `github_release`, a
     /// project id for `modrinth_id`, a pinned URL for `direct_hash` /
-    /// `technic_pack`, the pack id for `curated_pack`.
+    /// `technic_pack`, the pack id for `curated_pack`, and
+    /// `<provider-id>:<project-id>@<version-id>` for `provider_pack`.
     pub identifier: String,
 }
 

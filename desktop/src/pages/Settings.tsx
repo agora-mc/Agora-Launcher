@@ -313,7 +313,7 @@ export function Settings({
     let cancelled = false;
     (async () => {
       try {
-        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack', 'technic_pack'];
+        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack', 'technic_pack', 'provider_pack'];
         const results = await Promise.all(keys.map((k) => getSetting(`curated_source_${k}_enabled`)));
         if (cancelled) return;
         const next: Record<string, boolean> = {};
@@ -1784,6 +1784,16 @@ export function Settings({
             aria-label="Technic-sourced pack entries"
             checked={curatedSources['technic_pack'] ?? true}
             onChange={(e) => toggleCuratedSource('technic_pack', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Packs curated from content sources</span>
+          <input
+            type="checkbox"
+            aria-label="Packs curated from content sources"
+            checked={curatedSources['provider_pack'] ?? true}
+            onChange={(e) => toggleCuratedSource('provider_pack', e.target.checked)}
             className="h-5 w-5 accent-primary"
           />
         </label>

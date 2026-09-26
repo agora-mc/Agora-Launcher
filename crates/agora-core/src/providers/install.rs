@@ -300,16 +300,35 @@ pub async fn install_pack(
 ) -> LauncherResult<crate::import::ImportResult> {
     let (provider_id, project_id) =
         parse_item_id(item_id).ok_or_else(|| not_a_provider_item(item_id))?;
-    let provider = registry.usable(provider_id)?;
-    let descriptor = provider.descriptor();
-    let plan = provider
+    let plan = resolve_pack_plan(registry, provider_id, project_id, version_id).await?;
+    install_resolved_pack(ctx, registry, provider_id, project_id, plan).await
+}
+
+async fn resolve_pack_plan(
+    registry: &ProviderRegistry,
+    provider_id: &str,
+    project_id: &str,
+    version_id: Option<&str>,
+) -> LauncherResult<InstallPlan> {
+    registry
+        .usable(provider_id)?
         .resolve(ResolveRequest {
             project_id: project_id.to_string(),
             version_id: version_id.map(str::to_string),
             minecraft_version: String::new(),
             loader: String::new(),
         })
-        .await?;
+        .await
+}
+
+async fn install_resolved_pack(
+    ctx: &Ctx,
+    registry: &ProviderRegistry,
+    provider_id: &str,
+    project_id: &str,
+    plan: InstallPlan,
+) -> LauncherResult<crate::import::ImportResult> {
+    let descriptor = registry.usable(provider_id)?.descriptor();
     let authorization = authorize_plan(ctx, &plan, &descriptor.download_hosts)?;
     let InstallPlan::Pack(pack) = plan else {
         return Err(LauncherError::Generic {
@@ -336,6 +355,150 @@ pub async fn install_pack(
             symlink_saves: false,
         })
         .await
+}
+
+// ---------------------------------------------------------------------------
+// Curated provider packs
+// ---------------------------------------------------------------------------
+
+/// A catalog entry's `provider_pack` source: one version of one provider
+/// project, written `<provider-id>:<project-id>@<version-id>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuratedProviderPack {
+    pub provider_id: String,
+    pub project_id: String,
+    pub version_id: String,
+}
+
+impl CuratedProviderPack {
+    pub fn parse(identifier: &str) -> Option<Self> {
+        let (provider_id, rest) = identifier.trim().split_once(':')?;
+        let (project_id, version_id) = rest.rsplit_once('@')?;
+        let valid = |part: &str| !part.is_empty() && !part.chars().any(char::is_whitespace);
+        (valid(provider_id) && valid(project_id) && valid(version_id)).then(|| Self {
+            provider_id: provider_id.to_string(),
+            project_id: project_id.to_string(),
+            version_id: version_id.to_string(),
+        })
+    }
+}
+
+/// SHA-256 over a plan's canonical JSON.
+///
+/// This is what a curator pins for a `provider_pack` entry. It covers every
+/// file's path, URL and published digest, so it changes if the provider ever
+/// serves something different for the version the curator reviewed, even
+/// though the version id stayed the same.
+pub fn plan_digest(plan: &InstallPlan) -> String {
+    let bytes = serde_json::to_vec(plan).unwrap_or_default();
+    crate::download::sha256_hex(&bytes)
+}
+
+/// Resolve a curated `provider_pack` entry and return its current plan digest,
+/// for curators pinning (or re-checking) an entry.
+pub async fn curated_pack_digest(
+    registry: &ProviderRegistry,
+    identifier: &str,
+) -> LauncherResult<String> {
+    let pin = parse_curated(identifier)?;
+    let plan = resolve_pack_plan(
+        registry,
+        &pin.provider_id,
+        &pin.project_id,
+        Some(&pin.version_id),
+    )
+    .await?;
+    Ok(plan_digest(&plan))
+}
+
+fn parse_curated(identifier: &str) -> LauncherResult<CuratedProviderPack> {
+    CuratedProviderPack::parse(identifier).ok_or_else(|| LauncherError::Generic {
+        code: "ERR_PROVIDER_PACK_IDENTIFIER".into(),
+        message: format!(
+            "`{identifier}` is not a provider pack; expected <provider-id>:<project-id>@<version-id>."
+        ),
+    })
+}
+
+/// Install a catalog entry whose source is `provider_pack`, by registry id.
+pub async fn install_catalog_pack(
+    ctx: &Ctx,
+    registry: &ProviderRegistry,
+    item_id: &str,
+    accept_changed: bool,
+) -> LauncherResult<crate::import::ImportResult> {
+    let item = crate::registry::RegistryService::new(ctx.clone())
+        .get_item_by_id(item_id)?
+        .ok_or_else(|| LauncherError::Generic {
+            code: "ERR_ITEM_NOT_FOUND".into(),
+            message: format!("Registry item '{item_id}' not found."),
+        })?;
+    if item.download_strategy != "provider_pack" {
+        return Err(LauncherError::Generic {
+            code: "ERR_UNSUPPORTED_STRATEGY".into(),
+            message: format!("'{}' is not a provider pack.", item.name),
+        });
+    }
+    let enabled = crate::settings::SettingsService::new(ctx.clone())
+        .get_bool_or("curated_source_provider_pack_enabled", true)
+        .unwrap_or(true);
+    if !enabled {
+        return Err(LauncherError::Generic {
+            code: "ERR_SOURCE_DISABLED".into(),
+            message: "Curated packs from content sources are turned off in Settings.".into(),
+        });
+    }
+    install_curated_pack(
+        ctx,
+        registry,
+        &item.source_identifier,
+        &item.sha256,
+        accept_changed,
+    )
+    .await
+}
+
+/// Install a curated `provider_pack` entry.
+///
+/// The curator reviewed one exact plan and pinned its digest. If the provider
+/// now answers with something else for the same version, the entry is no
+/// longer what was reviewed: that is refused with `ERR_PROVIDER_PACK_CHANGED`
+/// unless the user explicitly accepts installing it as ordinary, uncurated
+/// provider content.
+pub async fn install_curated_pack(
+    ctx: &Ctx,
+    registry: &ProviderRegistry,
+    identifier: &str,
+    pinned_digest: &str,
+    accept_changed: bool,
+) -> LauncherResult<crate::import::ImportResult> {
+    let pin = parse_curated(identifier)?;
+    let plan = resolve_pack_plan(
+        registry,
+        &pin.provider_id,
+        &pin.project_id,
+        Some(&pin.version_id),
+    )
+    .await?;
+    let actual = plan_digest(&plan);
+    let pinned = pinned_digest.trim();
+    if !accept_changed && !actual.eq_ignore_ascii_case(pinned) {
+        return Err(LauncherError::Generic {
+            code: "ERR_PROVIDER_PACK_CHANGED".into(),
+            message: if pinned.is_empty() {
+                "This catalog entry pins no plan digest, so Agora cannot tell whether it is \
+                 the version the curators reviewed."
+                    .into()
+            } else {
+                format!(
+                    "The source now serves something different for version {} than the \
+                     curators reviewed. You can still install it, as uncurated content.",
+                    pin.version_id
+                )
+            },
+        });
+    }
+    install_resolved_pack(ctx, registry, &pin.provider_id, &pin.project_id, plan).await
 }
 
 /// A dry run of what installing an item would involve, for the review
@@ -429,4 +592,36 @@ pub async fn preview(
         reduced_security_enabled: crate::settings::reduced_security_enabled(ctx),
         hosts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curated_provider_pack_identifiers_parse_and_reject_the_malformed() {
+        assert_eq!(
+            CuratedProviderPack::parse("technic:tekkit@1.2.3"),
+            Some(CuratedProviderPack {
+                provider_id: "technic".into(),
+                project_id: "tekkit".into(),
+                version_id: "1.2.3".into(),
+            })
+        );
+        // Plugin provider ids carry a slash; project ids may carry colons.
+        let plugin = CuratedProviderPack::parse("acme.cf/packs:mod:12@v@2").unwrap();
+        assert_eq!(plugin.provider_id, "acme.cf/packs");
+        assert_eq!(plugin.project_id, "mod:12@v");
+        assert_eq!(plugin.version_id, "2");
+        for bad in [
+            "technic:tekkit",
+            "tekkit@1",
+            ":p@1",
+            "t:@1",
+            "t:p@",
+            "t:p q@1",
+        ] {
+            assert_eq!(CuratedProviderPack::parse(bad), None, "{bad}");
+        }
+    }
 }

@@ -63,7 +63,7 @@ not just in Browse, and an entry stays installable as long as one of its sources
 Rules:
 
 - Each entry is `{"strategy": ..., "identifier": ...}`. `strategy` is one of `github_release`,
-  `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`; `identifier` is what that strategy
+  `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, `provider_pack`; `identifier` is what that strategy
   resolves (repo, project id, or pinned URL — same values as `source_identifier`).
 - The list is what the launcher walks, so **every pinned source in it is held to the full
   `direct_hash` contract**, not just the first. A fallback that only fails once the preferred
@@ -226,7 +226,7 @@ does not inherit the preferred source's host policy.
 | `author` | string | Yes | Creator or organization name. |
 | `license` | string | Yes | SPDX license identifier (see §3 below). |
 | `download_sources` | array | Yes, unless the legacy pair is used | Ordered `{strategy, identifier}` objects, best first. The launcher installs from the first source that is enabled and reachable. See "Where the file comes from" above. |
-| `download_strategy` | string | Only without `download_sources` | One of: `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`. Describes the *preferred* source; derived from `download_sources[0]` when that list is present. |
+| `download_strategy` | string | Only without `download_sources` | One of: `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, `provider_pack`. Describes the *preferred* source; derived from `download_sources[0]` when that list is present. |
 | `source_identifier` | string | Only without `download_sources` | Depends on strategy: `github_release` → GitHub `"owner/repo"`; `modrinth_id` → Modrinth project ID; `direct_hash` → direct HTTPS URL ending in the file's name. |
 | `sha256` | string | Yes | SHA-256 hash of the downloadable file (64 lowercase hex chars). For `github_release` and `modrinth_id`, the compiler populates this from API metadata. For `direct_hash`, it MUST be manually provided. One hash covers the whole entry, so every pinned source must serve identical bytes. The launcher **blocks download** if the computed hash doesn't match. |
 | `package_signatures` | string[] | Recommended | Java package prefixes used to attribute crash-log stack frames to this mod (e.g. `me.jellysquid.mods.sodium`). Use 2+ segments; single top-level like `net` is too broad. |
@@ -385,6 +385,38 @@ Each entry in `mods[]` (top level or inside a release):
 | `version` | string | Required in a release; optional at top level | Exact version string (Modrinth version number or ID, or the catalog version). At top level it is a preference: used when it fits the chosen target, otherwise the newest compatible build is used. |
 | `status` | string | No (default `required`) | `required`, `recommended`, or `optional` — see the table at the top of this section. |
 | `description` | string | Optional | Tooltip shown next to the mod in the pack install UI. |
+
+### Curating an existing pack as it is: `provider_pack`
+
+To list a pack someone else publishes (a Technic Solder pack, or a pack from a plugin's content
+source) exactly as its author ships it, pin one version of it instead of writing a recipe:
+
+```json
+{
+  "id": "tekkit-classic",
+  "name": "Tekkit Classic",
+  "content_type": "pack",
+  "download_strategy": "provider_pack",
+  "source_identifier": "technic:tekkit@3.1.2",
+  "sha256": "<output of: agora provider plan-digest technic:tekkit@3.1.2>",
+  "compatible_versions": [{ "mc_version": "1.2.5", "loader": "forge", "mod_version": "3.1.2" }],
+  "license_id": "LicenseRef-Proprietary"
+}
+```
+
+- `source_identifier` is `<provider-id>:<project-id>@<version-id>`. The provider id is `technic`,
+  `modrinth`, or a plugin's `<plugin-id>/<contribution-id>`; the version is the build or version id
+  the provider uses.
+- `sha256` is the **plan digest**, not a file hash: `agora provider plan-digest` resolves that
+  version and hashes every file's path, URL and published digest. If the provider later serves
+  anything different for the same version, the launcher tells the player the entry is no longer
+  what was reviewed and installs it only if they accept it as uncurated content.
+- No `mods` or `versions`: the provider's file list is the recipe. `provider_pack` must be the
+  entry's only source.
+- Players need the provider switched on (Settings → Content sources, or the plugin installed), and
+  the provider's usual security rules still apply: Technic Solder mods carry only MD5, so they
+  install after a warning.
+- `.mrpack` packs on Modrinth are listed with `modrinth_id` as before.
 
 ---
 
@@ -597,7 +629,7 @@ Before submitting a PR, verify:
 - [ ] Filename matches `id`.
 - [ ] `content_type` matches the directory (mods → `"mod"`, packs → `"pack"`, etc.).
 - [ ] `license` is a valid SPDX identifier (or `LicenseRef-*` for custom).
-- [ ] Every `download_sources` strategy is one of `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`.
+- [ ] Every `download_sources` strategy is one of `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, `provider_pack`.
 - [ ] Each identifier matches its strategy's format (GitHub `owner/repo`, Modrinth ID, or HTTPS URL).
 - [ ] The sources are in genuine preference order, and every fallback actually serves this entry's file.
 - [ ] `sha256` is 64 lowercase hex chars (compute via §8).
@@ -639,6 +671,6 @@ For mods with no Modrinth presence (pure GitHub-release mods whose slug doesn't 
 5. **Putting a pack manifest in `registry/mods/`** — packs go in `registry/packs/` and use `id` with `content_type: "pack"`.
 6. **Deleting a manifest to retire it** — move to `registry/archived/` instead to preserve git history.
 7. **Setting `governance.immune: true` without `override_justification`** — the compiler rejects it.
-8. **Inventing a strategy** like `"curseforge"` — only `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, and `curated_pack` are supported.
+8. **Inventing a strategy** like `"curseforge"` — only `github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, and `provider_pack` are supported.
 9. **Using a URL as the identifier for `github_release`** — it must be `owner/repo` format (e.g. `CaffeineMC/sodium`), not a full URL.
 10. **Forgetting `sha256` on a `direct_hash` mod** — it's required for all strategies; for `direct_hash` it's the only integrity guarantee and must be manually provided.

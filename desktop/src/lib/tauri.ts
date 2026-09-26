@@ -315,6 +315,16 @@ export function parseLauncherError(e: unknown): ParsedLauncherError {
   return fallback(String(e));
 }
 
+/** Whether a thrown launcher error carries `code`, at the top level or inside a variant. */
+export function hasErrorCode(e: unknown, code: string): boolean {
+  if (e == null || typeof e !== 'object') return false;
+  const obj = e as Record<string, unknown>;
+  if (obj.code === code) return true;
+  return Object.values(obj).some(
+    (inner) => !!inner && typeof inner === 'object' && (inner as Record<string, unknown>).code === code,
+  );
+}
+
 /** Check whether a thrown error is an expired-GitHub-session error. */
 export function isAuthExpired(e: unknown): boolean {
   if (e == null || typeof e !== 'object') return false;
@@ -534,6 +544,7 @@ const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
   direct_hash: 'Direct Download',
   technic_pack: 'Technic',
   curated_pack: 'Curated Pack',
+  provider_pack: 'Content source',
 };
 
 /// Human-readable label for a download strategy (`github_release` → `GitHub Release`).
@@ -2952,6 +2963,14 @@ export const providerInstallPreview = (
 
 export const providerInstallPack = (itemId: string, versionId?: string) =>
   invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null });
+
+/**
+ * Install a catalog entry that pins one version of a provider's pack.
+ * Fails with `ERR_PROVIDER_PACK_CHANGED` when the source now serves something
+ * other than what was reviewed; `acceptChanged` is the user's answer to that.
+ */
+export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean) =>
+  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged });
 
 // --- Repair loader ---
 

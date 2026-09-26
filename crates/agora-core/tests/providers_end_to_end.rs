@@ -345,6 +345,37 @@ async fn a_pack_plan_is_previewed_with_where_its_files_come_from() {
 }
 
 #[tokio::test]
+async fn a_curated_provider_pack_installs_only_the_plan_the_curators_pinned() {
+    let world = world();
+    install_example(&world);
+    set(&world.ctx, "network_plugins_enabled", true);
+    let registry = registry(&world);
+    let identifier = "agora.example-provider/shelf:cozy-pack@cozy-1.0.0";
+
+    let digest = install::curated_pack_digest(&registry, identifier)
+        .await
+        .unwrap();
+    assert_eq!(digest.len(), 64);
+    assert_eq!(
+        install::curated_pack_digest(&registry, identifier)
+            .await
+            .unwrap(),
+        digest,
+        "the same plan always has the same digest"
+    );
+
+    // A different pin means the source no longer serves what was reviewed:
+    // refused before anything is downloaded, with a code the UI can offer to
+    // override.
+    let changed =
+        install::install_curated_pack(&world.ctx, &registry, identifier, &"0".repeat(64), false)
+            .await
+            .unwrap_err();
+    assert!(changed.to_string().contains("different"), "{changed}");
+    assert!(format!("{changed:?}").contains("ERR_PROVIDER_PACK_CHANGED"));
+}
+
+#[tokio::test]
 async fn reduced_assurance_warns_and_no_integrity_needs_low_security_downloads() {
     let world = world();
     // `x` comes from a host the plugin never declared, with a strong digest.

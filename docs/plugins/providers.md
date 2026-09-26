@@ -150,31 +150,7 @@ update that asks for more is left for review in Plugins.
 
 ## Where this is going
 
-The direction agreed so far, with the decisions still open marked as such. Nothing here is built
-yet.
-
-### Plugins in any language, native plugins in Rust
-
-QuickJS stays for plugins that mostly shape UI. Backend-heavy plugins (providers especially) get a
-second runtime: a **companion process**. The plugin package ships a small executable per platform;
-Agora starts it and exchanges the same `HostRequest`/`HostResponse` messages the QuickJS host
-uses, as JSON lines over stdin/stdout. It implements the existing `ScriptHost` trait, so plugin
-policy, capabilities and the provider bridge do not change. Any language can speak it; a Rust
-plugin depends on `agora-plugin-api` directly and gets the exact same types core uses.
-
-Rejected alternatives: loading a native library into Agora's process (no stable Rust ABI, and a
-crash in the plugin is a crash in Agora), and WebAssembly (sandboxed and multi-language, but adds a
-10–20 MB engine; it can be a third `ScriptHost` later if wanted).
-
-A native plugin runs with the user's own permissions: it is not sandboxed. Per the project's
-principle that is allowed, behind a capability whose install prompt says exactly that.
-
-### Official providers become real plugins
-
-Once native plugins exist, the Modrinth and Technic providers move out of `agora-core` into their
-own Rust plugin crates. Agora ships signed copies; the existing toggles install and enable them.
-Technic installs then work only with the Technic plugin. Needs an official plugin signing key and a
-place to publish its update document (GitHub Releases).
+The direction agreed so far. Each part says whether it is built.
 
 ### One detail page
 
@@ -194,15 +170,36 @@ export to answer "which of your projects provides mod id X?".
 
 ### `.mrpack` and curated content
 
-- An `.mrpack` lists its files with URLs and SHA-512 digests, so it is self-describing. Proposal:
-  install it without requiring the Modrinth plugin, substituting curated entries where possible,
-  and treat files from hosts no enabled provider declared as a warning, not a block.
+- `.mrpack` files already install without the Modrinth provider being switched on: the importer
+  checks every file's SHA-1 against the index and only downloads from Modrinth's and GitHub's CDNs.
+  Routing it through a plugin would add nothing, so it stays as is.
 - Curated entries whose sources are Agora-native (`github_release`, `direct_hash`,
   `curated_pack`) keep resolving in core. Entries sourced from a provider (`modrinth_id`,
-  `technic_pack`) resolve through that provider's plugin.
-- Open: whether to show curated entries whose only usable source needs a plugin the user does not
-  have. Proposal: shown by default when the plugin is official (with a button to turn it on),
-  behind a setting for community plugins.
-- There is no way today to curate an existing Modrinth or Technic-style modpack *as is*; curated
-  packs are Agora recipes listing mods. A generic `provider_pack` strategy (provider, project,
-  version, pinned digest) would allow it.
+  `technic_pack`) resolve through that provider once the official providers are plugins.
+- **Decided:** curated entries whose only usable source needs a plugin the user does not have are
+  shown by default when that plugin is official (with a button to turn it on), and behind a
+  setting for community plugins. Not built yet.
+
+### Curating a provider's pack as it is (built)
+
+A catalog entry with `download_strategy: "provider_pack"` pins one version of any provider's pack
+(`technic:tekkit@3.1.2`, or a plugin source's pack) and its **plan digest**: the SHA-256 of the
+plan the curator reviewed, printed by `agora provider plan-digest`. At install time Agora resolves
+the same version, recomputes the digest and, if the provider now serves something different,
+tells the user it is no longer the reviewed version and installs it only if they accept it as
+uncurated content. This is how Technic Solder packs become curatable: the digest covers every
+mod's URL and MD5, so a build that changes after review is caught. `.mrpack` packs keep using
+`modrinth_id`. See `REGISTRY_CURATION_REFERENCE.md`.
+
+### Native plugins: not planned
+
+A native (compiled) plugin would need its own program built for every platform Agora runs on, for
+every plugin. That is a real cost for every author, for a benefit (speed, other languages) that
+providers do not need: they spend their time waiting on the network. So plugins stay JavaScript
+on QuickJS, and Modrinth and Technic stay Rust built-ins behind the same trait as plugins (see
+*Official providers are not privileged*).
+
+Considered and set aside: a companion process per plugin speaking the host protocol over stdin/
+stdout (the per-platform build cost above), loading a native library into Agora's process (no
+stable Rust ABI, and a plugin crash is an Agora crash), and WebAssembly (sandboxed and
+multi-language, but a 10–20 MB engine; it could be added as another `ScriptHost` later).

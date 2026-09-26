@@ -113,6 +113,18 @@ pub async fn provider_install_preview(
     .await
 }
 
+/// Install a catalog entry that pins one version of a provider's pack.
+/// `accept_changed` is the user's answer to `ERR_PROVIDER_PACK_CHANGED`.
+#[tauri::command]
+pub async fn install_catalog_provider_pack(
+    app: AppHandle,
+    item_id: String,
+    accept_changed: bool,
+) -> LauncherResult<agora_core::import::ImportResult> {
+    let ctx = crate::core_context(&app)?;
+    install::install_catalog_pack(&ctx, &registry(&app)?, &item_id, accept_changed).await
+}
+
 /// Install a provider's modpack as a new instance.
 #[tauri::command]
 pub async fn provider_install_pack(
