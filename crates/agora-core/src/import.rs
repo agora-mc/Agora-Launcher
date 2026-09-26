@@ -3,6 +3,7 @@ use crate::event_sink::{OperationId, ProgressEvent, ProgressPhase, ProgressSink}
 use crate::models::{
     InstalledMod, InstanceManifest, PackOrigin, PackPlatform, CURRENT_MANIFEST_VERSION,
 };
+use crate::override_sanitizer::OverridePolicy;
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -81,18 +82,7 @@ fn sanitize(name: &str) -> String {
 const MAX_MRPACK_FILE_BYTES: usize = 500 * 1024 * 1024;
 const MAX_MRPACK_OVERRIDE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_MRPACK_OVERRIDE_FILES: usize = 5000;
-pub(crate) const ALLOWED_OVERRIDE_PREFIXES: &[&str] = &[
-    "config/",
-    "defaultconfigs/",
-    "resourcepacks/",
-    "shaderpacks/",
-    "datapacks/",
-    "kubejs/",
-];
-const BANNED_OVERRIDE_EXTENSIONS: &[&str] = &[
-    ".jar", ".class", ".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".so", ".dylib", ".msi",
-    ".dmg",
-];
+pub(crate) const ALLOWED_OVERRIDE_PREFIXES: &[&str] = crate::override_sanitizer::ALLOWED_PREFIXES;
 
 const MRPACK_DOWNLOAD_ALLOWLIST: &[&str] = &[
     "cdn.modrinth.com",
@@ -176,7 +166,11 @@ fn manifest_path_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn mrpack_override_path(entry_name: &str, custom_prefix: &str) -> Option<PathBuf> {
+fn mrpack_override_path(
+    entry_name: &str,
+    custom_prefix: &str,
+    policy: OverridePolicy,
+) -> Option<PathBuf> {
     let normalized = entry_name.replace('\\', "/");
     let standard_prefixes = ["overrides/", "client-overrides/", "client_overrides/"];
     let relative = standard_prefixes
@@ -189,22 +183,14 @@ fn mrpack_override_path(entry_name: &str, custom_prefix: &str) -> Option<PathBuf
                 .flatten()
         })?;
 
-    if relative.is_empty()
-        || !ALLOWED_OVERRIDE_PREFIXES
-            .iter()
-            .any(|prefix| relative.starts_with(prefix))
-    {
+    if relative.is_empty() || relative.ends_with('/') || !policy.admits(relative) {
         return None;
     }
     Some(relative_archive_path(relative))
 }
 
-fn validate_override_extension(path: &Path) -> LauncherResult<()> {
-    let lower = manifest_path_key(path).to_ascii_lowercase();
-    if BANNED_OVERRIDE_EXTENSIONS
-        .iter()
-        .any(|extension| lower.ends_with(extension))
-    {
+fn validate_override_extension(path: &Path, policy: OverridePolicy) -> LauncherResult<()> {
+    if policy.forbids(&manifest_path_key(path)) {
         return Err(import_error(
             "ERR_SECURITY_VIOLATION",
             format!(
@@ -541,6 +527,7 @@ pub fn import_mrpack(
         None,
         None,
         None,
+        OverridePolicy::Standard,
     )
 }
 
@@ -551,6 +538,7 @@ pub fn import_mrpack_with_progress(
     progress_sink: Option<std::sync::Arc<dyn ProgressSink>>,
     operation_id: Option<OperationId>,
     origin_url: Option<String>,
+    override_policy: OverridePolicy,
 ) -> LauncherResult<ImportResult> {
     let file = fs::File::open(mrpack_path).map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_OPEN".into(),
@@ -693,13 +681,15 @@ pub fn import_mrpack_with_progress(
                 Err(_) => continue,
             };
             let entry_name = entry.name().replace('\\', "/");
-            let Some(relative_path) = mrpack_override_path(&entry_name, &index.overrides) else {
+            let Some(relative_path) =
+                mrpack_override_path(&entry_name, &index.overrides, override_policy)
+            else {
                 continue;
             };
             if entry.is_dir() {
                 continue;
             }
-            validate_override_extension(&relative_path)?;
+            validate_override_extension(&relative_path, override_policy)?;
             assert_safe_path(target_dir, &relative_path)?;
 
             override_files += 1;
@@ -1634,6 +1624,7 @@ pub fn import_technic_solder_pack(
 pub fn import_technic_zip_pack(
     pack: &TechnicZipPack,
     instances_root: &Path,
+    policy: OverridePolicy,
 ) -> LauncherResult<ImportResult> {
     let bytes = crate::download::download_consented_bytes_blocking(&pack.download_url)?;
     if let Some(pinned) = pack.sha256.as_deref().filter(|sha| !sha.trim().is_empty()) {
@@ -1677,7 +1668,7 @@ pub fn import_technic_zip_pack(
     })?;
 
     let result = (|| -> LauncherResult<usize> {
-        let imported_mods = extract_technic_zip_entries(&mut archive, &mods_dir)?;
+        let imported_mods = extract_technic_zip_entries(&mut archive, &mods_dir, policy)?;
         // Stamp PackOrigin for Technic Zip — download_url (stripped) is the honest identity.
         let origin_url = if pack.download_url.trim().is_empty() {
             None
@@ -1772,11 +1763,17 @@ pub fn import_technic_zip_pack(
 }
 
 /// Extract the top-level `mods/<file>.jar|.zip` entries from a consented
-/// Technic zip. Returns the number of files written. Kept generic over the
+/// Technic zip. Returns the number of mods written. Kept generic over the
 /// underlying reader so tests can feed in-memory archives.
+///
+/// Everything else in the zip (`config/` and friends) is ignored unless the
+/// user turned on *Reduced security mode*, in which case it is extracted
+/// next to `mods/` under the permissive override rules. `bin/` is Technic's
+/// own launcher payload and is never extracted.
 fn extract_technic_zip_entries<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     mods_dir: &Path,
+    policy: OverridePolicy,
 ) -> LauncherResult<usize> {
     // Checked up-front: the per-file cap below is only reached by `mods/`
     // entries, so an archive made entirely of other paths would otherwise walk
@@ -1800,6 +1797,16 @@ fn extract_technic_zip_entries<R: Read + Seek>(
         // Only top-level `mods/<file>` entries are permitted — nothing
         // nested (no config, no overrides, no traversal, no symlink games).
         let Some(relative) = entry_name.strip_prefix("mods/") else {
+            if policy == OverridePolicy::Permissive && !entry_name.starts_with("bin/") {
+                total_bytes = total_bytes.saturating_add(entry.size());
+                if entry.size() > MAX_TECHNIC_ENTRY_BYTES || total_bytes > MAX_TECHNIC_ZIP_BYTES {
+                    return Err(import_error(
+                        "ERR_ZIP_BOMB",
+                        "Technic zip exceeds the extraction safety limits.",
+                    ));
+                }
+                extract_technic_extra_entry(&mut entry, &entry_name, mods_dir, policy)?;
+            }
             continue;
         };
         if relative.contains('/') || relative.contains('\\') || relative.is_empty() {
@@ -1847,6 +1854,34 @@ fn extract_technic_zip_entries<R: Read + Seek>(
         imported_mods += 1;
     }
     Ok(imported_mods)
+}
+
+/// Write one non-`mods/` Technic zip entry into the instance, when the
+/// permissive policy admits it.
+fn extract_technic_extra_entry<R: Read>(
+    entry: &mut R,
+    entry_name: &str,
+    mods_dir: &Path,
+    policy: OverridePolicy,
+) -> LauncherResult<()> {
+    let Some(instance_dir) = mods_dir.parent() else {
+        return Ok(());
+    };
+    let relative = relative_archive_path(entry_name);
+    let key = manifest_path_key(&relative);
+    if key.is_empty() || !policy.admits(&key) {
+        return Ok(());
+    }
+    validate_override_extension(&relative, policy)?;
+    assert_safe_path(instance_dir, &relative)?;
+    let dest = instance_dir.join(&relative);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| import_error("ERR_IMPORT_MKDIR", format!("Cannot create folder: {e}")))?;
+    }
+    let buf = read_zip_entry_bounded(entry, MAX_TECHNIC_ENTRY_BYTES, entry_name)?;
+    fs::write(&dest, &buf)
+        .map_err(|e| import_error("ERR_IMPORT_WRITE", format!("Cannot write {key:?}: {e}")))
 }
 
 /// Write a fresh `instance_manifest.json` into a staged import target.
@@ -2593,6 +2628,7 @@ mod tests {
             None,
             None,
             Some(presigned.to_string()),
+            OverridePolicy::Standard,
         )
         .unwrap();
 
@@ -2692,10 +2728,39 @@ mod tests {
         let mods_dir = tmp.path().join("mods");
         fs::create_dir_all(&mods_dir).unwrap();
         let mut archive = zip::ZipArchive::new(io::Cursor::new(bytes)).unwrap();
-        let imported = extract_technic_zip_entries(&mut archive, &mods_dir).unwrap();
+        let imported =
+            extract_technic_zip_entries(&mut archive, &mods_dir, OverridePolicy::Standard).unwrap();
         assert_eq!(imported, 1);
         assert!(mods_dir.join("good.jar").exists());
         assert!(!mods_dir.join("ignored.txt").exists());
+    }
+
+    #[test]
+    fn test_technic_zip_extracts_the_rest_only_in_reduced_security_mode() {
+        let bytes = zip_bytes(&[
+            ("mods/good.jar", b"meow"),
+            ("config/kept.txt", b"kept"),
+            ("bin/modpack.jar", b"never"),
+            ("instance_manifest.json", b"{}"),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let mods_dir = tmp.path().join("mods");
+        fs::create_dir_all(&mods_dir).unwrap();
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(bytes)).unwrap();
+        let imported =
+            extract_technic_zip_entries(&mut archive, &mods_dir, OverridePolicy::Permissive)
+                .unwrap();
+        assert_eq!(imported, 1);
+        assert!(tmp.path().join("config/kept.txt").exists());
+        assert!(!tmp.path().join("bin").exists());
+        assert!(!tmp.path().join("instance_manifest.json").exists());
+
+        let exe = zip_bytes(&[("tools/run.bat", b"x")]);
+        let mut archive = zip::ZipArchive::new(io::Cursor::new(exe)).unwrap();
+        assert!(
+            extract_technic_zip_entries(&mut archive, &mods_dir, OverridePolicy::Permissive)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2704,18 +2769,27 @@ mod tests {
         let evil = zip_bytes(&[("mods/../evil.jar", b"boom")]);
         let tmp = tempfile::tempdir().unwrap();
         let mut archive = zip::ZipArchive::new(io::Cursor::new(evil)).unwrap();
-        assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+        assert!(
+            extract_technic_zip_entries(&mut archive, tmp.path(), OverridePolicy::Standard)
+                .is_err()
+        );
         assert!(!tmp.path().parent().unwrap().join("evil.jar").exists());
 
         // A top-level mods/ file that is not .jar/.zip must be rejected.
         let exe = zip_bytes(&[("mods/hack.exe", b"MZ")]);
         let mut archive = zip::ZipArchive::new(io::Cursor::new(exe)).unwrap();
-        assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+        assert!(
+            extract_technic_zip_entries(&mut archive, tmp.path(), OverridePolicy::Standard)
+                .is_err()
+        );
 
         // A nested mods/config/... entry is not a top-level mod.
         let nested = zip_bytes(&[("mods/sub/evil.jar", b"x")]);
         let mut archive = zip::ZipArchive::new(io::Cursor::new(nested)).unwrap();
-        assert!(extract_technic_zip_entries(&mut archive, tmp.path()).is_err());
+        assert!(
+            extract_technic_zip_entries(&mut archive, tmp.path(), OverridePolicy::Standard)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2909,6 +2983,9 @@ pub struct ProviderPackImport {
     /// Whether core accepted files with no integrity information under the
     /// user's *Allow low security downloads* setting.
     pub low_security_accepted: bool,
+    /// Permissive under *Reduced security mode*: files outside the usual pack
+    /// folders, and the overrides archive, are then accepted.
+    pub override_policy: OverridePolicy,
 }
 
 /// Fetch one planned file on a blocking worker and verify it.
@@ -2950,6 +3027,24 @@ fn fetch_provider_file(
     Ok(bytes)
 }
 
+/// A provider pack file's path: always a safe, non-executable relative path;
+/// under one of the contract's content roots unless the user turned on
+/// *Reduced security mode*.
+fn provider_pack_path_allowed(path: &str, policy: OverridePolicy) -> LauncherResult<()> {
+    let checked = match policy {
+        OverridePolicy::Standard => agora_plugin_api::provider::validate_pack_path(path),
+        OverridePolicy::Permissive => agora_plugin_api::provider::validate_pack_path_shape(path),
+    };
+    checked.map_err(|e| import_error("ERR_PROVIDER_PACK_PATH", e.message))?;
+    if !policy.admits(path) {
+        return Err(import_error(
+            "ERR_PROVIDER_PACK_PATH",
+            format!("'{path}' is a file Agora keeps for itself; a pack cannot replace it."),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a new instance from a provider's pack plan.
 ///
 /// Every file lands under one of the contract's pack roots (re-checked here,
@@ -2971,8 +3066,7 @@ pub fn import_provider_pack(
     let result = (|| -> LauncherResult<usize> {
         let mut imported = 0usize;
         for file in &plan.files {
-            agora_plugin_api::provider::validate_pack_path(&file.path)
-                .map_err(|e| import_error("ERR_PROVIDER_PACK_PATH", e.message))?;
+            provider_pack_path_allowed(&file.path, pack.override_policy)?;
             let bytes = fetch_provider_file(&clients, &file.download, pack)?;
             let dest = file
                 .path
@@ -2998,8 +3092,11 @@ pub fn import_provider_pack(
             fs::write(&archive, &bytes).map_err(|e| {
                 import_error("ERR_IMPORT_WRITE", format!("Cannot stage overrides: {e}"))
             })?;
-            let extracted =
-                crate::override_sanitizer::extract_overrides(&archive, &target.staging_dir);
+            let extracted = crate::override_sanitizer::extract_overrides_with(
+                &archive,
+                &target.staging_dir,
+                pack.override_policy,
+            );
             let _ = fs::remove_file(&archive);
             extracted?;
         }

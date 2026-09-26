@@ -261,6 +261,7 @@ impl ImportService {
         ));
         check(&op, &cancel)?;
 
+        let override_policy = crate::override_sanitizer::OverridePolicy::from_settings(&self.ctx);
         let (blocking_instances_root, blocking_source, blocking_symlink) = (
             self.ctx.paths.instances_root(),
             request.source.clone(),
@@ -278,6 +279,7 @@ impl ImportService {
                     Some(blocking_sink),
                     Some(blocking_operation_id),
                     origin_url,
+                    override_policy,
                 )
             }
             ImportSource::PrismZip(path) => {
@@ -294,9 +296,11 @@ impl ImportService {
             ImportSource::TechnicSolder(pack) => {
                 crate::import::import_technic_solder_pack(&pack, &blocking_instances_root)
             }
-            ImportSource::TechnicZip(pack) => {
-                crate::import::import_technic_zip_pack(&pack, &blocking_instances_root)
-            }
+            ImportSource::TechnicZip(pack) => crate::import::import_technic_zip_pack(
+                &pack,
+                &blocking_instances_root,
+                override_policy,
+            ),
             ImportSource::ProviderPack(pack) => {
                 crate::import::import_provider_pack(&pack, &blocking_instances_root)
             }

@@ -104,12 +104,6 @@
     "messageContains": "IP address",
     "why": "An IP literal sidesteps DNS, and with it the private-range rejection that protects the user's own network."
   },
-  "network-wildcard-host.json": {
-    "stage": "manifest",
-    "code": "INVALID_MANIFEST",
-    "messageContains": "wildcard",
-    "why": "`*.example.com` is not something a user can evaluate at an install prompt."
-  },
   "script-contribution-without-entrypoint.json": {
     "stage": "manifest",
     "code": "INVALID_MANIFEST",

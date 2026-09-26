@@ -71,12 +71,15 @@ name projects *in your provider*; Agora resolves each one by asking you again, o
 same review screen as curated dependencies, and flags an installed `incompatible` project as a
 blocking conflict.
 
-**`pack`**: a whole modpack, which Agora creates a new instance from. Each file's `path` must sit
-under `mods/`, `config/`, `defaultconfigs/`, `resourcepacks/`, `shaderpacks/`, `datapacks/` or
-`kubejs/`. Executables are refused everywhere, and `.jar` files only belong in `mods/`. An
-optional `overrides` zip goes through the same sanitiser as `.mrpack` overrides. `kubejs/` is not
-inert (KubeJS runs the scripts it finds there), which is exactly why trusting the provider is the
-user's decision.
+**`pack`**: a whole modpack, which Agora creates a new instance from. Each file's `path` is
+relative, stays inside the instance, and is never a native executable. Paths under `mods/`,
+`config/`, `defaultconfigs/`, `resourcepacks/`, `shaderpacks/`, `datapacks/`, `kubejs/`,
+`scripts/`, `global_packs/`, `openloader/` or `patchouli_books/` (with `.jar` only in `mods/`)
+install normally; anything else, like `options.txt`, installs only when the user has turned on
+**Reduced security mode**, and the install prompt lists those files. An optional `overrides` zip
+goes through the same sanitiser as `.mrpack` overrides, under the same mode. `kubejs/` and
+`scripts/` are not inert (KubeJS and CraftTweaker run what they find there), which is exactly why
+trusting the provider is the user's decision.
 
 ## The trust model
 
@@ -101,6 +104,11 @@ after the fact.
 | over HTTPS, from a host the provider declared, with SHA-256 or SHA-512 | installs; nothing to warn about |
 | from another host, over plain HTTP, or with only MD5/SHA-1 | **reduced security**: the user is warned and may continue |
 | with no digest at all | **low security**: hidden and not installable unless the user turned on **Allow low security downloads** |
+
+**Reduced security mode** is the one switch for limits that are reasonable to lift for a source
+the user trusts: plugins reaching any host (`"network": {"hosts": ["*"]}`) or more than 10, and
+packs placing files outside the usual folders. It never allows executables, paths outside the
+instance, or skipping digest checks. See MASTER_SPEC §21.3.
 
 Agora warns and asks; it does not decide for the user. A provider can mark a search result
 `lowSecurity: true` so it stays out of Browse for users who have not opted in, without filtering

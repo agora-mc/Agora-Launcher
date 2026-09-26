@@ -1259,6 +1259,27 @@ impl PluginService {
         previous: Option<&ExistingRecord>,
         accepted: bool,
     ) -> LauncherResult<()> {
+        // Reaching any host, or a list too long to review, is allowed — but
+        // only once the user has chosen reduced security mode. Checked before
+        // consent so the message says what to change rather than asking the
+        // user to accept something that would then be refused.
+        if manifest.network.is_elevated()
+            && !crate::settings::reduced_security_enabled(&self.inner.ctx)
+        {
+            return Err(LauncherError::Generic {
+                code: "ERR_REDUCED_SECURITY_REQUIRED".into(),
+                message: format!(
+                    "`{}` asks to reach {}. Turn on Reduced security mode in Settings to \
+                     install it.",
+                    manifest.id,
+                    if manifest.network.hosts.iter().any(|h| h == "*") {
+                        "any website".to_string()
+                    } else {
+                        format!("{} websites", manifest.network.hosts.len())
+                    }
+                ),
+            });
+        }
         let added = install::added_capabilities(previous.map(|p| &p.granted), manifest);
         let hosts = install::added_hosts(previous.map(|p| p.hosts.as_slice()), manifest);
         if (added.is_empty() && hosts.is_empty()) || accepted {

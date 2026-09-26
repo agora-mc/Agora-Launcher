@@ -24,13 +24,21 @@ const MAX_FILE_COUNT: usize = 5000; // 5000 files max
 /// [`BANNED_EXTENSIONS`].** Do not reason about `kubejs/` as though the
 /// extension ban made overrides safe, and do not widen either list on the
 /// assumption that it did.
-const ALLOWED_PREFIXES: &[&str] = &[
+///
+/// `scripts/` is CraftTweaker's equivalent of `kubejs/` and carries the same
+/// caveat. `global_packs/`, `openloader/` and `patchouli_books/` are data the
+/// game (or a data-loading mod) reads.
+pub(crate) const ALLOWED_PREFIXES: &[&str] = &[
     "config/",
     "defaultconfigs/",
     "resourcepacks/",
     "shaderpacks/",
     "datapacks/",
     "kubejs/",
+    "scripts/",
+    "global_packs/",
+    "openloader/",
+    "patchouli_books/",
 ];
 
 /// Banned extensions (§7.2.2). Hard-banned even inside whitelisted directories.
@@ -42,6 +50,70 @@ const BANNED_EXTENSIONS: &[&str] = &[
     ".jar", ".class", ".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".so", ".dylib", ".msi",
     ".dmg",
 ];
+
+/// Instance files Agora owns. A pack never gets to overwrite these, in any mode.
+const AGORA_OWNED_FILES: &[&str] = &["instance_manifest.json"];
+
+/// How much of an overrides archive is accepted.
+///
+/// `Standard` is the whitelist above. `Permissive` is what the user opts into
+/// with **Reduced security mode**: any path inside the instance, `.jar` files
+/// included (plenty of packs ship mods in their overrides), because the user
+/// chose to trust the pack. Some things stay refused in both modes, since no
+/// pack needs them and the downside is large: path traversal, native
+/// executables and scripts (Minecraft never runs them, so they are only useful
+/// to an attacker), and files Agora itself keeps in the instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverridePolicy {
+    #[default]
+    Standard,
+    Permissive,
+}
+
+impl OverridePolicy {
+    /// The policy the user's settings ask for.
+    pub fn from_settings(ctx: &crate::ctx::Ctx) -> Self {
+        if crate::settings::reduced_security_enabled(ctx) {
+            Self::Permissive
+        } else {
+            Self::Standard
+        }
+    }
+
+    /// Whether a sanitised, instance-relative path is extracted at all.
+    /// Paths it declines are skipped, not treated as an attack.
+    pub fn admits(self, path: &str) -> bool {
+        if is_agora_owned(path) {
+            return false;
+        }
+        match self {
+            Self::Standard => is_whitelisted(path),
+            Self::Permissive => true,
+        }
+    }
+
+    /// Whether a path that [`admits`](Self::admits) accepted is still refused
+    /// outright, failing the extraction.
+    pub fn forbids(self, path: &str) -> bool {
+        match self {
+            Self::Standard => has_banned_extension(path),
+            Self::Permissive => {
+                let lower = path.to_ascii_lowercase();
+                agora_plugin_api::provider::BANNED_EXTENSIONS
+                    .iter()
+                    .any(|ext| lower.ends_with(ext))
+            }
+        }
+    }
+}
+
+fn is_agora_owned(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    AGORA_OWNED_FILES.contains(&lower.as_str())
+        || lower
+            .split('/')
+            .any(|segment| segment.starts_with(".agora"))
+}
 
 /// Result of an override extraction.
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +134,15 @@ pub struct ExtractionResult {
 /// 6. Tracks actual bytes written and aborts mid-stream if limits are exceeded.
 /// 7. On any security violation, deletes partially extracted files.
 pub fn extract_overrides(zip_path: &Path, dest_dir: &Path) -> LauncherResult<ExtractionResult> {
+    extract_overrides_with(zip_path, dest_dir, OverridePolicy::Standard)
+}
+
+/// [`extract_overrides`] under an explicit [`OverridePolicy`].
+pub fn extract_overrides_with(
+    zip_path: &Path,
+    dest_dir: &Path,
+    policy: OverridePolicy,
+) -> LauncherResult<ExtractionResult> {
     // Pre-check: compressed file size.
     let zip_size = zip_path
         .metadata()
@@ -161,13 +242,13 @@ pub fn extract_overrides(zip_path: &Path, dest_dir: &Path) -> LauncherResult<Ext
         }
 
         // Check directory whitelist.
-        if !is_whitelisted(&safe_name) {
+        if !policy.admits(&safe_name) {
             skipped.push(safe_name.clone());
             continue;
         }
 
         // Check banned extensions.
-        if has_banned_extension(&safe_name) {
+        if policy.forbids(&safe_name) {
             cleanup_partial(dest_dir, &extracted);
             return Err(LauncherError::Generic {
                 code: "ERR_SECURITY_VIOLATION".to_string(),
@@ -354,6 +435,56 @@ mod tests {
     fn test_whitelist_allows_shaderpacks() {
         assert!(is_whitelisted("shaderpacks/ComplementaryShaders.zip"));
         assert!(is_whitelisted("datapacks/custom_loot.zip"));
+    }
+
+    #[test]
+    fn permissive_overrides_take_jars_and_any_folder_but_never_executables() {
+        let permissive = OverridePolicy::Permissive;
+        assert!(permissive.admits("mods/extra.jar"));
+        assert!(!permissive.forbids("mods/extra.jar"));
+        assert!(permissive.admits("options.txt"));
+        assert!(permissive.admits("saves/Tutorial/level.dat"));
+        assert!(permissive.forbids("bin/run.sh"));
+        assert!(permissive.forbids("natives/lib.dll"));
+        assert!(!permissive.admits("instance_manifest.json"));
+        assert!(!permissive.admits(".agora/state.json"));
+
+        let standard = OverridePolicy::Standard;
+        assert!(!standard.admits("mods/extra.jar"));
+        assert!(standard.forbids("config/extra.jar"));
+        assert!(standard.admits("scripts/recipes.zs"));
+        assert!(standard.admits("global_packs/required_data/pack.zip"));
+    }
+
+    #[test]
+    fn permissive_extraction_writes_mods_and_still_refuses_executables() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("o.zip");
+        let write_zip = |entries: &[&str]| {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+            for name in entries {
+                zip.start_file(*name, zip::write::FileOptions::default())
+                    .unwrap();
+                zip.write_all(b"x").unwrap();
+            }
+            zip.finish().unwrap();
+        };
+        let dest = dir.path().join("instance");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        write_zip(&["mods/a.jar", "options.txt", "instance_manifest.json"]);
+        let standard = extract_overrides(&zip_path, &dest).unwrap();
+        assert!(standard.extracted.is_empty());
+        let permissive =
+            extract_overrides_with(&zip_path, &dest, OverridePolicy::Permissive).unwrap();
+        assert_eq!(permissive.extracted, vec!["mods/a.jar", "options.txt"]);
+        assert_eq!(permissive.skipped, vec!["instance_manifest.json"]);
+
+        write_zip(&["tools/setup.exe"]);
+        let error =
+            extract_overrides_with(&zip_path, &dest, OverridePolicy::Permissive).unwrap_err();
+        assert!(error.to_string().contains("setup.exe"), "{error}");
     }
 
     #[test]

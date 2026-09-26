@@ -177,6 +177,9 @@ pub struct InstallPreview {
     pub update_source: Option<UpdateSourceSummary>,
     /// True when the upgrade changes the plugin's stored data shape.
     pub migrates_data: bool,
+    /// It asks to reach any host, or more hosts than can reasonably be
+    /// reviewed, so it installs only with Reduced security mode on.
+    pub needs_reduced_security: bool,
     pub file_count: usize,
     pub uncompressed_bytes: u64,
 }
@@ -458,6 +461,7 @@ fn build_preview(
         required_capabilities: required,
         optional_capabilities: optional,
         unsupported_capabilities: unsupported,
+        needs_reduced_security: manifest.network.is_elevated(),
         file_count,
         uncompressed_bytes,
         manifest,

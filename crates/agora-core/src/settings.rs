@@ -16,6 +16,19 @@ pub struct SettingsService {
     ctx: Ctx,
 }
 
+/// **Reduced security mode.** One switch for the things Agora allows but
+/// cannot vouch for: plugins that reach any public host or declare a long
+/// host list, and pack files outside the usual content folders. Off by
+/// default; turning it on is the user saying they accept that.
+pub const REDUCED_SECURITY_SETTING: &str = "reduced_security_mode";
+
+/// Whether the user has turned reduced security mode on.
+pub fn reduced_security_enabled(ctx: &crate::ctx::Ctx) -> bool {
+    SettingsService::new(ctx.clone())
+        .get_bool(REDUCED_SECURITY_SETTING)
+        .unwrap_or(false)
+}
+
 impl SettingsService {
     pub fn new(ctx: Ctx) -> Self {
         Self { ctx }

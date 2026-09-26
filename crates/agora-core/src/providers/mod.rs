@@ -352,12 +352,19 @@ pub struct PlanAuthorization {
     /// Files with no integrity information at all. These install only with
     /// low security downloads allowed.
     pub low_security: Vec<SecurityNote>,
+    /// Pack files outside the usual content folders (`mods/`, `config/`, …),
+    /// or `.jar` files outside `mods/`. These install only with **Reduced
+    /// security mode** on.
+    #[serde(default)]
+    pub outside_content_folders: Vec<String>,
 }
 
 impl PlanAuthorization {
     /// Nothing to warn about.
     pub fn is_clean(&self) -> bool {
-        self.warnings.is_empty() && self.low_security.is_empty()
+        self.warnings.is_empty()
+            && self.low_security.is_empty()
+            && self.outside_content_folders.is_empty()
     }
 
     pub fn is_low_security(&self) -> bool {
@@ -377,10 +384,14 @@ pub fn url_in_scope(url: &str, hosts: &[String]) -> bool {
         return false;
     };
     let host = host.to_ascii_lowercase();
-    hosts.iter().any(|allowed| {
-        host == *allowed
+    // `*` reaches anywhere, but it declares nowhere in particular: a provider
+    // that can fetch from any host has not told the user where its files
+    // live, so those downloads still carry a warning.
+    hosts.iter().filter(|h| h.as_str() != "*").any(|allowed| {
+        let allowed = allowed.strip_prefix("*.").unwrap_or(allowed);
+        host == allowed
             || (host.len() > allowed.len()
-                && host.ends_with(allowed.as_str())
+                && host.ends_with(allowed)
                 && host.as_bytes()[host.len() - allowed.len() - 1] == b'.')
     })
 }
@@ -411,6 +422,17 @@ pub fn authorize_plan(
                 first.url_host, first.reason
             ),
         });
+    }
+    if let Some(first) = authorization.outside_content_folders.first() {
+        if !crate::settings::reduced_security_enabled(ctx) {
+            return Err(LauncherError::Generic {
+                code: "ERR_REDUCED_SECURITY_REQUIRED".into(),
+                message: format!(
+                    "This pack places files outside the usual content folders (for example \
+                     '{first}'). Turn on Reduced security mode in Settings to install it anyway."
+                ),
+            });
+        }
     }
     Ok(authorization)
 }
@@ -445,6 +467,12 @@ pub fn judge_plan(plan: &InstallPlan, declared_hosts: &[String]) -> PlanAuthoriz
         P::File(file) => judge(&file.file),
         P::Pack(pack) => {
             pack.files.iter().for_each(|f| judge(&f.download));
+            verdict.outside_content_folders = pack
+                .files
+                .iter()
+                .filter(|f| !agora_plugin_api::provider::pack_path_in_content_roots(&f.path))
+                .map(|f| f.path.clone())
+                .collect();
             if let Some(overrides) = &pack.overrides {
                 judge(overrides);
             }
@@ -606,6 +634,42 @@ mod tests {
             &hosts,
         );
         assert!(verdict.is_low_security());
+    }
+
+    #[test]
+    fn pack_files_outside_the_content_folders_are_listed_for_reduced_security() {
+        use agora_plugin_api::provider::{PackFile, PackPlan};
+        let file = |path: &str| PackFile {
+            path: path.into(),
+            download: PlannedDownload {
+                url: "https://cdn.example.com/f".into(),
+                filename: "f".into(),
+                size: None,
+                hashes: strong(),
+            },
+        };
+        let plan = InstallPlan::Pack(PackPlan {
+            name: "P".into(),
+            version_id: "1".into(),
+            version_number: None,
+            minecraft_version: "1.20.1".into(),
+            loader: "fabric".into(),
+            loader_version: String::new(),
+            files: vec![
+                file("mods/a.jar"),
+                file("scripts/r.zs"),
+                file("options.txt"),
+                file("config/x.jar"),
+            ],
+            overrides: None,
+        });
+        assert_eq!(plan.validate(), Ok(()));
+        let verdict = judge_plan(&plan, &["cdn.example.com".to_string()]);
+        assert_eq!(
+            verdict.outside_content_folders,
+            ["options.txt", "config/x.jar"]
+        );
+        assert!(!verdict.is_clean());
     }
 
     #[test]

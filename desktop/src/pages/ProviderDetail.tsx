@@ -50,9 +50,14 @@ const SANITIZE_SCHEMA: Schema = {
 const https = (url: string | null | undefined) =>
   url && url.startsWith('https://') ? url : null;
 
+const outsideFolders = (preview: ProviderPlanPreview | null) =>
+  preview?.outsideContentFolders ?? [];
+
 /** Whether this plan can be installed with the user's current settings. */
 const blockedByLowSecurity = (preview: ProviderPlanPreview | null) =>
-  !!preview && preview.lowSecurity.length > 0 && !preview.lowSecurityAllowed;
+  !!preview &&
+  ((preview.lowSecurity.length > 0 && !preview.lowSecurityAllowed) ||
+    (outsideFolders(preview).length > 0 && !preview.reducedSecurityEnabled));
 
 function NoteList({ notes }: { notes: ProviderSecurityNote[] }) {
   return (
@@ -73,7 +78,8 @@ function NoteList({ notes }: { notes: ProviderSecurityNote[] }) {
  */
 function IntegrityNote({ preview }: { preview: ProviderPlanPreview }) {
   const hosts = Object.entries(preview.hosts);
-  if (preview.warnings.length === 0 && preview.lowSecurity.length === 0) {
+  const outside = outsideFolders(preview);
+  if (preview.warnings.length === 0 && preview.lowSecurity.length === 0 && outside.length === 0) {
     return (
       <p className="flex items-start gap-2 text-sm text-muted-foreground">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" aria-hidden="true" />
@@ -102,6 +108,25 @@ function IntegrityNote({ preview }: { preview: ProviderPlanPreview }) {
           )}
         </div>
       )}
+      {outside.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <p className="flex items-start gap-2 font-medium">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+            {outside.length === 1 ? 'One file goes' : `${outside.length} files go`} outside the usual
+            content folders.
+          </p>
+          <ul className="mt-1 list-disc pl-6 text-xs text-muted-foreground">
+            {outside.slice(0, 5).map((path) => (
+              <li key={path}>{path}</li>
+            ))}
+          </ul>
+          {!preview.reducedSecurityEnabled && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Turn on Reduced security mode in Settings → Content sources to install it.
+            </p>
+          )}
+        </div>
+      )}
       {preview.warnings.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
           <p className="flex items-start gap-2 font-medium">
@@ -122,10 +147,20 @@ function IntegrityNote({ preview }: { preview: ProviderPlanPreview }) {
 
 /** Confirmation text for a plan with anything to warn about, or null. */
 function warningBody(preview: ProviderPlanPreview | null): string | null {
-  if (!preview || (preview.warnings.length === 0 && preview.lowSecurity.length === 0)) return null;
-  return [...preview.lowSecurity, ...preview.warnings]
+  const outside = outsideFolders(preview);
+  if (
+    !preview ||
+    (preview.warnings.length === 0 && preview.lowSecurity.length === 0 && outside.length === 0)
+  ) {
+    return null;
+  }
+  return [
+    ...[...preview.lowSecurity, ...preview.warnings].map(
+      (note) => `${note.urlHost || 'unknown host'}: ${note.reason}`,
+    ),
+    ...outside.map((path) => `${path}: outside the usual content folders`),
+  ]
     .slice(0, 5)
-    .map((note) => `${note.urlHost || 'unknown host'}: ${note.reason}`)
     .join('\n');
 }
 

@@ -73,10 +73,13 @@ pub const MAX_SHORT: usize = 2_048;
 /// because a provider must never be able to shape files outside the content
 /// an instance is expected to hold.
 ///
-/// `kubejs/` is not inert: the KubeJS mod executes the scripts it finds there.
-/// It is allowed because it is an ordinary part of how packs are built, and
-/// the user's decision to trust the provider is the control for it — exactly
-/// as for a Modrinth `.mrpack`.
+/// `kubejs/` and `scripts/` (CraftTweaker) are not inert: those mods run the
+/// scripts they find there. They are allowed because they are an ordinary
+/// part of how packs are built, and the user's decision to trust the provider
+/// is the control for them — exactly as for a Modrinth `.mrpack`.
+///
+/// Anything outside these folders is allowed only with reduced security mode
+/// on; see [`pack_path_in_content_roots`].
 pub const PACK_FILE_ROOTS: &[&str] = &[
     "mods",
     "config",
@@ -85,10 +88,16 @@ pub const PACK_FILE_ROOTS: &[&str] = &[
     "shaderpacks",
     "datapacks",
     "kubejs",
+    "scripts",
+    "global_packs",
+    "openloader",
+    "patchouli_books",
 ];
 
-/// Extensions no pack file may have, in any folder. Matches the override
-/// sanitiser's list, minus `.jar`, which is permitted under `mods/` only.
+/// Executables no pack file may be, in any folder, whatever the security
+/// mode: Minecraft never runs them, so a pack that ships one gains nothing a
+/// user would want. (`.jar` is not here; outside `mods/` it needs reduced
+/// security mode instead.)
 pub const BANNED_EXTENSIONS: &[&str] = &[
     ".class", ".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".so", ".dylib", ".msi", ".dmg",
 ];
@@ -780,7 +789,7 @@ impl InstallPlan {
                 }
                 let mut seen = std::collections::BTreeSet::new();
                 for file in &plan.files {
-                    validate_pack_path(&file.path)?;
+                    validate_pack_path_shape(&file.path)?;
                     file.download.validate(&file.path)?;
                     if !seen.insert(file.path.to_ascii_lowercase()) {
                         return Err(invalid_response(format!(
@@ -1023,26 +1032,20 @@ pub fn validate_filename(value: &str) -> PluginResult<()> {
     }
 }
 
-/// An instance-relative path a pack may write to.
-pub fn validate_pack_path(value: &str) -> PluginResult<()> {
+/// A structurally safe instance-relative path: relative, `/`-separated,
+/// no `.`/`..` segments, an ordinary file name, and not an executable.
+///
+/// This is what every plan must satisfy. Whether the path is also inside the
+/// usual content folders is a separate question — see
+/// [`pack_path_in_content_roots`] — because a user may choose to allow more.
+pub fn validate_pack_path_shape(value: &str) -> PluginResult<()> {
     if value.len() > 512 || value.contains('\\') || value.starts_with('/') {
         return Err(invalid_response(format!(
             "pack path `{value}` must be relative and `/`-separated"
         )));
     }
     let segments: Vec<&str> = value.split('/').collect();
-    if segments.len() < 2 {
-        return Err(invalid_response(format!(
-            "pack path `{value}` must be inside a folder such as `mods/`"
-        )));
-    }
-    if !PACK_FILE_ROOTS.contains(&segments[0]) {
-        return Err(invalid_response(format!(
-            "pack path `{value}` is outside the folders a pack may write to ({})",
-            PACK_FILE_ROOTS.join(", ")
-        )));
-    }
-    for segment in &segments[1..segments.len() - 1] {
+    for segment in &segments[..segments.len() - 1] {
         if segment.is_empty() || *segment == "." || *segment == ".." || segment.contains(':') {
             return Err(invalid_response(format!("pack path `{value}` is unsafe")));
         }
@@ -1052,12 +1055,32 @@ pub fn validate_pack_path(value: &str) -> PluginResult<()> {
     let lower = name.to_ascii_lowercase();
     if BANNED_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
         return Err(invalid_response(format!(
-            "pack path `{value}` has a file type a pack may not install"
+            "pack path `{value}` is an executable; Minecraft never runs these, so no pack needs one"
         )));
     }
-    if lower.ends_with(".jar") && segments[0] != "mods" {
+    Ok(())
+}
+
+/// Whether a (structurally safe) pack path stays within the folders packs
+/// normally use, with `.jar` files only in `mods/`. Paths outside this are
+/// allowed only with reduced security mode on.
+pub fn pack_path_in_content_roots(value: &str) -> bool {
+    let mut segments = value.split('/');
+    let root = segments.next().unwrap_or_default();
+    let nested = value.contains('/');
+    let is_jar = value.to_ascii_lowercase().ends_with(".jar");
+    nested && PACK_FILE_ROOTS.contains(&root) && (!is_jar || root == "mods")
+}
+
+/// A pack path that is both structurally safe and inside the usual content
+/// folders — the rule under normal security.
+pub fn validate_pack_path(value: &str) -> PluginResult<()> {
+    validate_pack_path_shape(value)?;
+    if !pack_path_in_content_roots(value) {
         return Err(invalid_response(format!(
-            "pack path `{value}`: `.jar` files belong in `mods/`"
+            "pack path `{value}` is outside the folders a pack normally writes to ({}); \
+             allowed only with reduced security mode",
+            PACK_FILE_ROOTS.join(", ")
         )));
     }
     Ok(())
@@ -1187,7 +1210,7 @@ mod tests {
             "config/evil.jar",
             "mods/run.exe",
             "kubejs/x.sh",
-            "scripts/a.zs",
+            "saves/world/level.dat",
         ] {
             assert!(validate_pack_path(bad).is_err(), "{bad} must be refused");
         }
@@ -1195,8 +1218,27 @@ mod tests {
             "mods/a.jar",
             "config/sub/dir/x.toml",
             "kubejs/server_scripts/a.js",
+            "scripts/recipes.zs",
         ] {
             validate_pack_path(good).unwrap();
+        }
+    }
+
+    #[test]
+    fn paths_outside_content_folders_are_shape_safe_but_need_reduced_security() {
+        for path in ["options.txt", "saves/world/level.dat", "config/coremod.jar"] {
+            validate_pack_path_shape(path).unwrap();
+            assert!(!pack_path_in_content_roots(path), "{path}");
+        }
+        // Traversal and executables are refused in every mode.
+        for bad in [
+            "../x.jar",
+            "a/../../b.txt",
+            "/abs.txt",
+            "tools/run.exe",
+            "x.bat",
+        ] {
+            assert!(validate_pack_path_shape(bad).is_err(), "{bad}");
         }
     }
 

@@ -330,6 +330,7 @@ pub async fn install_pack(
                     plan: pack,
                     download_hosts: descriptor.download_hosts,
                     low_security_accepted: authorization.is_low_security(),
+                    override_policy: crate::override_sanitizer::OverridePolicy::from_settings(ctx),
                 },
             ),
             symlink_saves: false,
@@ -355,6 +356,10 @@ pub struct PlanPreview {
     pub low_security: Vec<super::SecurityNote>,
     /// Whether the user currently allows low security downloads.
     pub low_security_allowed: bool,
+    /// Pack files outside the usual content folders: need reduced security mode.
+    pub outside_content_folders: Vec<String>,
+    /// Whether the user currently has reduced security mode on.
+    pub reduced_security_enabled: bool,
     /// Download hosts by number of files, so the prompt can say where things
     /// come from rather than listing every URL.
     pub hosts: BTreeMap<String, usize>,
@@ -420,6 +425,8 @@ pub async fn preview(
         warnings: verdict.warnings,
         low_security: verdict.low_security,
         low_security_allowed,
+        outside_content_folders: verdict.outside_content_folders,
+        reduced_security_enabled: crate::settings::reduced_security_enabled(ctx),
         hosts,
     })
 }

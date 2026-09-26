@@ -2885,6 +2885,9 @@ export interface ProviderPlanPreview {
   /** No integrity information at all: installs only with low security downloads on. */
   lowSecurity: ProviderSecurityNote[];
   lowSecurityAllowed: boolean;
+  /** Pack files outside the usual content folders: install only with reduced security mode on. */
+  outsideContentFolders?: string[];
+  reducedSecurityEnabled?: boolean;
   /** Download host → number of files from it. */
   hosts: Record<string, number>;
 }

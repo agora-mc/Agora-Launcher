@@ -191,6 +191,7 @@ export function Settings({
   });
   const [technic, setTechnic] = useState(false);
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
+  const [reducedSecurity, setReducedSecurity] = useState(false);
   const [aiMcp, setAiMcp] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
   const [alwaysPreTouch, setAlwaysPreTouch] = useState(true);
@@ -325,14 +326,16 @@ export function Settings({
               : true;
         });
         setCuratedSources(next);
-        const [technicRaw, allowRaw] = await Promise.all([
+        const [technicRaw, allowRaw, reducedRaw] = await Promise.all([
           getSetting('technic_enabled'),
           getSetting('allow_unverified_packs'),
+          getSetting('reduced_security_mode'),
         ]);
         if (!cancelled) {
           const asBool = (raw: unknown) => raw === true || raw === 'true' || raw === 1 || raw === '1';
           setTechnic(asBool(technicRaw));
           setAllowUnverifiedPacks(asBool(allowRaw));
+          setReducedSecurity(asBool(reducedRaw));
         }
       } catch {
         // keep defaults; the backend stays authoritative on read when present
@@ -641,6 +644,27 @@ export function Settings({
       await setSetting('allow_unverified_packs', value);
     } catch (e) {
       setAllowUnverifiedPacks(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleReducedSecurity = async (value: boolean) => {
+    if (value && !await confirm({
+      title: 'Turn on reduced security mode?',
+      body: [
+        'Plugins may ask to reach any website, or a list of sites too long to review. Agora can then no longer tell you in advance where a plugin sends data. You are still asked before each plugin is installed.',
+        'Modpacks may place files anywhere in their instance folder, including mods shipped inside their overrides and settings files such as options.txt. Normally only content folders like config/ and resourcepacks/ are accepted.',
+        'Some limits stay in every mode: nothing is written outside the instance, programs such as .exe, .sh or .dll files are always refused, and downloads are still checked against every hash their source publishes.',
+        'Only turn this on for plugins and packs you trust. You can turn it off again at any time; content already installed stays installed.',
+      ].join('\n\n'),
+      confirmLabel: 'Turn on',
+      tone: 'danger',
+    })) return;
+    setReducedSecurity(value);
+    try {
+      await setSetting('reduced_security_mode', value);
+    } catch (e) {
+      setReducedSecurity(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -1797,6 +1821,24 @@ export function Settings({
             aria-label="Allow low security downloads"
             checked={allowUnverifiedPacks}
             onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-3">
+        <label className="flex items-center justify-between">
+          <div>
+            <span className="text-sm">Reduced security mode</span>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Lets plugins reach any website, and lets modpacks place files anywhere in their instance (including mods in their overrides). Programs are still refused and hashes are still checked. For plugins and packs you trust.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Reduced security mode"
+            checked={reducedSecurity}
+            onChange={(e) => toggleReducedSecurity(e.target.checked)}
             className="h-5 w-5 accent-primary"
           />
         </label>

@@ -78,8 +78,10 @@ have to infer any of them:
   // restore if your migration goes wrong.
   "dataVersion": 1,
 
-  // Only meaningful with the `network` capability. Exact hostnames: no
-  // wildcards, no IP literals, no ports, no localhost. At most 10.
+  // Only meaningful with the `network` capability. Hostnames (each also covers
+  // its subdomains; `*.example.com` means the same as `example.com`): no IP
+  // literals, no ports, no localhost. At most 10. `"*"` (any host) or a longer
+  // list installs only when the user has Reduced security mode on.
   "network": { "hosts": ["api.example.com"] },
 
   "contributions": {

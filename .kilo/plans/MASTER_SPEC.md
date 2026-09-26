@@ -2589,10 +2589,11 @@ itself constructed from a manifest-declared file inside the plugin's own package
 **Network access is an allowlist, not a switch.** Holding the `network` capability is not
 permission to reach the internet; it is permission to reach the hosts the plugin *declared in
 its manifest* and the user saw at install time. `HostPolicy::PluginDeclared` enforces that
-list on the initial request and on every redirect hop. Wildcards, IP literals, ports and
-loopback names are rejected at manifest-validation time — a user cannot meaningfully consent
-to `*.example.com`, and an IP literal would sidestep the DNS checks that protect the user's
-own network. `network_plugins_enabled` defaults to **off**, and Lockdown Mode overrides
+list on the initial request and on every redirect hop. IP literals, ports and loopback names
+are rejected at manifest-validation time — an IP literal would sidestep the DNS checks that
+protect the user's own network. A declared host always covered its subdomains, so
+`*.example.com` is accepted as another spelling of `example.com`. Reaching *any* host (`*`) or
+more than 10 hosts is allowed only under Reduced security mode (§21.3). `network_plugins_enabled` defaults to **off**, and Lockdown Mode overrides
 everything regardless.
 
 **Both switches are opt-in.** `plugins_enabled` defaults to off. A user who never opts in
@@ -2701,6 +2702,42 @@ plugin subsystem and never accepts a capability widening on the user's behalf.
 this is going*): Modrinth's single-file install and the Modrinth and Technic detail pages still
 have their own code, `.mrpack` stays with the mrpack importer, and the official providers are
 compiled in rather than shipped as plugins.
+
+### 21.3 Reduced Security Mode: One Opt-In for Limits That Are Reasonable to Lift
+
+**Why.** Several limits existed to protect users who never chose anything: a plugin's host list
+capped at 10 exact names, and pack contents limited to a handful of folders (`config/`,
+`resourcepacks/`, …) with no `.jar` outside the manifest. Real plugins and packs outgrow them — a
+search plugin that follows links, a pack that ships mods or `options.txt` in its overrides. The
+project principle (`AGENTS.md`) is to let users choose rather than block, so these limits become
+one setting, `reduced_security_mode`, off by default, turned on behind a confirmation that says
+exactly what changes.
+
+**What it lifts.**
+
+| Limit | Default | With reduced security mode |
+|---|---|---|
+| Plugin `network.hosts` | ≤ 10 named hosts | `*` (any public host) or up to 200 |
+| `.mrpack` / provider-pack / Standard override folders | `config/`, `defaultconfigs/`, `resourcepacks/`, `shaderpacks/`, `datapacks/`, `kubejs/`, `scripts/`, `global_packs/`, `openloader/`, `patchouli_books/` | anywhere inside the instance |
+| `.jar` in overrides or outside `mods/` | refused | allowed |
+| Technic zip packs | only top-level `mods/` extracted | everything except `bin/` |
+
+**What it never lifts**, because the reward is nil and the risk is large: anything outside the
+instance directory (traversal, absolute paths); native executables and scripts (`.exe`, `.dll`,
+`.so`, `.sh`, `.bat`, `.ps1`, …) which Minecraft never runs; `instance_manifest.json` and
+`.agora*` files that Agora owns; IP-literal and loopback plugin hosts and the private-address
+DNS floor; Lockdown Mode; and digest verification.
+
+**Enforcement.** Install time: `PluginService::guard_consent` refuses an elevated manifest
+(`NetworkDeclaration::is_elevated`) while the mode is off, and the install preview carries
+`needsReducedSecurity`. Run time: `net_fetch_json` denies an elevated plugin's requests once the
+mode is turned off again, so switching it off takes effect without uninstalling anything.
+Packs: `override_sanitizer::OverridePolicy` (Standard / Permissive) is read from settings when an
+import starts; `providers::authorize_plan` lists `outsideContentFolders` and refuses them while
+the mode is off. The default folder list gained `scripts/` (CraftTweaker, not inert — the same
+caveat as `kubejs/`), `global_packs/`, `openloader/` and `patchouli_books/`.
+
+**Not covered.** Pack inventory (drift detection) still tracks only the default folders.
 
 ## 22. CREDENTIALS & AUTHENTICATION
 
