@@ -2697,7 +2697,9 @@ list), merged into Browse's picker. Curated content keeps its own band above eve
 **Switches and updates.** The Modrinth and Technic toggles remain the entry points for the
 official providers. A plugin provider's switch is its plugin's enable state. Plugin updates stay
 with the plugin updater; Settings' "Check everything / Update all" asks the app updater and the
-plugin subsystem and never accepts a capability widening on the user's behalf.
+plugin subsystem and never accepts a capability widening on the user's behalf. Content installed
+from a provider is update-checked against that provider (`update_cache`, the background sweep
+using the official providers only) and updated through the same resolver.
 
 **Curated provider packs.** The catalog strategy `provider_pack` (identifier
 `<provider-id>:<project-id>@<version-id>`) lists a provider's pack as its author ships it. Its

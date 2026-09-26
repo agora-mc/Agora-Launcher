@@ -6409,12 +6409,14 @@ pub async fn check_instance_updates(
     let sanitized = crate::paths::sanitize_id(&instance_id);
     let shared_state = state.inner().clone();
 
+    let providers = crate::providers::registry(&app)?;
     let updates = agora_core::update_cache::check_single_instance_updates_with(
         &ctx,
         &sanitized,
         agora_core::update_cache::UpdateCheckOptions {
             memory_cache: Some(&shared_state),
             on_item_error: agora_core::update_cache::ItemErrorPolicy::Fail,
+            providers: Some(&providers),
         },
     )
     .await?;

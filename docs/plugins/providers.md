@@ -133,7 +133,7 @@ These paths still name a source. Each is listed so it gets retired rather than f
 
 | Where | What is still source-specific | Why it has not moved yet |
 |---|---|---|
-| Modrinth single-file install (`resolver.rs`, `SourceType::Modrinth`) | Browse installs of Modrinth mods use the older Modrinth resolver, which reads dependency data from the downloaded jar | That jar-level dependency resolution has no provider-vocabulary equivalent yet. `ModrinthProvider::resolve` exists and is tested |
+| Modrinth single-file install (`resolver.rs`, `SourceType::Modrinth`) | Browse installs of Modrinth mods use the older Modrinth resolver, which reads dependency data from the downloaded jar | See *Modrinth's single-file install on the provider path* below: a follow-up, deliberately not part of the provider change. `ModrinthProvider::resolve` exists and is tested |
 | Modrinth modpacks (`.mrpack`) | Installed by the mrpack importer | A `.mrpack`'s file list is inside the archive, so a plan cannot be written without downloading it, which a provider must not do |
 | Technic pack install (`crate::technic`) | Still installs through its own importer | The rules now match (Solder warns, zip needs low security downloads); what remains is routing the button through `TechnicProvider::resolve` |
 | `ModDetail.tsx` | The Modrinth and Technic project pages are their own components | Plugin providers use the generic `ProviderDetail` page; the official ones keep their richer pages for now |
@@ -159,14 +159,24 @@ The direction agreed so far. Each part says whether it is built.
 when a catalog entry exists, and a provider able to contribute extra blocks through the existing
 host-rendered view model.
 
-### Modrinth's single-file install on the provider path
+### Modrinth's single-file install on the provider path (next, as its own change)
 
 The older path downloads the jar while planning and reads the mod's own metadata
 (`fabric.mod.json` and friends), because Modrinth's declared dependencies are sometimes wrong for
-the chosen loader. It then maps the jar's mod ids back to Modrinth projects to find what is
-missing. Porting it means two things: jar-metadata checking becomes a core step for every
-provider's file plans (Agora verifying, which is provider-neutral), and providers gain an optional
-export to answer "which of your projects provides mod id X?".
+the chosen loader. It then maps the jar's mod ids back to Modrinth projects (via the catalog's
+aliases, then a Modrinth search), handles several roots installed together, collapses a jar id
+and a Modrinth project that turn out to be the same mod, and can fall back to the closest
+Minecraft version. That is about 700 lines of tuned behaviour on the most-used install path.
+
+The plan is to **parameterize that engine over `ContentProvider`** rather than rewrite it: its
+Modrinth calls become trait calls (list versions, resolve, project details, and a new optional
+"which of your projects provides mod id X?"), and jar-metadata checking becomes a core step every
+provider's file plans get. Then Browse's Modrinth installs switch to `provider:modrinth:<id>`
+items. It lands as its own pull request so the change to that path gets its own review.
+
+Already provider-neutral: update checks (provider-installed content is checked against its
+provider, and **Update all** applies it through the same resolver), and the installed-content
+view labels each item with the provider it came from.
 
 ### `.mrpack` and curated content
 

@@ -165,7 +165,10 @@ fn build_row(
 ) -> InstalledContentRow {
     let (resolved_path, size_bytes) = resolve_file(instance_dir, entry);
     let file_present = resolved_path.is_some();
-    let source_label = source_label(&entry.source);
+    let source_label = match &entry.provider {
+        Some(origin) => provider_source_label(&origin.provider_id),
+        None => source_label(&entry.source),
+    };
     let curation_status = registry_item
         .map(|item| curation_status(&item.status))
         .unwrap_or(CurationStatus::Unknown);
@@ -266,6 +269,16 @@ fn filename_display_name(filename: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(filename)
         .to_string()
+}
+
+/// Official providers by name; a plugin's provider by its plugin id, which is
+/// what the user saw when they installed it.
+fn provider_source_label(provider_id: &str) -> String {
+    match provider_id {
+        "modrinth" => "Modrinth".to_string(),
+        "technic" => "Technic".to_string(),
+        other => other.split('/').next().unwrap_or(other).to_string(),
+    }
 }
 
 fn source_label(source: &str) -> String {
@@ -377,6 +390,8 @@ mod tests {
         assert!(!rows[2].file_present);
         assert_eq!(rows[3].content_type, "resourcepack");
         assert_eq!(rows[3].source_label, "Manual");
+        assert_eq!(provider_source_label("acme.cf/shelf"), "acme.cf");
+        assert_eq!(provider_source_label("modrinth"), "Modrinth");
         manifest.mods.clear();
         let filtered = list_installed_content(&dir, &manifest, Some("resourcepack"), None);
         assert_eq!(filtered.len(), 1);
