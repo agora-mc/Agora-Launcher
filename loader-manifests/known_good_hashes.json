@@ -2737,6 +2737,7 @@
       "neoforge-21.1.249-installer.jar": "sha256:d88b448eab73cd65bdf1720844a4828262de30a15fc71bd04dd81acc61c5399a",
       "neoforge-21.1.250-installer.jar": "sha256:0e47a91ba2139a8db4bf7627af081f7b5789b508bb039ee8dea1272b79693d60",
       "neoforge-21.1.251-installer.jar": "sha256:f63d9011b89aa5db0f5cbe437bb21b2f8c2182ff0c6ac329b7bbf6c9b19bc741",
+      "neoforge-21.1.252-installer.jar": "sha256:d0345e2a104ce4633065f572310ba6e0dd428bb6a73364cf0c2443ed9f8950ad",
       "neoforge-21.2.0-beta-installer.jar": "sha256:6e01c9c724522a5c61e8eff47a5d5f5f52fff2e79c5b81ee5caf183be72959b5",
       "neoforge-21.2.1-beta-installer.jar": "sha256:e4b6e64c9192e3baacb6223bfaa65ce2d677b4f4ad74ac051335681fd6a70e34",
       "neoforge-21.3.88-installer.jar": "sha256:644977bba3f21f9b5eea112a94da44884ac14b5f05757333043a811528af73a1",
@@ -3588,7 +3589,10 @@
       "forge-26.2-65.1.3-installer.jar": "sha256:57dc567dc125d963f352fcb38136ba171326cc0b9516e6f7f6b2ef05251ccc33",
       "forge-26.3-66.0.0-installer.jar": "sha256:3c06a28f76faf54982f745fa24c060f8205dd92bd6754e09231b52cf2cf4ea35",
       "forge-26.3-66.0.2-installer.jar": "sha256:654a9924aa7c1a8e4b38df8f58babf1de090eb4ad7855fc0bbb6df5dfa0210fd",
-      "forge-26.3-66.0.3-installer.jar": "sha256:97a1dc3ee71c558b006e5c7ea9b4c60ab263988a4f8d67b492caafbeb2d0077b"
+      "forge-26.3-66.0.3-installer.jar": "sha256:97a1dc3ee71c558b006e5c7ea9b4c60ab263988a4f8d67b492caafbeb2d0077b",
+      "forge-26.3-66.0.4-installer.jar": "sha256:df99efb91bf239b8e2fe0b6d6a54ee963ff5966f76142dc6845b508b85a40381",
+      "forge-26.3-66.0.5-installer.jar": "sha256:0dac35b3d6bda5a3bf15cd3393639b01f1976a958fb4afc064061098063f0eb4",
+      "forge-26.3-66.0.6-installer.jar": "sha256:bc7c8892eb2c6d098dc313f99a76cbcd6f2951a0a249dec43f4e8439cd98604f"
     }
   },
   "_source": "Generated from loader_manifests.json by scripts/fetch_loader_manifests.py. Do not edit manually."
