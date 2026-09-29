@@ -308,6 +308,11 @@ fn contribution_title(record: &PluginRecord, kind: ContributionKind, local_id: &
             .iter()
             .find(|c| c.id == local_id)
             .map(|c| c.title.clone()),
+        ContributionKind::ContentProvider => contributions
+            .content_providers
+            .iter()
+            .find(|c| c.id == local_id)
+            .map(|c| c.title.clone()),
     };
     found.unwrap_or_else(|| local_id.to_string())
 }

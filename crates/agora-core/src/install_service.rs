@@ -36,11 +36,23 @@ pub struct InstanceLoadResult {
 #[derive(Clone)]
 pub struct InstallService {
     ctx: Ctx,
+    providers: Option<crate::providers::ProviderRegistry>,
 }
 
 impl InstallService {
     pub fn new(ctx: Ctx) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            providers: None,
+        }
+    }
+
+    /// Resolve `SourceType::Provider` items against these providers. Without
+    /// a registry, a provider item fails to resolve with a clear error rather
+    /// than falling through to another source.
+    pub fn with_providers(mut self, providers: crate::providers::ProviderRegistry) -> Self {
+        self.providers = Some(providers);
+        self
     }
 
     /// Validate instance ID and load its manifest + registry revision.
@@ -142,6 +154,9 @@ impl InstallService {
     ) -> LauncherResult<ResolvedInstallPlan> {
         let load = self.load_instance(&intent.target_instance)?;
         let mut resolver = Resolver::new(self.ctx.clone());
+        if let Some(providers) = &self.providers {
+            resolver = resolver.with_providers(providers.clone());
+        }
         if let Some(token) = std::env::var("GITHUB_TOKEN")
             .ok()
             .filter(|value| !value.is_empty())
@@ -376,6 +391,7 @@ impl InstallService {
             crate::jar_metadata::parse_jar_metadata_for_loader(&item_path, &manifest.loader);
 
         let installed_mod = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -532,6 +548,7 @@ impl InstallService {
 
         let metadata = crate::jar_metadata::parse_jar_metadata_for_loader(&dest, &manifest.loader);
         let installed_mod = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -733,6 +750,7 @@ mod curated_conflict_tests {
 
     fn installed(registry_id: &str, filename: &str, version: Option<&str>) -> InstalledMod {
         InstalledMod {
+            provider: None,
             filename: filename.into(),
             registry_id: Some(registry_id.into()),
             modrinth_id: None,
@@ -789,6 +807,7 @@ mod curated_conflict_tests {
                 size: 0,
                 filename: format!("{registry_id}.jar"),
                 metadata: ArtifactMetadata {
+                    provider: None,
                     source_type: SourceType::Curated,
                     registry_id: Some(registry_id.into()),
                     modrinth_id: None,

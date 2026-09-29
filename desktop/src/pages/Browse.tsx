@@ -7,17 +7,20 @@ import {
   formatError,
   getInstanceDetail,
   getSetting,
+  isProviderItemId,
   listCategories,
+  listContentProviders,
   listInstances,
   listManifestLoaders,
   listManifestMcVersions,
-  listModrinthCategories,
+  listProviderCategories,
   type BrowseItemCached,
   type CategoryInfo,
+  type ProviderFailure,
   type RegistryItem,
   type SortOption,
   type ModrinthSearchResult,
-  type ModrinthCategoryInfo,
+  type ProviderCategory,
   type InstanceDetail,
   type InstanceRow,
 } from '../lib/tauri';
@@ -64,20 +67,8 @@ function parseBool(raw: unknown): boolean {
 }
 
 /**
- * Whether live Modrinth *browsing* is on.
- *
- * This is the third-party discovery axis only, and it is off by default —
- * curated-only is the default state, not a mode. It says nothing about curated
- * catalog entries that happen to be Modrinth-sourced: those are governed by
- * `curated_source_modrinth_id_enabled` and stay browsable and installable here.
- */
-async function modrinthEffectivelyEnabled(): Promise<boolean> {
-  const mr = await Promise.allSettled([getSetting('modrinth_enabled')]);
-  return mr[0].status === 'fulfilled' && parseBool(mr[0].value);
-}
-
-/**
- * Whether any live third-party browse source (Modrinth, Technic) is enabled.
+ * Whether any content provider (Modrinth, Technic, or a plugin's) can be
+ * browsed right now. Core decides; this only asks.
  *
  * `null` means "not read yet". Callers must not choose between the browse UI
  * and the catalog-recovery shell until this resolves, or the wrong one flashes.
@@ -87,14 +78,14 @@ function useLiveSourcesEnabled(): boolean | null {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [modrinth, technic] = await Promise.allSettled([
-        modrinthEffectivelyEnabled(),
-        getSetting('technic_enabled'),
-      ]);
+      const providers = await listContentProviders().catch(() => null);
       if (cancelled) return;
+      // Anything but a list — an error, an older backend — means "no live
+      // source", so a missing catalog still reaches the recovery shell
+      // instead of leaving the page blank.
       setEnabled(
-        (modrinth.status === 'fulfilled' && modrinth.value === true)
-        || (technic.status === 'fulfilled' && parseBool(technic.value)),
+        Array.isArray(providers)
+          && providers.some((provider) => provider.enabled && !provider.unavailableReason),
       );
     })();
     return () => {
@@ -139,29 +130,18 @@ const SIMPLE_DEFAULT_SORT: SortOption = 'net_score';
 
 const CONTENT_TYPES = ['mod', 'pack', 'shader', 'resourcepack', 'server', 'datapack', 'world'];
 
-const MODRINTH_PROJECT_TYPES: Partial<Record<string, string>> = {
-  mod: 'mod',
-  pack: 'modpack',
-  shader: 'shader',
-  resourcepack: 'resourcepack',
-  server: 'minecraft_java_server',
-  datapack: 'datapack',
-};
-
-const SUPPORTED_MODRINTH_PROJECT_TYPES = new Set(Object.values(MODRINTH_PROJECT_TYPES));
-
 /** Bazaar stall id ⇄ Browse content type. `null` content type = "Everything". */
 function contentTypeToStall(contentType: string | null): string {
   return contentType ?? 'all';
 }
 
-function formatCategoryName(value: string): string {
-  return value.replace(/[-_]/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function modrinthCategoryMatchesContentType(category: ModrinthCategoryInfo, contentType: string | null): boolean {
-  if (contentType === null) return SUPPORTED_MODRINTH_PROJECT_TYPES.has(category.project_type);
-  return MODRINTH_PROJECT_TYPES[contentType] === category.project_type;
+/**
+ * Whether a provider category applies to the chosen content type. Core has
+ * already expanded "all of the provider's types", so this is one rule for
+ * every source.
+ */
+function providerCategoryMatchesContentType(category: ProviderCategory, contentType: string | null): boolean {
+  return contentType === null || category.contentTypes.includes(contentType);
 }
 
 function curatedCategoryMatchesContentType(category: CategoryInfo, contentType: string | null): boolean {
@@ -470,7 +450,9 @@ function BrowseContent({
   const [items, setItems] = useState<BrowseItemCached[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [categories, setCategories] = useState<CategoryInfo[]>([]);
-  const [modrinthCategories, setModrinthCategories] = useState<ModrinthCategoryInfo[]>([]);
+  // Categories every enabled content provider offers (Modrinth's tags, a
+  // plugin's declared list, ...). Curated categories are separate, above.
+  const [providerCategories, setProviderCategories] = useState<ProviderCategory[]>([]);
   /**
    * Which Browse surface this interaction mode uses. Read once per mount, like
    * every other presentation read on this page: `bazaar` is the High
@@ -536,6 +518,8 @@ function BrowseContent({
   const [metaError, setMetaError] = useState<string | null>(null);
   const [searchLoading, setSearchLoading] = useState(true);
   const [searchError, setSearchError] = useState<string | null>(null);
+  // Sources that failed this query. Browse still shows everyone else.
+  const [providerFailures, setProviderFailures] = useState<ProviderFailure[]>([]);
   const [loadMoreLoading, setLoadMoreLoading] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   // Tracks the 0-indexed page displayed. Starts at 0; incremented after each
@@ -620,7 +604,12 @@ function BrowseContent({
 
   const buildBatchInstallIntent = (instanceId: string, items: Iterable<BrowseItem>): InstallIntent => {
     const batchItems: BatchInstallItem[] = [...items].map((item) => ({
-      sourceType: item.source === 'curated' ? 'curated' : 'modrinth',
+      // Modrinth items still resolve through the older Modrinth install path
+      // (see docs/plugins/providers.md, "Migration debt"); every other
+      // provider's items are `provider:` ids and resolve through the provider.
+      sourceType: item.source === 'curated'
+        ? 'curated'
+        : isProviderItemId(item.id) ? 'provider' : 'modrinth',
       itemId: item.id,
     }));
     return {
@@ -743,17 +732,17 @@ function BrowseContent({
     () => categories.filter((item) => curatedCategoryMatchesContentType(item, contentType)),
     [categories, contentType],
   );
-  const visibleModrinthCategories = useMemo(() => {
+  const visibleProviderCategories = useMemo(() => {
     const seen = new Set<string>();
-    return modrinthCategories
-      .filter((item) => modrinthCategoryMatchesContentType(item, contentType))
+    return providerCategories
+      .filter((item) => providerCategoryMatchesContentType(item, contentType))
       .filter((item) => {
-        if (seen.has(item.name)) return false;
-        seen.add(item.name);
+        if (seen.has(item.id)) return false;
+        seen.add(item.id);
         return true;
       })
-      .sort((left, right) => formatCategoryName(left.name).localeCompare(formatCategoryName(right.name)));
-  }, [contentType, modrinthCategories]);
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [contentType, providerCategories]);
 
   useEffect(() => {
     let cancelled = false;
@@ -917,9 +906,9 @@ function BrowseContent({
       try {
         if (!cancelled) setMetaLoading(true);
         setMetaError(null);
-        const [curatedResult, modrinthEnabledResult] = await Promise.allSettled([
+        const [curatedResult, providerResult] = await Promise.allSettled([
           catalogAvailable ? listCategories() : Promise.resolve([]),
-          modrinthEffectivelyEnabled(),
+          listProviderCategories(),
         ]);
         if (cancelled) return;
 
@@ -929,19 +918,13 @@ function BrowseContent({
           setMetaError(`Curated categories: ${formatError(curatedResult.reason)}`);
         }
 
-        const modrinthEnabled = modrinthEnabledResult.status === 'fulfilled'
-          && modrinthEnabledResult.value === true;
-        if (modrinthEnabled) {
-          try {
-            const result = await listModrinthCategories();
-            if (!cancelled) setModrinthCategories(Array.isArray(result) ? result : []);
-          } catch (error) {
-            if (!cancelled) {
-              setMetaError((current) => [current, `Modrinth categories: ${formatError(error)}`].filter(Boolean).join(' '));
-            }
-          }
+        if (providerResult.status === 'fulfilled' && Array.isArray(providerResult.value)) {
+          setProviderCategories(providerResult.value.flatMap((provider) => provider.categories));
         } else {
-          setModrinthCategories([]);
+          setProviderCategories([]);
+          if (providerResult.status === 'rejected') {
+            setMetaError((current) => [current, `Source categories: ${formatError(providerResult.reason)}`].filter(Boolean).join(' '));
+          }
         }
       } catch (e) {
         if (!cancelled) setMetaError(formatError(e));
@@ -957,9 +940,9 @@ function BrowseContent({
   useEffect(() => {
     if (metaLoading || category === null) return;
     const isAvailable = visibleCuratedCategories.some((item) => item.id === category)
-      || visibleModrinthCategories.some((item) => item.name === category);
+      || visibleProviderCategories.some((item) => item.id === category);
     if (!isAvailable) setCategory(null);
-  }, [category, metaLoading, visibleCuratedCategories, visibleModrinthCategories]);
+  }, [category, metaLoading, visibleCuratedCategories, visibleProviderCategories]);
 
   // ---- Load loaders and MC versions (static metadata) ----
   useEffect(() => {
@@ -1061,6 +1044,7 @@ function BrowseContent({
           if (!cancelled && inFlightSearchRef.current === generation) {
             setItems(curatedOnlyItems(registryItems));
             setHasMore(false);
+            setProviderFailures([]);
           }
         } else {
           const page = await browseSearch(
@@ -1076,6 +1060,7 @@ function BrowseContent({
           if (!cancelled && inFlightSearchRef.current === generation) {
             setItems(page.items);
             setHasMore(page.hasMore);
+            setProviderFailures(page.providerFailures ?? []);
           }
         }
       } catch (e) {
@@ -1559,24 +1544,24 @@ function BrowseContent({
             >
               All
             </button>
-            {visibleModrinthCategories.map((item) => (
+            {visibleProviderCategories.map((item) => (
               <button
                 type="button"
-                key={item.name}
-                onClick={() => setCategory(item.name)}
+                key={item.id}
+                onClick={() => setCategory(item.id)}
                 className={[
                   'px-3 py-1 rounded-full text-sm border transition-colors',
-                  category === item.name
+                  category === item.id
                     ? 'bg-primary text-primary-foreground border-primary'
                     : 'border-border hover:bg-accent',
                 ].join(' ')}
               >
-                {formatCategoryName(item.name)}
+                {item.label}
               </button>
             ))}
-            {!metaLoading && visibleModrinthCategories.length === 0 && (
+            {!metaLoading && visibleProviderCategories.length === 0 && (
               <span className="self-center text-xs text-muted-foreground">
-                No Modrinth categories are available for this content type.
+                No source categories are available for this content type.
               </span>
             )}
           </div>
@@ -1589,6 +1574,24 @@ function BrowseContent({
       {metaError && (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-3 text-xs text-destructive">
           Could not load categories: {metaError}
+        </div>
+      )}
+
+      {providerFailures.length > 0 && (
+        <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <p className="font-medium">
+            {providerFailures.length === 1
+              ? `${providerFailures[0].title} could not be searched.`
+              : `${providerFailures.length} sources could not be searched.`}{' '}
+            Showing results from everywhere else.
+          </p>
+          <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+            {providerFailures.map((failure) => (
+              <li key={failure.providerId}>
+                {failure.title}: {failure.message}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

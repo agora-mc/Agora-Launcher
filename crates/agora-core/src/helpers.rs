@@ -449,6 +449,7 @@ mod tests {
         };
 
         let mod_item = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,

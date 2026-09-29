@@ -1,0 +1,81 @@
+{
+  "manifest": 1,
+  "id": "agora.example-provider",
+  "name": "Example content provider",
+  "version": "0.1.0",
+  "description": "A tiny, self-contained content source showing the provider contract end to end.",
+  "license": "MIT",
+  "apiRange": ">=0.1.1, <0.2",
+  "entrypoint": "main.js",
+  "capabilities": {
+    "required": [
+      "content:provide",
+      "network"
+    ]
+  },
+  "network": {
+    "hosts": [
+      "downloads.example.org"
+    ]
+  },
+  "contributions": {
+    "contentProviders": [
+      {
+        "id": "shelf",
+        "title": "Example Shelf",
+        "description": "Three projects served from memory, so the example runs anywhere.",
+        "contentTypes": [
+          "mod",
+          "pack"
+        ],
+        "sorts": [
+          "relevance",
+          "downloads"
+        ],
+        "paginates": true,
+        "filters": [
+          {
+            "id": "side",
+            "title": "Side",
+            "options": [
+              {
+                "value": "client",
+                "label": "Client"
+              },
+              {
+                "value": "both",
+                "label": "Client and server"
+              }
+            ]
+          }
+        ],
+        "categories": [
+          {
+            "id": "lighting",
+            "label": "Lighting",
+            "contentTypes": [
+              "mod"
+            ]
+          },
+          {
+            "id": "cozy",
+            "label": "Cozy"
+          }
+        ],
+        "ranking": {
+          "downloadsCeiling": 100000,
+          "endorsementsCeiling": 1000,
+          "libraryCategories": [
+            "library"
+          ]
+        },
+        "exports": {
+          "search": "search",
+          "project": "project",
+          "versions": "versions",
+          "resolve": "resolve"
+        }
+      }
+    ]
+  }
+}

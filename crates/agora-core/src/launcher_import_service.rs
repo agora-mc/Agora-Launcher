@@ -584,6 +584,7 @@ fn inventory_directory(
         };
 
         items.push(InstalledMod {
+            provider: None,
             update_pinned: false,
             // Copied out of another launcher's instance, not user-added here.
             pack_managed: true,

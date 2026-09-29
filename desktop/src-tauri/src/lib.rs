@@ -12,6 +12,7 @@ pub mod launcher_profiles;
 pub mod mod_install;
 pub mod modrinth_raw;
 pub mod mojang;
+pub mod providers;
 pub use agora_core::override_sanitizer;
 pub mod mcp;
 pub mod paths;
@@ -357,6 +358,14 @@ pub fn run() {
             commands::browse_search,
             commands::browse_load_more,
             commands::browse_page,
+            providers::list_content_providers,
+            providers::list_provider_categories,
+            providers::set_content_provider_enabled,
+            providers::provider_project,
+            providers::provider_versions,
+            providers::provider_install_preview,
+            providers::provider_install_pack,
+            providers::install_catalog_provider_pack,
             commands::export_server_environment,
             commands::kill_process,
             commands::install_pack,

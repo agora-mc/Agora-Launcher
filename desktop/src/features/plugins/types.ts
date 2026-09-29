@@ -140,6 +140,8 @@ export interface InstallPreview {
   addedHosts: string[];
   updateSource: UpdateSourceSummary | null;
   migratesData: boolean;
+  /** Reaches any host, or a very long host list: needs Reduced security mode. */
+  needsReducedSecurity?: boolean;
   fileCount: number;
   uncompressedBytes: number;
 }

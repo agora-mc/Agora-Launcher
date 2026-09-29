@@ -542,6 +542,11 @@ pub struct UpdateCheckOptions<'a> {
     pub memory_cache: Option<&'a LauncherState>,
     /// What to do when one item's candidate lookup fails.
     pub on_item_error: ItemErrorPolicy,
+    /// Content providers to ask about provider-installed items. `None` checks
+    /// them against the official providers only (the background sweep runs
+    /// without the plugin runtime); items from a provider that is missing or
+    /// switched off are skipped, not treated as errors.
+    pub providers: Option<&'a crate::providers::ProviderRegistry>,
 }
 
 impl UpdateCheckOptions<'_> {
@@ -550,6 +555,7 @@ impl UpdateCheckOptions<'_> {
         Self {
             memory_cache: None,
             on_item_error: ItemErrorPolicy::Skip,
+            providers: None,
         }
     }
 }
@@ -563,6 +569,29 @@ fn modrinth_project_type(content_type: &str) -> &'static str {
         "world" | "worlds" => "modpack",
         _ => "mod",
     }
+}
+
+/// Decide whether a provider-installed item has an update available: the
+/// provider now resolves a different version (or file) for this instance.
+fn provider_update(
+    installed: &InstalledMod,
+    origin: &crate::models::ProviderOrigin,
+    plan: &agora_plugin_api::provider::FilePlan,
+) -> Option<UpdateInfo> {
+    if origin.version_id == plan.version_id && installed.filename == plan.file.filename {
+        return None;
+    }
+    Some(UpdateInfo {
+        filename: installed.filename.clone(),
+        mod_jar_id: crate::providers::item_id(&origin.provider_id, &origin.project_id),
+        current_version: installed
+            .version
+            .clone()
+            .unwrap_or_else(|| origin.version_id.clone()),
+        latest_version: plan.version_number.clone(),
+        target_version: plan.version_id.clone(),
+        source: installed.source.clone(),
+    })
 }
 
 /// Decide whether a raw-Modrinth item has an update available.
@@ -778,6 +807,15 @@ pub async fn check_single_instance_updates_with(
         }
     };
 
+    let official_providers;
+    let providers = match opts.providers {
+        Some(providers) => providers,
+        None => {
+            official_providers = crate::providers::ProviderRegistry::new(ctx, None);
+            &official_providers
+        }
+    };
+
     let mut updates = Vec::new();
     for installed in manifest
         .mods
@@ -793,6 +831,31 @@ pub async fn check_single_instance_updates_with(
         // badge promising updates the editor then refused to show. It also
         // saves a network round trip per pinned item.
         if installed.update_pinned {
+            continue;
+        }
+        if let Some(origin) = &installed.provider {
+            let Ok(provider) = providers.usable(&origin.provider_id) else {
+                continue;
+            };
+            let resolved = provider
+                .resolve(crate::providers::ResolveRequest {
+                    project_id: origin.project_id.clone(),
+                    version_id: None,
+                    minecraft_version: instance.minecraft_version.clone(),
+                    loader: instance.loader.clone(),
+                })
+                .await;
+            let plan = match resolved {
+                Ok(agora_plugin_api::provider::InstallPlan::File(plan)) => plan,
+                Ok(agora_plugin_api::provider::InstallPlan::Pack(_)) => continue,
+                Err(err) => match opts.on_item_error {
+                    ItemErrorPolicy::Skip => continue,
+                    ItemErrorPolicy::Fail => return Err(err),
+                },
+            };
+            if let Some(info) = provider_update(installed, origin, &plan) {
+                updates.push(info);
+            }
             continue;
         }
         if let Some(project_id) = installed
@@ -1218,6 +1281,39 @@ mod tests {
         assert_eq!(info.latest_version, "0.5.0");
         // Raw installs address a version by its opaque id.
         assert_eq!(info.target_version, "abc123");
+    }
+
+    #[test]
+    fn provider_updates_follow_the_version_the_provider_resolves_now() {
+        use agora_plugin_api::provider::{FileHashes, FilePlan, PlannedDownload};
+        let origin = crate::models::ProviderOrigin {
+            provider_id: "acme.cf/shelf".into(),
+            project_id: "cozy".into(),
+            version_id: "v1".into(),
+        };
+        let mut installed = installed_fixture(Some("1.0.0"), "cozy-1.0.0.jar", "deadbeef");
+        installed.provider = Some(origin.clone());
+        let plan = |version_id: &str, filename: &str| FilePlan {
+            version_id: version_id.into(),
+            version_number: "2.0.0".into(),
+            content_type: "mod".into(),
+            file: PlannedDownload {
+                url: "https://cdn.example.com/f.jar".into(),
+                filename: filename.into(),
+                size: None,
+                hashes: FileHashes::default(),
+            },
+            dependencies: vec![],
+        };
+        assert_eq!(
+            provider_update(&installed, &origin, &plan("v1", "cozy-1.0.0.jar")),
+            None
+        );
+        let info = provider_update(&installed, &origin, &plan("v2", "cozy-2.0.0.jar")).unwrap();
+        assert_eq!(info.mod_jar_id, "provider:acme.cf/shelf:cozy");
+        assert_eq!(info.current_version, "1.0.0");
+        assert_eq!(info.latest_version, "2.0.0");
+        assert_eq!(info.target_version, "v2");
     }
 
     #[test]

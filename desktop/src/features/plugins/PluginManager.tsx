@@ -910,7 +910,20 @@ function InstallPrompt({
 
       {manifestNetwork.length > 0 ? (
         <p className="mt-2 text-sm text-muted-foreground">
-          It may contact: {manifestNetwork.join(', ')}
+          It may contact:{' '}
+          {manifestNetwork.includes('*')
+            ? 'any website'
+            : manifestNetwork.join(', ')}
+        </p>
+      ) : null}
+
+      {preview.needsReducedSecurity === true ? (
+        <p className="mt-3 flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          This plugin can reach{' '}
+          {manifestNetwork.includes('*') ? 'any website' : `${manifestNetwork.length} websites`}, so
+          Agora cannot tell you in advance where your data goes. It installs only with Reduced
+          security mode turned on in Settings.
         </p>
       ) : null}
 

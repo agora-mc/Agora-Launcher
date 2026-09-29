@@ -104,12 +104,6 @@
     "messageContains": "IP address",
     "why": "An IP literal sidesteps DNS, and with it the private-range rejection that protects the user's own network."
   },
-  "network-wildcard-host.json": {
-    "stage": "manifest",
-    "code": "INVALID_MANIFEST",
-    "messageContains": "wildcard",
-    "why": "`*.example.com` is not something a user can evaluate at an install prompt."
-  },
   "script-contribution-without-entrypoint.json": {
     "stage": "manifest",
     "code": "INVALID_MANIFEST",
@@ -126,6 +120,18 @@
     "stage": "capability-grant",
     "code": "INCOMPATIBLE_API",
     "messageContains": "world:teleport",
-    "why": "Well-formed, but asks for something this API version cannot provide. The honest answer is 'this Agora is too old', not 'permission denied' — so it is an API incompatibility, and it surfaces at grant time rather than at parse time."
+    "why": "Well-formed, but asks for something this API version cannot provide. The honest answer is 'this Agora is too old', not 'permission denied' \u2014 so it is an API incompatibility, and it surfaces at grant time rather than at parse time."
+  },
+  "provider-without-capability.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "content:provide",
+    "why": "A content source appears in Browse and can hand Agora files to install. The user must be asked about that at install time, so a provider contribution without the `content:provide` capability is refused rather than silently granted."
+  },
+  "provider-unknown-content-type.json": {
+    "stage": "manifest",
+    "code": "INVALID_MANIFEST",
+    "messageContains": "unknown content type",
+    "why": "Content types are Agora's own closed vocabulary. A provider claiming one Agora does not understand would show results nothing can install."
   }
 }

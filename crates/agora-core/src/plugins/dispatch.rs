@@ -731,6 +731,17 @@ fn net_fetch_json(
     args: &serde_json::Value,
 ) -> PluginResult<serde_json::Value> {
     let url = arg_str(args, "url")?;
+    // A plugin installed under reduced security mode keeps its wide reach
+    // only while the mode stays on.
+    let elevated = cx.declared_hosts.len()
+        > agora_plugin_api::manifest::NetworkDeclaration::MAX_HOSTS
+        || cx.declared_hosts.iter().any(|h| h == "*");
+    if elevated && !crate::settings::reduced_security_enabled(cx.ctx) {
+        return Err(PluginError::new(
+            PluginErrorCode::NetworkDenied,
+            "this plugin's network access needs Reduced security mode, which is off",
+        ));
+    }
     if cx.declared_hosts.is_empty() {
         return Err(PluginError::new(
             PluginErrorCode::NetworkDenied,

@@ -134,6 +134,12 @@ pub enum HostPolicy<'a> {
     /// the whole internet: it reaches the hosts it told the user about, and
     /// nothing else. Every other gate, including Lockdown, still applies.
     PluginDeclared(&'a [String]),
+    /// Hosts a content provider declared for its downloads: a plugin
+    /// provider's manifest `network.hosts`, or a built-in provider's fixed
+    /// list. Valid only for `ConsentedContent`, the category provider
+    /// downloads travel in, so the list cannot authorize anything else.
+    /// Enabling the provider is the consent; its declared hosts are the scope.
+    ProviderDeclared(&'a [String]),
 }
 
 /// Friendly name for each HTTP client category, used in logging and errors.
@@ -595,6 +601,9 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 /// http/https, and folding case here would only widen matching for inputs that
 /// cannot reach an authorization decision.
 pub fn host_matches_domain(host: &str, domain: &str) -> bool {
+    // `*.example.com` is how a manifest may spell `example.com`; subdomains
+    // are covered either way.
+    let domain = domain.strip_prefix("*.").unwrap_or(domain);
     // An empty domain would make the suffix test match every host ending in
     // ".", so refuse it rather than authorize the world.
     if domain.is_empty() {
@@ -624,6 +633,19 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
             // keeps the generic Allowlist path failed-closed.
             category == ClientCategory::ConsentedContent
         }
+        HostPolicy::ProviderDeclared(hosts) => {
+            category == ClientCategory::ConsentedContent
+                && hosts
+                    .iter()
+                    .any(|allowed| host_matches_domain(host, allowed))
+        }
+        // `*` is "any public host", which only a plugin installed under
+        // reduced security mode can declare. The private/loopback DNS floor
+        // still applies to it like every other request.
+        HostPolicy::PluginDeclared(hosts) if hosts.iter().any(|h| h == "*") => matches!(
+            category,
+            ClientCategory::Plugin | ClientCategory::PluginUpdate | ClientCategory::PluginPackage
+        ),
         HostPolicy::PluginDeclared(hosts) => {
             // Scoped to the plugin category so a bug elsewhere cannot pass a
             // plugin's host list for, say, a Mojang download.

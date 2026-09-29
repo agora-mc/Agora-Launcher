@@ -1,91 +1,48 @@
 # Agent Guide: Agora
 
-## Mission & Ethos
+Agora is a decentralized, open-source Minecraft mod launcher and discovery platform: a
+community-curated catalog compiled from flat files in this repository, plus a launcher that runs
+Minecraft directly or hands it to the official launcher. No backend servers, no forced sign-in,
+curated rather than warehoused. [`README.md`](README.md) has the full pitch.
 
-Agora is a decentralized, ad-free, open-source Minecraft mod launcher and discovery platform. It returns platform control to the community by treating the GitHub repository itself as the database: flat-file manifests are compiled into a signed SQLite catalog. Both launch modes are first-class: direct launch runs Minecraft inside Agora with integrated process status and console output, and delegated launch hands execution to the official launcher. Delegation is the *default* only so that a Microsoft sign-in is never required to use Agora -- it is not the point of the project.
+## How to read this repo
 
-Core values:
-- **$0.00/month server footprint.** No backend services; data ships via GitHub Release Assets and static sites.
-- **No forced sign-in.** Agora is fully usable without a Microsoft account, which is why delegated launch is the default rather than the goal. Direct launch is an equally supported mode that runs Minecraft inside Agora; choosing it is a preference, not a downgrade.
-- **Curated, not warehoused.** Boutique quality over infinite inventory; every entry is community reviewed.
+`AGENTS.md` and `.kilo/plans/MASTER_SPEC.md` are the closest thing to a source of truth — but this
+codebase was built almost entirely by AI agents, so neither is authoritative just because it is
+written down. When a decision looks strange, needlessly strict, or wrong (including one in these
+two files, or in the user's own request), raise it with the user rather than following it.
 
-## Directory Map
+## Principles
 
-| Path | Purpose |
+- **Modding is user customization.** Plugins, providers and content should be able to do what
+  users choose to let them do. Protect people with clear warnings and explicit opt-in — for
+  anything Agora has not authorized or verified itself — rather than by blocking. Only refuse
+  something outright when its risk/reward is genuinely poor, and ask the user before deciding that.
+- **Business logic lives in `agora-core`.** The desktop app, CLI and MCP server are thin adapters
+  over the same core services.
+- **Smallest change that does the job.** No drive-by refactoring.
+- **Large architectural changes get their own section in `MASTER_SPEC.md`**, not another
+  subsection appended to §19.
+
+## Where to look
+
+| For | Read |
 |---|---|
-| `registry/` | Curated catalog manifests (mods, packs, shaders, resource packs, servers, datapacks, worlds, governance) |
-| `crash-signatures/` | Crash triage regex definitions |
-| `loader-manifests/` | Pinned modloader URLs + SHA-256 hashes |
-| `compiler/` | Python compiler that builds the catalog (`registry.db`) from the flat files |
-| `desktop/` | Tauri desktop app (Rust backend, React frontend) |
-| `web/` | Next.js static web directory |
-| `scripts/` | Sanity-check and utility scripts |
-| `.github/` | Workflows, issue templates, and governance forms |
-| `.kilo/` | Kilo AI tooling configuration, agent profiles, commands, and skills |
-| `.kilo/plans/MASTER_SPEC.md` | Authoritative engineering blueprint (read-only for agents) |
-| crates/ | Shared Rust workspace (agora-core shared lib, agora CLI binary, plugin API + host) |
-| `sdk/` | TypeScript declarations for the `agora` module community plugins import |
-| `examples/plugins/` | Runnable example plugins, exercised by the core end-to-end tests |
-| `docs/plugins/` | Plugin author guide, honest implementation status, and compatibility fixtures |
-| BACKLOG.md | Phase-by-phase task tracker |
-| CODE_OF_ENGAGEMENT.md | Canonical review-conduct rules |
-| REGISTRY_CURATION_REFERENCE.md | Self-contained catalog manifest-authoring reference |
+| Building, validation gates, gotchas, repository map | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) |
+| Which layer owns a behavior | [`docs/architecture/layer-ownership.md`](docs/architecture/layer-ownership.md) |
+| Design decisions and their reasons | `.kilo/plans/MASTER_SPEC.md` |
+| Plugins and content providers | [`docs/plugins/`](docs/plugins/README.md) |
+| Catalog manifests | [`REGISTRY_CURATION_REFERENCE.md`](REGISTRY_CURATION_REFERENCE.md) |
+| Governance pipeline and its state | [`docs/GOVERNANCE_OPERATIONS.md`](docs/GOVERNANCE_OPERATIONS.md) |
+| CLI, releases, support | [`docs/CLI.md`](docs/CLI.md), [`docs/RELEASING.md`](docs/RELEASING.md), [`docs/SUPPORT.md`](docs/SUPPORT.md) |
+| What is planned | `BACKLOG.md` |
 
-## Agent Roles
+Kilo agent profiles, commands and skills live in `.kilo/`.
 
-| Agent | Use for |
-|---|---|
-| `code` | Primary implementation in Rust, TypeScript/React, and Python |
-| `security` | Security audits, threat-model reviews, hardening guidance |
-| `registry-curator` | Adding or reviewing catalog entries and loader manifests |
-| `reviewer` | Focused code review across security, logic, and deploy safety |
+## Security defaults worth keeping in mind on every task
 
-## Conventions
-
-- Treat `AGENTS.md` and `.kilo/plans/MASTER_SPEC.md` as the source of truth. `MASTER_SPEC.md` §0-§18 are the original design spec; §19 captures architectural-evolution decisions and supersedes the earlier prose where they conflict. When the architecture genuinely pivots, append a new subsection under §19 (do NOT rewrite §0-§18 design prose as drive-by edits -- those are preserved for decision-rationale value).
-- Prefer the smallest change that satisfies the request; avoid drive-by refactoring.
-- Edit files via tools. Do not manually stage or edit files outside the project directory unless asked.
-- After catalog/loader/crash-signature changes, run `/registry`.
-- After desktop changes, run `/desktop`.
-- After web changes, run `/web`.
-- Do not modify `.lock` files or existing data history in `registry/archived/`.
-- Security defaults:
-  - **Whitelist over denylist** for capabilities, shell scopes, and network access.
-  - Verify every download with SHA-256 and package signatures.
-  - All SQL lives in `agora-core` behind `rusqlite`, parameterized only. The frontend reaches it through `invoke()`; there is deliberately no Tauri SQL plugin registered.
-  - Never render community content with `dangerouslySetInnerHTML`.
-  - Never store secrets, tokens, or private keys in source files or manifests.
-
-## MCP Server
-
-The shipped Agora launcher app exposes an MCP server on `127.0.0.1:39741` when the user has *AI / MCP Server* enabled in Settings (disabled by default in the shipped app). Every request requires the persistent Bearer token generated when MCP is enabled and shown in Settings; localhost binding remains defense in depth. For local development, this project's `.kilo/kilo.json` enables the Kilo MCP client (`enabled: true`) to talk to a locally-running launcher instance. Keep MCP calls stateless and avoid privileged operations without explicit user approval.
-
-## Governance Modes and Tracked State
-
-The compiler governance pipeline (`compiler/governance.py`) detects vote-surge anomalies and manages quarantine state:
-
-| Mode | Reads GitHub | Writes state file | Discord alerts |
-|---|---|---|---|
-| `off` | No | No | No |
-| `read-only` | Yes | No | No |
-| `monitor` | Yes | Yes | Yes |
-
-- **State path**: production tracks `registry/governance/governance-state.json` and passes it explicitly as both state input and output. The compiler default remains `<output-dir>/governance-state.json` for isolated runs.
-- **Repo resolution**: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`.
-- **Decisions**: Curators edit `registry/governance/quarantine_decisions.json` (compiler never writes it). Each entry maps `event_id` to `accepted` (lift quarantine) or `rejected` (permanently exclude).
-- **Recovery**: production CI rejects missing, malformed, mismatched, duplicate, or incomplete state. Restore the last valid file from Git history or commit a curator-approved empty production envelope, then run `python scripts/validate_governance_state.py registry/governance/governance-state.json`.
-- **Production currently uses `monitor`**: `.github/workflows/compile.yml` pins the production policy, validates the tracked state, requires alert configuration, and may commit meaningful state transitions.
-- **Workflow ownership**: the loader-refresh workflow is the sole committer for `loader-manifests/`. The nightly governance commit stages only `registry/governance/governance-state.json`; signed registry artifacts are release assets, not Git commits.
-
-### Local diagnostics
-
-```powershell
-# Read-only does not write monitor state or send monitor alerts.
-$env:GITHUB_TOKEN = (gh auth token)
-python compiler/compile.py --skip-sign --governance-mode read-only --governance-policy production --governance-repo agora-mc/Agora-Launcher --governance-state-in registry/governance/governance-state.json --out tmp/governance-read-only/registry.db
-```
-
-## Environment Variables
-
-- `ED25519_PRIVATE_KEY` — CI-only Ed25519 key used to sign the catalog (`registry.db`). Never expose or bundle it.
-- `GITHUB_TOKEN` — Standard GitHub token for compiler and CI operations.
+- Secrets (signing keys, tokens, webhook URLs) never go in source, manifests, docs or screenshots.
+- SQL lives in `agora-core`, parameterized. React reaches it through `invoke()`.
+- Community content is never rendered with `dangerouslySetInnerHTML`.
+- Downloads are checked against the hash their source published, and the user is told when
+  there is none.

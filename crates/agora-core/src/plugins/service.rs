@@ -61,6 +61,11 @@ const INVOKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// user asked for and is watching a spinner for.
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Longest one content-provider call may take. A provider typically makes a
+/// network request or two per call; this is generous for that and short
+/// enough that a hung provider cannot hold Browse open.
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(20);
+
 // ---------------------------------------------------------------------------
 // Public shapes
 // ---------------------------------------------------------------------------
@@ -326,6 +331,17 @@ impl HostBridge for CoreBridge {
 // ---------------------------------------------------------------------------
 // The service
 // ---------------------------------------------------------------------------
+
+/// One provider a plugin contributes, as `PluginService::content_providers`
+/// reports it.
+#[derive(Debug, Clone)]
+pub struct PluginContentProvider {
+    pub plugin_id: PluginId,
+    pub contribution: agora_plugin_api::provider::ProviderContribution,
+    pub declared_hosts: Vec<String>,
+    /// Whether the plugin is enabled and able to run.
+    pub runnable: bool,
+}
 
 /// Core-owned plugin management and execution.
 #[derive(Clone)]
@@ -1243,6 +1259,27 @@ impl PluginService {
         previous: Option<&ExistingRecord>,
         accepted: bool,
     ) -> LauncherResult<()> {
+        // Reaching any host, or a list too long to review, is allowed — but
+        // only once the user has chosen reduced security mode. Checked before
+        // consent so the message says what to change rather than asking the
+        // user to accept something that would then be refused.
+        if manifest.network.is_elevated()
+            && !crate::settings::reduced_security_enabled(&self.inner.ctx)
+        {
+            return Err(LauncherError::Generic {
+                code: "ERR_REDUCED_SECURITY_REQUIRED".into(),
+                message: format!(
+                    "`{}` asks to reach {}. Turn on Reduced security mode in Settings to \
+                     install it.",
+                    manifest.id,
+                    if manifest.network.hosts.iter().any(|h| h == "*") {
+                        "any website".to_string()
+                    } else {
+                        format!("{} websites", manifest.network.hosts.len())
+                    }
+                ),
+            });
+        }
         let added = install::added_capabilities(previous.map(|p| &p.granted), manifest);
         let hosts = install::added_hosts(previous.map(|p| p.hosts.as_slice()), manifest);
         if (added.is_empty() && hosts.is_empty()) || accepted {
@@ -1652,6 +1689,76 @@ impl PluginService {
             }
         }
         Ok(report)
+    }
+
+    /// Every content provider contributed by an installed plugin that was
+    /// granted `content:provide`, with whether that plugin can run now.
+    ///
+    /// Disabled plugins are included (as not runnable) so the provider list
+    /// can offer to switch them back on. The grant is read from the stored
+    /// consent, never the manifest: a provider the user did not agree to never
+    /// appears, even if an update added one.
+    pub fn content_providers(&self) -> Vec<PluginContentProvider> {
+        if !self.is_enabled() {
+            return Vec::new();
+        }
+        let Ok(resolution) = self.inner.resolution.read() else {
+            return Vec::new();
+        };
+        resolution
+            .plugins
+            .iter()
+            .filter(|resolved| {
+                resolved
+                    .record
+                    .granted
+                    .contains(agora_plugin_api::Capability::ContentProvide)
+            })
+            .flat_map(|resolved| {
+                let record = &resolved.record;
+                let runnable = resolved.status.is_runnable();
+                record
+                    .manifest
+                    .contributions
+                    .content_providers
+                    .iter()
+                    .map(move |provider| PluginContentProvider {
+                        plugin_id: record.id().clone(),
+                        contribution: provider.clone(),
+                        declared_hosts: record.manifest.network.hosts.clone(),
+                        runnable,
+                    })
+            })
+            .collect()
+    }
+
+    /// Call one of a content provider's exports.
+    ///
+    /// Blocking, like every other call into a plugin; async callers run it on
+    /// a blocking thread. The grant is re-checked on each call so that
+    /// revoking a plugin takes effect immediately rather than when Browse
+    /// next rebuilds its provider list.
+    pub fn call_provider(
+        &self,
+        plugin_id: &PluginId,
+        export: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
+        let granted = self.inner.record(plugin_id).is_some_and(|record| {
+            record
+                .granted
+                .contains(agora_plugin_api::Capability::ContentProvide)
+        });
+        if !granted {
+            return Err(PluginError::capability_denied(
+                agora_plugin_api::Capability::ContentProvide,
+                export,
+            ));
+        }
+        self.ensure_running(plugin_id)?;
+        self.inner
+            .host
+            .invoke(plugin_id, export, args, PROVIDER_TIMEOUT)
     }
 
     /// Run every contributed launch check for an instance.

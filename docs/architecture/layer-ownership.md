@@ -31,6 +31,7 @@ Canonical reference for which code belongs where.
 | Locks / operation state | `agora-core` | Per-instance mutex, catalog read-writer lock, operation state machine |
 | Process identity verification | `agora-core` | PID → executable path → start-time verification; os-identifier abstraction behind a core trait |
 | Controller support policy | `agora-core` | Whether to offer Controlify for an instance, which loaders it supports, and which instances the user declined. Gamepad *detection* is the Web Gamepad API and belongs to React — core never asks whether a pad is plugged in, only what to do about an instance |
+| Content providers | `agora-core` | Which providers exist (`providers::ProviderRegistry`), Browse orchestration across them (`providers::browse`), whether a provider's install plan is permitted (`providers::authorize_plan`), and installing it. Modrinth and Technic implement the same `ContentProvider` trait as plugin providers. Adapters build the registry and move data; React renders descriptors and never decides which providers exist |
 | Plugin policy | `agora-core` | What is installed, what is enabled, which capabilities were granted, what order plugins activate in, which host method each call maps to, and what happens when a plugin misbehaves. Core does **not** own the script engine — see below |
 
 ### Plugin Layer — `agora-plugin-api` / `agora-plugin-host`
@@ -270,3 +271,20 @@ MCP client (e.g., Claude Desktop)
 ```
 
 The transport adapter owns only framing (JSON-RPC parse/serialize) and transport-level authorization. The core dispatcher owns all tool behavior, approval policy, and system context generation. This prevents duplicate business logic when adding new transports (e.g., `agora serve` stdio mode later).
+
+## Interactive feature boundary (`desktop/src/features/interactive/`)
+
+A stricter allowlist on top of the rules above, enforced fail-closed by
+`desktop/scripts/check-interactive-boundaries.mjs`:
+
+- `domain/`, `visual/` and `lab/` must not import `@tauri-apps/*`, `@/lib/tauri`, `live/`, or
+  operation components. `live/` is the only app-boundary layer.
+- Within `live/`: the read layer (readAdapters, liveScene, freshness) may call only the
+  read-command allowlist; `core` may use Tauri *types* only; `operationBridges/` may host Standard
+  controllers but not invoke Tauri. Unclassified files fail.
+- Shared visuals are controlled components emitting `VisualIntent` only — no operation-shaped
+  callback props (checked via AST, property and method signatures).
+
+Every negative fixture in `desktop/scripts/boundary-fixtures/` must produce a violation:
+`node scripts/check-interactive-boundaries.mjs --root scripts/boundary-fixtures/interactive --fixtures`
+(from `desktop/`).

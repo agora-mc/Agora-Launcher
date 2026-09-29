@@ -1,6 +1,6 @@
 # Community plugins: experimental author guide
 
-The plugin host is opt-in and uses API **0.1.0**. It adds behavior to the existing Minecraft launcher without rebuilding Agora. This is a development feature; the public release acceptance gates are recorded in `implementation-status.md`.
+The plugin host is opt-in and uses API **0.1.1** (0.1.1 added content providers; every 0.1.0 plugin still loads). It adds behavior to the existing Minecraft launcher without rebuilding Agora. This is a development feature; the public release acceptance gates are recorded in `implementation-status.md`.
 
 ## Try the examples
 
@@ -10,6 +10,7 @@ Build the desktop application, open **Settings → Services → Plugins**, and e
 - `diagnostics`: lists disabled mods in an instance and proposes enabling one. The instance's integration area shows findings and a repair review; no repair runs until the user approves it. Its launch reminder feeds into the normal launch flow.
 - `theme`: adds selectable Forest accents. Choose it in the Plugins page. Built-in appearance preferences remain stored and resume when the plugin is disabled.
 - `home-replacement`: offers to render Agora's home screen instead of adding a page. Installing it changes nothing until you choose it under **Who draws each screen**, and Agora's own screen comes back the moment you disable it.
+- `provider`: adds a small content source to Browse. Its projects appear next to curated and Modrinth results, have their own detail page, and install through the same reviewed install flow. Written up, with the trust model, in [`providers.md`](providers.md).
 
 The same operations exist in the standalone CLI, which is usually faster while iterating:
 
@@ -77,8 +78,10 @@ have to infer any of them:
   // restore if your migration goes wrong.
   "dataVersion": 1,
 
-  // Only meaningful with the `network` capability. Exact hostnames: no
-  // wildcards, no IP literals, no ports, no localhost. At most 10.
+  // Only meaningful with the `network` capability. Hostnames (each also covers
+  // its subdomains; `*.example.com` means the same as `example.com`): no IP
+  // literals, no ports, no localhost. At most 10. `"*"` (any host) or a longer
+  // list installs only when the user has Reduced security mode on.
   "network": { "hosts": ["api.example.com"] },
 
   "contributions": {

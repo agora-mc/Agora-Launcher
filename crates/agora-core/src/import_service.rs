@@ -42,6 +42,10 @@ pub enum ImportSource {
     TechnicSolder(crate::import::TechnicSolderPack),
     /// A consented Technic zip archive (Tier Z, or Tier C when SHA-256-pinned).
     TechnicZip(crate::import::TechnicZipPack),
+    /// A content provider's pack plan, already validated and authorized by
+    /// `crate::providers::install`. Each file is downloaded under the
+    /// provider's declared scope and checked against its published digests.
+    ProviderPack(crate::import::ProviderPackImport),
 }
 
 impl ImportSource {
@@ -198,6 +202,7 @@ impl ImportService {
             ImportSource::Mrpack { .. }
                 | ImportSource::TechnicSolder(_)
                 | ImportSource::TechnicZip(_)
+                | ImportSource::ProviderPack(_)
         );
 
         // Check cancellation, keeping external and operation-manager tokens
@@ -242,6 +247,12 @@ impl ImportService {
             ImportSource::TechnicZip(pack) => {
                 format!("Installing Technic pack '{}'…", pack.display_name)
             }
+            ImportSource::ProviderPack(pack) => format!(
+                "Installing '{}' from {}, downloading {} files…",
+                pack.plan.name,
+                pack.provider_title,
+                pack.plan.files.len()
+            ),
         };
         sink.report(ProgressEvent::new(
             op_id.clone(),
@@ -250,6 +261,7 @@ impl ImportService {
         ));
         check(&op, &cancel)?;
 
+        let override_policy = crate::override_sanitizer::OverridePolicy::from_settings(&self.ctx);
         let (blocking_instances_root, blocking_source, blocking_symlink) = (
             self.ctx.paths.instances_root(),
             request.source.clone(),
@@ -267,6 +279,7 @@ impl ImportService {
                     Some(blocking_sink),
                     Some(blocking_operation_id),
                     origin_url,
+                    override_policy,
                 )
             }
             ImportSource::PrismZip(path) => {
@@ -283,8 +296,13 @@ impl ImportService {
             ImportSource::TechnicSolder(pack) => {
                 crate::import::import_technic_solder_pack(&pack, &blocking_instances_root)
             }
-            ImportSource::TechnicZip(pack) => {
-                crate::import::import_technic_zip_pack(&pack, &blocking_instances_root)
+            ImportSource::TechnicZip(pack) => crate::import::import_technic_zip_pack(
+                &pack,
+                &blocking_instances_root,
+                override_policy,
+            ),
+            ImportSource::ProviderPack(pack) => {
+                crate::import::import_provider_pack(&pack, &blocking_instances_root)
             }
         })
         .await
@@ -435,6 +453,7 @@ impl ImportService {
                 | ImportSource::Directory(_)
                 | ImportSource::TechnicSolder(_)
                 | ImportSource::TechnicZip(_)
+                | ImportSource::ProviderPack(_)
         ) {
             if let Ok(instance_dir) = self.ctx.paths.instance_dir(&result.instance_id) {
                 if instance_dir.exists() {

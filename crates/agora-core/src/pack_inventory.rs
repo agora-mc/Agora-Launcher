@@ -17,8 +17,9 @@ use std::path::Path;
 
 /// Roots that a pack may have contributed.
 ///
-/// `mods/` plus the six override prefixes from `import::ALLOWED_OVERRIDE_PREFIXES`
-/// plus the single root file `options.txt`.
+/// `mods/` plus the override prefixes from `import::ALLOWED_OVERRIDE_PREFIXES`
+/// plus the single root file `options.txt`. Files a pack placed elsewhere under
+/// Reduced security mode are not inventoried, so drift there goes unnoticed.
 const PACK_ROOT_FILE: &str = "options.txt";
 
 /// Collect the current pack-contributable inventory from `instance_dir`.
@@ -263,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_captures_all_six_override_prefixes() {
+    fn collect_captures_every_override_prefix() {
         let tmp = temp_instance();
         let inst = tmp.path().join("inst");
         fs::create_dir_all(&inst).unwrap();
@@ -272,8 +273,8 @@ mod tests {
             write_file(&inst, &format!("{dir}/file.txt"), b"data");
         }
         let inv = collect_pack_inventory(&inst).unwrap();
-        // mods/ not created, so only 6 override dirs
-        assert_eq!(inv.len(), 6);
+        // mods/ not created, so only the override dirs
+        assert_eq!(inv.len(), crate::import::ALLOWED_OVERRIDE_PREFIXES.len());
         for file in &inv {
             assert!(crate::import::ALLOWED_OVERRIDE_PREFIXES
                 .iter()

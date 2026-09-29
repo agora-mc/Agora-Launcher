@@ -1,22 +1,25 @@
 # MASTER_SPEC.md
 # The Premium Curated Minecraft Mod Launcher — Complete Engineering Blueprint
 
-> **This document is the single source of truth for the entire project. It is intended to be fed directly to an AI coding agent as unambiguous implementation context. Every architectural decision made across the full design session is captured here.**
-
-> **IMPLEMENTATION STATUS (last consolidated 2026-07-05):** The original design captured below is preserved verbatim for its decision-rationale value. Several architectural pivots have since landed in code and are documented in **§19 — Architectural Evolution & Implementation Status** (appended at the end). Where §19 conflicts with the original prose in §0–§18, **§19 wins** for the purposes of new work. The pivots in brief:
-> - **Pivot (E9):** The launcher now optionally performs **in-process Microsoft Account (MSA) authentication and direct JVM execution** (crates/agora-core/src/msa.rs, launch.rs). This is a deliberate expansion of the original *security by delegation* constraint in §0, motivated by the v1 launcher refactor — it enables in-launcher features (account sign-in, version manifest fetching) that the Mojang-launcher-delegation model cannot support. The Mojang-launcher-delegation path in §8 remains as a fallback; MSA + direct launch is the new primary path.
-> - **Workspace restructure (D12/E13):** Business logic is migrating into a shared Rust crate crates/agora-core/ consumed by both the Tauri GUI (desktop/src-tauri/, package name **agora-desktop**) and a standalone CLI (crates/agora/, binary agora). See §1.1 and §19 for migration status.
-> - **Modrinth unified into Browse (E4/D1):** The separate *Raw Modrinth tab / page* (originally described in §6.3) was removed — Modrinth search results are now merged directly into the Browse grid. The desktop/src/pages/ModrinthRaw.tsx file has been deleted.
-> - **Telemetry removed (E5/§12):** The opt-in crash telemetry (§12) had no aggregation endpoint and was never wired to a real upload path. The opt-in prompt UI and the crash_telemetry_opt_in setting have been deleted. The spec text in §12 is kept for historical reference only.
-> - **MCP server audit (A2/E2/E3):** The MCP server in desktop/src-tauri/src/mcp.rs is bound to 127.0.0.1:39741. Per the project pivot the per-session Bearer token from §10.0 #2 is **not yet implemented** (the localhost binding is the current security boundary). The tool set already implemented is the extended set (6 tools: list_instances, list_instance_mods, disable_mod, search_crash_signatures, suggest_mod_incompatibility, get_system_context) — the §10.1 set (
-ead_latest_crash, 
-ead_mod_manifest, enable_mod, search_knowledge_base) is planned to be added as a superset per user decision.
-> - **Old plan files removed:** .kilo/plans/1782081355093-crash-investigator-plan.md, 1782611768583-agora-v1-launcher-refactor.md, and dependency-aware-mod-ops-plan.md have been deleted; their key decisions are folded into §19.
-
-> **The original §0–§18 design spec follows below. For current code status, jump to §19.**
-
----
-
+> **How to read this document.** It is the closest thing Agora has to a source of truth, and it
+> is also a record written largely by AI agents: if something here looks wrong, strange or
+> needlessly strict, raise it with the user rather than following it (see `AGENTS.md`).
+>
+> **§0–§18** are the original design, kept verbatim for their decision rationale. **§19–§25**
+> record what changed and supersede §0–§18 where they conflict. §19 holds status notes and small
+> decisions; each major area that evolved has its own section (§20 content sources, §21 plugins
+> and content providers, §22 credentials, §23 reliability, §24 governance, §25 controllers). A new
+> architectural change large enough to explain gets a new section, not another §19 subsection.
+>
+> Pivots that most change how §0–§18 read:
+> - **Direct launch and Microsoft sign-in** are first-class alongside delegation to the official
+>   launcher (§22.1).
+> - **Business logic lives in `crates/agora-core`**, shared by the desktop app, the CLI and the
+>   MCP server (§19.1, `docs/architecture/layer-ownership.md`).
+> - **Modrinth is merged into Browse**, and every source outside the curated catalog now sits
+>   behind one content-provider interface (§21.2).
+> - **Crash telemetry (§12) was removed**; the text is kept for history.
+> - **The MCP server** requires a persistent Bearer token when enabled (§10, §19.6).
 
 ---
 
@@ -43,6 +46,13 @@ ead_mod_manifest, enable_mod, search_knowledge_base) is planned to be added as a
 | 16 | Technical Decisions Log | All architectural decisions with rationale |
 | 17 | Implementation Order & MVP Scope | Phased build guide |
 | 18 | Known Limitations & Open Questions | Honest disclosure of gaps |
+| 19 | Architectural Evolution & Status | What changed since §0–§18, and where major areas moved |
+| 20 | Content Sources & Resolution | Ordered sources, content axes, pack identity, curated packs |
+| 21 | Plugins & Content Providers | Extension system; provider interface; security tiers |
+| 22 | Credentials & Authentication | MSA, direct launch, token storage per platform |
+| 23 | Reliability & Recovery | Safe operations, Last Known Good, snapshots, launch health |
+| 24 | Governance Operations | Audit log, quarantine, production monitor |
+| 25 | Controller Support | App-wide controller navigation |
 
 ---
 
@@ -2229,7 +2239,31 @@ The spec is comprehensive, internally consistent, and covers all major architect
 
 ## 19. ARCHITECTURAL EVOLUTION & IMPLEMENTATION STATUS
 
-> This section supersedes conflicting statements above. Last updated 2026-07-05.
+> Status notes and smaller decisions that supersede §0–§18. Major areas that grew here have
+> moved into their own sections (§20–§25); new large changes should get a section of their own
+> rather than another §19 subsection. Old numbers still resolve:
+
+| Was | Now |
+|---|---|
+| §19.3 | §22.1 |
+| §19.7 | §24.1 |
+| §19.8 | §24.2 |
+| §19.13 | §23.1 |
+| §19.14 | §23.2 |
+| §19.15 | §23.3 |
+| §19.16 | §24.3 |
+| §19.17 | §20.3 |
+| §19.18 | §24.4 |
+| §19.19 | §23.4 |
+| §19.20 | §20.1 |
+| §19.21 | §20.2 |
+| §19.22 | §25.1 |
+| §19.23 | §22.2 |
+| §19.24 | §21.1 |
+| §19.25 | §22.3 |
+| §19.26 | §22.4 |
+| §19.27 | §20.4 |
+| §19.28 | §21.2 |
 
 ### 19.1 Workspace Layout (supersedes section 1)
 
@@ -2273,14 +2307,6 @@ Goal (per the deleted v1-launcher-refactor plan): move all business logic into c
 
 **Dead code removed during 2026-07-05 audit:** dead REGISTRY_SCHEMA_VERSION = 1 constants, commands::greet template leftover, the duplicate compiler/_test_social_metrics.py (merged into test_compile.py), compiler/analyze_sha256.py, desktop/src-tauri/neoforge-installer.jar.log, the stray root browse search response.md debug dump, and the entire desktop/src/pages/ModrinthRaw.tsx (separate Modrinth UI merged into Browse).
 
-### 19.3 MSA Authentication & Direct Launch (supersedes section 0, section 8.1)
-
-Per the v1 refactor (decision E9): the launcher now optionally performs **Microsoft Account (MSA) authentication and direct JVM execution in-process** -- crates/agora-core/src/msa.rs implements the full: device code, then MSA token, then XSTS, then Minecraft services token, then profile + Xbox profile, then DRM header token flow. crates/agora-core/src/launch.rs then constructs the classpath + args + natives and spawns java directly.
-
-This deliberately relaxes the original *security by delegation* constraint because in-launcher features (one-click version selection, accurate launch errors, native version manifest caching via piston-meta.mojang.com, OAuth token refresh) cannot be implemented on top of the Mojang-launcher-delegation model. The Mojang-launcher-path (section 8.4 -- discover official launcher binary, mutate launcher_profiles.json) is retained as a fallback for users who prefer not to use the in-process MSA flow.
-
-MSA tokens use the same storage backend as GitHub OAuth tokens: OS keyring first, with a PBKDF2 + AES-256-GCM encrypted-file fallback (tokens.enc) per section 7.5.2 -- implemented during the 2026-07-05 audit (was previously a hard error).
-
 ### 19.4 Crash Investigator (signal-based dynamic scoring)
 
 From the deleted 1782081355093-crash-investigator-plan.md: when a curated regex signature (section 9.2) does not match a crash log, the launcher runs a **dynamic weighted scoring algorithm** in desktop/src-tauri/src/crash_investigator.rs to rank suspect mods. Score contributions per mod:
@@ -2316,22 +2342,6 @@ Per the E2 user decision (combine spec section 10.1 with the implemented v1 set)
 10. search_knowledge_base(query) -- local curated-catalog search.
 
 The server binds only to `127.0.0.1` and requires a persistent Bearer token for every request. The token is generated when MCP is enabled, displayed and regenerable in Settings, and accepted through the Authorization header or SSE query parameter. Requests also retain the per-instance destructive-tool approval boundary and rate limiting.
-
-### 19.7 Audit Log Schema (replaces section 4.6 compile-only entries)
-
-Per the E8 user decision (expand to match section 4.6), the compiler (compiler/compile.py) now writes audit entries with the full section 4.6 schema -- every entry includes timestamp, action, actor, target_type, target_id, 
-eason, details. Action types cover: compile (every nightly run), AUTO_FLAG (velocity circuit breaker), POLL_CREATED, POLL_CLOSED, IMMUNITY_APPLIED, IMMUNITY_REMOVED, ARCHIVED, RESTORED, BLACKLIST_UPDATED, REACTION_SCRUBBED, SIGNATURE_REJECTED (client-side). The root audit_log object carries log_format_version: 1. Rotation per section 4.6: at 10,000 entries, the oldest 2,000 move to 
-egistry/governance/audit_log_archive.{YYYYMMDD}.json (new archive file per day; existing archive appended to).
-
-### 19.8 Triage Poll Resolution Bugs (fixed 2026-07-05)
-
-Per the A4 fixes during the 2026-07-05 audit:
-
-- **Tied polls** (keep_votes == remove_votes with total_votes > 0): now treated as KEEP-win, with an audit entry noting the tie. Items with **zero total votes** remain under_review (no resolution) and an audit entry is written explaining the no-vote situation.
-- **Organic anomaly_window_start is now preserved** across nightly runs -- it is only set when the item first transitions to under_review. Previously every nightly build overwrote it with 
-ow, so the 7-day poll timer never elapsed.
-- **KEEP-win now writes immunity_cooldown_until** -- a 30-day ISO timestamp populated on the 
-egistry_items row. (Previously the column was always NULL.)
 
 ### 19.9 Deferred / Removed Features
 
@@ -2376,215 +2386,19 @@ ead_mod_manifest, enable_mod, search_knowledge_base) per E2 superset.
 - Delete the unused crates/agora-core/src/catalog/ trait + ModrinthSource impl (zero callers) -- was speculative design from a prior planning iteration.
 - Delete the unused crates/agora-core/src/ctx.rs Ctx struct + state.rs AppState re-export (zero callers) -- replaced by ad-hoc per-module DB connection patterns; a proper Ctx struct may be reintroduced when finishing the v1 refactor.
 
-### 19.13 Desktop Reliability, UX Coherence, and Safe Operations
-
-> Approved principles for the Desktop Upgrade Execution Plan (packages A1–D5). Last updated 2026-07-10.
-
-**Architecture principles:**
-
-1. **One canonical launch orchestration path.** There is exactly one route through health preflight, user decision, launch mode selection, process spawn, PID tracking, and exit handling. Dialogs return decisions; they do not launch.
-2. **One canonical install transaction path.** Every mod/update/removal entry point resolves an `InstallIntent` → `ResolvedInstallPlan` → verified staging → atomic application → health scan → result. No page bypasses the plan.
-3. **React dialogs return user decisions and do not execute business operations.** A dialog's only side effect is calling `onConfirm()` or `onCancel()`. The parent component dispatches backend commands.
-4. **Process state survives navigation.** Running-instance identity, PID, console subscription, and exit status live in a controller that outlives page components. React may query backend state after remount.
-5. **User-changing operations are previewable and reversible.** Every manifest mutation produces a plan that shows what changes before execution. Snapshots enable rollback.
-6. **Existing snapshots become the basis of last-known-good recovery.** A successful launch establishes LKG state. Changes since LKG are visible. One-click restore returns to LKG.
-7. **Desktop UX work must include meaningful integration tests.** Mocked UI tests, Rust integration tests, and native smoke checks are separate layers. A test that only asserts the page rendered is not sufficient.
-
-#### 19.13.3 Release C canonical install-transaction architecture
-
-> Approved design from C0 Sol architect call. Implementation packages C1-C4.
-
-**Five-phase pipeline (all in `agora-core`):**
-
-1. **Resolve** — pure data, no instance changes. Takes `InstallIntent`, returns `ResolvedInstallPlan` with required/optional deps, conflicts, files to add/remove/disable, snapshot requirement, disk estimate, warnings, and blocking errors.
-2. **Stage** — download all artifacts into `<instance_dir>/.agora/staging/<fingerprint>/`. Verify every artifact before touching the live instance. Any verification failure aborts with zero live instance changes.
-3. **Snapshot** — create recovery snapshot of `mods/` + `instance_manifest.json` immediately before application. `.agora/` excluded.
-4. **Apply** — atomic stage-then-swap: remove/disable/add files, then write `instance_manifest.json.tmp` -> fsync -> atomic rename over `instance_manifest.json`. **The manifest rename is the single commit point.** Pre-application manifest backup at `.bak.<fp>` enables fast rollback.
-5. **Health scan** — run `check_instance_health` post-apply. Failure triggers automatic snapshot restore, guaranteeing the instance ends in either (healthy + new install) or (pre-install state).
-
-**Key invariants:**
-- InstallIntent -> ResolvedInstallPlan: plan makes zero instance changes. Deterministic for unchanged input (intent + instance state + registry revision).
-- Plan fingerprint = SHA-256(canonical_json(intent) || canonical_json(resolved_candidates) || instance_state_hash || registry_revision). Stale plans are rejected at apply time.
-- Required dependencies: fail closed. Missing -> blocking error, plan cannot proceed.
-- Optional dependencies: governed by OptionalDepsPolicy (Include/ExcludeAll/Prompt). Prompt returns choices to frontend; user picks, intent re-submitted.
-- Conflicts: structured DepConflict with resolution_options (Replace/Skip/DisableExisting/Abort) and blocking flag.
-- Existing-file: same item same version -> Skip (no-op). Same item different version -> Update (remove old + add new). Different item same filename -> conflict.
-- Staging: same-volume as mods/ -> moves are atomic renames. Orphan staging dirs cleaned on next launcher startup.
-- Verification: SHA-256 required for curated items. Modrinth uses strongest available (SHA-512 > 256 > 1). SHA-1 only accepted with Modrinth's published hash. No hash -> blocking error.
-- Snapshot: always required for mutating operations (install/update/remove). Label encodes plan fingerprint.
-- Atomic application: remove phase (move targets to staging trash), disable phase (.jar -> .jar.disabled), add phase (atomic rename from staging into mods/), manifest commit (.tmp -> fsync -> rename). Every pre-commit step is reversible.
-- Fast rollback (pre-commit): reverse file moves, restore manifest .bak. Snapshot restore (post-commit or crash): restore from snapshot zip. Health scan failure -> automatic snapshot restore.
-
-**State ownership:**
-- `agora-core`: `InstallPipeline` struct with `resolve_plan()`, `apply_plan()`, `cancel()`. Owns all business logic, dependency resolution, staging, application, hashing, health checks. No Tauri dependency. Communicates progress via `&dyn ProgressReporter` trait.
-- Tauri facade: thin commands (`resolve_install_plan`, `apply_install_plan`, `cancel_install`). Provides ProgressReporter impl that emits Tauri events. Maps core errors to Tauri errors.
-- React: constructs InstallIntent from user action, renders plan, handles interactive prompts, subscribes to progress events, sends cancel on user request. Never touches filesystem or makes integrity decisions.
-
-**CLI reuse:** `agora-cli` depends on `agora-core`, calls `InstallPipeline` directly. Provides ProgressReporter impl for stdout progress bar. Cancellation via Ctrl+C. `--dry-run` resolves + prints, no mutation. `--yes` skips interactive prompts.
-
-**Migration sequence (behind feature flag INSTALL_PIPELINE_V2):**
-1. Build core InstallPipeline with unit tests.
-2. Add Tauri facade commands alongside existing commands.
-3. Migrate ModDetail main install -> plan UI component -> apply pipeline.
-4. Migrate Versions tab.
-5. Migrate raw Modrinth install (wraps intent with SourceType=Modrinth).
-6. Migrate InstanceEditor Add Mod.
-7. Remove old commands + feature flag.
-
-**Required tests:** resolution (missing dep, optional, cycles, conflicts); fingerprint staleness; staging verification (hash mismatch, no hash, network failure); snapshot (create + restore, .agora exclusion); application atomicity (pre-commit rollback, post-commit snapshot restore, crash recovery); health scan (success + failure rollback); cancellation (each phase); E2E (full install via Tauri mock/CLI); migration flag toggling.
-
-**Rejected alternatives:**
-- Dialogs or frontend code invoking install commands directly.
-- Skipping dependency resolution for Modrinth or manual installs.
-- Verifying artifacts after touching the live instance.
-- Incremental/file-level snapshot in v1 (full zip only for correctness).
-- Staging on a different volume than the instance (atomic rename fails cross-volume).
-- Plan submitted by the client without backend re-validation (backend must own the plan or re-resolve under transaction lock).
-
-**Current status (2026-07-10):** C0 design documented; C1 core types present; C2 execution scaffold exists with cfg-gated commands and stub resolver. Unsafe commands (`apply_install_plan`, `cancel_install`) are NOT registered in production builds. Legacy install paths remain active. Full implementation deferred to Release C2-C4.
-
-### 19.14 Last-Known-Good and Reproducibility Architecture
-
-> Approved design from D2 architect call. LKG is an additive marker on the existing zip-snapshot system, driven by a pure `LaunchOutcome` classifier in `agora-core`. Lockfiles are a separate canonical, content-addressed, hash-authoritative export format that excludes config contents for privacy.
-
-**Data model.** LKG is a label on a snapshot, not separate storage. Three artifacts per instance: snapshot index (inside snapshot zip with `isLkg`, `promotedAt`, `launchSessionId`), `lkg.json` (convenience pointer), and `launches.jsonl` (append-only audit trail). Current LKG = snapshot with highest `promotedAt`.
-
-**Promotion rule.** Pre-launch snapshot → classify outcome → promote iff `Success`. Optimization: skip snapshot creation if `contentHash` unchanged since last snapshot. Promotion gated by per-instance mutex.
-
-**Launch classification.** `classify_launch()` in `agora-core`: `Success` (exit 0, runtime >= 60s, no crash file/signature), `Crash` (non-zero exit, crash file, signal), `Cancelled` (user stop), `Unknown` (process vanished), `Abandoned` (exit 0 but runtime < 60s). Only `Success` promotes LKG.
-
-**Retention policy.** Keep current LKG, N most-recently-promoted LKG (default 3), 1 most-recent non-LKG, 1 most-recent pre-restore. Size cap 2 GB per instance. Current LKG is last evicted.
-
-**Diff representation.** `compute_diff(indexA, indexB)` in `agora-core`: added/removed/modified paths with SHA-256. No rename detection. `diff_since_lkg()` compares live scan of mods/ + manifest against current LKG snapshot index.
-
-**Restore semantics.** Transactional with pre-restore snapshot: block active game, snapshot current, verify staged files, atomic swap, rollback on failure. Pre-restore snapshot enables undo.
-
-**Lockfile schema.** Portable canonical instance definition. Contains mods (id, filename, SHA-256, source URL, hashes), loader manifest hash, manifest hash, content hash. Optional Ed25519 signature for authorship attribution. Config excluded for privacy (`configPolicy.included: false`). Import verification: parse → check schema version → recompute contentHash → verify signature → verify each artifact hash → reject with precise error on any failure.
-
-**Config policy.** Tracked in snapshots (mods/ + manifest + small config files). **Excluded** from lockfile entirely (privacy: no server IPs, world data). Optional `configHash` for drift detection without content exposure.
-
-**Drift detection.** `detect_drift()` compares current mods/ hashes against reference (lockfile or LKG). Returns `DriftReport { status: InSync|Drifted, differences[] }`. Triggers on launch, instance view, manual command. Remediation: restore-to-LKG.
-
-**Ownership.** `agora-core` owns all pure logic: LkgState, LaunchOutcome, classify_launch(), promote_to_lkg(), Diff, compute_diff(), Lockfile, detect_drift(), RetentionPolicy. Desktop crate owns filesystem impl, process capture, IPC, keychain. React owns UI.
-
-**Migration sequence.** Phase 1: core types + pure logic + unit tests. Phase 2: pre-change snapshots. Phase 3: launch classification + promotion. Phase 4: diff viewer. Phase 5: LKG restore. Phase 6: lockfile export/import. Phase 7: drift detection. Phase 8: retention automation. Phase 9: backfill existing instances.
-
-**Required tests.** Pure unit: classify_launch outcomes, promote_to_lkg failure rejection, compute_diff symmetry, lockfile canonicalization round-trip, detect_drift, retention_plan boundary. Integration: pre-change snapshot on install, lkg.json written on success, crash does not overwrite, restore transactionality. E2E: snapshot → launch → promote → diff → restore → content hash match; export lockfile → import → verify → reject tampered lockfile.
-
-### 19.16 Governance Sandbox and Persistent Vote Quarantine
-
-Production registry and governance data remain in the main Agora repository by default. The compiler may explicitly target a separate governance repository and registry fixture root for sandbox testing; compiler code remains exclusively in the main repository. Governance repository resolution is `--governance-repo`, `AGORA_GOVERNANCE_REPO`, `AGORA_REGISTRY_REPO`, then `GITHUB_REPOSITORY`.
-
-Compiler governance modes are `off`, `read-only`, and `monitor`. All modes are non-mutating with respect to GitHub. `monitor` may write persistent local governance state and send deduplicated Discord alerts for new, expanded, or resolved quarantine events. Review Issues are identified only by the `community-review` label. Votes are read only from direct `+1` and `-1` reactions on canonical Issues mapped in `registry/governance/vote_issues.json`; review and comment reactions never count.
-
-Schema 7 adds per-item `governance_summary` and persistent `governance_events` tables while retaining final counted values and compatibility fields on `registry_items`. Pending and rejected reaction IDs remain excluded across compiles; an accepted curator decision restores them. The desktop supports schema 6 fallback, compile-time production/sandbox governance configuration, read-only diagnostics, and a debug-only validated `AGORA_DEV_REGISTRY_DB` override. The v1 review-report/admin-alert path is removed.
-
-### 19.17 Canonical Registry Identity for Packs
-
-Every registry manifest uses `id` as its canonical top-level identity and declares its kind through `content_type`. Pack manifests therefore use `id` plus `content_type: "pack"`; the older top-level `pack_id` field is a deprecated compiler input alias. The compiler normalizes that alias before metadata hydration or governance, rejects mismatched `id` and `pack_id` values, and keeps relational names such as `pack_mods.pack_id` unchanged because those identify the owning pack in a relationship rather than defining a separate identity system.
-
 ---
 
-### 19.15 Content-Addressed Recovery Snapshots
+## 20. CONTENT SOURCES & RESOLUTION
 
-The recovery snapshot implementation evolved from full Deflate ZIP archives to
-immutable per-file SHA-256 objects plus an atomic per-snapshot JSON manifest.
-Each manifest records the tracked relative path, size, and object hash. Objects
-are shared below the app data root, so unchanged mods and configuration files
-are written once across snapshots and instances. New snapshot writes stream
-through a bounded buffer, hash and persist each object once, and restore reads
-and verifies objects before the existing atomic root-swap protocol. Existing
-v1/v2 ZIP snapshots remain readable and restorable.
+Where content comes from and how a request becomes a file: the curated catalog's ordered sources, the two settings axes that govern visibility, and how packs are identified and pinned.
 
-Initial imports register the instance and then finalize their first recovery
-manifest on a blocking worker. While that worker runs, the instance reports a
-pending snapshot state: inspection is allowed, but launch and mutating
-operations are blocked. A failed worker records an actionable failed state;
-creating a manual snapshot clears the state. Launch and install backends also
-enforce the readiness check so the UI is not the security boundary.
-
-Retention accounts for manifest and referenced object storage and removes an
-object only after no remaining snapshot manifest references it.
-
-### 19.18 Governance Monitor and Tracked State (Work Package 7)
-
-> Operational model, file ownership, and safety constraints for the compiler governance sandbox. Last updated 2026-07-29.
-
-**State file location and format.** Production tracks `registry/governance/governance-state.json` and passes it explicitly as both state input and output. The compiler's isolated-run default remains `<output-dir>/governance-state.json`. The file carries `schema_version`, `governance_repository`, `policy`, an `events` array, and `generated_at` after the first meaningful transition. Each event has `event_id`, `item_id`, `event_type`, `status`, `detected_at`, `affected_reactions`, and `details_json`. Growth merges new reactions into the original stable event rather than creating overlapping duplicates.
-
-**Production repo and policy resolution.** Governance repo: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Policy constants: production uses 30-day account-age threshold, 6-hour window, 5×-baseline ratio with 20-reaction floor; sandbox uses 0-day age, 10-minute window, 3-reaction threshold, no baseline. State files embed `governance_repository` and `policy`; `load_governance_state()` discards mismatched state to prevent cross-environment corruption.
-
-**Monitor semantics.** State is persisted only when `mode=monitor`. A write represents a meaningful change: new event creation, event growth (additional reactions in the same bucket), or status transition from curator decision application. Compiles with zero state delta produce no file modification. This prevents spurious diffs on every nightly run.
-
-**Curator decision input.** `registry/governance/quarantine_decisions.json` is curator-authored; the compiler never writes it. Each entry maps `event_id` to `accepted` or `rejected`. The pipeline applies these as overrides over stored event statuses: `accepted` lifts the quarantine and `rejected` permanently excludes those reaction IDs.
-
-**Public audit rationale.** Every state event captures the full anomaly context in `details_json`: threshold, window, historical average, baseline ratio, raw/eligible/counted/quarantined up/down counts, conflict users, and the exact reaction IDs. This enables any community member to independently verify that the quarantine decision matches the policy criteria. The `audit_log.json` separately records compile-level actions.
-
-**Non-release-asset rationale.** `governance-state.json` is consumed exclusively by the compiler on subsequent runs, not by the desktop app or web directory. It must reside in the repository working tree for the nightly governance commit. It is intentionally excluded from `registry.db` and the GitHub Release Asset pipeline.
-
-**Local monitor command and warning.**
-
-```powershell
-# WARNING: This changes tracked production state and can send real alerts.
-$env:GITHUB_TOKEN = (gh auth token)
-$env:DISCORD_WEBHOOK_URL = "YOUR_PRODUCTION_WEBHOOK"
-python compiler/compile.py `
-  --governance-mode monitor `
-  --governance-policy production `
-  --governance-repo agora-mc/Agora-Launcher `
-  --governance-state-in D:/Agora/registry/governance/governance-state.json `
-  --governance-state-out D:/Agora/registry/governance/governance-state.json `
-  --no-governance-write `
-  --skip-sign `
-  --out D:/Agora/registry.db
-```
-
-**Read-only diagnostics.**
-
-```powershell
-$env:GITHUB_TOKEN = (gh auth token)
-python compiler/compile.py `
-  --governance-mode read-only `
-  --governance-policy production `
-  --governance-repo agora-mc/Agora-Launcher `
-  --governance-state-in D:/Agora/registry/governance/governance-state.json `
-  --skip-sign `
-  --out D:/Agora/registry.db
-```
-
-`read-only` runs the full detection pipeline in memory but never writes state, never sends Discord alerts, and has no effect on the working tree or remote.
-
-**State recovery.** Production preflight rejects missing or malformed JSON, unsupported schemas, duplicate or incomplete events, and mismatched `governance_repository` or `policy`. Recovery restores the last valid file from Git history or, after curator review, commits an empty production envelope and validates it with `scripts/validate_governance_state.py`. Production state must not be silently truncated or regenerated.
-
-**Workflow ownership boundaries.**
-- The loader-refresh workflow is the sole committer for the three tracked loader-manifest files. The nightly compile may regenerate them for compilation but never stages them in the governance commit.
-- The nightly governance commit stages only `registry/governance/governance-state.json`. Signed database and web exports are user-facing release assets, not Git commits.
-- `quarantine_decisions.json` and `vote_issues.json` are curated manually via PR.
-
-**Production mode is currently read-only.** The CI `compile.yml` workflow runs governance in `read-only` mode (observation, no state writing, no Discord). Full `monitor` mode (state commits + real Discord alerts) is **not yet activated in production** — it requires completion of sandbox testing gates and explicit manual curator sign-off. Until those gates pass, production runs are observation-only.
-
----
-
-### 19.19 Health, Crash Doctor, Memory, Authentication, and Launch Reliability
-
-Health reports separate blockers, warnings, and non-interrupting recommendations. Recommendation-only reports remain green and never stop launch. Warning mutes use stable structured keys with legacy-setting migration; blockers cannot be muted. A health scan carries an identity derived from the instance manifest plus observed mod-file and registry-database content hashes. Core launch reuses that scan only while the identity remains unchanged, preventing duplicate healthy scans without trusting stale frontend approval.
-
-Crash Doctor is local-first and instance-aware. Automatic evidence collection considers the newest coherent launch window across `crash-reports/*.txt`, `logs/latest.log`, `logs/debug.log`, and `hs_err_pid*.log`; bounded user-selected text files and pasted text are supported without exposing a generic arbitrary-path read command. Evidence paths are never returned to the webview, text is size-bounded and cleaned, and no evidence is uploaded. Curated signatures, fingerprints, and installed-mod scoring analyze the coherent evidence set together. Recovery snapshots are created lazily before the first mutation, not during read-only diagnosis. Guided disable experiments wait for a correlated launch outcome: the same crash rules a suspect out, a changed crash starts a new hypothesis without claiming causality, a successful run asks for confirmation, and an abandoned run restores state as inconclusive. The built-in doctor does not search or submit GitHub issues; an external AI agent may optionally research upstream sources after local findings are exhausted and must label those findings as external hypotheses.
-
-Schema v9 adds `user_instances.jvm_memory_mode` with `auto` and `manual` values. Existing rows migrate to Manual because their prior allocation does not establish consent to automatic changes; newly created instances default to Auto unless an explicit imported or CLI memory value is present. Auto derives a 512 MiB-rounded recommendation from enabled mod count, enabled archive bytes, resource-pack load, and system headroom, and calculates the effective value at launch without overwriting Manual allocations. Both desktop and CLI expose the recommendation and insufficient-system-RAM warning.
-
-Direct launch obtains classified Microsoft credentials through a single-flight refresh path. Delegated launch does not read Microsoft credentials because the official launcher owns authentication. GitHub preflight and post-401 recovery use the same fallible token path; post-401 refresh carries the exact failed access token under the refresh mutex so concurrent failures rotate once. Permanent refresh failures clear credentials, transient failures preserve them, and secret values are never logged.
-
-Launch records `last_launched_at` immediately after successful handoff or process spawn so a newly written crash report is discoverable. Warm Java discovery uses a bounded five-minute cache. Launch progress records loading, health, resolution, materialization, and snapshot durations; the CLI exposes these with `launch --timings`. Content-addressed snapshot indexes use immutable manifest hashes for comparison rather than rereading every object blob, while restore continues verifying bytes before mutation.
-
----
-
-### 19.20 Ordered Download Sources
+### 20.1 Ordered Download Sources (formerly §19.20)
 
 A registry entry no longer names one place its file comes from. It carries an **ordered list** of
 download sources, `download_sources_json` in `registry_items` (registry schema v8), each entry a
 `{strategy, identifier}` pair drawn from the same strategy vocabulary as before
-(`github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`). Index 0 is the
+(`github_release`, `modrinth_id`, `direct_hash`, `technic_pack`, `curated_pack`, and
+`provider_pack` from §21.2). Index 0 is the
 curator's preference; the rest are fallbacks in order.
 
 `download_strategy` and `source_identifier` remain in the schema and describe the *preferred*
@@ -2619,7 +2433,7 @@ Modrinth fallback a `modrinth_id`-carrying entry has always had.
 
 ---
 
-### 19.21 Two Content Axes, and What Each One Governs
+### 20.2 Two Content Axes, and What Each One Governs (formerly §19.21)
 
 Two settings axes decide what a user sees, and they answer different questions.
 Conflating them is what made a curated entry look broken while it was perfectly
@@ -2630,7 +2444,7 @@ each call site.
 **on**, one per entry in `CURATED_DOWNLOAD_STRATEGIES`). Governs curated catalog
 entries: whether they appear in Browse, and which of an entry's ordered download
 sources the resolver may use. An entry stays visible and installable while *any*
-of its sources is enabled (§19.20).
+of its sources is enabled (§20.1).
 
 **Axis B — live third-party browsing** (`modrinth_enabled`, `technic_enabled`,
 default **off**). Governs discovery *outside* the catalog: searching Modrinth's
@@ -2659,71 +2473,298 @@ from the first. The migration folds the intent forward before dropping the key:
 a stored `true` forces `modrinth_enabled` and `technic_enabled` off, so removing
 the switch never silently re-enables a source the user had opted out of.
 
-### 19.22 Controller Support Is App-Wide, Not a Second Application
+### 20.3 Canonical Registry Identity for Packs (formerly §19.17)
 
-Handheld mode originally shipped as a separate full-screen shell that could list
-instances and launch one. That was the whole feature. The failure was structural
-rather than a matter of missing screens: a parallel controller UI is a second
-place every future feature must be built, so it is built once and then stops
-being maintained. The offer dialog that exists *because* the user is holding a
-controller could not be answered with that controller, which is what the pattern
-produces at its logical end.
+Every registry manifest uses `id` as its canonical top-level identity and declares its kind through `content_type`. Pack manifests therefore use `id` plus `content_type: "pack"`; the older top-level `pack_id` field is a deprecated compiler input alias. The compiler normalizes that alias before metadata hydration or governance, rejects mismatched `id` and `pack_id` values, and keeps relational names such as `pack_mods.pack_id` unchanged because those identify the owning pack in a relationship rather than defining a separate identity system.
 
-**The pivot: one application, navigable by any input device.** Controller support
-is an input layer over the same pages, not a rendering of a chosen few. The
-separate handheld shell is retired: what remains is a *presentation* of the
-ordinary app — larger hit targets, bigger type, opened-up spacing — applied to
-the same destinations, never a separate destination tree. A component-level
-presentation variant is fine; a duplicated workflow is not.
+---
 
-**Presentation follows controller presence, not a setting.** This keeps the
-decision the old handheld mode was built on: picking the pad up *is* the
-request, and the Web Gamepad API only reports a pad once a button has actually
-been pressed, so it follows a deliberate act rather than a device left plugged
-in. Note this is a different signal from the input-modality marker that drives
-the focus ring: modality flips the instant a mouse is touched, which is right
-for a ring and wrong for layout, because resizing the interface every time a
-hand moves between pad and mouse would be unusable.
+### 20.4 Curated Packs Have Locked Releases and a Flexible Recipe (formerly §19.27)
 
-**Input ownership is explicit and exclusive.** A global enable/disable flag can
-only say "everything off", never "the dialog owns input now", which is why the
-Controlify offer was unreachable and why overlays such as HealthDialog left the
-shell live behind them. Instead, a layer stack: components claim ownership while
-mounted, the topmost layer receives every intent, and it either handles an intent
-or lets it fall through to that layer's default navigation. Nothing infers
-ownership from `defaultPrevented`, because a handler that silently swallows an
-intent is indistinguishable from a controller that stopped working.
+§2.3 gave a curated pack one Minecraft version and a mod list with optional pins, and the desktop
+resolved that list itself in React: it ignored the pins, ignored `status`, and silently fell
+back to the newest build of a mod whether or not it fit. A pack could be installed on any
+Minecraft version with no signal about what would break. This subsection replaces that with two
+explicit shapes, planned in core.
 
-**Intents are semantic, never button labels.** Nothing above the sampler sees
-`a`/`b`: those are Xbox names, physically swapped on Nintendo layouts and
-different again on a DualSense. The physical mapping is sealed inside
-`lib/useGamepad`; everything above reasons about `accept`, `cancel`, `secondary`,
-`context`, `menu`, `page` and `scroll`.
+**Locked releases.** A manifest's optional `versions` array, newest first, lists releases. Each
+has an exact Minecraft version, loader and loader version, and a pinned `version` for every mod;
+the compiler rejects a release with an unpinned mod. They compile into `pack_versions` and
+`pack_version_mods`, and they are the default install whenever a pack has any. This is what a
+pack's Versions tab lists, and it matches what players expect from Modrinth and CurseForge.
 
-**The provider mounts above `App`.** `App` early-returns during onboarding, so a
-provider mounted inside it would leave first run with no controller support while
-claiming whole-app coverage. Whole-app has to mean whole-app, including the parts
-that run before the shell exists.
+**The flexible recipe.** The top-level `mods` list keeps working unchanged and can be aimed at
+any Minecraft version and loader. Each mod takes its pin while that build fits the chosen target,
+otherwise the newest compatible build. This keeps the old behaviour as a feature rather than an
+accident: an older pack, or a newer Minecraft version the curator has not released for yet,
+still installs.
 
-**Geometry is a fallback, not the architecture.** Element counts say the DOM is
-mostly focusable already; they do not say who owns the arrows at a given moment.
-Spatial navigation, scrollport awareness and navigation groups sit *inside* the
-ownership model rather than replacing it.
+**`status` finally decides failure handling, in both modes.** A `required` mod that cannot be
+resolved blocks the install before an instance is created; a Create pack without Create is not
+that pack. `recommended` and `optional` mods with no build are left out and listed in the review.
+An unrecognised status is treated as required, so the default fails closed.
 
-**Text entry goes through a service boundary.** A home-grown on-screen keyboard
-is a basic-Latin fallback, not the answer: it does not solve composition/IME,
-caret and selection editing, dead keys, RTL or clipboard behaviour. Platform
-adapters (Steam's overlay where genuinely available, a narrow native helper where
-supported) sit behind one `TextInputService` seam in the desktop backend, reached
-through `invoke()`. That seam never justifies a general `shell:allow-execute`
-capability; a fixed, argument-free command is the most that may be added.
+**Core owns the plan.** `curated_pack::CuratedPackService::plan` resolves a selection (a release,
+or the recipe plus a target) through the existing `Resolver`, returning the planned mods with
+their resolved versions, the dropped mods and the blocking mods. Planning writes nothing. The
+desktop only asks for a plan, shows it, creates the instance, and hands the planned mods to a
+normal `batch-install` review, so snapshots, hash verification and the health gate all apply as
+before. The CLI uses the same planner (`agora pack versions`, `agora pack curated`).
 
-Coverage expands by *interaction class* — native `select`, `range`, `color`,
-tables, text entry — fixed once each at the primitive level, rather than page by
-page. Until every class is covered, the honest description is limited coverage,
-not controller support.
+**The storage change is additive.** `pack_versions` and `pack_version_mods` are new tables, and
+`pack_mods` gains a `modrinth_id` column so Modrinth-sourced entries keep their project id. The
+schema version does not move: clients refuse a registry whose schema is newer than they support,
+so a bump would lock every older client out of catalog updates for a change they can ignore.
+New clients check for the tables and columns and treat their absence as "flexible only".
 
-### 19.23 Keyring Fallback Keys Come From a Random Secret, Not Public Inputs (supersedes 7.5.2)
+**Not yet covered.** Moving an instance created from one release to a newer release of the same
+pack is left to the pack-update flow (§6.5a) and is not implemented here. The flexible recipe
+does not yet let a player untick optional mods before installing.
+
+---
+
+## 21. EXTENSIBILITY: PLUGINS & CONTENT PROVIDERS
+
+Community plugins and the content-provider interface built on them. Guiding principle (see AGENTS.md): modding is user customization — protect users with warnings and explicit opt-in rather than by blocking.
+
+### 21.1 Community Plugins: Core Owns Policy, an Adapter Owns the Engine (formerly §19.24)
+
+Agora is extensible: a community author can add pages, instance panels, commands, themes,
+diagnostics and pre-launch checks without rebuilding the launcher. The design choices below
+are the ones that are *not* recoverable from reading the code.
+
+**QuickJS, chosen on a measurement rather than a preference.** The runtime question was
+settled by a spike before any of the surrounding system was written. `rquickjs` 0.13 built
+clean on MSVC in 15 seconds with no external toolchain, and a full release binary carrying
+tokio, `serde_json` and the engine came to 2 MB. A V8-based host (`deno_core`) would have
+added tens of megabytes to a launcher whose stated position is that it costs nothing to run,
+and Agora's `$0.00/month` ethos extends to what the user downloads. The spike also had to
+prove async host calls, ES module loading, cancellation, error isolation and a memory
+ceiling; all five hold, and `crates/agora-plugin-host/tests/host.rs` is those gates in
+executable form.
+
+**The engine is deliberately not in core.** `agora-core` holds an `Arc<dyn ScriptHost>`
+defined in `agora-plugin-api`, the same way it holds a `dyn Clock`. Core decides what may run
+and what it may do; an adapter supplies the thing that runs it. This is not ceremony — it is
+what makes a second runtime (a companion process speaking C#, Python or Rust) a matter of
+writing a new `ScriptHost` rather than reworking plugin policy, and it keeps the contract
+crate depending on nothing but `serde`, `semver` and `thiserror`.
+
+**A plugin proposes; core disposes.** Plugins never perform operations. A diagnostic returns
+findings plus a `RepairProposal` drawn from a **closed set** of `RepairAction` variants, each
+mapping onto an existing core service. The user approves, core re-validates the world *as it
+is now*, and then calls the same service the GUI would have called — same locks, same
+operation state, same recovery. The closed set is the point: if a plugin could return "run
+this command", the repair path would be an arbitrary-execution API wearing a diagnostic's
+clothes. Adding a variant is an API change reviewed on its own merits, which is exactly the
+friction that should exist before plugins gain a new way to change someone's game.
+
+**Capability grants are stored, not re-read.** The set of capabilities a plugin holds is
+recorded in `plugin_installs` alongside the manifest at the moment the user consented. It is
+not re-derived from the manifest on load. An update that asks for more permission therefore
+does not silently receive it; `widens_capabilities` detects the difference and the user has
+to be asked again.
+
+**Plugin UI is data, not markup.** A host-rendered view is a `ViewModel` — stats, tables,
+lists, status callouts, actions — that React draws with Agora's own components. There is no
+HTML string anywhere in that path, so there is nothing for `dangerouslySetInnerHTML` to
+receive and no sanitiser to get wrong, and plugin views inherit theming, accessibility and
+controller navigation for free. A plugin picks a semantic `Tone`, never a colour, so it
+cannot produce unreadable contrast or ignore the user's theme.
+
+A prototype **custom view** exists for authors who need their own HTML/CSS/JS: an
+opaque-origin `data:` iframe with `sandbox="allow-scripts"`, its own `default-src 'none';
+connect-src 'none'` CSP, and a narrow `postMessage` bridge that can only invoke commands the
+plugin declared in its manifest. It has no launcher IPC of its own. Treat it as experimental.
+`desktop/e2e/plugins.spec.ts` drives the frame in a real browser and confirms it cannot reach
+parent IPC or the network -- that part is the browser's own sandbox enforcement, not a mock --
+but the Tauri bridge around it in that test *is* mocked, so it is evidence about the frame
+boundary rather than about the packaged desktop app. The host-rendered path is the supported
+one.
+
+This required widening the application CSP in `tauri.conf.json` by exactly one directive,
+`frame-src data:` — enough for an opaque-origin document and nothing else. It does not permit
+`'self'` frames or remote ones, so the only thing that can be framed is a document the host
+itself constructed from a manifest-declared file inside the plugin's own package.
+
+**Network access is an allowlist, not a switch.** Holding the `network` capability is not
+permission to reach the internet; it is permission to reach the hosts the plugin *declared in
+its manifest* and the user saw at install time. `HostPolicy::PluginDeclared` enforces that
+list on the initial request and on every redirect hop. IP literals, ports and loopback names
+are rejected at manifest-validation time — an IP literal would sidestep the DNS checks that
+protect the user's own network. A declared host always covered its subdomains, so
+`*.example.com` is accepted as another spelling of `example.com`. Reaching *any* host (`*`) or
+more than 10 hosts is allowed only under Reduced security mode (§21.3). `network_plugins_enabled` defaults to **off**, and Lockdown Mode overrides
+everything regardless.
+
+**Both switches are opt-in.** `plugins_enabled` defaults to off. A user who never opts in
+never has a plugin runtime in their process. This is the whitelist-over-denylist rule from
+`AGENTS.md` applied to the extension system itself: a default-on extension surface is a
+default-on attack surface.
+
+**Activation events gate activation, and are not decorative.** `activate_all` starts only the
+plugins that asked for startup — `onStartup`, or a manifest declaring no activation at all,
+since that has no lazy path that could ever start it. A plugin contributing only a page or a
+command is started the moment something needs it; one declaring `onEvent:` is started when
+that event first fires, which is why adapters publish through `PluginService::publish_event`
+rather than straight to the bus. A plugin that has not run has not subscribed to anything, so
+going directly to the bus would deliver to nobody and the declaration would silently never
+fire. Without this, a dozen installed plugins would be a dozen runtimes at boot and the
+manifest's activation list would be documentation of an intention rather than a mechanism.
+
+**Be precise about what the isolation buys.** Each plugin gets its own OS thread, its own
+QuickJS runtime, its own heap and stack ceiling, and its own interrupt flag. Two mechanisms
+stop a misbehaving plugin, and both are needed: a QuickJS **interrupt handler** stops
+JavaScript that is *running* (the `while (true) {}` case), and a Tokio **timeout** stops a
+task that is *awaiting* (a slow host call). Neither alone suffices — the interrupt never
+fires while the engine is parked on a future, and the timeout never fires while the engine is
+in a tight loop that yields to nothing.
+
+| Failure | Contained? | How |
+|---|---|---|
+| Plugin throws on activation | Yes | Recorded as `last_error`, held back next start, other plugins unaffected |
+| Plugin loops forever | Yes | Interrupt handler; the call returns `Timeout` and the plugin stays usable |
+| Plugin exhausts its heap | Yes | Per-runtime memory limit; returns `ResourceExhausted` |
+| Plugin floods events | Yes | Bounded per-plugin queue; events are dropped and counted, never back-pressured onto the emitting operation |
+| Plugin refuses to shut down | Yes | `disable_all` interrupts rather than asking politely, so recovery does not need plugin cooperation |
+| Plugin is simply malicious within its granted capabilities | **No** | Capabilities are the boundary. A plugin granted `content:write` may disable mods; that is what the user agreed to |
+
+That last row is the honest limit. This is a **capability** boundary enforced by the method
+table in `agora-core/src/plugins/dispatch.rs`, not a security sandbox against hostile native
+code, and the install prompt is therefore load-bearing. Claims of stronger isolation would
+have to be justified by the runtime, and QuickJS-in-process does not justify them.
+
+**Event loops are broken structurally.** Every event carries an origin and a depth. A plugin
+is never told about its own effects, and a chain of plugin-caused events stops at
+`MAX_EVENT_DEPTH`. The alternative — hoping plugin authors are careful — is not a design.
+
+### 21.2 Content Providers: One Interface for Every Source Outside the Catalog (formerly §19.28)
+
+Agora's position is that it does not structurally depend on any one hosting platform. Modrinth
+held a special place because the curated registry is still small and a practical fallback was
+needed, and Technic was added the same way: each as its own branch through Browse, the adapter
+and the frontend. That made "which platforms exist" a property of Agora's source code. It is now a
+property of what is installed.
+
+**The interface.** `agora_core::providers::ContentProvider` answers `search`, `project`,
+`versions` and `resolve`. The vocabulary — projects, versions, dependencies, filter definitions,
+and an `InstallPlan` that is either a single `File` or a `Pack` — lives in
+`agora_plugin_api::provider`, so a plugin and Agora's own code speak exactly the same types.
+Modrinth and Technic implement the trait in Rust; `PluginProvider` implements it by calling a
+plugin's exports through the script host. A plugin contributes one with a `contentProviders`
+manifest entry and the `content:provide` capability (plugin API 0.1.1, additive).
+
+**Official is not privileged.** The official providers stay compiled in rather than being
+rewritten as JavaScript plugins. The property "just another plugin" was meant to buy — no
+capability a community provider lacks — holds structurally through the shared trait and plan
+type, without paying for a rewrite, a mandatory plugin runtime for Modrinth users, or an
+official signing key. A later port is a registration change.
+
+**Provenance, which is why providers were first declined.** A provider supplies both URL and
+digest, so a matching hash proves integrity, never trustworthiness. Trust is therefore an
+explicit, recorded user decision: `content:provide` is granted at install time alongside the
+plugin's declared hosts; every provider-installed file records
+`ProviderOrigin { provider_id, project_id, version_id }` in the instance manifest, and packs
+record `PackPlatform::Provider` with the provider in `source_key`.
+
+**Security tiers, one rule for every provider** (generalised from Technic, whose Solder packs
+always warned and whose bare zips always needed an opt-in):
+
+| Planned file | Outcome |
+|---|---|
+| HTTPS from a declared host, SHA-256/512 | installs |
+| undeclared host, plain HTTP, or only MD5/SHA-1 | warning; the user may continue |
+| no digest at all | hidden and not installable unless **Allow low security downloads** is on |
+
+Agora warns and asks rather than blocks (see `AGENTS.md`, *Modding is user customization*). The
+setting keeps its old key (`allow_unverified_packs`) so existing choices carry over, and it is no
+longer switched off as a side effect of turning Technic off. A provider marks search results
+`lowSecurity` so Browse can hide them for users who have not opted in. Downloads use
+`ClientCategory::ConsentedContent` — `HostPolicy::ProviderDeclared` for declared hosts, the
+consented policy otherwise — so Lockdown, the private-address floor and per-hop redirect checks
+all still apply, and every published digest (including MD5) is checked.
+
+**Browse moved to core.** The merge, per-source paging and ranking that lived in the Tauri
+adapter are now `providers::browse`, with a cursor per provider. A provider that fails is
+reported in `providerFailures` and the rest of Browse still renders.
+
+**Ranking and categories are declared, not hard-coded.** A provider's `ranking` profile says
+where its downloads and endorsements saturate and which of its categories mark libraries; the
+ranker scales each item against its own provider's profile, so it no longer names Modrinth or
+Technic. Categories come from providers too (Modrinth fetches its tags; a plugin declares a
+list), merged into Browse's picker. Curated content keeps its own band above every provider.
+
+**Switches and updates.** The Modrinth and Technic toggles remain the entry points for the
+official providers. A plugin provider's switch is its plugin's enable state. Plugin updates stay
+with the plugin updater; Settings' "Check everything / Update all" asks the app updater and the
+plugin subsystem and never accepts a capability widening on the user's behalf. Content installed
+from a provider is update-checked against that provider (`update_cache`, the background sweep
+using the official providers only) and updated through the same resolver.
+
+**Curated provider packs.** The catalog strategy `provider_pack` (identifier
+`<provider-id>:<project-id>@<version-id>`) lists a provider's pack as its author ships it. Its
+`sha256` is the *plan digest* — SHA-256 of the resolved plan's JSON, printed by
+`agora provider plan-digest` — so a version whose files change after review is caught at install
+(`ERR_PROVIDER_PACK_CHANGED`) and installs only if the user accepts it as uncurated. This is what
+makes Technic Solder packs curatable. It must be an entry's only source and is packs-only.
+
+**Native plugins are not planned.** Each would need a build per platform per plugin; providers
+gain nothing from native speed. Plugins stay on QuickJS; official providers stay Rust built-ins.
+
+**Still source-specific**, tracked in `docs/plugins/providers.md` (*Migration debt* and *Where
+this is going*): Modrinth's single-file install and the Modrinth and Technic detail pages still
+have their own code, `.mrpack` stays with the mrpack importer, and the official providers are
+compiled in rather than shipped as plugins.
+
+### 21.3 Reduced Security Mode: One Opt-In for Limits That Are Reasonable to Lift
+
+**Why.** Several limits existed to protect users who never chose anything: a plugin's host list
+capped at 10 exact names, and pack contents limited to a handful of folders (`config/`,
+`resourcepacks/`, …) with no `.jar` outside the manifest. Real plugins and packs outgrow them — a
+search plugin that follows links, a pack that ships mods or `options.txt` in its overrides. The
+project principle (`AGENTS.md`) is to let users choose rather than block, so these limits become
+one setting, `reduced_security_mode`, off by default, turned on behind a confirmation that says
+exactly what changes.
+
+**What it lifts.**
+
+| Limit | Default | With reduced security mode |
+|---|---|---|
+| Plugin `network.hosts` | ≤ 10 named hosts | `*` (any public host) or up to 200 |
+| `.mrpack` / provider-pack / Standard override folders | `config/`, `defaultconfigs/`, `resourcepacks/`, `shaderpacks/`, `datapacks/`, `kubejs/`, `scripts/`, `global_packs/`, `openloader/`, `patchouli_books/` | anywhere inside the instance |
+| `.jar` in overrides or outside `mods/` | refused | allowed |
+| Technic zip packs | only top-level `mods/` extracted | everything except `bin/` |
+
+**What it never lifts**, because the reward is nil and the risk is large: anything outside the
+instance directory (traversal, absolute paths); native executables and scripts (`.exe`, `.dll`,
+`.so`, `.sh`, `.bat`, `.ps1`, …) which Minecraft never runs; `instance_manifest.json` and
+`.agora*` files that Agora owns; IP-literal and loopback plugin hosts and the private-address
+DNS floor; Lockdown Mode; and digest verification.
+
+**Enforcement.** Install time: `PluginService::guard_consent` refuses an elevated manifest
+(`NetworkDeclaration::is_elevated`) while the mode is off, and the install preview carries
+`needsReducedSecurity`. Run time: `net_fetch_json` denies an elevated plugin's requests once the
+mode is turned off again, so switching it off takes effect without uninstalling anything.
+Packs: `override_sanitizer::OverridePolicy` (Standard / Permissive) is read from settings when an
+import starts; `providers::authorize_plan` lists `outsideContentFolders` and refuses them while
+the mode is off. The default folder list gained `scripts/` (CraftTweaker, not inert — the same
+caveat as `kubejs/`), `global_packs/`, `openloader/` and `patchouli_books/`.
+
+**Not covered.** Pack inventory (drift detection) still tracks only the default folders.
+
+## 22. CREDENTIALS & AUTHENTICATION
+
+Microsoft sign-in, direct launch, and how tokens are protected at rest on each platform.
+
+### 22.1 MSA Authentication & Direct Launch (supersedes section 0, section 8.1) (formerly §19.3)
+
+Per the v1 refactor (decision E9): the launcher now optionally performs **Microsoft Account (MSA) authentication and direct JVM execution in-process** -- crates/agora-core/src/msa.rs implements the full: device code, then MSA token, then XSTS, then Minecraft services token, then profile + Xbox profile, then DRM header token flow. crates/agora-core/src/launch.rs then constructs the classpath + args + natives and spawns java directly.
+
+This deliberately relaxes the original *security by delegation* constraint because in-launcher features (one-click version selection, accurate launch errors, native version manifest caching via piston-meta.mojang.com, OAuth token refresh) cannot be implemented on top of the Mojang-launcher-delegation model. The Mojang-launcher-path (section 8.4 -- discover official launcher binary, mutate launcher_profiles.json) is retained as a fallback for users who prefer not to use the in-process MSA flow.
+
+MSA tokens use the same storage backend as GitHub OAuth tokens: OS keyring first, with a PBKDF2 + AES-256-GCM encrypted-file fallback (tokens.enc) per section 7.5.2 -- implemented during the 2026-07-05 audit (was previously a hard error).
+
+### 22.2 Keyring Fallback Keys Come From a Random Secret, Not Public Inputs (supersedes 7.5.2) (formerly §19.23)
 
 Section 7.5.2 specifies deriving the fallback encryption key from "the OS username +
 machine ID ... using PBKDF2". That construction shipped, and every input to it was
@@ -2825,117 +2866,7 @@ which is honest, because local deletion never revokes a token an attacker alread
 If that promise ever changes, the right unit is an explicit all-credentials reset plus
 provider-revocation guidance, not opportunistic deletion inside a per-credential sign-out.
 
-### 19.24 Community Plugins: Core Owns Policy, an Adapter Owns the Engine
-
-Agora is extensible: a community author can add pages, instance panels, commands, themes,
-diagnostics and pre-launch checks without rebuilding the launcher. The design choices below
-are the ones that are *not* recoverable from reading the code.
-
-**QuickJS, chosen on a measurement rather than a preference.** The runtime question was
-settled by a spike before any of the surrounding system was written. `rquickjs` 0.13 built
-clean on MSVC in 15 seconds with no external toolchain, and a full release binary carrying
-tokio, `serde_json` and the engine came to 2 MB. A V8-based host (`deno_core`) would have
-added tens of megabytes to a launcher whose stated position is that it costs nothing to run,
-and Agora's `$0.00/month` ethos extends to what the user downloads. The spike also had to
-prove async host calls, ES module loading, cancellation, error isolation and a memory
-ceiling; all five hold, and `crates/agora-plugin-host/tests/host.rs` is those gates in
-executable form.
-
-**The engine is deliberately not in core.** `agora-core` holds an `Arc<dyn ScriptHost>`
-defined in `agora-plugin-api`, the same way it holds a `dyn Clock`. Core decides what may run
-and what it may do; an adapter supplies the thing that runs it. This is not ceremony — it is
-what makes a second runtime (a companion process speaking C#, Python or Rust) a matter of
-writing a new `ScriptHost` rather than reworking plugin policy, and it keeps the contract
-crate depending on nothing but `serde`, `semver` and `thiserror`.
-
-**A plugin proposes; core disposes.** Plugins never perform operations. A diagnostic returns
-findings plus a `RepairProposal` drawn from a **closed set** of `RepairAction` variants, each
-mapping onto an existing core service. The user approves, core re-validates the world *as it
-is now*, and then calls the same service the GUI would have called — same locks, same
-operation state, same recovery. The closed set is the point: if a plugin could return "run
-this command", the repair path would be an arbitrary-execution API wearing a diagnostic's
-clothes. Adding a variant is an API change reviewed on its own merits, which is exactly the
-friction that should exist before plugins gain a new way to change someone's game.
-
-**Capability grants are stored, not re-read.** The set of capabilities a plugin holds is
-recorded in `plugin_installs` alongside the manifest at the moment the user consented. It is
-not re-derived from the manifest on load. An update that asks for more permission therefore
-does not silently receive it; `widens_capabilities` detects the difference and the user has
-to be asked again.
-
-**Plugin UI is data, not markup.** A host-rendered view is a `ViewModel` — stats, tables,
-lists, status callouts, actions — that React draws with Agora's own components. There is no
-HTML string anywhere in that path, so there is nothing for `dangerouslySetInnerHTML` to
-receive and no sanitiser to get wrong, and plugin views inherit theming, accessibility and
-controller navigation for free. A plugin picks a semantic `Tone`, never a colour, so it
-cannot produce unreadable contrast or ignore the user's theme.
-
-A prototype **custom view** exists for authors who need their own HTML/CSS/JS: an
-opaque-origin `data:` iframe with `sandbox="allow-scripts"`, its own `default-src 'none';
-connect-src 'none'` CSP, and a narrow `postMessage` bridge that can only invoke commands the
-plugin declared in its manifest. It has no launcher IPC of its own. Treat it as experimental.
-`desktop/e2e/plugins.spec.ts` drives the frame in a real browser and confirms it cannot reach
-parent IPC or the network -- that part is the browser's own sandbox enforcement, not a mock --
-but the Tauri bridge around it in that test *is* mocked, so it is evidence about the frame
-boundary rather than about the packaged desktop app. The host-rendered path is the supported
-one.
-
-This required widening the application CSP in `tauri.conf.json` by exactly one directive,
-`frame-src data:` — enough for an opaque-origin document and nothing else. It does not permit
-`'self'` frames or remote ones, so the only thing that can be framed is a document the host
-itself constructed from a manifest-declared file inside the plugin's own package.
-
-**Network access is an allowlist, not a switch.** Holding the `network` capability is not
-permission to reach the internet; it is permission to reach the hosts the plugin *declared in
-its manifest* and the user saw at install time. `HostPolicy::PluginDeclared` enforces that
-list on the initial request and on every redirect hop. Wildcards, IP literals, ports and
-loopback names are rejected at manifest-validation time — a user cannot meaningfully consent
-to `*.example.com`, and an IP literal would sidestep the DNS checks that protect the user's
-own network. `network_plugins_enabled` defaults to **off**, and Lockdown Mode overrides
-everything regardless.
-
-**Both switches are opt-in.** `plugins_enabled` defaults to off. A user who never opts in
-never has a plugin runtime in their process. This is the whitelist-over-denylist rule from
-`AGENTS.md` applied to the extension system itself: a default-on extension surface is a
-default-on attack surface.
-
-**Activation events gate activation, and are not decorative.** `activate_all` starts only the
-plugins that asked for startup — `onStartup`, or a manifest declaring no activation at all,
-since that has no lazy path that could ever start it. A plugin contributing only a page or a
-command is started the moment something needs it; one declaring `onEvent:` is started when
-that event first fires, which is why adapters publish through `PluginService::publish_event`
-rather than straight to the bus. A plugin that has not run has not subscribed to anything, so
-going directly to the bus would deliver to nobody and the declaration would silently never
-fire. Without this, a dozen installed plugins would be a dozen runtimes at boot and the
-manifest's activation list would be documentation of an intention rather than a mechanism.
-
-**Be precise about what the isolation buys.** Each plugin gets its own OS thread, its own
-QuickJS runtime, its own heap and stack ceiling, and its own interrupt flag. Two mechanisms
-stop a misbehaving plugin, and both are needed: a QuickJS **interrupt handler** stops
-JavaScript that is *running* (the `while (true) {}` case), and a Tokio **timeout** stops a
-task that is *awaiting* (a slow host call). Neither alone suffices — the interrupt never
-fires while the engine is parked on a future, and the timeout never fires while the engine is
-in a tight loop that yields to nothing.
-
-| Failure | Contained? | How |
-|---|---|---|
-| Plugin throws on activation | Yes | Recorded as `last_error`, held back next start, other plugins unaffected |
-| Plugin loops forever | Yes | Interrupt handler; the call returns `Timeout` and the plugin stays usable |
-| Plugin exhausts its heap | Yes | Per-runtime memory limit; returns `ResourceExhausted` |
-| Plugin floods events | Yes | Bounded per-plugin queue; events are dropped and counted, never back-pressured onto the emitting operation |
-| Plugin refuses to shut down | Yes | `disable_all` interrupts rather than asking politely, so recovery does not need plugin cooperation |
-| Plugin is simply malicious within its granted capabilities | **No** | Capabilities are the boundary. A plugin granted `content:write` may disable mods; that is what the user agreed to |
-
-That last row is the honest limit. This is a **capability** boundary enforced by the method
-table in `agora-core/src/plugins/dispatch.rs`, not a security sandbox against hostile native
-code, and the install prompt is therefore load-bearing. Claims of stronger isolation would
-have to be justified by the runtime, and QuickJS-in-process does not justify them.
-
-**Event loops are broken structurally.** Every event carries an origin and a depth. A plugin
-is never told about its own effects, and a chain of plugin-caused events stops at
-`MAX_EVENT_DEPTH`. The alternative — hoping plugin authors are careful — is not a design.
-
-### 19.25 DPAPI Holds the Windows Fallback Key (supersedes 19.23 on Windows)
+### 22.3 DPAPI Holds the Windows Fallback Key (supersedes 22.2 on Windows) (formerly §19.25)
 
 19.23 replaced a hard-coded key derivation with a random per-profile secret and was explicit
 about the limit it did not clear: the key lives in the same directory as the ciphertext it
@@ -3005,7 +2936,7 @@ as the signed-in user. It does not apply to macOS or Linux, where the keyring ha
 comparable ceiling and is still the primary path. And deleting a local credential is still not
 revocation: no provider request is made.
 
-### 19.26 A Portable Copy Never Uses the OS Keyring (refines 19.25)
+### 22.4 A Portable Copy Never Uses the OS Keyring (refines 22.3) (formerly §19.26)
 
 19.25 kept the keyring as the first stop everywhere and only changed what happens when a write
 does not fit. On a portable copy that left the two sign-ins behaving differently for no reason a
@@ -3030,47 +2961,298 @@ new sign-in; importing it from the keyring was rejected because that import woul
 after every portable sign-out. The Settings notice names portable mode as the reason for the
 degraded storage, because on a portable copy it is the reason.
 
-### 19.27 Curated Packs Have Locked Releases and a Flexible Recipe
+---
 
-§2.3 gave a curated pack one Minecraft version and a mod list with optional pins, and the desktop
-resolved that list itself in React: it ignored the pins, ignored `status`, and silently fell
-back to the newest build of a mod whether or not it fit. A pack could be installed on any
-Minecraft version with no signal about what would break. This subsection replaces that with two
-explicit shapes, planned in core.
+## 23. RELIABILITY, RECOVERY & REPRODUCIBILITY
 
-**Locked releases.** A manifest's optional `versions` array, newest first, lists releases. Each
-has an exact Minecraft version, loader and loader version, and a pinned `version` for every mod;
-the compiler rejects a release with an unpinned mod. They compile into `pack_versions` and
-`pack_version_mods`, and they are the default install whenever a pack has any. This is what a
-pack's Versions tab lists, and it matches what players expect from Modrinth and CurseForge.
+Keeping instances safe to change: safe operations, Last Known Good, content-addressed snapshots, and launch health.
 
-**The flexible recipe.** The top-level `mods` list keeps working unchanged and can be aimed at
-any Minecraft version and loader. Each mod takes its pin while that build fits the chosen target,
-otherwise the newest compatible build. This keeps the old behaviour as a feature rather than an
-accident: an older pack, or a newer Minecraft version the curator has not released for yet,
-still installs.
+### 23.1 Desktop Reliability, UX Coherence, and Safe Operations (formerly §19.13)
 
-**`status` finally decides failure handling, in both modes.** A `required` mod that cannot be
-resolved blocks the install before an instance is created; a Create pack without Create is not
-that pack. `recommended` and `optional` mods with no build are left out and listed in the review.
-An unrecognised status is treated as required, so the default fails closed.
+> Approved principles for the Desktop Upgrade Execution Plan (packages A1–D5). Last updated 2026-07-10.
 
-**Core owns the plan.** `curated_pack::CuratedPackService::plan` resolves a selection (a release,
-or the recipe plus a target) through the existing `Resolver`, returning the planned mods with
-their resolved versions, the dropped mods and the blocking mods. Planning writes nothing. The
-desktop only asks for a plan, shows it, creates the instance, and hands the planned mods to a
-normal `batch-install` review, so snapshots, hash verification and the health gate all apply as
-before. The CLI uses the same planner (`agora pack versions`, `agora pack curated`).
+**Architecture principles:**
 
-**The storage change is additive.** `pack_versions` and `pack_version_mods` are new tables, and
-`pack_mods` gains a `modrinth_id` column so Modrinth-sourced entries keep their project id. The
-schema version does not move: clients refuse a registry whose schema is newer than they support,
-so a bump would lock every older client out of catalog updates for a change they can ignore.
-New clients check for the tables and columns and treat their absence as "flexible only".
+1. **One canonical launch orchestration path.** There is exactly one route through health preflight, user decision, launch mode selection, process spawn, PID tracking, and exit handling. Dialogs return decisions; they do not launch.
+2. **One canonical install transaction path.** Every mod/update/removal entry point resolves an `InstallIntent` → `ResolvedInstallPlan` → verified staging → atomic application → health scan → result. No page bypasses the plan.
+3. **React dialogs return user decisions and do not execute business operations.** A dialog's only side effect is calling `onConfirm()` or `onCancel()`. The parent component dispatches backend commands.
+4. **Process state survives navigation.** Running-instance identity, PID, console subscription, and exit status live in a controller that outlives page components. React may query backend state after remount.
+5. **User-changing operations are previewable and reversible.** Every manifest mutation produces a plan that shows what changes before execution. Snapshots enable rollback.
+6. **Existing snapshots become the basis of last-known-good recovery.** A successful launch establishes LKG state. Changes since LKG are visible. One-click restore returns to LKG.
+7. **Desktop UX work must include meaningful integration tests.** Mocked UI tests, Rust integration tests, and native smoke checks are separate layers. A test that only asserts the page rendered is not sufficient.
 
-**Not yet covered.** Moving an instance created from one release to a newer release of the same
-pack is left to the pack-update flow (§6.5a) and is not implemented here. The flexible recipe
-does not yet let a player untick optional mods before installing.
+#### 19.13.3 Release C canonical install-transaction architecture
+
+> Approved design from C0 Sol architect call. Implementation packages C1-C4.
+
+**Five-phase pipeline (all in `agora-core`):**
+
+1. **Resolve** — pure data, no instance changes. Takes `InstallIntent`, returns `ResolvedInstallPlan` with required/optional deps, conflicts, files to add/remove/disable, snapshot requirement, disk estimate, warnings, and blocking errors.
+2. **Stage** — download all artifacts into `<instance_dir>/.agora/staging/<fingerprint>/`. Verify every artifact before touching the live instance. Any verification failure aborts with zero live instance changes.
+3. **Snapshot** — create recovery snapshot of `mods/` + `instance_manifest.json` immediately before application. `.agora/` excluded.
+4. **Apply** — atomic stage-then-swap: remove/disable/add files, then write `instance_manifest.json.tmp` -> fsync -> atomic rename over `instance_manifest.json`. **The manifest rename is the single commit point.** Pre-application manifest backup at `.bak.<fp>` enables fast rollback.
+5. **Health scan** — run `check_instance_health` post-apply. Failure triggers automatic snapshot restore, guaranteeing the instance ends in either (healthy + new install) or (pre-install state).
+
+**Key invariants:**
+- InstallIntent -> ResolvedInstallPlan: plan makes zero instance changes. Deterministic for unchanged input (intent + instance state + registry revision).
+- Plan fingerprint = SHA-256(canonical_json(intent) || canonical_json(resolved_candidates) || instance_state_hash || registry_revision). Stale plans are rejected at apply time.
+- Required dependencies: fail closed. Missing -> blocking error, plan cannot proceed.
+- Optional dependencies: governed by OptionalDepsPolicy (Include/ExcludeAll/Prompt). Prompt returns choices to frontend; user picks, intent re-submitted.
+- Conflicts: structured DepConflict with resolution_options (Replace/Skip/DisableExisting/Abort) and blocking flag.
+- Existing-file: same item same version -> Skip (no-op). Same item different version -> Update (remove old + add new). Different item same filename -> conflict.
+- Staging: same-volume as mods/ -> moves are atomic renames. Orphan staging dirs cleaned on next launcher startup.
+- Verification: SHA-256 required for curated items. Modrinth uses strongest available (SHA-512 > 256 > 1). SHA-1 only accepted with Modrinth's published hash. No hash -> blocking error.
+- Snapshot: always required for mutating operations (install/update/remove). Label encodes plan fingerprint.
+- Atomic application: remove phase (move targets to staging trash), disable phase (.jar -> .jar.disabled), add phase (atomic rename from staging into mods/), manifest commit (.tmp -> fsync -> rename). Every pre-commit step is reversible.
+- Fast rollback (pre-commit): reverse file moves, restore manifest .bak. Snapshot restore (post-commit or crash): restore from snapshot zip. Health scan failure -> automatic snapshot restore.
+
+**State ownership:**
+- `agora-core`: `InstallPipeline` struct with `resolve_plan()`, `apply_plan()`, `cancel()`. Owns all business logic, dependency resolution, staging, application, hashing, health checks. No Tauri dependency. Communicates progress via `&dyn ProgressReporter` trait.
+- Tauri facade: thin commands (`resolve_install_plan`, `apply_install_plan`, `cancel_install`). Provides ProgressReporter impl that emits Tauri events. Maps core errors to Tauri errors.
+- React: constructs InstallIntent from user action, renders plan, handles interactive prompts, subscribes to progress events, sends cancel on user request. Never touches filesystem or makes integrity decisions.
+
+**CLI reuse:** `agora-cli` depends on `agora-core`, calls `InstallPipeline` directly. Provides ProgressReporter impl for stdout progress bar. Cancellation via Ctrl+C. `--dry-run` resolves + prints, no mutation. `--yes` skips interactive prompts.
+
+**Migration sequence (behind feature flag INSTALL_PIPELINE_V2):**
+1. Build core InstallPipeline with unit tests.
+2. Add Tauri facade commands alongside existing commands.
+3. Migrate ModDetail main install -> plan UI component -> apply pipeline.
+4. Migrate Versions tab.
+5. Migrate raw Modrinth install (wraps intent with SourceType=Modrinth).
+6. Migrate InstanceEditor Add Mod.
+7. Remove old commands + feature flag.
+
+**Required tests:** resolution (missing dep, optional, cycles, conflicts); fingerprint staleness; staging verification (hash mismatch, no hash, network failure); snapshot (create + restore, .agora exclusion); application atomicity (pre-commit rollback, post-commit snapshot restore, crash recovery); health scan (success + failure rollback); cancellation (each phase); E2E (full install via Tauri mock/CLI); migration flag toggling.
+
+**Rejected alternatives:**
+- Dialogs or frontend code invoking install commands directly.
+- Skipping dependency resolution for Modrinth or manual installs.
+- Verifying artifacts after touching the live instance.
+- Incremental/file-level snapshot in v1 (full zip only for correctness).
+- Staging on a different volume than the instance (atomic rename fails cross-volume).
+- Plan submitted by the client without backend re-validation (backend must own the plan or re-resolve under transaction lock).
+
+**Current status (2026-07-10):** C0 design documented; C1 core types present; C2 execution scaffold exists with cfg-gated commands and stub resolver. Unsafe commands (`apply_install_plan`, `cancel_install`) are NOT registered in production builds. Legacy install paths remain active. Full implementation deferred to Release C2-C4.
+
+### 23.2 Last-Known-Good and Reproducibility Architecture (formerly §19.14)
+
+> Approved design from D2 architect call. LKG is an additive marker on the existing zip-snapshot system, driven by a pure `LaunchOutcome` classifier in `agora-core`. Lockfiles are a separate canonical, content-addressed, hash-authoritative export format that excludes config contents for privacy.
+
+**Data model.** LKG is a label on a snapshot, not separate storage. Three artifacts per instance: snapshot index (inside snapshot zip with `isLkg`, `promotedAt`, `launchSessionId`), `lkg.json` (convenience pointer), and `launches.jsonl` (append-only audit trail). Current LKG = snapshot with highest `promotedAt`.
+
+**Promotion rule.** Pre-launch snapshot → classify outcome → promote iff `Success`. Optimization: skip snapshot creation if `contentHash` unchanged since last snapshot. Promotion gated by per-instance mutex.
+
+**Launch classification.** `classify_launch()` in `agora-core`: `Success` (exit 0, runtime >= 60s, no crash file/signature), `Crash` (non-zero exit, crash file, signal), `Cancelled` (user stop), `Unknown` (process vanished), `Abandoned` (exit 0 but runtime < 60s). Only `Success` promotes LKG.
+
+**Retention policy.** Keep current LKG, N most-recently-promoted LKG (default 3), 1 most-recent non-LKG, 1 most-recent pre-restore. Size cap 2 GB per instance. Current LKG is last evicted.
+
+**Diff representation.** `compute_diff(indexA, indexB)` in `agora-core`: added/removed/modified paths with SHA-256. No rename detection. `diff_since_lkg()` compares live scan of mods/ + manifest against current LKG snapshot index.
+
+**Restore semantics.** Transactional with pre-restore snapshot: block active game, snapshot current, verify staged files, atomic swap, rollback on failure. Pre-restore snapshot enables undo.
+
+**Lockfile schema.** Portable canonical instance definition. Contains mods (id, filename, SHA-256, source URL, hashes), loader manifest hash, manifest hash, content hash. Optional Ed25519 signature for authorship attribution. Config excluded for privacy (`configPolicy.included: false`). Import verification: parse → check schema version → recompute contentHash → verify signature → verify each artifact hash → reject with precise error on any failure.
+
+**Config policy.** Tracked in snapshots (mods/ + manifest + small config files). **Excluded** from lockfile entirely (privacy: no server IPs, world data). Optional `configHash` for drift detection without content exposure.
+
+**Drift detection.** `detect_drift()` compares current mods/ hashes against reference (lockfile or LKG). Returns `DriftReport { status: InSync|Drifted, differences[] }`. Triggers on launch, instance view, manual command. Remediation: restore-to-LKG.
+
+**Ownership.** `agora-core` owns all pure logic: LkgState, LaunchOutcome, classify_launch(), promote_to_lkg(), Diff, compute_diff(), Lockfile, detect_drift(), RetentionPolicy. Desktop crate owns filesystem impl, process capture, IPC, keychain. React owns UI.
+
+**Migration sequence.** Phase 1: core types + pure logic + unit tests. Phase 2: pre-change snapshots. Phase 3: launch classification + promotion. Phase 4: diff viewer. Phase 5: LKG restore. Phase 6: lockfile export/import. Phase 7: drift detection. Phase 8: retention automation. Phase 9: backfill existing instances.
+
+**Required tests.** Pure unit: classify_launch outcomes, promote_to_lkg failure rejection, compute_diff symmetry, lockfile canonicalization round-trip, detect_drift, retention_plan boundary. Integration: pre-change snapshot on install, lkg.json written on success, crash does not overwrite, restore transactionality. E2E: snapshot → launch → promote → diff → restore → content hash match; export lockfile → import → verify → reject tampered lockfile.
+
+### 23.3 Content-Addressed Recovery Snapshots (formerly §19.15)
+
+The recovery snapshot implementation evolved from full Deflate ZIP archives to
+immutable per-file SHA-256 objects plus an atomic per-snapshot JSON manifest.
+Each manifest records the tracked relative path, size, and object hash. Objects
+are shared below the app data root, so unchanged mods and configuration files
+are written once across snapshots and instances. New snapshot writes stream
+through a bounded buffer, hash and persist each object once, and restore reads
+and verifies objects before the existing atomic root-swap protocol. Existing
+v1/v2 ZIP snapshots remain readable and restorable.
+
+Initial imports register the instance and then finalize their first recovery
+manifest on a blocking worker. While that worker runs, the instance reports a
+pending snapshot state: inspection is allowed, but launch and mutating
+operations are blocked. A failed worker records an actionable failed state;
+creating a manual snapshot clears the state. Launch and install backends also
+enforce the readiness check so the UI is not the security boundary.
+
+Retention accounts for manifest and referenced object storage and removes an
+object only after no remaining snapshot manifest references it.
+
+### 23.4 Health, Crash Doctor, Memory, Authentication, and Launch Reliability (formerly §19.19)
+
+Health reports separate blockers, warnings, and non-interrupting recommendations. Recommendation-only reports remain green and never stop launch. Warning mutes use stable structured keys with legacy-setting migration; blockers cannot be muted. A health scan carries an identity derived from the instance manifest plus observed mod-file and registry-database content hashes. Core launch reuses that scan only while the identity remains unchanged, preventing duplicate healthy scans without trusting stale frontend approval.
+
+Crash Doctor is local-first and instance-aware. Automatic evidence collection considers the newest coherent launch window across `crash-reports/*.txt`, `logs/latest.log`, `logs/debug.log`, and `hs_err_pid*.log`; bounded user-selected text files and pasted text are supported without exposing a generic arbitrary-path read command. Evidence paths are never returned to the webview, text is size-bounded and cleaned, and no evidence is uploaded. Curated signatures, fingerprints, and installed-mod scoring analyze the coherent evidence set together. Recovery snapshots are created lazily before the first mutation, not during read-only diagnosis. Guided disable experiments wait for a correlated launch outcome: the same crash rules a suspect out, a changed crash starts a new hypothesis without claiming causality, a successful run asks for confirmation, and an abandoned run restores state as inconclusive. The built-in doctor does not search or submit GitHub issues; an external AI agent may optionally research upstream sources after local findings are exhausted and must label those findings as external hypotheses.
+
+Schema v9 adds `user_instances.jvm_memory_mode` with `auto` and `manual` values. Existing rows migrate to Manual because their prior allocation does not establish consent to automatic changes; newly created instances default to Auto unless an explicit imported or CLI memory value is present. Auto derives a 512 MiB-rounded recommendation from enabled mod count, enabled archive bytes, resource-pack load, and system headroom, and calculates the effective value at launch without overwriting Manual allocations. Both desktop and CLI expose the recommendation and insufficient-system-RAM warning.
+
+Direct launch obtains classified Microsoft credentials through a single-flight refresh path. Delegated launch does not read Microsoft credentials because the official launcher owns authentication. GitHub preflight and post-401 recovery use the same fallible token path; post-401 refresh carries the exact failed access token under the refresh mutex so concurrent failures rotate once. Permanent refresh failures clear credentials, transient failures preserve them, and secret values are never logged.
+
+Launch records `last_launched_at` immediately after successful handoff or process spawn so a newly written crash report is discoverable. Warm Java discovery uses a bounded five-minute cache. Launch progress records loading, health, resolution, materialization, and snapshot durations; the CLI exposes these with `launch --timings`. Content-addressed snapshot indexes use immutable manifest hashes for comparison rather than rereading every object blob, while restore continues verifying bytes before mutation.
+
+---
+
+---
+
+## 24. GOVERNANCE OPERATIONS
+
+How community votes are audited, quarantined and monitored in production.
+
+### 24.1 Audit Log Schema (replaces section 4.6 compile-only entries) (formerly §19.7)
+
+Per the E8 user decision (expand to match section 4.6), the compiler (compiler/compile.py) now writes audit entries with the full section 4.6 schema -- every entry includes timestamp, action, actor, target_type, target_id, 
+eason, details. Action types cover: compile (every nightly run), AUTO_FLAG (velocity circuit breaker), POLL_CREATED, POLL_CLOSED, IMMUNITY_APPLIED, IMMUNITY_REMOVED, ARCHIVED, RESTORED, BLACKLIST_UPDATED, REACTION_SCRUBBED, SIGNATURE_REJECTED (client-side). The root audit_log object carries log_format_version: 1. Rotation per section 4.6: at 10,000 entries, the oldest 2,000 move to 
+egistry/governance/audit_log_archive.{YYYYMMDD}.json (new archive file per day; existing archive appended to).
+
+### 24.2 Triage Poll Resolution Bugs (fixed 2026-07-05) (formerly §19.8)
+
+Per the A4 fixes during the 2026-07-05 audit:
+
+- **Tied polls** (keep_votes == remove_votes with total_votes > 0): now treated as KEEP-win, with an audit entry noting the tie. Items with **zero total votes** remain under_review (no resolution) and an audit entry is written explaining the no-vote situation.
+- **Organic anomaly_window_start is now preserved** across nightly runs -- it is only set when the item first transitions to under_review. Previously every nightly build overwrote it with 
+ow, so the 7-day poll timer never elapsed.
+- **KEEP-win now writes immunity_cooldown_until** -- a 30-day ISO timestamp populated on the 
+egistry_items row. (Previously the column was always NULL.)
+
+### 24.3 Governance Sandbox and Persistent Vote Quarantine (formerly §19.16)
+
+Production registry and governance data remain in the main Agora repository by default. The compiler may explicitly target a separate governance repository and registry fixture root for sandbox testing; compiler code remains exclusively in the main repository. Governance repository resolution is `--governance-repo`, `AGORA_GOVERNANCE_REPO`, `AGORA_REGISTRY_REPO`, then `GITHUB_REPOSITORY`.
+
+Compiler governance modes are `off`, `read-only`, and `monitor`. All modes are non-mutating with respect to GitHub. `monitor` may write persistent local governance state and send deduplicated Discord alerts for new, expanded, or resolved quarantine events. Review Issues are identified only by the `community-review` label. Votes are read only from direct `+1` and `-1` reactions on canonical Issues mapped in `registry/governance/vote_issues.json`; review and comment reactions never count.
+
+Schema 7 adds per-item `governance_summary` and persistent `governance_events` tables while retaining final counted values and compatibility fields on `registry_items`. Pending and rejected reaction IDs remain excluded across compiles; an accepted curator decision restores them. The desktop supports schema 6 fallback, compile-time production/sandbox governance configuration, read-only diagnostics, and a debug-only validated `AGORA_DEV_REGISTRY_DB` override. The v1 review-report/admin-alert path is removed.
+
+### 24.4 Governance Monitor and Tracked State (Work Package 7) (formerly §19.18)
+
+> Operational model, file ownership, and safety constraints for the compiler governance sandbox. Last updated 2026-07-29.
+
+**State file location and format.** Production tracks `registry/governance/governance-state.json` and passes it explicitly as both state input and output. The compiler's isolated-run default remains `<output-dir>/governance-state.json`. The file carries `schema_version`, `governance_repository`, `policy`, an `events` array, and `generated_at` after the first meaningful transition. Each event has `event_id`, `item_id`, `event_type`, `status`, `detected_at`, `affected_reactions`, and `details_json`. Growth merges new reactions into the original stable event rather than creating overlapping duplicates.
+
+**Production repo and policy resolution.** Governance repo: `AGORA_GOVERNANCE_REPO` → `AGORA_REGISTRY_REPO` → `GITHUB_REPOSITORY`. Policy constants: production uses 30-day account-age threshold, 6-hour window, 5×-baseline ratio with 20-reaction floor; sandbox uses 0-day age, 10-minute window, 3-reaction threshold, no baseline. State files embed `governance_repository` and `policy`; `load_governance_state()` discards mismatched state to prevent cross-environment corruption.
+
+**Monitor semantics.** State is persisted only when `mode=monitor`. A write represents a meaningful change: new event creation, event growth (additional reactions in the same bucket), or status transition from curator decision application. Compiles with zero state delta produce no file modification. This prevents spurious diffs on every nightly run.
+
+**Curator decision input.** `registry/governance/quarantine_decisions.json` is curator-authored; the compiler never writes it. Each entry maps `event_id` to `accepted` or `rejected`. The pipeline applies these as overrides over stored event statuses: `accepted` lifts the quarantine and `rejected` permanently excludes those reaction IDs.
+
+**Public audit rationale.** Every state event captures the full anomaly context in `details_json`: threshold, window, historical average, baseline ratio, raw/eligible/counted/quarantined up/down counts, conflict users, and the exact reaction IDs. This enables any community member to independently verify that the quarantine decision matches the policy criteria. The `audit_log.json` separately records compile-level actions.
+
+**Non-release-asset rationale.** `governance-state.json` is consumed exclusively by the compiler on subsequent runs, not by the desktop app or web directory. It must reside in the repository working tree for the nightly governance commit. It is intentionally excluded from `registry.db` and the GitHub Release Asset pipeline.
+
+**Local monitor command and warning.**
+
+```powershell
+# WARNING: This changes tracked production state and can send real alerts.
+$env:GITHUB_TOKEN = (gh auth token)
+$env:DISCORD_WEBHOOK_URL = "YOUR_PRODUCTION_WEBHOOK"
+python compiler/compile.py `
+  --governance-mode monitor `
+  --governance-policy production `
+  --governance-repo agora-mc/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --governance-state-out D:/Agora/registry/governance/governance-state.json `
+  --no-governance-write `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+**Read-only diagnostics.**
+
+```powershell
+$env:GITHUB_TOKEN = (gh auth token)
+python compiler/compile.py `
+  --governance-mode read-only `
+  --governance-policy production `
+  --governance-repo agora-mc/Agora-Launcher `
+  --governance-state-in D:/Agora/registry/governance/governance-state.json `
+  --skip-sign `
+  --out D:/Agora/registry.db
+```
+
+`read-only` runs the full detection pipeline in memory but never writes state, never sends Discord alerts, and has no effect on the working tree or remote.
+
+**State recovery.** Production preflight rejects missing or malformed JSON, unsupported schemas, duplicate or incomplete events, and mismatched `governance_repository` or `policy`. Recovery restores the last valid file from Git history or, after curator review, commits an empty production envelope and validates it with `scripts/validate_governance_state.py`. Production state must not be silently truncated or regenerated.
+
+**Workflow ownership boundaries.**
+- The loader-refresh workflow is the sole committer for the three tracked loader-manifest files. The nightly compile may regenerate them for compilation but never stages them in the governance commit.
+- The nightly governance commit stages only `registry/governance/governance-state.json`. Signed database and web exports are user-facing release assets, not Git commits.
+- `quarantine_decisions.json` and `vote_issues.json` are curated manually via PR.
+
+**Production mode is currently read-only.** The CI `compile.yml` workflow runs governance in `read-only` mode (observation, no state writing, no Discord). Full `monitor` mode (state commits + real Discord alerts) is **not yet activated in production** — it requires completion of sandbox testing gates and explicit manual curator sign-off. Until those gates pass, production runs are observation-only.
+
+---
+
+---
+
+## 25. CONTROLLER SUPPORT
+
+### 25.1 Controller Support Is App-Wide, Not a Second Application (formerly §19.22)
+
+Handheld mode originally shipped as a separate full-screen shell that could list
+instances and launch one. That was the whole feature. The failure was structural
+rather than a matter of missing screens: a parallel controller UI is a second
+place every future feature must be built, so it is built once and then stops
+being maintained. The offer dialog that exists *because* the user is holding a
+controller could not be answered with that controller, which is what the pattern
+produces at its logical end.
+
+**The pivot: one application, navigable by any input device.** Controller support
+is an input layer over the same pages, not a rendering of a chosen few. The
+separate handheld shell is retired: what remains is a *presentation* of the
+ordinary app — larger hit targets, bigger type, opened-up spacing — applied to
+the same destinations, never a separate destination tree. A component-level
+presentation variant is fine; a duplicated workflow is not.
+
+**Presentation follows controller presence, not a setting.** This keeps the
+decision the old handheld mode was built on: picking the pad up *is* the
+request, and the Web Gamepad API only reports a pad once a button has actually
+been pressed, so it follows a deliberate act rather than a device left plugged
+in. Note this is a different signal from the input-modality marker that drives
+the focus ring: modality flips the instant a mouse is touched, which is right
+for a ring and wrong for layout, because resizing the interface every time a
+hand moves between pad and mouse would be unusable.
+
+**Input ownership is explicit and exclusive.** A global enable/disable flag can
+only say "everything off", never "the dialog owns input now", which is why the
+Controlify offer was unreachable and why overlays such as HealthDialog left the
+shell live behind them. Instead, a layer stack: components claim ownership while
+mounted, the topmost layer receives every intent, and it either handles an intent
+or lets it fall through to that layer's default navigation. Nothing infers
+ownership from `defaultPrevented`, because a handler that silently swallows an
+intent is indistinguishable from a controller that stopped working.
+
+**Intents are semantic, never button labels.** Nothing above the sampler sees
+`a`/`b`: those are Xbox names, physically swapped on Nintendo layouts and
+different again on a DualSense. The physical mapping is sealed inside
+`lib/useGamepad`; everything above reasons about `accept`, `cancel`, `secondary`,
+`context`, `menu`, `page` and `scroll`.
+
+**The provider mounts above `App`.** `App` early-returns during onboarding, so a
+provider mounted inside it would leave first run with no controller support while
+claiming whole-app coverage. Whole-app has to mean whole-app, including the parts
+that run before the shell exists.
+
+**Geometry is a fallback, not the architecture.** Element counts say the DOM is
+mostly focusable already; they do not say who owns the arrows at a given moment.
+Spatial navigation, scrollport awareness and navigation groups sit *inside* the
+ownership model rather than replacing it.
+
+**Text entry goes through a service boundary.** A home-grown on-screen keyboard
+is a basic-Latin fallback, not the answer: it does not solve composition/IME,
+caret and selection editing, dead keys, RTL or clipboard behaviour. Platform
+adapters (Steam's overlay where genuinely available, a narrow native helper where
+supported) sit behind one `TextInputService` seam in the desktop backend, reached
+through `invoke()`. That seam never justifies a general `shell:allow-execute`
+capability; a fixed, argument-free command is the most that may be added.
+
+Coverage expands by *interaction class* — native `select`, `range`, `color`,
+tables, text entry — fixed once each at the primitive level, rather than page by
+page. Until every class is covered, the honest description is limited coverage,
+not controller support.
 
 ---
 

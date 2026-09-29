@@ -1,19 +1,12 @@
 /**
- * Human-readable name for a browse item's source.
+ * Human-readable name for where a browse item came from.
  *
- * Was previously inlined as `source === 'curated' ? 'Agora Registry' : 'Modrinth'`
- * in each card, which labelled Technic packs as Modrinth once a third source
- * joined the list.
+ * Curated items come from Agora's own registry. Everything else came from a
+ * content provider, and core already tells us that provider's name — so the
+ * card says "Modrinth", "Technic" or a plugin's own title without this file
+ * having to know which providers exist.
  */
-export function sourceLabel(source: string): string {
-  switch (source) {
-    case 'curated':
-      return 'Agora Registry';
-    case 'technic':
-      return 'Technic';
-    case 'modrinth':
-      return 'Modrinth';
-    default:
-      return 'Third-party';
-  }
+export function sourceLabel(item: { source: string; providerTitle?: string | null }): string {
+  if (item.source === 'curated') return 'Agora Registry';
+  return item.providerTitle || 'Third-party';
 }

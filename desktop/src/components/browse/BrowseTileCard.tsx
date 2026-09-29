@@ -37,7 +37,7 @@ export function BrowseTileCard({ item, context, onSelectMod, selected = false, o
           {item.source === 'curated' && <CuratedBadge />}
         </div>
         <p className="browse-card-source">
-          {item.author ? `by ${item.author} · ` : ''}{sourceLabel(item.source)}
+          {item.author ? `by ${item.author} · ` : ''}{sourceLabel(item)}
         </p>
         {item.description ? (
           <p className="browse-tile-card__description">{item.description}</p>

@@ -80,6 +80,9 @@ pub enum SourceType {
     Modrinth,
     /// Local file path.
     Manual,
+    /// A project from any content provider. The item id is
+    /// `provider:<provider-id>:<project-id>`; see `crate::providers`.
+    Provider,
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +162,9 @@ pub enum HashAlgorithm {
     Sha256,
     Sha512,
     Sha1,
+    /// Accepted only from content providers, as reduced assurance the user
+    /// was warned about. Catches a corrupted download; proves nothing more.
+    Md5,
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +221,34 @@ pub struct ArtifactMetadata {
     /// than a tautology.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_host: Option<String>,
+    /// Present for an artifact a content provider planned. Carries the
+    /// provider's identity (stamped on the installed entry) and the hosts its
+    /// downloads are scoped to. Built by core from the provider registry at
+    /// resolve time — never taken from the frontend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderArtifact>,
+}
+
+/// Provider provenance and download scope for one planned artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderArtifact {
+    pub provider_id: String,
+    pub project_id: String,
+    pub version_id: String,
+    /// Hosts in the provider's declared download scope.
+    pub download_hosts: Vec<String>,
+    /// The provider published no digest at all, and the user allowed low
+    /// security downloads when the plan was resolved. The only artifacts the
+    /// pipeline installs without a hash to check.
+    #[serde(default)]
+    pub low_security: bool,
+    /// Reduced-assurance findings for this file (an undeclared host, plain
+    /// HTTP, only MD5/SHA-1), as `host: reason`. They become plan warnings
+    /// so the install review shows them for dependencies and batch items
+    /// too, not only for the item the user clicked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2181,6 +2215,14 @@ fn plan_artifact_change(
         });
         return;
     }
+    if let ResolvedArtifact::Download(download) = artifact {
+        if let Some(provider) = &download.metadata.provider {
+            warnings.extend(provider.security_notes.iter().map(|note| PlanWarning {
+                code: "WARN_PROVIDER_REDUCED_SECURITY".into(),
+                message: format!("{filename} from {}: {note}", provider.provider_id),
+            }));
+        }
+    }
     if let Err(error) = validate_artifact_hashes(artifact) {
         blocking_errors.push(PlanError {
             code: "ERR_HASH_UNAVAILABLE".into(),
@@ -2384,6 +2426,16 @@ fn validate_artifact_hashes(artifact: &ResolvedArtifact) -> Result<(), String> {
                 || valid(HashAlgorithm::Sha256, 64)
                 || valid(HashAlgorithm::Sha1, 40)
         }
+        // A provider artifact may carry any digest the provider published —
+        // weaker ones were shown to the user as a warning — or none at all
+        // when the user allowed low security downloads.
+        SourceType::Provider => {
+            valid(HashAlgorithm::Sha512, 128)
+                || valid(HashAlgorithm::Sha256, 64)
+                || valid(HashAlgorithm::Sha1, 40)
+                || valid(HashAlgorithm::Md5, 32)
+                || (hashes.is_empty() && metadata.provider.as_ref().is_some_and(|p| p.low_security))
+        }
     };
     if verified {
         Ok(())
@@ -2519,6 +2571,11 @@ async fn stage_plan_artifacts(
         validate_filename(&file.staging_filename)?;
         let contents = match &file.artifact {
             ResolvedArtifact::Download(download) => match &download.source {
+                ArtifactSource::Download { url } if download.metadata.provider.is_some() => {
+                    stage_provider_download(url, download)
+                        .await
+                        .map_err(|e| format!("failed to download {}: {e}", download.item_id))?
+                }
                 ArtifactSource::Download { url } => {
                     let strategy = download
                         .metadata
@@ -2565,7 +2622,7 @@ async fn stage_plan_artifacts(
                 contents.len()
             ));
         }
-        verify_bytes(&contents, &file.hashes)
+        verify_file_add(&contents, file)
             .map_err(|e| format!("verification failed for {}: {e}", file.target_filename))?;
 
         let target = artifacts_dir.join(&file.staging_filename);
@@ -2597,6 +2654,53 @@ async fn stage_plan_artifacts(
     Ok(())
 }
 
+/// Fetch a provider-planned artifact under the provider's download scope.
+///
+/// In scope: HTTPS to a declared host, redirects held to the same list.
+/// Otherwise the provider served it from somewhere it did not declare, which
+/// the user was warned about when reviewing the plan; it is fetched under the
+/// consented-content policy, which still refuses loopback and private
+/// addresses and still honours Lockdown.
+/// The digest check that follows is the same `verify_bytes` every artifact
+/// gets.
+async fn stage_provider_download(
+    url: &str,
+    download: &ResolvedDownload,
+) -> crate::error::LauncherResult<Vec<u8>> {
+    use crate::http_client::{self, ClientCategory, HostPolicy, HttpClients};
+    let provider = download
+        .metadata
+        .provider
+        .as_ref()
+        .ok_or(crate::error::LauncherError::UntrustedSource)?;
+    let clients = HttpClients::new()?;
+    let policy = if crate::providers::url_in_scope(url, &provider.download_hosts) {
+        HostPolicy::ProviderDeclared(&provider.download_hosts)
+    } else {
+        HostPolicy::UserConsented
+    };
+    http_client::checked_get_bytes_with_policy(
+        &clients,
+        ClientCategory::ConsentedContent,
+        url,
+        policy,
+    )
+    .await
+}
+
+/// Verify a planned file, allowing the one case with nothing to check: a
+/// provider artifact the user accepted as a low security download.
+fn verify_file_add(contents: &[u8], add: &FileAdd) -> Result<(), String> {
+    let low_security = artifact_metadata(&add.artifact)
+        .provider
+        .as_ref()
+        .is_some_and(|p| p.low_security);
+    if add.hashes.values.is_empty() && low_security {
+        return Ok(());
+    }
+    verify_bytes(contents, &add.hashes)
+}
+
 fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
     use sha1::Digest as _;
 
@@ -2620,6 +2724,7 @@ fn verify_bytes(contents: &[u8], hashes: &HashSpec) -> Result<(), String> {
                 hasher.update(contents);
                 format!("{:x}", hasher.finalize())
             }
+            HashAlgorithm::Md5 => crate::download::md5_hex(contents),
         };
         if !actual.eq_ignore_ascii_case(expected.value.trim()) {
             return Err(format!("{:?} hash mismatch", expected.algorithm));
@@ -2676,7 +2781,7 @@ fn prepare_manifest(
         }
         let contents = std::fs::read(&staged)
             .map_err(|e| format!("failed to read staged {}: {e}", add.staging_filename))?;
-        verify_bytes(&contents, &add.hashes)?;
+        verify_file_add(&contents, add)?;
         let metadata = artifact_metadata(&add.artifact);
         let jar = if metadata.content_type == "mod" {
             crate::jar_metadata::parse_jar_metadata_for_loader(&staged, &manifest.loader)
@@ -2685,6 +2790,14 @@ fn prepare_manifest(
         };
         let sha256 = crate::download::sha256_hex(&contents);
         let installed = crate::models::InstalledMod {
+            provider: metadata
+                .provider
+                .as_ref()
+                .map(|origin| crate::models::ProviderOrigin {
+                    provider_id: origin.provider_id.clone(),
+                    project_id: origin.project_id.clone(),
+                    version_id: origin.version_id.clone(),
+                }),
             update_pinned: false,
             // Individual install through the transaction pipeline. Pack-driven
             // installs stamp their own provenance; see PackOrigin.
@@ -2697,6 +2810,7 @@ fn prepare_manifest(
                 SourceType::Curated => "registry",
                 SourceType::Modrinth => "modrinth_raw",
                 SourceType::Manual => "manual",
+                SourceType::Provider => "provider",
             }
             .into(),
             source_url: match &add.artifact {
@@ -3178,6 +3292,7 @@ mod tests {
             size: 42,
             filename: "fabric-api.jar".into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: SourceType::Curated,
                 registry_id: Some("fabric-api".into()),
                 modrinth_id: Some("P7dR8mSH".into()),
@@ -3776,7 +3891,7 @@ mod tests {
             let item_id = match &source_type {
                 SourceType::Curated => "curated-item",
                 SourceType::Modrinth => "modrinth-item",
-                SourceType::Manual => unreachable!(),
+                SourceType::Manual | SourceType::Provider => unreachable!(),
             };
             let intent = InstallIntent {
                 action: InstallAction::Install {
@@ -4601,6 +4716,7 @@ mod tests {
             size: 0,
             filename: filename.into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type,
                 registry_id: Some(item_id.into()),
                 modrinth_id: None,
@@ -4610,6 +4726,73 @@ mod tests {
                 pinned_host: None,
             },
         })
+    }
+
+    fn provider_artifact(values: Vec<HashedValue>, low_security: bool) -> FileAdd {
+        let hashes = HashSpec { values };
+        let artifact = ResolvedArtifact::Download(ResolvedDownload {
+            item_id: "provider:acme.src/x:x".into(),
+            version_id: "1".into(),
+            source: ArtifactSource::Download {
+                url: "https://files.example.org/x.jar".into(),
+            },
+            hashes: hashes.clone(),
+            size: 0,
+            filename: "x.jar".into(),
+            metadata: ArtifactMetadata {
+                provider: Some(ProviderArtifact {
+                    provider_id: "acme.src/x".into(),
+                    project_id: "x".into(),
+                    version_id: "1".into(),
+                    download_hosts: vec!["files.example.org".into()],
+                    low_security,
+                    security_notes: Vec::new(),
+                }),
+                source_type: SourceType::Provider,
+                registry_id: None,
+                modrinth_id: None,
+                content_type: "mod".into(),
+                version: Some("1".into()),
+                download_strategy: None,
+                pinned_host: None,
+            },
+        });
+        FileAdd {
+            target_filename: "x.jar".into(),
+            staging_filename: "x.jar".into(),
+            artifact,
+            hashes,
+            size: 0,
+            installed_as_dependency: false,
+        }
+    }
+
+    #[test]
+    fn a_provider_file_without_a_digest_installs_only_as_an_accepted_low_security_download() {
+        let accepted = provider_artifact(Vec::new(), true);
+        assert!(validate_artifact_hashes(&accepted.artifact).is_ok());
+        assert!(verify_file_add(b"anything", &accepted).is_ok());
+
+        // The same file without the user's opt-in has nothing to check and
+        // is refused, rather than silently installed unverified.
+        let refused = provider_artifact(Vec::new(), false);
+        assert!(validate_artifact_hashes(&refused.artifact).is_err());
+        assert!(verify_file_add(b"anything", &refused).is_err());
+    }
+
+    #[test]
+    fn a_provider_md5_is_checked_not_ignored() {
+        let bytes = b"hello";
+        let good = provider_artifact(
+            vec![HashedValue {
+                algorithm: HashAlgorithm::Md5,
+                value: crate::download::md5_hex(bytes),
+            }],
+            false,
+        );
+        assert!(validate_artifact_hashes(&good.artifact).is_ok());
+        assert!(verify_file_add(bytes, &good).is_ok());
+        assert!(verify_file_add(b"tampered", &good).is_err());
     }
 
     #[test]
@@ -4629,6 +4812,7 @@ mod tests {
             size: 1,
             filename: "xaerominimap-fabric-26.2-26.4.2.jar".into(),
             metadata: ArtifactMetadata {
+                provider: None,
                 source_type: SourceType::Curated,
                 registry_id: Some("xaeros-minimap".into()),
                 modrinth_id: Some("1bokaNcj".into()),
@@ -4681,6 +4865,7 @@ mod tests {
         let mut manifest: crate::models::InstanceManifest =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest.mods.push(crate::models::InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -5206,6 +5391,7 @@ mod tests {
                     size: 0,
                     filename: "test.jar".into(),
                     metadata: ArtifactMetadata {
+                        provider: None,
                         source_type: SourceType::Curated,
                         registry_id: Some("test".into()),
                         modrinth_id: None,

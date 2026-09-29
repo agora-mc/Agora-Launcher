@@ -221,6 +221,11 @@ enum Commands {
         #[command(subcommand)]
         action: PluginCmd,
     },
+    /// List, switch, and search content providers (Modrinth, Technic, plugins).
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCmd,
+    },
     /// Read or write Agora settings.
     Settings {
         #[command(subcommand)]
@@ -327,6 +332,27 @@ enum InstanceCmd {
     RepairLoader { id: String },
     /// Explain the current automatic memory estimate without changing settings.
     RecommendMemory { id: String },
+}
+
+#[derive(Subcommand)]
+enum ProviderCmd {
+    /// List every content provider and whether it can be used right now.
+    List,
+    /// Switch a provider on. For a plugin's provider, this enables the plugin.
+    Enable { provider_id: String },
+    /// Switch a provider off. For a plugin's provider, this disables the plugin.
+    Disable { provider_id: String },
+    /// Search one provider directly.
+    Search {
+        provider_id: String,
+        #[arg(default_value = "")]
+        query: String,
+        #[arg(long)]
+        content_type: Option<String>,
+    },
+    /// Print the plan digest a curator pins as `sha256` for a `provider_pack`
+    /// catalog entry. IDENTIFIER is `<provider-id>:<project-id>@<version-id>`.
+    PlanDigest { identifier: String },
 }
 
 #[derive(Subcommand)]
@@ -1346,6 +1372,19 @@ fn print_plugin_preview(
 
     print_capabilities("Required capabilities", &preview.required_capabilities);
     print_capabilities("Optional capabilities", &preview.optional_capabilities);
+    // The hosts are the other half of the `network` grant — and, for a content
+    // provider, the scope its downloads count as verified in — so they belong
+    // on the same screen as the capability, not only in the GUI.
+    if !preview.manifest.network.hosts.is_empty() {
+        println!("Reaches: {}", preview.manifest.network.hosts.join(", "));
+    }
+    for provider in &preview.manifest.contributions.content_providers {
+        println!(
+            "Content source: {} ({})",
+            provider.title,
+            provider.content_types.join(", ")
+        );
+    }
     if !preview.unsupported_capabilities.is_empty() {
         println!(
             "Unsupported capabilities: {}",
@@ -2019,6 +2058,91 @@ async fn run_command(
         Commands::Plugin { action } => {
             let service = plugin_service(ctx);
             run_plugin_command(&service, action, output_fmt).await?;
+        }
+        Commands::Provider { action } => {
+            let service = plugin_service(ctx);
+            let _ = service.reload();
+            let plugins = service.is_enabled().then_some(&service);
+            let registry = agora_core::providers::ProviderRegistry::new(ctx, plugins);
+            match &action {
+                ProviderCmd::List => {
+                    let descriptors = registry.descriptors();
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&descriptors)?);
+                    } else {
+                        for d in descriptors {
+                            let origin = match &d.origin {
+                                agora_core::providers::ProviderOrigin::Official => {
+                                    "official".to_string()
+                                }
+                                agora_core::providers::ProviderOrigin::Plugin { plugin_id } => {
+                                    format!("plugin {plugin_id}")
+                                }
+                            };
+                            let state = match (d.enabled, &d.unavailable_reason) {
+                                (false, _) => "off".to_string(),
+                                (true, Some(reason)) => format!("on, unavailable: {reason}"),
+                                (true, None) => "on".to_string(),
+                            };
+                            println!("{:<36} {:<20} {:<28} {}", d.id, d.title, origin, state);
+                        }
+                    }
+                }
+                ProviderCmd::Enable { provider_id } | ProviderCmd::Disable { provider_id } => {
+                    let enabled = matches!(action, ProviderCmd::Enable { .. });
+                    agora_core::providers::set_enabled(
+                        ctx,
+                        &registry,
+                        plugins,
+                        provider_id,
+                        enabled,
+                    )?;
+                    if !json {
+                        println!(
+                            "{provider_id} is now {}",
+                            if enabled { "on" } else { "off" }
+                        );
+                    }
+                }
+                ProviderCmd::PlanDigest { identifier } => {
+                    let digest =
+                        agora_core::providers::install::curated_pack_digest(&registry, identifier)
+                            .await?;
+                    if json {
+                        println!("{}", serde_json::json!({ "planDigest": digest }));
+                    } else {
+                        println!("{digest}");
+                    }
+                }
+                ProviderCmd::Search {
+                    provider_id,
+                    query,
+                    content_type,
+                } => {
+                    let page = registry
+                        .usable(provider_id)?
+                        .search(agora_core::providers::SearchRequest {
+                            query: query.clone(),
+                            content_type: content_type.clone(),
+                            limit: 20,
+                            ..Default::default()
+                        })
+                        .await?;
+                    let summaries: Vec<_> = page.hits.into_iter().map(|h| h.summary).collect();
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&summaries)?);
+                    } else {
+                        for s in summaries {
+                            println!(
+                                "{:<48} {:<10} {}",
+                                agora_core::providers::item_id(provider_id, &s.id),
+                                s.content_type,
+                                s.title
+                            );
+                        }
+                    }
+                }
+            }
         }
         Commands::Settings { action } => match action {
             SettingsCmd::List => {
@@ -4410,6 +4534,7 @@ mod tests {
     #[test]
     fn removal_plan_detects_reverse_dependents() {
         let target = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -4432,6 +4557,7 @@ mod tests {
         };
 
         let dependent = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -4466,6 +4592,7 @@ mod tests {
     #[test]
     fn removal_plan_empty_for_unreferenced_mod() {
         let target = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -4488,6 +4615,7 @@ mod tests {
         };
 
         let other = InstalledMod {
+            provider: None,
             update_pinned: false,
             pack_managed: false,
             installed_as_dependency: false,
@@ -5066,6 +5194,7 @@ mod tests {
             loader_version: "0.16.0".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,
@@ -5663,6 +5792,7 @@ mod tests {
                     hashes: HashSpec { values: vec![] },
                     size: 0,
                     metadata: ArtifactMetadata {
+                        provider: None,
                         source_type: SourceType::Modrinth,
                         registry_id: None,
                         modrinth_id: None,
@@ -5722,6 +5852,7 @@ mod tests {
                     hashes: HashSpec { values: vec![] },
                     size: 0,
                     metadata: ArtifactMetadata {
+                        provider: None,
                         source_type: SourceType::Modrinth,
                         registry_id: None,
                         modrinth_id: None,

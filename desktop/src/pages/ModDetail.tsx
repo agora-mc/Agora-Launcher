@@ -9,6 +9,8 @@ import {
   downloadSourceLabel,
   downloadSourcesOf,
   formatError,
+  hasErrorCode,
+  installCatalogProviderPack,
   getAuthStatus,
   getCuratedAnnotation,
   getGovernanceSummary,
@@ -54,6 +56,7 @@ import {
 } from '../lib/tauri';
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
+import { useConfirm } from '../components/ui/confirm';
 
 /**
  * Whether any of an item's download sources uses `strategy`.
@@ -248,6 +251,8 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   // needs its tier, Solder endpoint and build — none of which fit RegistryItem.
   const [technicDetail, setTechnicDetail] = useState<TechnicPackDetail | null>(null);
   const [technicInstalling, setTechnicInstalling] = useState(false);
+  const [providerPackInstalling, setProviderPackInstalling] = useState(false);
+  const { confirm } = useConfirm();
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
 
   // Full Modrinth project data (primary source when modrinth_id exists)
@@ -875,6 +880,34 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     }
   };
 
+  // A catalog entry that pins one version of a provider's pack: the provider
+  // supplies the files, so there is no recipe to aim at a target.
+  const handleProviderPackInstall = async () => {
+    setProviderPackInstalling(true);
+    try {
+      let outcome;
+      try {
+        outcome = await installCatalogProviderPack(item.id, false);
+      } catch (e) {
+        if (!hasErrorCode(e, 'ERR_PROVIDER_PACK_CHANGED')) throw e;
+        const proceed = await confirm({
+          title: 'This pack is no longer the reviewed version',
+          body: `${formatError(e)}\n\nInstalling it anyway treats it as uncurated content from its source.`,
+          confirmLabel: 'Install anyway',
+          tone: 'danger',
+        });
+        if (!proceed) return;
+        outcome = await installCatalogProviderPack(item.id, true);
+      }
+      showToast(`Imported "${outcome.name}" — review before launch.`, 'success');
+      onOpenInstanceEditor?.(outcome.instance_id);
+    } catch (e) {
+      showToast(formatError(e), 'error');
+    } finally {
+      setProviderPackInstalling(false);
+    }
+  };
+
   const handleInstall = async () => {
     setShowInstallFlow(true);
     setPhase('idle');
@@ -1162,7 +1195,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
             </button>
             {technicDetail.tier === 'zip' && !allowUnverifiedPacks && (
               <span className="text-xs text-muted-foreground">
-                Enable “Allow unverified zip packs” in Settings to install this.
+                Enable “Allow low security downloads” in Settings to install this.
               </span>
             )}
           </div>
@@ -1332,7 +1365,15 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         </div>
 
         <div className="mt-5 flex flex-wrap gap-2">
-          {item.content_type === 'pack' ? (
+          {item.content_type === 'pack' && item.download_strategy === 'provider_pack' ? (
+            <button
+              onClick={handleProviderPackInstall}
+              disabled={providerPackInstalling}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {providerPackInstalling ? 'Installing…' : 'Create Instance from Pack'}
+            </button>
+          ) : item.content_type === 'pack' ? (
             <button
               onClick={() => setShowPackCreate(true)}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"

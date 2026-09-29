@@ -46,6 +46,9 @@ pub enum PluginErrorCode {
     OperationFailed,
     /// Something went wrong inside the host itself.
     Internal,
+    /// The plugin returned data that does not match the contract for the
+    /// export it was asked to run (a provider's search page, an install plan).
+    InvalidResponse,
 }
 
 impl PluginErrorCode {
@@ -75,6 +78,7 @@ impl PluginErrorCode {
                 | PluginErrorCode::UnknownMethod
                 | PluginErrorCode::InvalidArguments
                 | PluginErrorCode::ScriptError
+                | PluginErrorCode::InvalidResponse
         )
     }
 }

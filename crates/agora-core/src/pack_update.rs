@@ -1088,6 +1088,7 @@ fn build_pack_entry(
     };
     let mod_jar_id = jar.mod_jar_id.clone().or_else(|| modrinth_id.clone());
     Ok(crate::models::InstalledMod {
+        provider: None,
         filename,
         registry_id: None,
         modrinth_id,
@@ -1356,6 +1357,7 @@ pub fn reconcile_manifest(
                     };
                     let mod_jar_id = jar.mod_jar_id.clone().or_else(|| modrinth_id.clone());
                     let installed = crate::models::InstalledMod {
+                        provider: None,
                         filename: new_filename,
                         registry_id: None,
                         modrinth_id,
@@ -3264,6 +3266,7 @@ mod tests {
         // with on-disk content at hash A.
         let old_bytes = b"old-sodium";
         let sodium = crate::models::InstalledMod {
+            provider: None,
             filename: "sodium-0.5.jar".into(),
             registry_id: None,
             modrinth_id: Some("abc".into()),
@@ -3394,6 +3397,7 @@ mod tests {
         write(&staged, "mods/packmod.jar", b"new-pack-content");
 
         let user_mod = crate::models::InstalledMod {
+            provider: None,
             filename: "usermod.jar".into(),
             registry_id: Some("my-reg".into()),
             modrinth_id: Some("my-mr".into()),
@@ -3415,6 +3419,7 @@ mod tests {
             incompatible_deps: vec![],
         };
         let pack_mod = crate::models::InstalledMod {
+            provider: None,
             filename: "packmod.jar".into(),
             registry_id: None,
             modrinth_id: Some("pack-mr".into()),
@@ -3545,6 +3550,7 @@ mod tests {
         write(&staged, "mods/newname.jar", b"new-bytes");
 
         let old_entry = crate::models::InstalledMod {
+            provider: None,
             filename: "oldname.jar".into(),
             registry_id: None,
             modrinth_id: Some("abc".into()),
@@ -3640,6 +3646,7 @@ mod tests {
         write(&staged, "mods/disabled.jar", b"new-content");
 
         let old_entry = crate::models::InstalledMod {
+            provider: None,
             filename: "disabled.jar".into(),
             registry_id: None,
             modrinth_id: Some("dis".into()),
@@ -3869,6 +3876,7 @@ mod tests {
         write(&staged, "mods/stray.jar", b"not in the plan");
 
         let user_mod = crate::models::InstalledMod {
+            provider: None,
             filename: "mine.jar".into(),
             registry_id: None,
             modrinth_id: None,
@@ -3989,6 +3997,7 @@ mod tests {
         fs::create_dir_all(&staged).unwrap();
 
         let keep = crate::models::InstalledMod {
+            provider: None,
             filename: "keep.jar".into(),
             registry_id: None,
             modrinth_id: None,
@@ -4010,6 +4019,7 @@ mod tests {
             incompatible_deps: vec![],
         };
         let remove = crate::models::InstalledMod {
+            provider: None,
             filename: "remove.jar".into(),
             registry_id: None,
             modrinth_id: Some("rem".into()),
@@ -4177,6 +4187,7 @@ mod tests {
         write(&staged, "mods/conflict.jar", b"theirs-bytes");
 
         let old_entry = crate::models::InstalledMod {
+            provider: None,
             filename: "conflict.jar".into(),
             registry_id: None,
             modrinth_id: Some("conf".into()),

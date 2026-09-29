@@ -2051,13 +2051,25 @@ def validate_sha256(raw: Any) -> str:
 
 
 VALID_DOWNLOAD_STRATEGIES = frozenset(
-    {"github_release", "modrinth_id", "direct_hash", "curated_pack", "technic_pack"}
+    {
+        "github_release",
+        "modrinth_id",
+        "direct_hash",
+        "curated_pack",
+        "technic_pack",
+        "provider_pack",
+    }
 )
+
+# ``provider_pack``: ``<provider-id>:<project-id>@<version-id>``. Provider ids are
+# the launcher's (``modrinth``, ``technic``) or a plugin's
+# (``<plugin-id>/<contribution-id>``); project ids may themselves contain ``:``.
+PROVIDER_PACK_IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._/-]*:\S+@[^@\s]+")
 
 
 def is_pinned_strategy(strategy: str) -> bool:
     """True for strategies whose artifact is hand-pinned in the manifest."""
-    return strategy in ("direct_hash", "technic_pack")
+    return strategy in ("direct_hash", "technic_pack", "provider_pack")
 
 
 def validate_download_strategy(item: dict[str, Any]) -> str:
@@ -2074,6 +2086,12 @@ def validate_download_strategy(item: dict[str, Any]) -> str:
     promoted from Technic (Tier C). Unlike ``direct_hash`` it may use plain
     HTTP: the curator-pinned SHA-256 is out-of-band, so transport is not the
     trust anchor.
+
+    ``provider_pack`` pins one version of a content provider's pack (a Technic
+    Solder build, a plugin source's pack). ``sha256`` is then the *plan
+    digest* that ``agora provider plan-digest`` prints: it covers every file's
+    path, URL and hash, so the launcher can tell when the provider starts
+    serving something other than what was reviewed.
 
     The launcher rejects an under-specified entry at resolve time with
     ``ERR_DIRECT_HASH_MANIFEST``. Checking the same contract here turns that
@@ -2116,7 +2134,16 @@ def validate_pinned_source(
     preferred one. A fallback that only fails once the preferred source is down
     is worse than no fallback at all.
     """
-    if strategy == "direct_hash" and not source.startswith("https://"):
+    if strategy == "provider_pack":
+        if not PROVIDER_PACK_IDENTIFIER.fullmatch(source):
+            logger.error(
+                "%s: provider_pack source_identifier must be "
+                "<provider-id>:<project-id>@<version-id>, got %r",
+                item_id,
+                source,
+            )
+            raise SystemExit(1)
+    elif strategy == "direct_hash" and not source.startswith("https://"):
         logger.error(
             "%s: direct_hash source_identifier must be an https:// URL, got %r",
             item_id,
@@ -2136,7 +2163,9 @@ def validate_pinned_source(
     # downloaded file from the URL's last path segment. A URL that does not end
     # in one (e.g. ".../download?id=12") cannot be used.
     filename = source.split("#")[0].split("?")[0].rsplit("/", 1)[-1]
-    if not filename or filename.startswith(".") or ".." in filename or "." not in filename:
+    if strategy != "provider_pack" and (
+        not filename or filename.startswith(".") or ".." in filename or "." not in filename
+    ):
         logger.error(
             "%s: %s source_identifier must end in a filename "
             "(e.g. https://example.com/files/my-mod-1.2.3.jar), got %r",
@@ -2314,6 +2343,16 @@ def normalize_download_sources(item: dict[str, Any]) -> list[dict[str, str]]:
     # Every pinned source -- preferred or fallback -- must satisfy the
     # hand-pinned contract, since any of them may end up being the one that
     # actually serves the file.
+    # A provider pack's sha256 is its plan digest, which means nothing for any
+    # other source, and it only ever creates a whole instance.
+    if any(source["strategy"] == "provider_pack" for source in sources):
+        if len(sources) != 1:
+            logger.error("%s: a provider_pack source cannot be combined with others", item_id)
+            raise SystemExit(1)
+        if item.get("content_type") != "pack":
+            logger.error("%s: provider_pack is only for content_type 'pack'", item_id)
+            raise SystemExit(1)
+
     declared = item.get("compatible_versions")
     for source in sources:
         if is_pinned_strategy(source["strategy"]):
@@ -3183,6 +3222,12 @@ def validate_pack_manifest(item: dict[str, Any]) -> None:
     an exact version and the target must be fully specified.
     """
     pack_id = item.get("id", "<pack>")
+    if item.get("download_strategy") == "provider_pack":
+        # The provider supplies the file list; the pinned plan digest in
+        # ``sha256`` is the whole recipe, so there is none to write here.
+        if item.get("mods") or item.get("versions"):
+            raise SystemExit(f"{pack_id}: a provider_pack entry has no mods or versions")
+        return
     _validate_pack_mod_entries(pack_id, item.get("mods"), require_version=False)
     versions = item.get("versions")
     if versions is None:

@@ -4,7 +4,7 @@ What is actually built, what is prototype, and what is not there at all. Kept se
 `README.md` so the author guide can describe the feature while this file stays blunt about its
 limits.
 
-API version: **0.1.0**. Manifest schema: **1**. Both `plugins_enabled` and
+API version: **0.1.1** (content providers; additive over 0.1.0). Manifest schema: **1**. Both `plugins_enabled` and
 `network_plugins_enabled` ship **off**.
 
 ## Milestones
@@ -196,11 +196,29 @@ deliberate compatibility decision and should be reviewed as exactly that.
 - [x] ~~A decision on whether the custom-view prototype becomes supported or is withdrawn.~~
       Withdrawn.
 
-Content-source providers, install hooks and generic import/export hooks were **declined** rather
-than deferred; `BACKLOG.md` records why. The short version: an extension point earns its
-maintenance cost by enabling something the existing API cannot express, and none of the three has
-a plugin that needs it. Install *observation* is already served by the ten lifecycle events;
-install *participation* is a transaction problem — ordering, veto, rollback, crash recovery — that
-should not be invented speculatively. A content source must never be able to certify its own
-artifacts, so it needs a provenance design before it needs an interface: a matching SHA-256 proves
-the bytes match an expected digest, and says nothing about whether that digest was trustworthy.
+**Content providers were built, reversing the earlier decision to decline them.** The decline
+said a content source "must never be able to certify its own artifacts, so it needs a provenance
+design before an interface". That was right, and the provenance design is now written down in
+[`providers.md`](providers.md#the-trust-model) and enforced in `agora-core/src/providers/`:
+
+- A matching hash proves integrity, not trustworthiness. Trust is the user's grant of
+  `content:provide`, and every installed file records the provider it came from.
+- One rule, applied to Agora's own providers and plugins alike, and taken from Technic: a strong
+  digest from a declared host installs quietly; weaker assurance (undeclared host, plain HTTP,
+  MD5/SHA-1) warns and lets the user continue; no digest at all needs *Allow low security
+  downloads*.
+- A provider returns data only. Core downloads, verifies, snapshots and records.
+
+Limits, bluntly:
+
+- Modrinth and Technic are providers for Browse, detail and plans, but their *install* buttons
+  still use their older paths. The list is in [`providers.md`](providers.md#migration-debt).
+- Provider pack installs have been exercised against the example provider's plan and the import
+  path's own tests, not against a real third-party host.
+- There is no provider catalog and no provider verification. A provider plugin is exactly as
+  trustworthy as the person who handed you the package; see "Signatures prove continuity" above.
+
+Install hooks and generic import/export hooks remain **declined**; `BACKLOG.md` records why.
+Install *observation* is already served by the ten lifecycle events; install *participation* is a
+transaction problem — ordering, veto, rollback, crash recovery — that should not be invented
+speculatively.

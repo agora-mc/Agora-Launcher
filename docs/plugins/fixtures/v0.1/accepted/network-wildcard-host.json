@@ -1,0 +1,19 @@
+{
+  "manifest": 1,
+  "id": "fixture.wildcard",
+  "name": "Wildcard host: a domain and its subdomains",
+  "version": "1.0.0",
+  "license": "MIT",
+  "apiRange": ">=0.1, <0.2",
+  "entrypoint": "main.js",
+  "capabilities": {
+    "required": [
+      "network"
+    ]
+  },
+  "network": {
+    "hosts": [
+      "*.example.com"
+    ]
+  }
+}

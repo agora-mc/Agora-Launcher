@@ -346,6 +346,18 @@ agora plugin install development ./example-plugin --yes
 
 Without `--yes`, a non-interactive invocation cannot grant capabilities. The CLI shows the preview and passes a negative consent answer to core, so `PluginService` refuses the install. This keeps scripting fail-closed; do not use `--yes` unless the package's preview is trusted. In JSON mode, a pending interactive preview and prompt are written to standard error; the completed plugin summary is the single JSON value on standard output.
 
+### Content providers
+
+```text
+agora provider list
+agora provider enable <PROVIDER_ID>
+agora provider disable <PROVIDER_ID>
+agora provider search <PROVIDER_ID> [QUERY] --content-type pack
+agora provider plan-digest <PROVIDER_ID>:<PROJECT_ID>@<VERSION_ID>
+```
+
+`provider list` shows the official providers (Modrinth, Technic) and every plugin provider, with why one is unusable right now. Enabling or disabling a plugin's provider enables or disables that plugin. `plan-digest` resolves one pack version and prints the digest a curator pins as `sha256` for a `provider_pack` catalog entry (see `REGISTRY_CURATION_REFERENCE.md`).
+
 ### Updates
 
 `plugin check-update` fetches a plugin's signed update document and reports what it means. It downloads only the metadata, never a package. With no plugin id it checks everything installed, and reports plugins with no update source rather than skipping them silently. The result distinguishes cases that a single "up to date" would blur together: a newer release that needs a newer Agora is reported as exactly that, and an installed version ahead of what the publisher lists is reported rather than downgraded.

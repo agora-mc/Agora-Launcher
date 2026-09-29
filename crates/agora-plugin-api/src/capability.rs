@@ -52,6 +52,14 @@ pub enum Capability {
     /// policy. Denied outright in Lockdown Mode, like every other category.
     #[serde(rename = "network")]
     Network,
+    /// Offer a content source in Browse: search results, project pages,
+    /// versions, and install plans that Agora then verifies and installs.
+    ///
+    /// A provider never installs anything itself. It describes files; core
+    /// downloads, verifies, snapshots and records them, and every file it
+    /// installs is labelled with the provider it came from.
+    #[serde(rename = "content:provide")]
+    ContentProvide,
 }
 
 impl Capability {
@@ -65,6 +73,7 @@ impl Capability {
         Capability::LaunchPrepare,
         Capability::DiagnosticsPublish,
         Capability::Network,
+        Capability::ContentProvide,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -77,6 +86,7 @@ impl Capability {
             Capability::LaunchPrepare => "launch:prepare",
             Capability::DiagnosticsPublish => "diagnostics:publish",
             Capability::Network => "network",
+            Capability::ContentProvide => "content:provide",
         }
     }
 
@@ -104,6 +114,9 @@ impl Capability {
             Capability::LaunchPrepare => "Run checks before a launch, and offer fixes",
             Capability::DiagnosticsPublish => "Report problems it finds and propose repairs",
             Capability::Network => "Reach the internet, subject to your network settings",
+            Capability::ContentProvide => {
+                "Offer content in Browse; Agora verifies and installs anything you choose"
+            }
         }
     }
 }

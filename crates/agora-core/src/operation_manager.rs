@@ -813,6 +813,7 @@ mod tests {
                     size: 1024,
                     filename: "sodium.jar".into(),
                     metadata: ArtifactMetadata {
+                        provider: None,
                         source_type: SourceType::Curated,
                         registry_id: None,
                         modrinth_id: None,

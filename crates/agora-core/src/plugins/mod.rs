@@ -53,10 +53,10 @@ pub use install::{
 };
 pub use registry::{NamespacedContribution, PluginStatus, Resolution};
 pub use service::{
-    LaunchCheckOutcome, LaunchCheckResult, PluginService, PluginSettingsView, PluginSummary,
-    RepairConflict, RepairOutcome, ReplacementOffer, SurfaceChoice, UpdateCheckRecord,
-    UpdateOutcome, PLUGINS_ENABLED_SETTING, PLUGIN_UPDATES_ENABLED_SETTING,
-    SURFACE_SELECTIONS_SETTING,
+    LaunchCheckOutcome, LaunchCheckResult, PluginContentProvider, PluginService,
+    PluginSettingsView, PluginSummary, RepairConflict, RepairOutcome, ReplacementOffer,
+    SurfaceChoice, UpdateCheckRecord, UpdateOutcome, PLUGINS_ENABLED_SETTING,
+    PLUGIN_UPDATES_ENABLED_SETTING, SURFACE_SELECTIONS_SETTING,
 };
 pub use store::{CheckpointSummary, PluginRecord, PluginSource, StorageKind};
 pub use updates::{PinnedTrust, UpdateVerdict};

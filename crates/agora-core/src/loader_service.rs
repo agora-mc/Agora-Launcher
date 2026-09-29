@@ -1137,6 +1137,7 @@ mod tests {
             mods: mods
                 .iter()
                 .map(|(filename, _)| InstalledMod {
+                    provider: None,
                     update_pinned: false,
                     pack_managed: false,
                     installed_as_dependency: false,

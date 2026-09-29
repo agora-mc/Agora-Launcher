@@ -1933,6 +1933,7 @@ mod tests {
             loader_version: "0.15.11".into(),
             is_locked: false,
             mods: vec![InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,
@@ -2094,6 +2095,7 @@ mod tests {
         let mods: Vec<InstalledMod> = mods
             .iter()
             .map(|(filename, jar_id)| InstalledMod {
+                provider: None,
                 update_pinned: false,
                 pack_managed: false,
                 installed_as_dependency: false,

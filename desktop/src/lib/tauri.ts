@@ -315,6 +315,16 @@ export function parseLauncherError(e: unknown): ParsedLauncherError {
   return fallback(String(e));
 }
 
+/** Whether a thrown launcher error carries `code`, at the top level or inside a variant. */
+export function hasErrorCode(e: unknown, code: string): boolean {
+  if (e == null || typeof e !== 'object') return false;
+  const obj = e as Record<string, unknown>;
+  if (obj.code === code) return true;
+  return Object.values(obj).some(
+    (inner) => !!inner && typeof inner === 'object' && (inner as Record<string, unknown>).code === code,
+  );
+}
+
 /** Check whether a thrown error is an expired-GitHub-session error. */
 export function isAuthExpired(e: unknown): boolean {
   if (e == null || typeof e !== 'object') return false;
@@ -353,7 +363,16 @@ export interface InstanceRow {
   import_source: string | null;
 }
 
+/** Which content provider a file came from, recorded when it was installed. */
+export interface ProviderOrigin {
+  provider_id: string;
+  project_id: string;
+  version_id: string;
+}
+
 export interface InstalledMod {
+  /** Present for anything installed through a content provider plugin. */
+  provider?: ProviderOrigin | null;
   filename: string;
   registry_id: string | null;
   modrinth_id: string | null;
@@ -525,6 +544,7 @@ const DOWNLOAD_SOURCE_LABELS: Record<string, string> = {
   direct_hash: 'Direct Download',
   technic_pack: 'Technic',
   curated_pack: 'Curated Pack',
+  provider_pack: 'Content source',
 };
 
 /// Human-readable label for a download strategy (`github_release` → `GitHub Release`).
@@ -611,7 +631,7 @@ export type CuratedPackSelection =
 export interface PlannedPackMod {
   modId: string;
   status: string;
-  sourceType: 'curated' | 'modrinth' | 'manual';
+  sourceType: 'curated' | 'modrinth' | 'manual' | 'provider';
   itemId: string;
   version: string;
   displayVersion: string;
@@ -2698,7 +2718,12 @@ export interface ScoreBreakdown {
 
 export interface BrowseItemCached {
   id: string;
+  /** `curated`, or the id of the provider the item came from. */
   source: string;
+  /** Provider this item came from; absent for curated items. */
+  providerId?: string | null;
+  /** The provider's display name, for the card's "from" label. */
+  providerTitle?: string | null;
   registryItem: RegistryItem | null;
   modrinthResult: ModrinthSearchResult | null;
   technicResult?: TechnicSearchResult | null;
@@ -2721,11 +2746,19 @@ export interface BrowseItemCached {
   sourcePageUrl: string | null;
 }
 
+export interface ProviderFailure {
+  providerId: string;
+  title: string;
+  message: string;
+}
+
 export interface BrowsePage {
   items: BrowseItemCached[];
   total: number;
   page: number;
   hasMore: boolean;
+  /** Providers that could not answer this query. Everyone else still shows. */
+  providerFailures?: ProviderFailure[];
 }
 
 export const browseSearch = (
@@ -2736,6 +2769,7 @@ export const browseSearch = (
   sort?: string,
   mcVersion?: string,
   loader?: string,
+  providerFilters?: Record<string, Record<string, string[]>>,
 ) =>
   invoke<BrowsePage>('browse_search', {
     queryKey,
@@ -2745,6 +2779,7 @@ export const browseSearch = (
     sort: sort ?? null,
     mcVersion: mcVersion ?? null,
     loader: loader ?? null,
+    providerFilters: providerFilters ?? null,
   });
 
 export const browseLoadMore = (queryKey: string, pageIndex: number) =>
@@ -2752,6 +2787,190 @@ export const browseLoadMore = (queryKey: string, pageIndex: number) =>
 
 export const browsePage = (queryKey: string, page: number) =>
   invoke<BrowsePage>('browse_page', { queryKey, page });
+
+// --- Content providers ---
+//
+// Every source of browsable content outside the curated catalog: Agora's
+// official Modrinth and Technic providers and any a plugin contributes. The
+// frontend never decides anything about them — which exist, whether one may be
+// used, whether a plan is safe — it renders what core reports.
+
+export type ProviderSort = 'relevance' | 'downloads' | 'follows' | 'newest' | 'updated';
+
+export interface ProviderFilterOption {
+  value: string;
+  label: string;
+}
+
+export interface ProviderFilterDefinition {
+  id: string;
+  title: string;
+  multiple: boolean;
+  options: ProviderFilterOption[];
+}
+
+export type ProviderOriginKind =
+  | { kind: 'official' }
+  | { kind: 'plugin'; pluginId: string };
+
+export interface ProviderDescriptor {
+  id: string;
+  title: string;
+  description?: string | null;
+  origin: ProviderOriginKind;
+  contentTypes: string[];
+  filters: ProviderFilterDefinition[];
+  sorts: ProviderSort[];
+  paginates: boolean;
+  downloadHosts: string[];
+  enabled: boolean;
+  /** Why an enabled provider cannot be used right now, if it cannot. */
+  unavailableReason?: string | null;
+}
+
+export interface ProviderProjectSummary {
+  id: string;
+  title: string;
+  description?: string | null;
+  author?: string | null;
+  iconUrl?: string | null;
+  contentType: string;
+  categories: string[];
+  downloads?: number | null;
+  follows?: number | null;
+  pageUrl?: string | null;
+  minecraftVersions: string[];
+  loaders: string[];
+  heroImageUrl?: string | null;
+  /** Installing this involves files with no integrity information. */
+  lowSecurity?: boolean;
+}
+
+export interface ProviderProjectLink {
+  label: string;
+  url: string;
+}
+
+export interface ProviderProjectDetail {
+  project: ProviderProjectSummary;
+  /** Plain text or Markdown. Never HTML, and never rendered as HTML. */
+  body?: string | null;
+  gallery: string[];
+  license?: string | null;
+  updated?: string | null;
+  links: ProviderProjectLink[];
+}
+
+export interface ProviderDependency {
+  projectId: string;
+  versionId?: string | null;
+  kind: 'required' | 'optional' | 'incompatible' | 'embedded';
+}
+
+export interface ProviderProjectVersion {
+  id: string;
+  name: string;
+  versionNumber: string;
+  channel: 'release' | 'beta' | 'alpha';
+  minecraftVersions: string[];
+  loaders: string[];
+  published?: string | null;
+  dependencies: ProviderDependency[];
+  changelog?: string | null;
+}
+
+export interface ProviderSecurityNote {
+  urlHost: string;
+  reason: string;
+}
+
+export interface ProviderPlanPreview {
+  providerId: string;
+  providerTitle: string;
+  kind: 'file' | 'pack';
+  name: string;
+  version: string;
+  fileCount: number;
+  /** Reduced assurance (undeclared host, plain HTTP, MD5/SHA-1): warn, may continue. */
+  warnings: ProviderSecurityNote[];
+  /** No integrity information at all: installs only with low security downloads on. */
+  lowSecurity: ProviderSecurityNote[];
+  lowSecurityAllowed: boolean;
+  /** Pack files outside the usual content folders: install only with reduced security mode on. */
+  outsideContentFolders?: string[];
+  reducedSecurityEnabled?: boolean;
+  /** Download host → number of files from it. */
+  hosts: Record<string, number>;
+}
+
+/** `provider:<provider-id>:<project-id>`, the id Browse gives provider items. */
+export const PROVIDER_ITEM_PREFIX = 'provider:';
+
+export const isProviderItemId = (id: string) => id.startsWith(PROVIDER_ITEM_PREFIX);
+
+/** The provider id inside a `provider:` item id, or null. */
+export function providerIdOf(itemId: string): string | null {
+  if (!isProviderItemId(itemId)) return null;
+  const rest = itemId.slice(PROVIDER_ITEM_PREFIX.length);
+  const split = rest.indexOf(':');
+  return split > 0 ? rest.slice(0, split) : null;
+}
+
+export interface ProviderCategory {
+  id: string;
+  label: string;
+  /** Content types the category applies to; core fills in "all of them". */
+  contentTypes: string[];
+}
+
+export interface ProviderCategories {
+  providerId: string;
+  providerTitle: string;
+  categories: ProviderCategory[];
+}
+
+export const listProviderCategories = () =>
+  invoke<ProviderCategories[]>('list_provider_categories');
+
+export const listContentProviders = () =>
+  invoke<ProviderDescriptor[]>('list_content_providers');
+
+export const setContentProviderEnabled = (providerId: string, enabled: boolean) =>
+  invoke<ProviderDescriptor[]>('set_content_provider_enabled', { providerId, enabled });
+
+export const providerProject = (itemId: string) =>
+  invoke<ProviderProjectDetail>('provider_project', { itemId });
+
+export const providerVersions = (itemId: string, minecraftVersion?: string, loader?: string) =>
+  invoke<{ versions: ProviderProjectVersion[] }>('provider_versions', {
+    itemId,
+    minecraftVersion: minecraftVersion ?? null,
+    loader: loader ?? null,
+  });
+
+export const providerInstallPreview = (
+  itemId: string,
+  versionId?: string,
+  minecraftVersion?: string,
+  loader?: string,
+) =>
+  invoke<ProviderPlanPreview>('provider_install_preview', {
+    itemId,
+    versionId: versionId ?? null,
+    minecraftVersion: minecraftVersion ?? null,
+    loader: loader ?? null,
+  });
+
+export const providerInstallPack = (itemId: string, versionId?: string) =>
+  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null });
+
+/**
+ * Install a catalog entry that pins one version of a provider's pack.
+ * Fails with `ERR_PROVIDER_PACK_CHANGED` when the source now serves something
+ * other than what was reviewed; `acceptChanged` is the user's answer to that.
+ */
+export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean) =>
+  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged });
 
 // --- Repair loader ---
 

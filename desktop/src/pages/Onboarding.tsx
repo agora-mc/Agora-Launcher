@@ -545,13 +545,13 @@ function ServicesStep({
   };
 
   const UNVERIFIED_PACKS_ENABLE_WARNING = {
-    title: 'Allow unverified zip packs?',
+    title: 'Allow low security downloads?',
     // Each point is a separate thing the user is agreeing to.
     // Kept as a list so that editing one cannot silently drop
     // another, which parsing a joined blob apart at the call
     // site could.
     body: [
-      'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+      'This lets you install content with NO integrity information at all — no hash of any kind — from any content source: Technic zip packs, or a plugin source that publishes no digest.',
       'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
       'Only enable this if you already trust the specific pack you are installing.',
     ].join('\n\n'),
@@ -604,8 +604,8 @@ function ServicesStep({
         </div>
         <div>
           <ServiceToggle
-            title="Unverified zip packs"
-            description="More packs become available, but Agora cannot verify these files: no hash, no curator review, no per-file audit. You are accepting files on the pack author's word. Only enable if you trust the developer — this is the weakest security tier."
+            title="Low security downloads"
+            description="Shows and installs content with no integrity information at all — no hash, no curator review — from any source, such as Technic zip packs. You are accepting files on the uploader's word. Only enable if you trust the developers you install from."
             checked={values.allowUnverifiedPacks}
             onChange={async (allowUnverifiedPacks) => {
               if (allowUnverifiedPacks && !await confirm({
@@ -618,7 +618,7 @@ function ServicesStep({
           />
           {values.allowUnverifiedPacks && (
             <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
-              Unverified packs have NO integrity information. Agora cannot detect tampering in transit. Only install if you already trust the specific pack and its host.
+              Low security downloads have NO integrity information. Agora cannot detect tampering in transit. Only install if you already trust the specific content and its host.
             </div>
           )}
         </div>

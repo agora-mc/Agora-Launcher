@@ -1631,6 +1631,7 @@ mod tests {
             mods: mod_filenames
                 .iter()
                 .map(|fname| crate::models::InstalledMod {
+                    provider: None,
                     update_pinned: false,
                     pack_managed: false,
                     installed_as_dependency: false,
@@ -1965,6 +1966,7 @@ Exception in thread \"main\" java.lang.RuntimeException: Test
             mods: mods
                 .iter()
                 .map(|(fname, packages)| crate::models::InstalledMod {
+                    provider: None,
                     update_pinned: false,
                     pack_managed: false,
                     installed_as_dependency: false,

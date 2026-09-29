@@ -92,6 +92,7 @@ pub mod paths;
 pub mod plugins;
 pub mod process_identity;
 pub mod process_session_manager;
+pub mod providers;
 pub mod prune_service;
 pub mod ranking;
 pub mod registry;

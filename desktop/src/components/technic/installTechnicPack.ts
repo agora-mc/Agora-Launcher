@@ -29,7 +29,7 @@ export async function installTechnicPack(
   }
 
   if (!allowUnverifiedPacks) {
-    throw new Error('Enable "Allow unverified zip packs" in Settings to install zip packs.');
+    throw new Error('Enable "Allow low security downloads" in Settings to install zip packs.');
   }
   const downloadUrl = detail.download_url;
   if (!downloadUrl) {

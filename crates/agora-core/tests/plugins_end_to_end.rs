@@ -653,6 +653,38 @@ fn installing_a_plugin_that_wants_capabilities_requires_consent() {
 }
 
 #[test]
+fn a_plugin_that_reaches_any_host_installs_only_under_reduced_security_mode() {
+    let world = world();
+    let mut manifest =
+        dashboard_manifest(serde_json::json!({ "required": ["instance:read", "network"] }));
+    manifest["network"] = serde_json::json!({ "hosts": ["*"] });
+    let folder = plugin_folder(world._dir.path(), "dashboard", manifest, DASHBOARD_MAIN);
+
+    let error = world
+        .service
+        .add_development_folder(&folder, true)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Reduced security mode"),
+        "{error}"
+    );
+    assert!(world.service.list().is_empty());
+
+    let conn = agora_core::db::local_state_connection(&world.ctx.paths.local_state_db()).unwrap();
+    agora_core::db::set_setting(
+        &conn,
+        agora_core::settings::REDUCED_SECURITY_SETTING,
+        &serde_json::json!(true),
+    )
+    .unwrap();
+    world
+        .service
+        .add_development_folder(&folder, true)
+        .expect("installs once the user has opted in");
+    assert_eq!(world.service.list().len(), 1);
+}
+
+#[test]
 fn a_plugin_that_throws_on_activation_is_recorded_and_the_rest_still_run() {
     let world = world();
     let broken = plugin_folder(

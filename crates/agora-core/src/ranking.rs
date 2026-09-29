@@ -37,18 +37,12 @@ use serde::{Deserialize, Serialize};
 
 /// Downloads at or below this score 0 on the popularity curve.
 const DOWNLOADS_FLOOR_LOG10: f64 = 3.0; // 1_000
-/// Downloads at or above this score 1.0.
-const DOWNLOADS_CEIL_LOG10: f64 = 8.4; // ~250_000_000
-
 /// Followers at or below this score 0.
 const FOLLOWS_FLOOR_LOG10: f64 = 1.0; // 10
-/// Modrinth followers at or above this score 1.0.
-const FOLLOWS_CEIL_LOG10: f64 = 4.7; // ~50_000
 
-/// Technic ratings are far denser relative to installs than Modrinth follows
-/// (~0.11% vs ~0.02%), so the endorsement ceiling is proportionally lower.
-/// Without this a Technic pack's ratings would barely register.
-const TECHNIC_RATINGS_CEIL_LOG10: f64 = 3.3; // ~2_000
+// Where popularity *saturates* is not a constant: each provider declares it
+// in its `RankingProfile`, because a download on one site is not worth the
+// same as a download on another. The floors above are shared.
 
 /// Downloads carry more weight than endorsement, but endorsement is what pulls
 /// content mods above libraries that accumulate downloads as dependencies.
@@ -81,33 +75,22 @@ const VOTE_CONFIDENCE_HALFWAY: f64 = 10.0;
 /// Fallback approval rate when the registry has no voted items at all.
 pub const DEFAULT_REGISTRY_MEAN_APPROVAL: f64 = 0.5;
 
-/// Modrinth's category tag for libraries. Deliberately does NOT include
-/// `utility` — that tag also covers Create, JourneyMap, and Mod Menu, which are
-/// content mods a player genuinely browses for.
-const LIBRARY_CATEGORIES: [&str; 2] = ["library", "api"];
+pub use agora_plugin_api::provider::RankingProfile;
 
 // ---------------------------------------------------------------------------
 // Inputs and outputs
 // ---------------------------------------------------------------------------
 
-/// Which endorsement scale a source's follower-equivalent uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EndorsementScale {
-    /// Modrinth followers.
-    Modrinth,
-    /// Technic ratings (denser relative to installs, so a lower ceiling).
-    Technic,
-}
-
 /// Everything the ranker needs about one item, independent of its source.
 #[derive(Debug, Clone, Default)]
 pub struct RankingInput {
-    /// Downloads (Modrinth) or installs (Technic). `None` when unknown.
+    /// Downloads or installs. `None` when unknown.
     pub downloads: Option<i64>,
-    /// Followers (Modrinth) or ratings (Technic). `None` when unknown.
+    /// Follows, likes or ratings. `None` when unknown.
     pub endorsements: Option<i64>,
-    /// Which ceiling to apply to `endorsements`.
-    pub endorsement_scale: Option<EndorsementScale>,
+    /// The source's own ceilings and library categories. The default is
+    /// calibrated against Modrinth and is also what curated items use.
+    pub profile: RankingProfile,
     /// Category tags, used only for library detection.
     pub categories: Vec<String>,
     /// True when the item comes from the signed registry.
@@ -155,12 +138,8 @@ fn log_normalize(value: i64, floor_log10: f64, ceil_log10: f64) -> f64 {
     ((magnitude - floor_log10) / (ceil_log10 - floor_log10)).clamp(0.0, 1.0)
 }
 
-/// True when the item's categories mark it as a library or API.
-pub fn is_library(categories: &[String]) -> bool {
-    categories.iter().any(|category| {
-        let lowered = category.trim().to_ascii_lowercase();
-        LIBRARY_CATEGORIES.contains(&lowered.as_str())
-    })
+fn ceil_log10(value: u64) -> f64 {
+    (value.max(1) as f64).log10()
 }
 
 /// Points votes contribute within the curated band, in `[-15.0, 15.0]`.
@@ -196,12 +175,9 @@ pub fn score_item(input: &RankingInput, registry_mean_approval: f64) -> ScoreBre
     let downloads_norm = log_normalize(
         input.downloads.unwrap_or(0),
         DOWNLOADS_FLOOR_LOG10,
-        DOWNLOADS_CEIL_LOG10,
+        ceil_log10(input.profile.downloads_ceiling),
     );
-    let endorsement_ceiling = match input.endorsement_scale {
-        Some(EndorsementScale::Technic) => TECHNIC_RATINGS_CEIL_LOG10,
-        _ => FOLLOWS_CEIL_LOG10,
-    };
+    let endorsement_ceiling = ceil_log10(input.profile.endorsements_ceiling);
     let endorsements_norm = log_normalize(
         input.endorsements.unwrap_or(0),
         FOLLOWS_FLOOR_LOG10,
@@ -209,7 +185,7 @@ pub fn score_item(input: &RankingInput, registry_mean_approval: f64) -> ScoreBre
     );
 
     let raw_popularity = DOWNLOADS_WEIGHT * downloads_norm + FOLLOWS_WEIGHT * endorsements_norm;
-    let library_penalized = is_library(&input.categories);
+    let library_penalized = input.profile.is_library(&input.categories);
     let popularity = if library_penalized {
         raw_popularity * LIBRARY_PENALTY
     } else {
@@ -251,10 +227,7 @@ pub fn score_item(input: &RankingInput, registry_mean_approval: f64) -> ScoreBre
 /// Deliberately ignores downloads so the sort answers "what do people actively
 /// follow or vote for", which is a different question from overall popularity.
 pub fn endorsement_score(input: &RankingInput, registry_mean_approval: f64) -> f64 {
-    let endorsement_ceiling = match input.endorsement_scale {
-        Some(EndorsementScale::Technic) => TECHNIC_RATINGS_CEIL_LOG10,
-        _ => FOLLOWS_CEIL_LOG10,
-    };
+    let endorsement_ceiling = ceil_log10(input.profile.endorsements_ceiling);
     let endorsements_norm = log_normalize(
         input.endorsements.unwrap_or(0),
         FOLLOWS_FLOOR_LOG10,
@@ -295,11 +268,11 @@ mod tests {
         RankingInput {
             downloads: Some(downloads),
             endorsements: Some(follows),
-            endorsement_scale: Some(EndorsementScale::Modrinth),
             categories: categories.iter().map(|c| c.to_string()).collect(),
             curated: false,
             upvotes: 0,
             downvotes: 0,
+            profile: RankingProfile::default(),
         }
     }
 
@@ -418,11 +391,12 @@ mod tests {
 
     #[test]
     fn library_penalty_matches_only_library_tags() {
-        assert!(is_library(&["library".into()]));
-        assert!(is_library(&["API".into()]));
+        let profile = RankingProfile::default();
+        assert!(profile.is_library(&["library".into()]));
+        assert!(profile.is_library(&["API".into()]));
         // `utility` also covers Create, JourneyMap and Mod Menu — must not match.
-        assert!(!is_library(&["utility".into()]));
-        assert!(!is_library(&["optimization".into(), "technology".into()]));
+        assert!(!profile.is_library(&["utility".into()]));
+        assert!(!profile.is_library(&["optimization".into(), "technology".into()]));
     }
 
     #[test]
@@ -473,13 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn technic_ratings_use_their_own_scale() {
+    fn a_provider_declared_scale_changes_how_its_endorsements_count() {
         let mean = 0.5;
-        // complex-pixelmon-reforged: 1_582_592 installs, 1_730 ratings.
+        // complex-pixelmon-reforged on Technic: 1_582_592 installs, 1_730
+        // ratings, scored with Technic's declared profile.
         let technic = RankingInput {
             downloads: Some(1_582_592),
             endorsements: Some(1_730),
-            endorsement_scale: Some(EndorsementScale::Technic),
+            profile: crate::providers::technic::ranking_profile(),
             ..Default::default()
         };
         let scored = score_item(&technic, mean);
@@ -490,7 +465,7 @@ mod tests {
         );
         // The same count on Modrinth's scale would be far weaker.
         let as_modrinth = RankingInput {
-            endorsement_scale: Some(EndorsementScale::Modrinth),
+            profile: RankingProfile::default(),
             ..technic
         };
         assert!(score_item(&as_modrinth, mean).endorsements_norm < scored.endorsements_norm);

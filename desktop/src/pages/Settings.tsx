@@ -81,6 +81,8 @@ import { SettingsSubNav, SettingsTabRail } from './settings/SettingsNav';
 import { TourStartButton } from '../features/tour';
 import type { Tab } from '../lib/useDestination';
 import { useConfirm } from '@/components/ui/confirm';
+import { ContentProvidersList } from '../components/ContentProvidersList';
+import { UpdateCenter } from '../features/updates/UpdateCenter';
 
 /** One sub-page of a settings section. */
 interface SettingsPage {
@@ -189,6 +191,7 @@ export function Settings({
   });
   const [technic, setTechnic] = useState(false);
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
+  const [reducedSecurity, setReducedSecurity] = useState(false);
   const [aiMcp, setAiMcp] = useState(false);
   const [launcherPath, setLauncherPath] = useState('');
   const [alwaysPreTouch, setAlwaysPreTouch] = useState(true);
@@ -310,7 +313,7 @@ export function Settings({
     let cancelled = false;
     (async () => {
       try {
-        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack', 'technic_pack'];
+        const keys = ['modrinth_id', 'github_release', 'direct_hash', 'curated_pack', 'technic_pack', 'provider_pack'];
         const results = await Promise.all(keys.map((k) => getSetting(`curated_source_${k}_enabled`)));
         if (cancelled) return;
         const next: Record<string, boolean> = {};
@@ -323,14 +326,16 @@ export function Settings({
               : true;
         });
         setCuratedSources(next);
-        const [technicRaw, allowRaw] = await Promise.all([
+        const [technicRaw, allowRaw, reducedRaw] = await Promise.all([
           getSetting('technic_enabled'),
           getSetting('allow_unverified_packs'),
+          getSetting('reduced_security_mode'),
         ]);
         if (!cancelled) {
           const asBool = (raw: unknown) => raw === true || raw === 'true' || raw === 1 || raw === '1';
           setTechnic(asBool(technicRaw));
           setAllowUnverifiedPacks(asBool(allowRaw));
+          setReducedSecurity(asBool(reducedRaw));
         }
       } catch {
         // keep defaults; the backend stays authoritative on read when present
@@ -601,13 +606,13 @@ export function Settings({
   };
 
   const UNVERIFIED_PACKS_ENABLE_WARNING = {
-    title: 'Allow unverified zip packs?',
+    title: 'Allow low security downloads?',
     // Each point is a separate thing the user is agreeing to.
     // Kept as a list so that editing one cannot silently drop
     // another, which parsing a joined blob apart at the call
     // site could.
     body: [
-      'This is the weakest tier Agora supports. These packs have NO integrity information at all — no hash of any kind.',
+      'This lets you install content with NO integrity information at all — no hash of any kind — from any content source: Technic zip packs, or a plugin source that publishes no digest.',
       'Agora cannot detect if the file was modified in transit, swapped by the host, or replaced after the listing was created. You are trusting the uploader and their host completely.',
       'Only enable this if you already trust the specific pack you are installing.',
     ].join('\n\n'),
@@ -621,12 +626,8 @@ export function Settings({
     setTechnic(value);
     try {
       await setSetting('technic_enabled', value);
-      // Turning Technic off must not leave the more permissive tier armed for
-      // the next time it is re-enabled.
-      if (!value && allowUnverifiedPacks) {
-        await setSetting('allow_unverified_packs', false);
-        setAllowUnverifiedPacks(false);
-      }
+      // Low security downloads is its own choice now and covers every
+      // source, so switching Technic off leaves it as the user set it.
     } catch (e) {
       setTechnic(!value);
       showToast(formatError(e), 'error');
@@ -643,6 +644,27 @@ export function Settings({
       await setSetting('allow_unverified_packs', value);
     } catch (e) {
       setAllowUnverifiedPacks(!value);
+      showToast(formatError(e), 'error');
+    }
+  };
+
+  const toggleReducedSecurity = async (value: boolean) => {
+    if (value && !await confirm({
+      title: 'Turn on reduced security mode?',
+      body: [
+        'Plugins may ask to reach any website, or a list of sites too long to review. Agora can then no longer tell you in advance where a plugin sends data. You are still asked before each plugin is installed.',
+        'Modpacks may place files anywhere in their instance folder, including mods shipped inside their overrides and settings files such as options.txt. Normally only content folders like config/ and resourcepacks/ are accepted.',
+        'Some limits stay in every mode: nothing is written outside the instance, programs such as .exe, .sh or .dll files are always refused, and downloads are still checked against every hash their source publishes.',
+        'Only turn this on for plugins and packs you trust. You can turn it off again at any time; content already installed stays installed.',
+      ].join('\n\n'),
+      confirmLabel: 'Turn on',
+      tone: 'danger',
+    })) return;
+    setReducedSecurity(value);
+    try {
+      await setSetting('reduced_security_mode', value);
+    } catch (e) {
+      setReducedSecurity(!value);
       showToast(formatError(e), 'error');
     }
   };
@@ -1124,6 +1146,7 @@ export function Settings({
           {dataFolderOpening ? 'Opening...' : 'Open application data folder'}
         </button>
       </div>
+      <UpdateCenter />
       <p className="text-xs text-muted-foreground">
         {isPortable
           ? 'Portable copies are updated by replacing the executable from a new portable ZIP.'
@@ -1764,6 +1787,16 @@ export function Settings({
             className="h-5 w-5 accent-primary"
           />
         </label>
+        <label className="flex items-center justify-between">
+          <span className="text-sm">Packs curated from content sources</span>
+          <input
+            type="checkbox"
+            aria-label="Packs curated from content sources"
+            checked={curatedSources['provider_pack'] ?? true}
+            onChange={(e) => toggleCuratedSource('provider_pack', e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
       </div>
 
       <div className="rounded-lg border border-border bg-card p-3">
@@ -1787,20 +1820,41 @@ export function Settings({
       <div className="rounded-lg border border-border bg-card p-3">
         <label className="flex items-center justify-between">
           <div>
-            <span className="text-sm">Allow unverified zip packs</span>
+            <span className="text-sm">Allow low security downloads</span>
             <p className="text-xs text-muted-foreground mt-0.5">
-              More packs become available, but Agora cannot verify these files: no hash, no curator review, and contents are not audited file-by-file. You are accepting files on the pack author's word.
+              Shows and installs content that has no integrity information at all — no hash of any kind — from any source, such as Technic zip packs. Agora cannot detect a modified or swapped file; you are taking it on the uploader's word.
+              Content with weaker checks (an MD5, or a host the source did not declare) does not need this: it installs after a warning.
             </p>
           </div>
           <input
             type="checkbox"
-            aria-label="Allow unverified zip packs"
+            aria-label="Allow low security downloads"
             checked={allowUnverifiedPacks}
             onChange={(e) => toggleAllowUnverifiedPacks(e.target.checked)}
             className="h-5 w-5 accent-primary"
           />
         </label>
       </div>
+
+      <div className="rounded-lg border border-border bg-card p-3">
+        <label className="flex items-center justify-between">
+          <div>
+            <span className="text-sm">Reduced security mode</span>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Lets plugins reach any website, and lets modpacks place files anywhere in their instance (including mods in their overrides). Programs are still refused and hashes are still checked. For plugins and packs you trust.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            aria-label="Reduced security mode"
+            checked={reducedSecurity}
+            onChange={(e) => toggleReducedSecurity(e.target.checked)}
+            className="h-5 w-5 accent-primary"
+          />
+        </label>
+      </div>
+
+      <ContentProvidersList />
     </SettingsSection>
   );
 

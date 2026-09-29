@@ -272,22 +272,40 @@ pub struct NetworkDeclaration {
 }
 
 impl NetworkDeclaration {
-    /// How many hosts one plugin may declare. A list long enough to hide
-    /// something in is not a list the user can meaningfully consent to.
+    /// Hosts a plugin may declare under normal security. More is allowed,
+    /// but only with *reduced security mode* on: a long list is hard to
+    /// evaluate at an install prompt.
     pub const MAX_HOSTS: usize = 10;
+    /// Hard ceiling, reduced security mode or not.
+    pub const MAX_HOSTS_REDUCED: usize = 200;
+    /// Declaring this host means "any public host".
+    pub const ANY_HOST: &'static str = "*";
 
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
     }
+
+    /// Whether this declaration needs *reduced security mode*: it reaches
+    /// any public host, or lists more hosts than a user can reasonably
+    /// review. Private and loopback addresses stay unreachable either way.
+    pub fn is_elevated(&self) -> bool {
+        self.hosts.len() > Self::MAX_HOSTS || self.hosts.iter().any(|h| h == Self::ANY_HOST)
+    }
 }
 
-/// Reject anything that is not a plain public hostname.
+/// Reject anything that is not a public hostname.
 ///
-/// Wildcards are refused because `*.example.com` is not something a user can
-/// evaluate, and loopback and private ranges are refused because a plugin
-/// reaching `127.0.0.1` is reaching the user's own machine — including
-/// Agora's own MCP server — rather than the internet.
+/// `*` (any public host) and `*.example.com` are accepted; the latter means
+/// the same as `example.com`, which already covers its subdomains. Loopback
+/// names and IP literals stay refused even with reduced security: a plugin
+/// reaching `127.0.0.1` reaches the user's own machine — including Agora's
+/// own MCP server — and an IP literal sidesteps the DNS check that keeps
+/// private networks out of reach. Neither has a use worth that risk.
 fn validate_declared_host(host: &str) -> PluginResult<()> {
+    if host == NetworkDeclaration::ANY_HOST {
+        return Ok(());
+    }
+    let host = host.strip_prefix("*.").unwrap_or(host);
     if host.is_empty() || host.len() > 253 {
         return Err(PluginError::invalid_manifest(format!(
             "`{host}` is not a hostname"
@@ -305,7 +323,8 @@ fn validate_declared_host(host: &str) -> PluginResult<()> {
     }
     if host.contains('*') {
         return Err(PluginError::invalid_manifest(format!(
-            "`{host}` may not use a wildcard; list each host you need"
+            "`{host}` uses a wildcard in an unsupported position; use `*` for any host or \
+             `*.example.com` for a domain and its subdomains"
         )));
     }
     if host.contains(':') {
@@ -410,11 +429,11 @@ impl PluginManifest {
             .chain(self.capabilities.optional.iter())
             .any(|name| name == "network");
 
-        if self.network.hosts.len() > NetworkDeclaration::MAX_HOSTS {
+        if self.network.hosts.len() > NetworkDeclaration::MAX_HOSTS_REDUCED {
             return Err(PluginError::invalid_manifest(format!(
                 "this plugin declares {} hosts; the limit is {}",
                 self.network.hosts.len(),
-                NetworkDeclaration::MAX_HOSTS
+                NetworkDeclaration::MAX_HOSTS_REDUCED
             )));
         }
         for host in &self.network.hosts {
@@ -465,7 +484,8 @@ impl PluginManifest {
                 .instance_panels
                 .iter()
                 .any(|p| matches!(p.view, crate::contributions::ViewSource::Host { .. }))
-            || !self.contributions.replacements.is_empty();
+            || !self.contributions.replacements.is_empty()
+            || !self.contributions.content_providers.is_empty();
         if needs_script && self.entrypoint.is_none() {
             return Err(PluginError::invalid_manifest(
                 "this plugin contributes something that has to call into script, \
@@ -531,6 +551,8 @@ impl PluginManifest {
             }
         }
 
+        self.validate_providers()?;
+
         for check in &self.contributions.launch_checks {
             if check.timeout_ms == 0 {
                 return Err(PluginError::invalid_manifest(format!(
@@ -538,6 +560,39 @@ impl PluginManifest {
                     check.id
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_providers(&self) -> PluginResult<()> {
+        let requests_provide = self
+            .capabilities
+            .required
+            .iter()
+            .chain(self.capabilities.optional.iter())
+            .any(|name| name == "content:provide");
+        let provides = !self.contributions.content_providers.is_empty();
+        // Same two-way agreement as `network`: a provider the user was never
+        // asked about must not appear, and a permission with nothing behind it
+        // is a prompt the user cannot evaluate.
+        if provides
+            && !self
+                .capabilities
+                .required
+                .iter()
+                .any(|n| n == "content:provide")
+        {
+            return Err(PluginError::invalid_manifest(
+                "`contentProviders` requires the `content:provide` capability under                  `capabilities.required`",
+            ));
+        }
+        if requests_provide && !provides {
+            return Err(PluginError::invalid_manifest(
+                "`content:provide` was requested but no `contentProviders` were declared",
+            ));
+        }
+        for provider in &self.contributions.content_providers {
+            provider.validate()?;
         }
         Ok(())
     }
@@ -934,13 +989,23 @@ mod network_tests {
     }
 
     #[test]
-    fn a_wildcard_host_is_refused_because_a_user_cannot_consent_to_it() {
-        let err = with_network(
+    fn wildcards_parse_and_only_any_host_needs_reduced_security() {
+        // `*.example.com` means what `example.com` already means.
+        let manifest = with_network(
             serde_json::json!({ "required": ["network"] }),
             &["*.example.com"],
         )
-        .unwrap_err();
-        assert!(err.message.contains("wildcard"), "{}", err.message);
+        .unwrap();
+        assert!(!manifest.network.is_elevated());
+
+        let any = with_network(serde_json::json!({ "required": ["network"] }), &["*"]).unwrap();
+        assert!(any.network.is_elevated());
+
+        let misplaced = with_network(
+            serde_json::json!({ "required": ["network"] }),
+            &["api.*.com"],
+        );
+        assert!(misplaced.is_err());
     }
 
     #[test]
@@ -990,11 +1055,16 @@ mod network_tests {
     }
 
     #[test]
-    fn too_many_declared_hosts_are_refused() {
-        let hosts: Vec<String> = (0..NetworkDeclaration::MAX_HOSTS + 1)
-            .map(|i| format!("h{i}.example.com"))
-            .collect();
-        let refs: Vec<&str> = hosts.iter().map(|h| h.as_str()).collect();
+    fn a_long_host_list_needs_reduced_security_and_has_a_hard_ceiling() {
+        let hosts =
+            |n: usize| -> Vec<String> { (0..n).map(|i| format!("h{i}.example.com")).collect() };
+        let long = hosts(NetworkDeclaration::MAX_HOSTS + 1);
+        let refs: Vec<&str> = long.iter().map(|h| h.as_str()).collect();
+        let manifest = with_network(serde_json::json!({ "required": ["network"] }), &refs).unwrap();
+        assert!(manifest.network.is_elevated());
+
+        let too_long = hosts(NetworkDeclaration::MAX_HOSTS_REDUCED + 1);
+        let refs: Vec<&str> = too_long.iter().map(|h| h.as_str()).collect();
         let err = with_network(serde_json::json!({ "required": ["network"] }), &refs).unwrap_err();
         assert!(err.message.contains("the limit is"), "{}", err.message);
     }

@@ -13,6 +13,7 @@ import { About } from './pages/About';
 import { Settings } from './pages/Settings';
 import { Onboarding } from './pages/Onboarding';
 import { ModDetail } from './pages/ModDetail';
+import { ProviderDetail } from './pages/ProviderDetail';
 import { InstanceEditor } from './pages/InstanceEditor';
 import {
   changeLoaderVersion,
@@ -22,6 +23,7 @@ import {
   takePendingCliLaunch,
   getInstanceDetail,
   getSetting,
+  isProviderItemId,
   type ControlifyOffer,
   type HealthReport,
 } from './lib/tauri';
@@ -893,14 +895,28 @@ function AppContent() {
             ) : destination.type === 'plugin-page' ? (
               <PluginPage contributionId={destination.contributionId} onGoHome={() => navigateToTab('home')} />
             ) : showModDetail ? (
-              <ModDetail
-                itemId={destination.itemId}
-                initialInstanceId={modDetailBrowseInstanceId}
-                onBack={handleModDetailBack}
-                onOpenInstanceEditor={(id) => {
-                  navigateToInstanceDetail(id);
-                }}
-              />
+              isProviderItemId(destination.itemId) ? (
+                // A plugin provider's project: the generic page, built only
+                // from what core reports about that provider.
+                <ProviderDetail
+                  key={destination.itemId}
+                  itemId={destination.itemId}
+                  initialInstanceId={modDetailBrowseInstanceId}
+                  onBack={handleModDetailBack}
+                  onOpenInstanceEditor={(id) => {
+                    navigateToInstanceDetail(id);
+                  }}
+                />
+              ) : (
+                <ModDetail
+                  itemId={destination.itemId}
+                  initialInstanceId={modDetailBrowseInstanceId}
+                  onBack={handleModDetailBack}
+                  onOpenInstanceEditor={(id) => {
+                    navigateToInstanceDetail(id);
+                  }}
+                />
+              )
             ) : destination.type === 'instance-detail' ? null : (
               <>
                 {effectiveTab === 'home' && (

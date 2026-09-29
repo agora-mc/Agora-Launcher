@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::modrinth::ModrinthSearchResult;
-use crate::ranking::{self, EndorsementScale, RankingInput, ScoreBreakdown};
+use crate::ranking::{self, RankingInput, RankingProfile, ScoreBreakdown};
 use crate::registry::RegistryItem;
 use crate::technic::TechnicSearchResult;
 
@@ -28,7 +28,18 @@ struct NormalizedPresentation {
 #[serde(rename_all = "camelCase")]
 pub struct BrowseItem {
     pub id: String,
-    pub source: String, // "curated" | "modrinth" | "technic"
+    /// `curated`, or the id of the provider the item came from (`modrinth`,
+    /// `technic`, `<plugin>/<provider>`).
+    pub source: String,
+    /// The provider this item came from, or `None` for a curated item. A
+    /// curated item that Modrinth also lists keeps `None`: curation wins
+    /// identity ties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// The provider's display name, so a card can say where it came from
+    /// without a second lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_title: Option<String>,
     pub registry_item: Option<RegistryItem>,
     pub modrinth_result: Option<ModrinthSearchResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +65,10 @@ pub struct BrowseItem {
     /// explained without re-deriving the math by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score_breakdown: Option<ScoreBreakdown>,
+    /// The popularity scale of the provider this came from. `None` uses the
+    /// default profile, which is also what curated items are ranked on.
+    #[serde(skip)]
+    pub ranking_profile: Option<RankingProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,40 +88,42 @@ pub struct BrowseFilters {
     pub sort: String,
     pub mc_version: Option<String>,
     pub loader: Option<String>,
-    pub modrinth_enabled: bool,
+    /// Values for providers' own declared filters, by provider id then
+    /// filter id.
+    #[serde(default)]
+    pub provider_filters: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Where one provider's paging stands for the current query.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCursor {
+    pub offset: u32,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BrowseCache {
     /// Immutable identity of the filters that produced this cache.
     pub query_key: String,
     pub items: Vec<BrowseItem>,
     pub total: usize,
     pub filters: BrowseFilters,
-    pub modrinth_offset: usize,
-    pub has_more_modrinth: bool,
+    /// Paging state per provider, by provider id. A provider that cannot
+    /// paginate is fetched once per query and recorded with `has_more: false`,
+    /// then drained through `buffer` — the general form of what used to be a
+    /// Technic special case.
+    pub cursors: BTreeMap<String, ProviderCursor>,
     /// Everything fetched but not yet shown, scored and waiting for the next
     /// chunk. Holds curated and uncurated alike — a curated item that scores
     /// below a chunk's floor waits here and surfaces once the incoming pages
     /// drop to its level, instead of all curated content dumping at the top.
     pub buffer: Vec<BrowseItem>,
-    /// Technic cannot paginate (its API ignores `offset`), so it is fetched
-    /// once per query and drained through the buffer.
-    pub technic_fetched: bool,
 }
 
-impl Default for BrowseCache {
-    fn default() -> Self {
-        Self {
-            query_key: String::new(),
-            items: Vec::new(),
-            total: 0,
-            filters: BrowseFilters::default(),
-            modrinth_offset: 0,
-            has_more_modrinth: true,
-            buffer: Vec::new(),
-            technic_fetched: false,
-        }
+impl BrowseCache {
+    /// Whether any provider still has results upstream.
+    pub fn has_more_upstream(&self) -> bool {
+        self.cursors.values().any(|cursor| cursor.has_more)
     }
 }
 
@@ -218,6 +235,8 @@ pub fn item_from_modrinth(item: ModrinthSearchResult) -> BrowseItem {
     BrowseItem {
         id: item.project_id.clone(),
         source: "modrinth".to_string(),
+        provider_id: Some("modrinth".to_string()),
+        provider_title: Some("Modrinth".to_string()),
         registry_item: None,
         modrinth_result: Some(item.clone()),
         name: item.title.clone(),
@@ -237,6 +256,7 @@ pub fn item_from_modrinth(item: ModrinthSearchResult) -> BrowseItem {
         technic_result: None,
         score: 0.0,
         score_breakdown: None,
+        ranking_profile: None,
     }
 }
 
@@ -248,6 +268,8 @@ pub fn item_from_technic(item: TechnicSearchResult) -> BrowseItem {
     BrowseItem {
         id: format!("technic:{}", item.slug),
         source: "technic".to_string(),
+        provider_id: Some("technic".to_string()),
+        provider_title: Some("Technic".to_string()),
         registry_item: None,
         modrinth_result: None,
         name: item.title.clone(),
@@ -268,7 +290,61 @@ pub fn item_from_technic(item: TechnicSearchResult) -> BrowseItem {
         technic_result: Some(item),
         score: 0.0,
         score_breakdown: None,
+        ranking_profile: None,
     }
+}
+
+/// Build a `BrowseItem` for any provider's search hit.
+///
+/// The official providers carry their original payloads, which older screens
+/// still read, so they keep their established ids and shapes. Every other
+/// provider's item is built from the provider vocabulary alone and gets a
+/// `provider:<provider>:<project>` id, which the detail page routes on.
+pub fn item_from_hit(
+    descriptor: &crate::providers::ProviderDescriptor,
+    hit: crate::providers::ProviderHit,
+) -> BrowseItem {
+    let provider_id = descriptor.id.as_str();
+    let provider_title = descriptor.title.as_str();
+    let mut item = match hit.native {
+        Some(crate::providers::NativeHit::Modrinth(result)) => item_from_modrinth(result),
+        Some(crate::providers::NativeHit::Technic(result)) => item_from_technic(result),
+        None => {
+            let summary = hit.summary;
+            BrowseItem {
+                id: crate::providers::item_id(provider_id, &summary.id),
+                source: provider_id.to_string(),
+                provider_id: Some(provider_id.to_string()),
+                provider_title: Some(provider_title.to_string()),
+                registry_item: None,
+                modrinth_result: None,
+                technic_result: None,
+                name: summary.title,
+                // Only HTTPS images are ever put in front of the WebView.
+                icon_url: summary.icon_url.and_then(|u| normalized_https_url(&u)),
+                description: summary.description,
+                content_type: summary.content_type,
+                hero_image_url: summary
+                    .hero_image_url
+                    .and_then(|u| normalized_https_url(&u)),
+                author: summary.author,
+                categories: summary.categories,
+                downloads: summary.downloads.and_then(|d| i64::try_from(d).ok()),
+                follows: summary.follows.and_then(|f| i64::try_from(f).ok()),
+                upvotes: None,
+                downvotes: None,
+                net_score: None,
+                supported_versions: summary.minecraft_versions,
+                source_page_url: summary.page_url.and_then(|u| normalized_https_url(&u)),
+                score: 0.0,
+                score_breakdown: None,
+                ranking_profile: None,
+            }
+        }
+    };
+    // Every provider's items are ranked on the scale that provider declared.
+    item.ranking_profile = Some(descriptor.ranking.clone());
+    item
 }
 
 /// Collect the ranking signals for an already-assembled `BrowseItem`.
@@ -286,11 +362,7 @@ fn ranking_input(item: &BrowseItem) -> RankingInput {
     RankingInput {
         downloads: item.downloads,
         endorsements: item.follows,
-        endorsement_scale: Some(if item.source == "technic" {
-            EndorsementScale::Technic
-        } else {
-            EndorsementScale::Modrinth
-        }),
+        profile: item.ranking_profile.clone().unwrap_or_default(),
         categories,
         curated,
         upvotes: item.upvotes.unwrap_or(0),
@@ -308,16 +380,16 @@ pub fn score_and_sort(items: &mut [BrowseItem], registry_mean_approval: f64) {
     ranking::sort_by_score(items, |item| item.score, |item| item.name.as_str());
 }
 
-/// Merge all three sources into one ranked list, deduplicating by modrinth_id.
+/// Merge the curated catalog with every provider's hits into one ranked list.
 ///
-/// A curated item that also exists on Modrinth is emitted once, tagged
-/// `curated`, and ranked by the curated band — curation wins identity ties.
-/// The result is sorted by the unified score; it used to be returned unsorted
-/// with every Modrinth hit ahead of every curated leftover.
+/// A curated item whose registry row names a Modrinth project, and which that
+/// project's hit also appears for, is emitted once, tagged `curated`, and
+/// ranked by the curated band — curation wins identity ties. That match is
+/// driven by the *registry's* `modrinth_id` column, which is catalog data, not
+/// by anything about the provider. The result is sorted by the unified score.
 pub fn merge_items(
     registry_items: Vec<RegistryItem>,
-    modrinth_results: Vec<ModrinthSearchResult>,
-    technic_results: Vec<TechnicSearchResult>,
+    provider_items: Vec<BrowseItem>,
     registry_mean_approval: f64,
 ) -> Vec<BrowseItem> {
     let mut registry_by_modrinth_id = HashMap::new();
@@ -330,13 +402,19 @@ pub fn merge_items(
     let mut matched_ids = std::collections::HashSet::new();
     let mut merged = Vec::new();
 
-    for mr in modrinth_results {
+    for provider_item in provider_items {
+        let Some(mr) = provider_item.modrinth_result.clone() else {
+            merged.push(provider_item);
+            continue;
+        };
         if let Some(matched) = registry_by_modrinth_id.get(&mr.project_id) {
             matched_ids.insert(matched.id.clone());
             let pres = normalized_presentation(Some(matched), Some(&mr));
             merged.push(BrowseItem {
                 id: matched.id.clone(),
                 source: "curated".to_string(),
+                provider_id: None,
+                provider_title: None,
                 registry_item: Some(matched.clone()),
                 modrinth_result: Some(mr.clone()),
                 name: matched.name.clone(),
@@ -359,9 +437,10 @@ pub fn merge_items(
                 technic_result: None,
                 score: 0.0,
                 score_breakdown: None,
+                ranking_profile: None,
             });
         } else {
-            merged.push(item_from_modrinth(mr));
+            merged.push(provider_item);
         }
     }
 
@@ -371,6 +450,8 @@ pub fn merge_items(
             merged.push(BrowseItem {
                 id: ri.id.clone(),
                 source: "curated".to_string(),
+                provider_id: None,
+                provider_title: None,
                 registry_item: Some(ri.clone()),
                 modrinth_result: None,
                 name: ri.name.clone(),
@@ -390,12 +471,9 @@ pub fn merge_items(
                 technic_result: None,
                 score: 0.0,
                 score_breakdown: None,
+                ranking_profile: None,
             });
         }
-    }
-
-    for technic in technic_results {
-        merged.push(item_from_technic(technic));
     }
 
     score_and_sort(&mut merged, registry_mean_approval);
@@ -419,47 +497,38 @@ pub fn split_chunk(mut pile: Vec<BrowseItem>, take: usize) -> (Vec<BrowseItem>, 
 }
 
 /// Load the first page of browse results into the cache.
-#[allow(clippy::too_many_arguments)]
+///
+/// `items` is the already-merged, already-scored first pile (see
+/// [`merge_items`]); `cursors` records where each provider's paging stands.
 pub async fn load_initial(
     cache: &SharedBrowseCache,
     query_key: String,
-    registry_items: Vec<RegistryItem>,
-    modrinth_results: Vec<ModrinthSearchResult>,
-    technic_results: Vec<TechnicSearchResult>,
+    items: Vec<BrowseItem>,
     filters: BrowseFilters,
-    modrinth_offset: usize,
-    has_more_modrinth: bool,
-    registry_mean_approval: f64,
+    cursors: BTreeMap<String, ProviderCursor>,
 ) {
-    let technic_fetched = !technic_results.is_empty();
-    let merged = merge_items(
-        registry_items,
-        modrinth_results,
-        technic_results,
-        registry_mean_approval,
-    );
     // Curated is fetched in full up front, so the first pile is usually far
     // larger than one page. Show the best PAGE_SIZE and hold the rest.
-    let (shown, held) = split_chunk(merged, PAGE_SIZE);
+    let (shown, held) = split_chunk(items, PAGE_SIZE);
     let mut c = cache.write().await;
     c.query_key = query_key;
     c.total = shown.len() + held.len();
     c.items = shown;
     c.buffer = held;
     c.filters = filters;
-    c.modrinth_offset = modrinth_offset;
-    c.has_more_modrinth = has_more_modrinth;
-    c.technic_fetched = technic_fetched;
+    c.cursors = cursors;
 }
 
-/// Append more Modrinth items only when the cache still belongs to the
+/// Append more provider items only when the cache still belongs to the
 /// expected query. Returns false when a newer query replaced the cache.
+///
+/// `cursors` replaces the paging state of the providers that were just asked;
+/// providers not named keep theirs.
 pub async fn append_items(
     cache: &SharedBrowseCache,
     expected_query_key: &str,
     new_items: Vec<BrowseItem>,
-    new_offset: usize,
-    has_more: bool,
+    cursors: BTreeMap<String, ProviderCursor>,
     registry_mean_approval: f64,
 ) -> bool {
     let mut c = cache.write().await;
@@ -483,15 +552,18 @@ pub async fn append_items(
     }
     score_and_sort(&mut pile, registry_mean_approval);
 
+    c.cursors.extend(cursors);
     // Drain rule: once upstream is exhausted the buffer must be flushed, or
     // items held back earlier would never appear at all.
-    let take = if has_more { PAGE_SIZE } else { pile.len() };
+    let take = if c.has_more_upstream() {
+        PAGE_SIZE
+    } else {
+        pile.len()
+    };
     let (shown, held) = split_chunk(pile, take);
     c.items.extend(shown);
     c.buffer = held;
     c.total = c.items.len() + c.buffer.len();
-    c.modrinth_offset = new_offset;
-    c.has_more_modrinth = has_more;
     true
 }
 
@@ -558,6 +630,8 @@ mod tests {
         BrowseItem {
             id: format!("item-{id}"),
             source: "curated".into(),
+            provider_id: None,
+            provider_title: None,
             registry_item: None,
             modrinth_result: None,
             name: format!("Item {id}"),
@@ -577,7 +651,38 @@ mod tests {
             technic_result: None,
             score: 0.0,
             score_breakdown: None,
+            ranking_profile: None,
         }
+    }
+
+    fn test_descriptor() -> crate::providers::ProviderDescriptor {
+        crate::providers::ProviderDescriptor {
+            id: "acme.src/example".into(),
+            title: "Example".into(),
+            description: None,
+            origin: crate::providers::ProviderOrigin::Plugin {
+                plugin_id: "acme.src".into(),
+            },
+            content_types: vec!["mod".into()],
+            filters: vec![],
+            sorts: vec![],
+            paginates: true,
+            ranking: RankingProfile::default(),
+            download_hosts: vec![],
+            enabled: true,
+            unavailable_reason: None,
+        }
+    }
+
+    /// The cursor update for a provider that has nothing left upstream.
+    fn exhausted() -> BTreeMap<String, ProviderCursor> {
+        BTreeMap::from([(
+            "modrinth".to_string(),
+            ProviderCursor {
+                offset: 100,
+                has_more: false,
+            },
+        )])
     }
 
     fn modrinth_item() -> ModrinthSearchResult {
@@ -644,7 +749,6 @@ mod tests {
             state.query_key = "query-a".into();
             state.items = (0..95).map(item).collect();
             state.total = state.items.len();
-            state.has_more_modrinth = false;
         }
         let page_one = get_page(&cache, 1).await;
         assert_eq!(
@@ -661,7 +765,7 @@ mod tests {
     async fn stale_query_append_is_rejected() {
         let cache = new_cache();
         cache.write().await.query_key = "query-b".into();
-        let appended = append_items(&cache, "query-a", vec![item(1)], PAGE_SIZE, false, 0.5).await;
+        let appended = append_items(&cache, "query-a", vec![item(1)], exhausted(), 0.5).await;
         assert!(!appended);
         assert!(cache.read().await.items.is_empty());
     }
@@ -718,12 +822,88 @@ mod tests {
             tags: vec!["adventure".into()],
             tier: crate::technic::TechnicTier::Solder,
         };
-        let merged = merge_items(vec![], vec![], vec![technic], 0.5);
+        let merged = merge_items(vec![], vec![item_from_technic(technic)], 0.5);
         assert_eq!(merged.len(), 1);
         // Must not collide with a Modrinth project id or a registry item id.
         assert_eq!(merged[0].id, "technic:complex-pixelmon");
         assert_eq!(merged[0].source, "technic");
         assert_eq!(merged[0].content_type, "pack");
+    }
+
+    #[test]
+    fn a_curated_row_absorbs_the_matching_modrinth_hit_but_not_other_providers() {
+        let registry: RegistryItem = serde_json::from_value(serde_json::json!({
+            "id": "curated-example",
+            "name": "Curated Example",
+            "content_type": "mod",
+            "download_strategy": "github_release",
+            "source_identifier": "example/example",
+            "sha256": "",
+            "upvotes": 0,
+            "downvotes": 0,
+            "net_score": 0,
+            "velocity": 0.0,
+            "status": "active",
+            "is_immune": false,
+            "immunity_reason": null,
+            "allow_comments": true,
+            "icon_url": null,
+            "gallery_urls_json": null,
+            "date_added": null,
+            "compatible_versions_json": null,
+            "description": null,
+            "body_markdown": null,
+            "page_url": null,
+            "license_id": null,
+            "source_updated_at": null,
+            "modrinth_id": "modrinth-id"
+        }))
+        .unwrap();
+
+        let plugin_hit = crate::providers::ProviderHit {
+            summary: agora_plugin_api::provider::ProjectSummary {
+                // Same raw id as the Modrinth project: a different provider's
+                // project is a different thing, whatever its id looks like.
+                id: "modrinth-id".into(),
+                title: "Elsewhere".into(),
+                content_type: "mod".into(),
+                ..Default::default()
+            },
+            native: None,
+        };
+        let merged = merge_items(
+            vec![registry],
+            vec![
+                item_from_modrinth(modrinth_item()),
+                item_from_hit(&test_descriptor(), plugin_hit),
+            ],
+            0.5,
+        );
+        assert_eq!(merged.len(), 2);
+        let curated = merged.iter().find(|i| i.source == "curated").unwrap();
+        assert!(curated.provider_id.is_none());
+        assert!(curated.modrinth_result.is_some());
+        let plugin = merged.iter().find(|i| i.source != "curated").unwrap();
+        assert_eq!(plugin.id, "provider:acme.src/example:modrinth-id");
+        assert_eq!(plugin.provider_title.as_deref(), Some("Example"));
+    }
+
+    #[test]
+    fn plugin_items_drop_non_https_images() {
+        let hit = crate::providers::ProviderHit {
+            summary: agora_plugin_api::provider::ProjectSummary {
+                id: "p".into(),
+                title: "P".into(),
+                content_type: "mod".into(),
+                icon_url: Some("http://example.com/i.png".into()),
+                page_url: Some("javascript:alert(1)".into()),
+                ..Default::default()
+            },
+            native: None,
+        };
+        let item = item_from_hit(&test_descriptor(), hit);
+        assert!(item.icon_url.is_none());
+        assert!(item.source_page_url.is_none());
     }
 
     #[test]
@@ -750,7 +930,7 @@ mod tests {
         let before = cache.read().await.items[0].id.clone();
         // A far stronger item arrives later; it must land BELOW what is shown.
         let strong = scored("late-strong", "curated", 250_000_000, 50_000);
-        assert!(append_items(&cache, "q", vec![strong], 40, false, 0.5).await);
+        assert!(append_items(&cache, "q", vec![strong], exhausted(), 0.5).await);
         let items = &cache.read().await.items;
         assert_eq!(items[0].id, before, "an already-displayed item moved");
         assert_eq!(items[1].id, "late-strong");
@@ -765,7 +945,7 @@ mod tests {
             c.buffer = (0..30).map(item).collect();
         }
         // has_more = false means upstream is done: nothing may be left behind.
-        assert!(append_items(&cache, "q", vec![], 100, false, 0.5).await);
+        assert!(append_items(&cache, "q", vec![], exhausted(), 0.5).await);
         let c = cache.read().await;
         assert!(c.buffer.is_empty(), "buffered items were stranded");
         assert_eq!(c.items.len(), 30);
@@ -798,23 +978,20 @@ mod tests {
     #[tokio::test]
     async fn paging_walks_every_item_without_stalling() {
         let cache = new_cache();
-        // 6 curated (fetched in full) + 20 Modrinth on the first page.
-        let curated: Vec<RegistryItem> = Vec::new();
-        let modrinth: Vec<ModrinthSearchResult> = Vec::new();
+        // 6 curated (fetched in full) + 20 from a paginating provider.
         let seeded: Vec<BrowseItem> = (0..26).map(item).collect();
         load_initial(
             &cache,
             "q".into(),
-            curated,
-            modrinth,
-            vec![],
-            BrowseFilters {
-                modrinth_enabled: true,
-                ..Default::default()
-            },
-            PAGE_SIZE,
-            true,
-            0.5,
+            Vec::new(),
+            BrowseFilters::default(),
+            BTreeMap::from([(
+                "modrinth".to_string(),
+                ProviderCursor {
+                    offset: PAGE_SIZE as u32,
+                    has_more: true,
+                },
+            )]),
         )
         .await;
         {
@@ -829,7 +1006,7 @@ mod tests {
         assert!(page0.has_more, "page 0 must offer more");
 
         // Page 1 with upstream exhausted: only the 6 buffered items remain.
-        assert!(append_items(&cache, "q", vec![], PAGE_SIZE * 2, false, 0.5).await);
+        assert!(append_items(&cache, "q", vec![], exhausted(), 0.5).await);
         assert!(drain_buffer(&cache, "q", PAGE_SIZE * 2).await);
         let page1 = get_page(&cache, 1).await;
         assert_eq!(page1.items.len(), 6, "buffered remainder must be served");
@@ -850,8 +1027,7 @@ mod tests {
                 &cache,
                 "query-a",
                 vec![duplicate.clone(), duplicate],
-                PAGE_SIZE,
-                false,
+                exhausted(),
                 0.5,
             )
             .await
