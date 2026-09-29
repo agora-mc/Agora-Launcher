@@ -83,6 +83,7 @@ impl OverridePolicy {
     /// Whether a sanitised, instance-relative path is extracted at all.
     /// Paths it declines are skipped, not treated as an attack.
     pub fn admits(self, path: &str) -> bool {
+        let path = as_created(path);
         if is_agora_owned(path) {
             return false;
         }
@@ -95,6 +96,7 @@ impl OverridePolicy {
     /// Whether a path that [`admits`](Self::admits) accepted is still refused
     /// outright, failing the extraction.
     pub fn forbids(self, path: &str) -> bool {
+        let path = as_created(path);
         match self {
             Self::Standard => has_banned_extension(path),
             Self::Permissive => {
@@ -105,6 +107,13 @@ impl OverridePolicy {
             }
         }
     }
+}
+
+/// The name a path gets on disk. Windows drops trailing dots and spaces
+/// when it creates a file, so `config/run.bat.` is written as
+/// `config/run.bat`; every check has to look at that name, not the raw one.
+fn as_created(path: &str) -> &str {
+    path.trim_end_matches(['.', ' '])
 }
 
 fn is_agora_owned(path: &str) -> bool {
@@ -367,7 +376,7 @@ fn is_whitelisted(path: &str) -> bool {
 
 /// Check if a filename has a banned extension.
 fn has_banned_extension(path: &str) -> bool {
-    let lower = path.to_lowercase();
+    let lower = as_created(path).to_lowercase();
     BANNED_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
@@ -448,6 +457,11 @@ mod tests {
         assert!(permissive.forbids("natives/lib.dll"));
         assert!(!permissive.admits("instance_manifest.json"));
         assert!(!permissive.admits(".agora/state.json"));
+        // Windows would create these without the trailing dot or space.
+        assert!(permissive.forbids("config/run.bat."));
+        assert!(permissive.forbids("config/run.bat. ."));
+        assert!(!permissive.admits("instance_manifest.json."));
+        assert!(OverridePolicy::Standard.forbids("config/x.jar."));
 
         let standard = OverridePolicy::Standard;
         assert!(!standard.admits("mods/extra.jar"));

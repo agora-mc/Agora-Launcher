@@ -376,6 +376,57 @@ async fn a_curated_provider_pack_installs_only_the_plan_the_curators_pinned() {
 }
 
 #[tokio::test]
+async fn a_dependency_reached_first_as_optional_is_still_required_when_something_needs_it() {
+    let world = world();
+    // root: a optional, b required; b requires a.
+    install_misbehaving(
+        &world,
+        r#"
+        export async function search() { return { items: [] }; }
+        export async function versions() { return { versions: [] }; }
+        const deps = {
+            root: [{ projectId: "a", kind: "optional" }, { projectId: "b", kind: "required" }],
+            b: [{ projectId: "a", kind: "required" }],
+        };
+        export async function resolve({ projectId }) {
+            return {
+                kind: "file",
+                versionId: "1",
+                versionNumber: "1.0",
+                contentType: "mod",
+                file: {
+                    url: "https://files.example.org/" + projectId + ".jar",
+                    filename: projectId + ".jar",
+                    hashes: { sha512: "a".repeat(128) }
+                },
+                dependencies: deps[projectId] ?? []
+            };
+        }
+        "#,
+    );
+    set(&world.ctx, "network_plugins_enabled", true);
+    let resolved = install::resolve_item(
+        &world.ctx,
+        &registry(&world),
+        &fabric_instance(),
+        "provider:acme.misbehaving/bad:root",
+        None,
+    )
+    .await
+    .unwrap();
+    let a = resolved
+        .dependencies
+        .iter()
+        .find(|dep| dep.mod_jar_id == "provider:acme.misbehaving/bad:a")
+        .expect("a is offered");
+    assert_eq!(
+        a.requirement,
+        agora_core::dependency_ops::Requirement::Required,
+        "b needs a, so leaving optional dependencies out must not drop it"
+    );
+}
+
+#[tokio::test]
 async fn reduced_assurance_warns_and_no_integrity_needs_low_security_downloads() {
     let world = world();
     // `x` comes from a host the plugin never declared, with a strong digest.
@@ -405,9 +456,10 @@ async fn reduced_assurance_warns_and_no_integrity_needs_low_security_downloads()
     set(&world.ctx, "network_plugins_enabled", true);
     let registry = registry(&world);
 
-    // Reduced assurance is the user's call: it resolves, and the preview
-    // carries the warning the review screen shows.
-    install::resolve_item(
+    // Reduced assurance is the user's call: it resolves, and the warning
+    // travels with the artifact so the install review shows it even when
+    // this file is a dependency or part of a batch.
+    let resolved = install::resolve_item(
         &world.ctx,
         &registry,
         &fabric_instance(),
@@ -416,6 +468,13 @@ async fn reduced_assurance_warns_and_no_integrity_needs_low_security_downloads()
     )
     .await
     .expect("an undeclared host warns rather than blocks");
+    let agora_core::install_pipeline::ResolvedArtifact::Download(download) = &resolved.artifact
+    else {
+        panic!("a provider file is a download");
+    };
+    let notes = &download.metadata.provider.as_ref().unwrap().security_notes;
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].starts_with("somewhere-else.example:"), "{notes:?}");
     let preview = install::preview(
         &world.ctx,
         &registry,

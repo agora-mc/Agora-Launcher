@@ -37,6 +37,8 @@ type PluginRow = {
 type Found = {
   app: Update | null;
   appSkipped?: string;
+  /** Agora's own check failed: never shown as "up to date". */
+  appError?: string;
   plugins: PluginRow[];
   pluginErrors: string[];
 };
@@ -52,7 +54,12 @@ export function UpdateCenter() {
     try {
       const portable = await isPortableMode().catch(() => false);
       const [app, plugins] = await Promise.all([
-        portable ? Promise.resolve(null) : check().catch(() => null),
+        portable
+          ? Promise.resolve({ update: null, error: undefined })
+          : check().then(
+              (update) => ({ update, error: undefined }),
+              (e: unknown) => ({ update: null, error: formatError(e) }),
+            ),
         (async () => {
           const rows: PluginRow[] = [];
           const errors: string[] = [];
@@ -83,7 +90,8 @@ export function UpdateCenter() {
         })(),
       ]);
       setFound({
-        app: app?.available ? app : null,
+        app: app.update?.available ? app.update : null,
+        appError: app.error,
         appSkipped: portable
           ? 'Portable copies update by replacing the executable from a new portable ZIP.'
           : undefined,
@@ -136,8 +144,12 @@ export function UpdateCenter() {
           confirmLabel: 'Install and restart',
         });
         if (ok) {
-          await found.app.downloadAndInstall();
-          await restartApp();
+          try {
+            await found.app.downloadAndInstall();
+            await restartApp();
+          } catch (e) {
+            showToast(`Could not install the Agora update: ${formatError(e)}`, 'error');
+          }
         }
       }
     } finally {
@@ -186,6 +198,10 @@ export function UpdateCenter() {
             <li className="flex justify-between gap-2">
               <span>Agora</span>
               <span className="text-muted-foreground">{found.app.currentVersion} → {found.app.version}</span>
+            </li>
+          ) : found.appError ? (
+            <li className="text-xs text-destructive">
+              Could not check for an Agora update: {found.appError}
             </li>
           ) : (
             <li className="text-xs text-muted-foreground">

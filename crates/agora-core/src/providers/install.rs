@@ -60,7 +60,7 @@ fn artifact_from(
     project_id: &str,
     plan: &FilePlan,
     download_hosts: &[String],
-    low_security: bool,
+    authorization: &super::PlanAuthorization,
 ) -> LauncherResult<ResolvedArtifact> {
     let hashes = &plan.file.hashes;
     let values: Vec<HashedValue> = [
@@ -92,7 +92,12 @@ fn artifact_from(
                 project_id: project_id.to_string(),
                 version_id: plan.version_id.clone(),
                 download_hosts: download_hosts.to_vec(),
-                low_security,
+                low_security: authorization.is_low_security(),
+                security_notes: authorization
+                    .warnings
+                    .iter()
+                    .map(|note| format!("{}: {}", note.url_host, note.reason))
+                    .collect(),
             }),
             source_type: SourceType::Provider,
             registry_id: None,
@@ -139,7 +144,7 @@ async fn resolve_file(
         project_id,
         &file,
         &descriptor.download_hosts,
-        authorization.is_low_security(),
+        &authorization,
     )?;
     Ok((artifact, file))
 }
@@ -170,12 +175,13 @@ pub async fn resolve_item(
     let (artifact, root) =
         resolve_file(ctx, registry, manifest, provider_id, project_id, version_id).await?;
 
-    let mut dependencies = Vec::new();
+    let mut dependencies: Vec<ResolvedDep> = Vec::new();
     let mut conflicts = Vec::new();
     let mut seen = BTreeSet::from([project_id.to_string()]);
     // (project, pinned version, requirement, depth)
     let mut queue: Vec<(String, Option<String>, Requirement, usize)> = Vec::new();
     let enqueue = |plan: &FilePlan,
+                   from_project: &str,
                    depth: usize,
                    queue: &mut Vec<(String, Option<String>, Requirement, usize)>,
                    conflicts: &mut Vec<DepConflict>| {
@@ -187,7 +193,7 @@ pub async fn resolve_item(
                     {
                         conflicts.push(DepConflict {
                             conflict_id: format!(
-                                "provider-incompatible:{provider_id}:{}",
+                                "provider-incompatible:{provider_id}:{from_project}:{}",
                                 dependency.project_id
                             ),
                             kind: ConflictKind::IncompatibleMod,
@@ -195,7 +201,7 @@ pub async fn resolve_item(
                                 provider_id,
                                 &dependency.project_id,
                             ),
-                            incoming_mod_jar_id: super::item_id(provider_id, project_id),
+                            incoming_mod_jar_id: super::item_id(provider_id, from_project),
                             message: format!(
                                 "{} is marked incompatible with {} by {provider_id}.",
                                 plan.file.filename, existing.filename
@@ -231,13 +237,30 @@ pub async fn resolve_item(
             }
         }
     };
-    enqueue(&root, 0, &mut queue, &mut conflicts);
+    enqueue(&root, project_id, 0, &mut queue, &mut conflicts);
+    // Plans of dependencies first reached as optional, whose own
+    // dependencies were not followed; kept so a later required route to the
+    // same project can follow them.
+    let mut optional_plans: BTreeMap<String, (FilePlan, usize)> = BTreeMap::new();
 
     let mut index = 0;
     while index < queue.len() {
         let (dep_project, dep_version, requirement, depth) = queue[index].clone();
         index += 1;
         if !seen.insert(dep_project.clone()) {
+            // Reached again: the first route may have been optional, and a
+            // required route must win, or the install could leave it out.
+            if requirement == Requirement::Required {
+                let dep_item = super::item_id(provider_id, &dep_project);
+                if let Some(existing) = dependencies.iter_mut().find(|dep| {
+                    dep.mod_jar_id == dep_item && dep.requirement == Requirement::Optional
+                }) {
+                    existing.requirement = Requirement::Required;
+                    if let Some((plan, plan_depth)) = optional_plans.remove(&dep_project) {
+                        enqueue(&plan, &dep_project, plan_depth, &mut queue, &mut conflicts);
+                    }
+                }
+            }
             continue;
         }
         let dep_item = super::item_id(provider_id, &dep_project);
@@ -263,7 +286,9 @@ pub async fn resolve_item(
             {
                 Ok((artifact, plan)) => {
                     if requirement == Requirement::Required {
-                        enqueue(&plan, depth, &mut queue, &mut conflicts);
+                        enqueue(&plan, &dep_project, depth, &mut queue, &mut conflicts);
+                    } else {
+                        optional_plans.insert(dep_project.clone(), (plan, depth));
                     }
                     DepDisposition::InstallCandidate {
                         artifact: Box::new(artifact),

@@ -1020,6 +1020,9 @@ pub fn validate_filename(value: &str) -> PluginResult<()> {
         && value != "."
         && value != ".."
         && !value.starts_with('.')
+        // Windows drops a trailing dot or space when it creates the file, so
+        // `run.bat.` would land as `run.bat` past every extension check.
+        && !value.ends_with(['.', ' '])
         && !value.chars().any(|c| {
             c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
         });
@@ -1046,7 +1049,12 @@ pub fn validate_pack_path_shape(value: &str) -> PluginResult<()> {
     }
     let segments: Vec<&str> = value.split('/').collect();
     for segment in &segments[..segments.len() - 1] {
-        if segment.is_empty() || *segment == "." || *segment == ".." || segment.contains(':') {
+        if segment.is_empty()
+            || *segment == "."
+            || *segment == ".."
+            || segment.contains(':')
+            || segment.ends_with(['.', ' '])
+        {
             return Err(invalid_response(format!("pack path `{value}` is unsafe")));
         }
     }
@@ -1211,6 +1219,10 @@ mod tests {
             "mods/run.exe",
             "kubejs/x.sh",
             "saves/world/level.dat",
+            // Windows would create these as run.bat / x.jar.
+            "config/run.bat.",
+            "config/x.jar ",
+            "config./x.toml",
         ] {
             assert!(validate_pack_path(bad).is_err(), "{bad} must be refused");
         }

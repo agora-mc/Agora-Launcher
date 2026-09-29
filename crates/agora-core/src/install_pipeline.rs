@@ -243,6 +243,12 @@ pub struct ProviderArtifact {
     /// pipeline installs without a hash to check.
     #[serde(default)]
     pub low_security: bool,
+    /// Reduced-assurance findings for this file (an undeclared host, plain
+    /// HTTP, only MD5/SHA-1), as `host: reason`. They become plan warnings
+    /// so the install review shows them for dependencies and batch items
+    /// too, not only for the item the user clicked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2208,6 +2214,14 @@ fn plan_artifact_change(
             message: error,
         });
         return;
+    }
+    if let ResolvedArtifact::Download(download) = artifact {
+        if let Some(provider) = &download.metadata.provider {
+            warnings.extend(provider.security_notes.iter().map(|note| PlanWarning {
+                code: "WARN_PROVIDER_REDUCED_SECURITY".into(),
+                message: format!("{filename} from {}: {note}", provider.provider_id),
+            }));
+        }
     }
     if let Err(error) = validate_artifact_hashes(artifact) {
         blocking_errors.push(PlanError {
@@ -4732,6 +4746,7 @@ mod tests {
                     version_id: "1".into(),
                     download_hosts: vec!["files.example.org".into()],
                     low_security,
+                    security_notes: Vec::new(),
                 }),
                 source_type: SourceType::Provider,
                 registry_id: None,
