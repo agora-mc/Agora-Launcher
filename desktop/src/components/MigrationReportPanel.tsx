@@ -148,6 +148,9 @@ export function MigrationReportPanel({
             ? `Migration failed during ${outcome.phase} and was undone. ${outcome.error}`
             : `Migration failed during ${outcome.phase} and could NOT be undone automatically. ${outcome.error}`
               + (outcome.snapshotId ? ` Restore snapshot ${outcome.snapshotId} from the Snapshots tab.` : ''));
+          // A failure that was not undone may have left the instance partly
+          // changed; the editor must show what is actually on disk.
+          if (!outcome.rolledBack) onMigrated?.();
           break;
       }
     } catch (e) {
