@@ -1,0 +1,42 @@
+{
+    "spikeVersion":  1,
+    "mode":  "StockRoot",
+    "flavor":  "GOG",
+    "exeVersion":  "1.6.1179.0",
+    "method":  "hardlink",
+    "steamAppIdFileWritten":  false,
+    "stockRoot":  "D:\\AgoraSpike\\stock-gog",
+    "build":  {
+                  "hardlinked":  215,
+                  "copied":  9,
+                  "hardlinkFailedCopied":  0,
+                  "skipped":  {
+
+                              },
+                  "buildSeconds":  0.2,
+                  "gbHardlinked":  32.03,
+                  "gbCopied":  0.06
+              },
+    "launchedVia":  "SkyrimSE.exe",
+    "processSeen":  true,
+    "processPath":  "D:\\AgoraSpike\\stock-gog\\SkyrimSE.exe",
+    "ranFromStockRoot":  true,
+    "reachedMainMenu":  "y",
+    "userNotes":  "",
+    "skse":  {
+                 "logPath":  "C:\\Users\\<user>\\Documents\\My Games\\Skyrim Special Edition GOG\\SKSE\\skse64.log",
+                 "ranThisLaunch":  false,
+                 "head":  [
+
+                          ]
+             },
+    "realInstallFilesChanged":  [
+
+                                ],
+    "filesCreatedInStockRoot":  [
+
+                                ],
+    "userFilesChangedByGame":  [
+
+                               ]
+}
