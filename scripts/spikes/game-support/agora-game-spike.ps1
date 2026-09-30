@@ -184,12 +184,12 @@ function Invoke-Section([string]$Name, [scriptblock]$Body) {
 function Protect-Text([string]$Text) {
     if ($NoRedact) { return $Text }
     # JSON-escaped and plain forms of C:\Users\<name>
-    $Text = [regex]::Replace($Text, '(?i)([A-Z]:\\\\Users\\\\)[^\\"]+', '$1<user>')
-    $Text = [regex]::Replace($Text, '(?i)([A-Z]:\\Users\\)[^\\"\r\n]+', '$1<user>')
+    $out = [regex]::Replace($Text, '(?i)([A-Z]:\\\\Users\\\\)[^\\"]+', '$1<user>')
+    $out = [regex]::Replace($out, '(?i)([A-Z]:\\Users\\)[^\\"\r\n]+', '$1<user>')
     if ($env:COMPUTERNAME) {
-        $Text = [regex]::Replace($Text, '(?i)\b' + [regex]::Escape($env:COMPUTERNAME) + '\b', '<computer>')
+        $out = [regex]::Replace($out, '(?i)\b' + [regex]::Escape($env:COMPUTERNAME) + '\b', '<computer>')
     }
-    return $Text
+    return $out
 }
 
 function Save-Report([string]$Name, $Data) {
@@ -731,8 +731,8 @@ function Get-SkyrimDetails($Install) {
     $linked = 0
     if (Initialize-Native) {
         foreach ($f in $dataFiles) {
-            $id = Get-FileIdentity $f.FullName
-            if ($id -and $id.Links -gt 1) { $linked++ }
+            $identity = Get-FileIdentity $f.FullName
+            if ($identity -and $identity.Links -gt 1) { $linked++ }
         }
     }
     $topPlugins = @($dataFiles | Where-Object { $_.DirectoryName -eq $data -and $_.Extension -in '.esp', '.esm', '.esl' })
@@ -1110,12 +1110,12 @@ function Get-TreeSnapshot([string]$Dir) {
     $snap = @{}
     if (-not (Test-Path -LiteralPath $Dir)) { return $snap }
     foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force -ErrorAction SilentlyContinue)) {
-        $id = Get-FileIdentity $f.FullName
+        $identity = Get-FileIdentity $f.FullName
         $snap[(Get-RelativePath $Dir $f.FullName)] = [pscustomobject]@{
             length = $f.Length
             write  = $f.LastWriteTimeUtc.Ticks
-            id     = $(if ($id) { $id.Id } else { $null })
-            links  = $(if ($id) { $id.Links } else { $null })
+            id     = $(if ($identity) { $identity.Id } else { $null })
+            links  = $(if ($identity) { $identity.Links } else { $null })
         }
     }
     return $snap
@@ -1221,15 +1221,15 @@ function Invoke-LinkArm([int]$Id) {
     $entries = @()
     $skippedLinked = 0
     foreach ($f in @(Get-ChildItem -LiteralPath $source -Recurse -File -Force -ErrorAction SilentlyContinue)) {
-        $id = Get-FileIdentity $f.FullName
-        if (-not $id) { continue }
-        if ($id.Links -gt 1) { $skippedLinked++; continue }   # already hardlinked by something else (e.g. Vortex)
+        $identity = Get-FileIdentity $f.FullName
+        if (-not $identity) { continue }
+        if ($identity.Links -gt 1) { $skippedLinked++; continue }   # already hardlinked by something else (e.g. Vortex)
         $rel = Get-RelativePath $source $f.FullName
         $dest = Join-Path $side $rel
         $destDir = Split-Path -Parent $dest
         if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
         try { [AgoraSpikeNative]::HardLink($dest, $f.FullName) } catch { continue }
-        $entries += [pscustomobject]@{ rel = $rel; length = $f.Length; write = $f.LastWriteTimeUtc.Ticks; id = $id.Id }
+        $entries += [pscustomobject]@{ rel = $rel; length = $f.Length; write = $f.LastWriteTimeUtc.Ticks; id = $identity.Id }
     }
     $state = [ordered]@{
         appId = $app.appId; name = $app.name; source = $source; side = $side

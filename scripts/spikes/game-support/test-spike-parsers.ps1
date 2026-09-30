@@ -150,5 +150,23 @@ version=2.5.2
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+# PowerShell names are case-insensitive, so `$id = ...` inside a function taking `[int]$Id`
+# assigns to the typed parameter and fails at run time (it broke LinkArm on Windows).
+$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'agora-game-spike.ps1'), [ref]$null, [ref]$null)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    $params = @()
+    if ($fn.Parameters) { $params += $fn.Parameters }
+    if ($fn.Body.ParamBlock) { $params += $fn.Body.ParamBlock.Parameters }
+    foreach ($p in $params) {
+        if (-not ($p.Attributes | Where-Object { $_ -is [System.Management.Automation.Language.TypeConstraintAst] })) { continue }
+        $name = $p.Name.VariablePath.UserPath
+        $writes = @($fn.Body.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                    $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    $n.Left.VariablePath.UserPath -eq $name }, $true))
+        Assert-Equal 0 $writes.Count "$($fn.Name): typed parameter `$$name is never reassigned"
+    }
+}
+
 if ($failures -gt 0) { Write-Host "$failures failure(s)" -ForegroundColor Red; exit 1 }
 Write-Host 'All parser checks passed.' -ForegroundColor Green
