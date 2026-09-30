@@ -1,0 +1,78 @@
+{
+    "spikeVersion":  2,
+    "mode":  "LinkCheck",
+    "appId":  "1086940",
+    "name":  "Baldur\u0027s Gate 3",
+    "buildIdAtArm":  "24532579",
+    "buildIdNow":  "25605617",
+    "buildChanged":  true,
+    "armedUtc":  "2026-09-30T05:26:33.7968900Z",
+    "checkedUtc":  "2026-09-30T05:34:01.9931310Z",
+    "counts":  {
+                   "unchanged":  317,
+                   "modified-in-place":  0,
+                   "replaced":  14,
+                   "deleted":  0,
+                   "link-missing":  0
+               },
+    "focusFile":  "",
+    "focusOutcome":  null,
+    "changed":  [
+                    {
+                        "rel":  "bin\\bg3.exe",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "bin\\bg3_dx11.exe",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\CrashReporter.deps.json",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\CrashReporter.dll",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\CrashReporter.exe",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\DbgHelper.dll",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\DriverVersionChecker.exe",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\LariLauncher.deps.json",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\LariLauncher.dll",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\LariLauncher.exe",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\LayersChecker.exe",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\SDL2Binding.dll",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\Shared.dll",
+                        "outcome":  "replaced"
+                    },
+                    {
+                        "rel":  "Launcher\\Steamworks.NET.dll",
+                        "outcome":  "replaced"
+                    }
+                ]
+}
