@@ -1855,7 +1855,6 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
             <div className="flex flex-col items-end gap-3 self-end xl:self-end">
               <div className="flex flex-wrap justify-end gap-2">
-              {(!!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack) && (
               <button
                 onClick={() => {
                   setPackInstallOpen(true);
@@ -1866,9 +1865,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 disabled={recoveryBlocked}
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
               >
-                📦 Install all mods from pack
+                📦 Add mods from a pack…
               </button>
-              )}
               <button
                 onClick={handleImportPack}
                 disabled={recoveryBlocked}
