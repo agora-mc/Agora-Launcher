@@ -758,12 +758,13 @@ pub async fn execute_migration(
     }
 
     // 4. Mandatory recovery snapshot of the pre-migration state.
-    let snapshot = match crate::snapshot::create_snapshot(
+    let snapshot = match crate::snapshot::create_snapshot_with_origin(
         &instance_dir,
         Some(&format!(
             "migration-{}",
             &plan.fingerprint[..16.min(plan.fingerprint.len())]
         )),
+        crate::snapshot::SnapshotOrigin::Migration,
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {

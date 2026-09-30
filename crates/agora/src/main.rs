@@ -3056,9 +3056,12 @@ async fn run_command(
                 if !instance_dir.exists() {
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
-                let snapshot =
-                    agora_core::snapshot::create_snapshot(&instance_dir, label.as_deref())
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let snapshot = agora_core::snapshot::create_snapshot_with_origin(
+                    &instance_dir,
+                    label.as_deref(),
+                    agora_core::snapshot::SnapshotOrigin::User,
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&snapshot)?);
                 } else {

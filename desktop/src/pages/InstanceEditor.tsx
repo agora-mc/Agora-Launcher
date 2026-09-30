@@ -2181,6 +2181,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           </div>
 
+          <p className="text-xs text-muted-foreground">
+            Snapshots you create and migration recovery points are kept (up to 10). Automatic ones taken around launches, installs and templates rotate, so only the latest is kept.
+          </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No snapshots yet. Create one to save a restore point.
