@@ -832,7 +832,9 @@ function ReviewView({
           title={plan.conflicts.length === 1
             ? 'One overlap to sort out'
             : `${plan.conflicts.length} overlaps to sort out`}
-          hint="These mods cannot both stay as they are. Pick what should happen to each."
+          hint={plan.conflicts.some((c) => c.kind === 'broken-reverse-dep')
+            ? 'Something that stays installed still needs a file you are removing. Cancel, or remove it anyway and repair it from the instance health alert later.'
+            : 'These mods cannot both stay as they are. Pick what should happen to each.'}
         >
           {plan.conflicts.map((c, i) => (
             <ConflictRow
@@ -1208,6 +1210,7 @@ const RESOLUTION_LABELS: Record<string, string> = {
   skip: 'Keep what is installed',
   'disable-existing': 'Turn off the installed one',
   abort: 'Cancel this change',
+  'remove-anyway': 'Remove anyway (leaves a health alert)',
 };
 
 function ConflictRow({ conflict, selected, onSelect }: { conflict: DepConflict; selected?: string; onSelect: (r: string) => void }) {

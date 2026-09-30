@@ -134,6 +134,8 @@ export interface ResolvedDep {
   displayName?: string | null;
   /** Canonical upstream page URL when known. */
   pageUrl?: string | null;
+  /** Selected batch items that pulled this dependency in. */
+  requestedBy?: string[];
 }
 
 export type DepDisposition =
@@ -155,7 +157,7 @@ export interface DepConflict {
 }
 
 export type ConflictKind = 'version-conflict' | 'duplicate-mod' | 'loader-mismatch' | 'game-version-mismatch' | 'incompatible-mod' | 'broken-reverse-dep';
-export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort';
+export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort' | 'remove-anyway';
 
 export interface FileAdd { targetFilename: string; stagingFilename: string; artifact: ResolvedArtifact; hashes: HashSpec; size: number; }
 export interface FileRemove { filename: string; }

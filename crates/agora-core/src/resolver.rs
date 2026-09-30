@@ -671,6 +671,7 @@ impl Resolver {
                 resolved.insert(
                     key,
                     ResolvedDep {
+                        requested_by: Vec::new(),
                         mod_jar_id: canonical,
                         requirement,
                         source: DepSource::Manifest,
@@ -692,6 +693,7 @@ impl Resolver {
                 resolved.insert(
                     key,
                     ResolvedDep {
+                        requested_by: Vec::new(),
                         mod_jar_id: canonical,
                         requirement,
                         source: DepSource::Manifest,
@@ -713,6 +715,7 @@ impl Resolver {
                     resolved.insert(
                         key,
                         ResolvedDep {
+                            requested_by: Vec::new(),
                             mod_jar_id: canonical,
                             requirement,
                             source: DepSource::Manifest,
@@ -731,6 +734,7 @@ impl Resolver {
             resolved.insert(
                 key.clone(),
                 ResolvedDep {
+                    requested_by: Vec::new(),
                     mod_jar_id: canonical.clone(),
                     requirement,
                     source: DepSource::Manifest,
@@ -1605,6 +1609,7 @@ impl Resolver {
                         resolved.insert(
                             loader_key,
                             ResolvedDep {
+                                requested_by: Vec::new(),
                                 mod_jar_id: loader_id.to_string(),
                                 requirement,
                                 source: DepSource::Jar,
@@ -1628,6 +1633,7 @@ impl Resolver {
                             resolved.insert(
                                 loader_key,
                                 ResolvedDep {
+                                    requested_by: Vec::new(),
                                     mod_jar_id: loader_id.to_string(),
                                     requirement,
                                     source: DepSource::Jar,
@@ -1657,6 +1663,7 @@ impl Resolver {
                     resolved.insert(
                         loader_key,
                         ResolvedDep {
+requested_by: Vec::new(),
                             mod_jar_id: loader_id.to_string(),
                             requirement,
                             source: DepSource::Jar,
@@ -1674,6 +1681,7 @@ impl Resolver {
                 resolved.insert(
                     identity.clone(),
                     ResolvedDep {
+                        requested_by: Vec::new(),
                         mod_jar_id: identity,
                         requirement,
                         source: DepSource::Manifest,
@@ -1716,6 +1724,7 @@ impl Resolver {
                 resolved.insert(
                     key,
                     ResolvedDep {
+                        requested_by: Vec::new(),
                         mod_jar_id: pid.clone(),
                         requirement,
                         source: DepSource::Manifest,
@@ -1740,6 +1749,7 @@ impl Resolver {
                     resolved.insert(
                         key,
                         ResolvedDep {
+                            requested_by: Vec::new(),
                             mod_jar_id: pid.clone(),
                             requirement,
                             source: DepSource::Manifest,
@@ -1846,6 +1856,7 @@ impl Resolver {
             resolved.insert(
                 key,
                 ResolvedDep {
+                    requested_by: Vec::new(),
                     mod_jar_id: pid.clone(),
                     requirement,
                     source: DepSource::Manifest,
@@ -2161,6 +2172,13 @@ impl Resolver {
                 SourceType::Provider => provider_extras.remove(&item.item_id).unwrap_or_default(),
             };
             operations.push(ResolvedOperation::Install { artifact });
+            let dependencies = dependencies
+                .into_iter()
+                .map(|mut dependency| {
+                    dependency.requested_by = vec![item.item_id.clone()];
+                    dependency
+                })
+                .collect();
             merge_deps(&mut deps_map, dependencies);
             for conflict in conflicts {
                 conflicts_map.insert(conflict.conflict_id.clone(), conflict);
@@ -3549,6 +3567,11 @@ fn merge_deps(target: &mut BTreeMap<String, ResolvedDep>, incoming: Vec<Resolved
                 if dependency.requirement == Requirement::Required {
                     existing.requirement = Requirement::Required;
                 }
+                for requester in &dependency.requested_by {
+                    if !existing.requested_by.contains(requester) {
+                        existing.requested_by.push(requester.clone());
+                    }
+                }
             })
             .or_insert(dependency);
     }
@@ -4858,6 +4881,7 @@ mod tests {
             (
                 "glitchcore".into(),
                 ResolvedDep {
+                    requested_by: Vec::new(),
                     mod_jar_id: "glitchcore".into(),
                     requirement: Requirement::Required,
                     source: DepSource::Jar,
@@ -4871,6 +4895,7 @@ mod tests {
             (
                 "s3dmwky5".into(),
                 ResolvedDep {
+                    requested_by: Vec::new(),
                     mod_jar_id: "s3dmwKy5".into(),
                     requirement: Requirement::Optional,
                     source: DepSource::Manifest,
