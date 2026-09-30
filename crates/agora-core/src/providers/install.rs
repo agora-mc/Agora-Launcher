@@ -301,6 +301,7 @@ pub async fn resolve_item(
         };
         dependencies.push(ResolvedDep {
             requested_by: Vec::new(),
+            pinned_version: None,
             mod_jar_id: dep_item,
             requirement,
             source: DepSource::Manifest,

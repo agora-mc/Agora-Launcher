@@ -674,6 +674,7 @@ impl Resolver {
                     key,
                     ResolvedDep {
                         requested_by: Vec::new(),
+                        pinned_version: None,
                         mod_jar_id: canonical,
                         requirement,
                         source: DepSource::Manifest,
@@ -696,6 +697,7 @@ impl Resolver {
                     key,
                     ResolvedDep {
                         requested_by: Vec::new(),
+                        pinned_version: None,
                         mod_jar_id: canonical,
                         requirement,
                         source: DepSource::Manifest,
@@ -718,6 +720,7 @@ impl Resolver {
                         key,
                         ResolvedDep {
                             requested_by: Vec::new(),
+                            pinned_version: None,
                             mod_jar_id: canonical,
                             requirement,
                             source: DepSource::Manifest,
@@ -737,6 +740,7 @@ impl Resolver {
                 key.clone(),
                 ResolvedDep {
                     requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: canonical.clone(),
                     requirement,
                     source: DepSource::Manifest,
@@ -1637,6 +1641,7 @@ impl Resolver {
                             loader_key,
                             ResolvedDep {
                                 requested_by: Vec::new(),
+                                pinned_version: None,
                                 mod_jar_id: loader_id.to_string(),
                                 requirement,
                                 source: DepSource::Jar,
@@ -1661,6 +1666,7 @@ impl Resolver {
                                 loader_key,
                                 ResolvedDep {
                                     requested_by: Vec::new(),
+                                    pinned_version: None,
                                     mod_jar_id: loader_id.to_string(),
                                     requirement,
                                     source: DepSource::Jar,
@@ -1691,6 +1697,7 @@ impl Resolver {
                         loader_key,
                         ResolvedDep {
 requested_by: Vec::new(),
+pinned_version: None,
                             mod_jar_id: loader_id.to_string(),
                             requirement,
                             source: DepSource::Jar,
@@ -1709,6 +1716,7 @@ requested_by: Vec::new(),
                     identity.clone(),
                     ResolvedDep {
                         requested_by: Vec::new(),
+                        pinned_version: None,
                         mod_jar_id: identity,
                         requirement,
                         source: DepSource::Manifest,
@@ -1752,6 +1760,7 @@ requested_by: Vec::new(),
                     key,
                     ResolvedDep {
                         requested_by: Vec::new(),
+                        pinned_version: None,
                         mod_jar_id: pid.clone(),
                         requirement,
                         source: DepSource::Manifest,
@@ -1777,6 +1786,7 @@ requested_by: Vec::new(),
                         key,
                         ResolvedDep {
                             requested_by: Vec::new(),
+                            pinned_version: None,
                             mod_jar_id: pid.clone(),
                             requirement,
                             source: DepSource::Manifest,
@@ -1884,6 +1894,7 @@ requested_by: Vec::new(),
                 key,
                 ResolvedDep {
                     requested_by: Vec::new(),
+                    pinned_version: pinned_version_honoured(version_id.as_deref(), &disposition),
                     mod_jar_id: pid.clone(),
                     requirement,
                     source: DepSource::Manifest,
@@ -2244,7 +2255,11 @@ requested_by: Vec::new(),
                 .identities
                 .iter()
                 .map(|identity| aliases.resolve_or_self(identity).to_ascii_lowercase())
-                .chain(deps_map.keys().cloned())
+                .chain(
+                    deps_map
+                        .values()
+                        .map(|dep| dep.mod_jar_id.to_ascii_lowercase()),
+                )
                 .collect();
             for conflict in
                 build_known_conflicts(&known_conflicts, &aliases, &incoming, &installed_set)
@@ -3674,7 +3689,14 @@ fn effective_installed_filename(item: &InstalledMod) -> String {
 
 fn merge_deps(target: &mut BTreeMap<String, ResolvedDep>, incoming: Vec<ResolvedDep>) {
     for dependency in incoming {
-        let key = dependency.mod_jar_id.to_ascii_lowercase();
+        // Different versions of one project chosen by different parents are
+        // kept apart so the install pipeline can pick one every parent accepts.
+        let mut key = dependency.mod_jar_id.to_ascii_lowercase();
+        if let DepDisposition::InstallCandidate { artifact } = &dependency.disposition {
+            if let ResolvedArtifact::Download(download) = artifact.as_ref() {
+                key = format!("{key}#{}", download.version_id);
+            }
+        }
         target
             .entry(key)
             .and_modify(|existing| {
@@ -3686,8 +3708,26 @@ fn merge_deps(target: &mut BTreeMap<String, ResolvedDep>, incoming: Vec<Resolved
                         existing.requested_by.push(requester.clone());
                     }
                 }
+                if existing.pinned_version.is_none() {
+                    existing.pinned_version = dependency.pinned_version.clone();
+                }
             })
             .or_insert(dependency);
+    }
+}
+
+/// The version a parent pinned, but only when the resolved artifact honours
+/// it; a stale pin that fell back to the best candidate constrains nothing.
+fn pinned_version_honoured(pin: Option<&str>, disposition: &DepDisposition) -> Option<String> {
+    let pin = pin?;
+    match disposition {
+        DepDisposition::InstallCandidate { artifact } => match artifact.as_ref() {
+            ResolvedArtifact::Download(download) if download.version_id == pin => {
+                Some(pin.to_string())
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -5092,6 +5132,7 @@ mod tests {
                 "glitchcore".into(),
                 ResolvedDep {
                     requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: "glitchcore".into(),
                     requirement: Requirement::Required,
                     source: DepSource::Jar,
@@ -5106,6 +5147,7 @@ mod tests {
                 "s3dmwky5".into(),
                 ResolvedDep {
                     requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: "s3dmwKy5".into(),
                     requirement: Requirement::Optional,
                     source: DepSource::Manifest,
