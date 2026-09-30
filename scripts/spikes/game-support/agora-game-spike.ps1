@@ -1386,9 +1386,23 @@ VerifyTest on $($app.name) will:
 # --------------------------------------------------------------------------------------------
 
 function Invoke-RestoreUserFiles {
-    $latest = @(Get-ChildItem -LiteralPath $SpikeHome -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1)
-    if ($latest.Count -eq 0) { throw "No backups in $SpikeHome." }
-    $dir = $latest[0].FullName
+    $all = @(Get-ChildItem -LiteralPath $SpikeHome -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+    if ($all.Count -eq 0) { throw "No backups in $SpikeHome." }
+    $dir = $all[0].FullName
+    if (-not (Test-Path -LiteralPath (Join-Parts $dir 'manifest.json'))) {
+        # Without a manifest nothing records which install a backup came from, so the newest one may
+        # belong to a different install than -Game names. Make the choice explicit.
+        $legacy = @($all | Where-Object { -not (Test-Path -LiteralPath (Join-Parts $_.FullName 'manifest.json')) })
+        Write-Host 'Backups from the first version of the script (newest first):' -ForegroundColor Cyan
+        for ($n = 0; $n -lt $legacy.Count; $n++) {
+            $files = (@(Get-ChildItem -LiteralPath $legacy[$n].FullName -File) | ForEach-Object { $_.Name }) -join ', '
+            Write-Host ("  [{0}] {1}  {2}  ({3})" -f ($n + 1), $legacy[$n].Name, $legacy[$n].CreationTime, $files)
+        }
+        $pick = Read-Host "Which backup belongs to $(if ($Game) { $Game } else { 'the install you want to restore' })? (number)"
+        $index = 0
+        if (-not [int]::TryParse($pick, [ref]$index) -or $index -lt 1 -or $index -gt $legacy.Count) { throw 'Cancelled.' }
+        $dir = $legacy[$index - 1].FullName
+    }
     $plan = @()
     $manifest = Join-Parts $dir 'manifest.json'
     if (Test-Path -LiteralPath $manifest) {
