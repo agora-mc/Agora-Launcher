@@ -34,7 +34,12 @@ impl SnapshotService {
             .acquire(LockResource::Instance(instance_id.to_string()), "snapshot")?;
         crate::instance_runtime::check_idle(&self.ctx.paths, instance_id)?;
 
-        let snapshot = snapshot::create_snapshot(&instance_dir, label).map_err(snapshot_error)?;
+        let snapshot = snapshot::create_snapshot_with_origin(
+            &instance_dir,
+            label,
+            snapshot::SnapshotOrigin::User,
+        )
+        .map_err(snapshot_error)?;
         // Retention is housekeeping: a failure here must not present a
         // successful capture as a failure.
         if let Err(error) = crate::lkg::run_retention(&instance_dir) {

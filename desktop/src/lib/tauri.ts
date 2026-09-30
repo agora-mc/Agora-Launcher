@@ -2062,6 +2062,8 @@ export interface Snapshot {
   created_at: string;
   file_count: number;
   size_estimate: number;
+  /** Absent on snapshots taken before origins were recorded. */
+  origin?: 'user' | 'migration' | 'automatic';
   is_lkg: boolean;
   is_current_lkg: boolean;
   is_pre_restore: boolean;

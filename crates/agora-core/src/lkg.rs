@@ -301,6 +301,9 @@ pub struct RetentionPolicy {
     pub keep_non_lkg_count: u32,
     /// Number of pre-restore snapshots to keep.
     pub keep_pre_restore_count: u32,
+    /// Number of user-created and migration snapshots to keep (most recent).
+    /// Automatic snapshots never count against this and never evict them.
+    pub keep_preserved_count: u32,
     /// Maximum total snapshot storage per instance in bytes.
     pub size_cap_bytes: u64,
 }
@@ -314,6 +317,8 @@ pub struct RetentionEntry {
     pub is_lkg: bool,
     pub is_current_lkg: bool,
     pub is_pre_restore: bool,
+    /// Created by the user or as a migration recovery point, not automatically.
+    pub is_preserved: bool,
     /// A live Crash Doctor recovery point. It must survive retention until
     /// Crash Doctor explicitly finishes or discards its experiment.
     pub is_protected: bool,
@@ -325,6 +330,7 @@ impl Default for RetentionPolicy {
             keep_lkg_count: 3,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
+            keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000, // 2 GB
         }
     }
@@ -347,6 +353,7 @@ pub fn retention_plan(
             is_lkg: lkg_ids.contains(id),
             is_current_lkg: current == Some(id),
             is_pre_restore: pre_restore_ids.contains(id),
+            is_preserved: false,
             is_protected: false,
         })
         .collect();
@@ -374,6 +381,7 @@ pub fn retention_plan_with_sizes(
     let mut kept_lkg = usize::from(!keep.is_empty());
     let mut kept_non_lkg = 0usize;
     let mut kept_pre_restore = 0usize;
+    let mut kept_preserved = 0usize;
     for entry in entries_newest_first {
         if entry.is_protected {
             keep.insert(entry.id.clone());
@@ -391,6 +399,11 @@ pub fn retention_plan_with_sizes(
             if kept_pre_restore < policy.keep_pre_restore_count as usize {
                 keep.insert(entry.id.clone());
                 kept_pre_restore += 1;
+            }
+        } else if entry.is_preserved {
+            if kept_preserved < policy.keep_preserved_count as usize {
+                keep.insert(entry.id.clone());
+                kept_preserved += 1;
             }
         } else if kept_non_lkg < policy.keep_non_lkg_count as usize {
             keep.insert(entry.id.clone());
@@ -411,8 +424,10 @@ pub fn retention_plan_with_sizes(
             .filter(|entry| !entry.is_protected)
             .collect();
         candidates.sort_by_key(|entry| {
-            if !entry.is_lkg && !entry.is_pre_restore {
-                0u8
+            if entry.is_preserved {
+                3u8
+            } else if !entry.is_lkg && !entry.is_pre_restore {
+                0
             } else if entry.is_pre_restore {
                 1
             } else {
@@ -470,6 +485,7 @@ pub fn run_retention(instance_dir: &Path) -> Result<(), String> {
                     .label
                     .as_deref()
                     .is_some_and(|label| label.starts_with("pre-restore-")),
+                is_preserved: snapshot.is_preserved(),
                 is_protected: snapshot
                     .label
                     .as_deref()
@@ -783,6 +799,7 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
+            keep_preserved_count: 10,
             size_cap_bytes: 2_000_000_000,
         };
         let evict = retention_plan(&ids, &lkg, &[], &policy);
@@ -806,6 +823,7 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 2,
             keep_pre_restore_count: 2,
+            keep_preserved_count: 10,
             size_cap_bytes: 1_000,
         };
         assert!(retention_plan_with_sizes(&entries, &policy).is_empty());
@@ -823,6 +841,7 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 1,
+            keep_preserved_count: 10,
             size_cap_bytes: 90,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -842,6 +861,7 @@ mod tests {
             keep_lkg_count: 1,
             keep_non_lkg_count: 1,
             keep_pre_restore_count: 0,
+            keep_preserved_count: 10,
             size_cap_bytes: 100,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -859,6 +879,7 @@ mod tests {
             keep_lkg_count: 2,
             keep_non_lkg_count: 0,
             keep_pre_restore_count: 1,
+            keep_preserved_count: 10,
             size_cap_bytes: 80,
         };
         let evicted = retention_plan_with_sizes(&entries, &policy);
@@ -878,6 +899,7 @@ mod tests {
             is_lkg,
             is_current_lkg,
             is_pre_restore,
+            is_preserved: false,
             is_protected: false,
         }
     }
@@ -891,6 +913,7 @@ mod tests {
                 is_lkg: false,
                 is_current_lkg: false,
                 is_pre_restore: false,
+                is_preserved: false,
                 is_protected: true,
             },
             retention("newer-regular", 10, false, false, false),
@@ -899,12 +922,147 @@ mod tests {
             keep_lkg_count: 0,
             keep_non_lkg_count: 0,
             keep_pre_restore_count: 0,
+            keep_preserved_count: 10,
             size_cap_bytes: 1,
         };
 
         let evicted = retention_plan_with_sizes(&entries, &policy);
 
         assert_eq!(evicted, vec!["newer-regular".to_string()]);
+    }
+
+    fn create_test_snapshot_as(
+        instance_dir: &Path,
+        label: &str,
+        origin: crate::snapshot::SnapshotOrigin,
+    ) -> String {
+        std::fs::write(
+            instance_dir.join("instance_manifest.json"),
+            b"{}
+",
+        )
+        .unwrap();
+        crate::snapshot::create_snapshot_with_origin(instance_dir, Some(label), origin)
+            .unwrap()
+            .id
+    }
+
+    fn remaining_ids(instance_dir: &Path) -> Vec<String> {
+        crate::snapshot::list_snapshots(instance_dir)
+            .unwrap()
+            .into_iter()
+            .map(|snapshot| snapshot.id)
+            .collect()
+    }
+
+    #[test]
+    fn manual_snapshot_survives_later_automatic_snapshots() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let manual = create_test_snapshot_as(
+            dir,
+            "UX recovery baseline",
+            crate::snapshot::SnapshotOrigin::User,
+        );
+        for label in ["pre-launch", "install-abc", "pre-template"] {
+            create_test_snapshot(dir, label);
+            run_retention(dir).unwrap();
+        }
+        let remaining = remaining_ids(dir);
+        assert!(remaining.contains(&manual));
+        // The automatic ones still rotate: only the newest one is kept.
+        assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn migration_snapshot_survives_a_manual_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let migration = create_test_snapshot_as(
+            dir,
+            "migration-24bac70bc66c3686",
+            crate::snapshot::SnapshotOrigin::Migration,
+        );
+        let manual = create_test_snapshot_as(
+            dir,
+            "UX recovery baseline",
+            crate::snapshot::SnapshotOrigin::User,
+        );
+        run_retention(dir).unwrap();
+        create_test_snapshot(dir, "pre-launch");
+        run_retention(dir).unwrap();
+        let remaining = remaining_ids(dir);
+        assert!(remaining.contains(&migration));
+        assert!(remaining.contains(&manual));
+    }
+
+    #[test]
+    fn automatic_snapshots_still_rotate() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+        let mut last = String::new();
+        for label in ["pre-launch", "pre-launch", "install-abc", "pack-merge"] {
+            last = create_test_snapshot(dir, label);
+            run_retention(dir).unwrap();
+        }
+        assert_eq!(remaining_ids(dir), vec![last]);
+    }
+
+    #[test]
+    fn preserved_snapshots_are_capped_by_count_and_evicted_last_under_the_size_cap() {
+        let preserved = |id: &str, size: u64| RetentionEntry {
+            is_preserved: true,
+            ..retention(id, size, false, false, false)
+        };
+        let mut entries: Vec<RetentionEntry> = (0..12)
+            .map(|i| preserved(&format!("user-{i}"), 1))
+            .collect();
+        entries.insert(0, retention("auto", 1, false, false, false));
+        let policy = RetentionPolicy::default();
+        let evicted = retention_plan_with_sizes(&entries, &policy);
+        assert_eq!(evicted, vec!["user-10".to_string(), "user-11".to_string()]);
+
+        let entries = vec![
+            preserved("user", 60),
+            retention("auto", 60, false, false, false),
+        ];
+        let policy = RetentionPolicy {
+            size_cap_bytes: 100,
+            ..RetentionPolicy::default()
+        };
+        assert_eq!(
+            retention_plan_with_sizes(&entries, &policy),
+            vec!["auto".to_string()]
+        );
+    }
+
+    #[test]
+    fn snapshots_without_a_recorded_origin_are_classified_by_label() {
+        let classify = |label: Option<&str>| {
+            crate::snapshot::Snapshot {
+                id: "x".into(),
+                label: label.map(str::to_string),
+                created_at: String::new(),
+                file_count: 0,
+                size_estimate: 0,
+                origin: None,
+            }
+            .is_preserved()
+        };
+        assert!(classify(Some("UX recovery baseline")));
+        assert!(classify(Some("migration-24bac70bc66c3686")));
+        for automatic in [
+            "pre-launch",
+            "pre-restore-20260930-120000",
+            "pre-template",
+            "pack-merge",
+            "install-0123456789abcdef",
+            "crash-doctor-1",
+            "Initial import state",
+        ] {
+            assert!(!classify(Some(automatic)), "{automatic}");
+        }
+        assert!(!classify(None));
     }
 
     #[test]
