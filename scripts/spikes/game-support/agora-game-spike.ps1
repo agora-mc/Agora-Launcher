@@ -55,6 +55,13 @@ param(
     # StockRoot (Steam only): write steam_appid.txt into the stock root before launching.
     [switch]$AddSteamAppId,
 
+    # ToolRecord / Inventory: an MO2 instance folder (the one holding ModOrganizer.ini) to use.
+    [string]$Mo2Instance,
+
+    # StoreProbe -TryLaunch: executable to start instead of the first one MicrosoftGame.config lists,
+    # relative to the game's Content folder (for example binaries\ck3.exe).
+    [string]$Exe,
+
     # StoreProbe: only games whose folder name contains this text.
     [string]$Name,
 
@@ -673,6 +680,33 @@ function Get-Mo2Instance([string]$InstanceDir, [string]$Kind) {
     }
 }
 
+function Find-Mo2Instances([int]$MaxDepth = 3, [string[]]$SearchRoots) {
+    # Breadth-first over directories only, skipping system trees. Cheap: a few thousand folders at most.
+    $roots = $SearchRoots
+    if (-not $roots) {
+        $roots = @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -match '^[A-Za-z]:\\$' } | ForEach-Object { $_.Root })
+    }
+    $skip = @('Windows', 'Program Files', 'Program Files (x86)', 'ProgramData', '$Recycle.Bin', 'System Volume Information',
+        'Users', 'XboxGames', 'Recovery', 'PerfLogs', 'AgoraSpike', 'steamapps', 'node_modules', '.git')
+    $found = @()
+    foreach ($searchRoot in $roots) {
+        $level = @($searchRoot)
+        for ($depth = 1; $depth -le $MaxDepth -and $level.Count -gt 0; $depth++) {
+            $next = @()
+            foreach ($dir in $level) {
+                foreach ($child in @(Get-ChildItem -LiteralPath $dir -Directory -Force -ErrorAction SilentlyContinue)) {
+                    if ($skip -contains $child.Name) { continue }
+                    if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+                    if (Test-Path -LiteralPath (Join-Parts $child.FullName 'ModOrganizer.ini')) { $found += $child.FullName; continue }
+                    $next += $child.FullName
+                }
+            }
+            $level = $next
+        }
+    }
+    return $found
+}
+
 function Get-Mo2Setups {
     $instances = @()
     $installs = @()
@@ -709,6 +743,17 @@ function Get-Mo2Setups {
             try { $instances += Get-Mo2Instance $c 'portable' }
             catch { $instances += [pscustomobject]@{ instanceDir = $c; error = $_.Exception.Message } }
         }
+    }
+    # Instances outside the usual places (Wabbajack lists, salvage copies): an explicit -Mo2Instance,
+    # plus a shallow scan of each fixed drive.
+    $extra = @()
+    if ($Mo2Instance) { $extra += $Mo2Instance.TrimEnd('\') }
+    $extra += @(Find-Mo2Instances)
+    foreach ($dir in $extra) {
+        if ($seenInstances.ContainsKey($dir) -or -not (Test-Path -LiteralPath (Join-Parts $dir 'ModOrganizer.ini'))) { continue }
+        $seenInstances[$dir] = $true
+        try { $instances += Get-Mo2Instance $dir 'found' }
+        catch { $instances += [pscustomobject]@{ instanceDir = $dir; error = $_.Exception.Message } }
     }
     return [ordered]@{ currentInstance = $currentInstance; installs = $installs; instances = $instances }
 }
@@ -754,6 +799,7 @@ function Get-SkyrimInstalls {
     }
     foreach ($g in @(Get-GogGames)) {
         if ($g.name -match 'Skyrim' -and $g.installed -and (Test-Path -LiteralPath (Join-Parts $g.installDir 'SkyrimSE.exe'))) {
+            if (@($list | Where-Object { $_.installDir -eq $g.installDir }).Count -gt 0) { continue }
             $list += [pscustomobject]@{ flavor = 'GOG'; key = 'SkyrimGOG'; installDir = $g.installDir; appDataName = 'Skyrim Special Edition GOG'; steam = $null }
         }
     }
@@ -1203,6 +1249,19 @@ function Invoke-ToolRecord {
         # Prefer MO2: a tool run through MO2 writes into its overwrite folder or a chosen output mod,
         # and reads the game folder MO2 points at, which may not be the Steam or GOG default.
         $mo2Skyrim = @(@((Get-Mo2Setups).instances) | Where-Object { $_.gameName -match 'Skyrim' -and $_.modsDir })
+        if ($Mo2Instance) {
+            $mo2Skyrim = @($mo2Skyrim | Where-Object { $_.instanceDir -eq $Mo2Instance.TrimEnd('\') })
+            if ($mo2Skyrim.Count -eq 0) { throw "$Mo2Instance is not a Skyrim MO2 instance (no ModOrganizer.ini for Skyrim there)." }
+        } elseif ($mo2Skyrim.Count -gt 1) {
+            Write-Host 'Skyrim MO2 instances found:' -ForegroundColor Cyan
+            for ($n = 0; $n -lt $mo2Skyrim.Count; $n++) {
+                Write-Host ("  [{0}] {1}  ({2} mods, game {3})" -f ($n + 1), $mo2Skyrim[$n].instanceDir, $mo2Skyrim[$n].modCount, $mo2Skyrim[$n].gameExeVersion)
+            }
+            $pick = Read-Host 'Which one will you run the tool from? (number)'
+            $index = 0
+            if (-not [int]::TryParse($pick, [ref]$index) -or $index -lt 1 -or $index -gt $mo2Skyrim.Count) { throw 'Cancelled.' }
+            $mo2Skyrim = @($mo2Skyrim[$index - 1])
+        }
         $appDataName = 'Skyrim Special Edition'
         if ($mo2Skyrim.Count -gt 0) {
             foreach ($inst in $mo2Skyrim) {
@@ -1623,9 +1682,12 @@ function Invoke-StoreProbe {
         if ($base.Count -ne 1) { throw "-TryLaunch needs -Name to match exactly one game; it matched $($base.Count)." }
         $game = $base[0]
         $exe = @($game.config.executables)[0]
+        if ($Exe) { $exe = [pscustomobject]@{ name = $Exe; id = '(from -Exe)' } }
         $exePath = Join-Parts $game.contentDir $exe.name
         $exeDir = Split-Path -Parent $exePath
         $processNames = @([IO.Path]::GetFileNameWithoutExtension($exe.name))
+        foreach ($listed in @($game.config.executables)) { $processNames += [IO.Path]::GetFileNameWithoutExtension($listed.name) }
+        $processNames = @($processNames | Sort-Object -Unique)
         $app = @($game.applications) | Select-Object -First 1
         Confirm-Yes (@"
 TryLaunch will start $($game.name) up to three times, one way at a time:
@@ -1642,6 +1704,7 @@ After each, say whether the game started, then close it. Nothing is written anyw
             $attempts += Invoke-LaunchAttempt 'app id (shell:AppsFolder)' { Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$aumid" } $processNames
         }
         $report.launchAttempts = $attempts
+        $report.launchedExecutable = $exe.name
     } else {
         Write-Host ''
         Write-Host 'To test launching one game:  -Mode StoreProbe -Name "Crusader Kings III" -TryLaunch' -ForegroundColor Yellow

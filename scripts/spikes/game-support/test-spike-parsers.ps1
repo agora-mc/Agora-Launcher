@@ -146,6 +146,15 @@ version=2.5.2
     Assert-Equal '"C:\\Users\\<user>\\Documents"' (Protect-Text '"C:\\Users\\alice\\Documents"') 'redact json path'
     Assert-Equal 'C:\Users\<user>\OneDrive' (Protect-Text 'C:\Users\alice\OneDrive') 'redact plain path'
 
+    # MO2 instance scan: depth limit, system folders skipped, found folders not descended into
+    $scan = Join-Path $root 'drive'
+    New-File (Join-Path $scan 'Skyrim-MO2-Salvage/MO2/ModOrganizer.ini')
+    New-File (Join-Path $scan 'Games/Wabbajack/List/ModOrganizer.ini')
+    New-File (Join-Path $scan 'Too/Deep/For/Scan/ModOrganizer.ini')
+    New-File (Join-Path $scan 'Program Files/MO2/ModOrganizer.ini')
+    $hits = @(Find-Mo2Instances 3 @($scan) | ForEach-Object { Get-RelativePath $scan $_ } | Sort-Object)
+    Assert-Equal 'Games/Wabbajack/List|Skyrim-MO2-Salvage/MO2' (($hits -join '|') -replace '\\', '/') 'mo2 scan finds instances up to depth 3 only'
+
     # Log head: plain strings, bounded count
     $log = Join-Path $root 'skse64.log'
     New-File $log "line one`r`nline two`r`nline three"
