@@ -61,7 +61,9 @@ const VERSION_MANIFEST_URL: &str =
 /// other metadata (version JSONs addressed by SHA-1, asset indexes, pinned
 /// loader profiles) are content-addressable and need no freshness window.
 const VERSION_MANIFEST_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-const RESOLVED_PLAN_CACHE_SCHEMA_VERSION: u32 = 1;
+// Bumped to 2: the loader/base library merge now replaces same-artifact
+// libraries, so plans cached with duplicate jars (e.g. two ASM versions) are stale.
+const RESOLVED_PLAN_CACHE_SCHEMA_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Redirect-safe HTTP clients
@@ -1992,7 +1994,9 @@ const MAX_CAPTURED_LINES: usize = 200;
 const MAX_CAPTURED_OUTPUT_BYTES: usize = 1024 * 1024;
 const OUTPUT_READ_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_OUTPUT_RECORD_BYTES: usize = 64 * 1024;
-const CAPTURED_LAUNCH_OUTPUT_FILE: &str = "agora-launch-output.log";
+/// File (under `<game_dir>/logs/`) holding the last launch's captured Java
+/// output. Read back by Crash Doctor when the JVM died before writing its own logs.
+pub const CAPTURED_LAUNCH_OUTPUT_FILE: &str = "agora-launch-output.log";
 type OutputLineCallback<'a> = dyn Fn(&str, &str) + Send + Sync + 'a;
 
 #[derive(Debug, Default)]
@@ -2106,6 +2110,16 @@ fn persist_captured_launch_output(
         &game_dir.join("logs").join(CAPTURED_LAUNCH_OUTPUT_FILE),
         contents.as_bytes(),
     );
+}
+
+/// Flag the captured launch output as the result of a user-requested stop so
+/// Crash Doctor does not treat the resulting non-zero exit as a crash.
+pub fn mark_captured_launch_output_user_stopped(game_dir: &Path) {
+    use std::io::Write;
+    let path = game_dir.join("logs").join(CAPTURED_LAUNCH_OUTPUT_FILE);
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
+        let _ = writeln!(file, "# user_stopped=true");
+    }
 }
 
 /// Wait for a child while streaming stdout/stderr lines in real-time to an
