@@ -7637,3 +7637,13 @@ mod command_helper_tests {
         }
     }
 }
+
+/// An image linked from community-written About text, as a `data:` URL.
+/// Core fetches it from any public host and confirms from its bytes that it is
+/// an image before the page can display it; see `agora_core::community_image`.
+#[tauri::command]
+pub async fn fetch_community_image(app: tauri::AppHandle, url: String) -> LauncherResult<String> {
+    let ctx = crate::core_context(&app)?;
+    let image = agora_core::community_image::fetch(&ctx, &url).await?;
+    Ok(image.to_data_url())
+}

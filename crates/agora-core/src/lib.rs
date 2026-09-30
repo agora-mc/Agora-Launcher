@@ -13,6 +13,7 @@ pub mod backup;
 pub mod bisect;
 pub mod browse_cache;
 pub mod clone;
+pub mod community_image;
 pub mod controller_service;
 pub mod crash_diagnostics;
 pub mod crash_evidence;

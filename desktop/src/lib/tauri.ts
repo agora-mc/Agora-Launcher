@@ -1307,6 +1307,9 @@ export const setCustomModIcon = (instanceId: string, filename: string, sourcePat
   invoke<string>('set_custom_mod_icon', { instanceId, filename, sourcePath });
 export const getCustomIcon = (instanceId: string, target: 'instance' | 'mod', filename?: string) =>
   invoke<string | null>('get_custom_icon', { instanceId, target, filename: filename ?? null });
+/** An About-text image from any public host as a `data:` URL; core rejects anything that is not an image. */
+export const fetchCommunityImage = (url: string) =>
+  invoke<string>('fetch_community_image', { url });
 
 export type LauncherKind = 'prism' | 'curse_forge' | 'modrinth';
 export type CandidateStatus = 'ready' | 'needs_review' | { unsupported: { reasons: string[] } };

@@ -2523,6 +2523,20 @@ does not yet let a player untick optional mods before installing.
 
 ---
 
+### 20.5 About-Text Images Come From Any Public Host, Confirmed as Images
+
+Community-written project descriptions link images from anywhere (badge
+services, personal hosts). The webview's CSP `img-src` stays limited to
+first-party hosts; every other HTTPS image is fetched by core under
+`ClientCategory::CommunityImage` with `HostPolicy::AnyPublicHost`, which is
+valid for that category only. Every other request gate still applies (HTTPS,
+port 443, no IP literals, no private or loopback addresses, per-hop redirect
+checks, Lockdown), responses are capped at 5 MiB, and the bytes must carry a
+known image signature (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO, or an SVG root
+element) before the page receives them as a `data:` URL. SVG is accepted
+because it is displayed through `<img>`, where its scripts and external
+references do not run. Anything else is dropped and the image is hidden.
+
 ## 21. EXTENSIBILITY: PLUGINS & CONTENT PROVIDERS
 
 Community plugins and the content-provider interface built on them. Guiding principle (see AGENTS.md): modding is user customization — protect users with warnings and explicit opt-in rather than by blocking.
@@ -3082,6 +3096,15 @@ enforce the readiness check so the UI is not the security boundary.
 
 Retention accounts for manifest and referenced object storage and removes an
 object only after no remaining snapshot manifest references it.
+
+Each snapshot records its origin: `user` (created by hand), `migration` (the
+recovery point of a Minecraft version change) or `automatic` (pre-launch,
+pre-install, pre-template, pack merge, import). Automatic snapshots rotate
+among themselves; they never evict user or migration snapshots, which are kept
+by their own count (10) and are the last to go under the storage cap.
+Snapshots written before the field existed are classified by label. A single
+shared count used to let the next launch delete a user's or a migration's
+recovery point without warning.
 
 ### 23.4 Health, Crash Doctor, Memory, Authentication, and Launch Reliability (formerly §19.19)
 

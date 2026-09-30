@@ -181,6 +181,7 @@ pub fn run() {
             plugins::read_plugin_log,
             commands::take_pending_cli_launch,
             commands::browse_items,
+            commands::fetch_community_image,
             commands::for_you_items,
             commands::get_registry_item,
             commands::list_categories,
