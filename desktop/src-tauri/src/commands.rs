@@ -1072,9 +1072,8 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
                         agora_core::launch_history::LaunchResult::Ok
                     }
                     LaunchOutcome::Crash => agora_core::launch_history::LaunchResult::Crashed,
-                    LaunchOutcome::Cancelled | LaunchOutcome::Unknown => {
-                        agora_core::launch_history::LaunchResult::Unknown
-                    }
+                    LaunchOutcome::Cancelled => agora_core::launch_history::LaunchResult::Stopped,
+                    LaunchOutcome::Unknown => agora_core::launch_history::LaunchResult::Unknown,
                 };
                 let _ = agora_core::launch_history::finish_launch(
                     &conn,

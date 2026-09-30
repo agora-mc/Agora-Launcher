@@ -737,6 +737,14 @@ impl LaunchService {
         .inspect_err(|_| {
             self.ctx.process_session_manager.remove(session_id);
         })?;
+        // A process the user stopped with Agora's Stop/Kill exits non-zero;
+        // record that as a user-requested stop rather than a crash.
+        let outcome = if self.ctx.process_session_manager.take_user_stop(session_id) {
+            crate::launch_planner::mark_captured_launch_output_user_stopped(&request.game_dir);
+            LaunchOutcome::Cancelled
+        } else {
+            outcome
+        };
 
         // The game has exited, so release the instance. On the error path
         // above the lease is deliberately left in place: we no longer know

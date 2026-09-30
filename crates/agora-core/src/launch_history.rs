@@ -37,6 +37,9 @@ pub enum LaunchResult {
     Ok,
     /// Non-zero exit or a crash signal.
     Crashed,
+    /// The user stopped it with Agora's own Stop/Kill control. Not a crash and
+    /// never counted as one.
+    Stopped,
     /// The launcher never saw it finish — killed, or Agora closed first.
     Unknown,
 }
@@ -46,6 +49,7 @@ impl LaunchResult {
         match self {
             Self::Ok => "ok",
             Self::Crashed => "crashed",
+            Self::Stopped => "stopped",
             Self::Unknown => "unknown",
         }
     }
@@ -54,6 +58,7 @@ impl LaunchResult {
         match value {
             "ok" => Self::Ok,
             "crashed" => Self::Crashed,
+            "stopped" => Self::Stopped,
             _ => Self::Unknown,
         }
     }

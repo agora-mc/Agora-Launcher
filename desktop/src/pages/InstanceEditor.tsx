@@ -3,6 +3,7 @@ import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
 import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
+import { takeRequestedEditorTab } from '../lib/editorDeepLink';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { DependencyPrompt } from '../components/DependencyPrompt';
@@ -270,7 +271,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const { confirm, prompt } = useConfirm();
 
   // Sub-sidebar active tab
-  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>('mods');
+  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>(() => (takeRequestedEditorTab() === 'console' ? 'console' : 'mods'));
 
   // Snapshots state (Phase 6)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -1587,6 +1588,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           processState={processState}
           installActive={packInstall?.status === 'running'}
           launchAvailable={!playDisabled}
+          onStop={onKillProcess && processRunning ? () => onKillProcess() : undefined}
           onLaunch={async () => {
             if (!onLaunch || playDisabled) return;
             setPlayBusy(true);

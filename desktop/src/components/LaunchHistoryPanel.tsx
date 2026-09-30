@@ -84,6 +84,7 @@ export function LaunchHistoryPanel({ instanceId }: { instanceId: string }) {
                 <span className={`ml-auto ${record.outcome === 'crashed' ? 'text-destructive' : 'text-muted-foreground'}`}>
                   {record.outcome === 'crashed' ? 'crashed'
                     : record.outcome === 'ok' ? 'ok'
+                    : record.outcome === 'stopped' ? 'stopped by you'
                     : record.outcome === 'unknown' ? 'unknown'
                     : 'running'}
                 </span>
