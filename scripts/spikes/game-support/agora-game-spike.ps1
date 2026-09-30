@@ -407,8 +407,8 @@ function Get-SteamRoot {
     foreach ($key in 'HKCU:\Software\Valve\Steam', 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam', 'HKLM:\SOFTWARE\Valve\Steam') {
         try {
             $p = Get-ItemProperty -Path $key -ErrorAction Stop
-            foreach ($name in 'SteamPath', 'InstallPath') {
-                $v = $p.$name
+            foreach ($valueName in 'SteamPath', 'InstallPath') {
+                $v = $p.$valueName
                 if ($v) {
                     $v = $v -replace '/', '\'
                     if (Test-Path -LiteralPath $v) { return $v }
@@ -730,11 +730,11 @@ function Get-Mo2Setups {
     if ($nxm -and $nxm.command -match '"?([^"]*?)\\nxmhandler\.exe') { $candidates += $Matches[1] }
     foreach ($c in @("$env:ProgramFiles\Mod Organizer 2", "$env:LOCALAPPDATA\Programs\Mod Organizer 2", 'C:\Modding\MO2', 'C:\MO2')) { $candidates += $c }
     foreach ($c in ($candidates | Sort-Object -Unique)) {
-        $exe = Join-Parts $c 'ModOrganizer.exe'
-        if (-not (Test-Path -LiteralPath $exe)) { continue }
+        $mo2Exe = Join-Parts $c 'ModOrganizer.exe'
+        if (-not (Test-Path -LiteralPath $mo2Exe)) { continue }
         $installs += [pscustomobject]@{
             dir      = $c
-            version  = Get-FileVersionString $exe
+            version  = Get-FileVersionString $mo2Exe
             portable = (Test-Path -LiteralPath (Join-Parts $c 'ModOrganizer.ini'))
             usvfs    = @(Get-ChildItem -LiteralPath $c -Filter 'usvfs*' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
         }
@@ -759,21 +759,21 @@ function Get-Mo2Setups {
 }
 
 function Get-VortexSetup {
-    $root = Join-Parts $env:APPDATA 'Vortex'
-    $exe = Join-Parts $env:ProgramFiles 'Black Tree Gaming Ltd' 'Vortex' 'Vortex.exe'
+    $vortexRoot = Join-Parts $env:APPDATA 'Vortex'
+    $vortexExe = Join-Parts $env:ProgramFiles 'Black Tree Gaming Ltd' 'Vortex' 'Vortex.exe'
     $result = [ordered]@{
-        installed  = (Test-Path -LiteralPath $exe)
-        version    = Get-FileVersionString $exe
-        dataFolder = (Test-Path -LiteralPath $root)
+        installed  = (Test-Path -LiteralPath $vortexExe)
+        version    = Get-FileVersionString $vortexExe
+        dataFolder = (Test-Path -LiteralPath $vortexRoot)
         stateDbMB  = $null
         staging    = @()
     }
-    if (Test-Path -LiteralPath $root) {
-        $state = Join-Parts $root 'state.v2'
+    if (Test-Path -LiteralPath $vortexRoot) {
+        $state = Join-Parts $vortexRoot 'state.v2'
         if (Test-Path -LiteralPath $state) {
             $result.stateDbMB = [math]::Round((@(Get-ChildItem -LiteralPath $state -Recurse -File -ErrorAction SilentlyContinue) | Measure-Object Length -Sum).Sum / 1MB, 1)
         }
-        foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $vortexRoot -Directory -ErrorAction SilentlyContinue)) {
             $mods = Join-Parts $d.FullName 'mods'
             if (Test-Path -LiteralPath $mods) {
                 $result.staging += [pscustomobject]@{
@@ -915,10 +915,10 @@ function Get-SystemInfo {
 }
 
 function Get-ParadoxData {
-    $root = Join-Parts (Get-DocumentsPath) 'Paradox Interactive'
+    $paradoxRoot = Join-Parts (Get-DocumentsPath) 'Paradox Interactive'
     $games = @()
-    if (Test-Path -LiteralPath $root) {
-        foreach ($g in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+    if (Test-Path -LiteralPath $paradoxRoot) {
+        foreach ($g in @(Get-ChildItem -LiteralPath $paradoxRoot -Directory -ErrorAction SilentlyContinue)) {
             $modDir = Join-Parts $g.FullName 'mod'
             $games += [pscustomobject]@{
                 game           = $g.Name
@@ -933,7 +933,7 @@ function Get-ParadoxData {
     }
     $launcher = Join-Parts $env:LOCALAPPDATA 'Paradox Interactive' 'launcher-v2'
     return [ordered]@{
-        documentsRoot    = $root
+        documentsRoot    = $paradoxRoot
         games            = $games
         launcherV2Folder = (Test-Path -LiteralPath $launcher)
         launcherDatabase = @(Get-ChildItem -LiteralPath $launcher -Filter '*.sqlite' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
@@ -1548,14 +1548,14 @@ function Read-GameConfig([string]$Path) {
             $desktopSettings[$child.LocalName] = $value
         }
     }
-    $root = $xml.DocumentElement
+    $documentElement = $xml.DocumentElement
     return [pscustomobject]@{
         identityName        = $(if ($identity) { $identity.GetAttribute('Name') } else { $null })
         publisher           = $(if ($identity) { $identity.GetAttribute('Publisher') } else { $null })
         version             = $(if ($identity) { $identity.GetAttribute('Version') } else { $null })
         executables         = $executables
         desktopRegistration = $desktopSettings
-        topLevelElements    = @($root.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.LocalName })
+        topLevelElements    = @($documentElement.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.LocalName })
     }
 }
 
@@ -1680,31 +1680,31 @@ function Invoke-StoreProbe {
     if ($TryLaunch) {
         $base = @($games | Where-Object { $_.isBaseGame })
         if ($base.Count -ne 1) { throw "-TryLaunch needs -Name to match exactly one game; it matched $($base.Count)." }
-        $game = $base[0]
-        $exe = @($game.config.executables)[0]
-        if ($Exe) { $exe = [pscustomobject]@{ name = $Exe; id = '(from -Exe)' } }
-        $exePath = Join-Parts $game.contentDir $exe.name
+        $target = $base[0]
+        $launchExe = @($target.config.executables)[0]
+        if ($Exe) { $launchExe = [pscustomobject]@{ name = $Exe; id = '(from -Exe)' } }
+        $exePath = Join-Parts $target.contentDir $launchExe.name
         $exeDir = Split-Path -Parent $exePath
-        $processNames = @([IO.Path]::GetFileNameWithoutExtension($exe.name))
-        foreach ($listed in @($game.config.executables)) { $processNames += [IO.Path]::GetFileNameWithoutExtension($listed.name) }
+        $processNames = @([IO.Path]::GetFileNameWithoutExtension($launchExe.name))
+        foreach ($listed in @($target.config.executables)) { $processNames += [IO.Path]::GetFileNameWithoutExtension($listed.name) }
         $processNames = @($processNames | Sort-Object -Unique)
-        $app = @($game.applications) | Select-Object -First 1
+        $app = @($target.applications) | Select-Object -First 1
         Confirm-Yes (@"
-TryLaunch will start $($game.name) up to three times, one way at a time:
-  1. its own executable directly ($($exe.name))
+TryLaunch will start $($target.name) up to three times, one way at a time:
+  1. its own executable directly ($($launchExe.name))
   2. gamelaunchhelper.exe, the stub the Xbox app installs
   3. the Windows app id ($(if ($app) { $app.aumid } else { 'not found' })), which is what the Xbox app itself uses
 After each, say whether the game started, then close it. Nothing is written anywhere.
 "@)
         $attempts = @()
         $attempts += Invoke-LaunchAttempt 'direct executable' { Start-Process -FilePath $exePath -WorkingDirectory $exeDir } $processNames
-        $attempts += Invoke-LaunchAttempt 'gamelaunchhelper.exe' { Start-Process -FilePath (Join-Parts $game.contentDir 'gamelaunchhelper.exe') -WorkingDirectory $game.contentDir } $processNames
+        $attempts += Invoke-LaunchAttempt 'gamelaunchhelper.exe' { Start-Process -FilePath (Join-Parts $target.contentDir 'gamelaunchhelper.exe') -WorkingDirectory $target.contentDir } $processNames
         if ($app) {
             $aumid = $app.aumid
             $attempts += Invoke-LaunchAttempt 'app id (shell:AppsFolder)' { Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$aumid" } $processNames
         }
         $report.launchAttempts = $attempts
-        $report.launchedExecutable = $exe.name
+        $report.launchedExecutable = $launchExe.name
     } else {
         Write-Host ''
         Write-Host 'To test launching one game:  -Mode StoreProbe -Name "Crusader Kings III" -TryLaunch' -ForegroundColor Yellow

@@ -221,5 +221,20 @@ foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.La
     }
 }
 
+# The same trap across scopes: a function that assigns `$exe` hides the script's `-Exe` parameter
+# from itself, because `$Exe` and `$exe` are one name (it broke StoreProbe -Exe on Windows).
+$scriptParams = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    $assigned = @($fn.Body.FindAll({ param($n)
+                ($n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.VariableExpressionAst]) -or
+                $n -is [System.Management.Automation.Language.ForEachStatementAst] }, $true) | ForEach-Object {
+            if ($_ -is [System.Management.Automation.Language.ForEachStatementAst]) { $_.Variable.VariablePath.UserPath } else { $_.Left.VariablePath.UserPath }
+        })
+    foreach ($sp in $scriptParams) {
+        $hits = @($assigned | Where-Object { $_ -eq $sp })
+        Assert-Equal 0 $hits.Count "$($fn.Name): does not shadow script parameter -$sp"
+    }
+}
+
 if ($failures -gt 0) { Write-Host "$failures failure(s)" -ForegroundColor Red; exit 1 }
 Write-Host 'All parser checks passed.' -ForegroundColor Green

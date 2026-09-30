@@ -40,7 +40,7 @@ identity and the hardlinked copy kept the old content.
 `verifytest-20260929-195903.json`
 
 **Design:** a hardlinked pinned copy survives Steam repairs. Pending: the same check across a real
-update (`LinkArm` now, `LinkCheck` after the next update).
+update (Baldur's Gate 3 has a hotfix waiting).
 
 ## 4. Under MO2's VFS, a tool's edits to existing files land in the mod's own folder
 
@@ -109,5 +109,5 @@ game definition declares its engine and loaders instead of relying on detection.
 ## Still to run
 
 - `ToolRecord -Mo2Instance <complete pack>` around a Nemesis run.
-- `LinkArm -SteamAppId 281990`, then `LinkCheck` after Stellaris next updates.
+- `LinkArm -SteamAppId 1086940` before applying Baldur's Gate 3's pending hotfix, then `LinkCheck`.
 - `StoreProbe -Name "Crusader Kings III" -TryLaunch -Exe binaries\ck3.exe`.
