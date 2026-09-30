@@ -3296,9 +3296,9 @@ two MO2 setups, one of them a 214,592-file pack.
 | Finding | Decision |
 |---|---|
 | A private copy of Skyrim builds in 0.1 s at ~50 MB of real disk; SKSE runs from it and loads its plugins from it; Steam does not relaunch it from its own folder (F1) | Every instance runs a **pinned base** of its game version (§26.4). A store update cannot break an instance. |
-| The game, and a tool run, rewrote `d3dx9_42.log` inside the base; the base was a hardlink, so the real Steam install changed (F2, F4) | The base is **read-only in practice, not just by intent**: only large immutable archives are hardlinked; everything else is copied (§26.4). |
-| Steam replaces files on repair and on a real update; 14 of 331 files replaced, none patched in place, no `.pak` touched (F3) | Hardlinked archives in a base stay frozen through updates. Pinning costs what an update replaces, not the game's size. |
-| Under MO2's usvfs, new files go to `overwrite`, but BodySlide and Nemesis edit existing files **in place** in their mod folders (F4) | Agora's content store is shared, so its files may never be the write target: the VFS must **copy on write** (§26.5). |
+| The game, and a tool run, rewrote `d3dx9_42.log` inside the base; the base was a hardlink, so the real Steam install changed (F2, F4) | A base is a **lower layer that is never written**: writes go to the instance's own layer, which protects the store install and every other instance sharing the base (§26.4, §26.5). |
+| Steam replaces files on repair and on a real update; 14 of 331 files replaced, none patched in place, no `.pak` touched (F3) | A **Linked** base (hardlinked archives) is frozen against replace-style updates, the only kind observed, and costs tens of MB. An archive changed in place is detected, never absorbed; a **Copied** base guarantees against anything (§26.4). |
+| Under MO2's usvfs, new files go to `overwrite`, but BodySlide and Nemesis edit existing files **in place** in their mod folders (F4) | Agora's content store is shared, so its files may never be the write target: the VFS must **copy on write, or fail closed** (§26.5), and this is measured before the layer contract is fixed. |
 | Nemesis's real output is ~46 files under `meshes\actors\character` plus its own cache (F4) | Tool output is a **generated layer** Agora owns, fingerprints and rolls back (§26.9). |
 | Steam 1.6.1170, GOG 1.6.1179 and an untracked 1.7.104 on one machine; an Address Library covering twelve runtimes but not the one its MO2 instance uses (F5) | A game's runtime identity is **store + exact version**, and compatibility is checked against it before launch (§26.6). |
 | 101 of 107 MO2 mods record a Nexus id and archive name; a forgotten MO2 setup turned up only when drives were scanned (F6) | MO2 import is a flagship path; discovery scans rather than trusting default locations (§26.10). |
@@ -3342,60 +3342,114 @@ after it was quitted" as a normal state to resolve rather than an error.
 
 ### 26.4 Pinned Bases
 
-**Every instance of a game with a readable install runs from a pinned base**: a private copy of one
-game version, shared by all instances pinned to that version. This is the Wabbajack "Stock Game"
-practice made automatic, and it is what fixes the problem that started this initiative: a Steam
-update changes the Steam install and no instance.
+**Every instance of a game whose install is readable and relocatable runs from a pinned base**: a
+private copy of one game version, shared by all instances pinned to that version. This is the
+Wabbajack "Stock Game" practice made automatic, and it is what fixes the problem that started this
+initiative: a Steam update changes the Steam install and no instance.
 
-**What is linked and what is copied.** The spike showed a base built entirely from hardlinks is not
-safe: files inside it are written by the game and by tools, and a hardlink carries those writes into
-the real install (F2, F4). So:
+**A base is a lower layer, never written.** Games and tools do write inside their own folder (F2,
+F4), and a base is shared, so every write is redirected by the deployment strategy (§26.5) into the
+instance's own layer. That protects the store install *and* the other instances pinned to the same
+base; copying files out of the store install protects only the first.
 
-- **Hardlink** only files that are large and never written: the archive formats a game definition
-  lists (`.bsa`/`.ba2` for Creation Engine, `.pak`/`.utoc`/`.ucas` for Unreal, `.archive` for REDengine 4,
-  and so on). For Skyrim that is almost all of its 16 GB.
-- **Copy** everything else: executables and DLLs (a pinned base must own its runtime, and updates
-  replace exactly these, F3), INIs, logs, small data. Tens of megabytes.
-- **Never write into a base.** Writes are redirected by the deployment strategy (§26.5). A base is
-  verified against its build manifest before launch; a changed file is a diagnostic, and repair means
-  re-linking or re-copying from the store install or another base.
+**Two ways to build one, and what each guarantees.**
 
-Hardlinks need the base on the same volume as the store install. On another volume, the archives are
-copied instead, with the cost shown before the user agrees. A base is kept while an instance uses it;
-when the store install moves on and no instance is pinned to the old version, Agora offers to remove
-it.
+| Mode | Built from | Disk | Guarantee |
+|---|---|---|---|
+| **Linked** (default) | Hardlinks for the large archives a game definition lists (`.bsa`/`.ba2`, `.pak`/`.utoc`/`.ucas`, `.archive`…); copies of everything else (executables, DLLs, INIs, small data) | Tens of MB | Frozen against stores that *replace* files, which is what Steam did for a repair and for a real update (F3). Not frozen against a store that patches an archive in place: a hardlink shares the file, and a read-only attribute is shared too. Such a change is **detected, never absorbed**. |
+| **Copied** | Copies of everything | The game's full size | Frozen against anything. |
+
+Linked is the default because the evidence so far supports it and Copied costs 16 GB for Skyrim and
+145 GB for Baldur's Gate 3. The user can make any base Copied, and an instance can require it. Where
+a volume offers copy-on-write file clones (ReFS, including Windows 11 Dev Drive), Copied costs no more
+than Linked and is used automatically.
+
+**Verification.** Building a base records a manifest: path, size, SHA-256, and for linked files the
+file identity. Before every launch the base is checked cheaply (identity, size, modification time);
+the full hash runs at build time, on demand, and whenever the cheap check fails.
+
+**Repair restores exact bytes or says it cannot.** A damaged base file is restored only from a source
+whose hash matches the manifest: the store install if it has not moved on, another base of the same
+version, or a Copied base. If no such source exists, Agora says so, names the files, and does not
+launch that instance on a mixed-version base. The choices offered are to move the instance to the
+store's current version (below) or to rebuild the base from a matching copy the
+user supplies.
+
+Hardlinks need the base on the same volume as the store install; elsewhere, a base is Copied, with
+the cost shown before the user agrees. A base is kept while an instance uses it; when no instance is
+pinned to it, Agora offers to remove it.
 
 **Updating is a choice.** When the store install's runtime identity changes, Agora shows which of an
 instance's frameworks and native plugins support the new version and offers to move the instance.
 Moving takes a snapshot first.
 
-Games whose executables cannot be read (Microsoft Store) run from their store folder and are not
-pinned. Their mods rarely need the game folder (CK3 and Dungeons read Documents and AppData).
+**Installs that cannot be pinned.** Two kinds: executables that cannot be read (Microsoft Store, F7),
+and games the store will not run from outside its folder (a store adapter records this per install,
+§26.3; Steam Skyrim and GOG Skyrim both ran relocated, F1). Both run from their store folder,
+unpinned, with the VFS mounted over that folder where the game needs one, as MO2 does; the instance
+page says the instance is unpinned and why. Microsoft Store mods rarely need the game folder anyway
+(CK3 and Dungeons read Documents and AppData).
 
 ### 26.5 Deployment: How Mods Reach the Game
 
 Deployment is a strategy chosen by the game definition, implemented in core, one interface with
-several backends. An instance is a stack of layers, bottom to top: the pinned base, content from the
-content store in load order, generated output (§26.9), and the instance's own writable layer.
+several backends.
+
+**The layer stack**, lowest first. A higher layer hides the same path in a lower one.
+
+1. The pinned base, or the store folder when unpinned (§26.4). Read-only.
+2. Content from the content store, in the instance's mod priority order. Read-only, shared.
+3. Generated layers (§26.9), one per tool, in the order the tools declare. Owned by the instance.
+4. The instance's writable layer: whatever the game writes while running.
+5. During a tool run only, that run's staging layer (§26.9).
+
+Only layers 4 and 5 are ever written. Deleting a path that exists in a lower layer records a
+*whiteout* in the writable layer; the lower file is untouched.
 
 | Strategy | For | How |
 |---|---|---|
 | **Redirect** | Games or frameworks that can be pointed at another folder: Factorio (`--mod-directory`), BepInEx and Unity Doorstop, Paradox mod descriptors, Minecraft | Agora builds the mod folder per instance and points the game at it. Nothing touches the game. |
-| **Virtual file system** | Games that load mods only from their own folder: Creation Engine, REDengine, many Unreal games | The stack is mounted over the base at launch. Windows: usvfs used as a library. Linux: overlayfs (`fuse-overlayfs` without root). |
-| **Journaled swap** | Small per-user files the game reads from fixed places: `plugins.txt`, `loadorder.txt`, INIs | Written from the profile before launch, restored after, and replayed by crash recovery if Agora dies in between. |
+| **Virtual file system** | Games that load mods only from their own folder: Creation Engine, REDengine, many Unreal games | The stack is mounted over layer 1 at launch. Windows: usvfs used as a library. Linux: overlayfs (`fuse-overlayfs` without root). |
+| **Journaled swap** | Per-user files a Redirect game reads from fixed places | See *Per-user files* below. |
 
-**Copy-on-write is a requirement, not an option.** Content-store files are shared between instances
-and hashed for provenance. A tool that edits a file in its own mod folder (BodySlide's config,
-Nemesis's `nemesis.ini`, F4) must write a copy in the instance's writable layer, never the store
-file. overlayfs does this natively (copy-up). usvfs, as used by MO2, writes existing files in place
-(F4), so the Windows backend needs copy-on-write added. **This is the first thing Phase 3 measures**
-(§26.13), before anything depends on it: if usvfs can be extended, that is the path; if not, a
-backend that materialises files declared or learned to be written is the fallback. Either way, the
-content store is verified by hash after each session, so a missed write is detected and repaired
-from the source archive, never silently kept.
+**Copy-on-write is a requirement, not an option.** Layers 1–3 are shared or must stay exactly as
+recorded. A tool that edits a file in its own mod folder (BodySlide's config, Nemesis's `nemesis.ini`,
+F4), or a game that rewrites a log in its root (F2), must write a copy into layer 4 or 5, never the
+lower file. overlayfs does this natively (copy-up). usvfs, as MO2 uses it, writes existing files in
+place (F4).
 
-**Per-user files.** Skyrim AE rewrites `plugins.txt` at launch (F2). Agora writes the profile's
-`plugins.txt` and INIs by journaled swap.
+**The Windows write-isolation gate comes before the layer contract is fixed** (Spike 2, §26.13).
+It tests usvfs against both content and base files for: writing an existing file, replacing it by
+rename, deleting it, creating a new one, and all four from a child process the game or tool starts.
+The outcomes, in order of preference:
+
+1. usvfs copies on write, or can be extended to (it is a separate library from MO2; extending it
+   is a fork of a small component, not of MO2).
+2. **Fail closed.** If copy-on-write cannot be made reliable, shared files are marked read-only on
+   disk, so an unexpected write fails visibly in the tool instead of changing a shared file.
+   Paths a game or tool is declared or observed to write are materialised into the instance layer
+   before launch, and an instance can opt into full materialisation (every file copied) at the
+   cost of disk.
+
+Either way, a write can never silently reach a shared file. Hash checks after a session (the
+content store, §26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
+
+**Per-user files.** Skyrim AE rewrites `plugins.txt` at launch (F2), and a game's INIs live in the
+user's profile, shared by every instance of that game.
+
+- For **VFS games**, these paths are mapped through the VFS to the instance's own copies, as MO2
+  maps its profile files. The real files are never touched.
+- For **Redirect games** that read them from a fixed place, they are swapped in by a journal:
+  - The swap is owned through a lock on the shared resource itself (`GameUserFiles(game, store)`, a
+    new `LockResource`), not the instance lock, and is held for the lifetime of the game's and any
+    tool's processes, not just the launch call. A second instance of the same game waits or is
+    refused with the name of the holder.
+  - The journal records the original bytes and what Agora wrote. Restoring puts the original back
+    only if the file still holds what Agora wrote; if something else changed it meanwhile, both
+    versions are kept and the user is asked.
+  - After a restart, Agora checks whether the journaled session's processes are still alive
+    (`process_identity`). If they are, the session is re-attached and nothing is restored under a
+    running game.
 
 **Saves are the user's choice per instance**, as in other mod managers: either the game's shared
 save folder (the default, and what a player expects) or saves owned by the instance, redirected
@@ -3428,7 +3482,10 @@ Game definitions declare simple rules; a script handles the rest.
 are never installed is right for Minecraft, which never runs them. For other games it is wrong: SKSE
 plugins are DLLs. A game definition declares where native code is legitimate
 (`Data/SKSE/Plugins/*.dll`); content placing native code there installs with a "contains native code"
-marker and its source's security tier (§21.2) shown. Native code anywhere else is still refused.
+marker and its source's security tier (§21.2) shown. Native code anywhere else needs the user's
+explicit approval for that item, with a warning that says where it goes and that the game definition
+does not expect it there: a new framework must not wait on a definition update (`AGENTS.md`, *Modding
+is user customization*).
 
 **Frameworks are content with runtime constraints.** SKSE, Address Library, BepInEx, MelonLoader,
 UE4SS, RED4ext and CET are what Fabric and Forge are to Minecraft. Each declares which runtime
@@ -3499,12 +3556,21 @@ Script Merger are all tools.
 experience, not caution: only if core starts the tool can it snapshot before the run, run it inside
 the instance's VFS, and capture what it wrote.
 
+**Each run writes into its own staging layer** (layer 5, §26.5), above everything else, so a tool's
+writes never mix with what the game writes during play (layer 4). When the run succeeds, its staging
+layer is **promoted**: it replaces that tool's previous generated layer, and the previous one is
+kept for rollback. When the run fails or is cancelled, the staging layer is discarded and kept aside
+for the diagnostics view; the previous generated layer stays in effect. Generated layers sit in the
+order the tools declare (an animation patcher above a body builder), and conflicts between two tools'
+outputs show in the same conflict view as mods.
+
 **Output becomes a generated layer.** Everything a run writes (Nemesis: ~46 behaviour files and its
 cache, F4) is captured into a layer owned by the instance and labelled with the tool and a fingerprint
 of its inputs: the enabled content, load order and relevant settings. When any input changes, the
 layer is marked **stale** and the launch check says "Nemesis output is out of date: rebuild?". The
 layer can be rolled back as a unit, compared with the previous run, or removed without touching
-anything else. This is the feature the initiative was proposed for, and the spike shows the output is
+anything else. Rolling back is judged by what the game reads: the test is that the bytes visible
+through the mounted stack change, not that a record says they did. This is the feature the initiative was proposed for, and the spike shows the output is
 small and well defined enough to support it.
 
 ### 26.10 Importing Existing Setups
@@ -3512,10 +3578,21 @@ small and well defined enough to support it.
 Most people who will try this already have a setup. Import has to be good.
 
 - **MO2**: instances are found by the usual locations *and* a shallow scan of each drive for
-  `ModOrganizer.ini` (a forgotten setup appeared only that way, F6). `meta.ini` supplies the Nexus
-  mod id and archive name for most mods (101 of 107, F6), so imported content keeps its provenance and
-  can be re-downloaded. Profiles become instances with their load order, local saves and local INIs.
-  The mod folders are copied into the content store; the MO2 setup is left untouched and working.
+  `ModOrganizer.ini` (a forgotten setup appeared only that way, F6). What is imported:
+  - **Bytes first.** Every mod folder is copied into the content store as it is on disk, whether or
+    not it could be downloaded again. Local edits survive; nothing is replaced by a download.
+  - **Provenance where it is real.** `meta.ini` names the Nexus mod id and archive name for most
+    mods (101 of 107, F6). That is recorded as the source, and a file is linked to a specific
+    download only when a hash proves it matches.
+  - **Two orders.** MO2's mod priority (`modlist.txt`, which decides which file wins) and the
+    plugin load order (`plugins.txt`, which decides which plugin wins) are separate, and both are
+    imported.
+  - **`overwrite`.** It becomes its own layer. Files in it that a known tool produces (Nemesis's
+    output and engine folder, F4) become that tool's generated layer, marked **inputs unknown**:
+    Agora cannot tell what they were built from, so the launch check offers a rebuild rather than
+    calling them current or stale.
+  - Profiles become instances with their local saves and local INIs.
+  The MO2 setup is left untouched and working.
 - **Vortex**: deployment manifests (`vortex.deployment*.json`) list every deployed file and its
   staging source; the staging folder holds the mods. Import copies from staging and offers to purge
   Vortex's deployment and verify the store install, since Vortex leaves the game folder modified.
@@ -3557,10 +3634,25 @@ UI; support comes from a definition.
 | `content:native` | mark folders of a game it defines as legitimate for native code |
 | `nxm:handle` | receive `nxm://` links routed by core |
 
-**First-party games use the same interfaces.** Minecraft moves behind the game interface as a
-compiled-in package, as the Modrinth and Technic providers stayed compiled-in (§21.2): "official is not
-privileged" holds through shared interfaces, not a rewrite. Creation Engine support is first-party
-Rust for the same reason, and because the LOOT crates are Rust.
+**One registration path, one set of host services.** Every game package, compiled or plugin,
+registers through one `GamePackage` interface in `agora-game-api`: its definitions (data) and
+optional behaviour (classification, version detection, load-order semantics, diagnostics, launch
+preparation). Core calls packages; packages reach core only through **`GameHost` services**, also
+defined in `agora-game-api`: policy-checked downloads, reading inside the game's install, running a
+declared tool, events, and the shared algorithms (archive extraction, FOMOD, load-order engines such
+as the Creation Engine sorter). A script package reaches the same services through the existing
+`HostBridge`, as one method table like `plugins/dispatch.rs`. So anything a compiled package can ask
+of core, a script package can ask by the same name: community parity is structural, not promised.
+
+**Heavy algorithms are host services, not private code.** Creation Engine load order (the LOOT
+crates) lives in core as a host service any package may use. Only Minecraft and Creation Engine are
+compiled packages, and they get nothing a plugin cannot also call, as the Modrinth and Technic
+providers stayed compiled-in without privilege (§21.2).
+
+**Community packages from the start, not the end.** The tracer games (§26.13) are external packages
+loaded through the plugin path from Phase 2, so the route a community author takes is exercised as
+each interface lands. What waits for Phase 5 is publishing the SDK and the spec, not proving they
+work.
 
 **The script runtime, examined rather than inherited.** QuickJS was introduced in one commit whose
 message states a measurement (a 15 s MSVC build, a 2 MB binary) with no spike or benchmark anywhere in
@@ -3573,9 +3665,24 @@ is added when the first package needs one, which the `ScriptHost` seam was desig
 ### 26.12 The Core Refactor
 
 **Shape.** A new contract crate `agora-game-api` (like `agora-plugin-api`) defines games, installs,
-runtime identity, layers, deployment strategies, frameworks, tools and load order. `agora-core`
-becomes game-agnostic and holds a registry of game packages. Minecraft moves to
-`agora-game-minecraft`; Creation Engine support is `agora-game-creation`.
+runtime identity, layers, deployment strategies, frameworks, tools, load order, `GamePackage` and
+`GameHost`. `agora-core` becomes game-agnostic and holds a registry of game packages. Minecraft moves
+to `agora-game-minecraft`; Creation Engine support is `agora-game-creation`.
+
+**Dependency direction.** Contracts at the bottom, no cycles, no side door:
+
+```
+agora-plugin-api    agora-game-api                 (contracts: serde, semver, thiserror only)
+        ^              ^        ^
+        |              |        |
+    agora-core --------+        agora-game-minecraft, agora-game-creation
+        ^                                   ^
+        +---- adapters (Tauri, CLI, MCP) ---+   build core, register packages into it
+```
+
+Packages depend on `agora-game-api`, never on `agora-core`. Core implements `GameHost`. Today's
+`launch_planner` calls core's download and network services directly; after the move it calls the
+same services through `GameHost`, which is the path a plugin package uses too.
 
 **What moves where**, from each module's own description:
 
@@ -3586,8 +3693,16 @@ becomes game-agnostic and holds a registry of game packages. Minecraft moves to
 **Instance manifest.** Today it carries `minecraft_version`, `loader`, `loader_version` and per-kind
 content lists. The next manifest version carries `game`, `runtime_identity`, `base`, `frameworks` and
 typed layers, with a Minecraft section holding what is Minecraft-only. Existing manifests migrate
-through `data_migration` and `manifest_version`; a migrated Minecraft instance is byte-for-byte the
-same on disk apart from the manifest.
+where manifest upgrades already happen (`models.rs`, which already upgrades version 1 to 2 on read);
+`data_migration` relocates data roots and is not involved. The contract:
+
+- the original manifest is kept beside the new one before the first write;
+- the new manifest is written to a temporary file and renamed into place, so an interrupted
+  migration leaves either the old manifest or the new one, never half of each;
+- migrating an already-migrated manifest is a no-op;
+- a manifest newer than the running Agora is opened read-only and never rewritten;
+- instance contents are not touched: a migrated Minecraft instance is byte-for-byte the same on disk
+  apart from the manifest.
 
 **Enforced by script.** `scripts/check_architecture.py` gains two rules: `agora-core` does not
 reference the Minecraft package's modules, and `agora-game-api` depends only on `serde`, `semver` and
@@ -3610,10 +3725,11 @@ least one tracer from another family use it.**
 | Phase | Delivers | Done when |
 |---|---|---|
 | **0. Spike** | `scripts/spikes/game-support/` | Done (F1–F8). |
-| **1. Game interface** | `agora-game-api`; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass. |
-| **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; base builder (link archives, copy the rest, verify); generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. Tracers: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store (definitions only). |
-| **3. Deployment** | **First:** measure usvfs copy-on-write. Then the content store, archives, FOMOD, Redirect, VFS (Windows) and journaled swap | A Skyrim instance with SKSE and twenty mods runs; a tool that edits its own config leaves the content store's hashes unchanged; switching instances needs no redeploy. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
-| **4. Creation Engine (Skyrim complete)** | Load order (LOOT crates); framework and Address Library checks; per-profile INIs; save choice; tools with generated layers; MO2 import; the catalog for Skyrim (§26.8) | The 214,592-file salvage pack imports and plays; changing a mod marks Nemesis output stale; rebuilding and rolling back both work; curated Skyrim mods install from a `github_release` and a `direct_hash` entry with verified hashes. |
+| **0b. Spike 2: write isolation** | usvfs against content and base files: write an existing file, replace by rename, delete, create, and each from a child process; an archive in a Linked base changed in place | Runs alongside Phase 1. Its result picks copy-on-write or fail-closed (§26.5) **before** Phase 3 fixes the layer contract. |
+| **1. Game interface** | `agora-game-api` with `GamePackage` and `GameHost`; the dependency direction above; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass; migration tests cover interruption, re-running, and a manifest from a newer Agora. |
+| **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; Linked and Copied bases with verification; generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. A base archive changed in place is detected and the instance refuses to launch on it, naming the files. Tracers, **as external packages through the plugin path**: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store. |
+| **3. Deployment** | Content store, archives, FOMOD, the layer stack, Redirect, VFS (Windows) with the isolation Spike 2 chose, per-user files | A Skyrim instance with SKSE and twenty mods runs; switching instances needs no redeploy. **Failure gates:** an unexpected write by a game or tool never changes a content or base file; two launches of one game contend on `GameUserFiles` and the second is told why; a failed launch restores per-user files; Agora killed while the game runs, then restarted, restores nothing under the running game; a file edited externally before recovery is kept, not overwritten. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
+| **4. Creation Engine (Skyrim complete)** | Load order (LOOT crates as a host service); framework and Address Library checks; per-profile INIs; save choice; tools with staging and generated layers; MO2 import including `overwrite` and both orders; the catalog for Skyrim (§26.8) | The 214,592-file salvage pack imports with its bytes, both orders and its Nemesis output (inputs unknown), and plays; changing a mod marks Nemesis output stale; rebuilding and rolling back both change the bytes the game reads; curated Skyrim mods install from a `github_release` and a `direct_hash` entry with verified hashes. |
 | **5. Plugin API 0.2** | Game packages, family parents, new capabilities, `GameTarget` providers, `nxm://` routing, published game-definition spec | The tracers become finished support written as plugins: Valheim (BepInEx) and Satisfactory (Unreal), then CK3 (Paradox, Microsoft Store) and Cyberpunk (REDengine). |
 | **6. Breadth** | Linux overlayfs backend and Proton; Vortex import; Wabbajack recognition; companion-process scripts when a package needs them | Each backed by a real run, like everything above. |
 
@@ -3629,7 +3745,7 @@ support, themes and plugin views carry over, since they are app-wide already (§
 
 ### 26.15 Open Questions
 
-- **usvfs copy-on-write** (§26.5): measured first in Phase 3; decides the Windows VFS backend.
+- **usvfs copy-on-write** (§26.5): Spike 2, before Phase 3; decides copy-on-write or fail-closed.
   usvfs's licence must also be confirmed compatible with GPL-3.0-only before it is distributed.
 - **CK3 without its launcher** (F7): `ck3.exe` started directly most likely loads either no mods or
   the playset last set in the launcher. Checked in Phase 5, together with whether Agora can supply
