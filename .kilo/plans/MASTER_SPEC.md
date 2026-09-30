@@ -3425,11 +3425,16 @@ The outcomes, in order of preference:
 
 1. usvfs copies on write, or can be extended to (it is a separate library from MO2; extending it
    is a fork of a small component, not of MO2).
-2. **Fail closed.** If copy-on-write cannot be made reliable, shared files are marked read-only on
-   disk, so an unexpected write fails visibly in the tool instead of changing a shared file.
-   Paths a game or tool is declared or observed to write are materialised into the instance layer
-   before launch, and an instance can opt into full materialisation (every file copied) at the
-   cost of disk.
+2. **Fail closed, with copies per mod.** If copy-on-write cannot be made reliable, shared files are
+   marked read-only on disk, so an unexpected write fails visibly instead of changing a shared file.
+   Copies are then made a mod at a time, which matches what the spike saw: both observed writes were
+   a tool editing its *own* mod folder (F4).
+   - A mod that contains a tool the instance runs gets its own writable copy in that instance
+     automatically.
+   - Any other mod can be given one: offered at the moment of a blocked write if usvfs can report
+     it (Spike 2 finds out), and always available from the mod's menu.
+   - "Reset to original" drops the instance's copy.
+   - Paths a game is declared to write (logs, INIs in its root) are materialised before launch.
 
 Either way, a write can never silently reach a shared file. Hash checks after a session (the
 content store, §26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
