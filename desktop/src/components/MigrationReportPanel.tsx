@@ -50,12 +50,15 @@ export function MigrationReportPanel({
   instanceId,
   currentVersion,
   loader,
+  onMigrated,
 }: {
   instanceId: string;
   currentVersion: string;
   /** The instance's loader, so the target list only offers versions it has a
    *  build for. Omitted falls back to every known version. */
   loader?: string;
+  /** Called once a migration has been applied, so the editor can reload. */
+  onMigrated?: () => void;
 }) {
   const { confirm } = useConfirm();
   const [target, setTarget] = useState('');
@@ -132,6 +135,7 @@ export function MigrationReportPanel({
           setStatus(`Now on ${outcome.toVersion}. ${outcome.replaced.length} item(s) replaced. Recovery snapshot: ${outcome.snapshotId}`);
           setReport(null);
           setPlan(null);
+          onMigrated?.();
           break;
         case 'blocked':
           setError(outcome.reasons.map((reason) => reason.message).join('; '));
