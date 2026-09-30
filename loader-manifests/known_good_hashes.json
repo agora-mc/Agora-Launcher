@@ -2732,6 +2732,8 @@
       "neoforge-21.1.242-installer.jar": "sha256:f11bef99d86dc424a93117ddf33507e5eaeb78173375741f70d2962e39a66787",
       "neoforge-21.1.243-installer.jar": "sha256:29493a719a69c9593040ddbb589488b1231583824018e383f6dcd39b79411980",
       "neoforge-21.1.244-installer.jar": "sha256:ac7bea8f5c8a1d64f8787d177cc890e3b9abf67ede800f999fe05386d46fcaa8",
+      "neoforge-21.1.245-installer.jar": "sha256:5b5903bd35be23b7efbd2612467fbb6833560279a54d88fed5ec38b28d9b0e86",
+      "neoforge-21.1.246-installer.jar": "sha256:abe4ff6bd19c6dd414722b63ba7c7f81307ee840961acb15c1d85a5ade94a2f4",
       "neoforge-21.1.247-installer.jar": "sha256:6fa14629491a796d75a39bc31b6e65eb3636b6ba2e1368577c061ba0591e8be4",
       "neoforge-21.1.248-installer.jar": "sha256:68eeab77059ba53df1812f1afa5bf530ab2566a3cdcd5f924aa6e71be42e410c",
       "neoforge-21.1.249-installer.jar": "sha256:d88b448eab73cd65bdf1720844a4828262de30a15fc71bd04dd81acc61c5399a",
@@ -2760,6 +2762,7 @@
       "neoforge-21.4.155-installer.jar": "sha256:4a0e338c3f875866480bc0e8970dd972824cbc074ad7470cd265b932d3c7f8b7",
       "neoforge-21.4.156-installer.jar": "sha256:8652fdb5dd95774b5a1d1b141e4b852e8405ce929d2dd49adc0dfbbab1914158",
       "neoforge-21.4.157-installer.jar": "sha256:a17bacb5d6ef902da2f64a8e98a461a57e2564392d9dac46687cdbe543a59a76",
+      "neoforge-21.4.158-installer.jar": "sha256:f392445f5f5c4523d5ba8f6481c14e83a6167d7ea16438d92ea7bfcd5a0e125a",
       "neoforge-21.5.89-installer.jar": "sha256:a8a732c3bea1b82baed4feeaaf976640a7d19483081151eab3bd884423f90dfc",
       "neoforge-21.5.90-installer.jar": "sha256:3b18c990b8b18a8cfdd415e130220b00d9bd9fc72671a6bbe4b75cfcc10494fa",
       "neoforge-21.5.91-installer.jar": "sha256:015a49e3bb6d0643c11e4aedbc1ed79777f9757d2c3b12ca674190c9e003870f",
@@ -3592,7 +3595,8 @@
       "forge-26.3-66.0.3-installer.jar": "sha256:97a1dc3ee71c558b006e5c7ea9b4c60ab263988a4f8d67b492caafbeb2d0077b",
       "forge-26.3-66.0.4-installer.jar": "sha256:df99efb91bf239b8e2fe0b6d6a54ee963ff5966f76142dc6845b508b85a40381",
       "forge-26.3-66.0.5-installer.jar": "sha256:0dac35b3d6bda5a3bf15cd3393639b01f1976a958fb4afc064061098063f0eb4",
-      "forge-26.3-66.0.6-installer.jar": "sha256:bc7c8892eb2c6d098dc313f99a76cbcd6f2951a0a249dec43f4e8439cd98604f"
+      "forge-26.3-66.0.6-installer.jar": "sha256:bc7c8892eb2c6d098dc313f99a76cbcd6f2951a0a249dec43f4e8439cd98604f",
+      "forge-26.3-66.0.8-installer.jar": "sha256:4d9b709c42f82220871672529afbda102c58289b3be5b02a19da7734039564df"
     }
   },
   "_source": "Generated from loader_manifests.json by scripts/fetch_loader_manifests.py. Do not edit manually."
