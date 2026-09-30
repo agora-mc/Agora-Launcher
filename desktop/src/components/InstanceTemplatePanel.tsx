@@ -25,6 +25,15 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** What a template holds, so a Java-only template is not shown as "0 files". */
+function describeTemplateContents(template: InstanceTemplate): string {
+  const parts: string[] = [];
+  if (Object.values(template.jvm ?? {}).some((value) => value !== null && value !== undefined)) parts.push('Java & memory settings');
+  const count = template.files.length;
+  if (count > 0 || parts.length === 0) parts.push(`${count} file${count === 1 ? '' : 's'}`);
+  return parts.join(' + ');
+}
+
 /** JVM settings of the current instance, in template shape. */
 function jvmFromRow(row: InstanceRow | undefined): TemplateJvm {
   if (!row) return {};
@@ -63,7 +72,11 @@ export function InstanceTemplatePanel({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [includeJvm, setIncludeJvm] = useState(true);
-  const [busy, setBusy] = useState(false);
+  // Saving and applying are separate operations: each shows its own label, but
+  // either one locks the other while it runs.
+  const [saving, setSaving] = useState(false);
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  const busy = saving || applyingId !== null;
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -100,7 +113,7 @@ export function InstanceTemplatePanel({
   );
 
   const save = async () => {
-    setBusy(true);
+    setSaving(true);
     setError(null);
     setStatus(null);
     try {
@@ -119,12 +132,12 @@ export function InstanceTemplatePanel({
     } catch (e) {
       setError(formatError(e));
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   };
 
   const apply = async (template: InstanceTemplate) => {
-    setBusy(true);
+    setApplyingId(template.id);
     setError(null);
     setStatus(null);
     try {
@@ -151,7 +164,7 @@ export function InstanceTemplatePanel({
     } catch (e) {
       setError(formatError(e));
     } finally {
-      setBusy(false);
+      setApplyingId(null);
     }
   };
 
@@ -260,7 +273,7 @@ export function InstanceTemplatePanel({
           disabled={disabled || busy}
           className="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {busy ? 'Saving…' : 'Save template'}
+          {saving ? 'Saving…' : 'Save template'}
         </button>
         <span className="text-xs text-muted-foreground">
           {selectedPaths.length} file{selectedPaths.length === 1 ? '' : 's'} selected
@@ -280,7 +293,7 @@ export function InstanceTemplatePanel({
             >
               <span className="min-w-0 flex-1 truncate text-sm">{template.name}</span>
               <span className="shrink-0 text-xs text-muted-foreground">
-                {template.files.length} file{template.files.length === 1 ? '' : 's'}
+                {describeTemplateContents(template)}
               </span>
               <button
                 type="button"
@@ -288,7 +301,7 @@ export function InstanceTemplatePanel({
                 disabled={disabled || busy}
                 className="rounded-lg border border-input px-3 py-1 text-sm hover:bg-accent disabled:opacity-50"
               >
-                Apply
+                {applyingId === template.id ? 'Applying…' : 'Apply'}
               </button>
             </div>
           ))}
