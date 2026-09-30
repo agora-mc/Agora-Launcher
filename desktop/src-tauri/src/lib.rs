@@ -259,6 +259,7 @@ pub fn run() {
             commands::apply_loadout_profile,
             commands::delete_loadout_profile,
             commands::import_instance,
+            commands::preview_import_name,
             commands::cancel_operation,
             commands::detect_launchers,
             commands::clone_instance_cmd,

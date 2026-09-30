@@ -2651,8 +2651,17 @@ export const applyLoadoutProfile = (instanceId: string, profileName: string) =>
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });
 
-export const importInstance = (sourcePath: string, symlinkSaves: boolean) =>
-  invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves });
+export const importInstance = (sourcePath: string, symlinkSaves: boolean, name?: string) =>
+  invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves, name: name ?? null });
+
+export interface ImportNamePreview {
+  default_name: string;
+  name_taken: boolean;
+  suggested_name: string;
+}
+
+export const previewImportName = (sourcePath: string) =>
+  invoke<ImportNamePreview>('preview_import_name', { sourcePath });
 
 export const cancelOperation = (operationId: string) =>
   invoke<boolean>('cancel_operation', { operationId });

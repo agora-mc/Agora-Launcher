@@ -39,6 +39,7 @@ import {
   setCustomInstanceIcon,
   setCustomModIcon,
   importInstance,
+  previewImportName,
   exportLockfile,
   verifyLockfile,
   repairLockfile,
@@ -287,6 +288,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   // Import state (Phase 6)
   const [importBusy, setImportBusy] = useState(false);
+  const [importPending, setImportPending] = useState<{
+    path: string;
+    name: string;
+    nameTaken: boolean;
+    originalName: string;
+  } | null>(null);
   const [launcherImportOpen, setLauncherImportOpen] = useState(false);
   const [lockfileText, setLockfileText] = useState('');
   const [lockfileBusy, setLockfileBusy] = useState<'export' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
@@ -1130,6 +1137,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setStatus(null);
     const path = await pickOpenFile('Import Pack', ['mrpack', 'agora-pack.json', 'json']);
     if (path === null) return;
+    if (path.toLowerCase().endsWith('.mrpack')) {
+      // Same name review as the Import tab, so a name clash can be renamed.
+      try {
+        const preview = await previewImportName(path);
+        setImportPending({
+          path,
+          name: preview.suggested_name,
+          nameTaken: preview.name_taken,
+          originalName: preview.default_name,
+        });
+        setActiveTab('import');
+      } catch (e) {
+        setError(formatError(e));
+      }
+      return;
+    }
     startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
     setStatus('Pack import started in the background.');
   };
@@ -1802,6 +1825,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
             <div className="flex flex-col items-end gap-3 self-end xl:self-end">
               <div className="flex flex-wrap justify-end gap-2">
+              {(!!detail?.row.is_modpack || !!detail?.manifest?.created_from_pack) && (
               <button
                 onClick={() => {
                   setPackInstallOpen(true);
@@ -1814,6 +1838,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               >
                 📦 Install all mods from pack
               </button>
+              )}
               <button
                 onClick={handleImportPack}
                 disabled={recoveryBlocked}
@@ -2498,30 +2523,93 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           >
             Import from Installed Launchers
           </button>
-          <button
-            onClick={async () => {
-              setImportBusy(true);
-              setError(null);
-              try {
-                const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
-                if (path === null) { setImportBusy(false); return; }
-                const result = await importInstance(path, false);
-                if (onOpenInstanceEditor) {
-                  onOpenInstanceEditor(result.instance_id);
-                } else {
-                  setStatus(`Imported "${result.name}" (MC ${result.minecraft_version}).`);
+          {importPending ? (
+            <div className="rounded-lg border border-border p-3 space-y-3">
+              <label className="block text-xs font-medium" htmlFor="import-instance-name">
+                Instance name
+              </label>
+              <input
+                id="import-instance-name"
+                value={importPending.name}
+                onChange={(e) =>
+                  setImportPending({ ...importPending, name: e.target.value })
                 }
-              } catch (e) {
-                setError(formatError(e));
-              } finally {
-                setImportBusy(false);
-              }
-            }}
-            disabled={importBusy}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 w-full"
-          >
-            {importBusy ? 'Importing…' : 'Select File & Import'}
-          </button>
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              />
+              {importPending.nameTaken && (
+                <p className="text-xs text-muted-foreground">
+                  An instance named &quot;{importPending.originalName}&quot; already exists, so
+                  this will be imported as a separate copy. The existing instance is not changed.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    setImportBusy(true);
+                    setError(null);
+                    try {
+                      const result = await importInstance(
+                        importPending.path,
+                        false,
+                        importPending.name.trim(),
+                      );
+                      setImportPending(null);
+                      if (onOpenInstanceEditor) {
+                        onOpenInstanceEditor(result.instance_id);
+                      } else {
+                        setStatus(`Imported "${result.name}" (MC ${result.minecraft_version}).`);
+                      }
+                    } catch (e) {
+                      setError(formatError(e));
+                    } finally {
+                      setImportBusy(false);
+                    }
+                  }}
+                  disabled={importBusy || importPending.name.trim() === ''}
+                  className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {importBusy
+                    ? 'Importing…'
+                    : importPending.nameTaken
+                      ? 'Import as a copy'
+                      : 'Import'}
+                </button>
+                <button
+                  onClick={() => setImportPending(null)}
+                  disabled={importBusy}
+                  className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={async () => {
+                setImportBusy(true);
+                setError(null);
+                try {
+                  const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
+                  if (path === null) return;
+                  const preview = await previewImportName(path);
+                  setImportPending({
+                    path,
+                    name: preview.suggested_name,
+                    nameTaken: preview.name_taken,
+                    originalName: preview.default_name,
+                  });
+                } catch (e) {
+                  setError(formatError(e));
+                } finally {
+                  setImportBusy(false);
+                }
+              }}
+              disabled={importBusy}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 w-full"
+            >
+              {importBusy ? 'Reading…' : 'Select File & Import'}
+            </button>
+          )}
           <p className="text-xs text-muted-foreground">
             Agora always copies imported data. Source instances and saves are never linked or modified.
           </p>

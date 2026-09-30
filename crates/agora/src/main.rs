@@ -190,6 +190,12 @@ enum Commands {
         url: Option<String>,
         #[arg(long, help = "Symlink saves instead of copying")]
         symlink_saves: bool,
+        #[arg(
+            long,
+            conflicts_with = "url",
+            help = "Name for the imported instance (use when the source's own name is already taken)"
+        )]
+        name: Option<String>,
     },
     /// Launch an instance directly through Agora core.
     Launch {
@@ -3137,6 +3143,7 @@ async fn run_command(
             path,
             url,
             symlink_saves,
+            name,
         } => {
             let svc = agora_core::import_service::ImportService::new(ctx.clone());
             if let Some(url) = url {
@@ -3172,7 +3179,23 @@ async fn run_command(
                 source: import_source,
                 symlink_saves,
             };
-            let result = svc.run_import(request).await?;
+            let result = svc
+                .run_import_named(
+                    request,
+                    name,
+                    ctx.progress_sink.clone(),
+                    agora_core::event_sink::CancellationToken::new(),
+                )
+                .await
+                .map_err(|error| {
+                    if error.code() == "ERR_INSTANCE_EXISTS" {
+                        anyhow::anyhow!(
+                            "{error} Re-run with --name \"<new name>\" to import it as a copy."
+                        )
+                    } else {
+                        anyhow::Error::from(error)
+                    }
+                })?;
             wait_for_initial_snapshot(ctx, &result.instance_id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
