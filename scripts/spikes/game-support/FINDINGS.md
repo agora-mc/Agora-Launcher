@@ -32,15 +32,20 @@ launch (restored by the script).
 redirected by the VFS to an instance-owned layer. `plugins.txt` is written by Agora per launch, per
 profile, as MO2 does.
 
-## 3. Steam replaces files rather than patching them in place (one data point)
+## 3. Steam replaces files rather than patching them in place
 
-Verify integrity repaired a corrupted file by writing a new file: the original path got a new file
-identity and the hardlinked copy kept the old content.
+- **Repair:** Verify integrity fixed a corrupted Balatro file by writing a new file. The original
+  path got a new file identity; the hardlinked copy kept the old content.
+- **Real update:** Baldur's Gate 3 hotfix (build 24532579 → 25605617). Of 331 hardlinked files, 14
+  were **replaced** (both game executables and twelve launcher files: `.exe`, `.dll`,
+  `.deps.json`) and 317 were unchanged, including every multi-gigabyte `.pak`. None was modified in
+  place.
 
-`verifytest-20260929-195903.json`
+`verifytest-20260929-195903.json`, `linkcheck-20260929-233402.json`
 
-**Design:** a hardlinked pinned copy survives Steam repairs. Pending: the same check across a real
-update (Baldur's Gate 3 has a hotfix waiting).
+**Design:** a hardlinked copy of a game version stays frozen through repairs and updates, and
+updates tend to touch executables, which a pinned copy copies anyway. Disk cost of pinning is the
+files an update replaces, not the game's size.
 
 ## 4. Under MO2's VFS, new files go to `overwrite`; edits to existing files stay where the file is
 
@@ -101,15 +106,17 @@ scans drives for `ModOrganizer.ini` instead of trusting the usual locations.
 - `C:\Program Files\WindowsApps\<package>` resolves to `C:\XboxGames\<game>\Content`.
 - Every executable of nine store games refused read access, so they can be neither hashed nor
   copied. The `Content` folder does accept new files.
-- CK3 and Minecraft Dungeons both started through their own executable, `gamelaunchhelper.exe`, and
-  their app id; the running process reports its path under `WindowsApps`. CK3's
-  `MicrosoftGame.config` lists the Paradox Launcher, not `ck3.exe`.
+- Minecraft Dungeons started through its own executable, `gamelaunchhelper.exe` and its app id.
+- CK3's `MicrosoftGame.config` lists only the Paradox Launcher, so all three of those routes open the
+  launcher. **Starting `binaries\ck3.exe` directly opens the game with no launcher**, and the
+  process reports its path under `XboxGames`.
 
-`storeprobe-*.json`
+`storeprobe-*.json` (`storeprobe-20260929-232519.json` for `ck3.exe`)
 
-**Design:** store games get no pinned copies and no executable hashes. Mods go where the game reads
-them (Documents or AppData for CK3 and Dungeons) or as added files. A VFS is probably unnecessary
-for them and untested. Pending: launching `binaries\ck3.exe` directly (`-Exe`).
+**Design:** store games get no pinned copies and no executable hashes, but Agora can launch them
+itself, including past a publisher launcher. Mods go where the game reads them (Documents or AppData
+for CK3 and Dungeons) or as added files. A VFS is probably unnecessary for them and untested. Open:
+which mod list CK3 loads when started without the launcher.
 
 ## 8. Discovery has to tell games from add-ons and tools
 
@@ -125,7 +132,8 @@ Evolution 2, Kingdom Come, PlanetSide 2), and the store Brotato has no separate 
 game definition declares its engine and loaders instead of relying on detection. Agora claims
 `nxm://` only when the user asks it to.
 
-## Still to run
+## Not measured
 
-- `LinkArm -SteamAppId 1086940` before applying Baldur's Gate 3's pending hotfix, then `LinkCheck`.
-- `StoreProbe -Name "Crusader Kings III" -TryLaunch -Exe binaries\ck3.exe`.
+- Whether usvfs can copy-on-write existing files, which findings 2 and 4 make a requirement.
+- Linux (overlayfs, Proton). Every run here was on Windows.
+- Vortex import: no Vortex-managed Skyrim was on the machine.

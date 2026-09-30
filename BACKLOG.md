@@ -608,4 +608,6 @@ Both switches ship **off**: `plugins_enabled` and `network_plugins_enabled`.
         Native companions only if a concrete plugin justifies them.
 
 **Explicitly out of scope for v1:** MO2 integration, Steam discovery, generic
-game adapters. These are a separate initiative and block none of the above.
+game adapters. These are a separate initiative and block none of the above. The
+plan for after v1 is MASTER_SPEC §26 (multi-game support), backed by the spike in
+`scripts/spikes/game-support/`.
