@@ -1208,6 +1208,7 @@ export type EvidenceSourceKind =
   | 'LatestLog'
   | 'DebugLog'
   | 'JvmFatalErrorLog'
+  | 'LaunchOutput'
   | 'UserAdded'
   | 'UserPasted';
 
@@ -3134,7 +3135,7 @@ export interface JavaRuntimeDownloadDisabledDetails {
 }
 
 /** Serialized `launch_history::LaunchResult`. */
-export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'unknown';
+export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'stopped' | 'unknown';
 
 /** Serialized `launch_history::LaunchRecord`. */
 export interface LaunchRecord {

@@ -22,6 +22,8 @@ const SIG_FABRIC_API: &str = include_str!("../../../crash-signatures/fabric-api-
 const SIG_MIXIN_CONFLICT: &str = include_str!("../../../crash-signatures/mixin-conflict.json");
 const SIG_MOD_RESOLUTION: &str = include_str!("../../../crash-signatures/mod-resolution.json");
 const SIG_OUT_OF_MEMORY: &str = include_str!("../../../crash-signatures/out-of-memory.json");
+const SIG_DUPLICATE_CLASSPATH: &str =
+    include_str!("../../../crash-signatures/duplicate-classpath-libraries.json");
 
 /// A curated crash signature loaded from the embedded `crash-signatures/*.json` files.
 #[derive(Debug, Deserialize, Clone)]
@@ -57,6 +59,7 @@ fn corpus() -> &'static [CrashSignature] {
             SIG_MIXIN_CONFLICT,
             SIG_MOD_RESOLUTION,
             SIG_OUT_OF_MEMORY,
+            SIG_DUPLICATE_CLASSPATH,
         ]
         .into_iter()
         .filter_map(|raw| serde_json::from_str(raw).ok())
@@ -543,11 +546,23 @@ mod tests {
         assert_eq!(r1.signature_name, r2.signature_name);
     }
 
-    /// test_corpus_nonempty: the embedded corpus should have all 4 signatures.
+    #[test]
+    fn test_duplicate_asm_classpath_matches() {
+        let log = "[stderr] java.lang.RuntimeException: Found duplicate ASM classes found on classpath: asm-9.3.jar, asm-9.10.1.jar";
+        let r = triage("duplicate ASM classes found on classpath");
+        assert!(r.matched, "{log}");
+        assert_eq!(
+            r.signature_name.as_deref(),
+            Some("Duplicate Libraries on the Classpath")
+        );
+    }
+
+    /// test_corpus_nonempty: the embedded corpus should have all 5 signatures.
     #[test]
     fn test_corpus_nonempty() {
         let c = corpus();
-        assert_eq!(c.len(), 4);
+        assert_eq!(c.len(), 5);
+        assert!(c.iter().any(|s| s.id == "duplicate-classpath-libraries"));
         let ids: Vec<&str> = c.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"fabric-api-missing"));
         assert!(ids.contains(&"mixin-conflict"));
