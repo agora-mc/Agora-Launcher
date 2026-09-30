@@ -146,6 +146,48 @@ version=2.5.2
     Assert-Equal '"C:\\Users\\<user>\\Documents"' (Protect-Text '"C:\\Users\\alice\\Documents"') 'redact json path'
     Assert-Equal 'C:\Users\<user>\OneDrive' (Protect-Text 'C:\Users\alice\OneDrive') 'redact plain path'
 
+    # Log head: plain strings, bounded count
+    $log = Join-Path $root 'skse64.log'
+    New-File $log "line one`r`nline two`r`nline three"
+    $head = @(Read-HeadLines $log 2)
+    Assert-Equal 'line one|line two' ($head -join '|') 'log head reads the first lines'
+    Assert-Equal 'System.String' $head[0].GetType().FullName 'log head lines are plain strings'
+    Assert-Equal 0 @($head[0].PSObject.Properties | Where-Object { $_.Name -eq 'PSPath' }).Count 'log head lines carry no provider properties'
+
+    # MicrosoftGame.config
+    $cfg = Join-Path $root 'MicrosoftGame.config'
+    New-File $cfg @'
+<?xml version="1.0" encoding="utf-8"?>
+<Game configVersion="1">
+  <Identity Name="ParadoxInteractive.ProjectTitus" Publisher="CN=Paradox" Version="1.1.289.0" />
+  <ExecutableList>
+    <Executable Name="binaries\ck3.exe" Id="Game" TargetDeviceFamily="PC" />
+  </ExecutableList>
+  <DesktopRegistration>
+    <ModFolder>mods</ModFolder>
+    <EnableWritesToPackageRoot>true</EnableWritesToPackageRoot>
+  </DesktopRegistration>
+  <ShellVisuals DefaultDisplayName="Crusader Kings III" />
+</Game>
+'@
+    $gc = Read-GameConfig $cfg
+    Assert-Equal 'ParadoxInteractive.ProjectTitus' $gc.identityName 'game config identity'
+    Assert-Equal 'binaries\ck3.exe/Game' "$($gc.executables[0].name)/$($gc.executables[0].id)" 'game config executable'
+    Assert-Equal 'mods|true' "$($gc.desktopRegistration['ModFolder'])|$($gc.desktopRegistration['EnableWritesToPackageRoot'])" 'game config desktop registration'
+    Assert-Equal 'Identity,ExecutableList,DesktopRegistration,ShellVisuals' ($gc.topLevelElements -join ',') 'game config elements'
+    $dlc = Join-Path $root 'dlc.config'
+    New-File $dlc '<Game configVersion="1"><Identity Name="X.DLC" Publisher="p" Version="1.0.0.0" /></Game>'
+    Assert-Equal 0 @((Read-GameConfig $dlc).executables).Count 'dlc config has no executables'
+
+    # Executable readability
+    $exe = Join-Path $root 'game.exe'
+    [IO.File]::WriteAllBytes($exe, [byte[]](0x4D, 0x5A, 0x90, 0x00))
+    $noise = Join-Path $root 'encrypted.exe'
+    [IO.File]::WriteAllBytes($noise, [byte[]](0x13, 0x37, 0x00))
+    Assert-Equal 'True|True' "$((Test-ReadableExecutable $exe).readable)|$((Test-ReadableExecutable $exe).peHeader)" 'plain exe has a PE header'
+    Assert-Equal 'True|False' "$((Test-ReadableExecutable $noise).readable)|$((Test-ReadableExecutable $noise).peHeader)" 'encrypted exe reads as noise'
+    Assert-Equal 'False' (Test-ReadableExecutable (Join-Path $root 'missing.exe')).exists 'missing exe'
+
     Assert-Equal 'FactoryGame\Mods\SML' (Get-TopFolder 'FactoryGame\Mods\SML\x.dll' 3) 'top folder depth 3'
     Assert-Equal '(root)' (Get-TopFolder 'x.dll' 3) 'top folder root file'
 }

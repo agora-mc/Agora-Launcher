@@ -16,6 +16,9 @@
       LinkCheck   After a Steam update, reports whether Steam replaced files or patched them in place.
       VerifyTest  LinkArm + corrupts one byte of one file + Steam "Verify integrity" + LinkCheck.
       RestoreUserFiles  Puts back the plugins.txt / INI files StockRoot backed up (newest backup).
+      StoreProbe  Microsoft Store / Xbox app games: what MicrosoftGame.config declares, the app id to
+                  launch them by, whether their files are readable, and (-TryLaunch) which ways of
+                  starting one actually work.
       Cleanup     Removes every folder this script created (only folders carrying its marker file).
 
     Reports are written to %LOCALAPPDATA%\AgoraSpike\reports. User-profile paths and the computer
@@ -30,7 +33,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Inventory', 'StockRoot', 'ToolRecord', 'LinkArm', 'LinkCheck', 'VerifyTest', 'RestoreUserFiles', 'Cleanup')]
+    [ValidateSet('Inventory', 'StockRoot', 'ToolRecord', 'LinkArm', 'LinkCheck', 'VerifyTest', 'RestoreUserFiles', 'StoreProbe', 'Cleanup')]
     [string]$Mode = 'Inventory',
 
     # Which Skyrim install StockRoot, ToolRecord and RestoreUserFiles use. Defaults: StockRoot prefers GOG, ToolRecord prefers Steam.
@@ -51,6 +54,12 @@ param(
 
     # StockRoot (Steam only): write steam_appid.txt into the stock root before launching.
     [switch]$AddSteamAppId,
+
+    # StoreProbe: only games whose folder name contains this text.
+    [string]$Name,
+
+    # StoreProbe: try starting the game (needs -Name matching exactly one game).
+    [switch]$TryLaunch,
 
     # Keep user names and paths in the report.
     [switch]$NoRedact
@@ -196,7 +205,8 @@ function Protect-Text([string]$Text) {
 function Save-Report([string]$Name, $Data) {
     $dir = Join-Parts $SpikeHome 'reports'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $json = Protect-Text ($Data | ConvertTo-Json -Depth 12)
+    # Reports are at most ~6 levels deep; a low ceiling keeps a stray rich object from exploding.
+    $json = Protect-Text ($Data | ConvertTo-Json -Depth 8)
     $path = Join-Parts $dir ('{0}-{1}.json' -f $Name, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     [IO.File]::WriteAllText($path, $json, (New-Object Text.UTF8Encoding($false)))
     Write-Host ''
@@ -226,6 +236,23 @@ function New-MarkedFolder([string]$Path, $Metadata) {
 }
 
 function Get-DocumentsPath { return [Environment]::GetFolderPath('MyDocuments') }
+
+function Read-HeadLines([string]$Path, [int]$Count) {
+    # Plain .NET strings on purpose: in Windows PowerShell 5.1 every line Get-Content returns carries
+    # PSDrive/PSProvider note properties, and ConvertTo-Json walks those object graphs until it hangs.
+    # ReadWrite sharing because a game that is still running may hold its log open.
+    $lines = New-Object System.Collections.Generic.List[string]
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+        $reader = New-Object IO.StreamReader($stream)
+        while ($lines.Count -lt $Count) {
+            $line = $reader.ReadLine()
+            if ($null -eq $line) { break }
+            $lines.Add($line)
+        }
+    } finally { $stream.Dispose() }
+    return $lines.ToArray()
+}
 
 # --------------------------------------------------------------------------------------------
 # Parsers (kept free of Windows-only calls so they can be exercised anywhere)
@@ -1097,7 +1124,7 @@ Nothing in the real install is written to. The new folder costs almost no disk w
     if (Test-Path -LiteralPath $skseLog) {
         $item = Get-Item -LiteralPath $skseLog
         $skse.ranThisLaunch = ($item.LastWriteTime -ge $launchedAt)
-        $skse.head = @(Get-Content -LiteralPath $skseLog -TotalCount 25)
+        $skse.head = @(Read-HeadLines $skseLog 25)
     }
 
     # Did anything write through a hardlink into the real install?
@@ -1435,6 +1462,194 @@ function Invoke-RestoreUserFiles {
 }
 
 # --------------------------------------------------------------------------------------------
+# Mode: StoreProbe  (Microsoft Store / Xbox app games)
+# --------------------------------------------------------------------------------------------
+
+function Read-GameConfig([string]$Path) {
+    # MicrosoftGame.config is plain XML; local-name() keeps this working whether or not it declares a namespace.
+    $xml = New-Object Xml.XmlDocument
+    $xml.Load($Path)
+    $identity = $xml.SelectSingleNode("//*[local-name()='Identity']")
+    $executables = @()
+    foreach ($e in @($xml.SelectNodes("//*[local-name()='ExecutableList']/*[local-name()='Executable']"))) {
+        $executables += [pscustomobject]@{
+            name         = $e.GetAttribute('Name')
+            id           = $e.GetAttribute('Id')
+            deviceFamily = $e.GetAttribute('TargetDeviceFamily')
+            overrideDisplayName = $e.GetAttribute('OverrideDisplayName')
+        }
+    }
+    $desktop = $xml.SelectSingleNode("//*[local-name()='DesktopRegistration']")
+    $desktopSettings = [ordered]@{}
+    if ($desktop) {
+        foreach ($child in @($desktop.ChildNodes)) {
+            if ($child.NodeType -ne [Xml.XmlNodeType]::Element) { continue }
+            $value = $child.InnerText
+            if ($value.Length -gt 200) { $value = $value.Substring(0, 200) + '...' }
+            $desktopSettings[$child.LocalName] = $value
+        }
+    }
+    $root = $xml.DocumentElement
+    return [pscustomobject]@{
+        identityName        = $(if ($identity) { $identity.GetAttribute('Name') } else { $null })
+        publisher           = $(if ($identity) { $identity.GetAttribute('Publisher') } else { $null })
+        version             = $(if ($identity) { $identity.GetAttribute('Version') } else { $null })
+        executables         = $executables
+        desktopRegistration = $desktopSettings
+        topLevelElements    = @($root.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.LocalName })
+    }
+}
+
+function Test-ReadableExecutable([string]$Path) {
+    # A readable PE file starts with "MZ". Store-encrypted files either refuse to open or read as noise.
+    $result = [ordered]@{ exists = (Test-Path -LiteralPath $Path); readable = $false; peHeader = $false; error = $null }
+    if (-not $result.exists) { return $result }
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $buffer = New-Object byte[] 2
+            $read = $stream.Read($buffer, 0, 2)
+            $result.readable = $true
+            $result.peHeader = ($read -eq 2 -and $buffer[0] -eq 0x4D -and $buffer[1] -eq 0x5A)
+        } finally { $stream.Dispose() }
+    } catch { $result.error = $_.Exception.Message }
+    return $result
+}
+
+function Get-StoreGames {
+    $packages = @()
+    try { $packages = @(Get-AppxPackage -ErrorAction Stop) } catch { }
+    $games = @()
+    foreach ($g in @(Get-XboxGames | Where-Object { $_.store -eq 'xbox' -and $_.installed -and $_.microsoftGameConfig })) {
+        if ($Name -and ($g.name -notlike "*$Name*")) { continue }
+        $content = $g.installDir
+        $config = $null
+        try { $config = Read-GameConfig (Join-Parts $content 'MicrosoftGame.config') } catch { $config = [pscustomobject]@{ error = $_.Exception.Message; executables = @() } }
+        $isBaseGame = (@($config.executables).Count -gt 0)
+        $package = $null
+        if ($config.identityName) { $package = @($packages | Where-Object { $_.Name -eq $config.identityName }) | Select-Object -First 1 }
+        $apps = @()
+        $manifestError = $null
+        if ($package) {
+            try {
+                $manifest = Get-AppxPackageManifest -Package $package.PackageFullName -ErrorAction Stop
+                foreach ($a in @($manifest.Package.Applications.Application)) {
+                    $apps += [pscustomobject]@{ id = $a.Id; executable = $a.Executable; aumid = "$($package.PackageFamilyName)!$($a.Id)" }
+                }
+            } catch { $manifestError = $_.Exception.Message }
+        }
+        $item = Get-Item -LiteralPath $content -Force
+        $packageLocationItem = $null
+        if ($package -and $package.InstallLocation) { $packageLocationItem = Get-Item -LiteralPath $package.InstallLocation -Force -ErrorAction SilentlyContinue }
+        $owner = $null
+        try { $owner = (Get-Acl -LiteralPath $content).Owner } catch { }
+        $exeChecks = @()
+        foreach ($e in @($config.executables)) {
+            $full = Join-Parts $content $e.name
+            $check = Test-ReadableExecutable $full
+            $exeChecks += [pscustomobject]@{ name = $e.name; id = $e.id; exists = $check.exists; readable = $check.readable; peHeader = $check.peHeader; error = $check.error }
+        }
+        $helper = Test-ReadableExecutable (Join-Parts $content 'gamelaunchhelper.exe')
+        $games += [pscustomobject]@{
+            name                    = $g.name
+            contentDir              = $content
+            isBaseGame              = $isBaseGame
+            contentIsReparsePoint   = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+            contentOwner            = $owner
+            contentWritable         = $g.contentWritable
+            config                  = $config
+            executableChecks        = $exeChecks
+            gameLaunchHelperReadable = $helper.readable
+            packageFound            = [bool]$package
+            packageFamilyName       = $(if ($package) { $package.PackageFamilyName } else { $null })
+            packageInstallLocation  = $(if ($package) { $package.InstallLocation } else { $null })
+            packageLocationIsReparsePoint = $(if ($packageLocationItem) { [bool]($packageLocationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) } else { $null })
+            packageLocationTarget   = $(if ($packageLocationItem -and $packageLocationItem.Target) { [string]($packageLocationItem.Target | Select-Object -First 1) } else { $null })
+            isDevelopmentMode       = $(if ($package) { [bool]$package.IsDevelopmentMode } else { $null })
+            signatureKind           = $(if ($package) { [string]$package.SignatureKind } else { $null })
+            applications            = $apps
+            manifestError           = $manifestError
+        }
+    }
+    return $games
+}
+
+function Invoke-LaunchAttempt([string]$Label, [scriptblock]$Start, [string[]]$ProcessNames) {
+    Write-Host ''
+    Write-Host "Attempt: $Label" -ForegroundColor Cyan
+    $attempt = [ordered]@{ method = $Label; startError = $null; processSeen = $false; processes = @(); userSaysGameStarted = $null; notes = $null }
+    try { & $Start } catch { $attempt.startError = $_.Exception.Message; Write-Warning $attempt.startError }
+    $seen = @()
+    if (-not $attempt.startError) {
+        for ($t = 0; $t -lt 20 -and $seen.Count -eq 0; $t++) {
+            Start-Sleep -Seconds 2
+            $seen = @(Get-Process -Name $ProcessNames -ErrorAction SilentlyContinue)
+        }
+    }
+    foreach ($p in $seen) {
+        $path = $null
+        $pathError = $null
+        try { $path = $p.Path } catch { $pathError = $_.Exception.Message }
+        $attempt.processes += [pscustomobject]@{ name = $p.ProcessName; path = $path; pathError = $pathError }
+        Write-Host "  running: $($p.ProcessName) $path"
+    }
+    $attempt.processSeen = ($seen.Count -gt 0)
+    $attempt.userSaysGameStarted = Read-Host '  Did the game itself start (menu or splash, not just a flash)? (y/n)'
+    $attempt.notes = Read-Host '  Anything odd (error dialog, Xbox sign-in prompt, launcher opened)? (Enter for none)'
+    [void](Read-Host '  Close the game completely, then press Enter')
+    for ($t = 0; $t -lt 10 -and @(Get-Process -Name $ProcessNames -ErrorAction SilentlyContinue).Count -gt 0; $t++) { Start-Sleep -Seconds 2 }
+    if (@(Get-Process -Name $ProcessNames -ErrorAction SilentlyContinue).Count -gt 0) {
+        if ((Read-Host '  It is still running. End it now? (y/n)') -eq 'y') {
+            Get-Process -Name $ProcessNames -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return [pscustomobject]$attempt
+}
+
+function Invoke-StoreProbe {
+    Write-Host 'Agora game spike: Microsoft Store / Xbox app games' -ForegroundColor Cyan
+    $games = @(Get-StoreGames)
+    if ($games.Count -eq 0) { throw 'No Xbox app games with a MicrosoftGame.config found (check -Name).' }
+    foreach ($g in $games) {
+        $kind = 'DLC/add-on'
+        if ($g.isBaseGame) { $kind = 'game' }
+        $exes = (@($g.executableChecks) | ForEach-Object { "$($_.name) readable=$($_.readable) pe=$($_.peHeader)" }) -join '; '
+        Write-Host ("  {0,-10} {1,-45} {2}" -f $kind, $g.name, $exes)
+    }
+    $report = [ordered]@{ spikeVersion = $SpikeVersion; mode = 'StoreProbe'; games = $games; launchAttempts = @() }
+
+    if ($TryLaunch) {
+        $base = @($games | Where-Object { $_.isBaseGame })
+        if ($base.Count -ne 1) { throw "-TryLaunch needs -Name to match exactly one game; it matched $($base.Count)." }
+        $game = $base[0]
+        $exe = @($game.config.executables)[0]
+        $exePath = Join-Parts $game.contentDir $exe.name
+        $exeDir = Split-Path -Parent $exePath
+        $processNames = @([IO.Path]::GetFileNameWithoutExtension($exe.name))
+        $app = @($game.applications) | Select-Object -First 1
+        Confirm-Yes (@"
+TryLaunch will start $($game.name) up to three times, one way at a time:
+  1. its own executable directly ($($exe.name))
+  2. gamelaunchhelper.exe, the stub the Xbox app installs
+  3. the Windows app id ($(if ($app) { $app.aumid } else { 'not found' })), which is what the Xbox app itself uses
+After each, say whether the game started, then close it. Nothing is written anywhere.
+"@)
+        $attempts = @()
+        $attempts += Invoke-LaunchAttempt 'direct executable' { Start-Process -FilePath $exePath -WorkingDirectory $exeDir } $processNames
+        $attempts += Invoke-LaunchAttempt 'gamelaunchhelper.exe' { Start-Process -FilePath (Join-Parts $game.contentDir 'gamelaunchhelper.exe') -WorkingDirectory $game.contentDir } $processNames
+        if ($app) {
+            $aumid = $app.aumid
+            $attempts += Invoke-LaunchAttempt 'app id (shell:AppsFolder)' { Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:AppsFolder\$aumid" } $processNames
+        }
+        $report.launchAttempts = $attempts
+    } else {
+        Write-Host ''
+        Write-Host 'To test launching one game:  -Mode StoreProbe -Name "Crusader Kings III" -TryLaunch' -ForegroundColor Yellow
+    }
+    Save-Report 'storeprobe' $report | Out-Null
+}
+
+# --------------------------------------------------------------------------------------------
 # Mode: Cleanup
 # --------------------------------------------------------------------------------------------
 
@@ -1472,5 +1687,6 @@ switch ($Mode) {
     'LinkCheck' { Save-Report 'linkcheck' (Invoke-LinkCheck $SteamAppId $null) | Out-Null }
     'VerifyTest' { Invoke-VerifyTest $SteamAppId }
     'RestoreUserFiles' { Invoke-RestoreUserFiles }
+    'StoreProbe' { Invoke-StoreProbe }
     'Cleanup' { Invoke-Cleanup }
 }
