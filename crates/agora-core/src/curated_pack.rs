@@ -275,6 +275,7 @@ impl CuratedPackService {
                     project_id,
                     &target.minecraft_version,
                     &target.loader,
+                    "mod",
                 )
                 .await
             {

@@ -752,9 +752,9 @@ function AppContent() {
     }
   };
 
-  const handleBrowseSelectMod = (id: string, instanceId?: string) => {
+  const handleBrowseSelectMod = (id: string, instanceId?: string, contentType?: string) => {
     browseScrollTopRef.current = mainRef.current?.scrollTop ?? 0;
-    navigateToModDetail(id, instanceId);
+    navigateToModDetail(id, instanceId, contentType);
   };
 
   const handleInstanceEditorOpenMod = (id: string) => {
@@ -911,6 +911,7 @@ function AppContent() {
                 <ModDetail
                   itemId={destination.itemId}
                   initialInstanceId={modDetailBrowseInstanceId}
+                  requestedContentType={destination.browseContentType}
                   onBack={handleModDetailBack}
                   onOpenInstanceEditor={(id) => {
                     navigateToInstanceDetail(id);

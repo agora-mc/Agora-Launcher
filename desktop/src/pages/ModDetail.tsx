@@ -90,6 +90,7 @@ function externalLinkLabel(url: string): string {
 import { formatDate, sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
 import type { InstallIntent, SourceType } from '../lib/installFlow';
+import { contentTypeLabel, installContentType, projectFormats, type ModrinthFormat } from '../lib/modrinthFormats';
 
 // Whether a candidate version is a pre-release (alpha/beta/rc/snapshot) —
 // mirrors `agora_core::models::is_prerelease_version` and the backend
@@ -161,8 +162,16 @@ const SANITIZE_SCHEMA: Schema = {
 
 type CuratorNotesRegistryItem = RegistryItem & { curator_notes?: string | null };
 
-export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
+export function ModDetail({ itemId, initialInstanceId, requestedContentType, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; requestedContentType?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
   const [item, setItem] = useState<RegistryItem | null>(null);
+  // Which format of a multi-format project the user is after. Seeded from the
+  // type Browse was showing, so "Add Data Pack" lands on the data pack.
+  const [formatChoice, setFormatChoice] = useState<ModrinthFormat | null>(
+    requestedContentType === 'datapack' ? 'datapack' : null,
+  );
+  useEffect(() => {
+    setFormatChoice(requestedContentType === 'datapack' ? 'datapack' : null);
+  }, [itemId, requestedContentType]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // True only when the item was resolved from registry_items via
@@ -667,6 +676,20 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
    */
   const isModrinthInstall = !!(item?.modrinth_id && modrinthProject && !isRegistryBacked);
 
+  // Modrinth types a mod with a companion data pack as "mod"; its data-pack
+  // versions are only distinguishable by their loader tags. Offer a choice when
+  // the versions really contain both, and install as whichever was chosen.
+  const availableFormats: ModrinthFormat[] =
+    isModrinthInstall && item?.content_type === 'mod' ? projectFormats(modrinthVersions) : [];
+  const activeFormat: ModrinthFormat =
+    formatChoice !== null && (availableFormats.length === 0 || availableFormats.includes(formatChoice))
+      ? formatChoice
+      : (availableFormats[0] ?? 'mod');
+  const installType: string =
+    isModrinthInstall && item?.content_type === 'mod' && activeFormat === 'datapack'
+      ? 'datapack'
+      : (item?.content_type ?? 'mod');
+
   // Find the manifest entry (if any) that corresponds to this mod in an
   // instance detail. Matches registry id, Modrinth project id, or the
   // resolved jar id so curated, Modrinth-linked, and raw installs all work.
@@ -949,7 +972,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
       const detail = await getInstanceDetail(selectedInstanceId).catch(() => null);
       setFlowInstalledEntry(findInstalledEntry(detail));
       if (isModrinthInstall) {
-        const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, item.content_type);
+        const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, installType);
         setModrinthCandidates(vers);
       } else {
         const page = await listModVersions(selectedInstanceId, itemId);
@@ -968,6 +991,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     sourceType: SourceType,
     sourceItemId: string,
     candidateVersion: string,
+    contentType?: string,
   ) => {
     const instance = instances.find((candidate) => candidate.instance_id === instanceId)
       ?? versionsTabInstances.find((candidate) => candidate.instance_id === instanceId);
@@ -987,6 +1011,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           allowReplace: false,
           skipHealthScan: false,
           forceConflictResolution: {},
+          ...(contentType && contentType !== 'mod' ? { contentType } : {}),
         },
       },
     });
@@ -1001,6 +1026,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         'modrinth',
         item.modrinth_id,
         selectedModrinthCandidate.version_id,
+        installContentType(item.content_type, selectedModrinthCandidate.loaders),
       );
       return;
     }
@@ -1086,6 +1112,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         'modrinth',
         item.modrinth_id,
         selectedVersion.version_id,
+        installContentType(item.content_type, selectedVersion.loaders),
       );
     }
   };
@@ -1218,7 +1245,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
               </h2>
               {modrinthProject && (
                 <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-primary-foreground">
-                  {item.content_type}
+                  {installType === item.content_type ? item.content_type : contentTypeLabel(installType)}
                 </span>
               )}
               {isRegistryBacked && (
@@ -1247,6 +1274,32 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                 </span>
               )}
             </div>
+            {availableFormats.length > 1 && (
+              <div
+                role="group"
+                aria-label="Install as"
+                className="mt-2 inline-flex overflow-hidden rounded-md border border-border text-xs"
+              >
+                {availableFormats.map((format) => (
+                  <button
+                    key={format}
+                    type="button"
+                    aria-pressed={activeFormat === format}
+                    onClick={() => {
+                      setFormatChoice(format);
+                      setSelectedModrinthCandidate(null);
+                    }}
+                    className={`px-3 py-1 font-medium ${
+                      activeFormat === format
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-card text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {format === 'datapack' ? 'Data pack' : 'Mod'}
+                  </button>
+                ))}
+              </div>
+            )}
             <p className="text-xs text-muted-foreground mt-1 break-all">
               {modrinthProject ? item.id : item.source_identifier}
             </p>

@@ -18,7 +18,7 @@ export type Tab = 'home' | 'browse' | 'instances' | 'governance' | 'ai' | 'guide
  */
 export type Destination =
   | { type: 'tab'; tab: Tab; browseInstanceId?: string; browseContentType?: string }
-  | { type: 'mod-detail'; itemId: string; browseInstanceId?: string }
+  | { type: 'mod-detail'; itemId: string; browseInstanceId?: string; browseContentType?: string }
   | { type: 'instance-detail'; instanceId: string }
   | { type: 'plugin-page'; contributionId: string };
 
@@ -29,7 +29,7 @@ export interface UseDestinationReturn {
   goBack: () => void;
   navigateToTab: (tab: Tab) => void;
   navigateToBrowse: (instanceId?: string, contentType?: string) => void;
-  navigateToModDetail: (itemId: string, browseInstanceId?: string) => void;
+  navigateToModDetail: (itemId: string, browseInstanceId?: string, browseContentType?: string) => void;
   navigateToInstanceDetail: (instanceId: string) => void;
   navigateToPluginPage: (contributionId: string) => void;
 }
@@ -44,7 +44,8 @@ function isValidDestination(d: unknown): d is Destination {
   }
   if (dest.type === 'mod-detail') {
     return typeof dest.itemId === 'string'
-      && (dest.browseInstanceId === undefined || typeof dest.browseInstanceId === 'string');
+      && (dest.browseInstanceId === undefined || typeof dest.browseInstanceId === 'string')
+      && (dest.browseContentType === undefined || typeof dest.browseContentType === 'string');
   }
   if (dest.type === 'instance-detail') return typeof dest.instanceId === 'string';
   if (dest.type === 'plugin-page') return typeof dest.contributionId === 'string';
@@ -133,10 +134,11 @@ export function useDestination(): UseDestinationReturn {
     [push],
   );
   const navigateToModDetail = useCallback(
-    (itemId: string, browseInstanceId?: string) => push({
+    (itemId: string, browseInstanceId?: string, browseContentType?: string) => push({
       type: 'mod-detail',
       itemId,
       ...(browseInstanceId ? { browseInstanceId } : {}),
+      ...(browseContentType ? { browseContentType } : {}),
     }),
     [push],
   );

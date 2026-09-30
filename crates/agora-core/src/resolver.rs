@@ -392,6 +392,7 @@ impl Resolver {
                         revision,
                         false,
                         intent.overrides.allow_closest_version,
+                        intent.overrides.content_type.as_deref().unwrap_or("mod"),
                     )
                     .await
                 }
@@ -439,6 +440,7 @@ impl Resolver {
                         revision,
                         true,
                         intent.overrides.allow_closest_version,
+                        &installed.content_type,
                     )
                     .await
                 } else {
@@ -1043,6 +1045,7 @@ impl Resolver {
                     None,
                     mc_version,
                     loader,
+                    &item.content_type,
                 )
                 .await
             }
@@ -1268,9 +1271,10 @@ impl Resolver {
         project_id: &str,
         requested_version: Option<&str>,
         allow_closest_version: bool,
+        content_type: &str,
     ) -> LauncherResult<(RawModrinthVersionCandidate, ResolvedArtifact)> {
         let mut candidates = self
-            .list_raw_modrinth_versions(manifest, project_id)
+            .list_raw_modrinth_versions(manifest, project_id, content_type)
             .await?;
         let mut used_closest_candidates = false;
         if allow_closest_version {
@@ -1284,7 +1288,7 @@ impl Resolver {
                 });
             if candidates.is_empty() || (requested_version.is_some() && !requested_found) {
                 if let Ok(fallback) = self
-                    .list_raw_modrinth_versions_closest(manifest, project_id)
+                    .list_raw_modrinth_versions_closest(manifest, project_id, content_type)
                     .await
                 {
                     if !fallback.is_empty() {
@@ -1305,10 +1309,11 @@ impl Resolver {
                     Err(error)
                 }
             })?;
-        let artifact = raw_modrinth_artifact(project_id, candidate)?;
+        let artifact = raw_modrinth_artifact(project_id, content_type, candidate)?;
         Ok((candidate.clone(), artifact))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_raw_modrinth_install(
         &self,
         manifest: &InstanceManifest,
@@ -1317,6 +1322,7 @@ impl Resolver {
         registry_revision: String,
         update: bool,
         allow_closest_version: bool,
+        content_type: &str,
     ) -> LauncherResult<PreparedPlan> {
         let (candidate, artifact) = self
             .resolve_raw_modrinth_artifact(
@@ -1324,13 +1330,32 @@ impl Resolver {
                 project_id,
                 requested_version,
                 allow_closest_version,
+                content_type,
             )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                // Keep the code (the UI keys "try closest" off it) but name
+                // the content honestly.
+                LauncherError::VersionNotFound if !is_mod_content(content_type) => {
+                    LauncherError::Generic {
+                        code: "ERR_VERSION_NOT_FOUND".into(),
+                        message: format!(
+                            "Requested {} version not found. Install the closest compatible version?",
+                            content_label(content_type)
+                        ),
+                    }
+                }
+                other => other,
+            })?;
         // A multi-loader Modrinth version may advertise compatibility-route
         // dependencies (for example Connector for NeoForge) at the version
         // level. Once the verified JAR is available, its active-loader-native
         // metadata is the authoritative dependency source.
-        let native_metadata = self.native_loader_metadata(manifest, &candidate).await;
+        let native_metadata = if is_mod_content(content_type) {
+            self.native_loader_metadata(manifest, &candidate).await
+        } else {
+            None
+        };
         let dependencies = self
             .resolve_raw_modrinth_deps(manifest, &candidate, native_metadata.as_ref(), None, false)
             .await;
@@ -1361,16 +1386,20 @@ impl Resolver {
         })
     }
 
-    /// List raw Modrinth versions for a project, filtered by MC version and loader.
+    /// List raw Modrinth versions for a project, filtered by MC version and
+    /// the loader filter that suits `content_type` (see
+    /// [`modrinth_version_loaders`]).
     pub async fn list_raw_modrinth_versions(
         &self,
         manifest: &InstanceManifest,
         project_id: &str,
+        content_type: &str,
     ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
         self.list_raw_modrinth_versions_for(
             project_id,
             &manifest.minecraft_version,
             &manifest.loader,
+            content_type,
         )
         .await
     }
@@ -1382,12 +1411,13 @@ impl Resolver {
         project_id: &str,
         minecraft_version: &str,
         loader: &str,
+        content_type: &str,
     ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
-        let url = format!(
-            "https://api.modrinth.com/v2/project/{pid}/version?game_versions=[\"{gv}\"]&loaders=[\"{ld}\"]",
-            pid = urlencoding::encode(project_id),
-            gv = urlencoding::encode(minecraft_version),
-            ld = urlencoding::encode(loader),
+        let url = modrinth_content_versions_url(
+            project_id,
+            Some(minecraft_version),
+            content_type,
+            loader,
         );
         self.fetch_raw_modrinth_versions_url(&url).await
     }
@@ -1399,12 +1429,9 @@ impl Resolver {
         &self,
         manifest: &InstanceManifest,
         project_id: &str,
+        content_type: &str,
     ) -> LauncherResult<Vec<RawModrinthVersionCandidate>> {
-        let url = format!(
-            "https://api.modrinth.com/v2/project/{pid}/version?loaders=[\"{ld}\"]",
-            pid = urlencoding::encode(project_id),
-            ld = urlencoding::encode(&manifest.loader),
-        );
+        let url = modrinth_content_versions_url(project_id, None, content_type, &manifest.loader);
         self.fetch_raw_modrinth_versions_url(&url).await
     }
 
@@ -1764,11 +1791,11 @@ requested_by: Vec::new(),
                 }
             }
 
-            let candidates = match self.list_raw_modrinth_versions(manifest, &pid).await {
+            let candidates = match self.list_raw_modrinth_versions(manifest, &pid, "mod").await {
                 Ok(mut candidates) => {
                     if allow_closest_version && candidates.is_empty() {
                         if let Ok(fallback) = self
-                            .list_raw_modrinth_versions_closest(manifest, &pid)
+                            .list_raw_modrinth_versions_closest(manifest, &pid, "mod")
                             .await
                         {
                             candidates = fallback;
@@ -1823,7 +1850,7 @@ requested_by: Vec::new(),
                                 native_metadata.as_ref(),
                                 &child_mappings,
                             );
-                            match raw_modrinth_artifact(&pid, candidate) {
+                            match raw_modrinth_artifact(&pid, "mod", candidate) {
                                 Ok(artifact) => (
                                     DepDisposition::InstallCandidate {
                                         artifact: Box::new(artifact),
@@ -2067,6 +2094,7 @@ requested_by: Vec::new(),
                                 &item.item_id,
                                 item.candidate_version.as_deref(),
                                 allow_closest_version,
+                                "mod",
                             )
                             .await?;
                         (artifact, Some(candidate))
@@ -2245,7 +2273,7 @@ requested_by: Vec::new(),
             SourceType::Provider => None,
             SourceType::Modrinth => {
                 let candidates = self
-                    .list_raw_modrinth_versions_closest(manifest, item_id)
+                    .list_raw_modrinth_versions_closest(manifest, item_id, "mod")
                     .await
                     .ok()?;
                 let candidate = select_closest_raw_modrinth_candidate(
@@ -2312,6 +2340,7 @@ requested_by: Vec::new(),
                     registry_revision.clone(),
                     true,
                     false,
+                    &installed.content_type,
                 )
                 .await?
             } else {
@@ -2790,10 +2819,11 @@ async fn fetch_modrinth_versions_for_item(
     modrinth_id: Option<&str>,
     mc_version: &str,
     loader: &str,
+    content_type: &str,
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
     let project_id = modrinth_id.unwrap_or(source_identifier);
 
-    let url = modrinth_versions_url(project_id, mc_version, loader);
+    let url = modrinth_content_versions_url(project_id, Some(mc_version), content_type, loader);
 
     #[derive(Deserialize)]
     struct MRFileHashes {
@@ -3054,7 +3084,16 @@ fn pinned_artifact_versions_for_source(
                     item.id
                 ))
             })?;
-        let compat = declared_version_compat(&entry.mc_version, &entry.loader, mc_version, loader);
+        // A resource pack, shader or data pack declares `minecraft`/`iris`/
+        // `datapack`, never the instance's mod loader, so only mods are held
+        // to the loader.
+        let want_loader = if is_mod_content(&item.content_type) {
+            loader
+        } else {
+            entry.loader.as_str()
+        };
+        let compat =
+            declared_version_compat(&entry.mc_version, &entry.loader, mc_version, want_loader);
         let is_prerelease = crate::models::is_prerelease_version(version);
         candidates.push(ModVersionCandidate {
             version: version.to_string(),
@@ -3320,8 +3359,79 @@ fn curated_hashes(
     Ok(HashSpec { values: hashes })
 }
 
+/// Whether a content type is an ordinary mod, whose Modrinth versions are
+/// tagged with the instance's mod loader.
+pub(crate) fn is_mod_content(content_type: &str) -> bool {
+    matches!(content_type, "" | "mod" | "modpack" | "pack")
+}
+
+/// The Modrinth `loaders` filter for a content type, or `None` for no filter.
+///
+/// Only mods are tagged with the instance's mod loader. Resource packs carry
+/// `minecraft`, data packs `datapack`, and shaders `iris`/`optifine`/`canvas`/
+/// `vanilla`, so filtering those by the instance loader hides every version.
+/// Resource packs and shaders take every loader tag: the game-version filter
+/// still applies, and a pack that merely lists `minecraft` is fine everywhere.
+pub(crate) fn modrinth_version_loaders(
+    content_type: &str,
+    instance_loader: &str,
+) -> Option<String> {
+    match content_type {
+        "resourcepack" | "shader" => None,
+        "datapack" => Some("datapack".to_string()),
+        _ if is_mod_content(content_type) => Some(instance_loader.to_string()),
+        _ => None,
+    }
+}
+
+/// Modrinth project-versions URL for a content type. `None` Minecraft
+/// version lists every game version.
+pub(crate) fn modrinth_content_versions_url(
+    project_id: &str,
+    minecraft_version: Option<&str>,
+    content_type: &str,
+    instance_loader: &str,
+) -> String {
+    modrinth_versions_url(
+        project_id,
+        minecraft_version.unwrap_or(""),
+        &modrinth_version_loaders(content_type, instance_loader).unwrap_or_default(),
+    )
+}
+
+/// Mod ids of mods that can render shader packs.
+const SHADER_LOADER_IDS: &[&str] = &["iris", "oculus", "optifine", "canvas"];
+
+/// Whether the instance has a mod that can load shader packs.
+pub(crate) fn manifest_has_shader_loader(manifest: &InstanceManifest) -> bool {
+    all_installed(manifest).any(|item| {
+        if item.content_type != "mod" && !item.content_type.is_empty() {
+            return false;
+        }
+        let filename = item.filename.to_ascii_lowercase();
+        item.mod_jar_id
+            .iter()
+            .chain(item.provided_mod_ids.iter())
+            .chain(item.registry_id.iter())
+            .any(|id| SHADER_LOADER_IDS.contains(&id.to_ascii_lowercase().as_str()))
+            || SHADER_LOADER_IDS.iter().any(|id| filename.contains(id))
+    })
+}
+
+/// Human wording for a content type in user-facing messages.
+fn content_label(content_type: &str) -> &'static str {
+    match content_type {
+        "resourcepack" => "resource pack",
+        "shader" => "shader pack",
+        "datapack" => "data pack",
+        "world" => "world",
+        _ => "mod",
+    }
+}
+
 fn raw_modrinth_artifact(
     project_id: &str,
+    content_type: &str,
     candidate: &RawModrinthVersionCandidate,
 ) -> LauncherResult<ResolvedArtifact> {
     let mut hashes = Vec::new();
@@ -3361,7 +3471,11 @@ fn raw_modrinth_artifact(
             source_type: SourceType::Modrinth,
             registry_id: None,
             modrinth_id: Some(project_id.to_string()),
-            content_type: "mod".into(),
+            content_type: if content_type.is_empty() {
+                "mod".into()
+            } else {
+                content_type.into()
+            },
             version: Some(candidate.version.clone()),
             download_strategy: None,
             pinned_host: None,
@@ -3873,7 +3987,7 @@ mod tests {
         };
 
         let ResolvedArtifact::Download(artifact) =
-            raw_modrinth_artifact("sodium", &candidate).unwrap()
+            raw_modrinth_artifact("sodium", "mod", &candidate).unwrap()
         else {
             panic!("expected a downloadable Modrinth artifact");
         };
@@ -4048,6 +4162,102 @@ mod tests {
             modrinth_versions_url("AANobbMI", "1.21", ""),
             "https://api.modrinth.com/v2/project/AANobbMI/version?game_versions=[\"1.21\"]"
         );
+    }
+
+    #[test]
+    fn version_url_loader_filter_follows_content_type() {
+        let url = |content_type: &str, mc: Option<&str>| {
+            modrinth_content_versions_url("proj", mc, content_type, "fabric")
+        };
+        let base = "https://api.modrinth.com/v2/project/proj/version";
+        // Mods keep the instance loader.
+        assert_eq!(
+            url("mod", Some("1.21")),
+            format!("{base}?game_versions=[\"1.21\"]&loaders=[\"fabric\"]")
+        );
+        // A missing content type is a mod.
+        assert_eq!(url("", Some("1.21")), url("mod", Some("1.21")));
+        // Resource packs and shaders are never tagged with a mod loader.
+        assert_eq!(
+            url("resourcepack", Some("1.21")),
+            format!("{base}?game_versions=[\"1.21\"]")
+        );
+        assert_eq!(
+            url("shader", Some("1.21")),
+            format!("{base}?game_versions=[\"1.21\"]")
+        );
+        // Data packs use the `datapack` loader regardless of the instance.
+        assert_eq!(
+            url("datapack", Some("1.21")),
+            format!("{base}?game_versions=[\"1.21\"]&loaders=[\"datapack\"]")
+        );
+        // The closest-version listing drops the game version only.
+        assert_eq!(url("mod", None), format!("{base}?loaders=[\"fabric\"]"));
+        assert_eq!(url("resourcepack", None), base);
+    }
+
+    #[test]
+    fn non_mod_version_not_found_is_not_described_as_a_mod() {
+        assert_eq!(content_label("resourcepack"), "resource pack");
+        assert_eq!(content_label("shader"), "shader pack");
+        assert_eq!(content_label("datapack"), "data pack");
+        assert!(!is_mod_content("resourcepack"));
+        assert!(is_mod_content("mod"));
+    }
+
+    #[test]
+    fn shader_loader_detection_ignores_shader_pack_filenames() {
+        let mut manifest = InstanceManifest {
+            manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            pack_origin: None,
+            instance_id: "test".into(),
+            name: "Test".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.15.0".into(),
+            is_locked: false,
+            mods: vec![],
+            resourcepacks: vec![],
+            shaders: vec![],
+            datapacks: vec![],
+            worlds: vec![],
+            created_from_pack: None,
+            user_preferences: serde_json::json!({}),
+        };
+        let entry = |filename: &str, content_type: &str, jar_id: Option<&str>| InstalledMod {
+            provider: None,
+            update_pinned: false,
+            pack_managed: false,
+            installed_as_dependency: false,
+            filename: filename.into(),
+            source: "modrinth_raw".into(),
+            sha256: "aa".into(),
+            installed_at: "now".into(),
+            enabled: true,
+            content_type: content_type.into(),
+            registry_id: None,
+            modrinth_id: None,
+            source_url: None,
+            version: None,
+            java_packages: vec![],
+            mod_jar_id: jar_id.map(str::to_string),
+            provided_mod_ids: vec![],
+            depends_on: vec![],
+            optional_deps: vec![],
+            incompatible_deps: vec![],
+        };
+        assert!(!manifest_has_shader_loader(&manifest));
+        manifest
+            .shaders
+            .push(entry("Iris-Look.zip", "shader", None));
+        manifest
+            .mods
+            .push(entry("sodium.jar", "mod", Some("sodium")));
+        assert!(!manifest_has_shader_loader(&manifest));
+        manifest
+            .mods
+            .push(entry("iris-1.8.jar", "mod", Some("iris")));
+        assert!(manifest_has_shader_loader(&manifest));
     }
 
     #[test]

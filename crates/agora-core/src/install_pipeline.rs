@@ -533,6 +533,11 @@ pub struct PlanOverrides {
     /// using the nearest available candidate after explicit user approval.
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_closest_version: bool,
+    /// What kind of content a raw Modrinth install is (`resourcepack`,
+    /// `shader`, `datapack`, ...). Absent means a mod. Decides which Modrinth
+    /// version `loaders` tags are acceptable and where the file is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
     /// Root batch items explicitly skipped after a version-resolution failure.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_items: Vec<String>,
@@ -905,6 +910,16 @@ impl InstallPipeline {
                 code: "WARN_CLOSEST_VERSION".into(),
                 message: "A closest available version was selected where the exact compatible version was unavailable. Verify the instance after installation.".into(),
             });
+        }
+        if let ResolvedOperation::Install { artifact } = &operation {
+            if artifact_metadata(artifact).content_type == "shader"
+                && !crate::resolver::manifest_has_shader_loader(&manifest)
+            {
+                warnings.push(PlanWarning {
+                    code: "WARN_SHADER_LOADER_MISSING".into(),
+                    message: "This instance has no shader loader (such as Iris or OptiFine), so the shader pack will not do anything until one is installed.".into(),
+                });
+            }
         }
         if manifest.is_locked {
             blocking_errors.push(PlanError {

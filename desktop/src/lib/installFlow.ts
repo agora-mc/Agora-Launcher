@@ -35,6 +35,12 @@ export interface PlanOverrides {
   allowReplace: boolean;
   skipHealthScan: boolean;
   allowClosestVersion?: boolean;
+  /**
+   * What a raw Modrinth install is (`resourcepack`, `shader`, `datapack`).
+   * Absent means a mod. Decides which Modrinth loader tags are acceptable and
+   * which folder the file installs into.
+   */
+  contentType?: string;
   skipItems?: string[];
   forceConflictResolution: Record<string, string>;
   /**
