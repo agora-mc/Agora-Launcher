@@ -76,3 +76,49 @@ export function clearBrowseSnapshot(): void {
   snapshot = null;
   parked = false;
 }
+
+/** The Minecraft version and loader Browse was filtered to. */
+export interface BrowseFilterContext {
+  mcVersion: string | null;
+  loader: string | null;
+}
+
+/**
+ * The filters of the Browse list the user just opened a detail page from, or
+ * null when this page was not reached from Browse (only a parked snapshot
+ * counts, so a stale list from earlier in the session is never mistaken for
+ * the current context).
+ */
+export function peekParkedBrowseFilter(): BrowseFilterContext | null {
+  if (!parked || !snapshot) return null;
+  try {
+    const key = JSON.parse(snapshot.queryKey) as { mcVersion?: unknown; loader?: unknown };
+    const mcVersion = typeof key.mcVersion === 'string' && key.mcVersion ? key.mcVersion : null;
+    const loader = typeof key.loader === 'string' && key.loader ? key.loader : null;
+    return mcVersion || loader ? { mcVersion, loader } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The release a pack should default to: the newest (first) one matching the
+ * Browse filter, else the newest overall. `mismatch` is true when the chosen
+ * release targets a different Minecraft version than the filter.
+ */
+export function pickDefaultPackRelease<T extends { minecraft_version: string; loader: string }>(
+  releases: readonly T[],
+  filter: BrowseFilterContext | null,
+): { index: number; mismatch: boolean } {
+  if (releases.length === 0) return { index: -1, mismatch: false };
+  const mc = filter?.mcVersion ?? null;
+  const loader = filter?.loader?.toLowerCase() ?? null;
+  if (!mc && !loader) return { index: 0, mismatch: false };
+  const matches = (release: T, withLoader: boolean) =>
+    (!mc || release.minecraft_version === mc)
+    && (!withLoader || !loader || release.loader.toLowerCase() === loader);
+  let index = releases.findIndex((release) => matches(release, true));
+  if (index < 0) index = releases.findIndex((release) => matches(release, false));
+  if (index >= 0) return { index, mismatch: false };
+  return { index: 0, mismatch: !!mc };
+}

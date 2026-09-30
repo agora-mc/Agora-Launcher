@@ -25,6 +25,7 @@ import {
   PREFERENCE_CHANGED_EVENT,
 } from '../features/interactive/live/presentationPreference';
 import { pinnedMotion } from './presentation-capabilities';
+import { motionAfterPinEnds, rememberMotionBeforePin, takeMotionBeforePin } from './motion-before-pin';
 
 export function PresentationMotionCoordinator() {
   const { preferences, setPreferences } = useUiPreferences();
@@ -33,6 +34,8 @@ export function PresentationMotionCoordinator() {
   // in a ref: the listener is registered once instead of re-subscribing on
   // every unrelated appearance tweak.
   const applyRef = useRef<() => void>(() => {});
+  // Whether the previous pass saw a pinning mode (Simple) active.
+  const wasPinnedRef = useRef(false);
   applyRef.current = () => {
     let pinned: ReturnType<typeof pinnedMotion>;
     try {
@@ -40,7 +43,19 @@ export function PresentationMotionCoordinator() {
     } catch {
       return; // storage unavailable — leave the user's motion setting alone
     }
-    if (pinned && preferences.motion !== pinned) setPreferences({ motion: pinned });
+    if (pinned) {
+      // Keep what the user had so leaving the mode can give it back.
+      rememberMotionBeforePin(preferences.motion);
+      wasPinnedRef.current = true;
+      if (preferences.motion !== pinned) setPreferences({ motion: pinned });
+      return;
+    }
+    const saved = takeMotionBeforePin();
+    if (saved !== null || wasPinnedRef.current) {
+      const restored = motionAfterPinEnds(preferences.motion, 'reduced', saved);
+      if (restored !== preferences.motion) setPreferences({ motion: restored });
+    }
+    wasPinnedRef.current = false;
   };
 
   useEffect(() => {
