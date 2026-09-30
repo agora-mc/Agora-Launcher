@@ -4812,6 +4812,7 @@ pub async fn import_instance(
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
     symlink_saves: bool,
+    name: Option<String>,
 ) -> LauncherResult<agora_core::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     let source = std::path::PathBuf::from(&source_path);
@@ -4833,12 +4834,25 @@ pub async fn import_instance(
         app,
         event_name: "operation-progress",
     });
-    svc.run_import_with_sink(
+    svc.run_import_named(
         request,
+        name,
         sink,
         agora_core::event_sink::CancellationToken::new(),
     )
     .await
+}
+
+/// Name an import would get, whether it is taken, and a free suggestion.
+#[tauri::command]
+pub async fn preview_import_name(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    source_path: String,
+) -> LauncherResult<agora_core::import_service::ImportNamePreview> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::import_service::ImportService::new(ctx)
+        .preview_import_name(std::path::Path::new(&source_path))
 }
 
 struct TauriCoreProgressSink {

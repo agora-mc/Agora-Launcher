@@ -1,3 +1,4 @@
+import { HideOnErrorImage } from '../components/HideOnErrorImage';
 import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
@@ -445,7 +446,7 @@ export function ProviderDetail({
                 <a {...props} target="_blank" rel="noopener noreferrer" />
               ),
               img: ({ node: _node, ...props }) => (
-                <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+                <HideOnErrorImage {...props} />
               ),
             }}
           >

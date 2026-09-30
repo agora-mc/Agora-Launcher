@@ -204,16 +204,14 @@ export function AppearanceInterfaceSettings() {
   // clearly named interaction control — this is that control.
   const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
   const applyInteraction = (value: InteractionPreference) => {
-    const previous = interaction;
     setInteraction(value);
     savePreference(value);
     // Simple and High Interaction both render the live instance view, so both
     // resume it; only Standard suspends.
     if (value === 'standard') suspendHighInteraction();
     else resumeHighInteractionView();
-    // Leaving Simple hands motion back to the user: its `reduced` pin was the
-    // mode's choice, not theirs, so follow system rather than staying pinned.
-    if (previous === 'simple' && value !== 'simple') setPreferences({ motion: 'system' });
+    // Leaving Simple hands motion back: PresentationMotionCoordinator restores
+    // the value the user had before Simple pinned it to reduced.
   };
   // Simple pins motion to `reduced` (PresentationMotionCoordinator applies it).
   // Showing the control as disabled beats letting the user pick a value that is

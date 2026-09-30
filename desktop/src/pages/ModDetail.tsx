@@ -5,6 +5,8 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { defaultSchema, type Schema } from 'hast-util-sanitize';
 import { ArrowDown, ArrowUp } from 'lucide-react';
+import { HideOnErrorImage } from '../components/HideOnErrorImage';
+import { peekParkedBrowseFilter, pickDefaultPackRelease } from './browseSession';
 import {
   downloadSourceLabel,
   downloadSourcesOf,
@@ -1878,7 +1880,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                           <a {...props} target="_blank" rel="noopener noreferrer" />
                         ),
                         img: ({ node, ...props }) => (
-                          <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+                          <HideOnErrorImage {...props} />
                         ),
                       }}
                     >
@@ -1910,7 +1912,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                           <a {...props} target="_blank" rel="noopener noreferrer" />
                         ),
                         img: ({ node, ...props }) => (
-                          <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+                          <HideOnErrorImage {...props} />
                         ),
                       }}
                     >
@@ -2754,6 +2756,8 @@ function PackCreateDialog({
   const [packVersion, setPackVersion] = useState('');
   const [packPlan, setPackPlan] = useState<CuratedPackPlan | null>(null);
   const [planning, setPlanning] = useState(false);
+  // The Browse filter this dialog was opened under, read once.
+  const [browseFilter] = useState(() => peekParkedBrowseFilter());
   const selectedRelease = packMode === 'locked'
     ? packVersions.find((release) => release.version === packVersion) ?? null
     : null;
@@ -2766,12 +2770,15 @@ function PackCreateDialog({
         if (cancelled || releases.length === 0) return;
         setPackVersions(releases);
         setPackMode('locked');
-        setPackVersion(releases[0].version);
+        // Prefer the newest release for the Minecraft version/loader Browse was
+        // filtered to; otherwise the newest release (the mismatch is shown).
+        const { index } = pickDefaultPackRelease(releases, browseFilter);
+        setPackVersion(releases[Math.max(index, 0)].version);
       })
       // An older registry has no releases: the flexible recipe is all there is.
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [isModrinth, item.id]);
+  }, [isModrinth, item.id, browseFilter]);
 
   // A plan answers one exact question; changing the question discards it.
   useEffect(() => {
@@ -3056,6 +3063,15 @@ function PackCreateDialog({
                         Minecraft {selectedRelease.minecraft_version} · {selectedRelease.loader}{' '}
                         {selectedRelease.loader_version}
                       </p>
+                      {browseFilter?.mcVersion && selectedRelease.minecraft_version !== browseFilter.mcVersion && (
+                        <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+                          You were browsing Minecraft {browseFilter.mcVersion}, but this release is for
+                          Minecraft {selectedRelease.minecraft_version}.
+                          {packVersions.some((release) => release.minecraft_version === browseFilter.mcVersion)
+                            ? ' Pick another release above for the version you were browsing.'
+                            : ' This pack has no release for that version.'}
+                        </p>
+                      )}
                       {selectedRelease.changelog && (
                         <p className="whitespace-pre-line text-xs text-muted-foreground">{selectedRelease.changelog}</p>
                       )}
