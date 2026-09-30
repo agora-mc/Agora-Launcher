@@ -15,6 +15,7 @@
       LinkArm     Hardlinks every file of a Steam game into a side folder and records identities.
       LinkCheck   After a Steam update, reports whether Steam replaced files or patched them in place.
       VerifyTest  LinkArm + corrupts one byte of one file + Steam "Verify integrity" + LinkCheck.
+      RestoreUserFiles  Puts back the plugins.txt / INI files StockRoot backed up (newest backup).
       Cleanup     Removes every folder this script created (only folders carrying its marker file).
 
     Reports are written to %LOCALAPPDATA%\AgoraSpike\reports. User-profile paths and the computer
@@ -29,10 +30,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Inventory', 'StockRoot', 'ToolRecord', 'LinkArm', 'LinkCheck', 'VerifyTest', 'Cleanup')]
+    [ValidateSet('Inventory', 'StockRoot', 'ToolRecord', 'LinkArm', 'LinkCheck', 'VerifyTest', 'RestoreUserFiles', 'Cleanup')]
     [string]$Mode = 'Inventory',
 
-    # Which Skyrim install StockRoot and ToolRecord use. Defaults: StockRoot prefers GOG, ToolRecord prefers Steam.
+    # Which Skyrim install StockRoot, ToolRecord and RestoreUserFiles use. Defaults: StockRoot prefers GOG, ToolRecord prefers Steam.
     [ValidateSet('SkyrimSteam', 'SkyrimGOG')]
     [string]$Game,
 
@@ -56,8 +57,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$SpikeVersion = 1
-$SpikeHome = Join-Path $env:LOCALAPPDATA 'AgoraSpike'
+$SpikeVersion = 2
+$SpikeHome = [IO.Path]::Combine($env:LOCALAPPDATA, 'AgoraSpike')
 $MarkerName = '.agora-spike-root'
 $SkyrimSteamAppId = '489830'
 
@@ -193,10 +194,10 @@ function Protect-Text([string]$Text) {
 }
 
 function Save-Report([string]$Name, $Data) {
-    $dir = Join-Path $SpikeHome 'reports'
+    $dir = Join-Parts $SpikeHome 'reports'
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $json = Protect-Text ($Data | ConvertTo-Json -Depth 12)
-    $path = Join-Path $dir ('{0}-{1}.json' -f $Name, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $path = Join-Parts $dir ('{0}-{1}.json' -f $Name, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     [IO.File]::WriteAllText($path, $json, (New-Object Text.UTF8Encoding($false)))
     Write-Host ''
     Write-Host "Report written to: $path" -ForegroundColor Green
@@ -213,7 +214,7 @@ function Confirm-Yes([string]$Message) {
 
 function New-MarkedFolder([string]$Path, $Metadata) {
     if (Test-Path -LiteralPath $Path) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Path $MarkerName))) {
+        if (-not (Test-Path -LiteralPath (Join-Parts $Path $MarkerName))) {
             throw "$Path exists and was not created by this script; refusing to touch it."
         }
         Write-Host "Removing previous spike folder $Path"
@@ -221,7 +222,7 @@ function New-MarkedFolder([string]$Path, $Metadata) {
     }
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
     $json = $Metadata | ConvertTo-Json -Depth 4
-    [IO.File]::WriteAllText((Join-Path $Path $MarkerName), $json, (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Parts $Path $MarkerName), $json, (New-Object Text.UTF8Encoding($false)))
 }
 
 function Get-DocumentsPath { return [Environment]::GetFolderPath('MyDocuments') }
@@ -307,10 +308,10 @@ function Get-EngineFingerprint([string]$Dir) {
     $top = @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue)
     $topDirs = @($top | Where-Object { $_.PSIsContainer })
     $topFiles = @($top | Where-Object { -not $_.PSIsContainer })
-    $has = { param($rel) Test-Path -LiteralPath (Join-Path $Dir $rel) }
+    $has = { param($rel) Test-Path -LiteralPath (Join-Parts $Dir $rel) }
 
     # Unity
-    $unityData = @($topDirs | Where-Object { $_.Name -like '*_Data' -and ((Test-Path -LiteralPath (Join-Path $_.FullName 'globalgamemanagers')) -or (Test-Path -LiteralPath (Join-Path $_.FullName 'data.unity3d'))) })
+    $unityData = @($topDirs | Where-Object { $_.Name -like '*_Data' -and ((Test-Path -LiteralPath (Join-Parts $_.FullName 'globalgamemanagers')) -or (Test-Path -LiteralPath (Join-Parts $_.FullName 'data.unity3d'))) })
     if ((& $has 'UnityPlayer.dll') -or $unityData.Count -gt 0) {
         if (& $has 'GameAssembly.dll') { $fp.engine += 'unity-il2cpp' } else { $fp.engine += 'unity-mono' }
     }
@@ -320,16 +321,16 @@ function Get-EngineFingerprint([string]$Dir) {
         if (Test-Path -LiteralPath $paks) {
             $fp.engine += 'unreal'
             $fp.notes += "unreal project folder: $($d.Name)"
-            if (Test-Path -LiteralPath (Join-Path $paks '~mods')) { $fp.loaders += 'pak-mods(~mods)' }
-            if (Test-Path -LiteralPath (Join-Path $paks 'LogicMods')) { $fp.loaders += 'ue4ss-logicmods' }
+            if (Test-Path -LiteralPath (Join-Parts $paks '~mods')) { $fp.loaders += 'pak-mods(~mods)' }
+            if (Test-Path -LiteralPath (Join-Parts $paks 'LogicMods')) { $fp.loaders += 'ue4ss-logicmods' }
             $win64 = Join-Parts $d.FullName 'Binaries' 'Win64'
-            if ((Test-Path -LiteralPath (Join-Path $win64 'ue4ss')) -or (Test-Path -LiteralPath (Join-Path $win64 'UE4SS.dll'))) { $fp.loaders += 'ue4ss' }
+            if ((Test-Path -LiteralPath (Join-Parts $win64 'ue4ss')) -or (Test-Path -LiteralPath (Join-Parts $win64 'UE4SS.dll'))) { $fp.loaders += 'ue4ss' }
             if (Test-Path -LiteralPath (Join-Parts $d.FullName 'Mods' 'SML')) { $fp.loaders += 'satisfactory-mod-loader' }
-            if (Test-Path -LiteralPath (Join-Path $d.FullName 'Mods')) { $fp.modFolders += "$($d.Name)\Mods" }
+            if (Test-Path -LiteralPath (Join-Parts $d.FullName 'Mods')) { $fp.modFolders += "$($d.Name)\Mods" }
         }
     }
     if (@($topFiles | Where-Object { $_.Extension -eq '.pck' }).Count -gt 0) { $fp.engine += 'godot' }
-    if ((& $has 'Data') -and @(Get-ChildItem -LiteralPath (Join-Path $Dir 'Data') -Filter '*.esm' -File -ErrorAction SilentlyContinue | Select-Object -First 1).Count -gt 0) {
+    if ((& $has 'Data') -and @(Get-ChildItem -LiteralPath (Join-Parts $Dir 'Data') -Filter '*.esm' -File -ErrorAction SilentlyContinue | Select-Object -First 1).Count -gt 0) {
         $fp.engine += 'creation'
         $fp.modFolders += 'Data'
     }
@@ -400,7 +401,7 @@ function Get-SteamApps {
     }
     $apps = @()
     foreach ($lib in $libraries) {
-        $steamapps = Join-Path $lib 'steamapps'
+        $steamapps = Join-Parts $lib 'steamapps'
         if (-not (Test-Path -LiteralPath $steamapps)) { continue }
         foreach ($acf in @(Get-ChildItem -LiteralPath $steamapps -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
             try {
@@ -474,7 +475,7 @@ function Get-EpicGames {
 }
 
 function Test-Writable([string]$Dir) {
-    $probe = Join-Path $Dir ('.agora-spike-probe-' + [guid]::NewGuid().ToString('N'))
+    $probe = Join-Parts $Dir ('.agora-spike-probe-' + [guid]::NewGuid().ToString('N'))
     try {
         [IO.File]::WriteAllText($probe, '')
         Remove-Item -LiteralPath $probe -Force
@@ -487,8 +488,8 @@ function Get-XboxGames {
     $roots = @()
     foreach ($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
         if ($drive.Root -notmatch '^[A-Za-z]:\\$') { continue }
-        $gamingRoot = Join-Path $drive.Root '.GamingRoot'
-        $folder = Join-Path $drive.Root 'XboxGames'
+        $gamingRoot = Join-Parts $drive.Root '.GamingRoot'
+        $folder = Join-Parts $drive.Root 'XboxGames'
         if (Test-Path -LiteralPath $folder) { $roots += $folder }
         elseif (Test-Path -LiteralPath $gamingRoot) { $roots += "(custom folder on $($drive.Root), see .GamingRoot)" }
     }
@@ -498,7 +499,7 @@ function Get-XboxGames {
             continue
         }
         foreach ($g in @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue)) {
-            $content = Join-Path $g.FullName 'Content'
+            $content = Join-Parts $g.FullName 'Content'
             $readable = $false
             $exes = @()
             try {
@@ -512,7 +513,7 @@ function Get-XboxGames {
                 installed            = (Test-Path -LiteralPath $content)
                 contentReadable      = $readable
                 contentWritable      = ($readable -and (Test-Writable $content))
-                microsoftGameConfig  = (Test-Path -LiteralPath (Join-Path $content 'MicrosoftGame.config'))
+                microsoftGameConfig  = (Test-Path -LiteralPath (Join-Parts $content 'MicrosoftGame.config'))
                 topLevelExecutables  = $exes
             }
         }
@@ -523,7 +524,7 @@ function Get-XboxGames {
             $loc = $p.InstallLocation
             if (-not $loc -or $loc -match '\\XboxGames\\') { continue }
             $isGame = $false
-            try { $isGame = Test-Path -LiteralPath (Join-Path $loc 'MicrosoftGame.config') } catch { }
+            try { $isGame = Test-Path -LiteralPath (Join-Parts $loc 'MicrosoftGame.config') } catch { }
             if (-not $isGame) { continue }
             $out += [pscustomobject]@{
                 store           = 'xbox-windowsapps'
@@ -553,14 +554,14 @@ function Get-NxmHandler {
 }
 
 function Get-Mo2Instance([string]$InstanceDir, [string]$Kind) {
-    $iniPath = Join-Path $InstanceDir 'ModOrganizer.ini'
+    $iniPath = Join-Parts $InstanceDir 'ModOrganizer.ini'
     $ini = Read-IniValues $iniPath
     $base = ConvertFrom-Mo2Path $ini['Settings/base_directory']
     if (-not $base) { $base = $InstanceDir }
     $resolve = {
         param($key, $default)
         $v = ConvertFrom-Mo2Path $ini["Settings/$key"]
-        if (-not $v) { return (Join-Path $base $default) }
+        if (-not $v) { return (Join-Parts $base $default) }
         return ($v -replace '%BASE_DIR%', $base)
     }
     $modsDir = & $resolve 'mod_directory' 'mods'
@@ -573,7 +574,7 @@ function Get-Mo2Instance([string]$InstanceDir, [string]$Kind) {
     $addressLibraries = @()
     foreach ($m in $mods) {
         if ($m.Name -like '*_separator') { $separators++; continue }
-        $meta = Join-Path $m.FullName 'meta.ini'
+        $meta = Join-Parts $m.FullName 'meta.ini'
         if (Test-Path -LiteralPath $meta) {
             try {
                 $mv = Read-IniValues $meta
@@ -591,14 +592,14 @@ function Get-Mo2Instance([string]$InstanceDir, [string]$Kind) {
     $profiles = @()
     if (Test-Path -LiteralPath $profilesDir) {
         foreach ($p in @(Get-ChildItem -LiteralPath $profilesDir -Directory -ErrorAction SilentlyContinue)) {
-            $modlist = Join-Path $p.FullName 'modlist.txt'
+            $modlist = Join-Parts $p.FullName 'modlist.txt'
             $lines = @()
             if (Test-Path -LiteralPath $modlist) { $lines = @([IO.File]::ReadAllLines($modlist)) }
-            $pluginsTxt = Join-Path $p.FullName 'plugins.txt'
+            $pluginsTxt = Join-Parts $p.FullName 'plugins.txt'
             $pluginLines = @()
             if (Test-Path -LiteralPath $pluginsTxt) { $pluginLines = @([IO.File]::ReadAllLines($pluginsTxt) | Where-Object { $_ -and -not $_.StartsWith('#') }) }
             $settings = @{}
-            $settingsPath = Join-Path $p.FullName 'settings.ini'
+            $settingsPath = Join-Parts $p.FullName 'settings.ini'
             if (Test-Path -LiteralPath $settingsPath) { $settings = Read-IniValues $settingsPath }
             $profiles += [pscustomobject]@{
                 name             = $p.Name
@@ -615,12 +616,24 @@ function Get-Mo2Instance([string]$InstanceDir, [string]$Kind) {
     $overwriteFiles = 0
     if (Test-Path -LiteralPath $overwriteDir) { $overwriteFiles = @(Get-ChildItem -LiteralPath $overwriteDir -Recurse -File -Force -ErrorAction SilentlyContinue).Count }
 
+    $gamePath = ConvertFrom-Mo2Path $ini['General/gamePath']
+    $gameExe = $null
+    if ($gamePath) {
+        foreach ($candidate in 'SkyrimSE.exe', 'Fallout4.exe', 'SkyrimVR.exe') {
+            if (Test-Path -LiteralPath (Join-Parts $gamePath $candidate)) { $gameExe = Join-Parts $gamePath $candidate; break }
+        }
+    }
     return [pscustomobject]@{
         kind             = $Kind
         instanceDir      = $InstanceDir
+        baseDir          = $base
+        modsDir          = $modsDir
+        profilesDir      = $profilesDir
+        overwriteDir     = $overwriteDir
         gameName         = $ini['General/gameName']
         gameEdition      = $ini['General/game_edition']
-        gamePath         = ConvertFrom-Mo2Path $ini['General/gamePath']
+        gamePath         = $gamePath
+        gameExeVersion   = Get-FileVersionString $gameExe
         selectedProfile  = ConvertFrom-Mo2Path $ini['General/selected_profile']
         mo2Version       = $ini['General/version']
         modCount         = $mods.Count - $separators
@@ -636,38 +649,45 @@ function Get-Mo2Instance([string]$InstanceDir, [string]$Kind) {
 function Get-Mo2Setups {
     $instances = @()
     $installs = @()
-    $global = Join-Path $env:LOCALAPPDATA 'ModOrganizer'
+    $seenInstances = @{}
+    $currentInstance = $null
+    try { $currentInstance = (Get-ItemProperty 'HKCU:\Software\Mod Organizer Team\Mod Organizer' -ErrorAction Stop).CurrentInstance } catch { }
+    $global = Join-Parts $env:LOCALAPPDATA 'ModOrganizer'
     if (Test-Path -LiteralPath $global) {
         foreach ($d in @(Get-ChildItem -LiteralPath $global -Directory -ErrorAction SilentlyContinue)) {
-            if (Test-Path -LiteralPath (Join-Path $d.FullName 'ModOrganizer.ini')) {
+            if (Test-Path -LiteralPath (Join-Parts $d.FullName 'ModOrganizer.ini')) {
+                $seenInstances[$d.FullName] = $true
                 try { $instances += Get-Mo2Instance $d.FullName 'global' }
                 catch { $instances += [pscustomobject]@{ instanceDir = $d.FullName; error = $_.Exception.Message } }
             }
         }
     }
-    # MO2 installs: the nxm handler usually points at one; portable installs are their own instance.
+    # MO2 installs: the nxm handler usually points at one. A ModOrganizer.ini beside the exe makes the
+    # install folder itself a portable instance (current MO2); older versions also used portable.txt.
     $candidates = @()
     $nxm = Get-NxmHandler
     if ($nxm -and $nxm.command -match '"?([^"]*?)\\nxmhandler\.exe') { $candidates += $Matches[1] }
     foreach ($c in @("$env:ProgramFiles\Mod Organizer 2", "$env:LOCALAPPDATA\Programs\Mod Organizer 2", 'C:\Modding\MO2', 'C:\MO2')) { $candidates += $c }
     foreach ($c in ($candidates | Sort-Object -Unique)) {
-        $exe = Join-Path $c 'ModOrganizer.exe'
+        $exe = Join-Parts $c 'ModOrganizer.exe'
         if (-not (Test-Path -LiteralPath $exe)) { continue }
         $installs += [pscustomobject]@{
             dir      = $c
             version  = Get-FileVersionString $exe
-            portable = (Test-Path -LiteralPath (Join-Path $c 'portable.txt'))
+            portable = (Test-Path -LiteralPath (Join-Parts $c 'ModOrganizer.ini'))
             usvfs    = @(Get-ChildItem -LiteralPath $c -Filter 'usvfs*' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
         }
-        if ((Test-Path -LiteralPath (Join-Path $c 'portable.txt')) -and (Test-Path -LiteralPath (Join-Path $c 'ModOrganizer.ini'))) {
-            try { $instances += Get-Mo2Instance $c 'portable' } catch { }
+        if ((Test-Path -LiteralPath (Join-Parts $c 'ModOrganizer.ini')) -and -not $seenInstances.ContainsKey($c)) {
+            $seenInstances[$c] = $true
+            try { $instances += Get-Mo2Instance $c 'portable' }
+            catch { $instances += [pscustomobject]@{ instanceDir = $c; error = $_.Exception.Message } }
         }
     }
-    return [ordered]@{ installs = $installs; instances = $instances }
+    return [ordered]@{ currentInstance = $currentInstance; installs = $installs; instances = $instances }
 }
 
 function Get-VortexSetup {
-    $root = Join-Path $env:APPDATA 'Vortex'
+    $root = Join-Parts $env:APPDATA 'Vortex'
     $exe = Join-Parts $env:ProgramFiles 'Black Tree Gaming Ltd' 'Vortex' 'Vortex.exe'
     $result = [ordered]@{
         installed  = (Test-Path -LiteralPath $exe)
@@ -677,12 +697,12 @@ function Get-VortexSetup {
         staging    = @()
     }
     if (Test-Path -LiteralPath $root) {
-        $state = Join-Path $root 'state.v2'
+        $state = Join-Parts $root 'state.v2'
         if (Test-Path -LiteralPath $state) {
             $result.stateDbMB = [math]::Round((@(Get-ChildItem -LiteralPath $state -Recurse -File -ErrorAction SilentlyContinue) | Measure-Object Length -Sum).Sum / 1MB, 1)
         }
         foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
-            $mods = Join-Path $d.FullName 'mods'
+            $mods = Join-Parts $d.FullName 'mods'
             if (Test-Path -LiteralPath $mods) {
                 $result.staging += [pscustomobject]@{
                     gameId   = $d.Name
@@ -706,7 +726,7 @@ function Get-SkyrimInstalls {
         }
     }
     foreach ($g in @(Get-GogGames)) {
-        if ($g.name -match 'Skyrim' -and $g.installed -and (Test-Path -LiteralPath (Join-Path $g.installDir 'SkyrimSE.exe'))) {
+        if ($g.name -match 'Skyrim' -and $g.installed -and (Test-Path -LiteralPath (Join-Parts $g.installDir 'SkyrimSE.exe'))) {
             $list += [pscustomobject]@{ flavor = 'GOG'; key = 'SkyrimGOG'; installDir = $g.installDir; appDataName = 'Skyrim Special Edition GOG'; steam = $null }
         }
     }
@@ -715,13 +735,13 @@ function Get-SkyrimInstalls {
 
 function Get-SkyrimDetails($Install) {
     $dir = $Install.installDir
-    $exeVersion = Get-FileVersionString (Join-Path $dir 'SkyrimSE.exe')
+    $exeVersion = Get-FileVersionString (Join-Parts $dir 'SkyrimSE.exe')
     $triple = $null
     if ($exeVersion) { $triple = ($exeVersion.Split('.')[0..2] -join '.') }
 
     $skseDlls = @(Get-ChildItem -LiteralPath $dir -Filter 'skse64_1_*.dll' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     $skseTargets = @($skseDlls | ForEach-Object { $_ -replace '^skse64_(\d+)_(\d+)_(\d+)\.dll$', '$1.$2.$3' })
-    $data = Join-Path $dir 'Data'
+    $data = Join-Parts $dir 'Data'
     $pluginsDir = Join-Parts $data 'SKSE' 'Plugins'
     $addressLibs = @(Get-ChildItem -LiteralPath $pluginsDir -Filter 'versionlib-*.bin' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     $expectedAddressLib = $null
@@ -737,8 +757,8 @@ function Get-SkyrimDetails($Install) {
     }
     $topPlugins = @($dataFiles | Where-Object { $_.DirectoryName -eq $data -and $_.Extension -in '.esp', '.esm', '.esl' })
 
-    $appData = Join-Path $env:LOCALAPPDATA $Install.appDataName
-    $pluginsTxt = Join-Path $appData 'plugins.txt'
+    $appData = Join-Parts $env:LOCALAPPDATA $Install.appDataName
+    $pluginsTxt = Join-Parts $appData 'plugins.txt'
     $pluginLines = @()
     if (Test-Path -LiteralPath $pluginsTxt) { $pluginLines = @([IO.File]::ReadAllLines($pluginsTxt) | Where-Object { $_ -and -not $_.StartsWith('#') }) }
     $myGames = Join-Parts (Get-DocumentsPath) 'My Games' $Install.appDataName
@@ -752,15 +772,15 @@ function Get-SkyrimDetails($Install) {
         exeVersion               = $exeVersion
         steamBuildId             = $(if ($Install.steam) { $Install.steam.buildId } else { $null })
         steamAutoUpdate          = $(if ($Install.steam) { $Install.steam.autoUpdateBehavior } else { $null })
-        skseLoaderPresent        = (Test-Path -LiteralPath (Join-Path $dir 'skse64_loader.exe'))
-        skseLoaderVersion        = Get-FileVersionString (Join-Path $dir 'skse64_loader.exe')
+        skseLoaderPresent        = (Test-Path -LiteralPath (Join-Parts $dir 'skse64_loader.exe'))
+        skseLoaderVersion        = Get-FileVersionString (Join-Parts $dir 'skse64_loader.exe')
         skseRuntimeTargets       = $skseTargets
         skseMatchesGame          = ($triple -and ($skseTargets -contains $triple))
         addressLibrariesInData   = $addressLibs
         expectedAddressLibrary   = $expectedAddressLib
         addressLibraryMatches    = ($expectedAddressLib -and ($addressLibs -contains $expectedAddressLib))
-        nemesisEngineInData      = (Test-Path -LiteralPath (Join-Path $data 'Nemesis_Engine'))
-        pandoraEngineInData      = (Test-Path -LiteralPath (Join-Path $data 'Pandora_Engine'))
+        nemesisEngineInData      = (Test-Path -LiteralPath (Join-Parts $data 'Nemesis_Engine'))
+        pandoraEngineInData      = (Test-Path -LiteralPath (Join-Parts $data 'Pandora_Engine'))
         dataFileCount            = $dataFiles.Count
         dataFilesHardlinked      = $linked
         dataTopLevelPlugins      = $topPlugins.Count
@@ -768,7 +788,7 @@ function Get-SkyrimDetails($Install) {
         pluginsTxtEntries        = $pluginLines.Count
         pluginsTxtEnabled        = @($pluginLines | Where-Object { $_.StartsWith('*') }).Count
         myGamesExists            = (Test-Path -LiteralPath $myGames)
-        saveCount                = @(Get-ChildItem -LiteralPath (Join-Path $myGames 'Saves') -Filter '*.ess' -File -ErrorAction SilentlyContinue).Count
+        saveCount                = @(Get-ChildItem -LiteralPath (Join-Parts $myGames 'Saves') -Filter '*.ess' -File -ErrorAction SilentlyContinue).Count
         skseLogLastWriteUtc      = $(if (Test-Path -LiteralPath $skseLog) { (Get-Item -LiteralPath $skseLog).LastWriteTimeUtc.ToString('o') } else { $null })
         vortexDeployments        = @($vortex | Select-Object manifest, deploymentMethod, gameId, stagingPath, targetPath, version, fileCount, modCount, error)
     }
@@ -822,18 +842,19 @@ function Get-SystemInfo {
 }
 
 function Get-ParadoxData {
-    $root = Join-Path (Get-DocumentsPath) 'Paradox Interactive'
+    $root = Join-Parts (Get-DocumentsPath) 'Paradox Interactive'
     $games = @()
     if (Test-Path -LiteralPath $root) {
         foreach ($g in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
-            $modDir = Join-Path $g.FullName 'mod'
+            $modDir = Join-Parts $g.FullName 'mod'
             $games += [pscustomobject]@{
                 game           = $g.Name
                 userDir        = $g.FullName
                 descriptors    = @(Get-ChildItem -LiteralPath $modDir -Filter '*.mod' -File -ErrorAction SilentlyContinue).Count
                 modFolders     = @(Get-ChildItem -LiteralPath $modDir -Directory -ErrorAction SilentlyContinue).Count
-                dlcLoadJson    = (Test-Path -LiteralPath (Join-Path $g.FullName 'dlc_load.json'))
-                contentLoadJson = (Test-Path -LiteralPath (Join-Path $g.FullName 'content_load.json'))
+                launcherDb     = (Test-Path -LiteralPath (Join-Parts $g.FullName 'launcher-v2.sqlite'))
+                dlcLoadJson    = (Test-Path -LiteralPath (Join-Parts $g.FullName 'dlc_load.json'))
+                contentLoadJson = (Test-Path -LiteralPath (Join-Parts $g.FullName 'content_load.json'))
             }
         }
     }
@@ -939,7 +960,7 @@ Nothing in the real install is written to. The new folder costs almost no disk w
     New-MarkedFolder $stock ([ordered]@{ createdBy = 'agora-game-spike'; mode = 'StockRoot'; source = $source; createdUtc = (Get-Date).ToUniversalTime().ToString('o') })
 
     $vortexTargets = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($dep in @(Get-VortexDeployments @($source, (Join-Path $source 'Data')))) {
+    foreach ($dep in @(Get-VortexDeployments @($source, (Join-Parts $source 'Data')))) {
         foreach ($t in @($dep.targets)) { [void]$vortexTargets.Add($t) }
     }
     $injectors = @('d3d11.dll', 'dxgi.dll', 'd3d9.dll', 'dinput8.dll', 'winhttp.dll', 'version.dll', 'd3dcompiler_46e.dll', 'enblocal.ini', 'enbseries.ini')
@@ -966,7 +987,7 @@ Nothing in the real install is written to. The new folder costs almost no disk w
             $stats.skipped[$reason]++
             continue
         }
-        $dest = Join-Path $stock $rel
+        $dest = Join-Parts $stock $rel
         $destDir = Split-Path -Parent $dest
         if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
         $alwaysCopy = $f.Extension -in '.exe', '.dll'
@@ -992,31 +1013,32 @@ Nothing in the real install is written to. The new folder costs almost no disk w
     Write-Host ("Built in {0}s: {1} hardlinked ({2} GB), {3} copied ({4} GB)" -f $stats.buildSeconds, $stats.hardlinked, $stats.gbHardlinked, $stats.copied, $stats.gbCopied)
 
     if ($AddSteamAppId -and $install.flavor -eq 'Steam') {
-        [IO.File]::WriteAllText((Join-Path $stock 'steam_appid.txt'), $SkyrimSteamAppId)
-        [void]$created.Add((Join-Path $stock 'steam_appid.txt'))
+        [IO.File]::WriteAllText((Join-Parts $stock 'steam_appid.txt'), $SkyrimSteamAppId)
+        [void]$created.Add((Join-Parts $stock 'steam_appid.txt'))
     }
 
     # Back up the per-user files the game (or the AE Creations menu) may rewrite.
-    $appData = Join-Path $env:LOCALAPPDATA $install.appDataName
+    $appData = Join-Parts $env:LOCALAPPDATA $install.appDataName
     $myGames = Join-Parts (Get-DocumentsPath) 'My Games' $install.appDataName
     $userFiles = @()
-    foreach ($n in 'plugins.txt', 'loadorder.txt', 'DLCList.txt') { $userFiles += (Join-Path $appData $n) }
-    foreach ($n in 'Skyrim.ini', 'SkyrimPrefs.ini', 'SkyrimCustom.ini') { $userFiles += (Join-Path $myGames $n) }
-    $backupDir = Join-Path $SpikeHome ('backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    foreach ($n in 'plugins.txt', 'loadorder.txt', 'DLCList.txt') { $userFiles += (Join-Parts $appData $n) }
+    foreach ($n in 'Skyrim.ini', 'SkyrimPrefs.ini', 'SkyrimCustom.ini') { $userFiles += (Join-Parts $myGames $n) }
+    $backupDir = Join-Parts $SpikeHome ('backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
     $backups = @()
     $i = 0
     foreach ($uf in $userFiles) {
         if (-not (Test-Path -LiteralPath $uf)) { continue }
-        $copyPath = Join-Path $backupDir ('{0:d2}-{1}' -f $i, (Split-Path -Leaf $uf)); $i++
+        $copyPath = Join-Parts $backupDir ('{0:d2}-{1}' -f $i, (Split-Path -Leaf $uf)); $i++
         Copy-Item -LiteralPath $uf -Destination $copyPath -Force
         $backups += [pscustomobject]@{ original = $uf; backup = $copyPath; hash = (Get-FileHash -LiteralPath $uf -Algorithm SHA256).Hash }
     }
+    [IO.File]::WriteAllText((Join-Parts $backupDir 'manifest.json'), (ConvertTo-Json @($backups) -Depth 3), (New-Object Text.UTF8Encoding($false)))
     Write-Host "Backed up $($backups.Count) user files to $backupDir"
 
-    $useSkse = (-not $NoSkse) -and (Test-Path -LiteralPath (Join-Path $stock 'skse64_loader.exe'))
-    $launchExe = Join-Path $stock 'SkyrimSE.exe'
-    if ($useSkse) { $launchExe = Join-Path $stock 'skse64_loader.exe' }
+    $useSkse = (-not $NoSkse) -and (Test-Path -LiteralPath (Join-Parts $stock 'skse64_loader.exe'))
+    $launchExe = Join-Parts $stock 'SkyrimSE.exe'
+    if ($useSkse) { $launchExe = Join-Parts $stock 'skse64_loader.exe' }
     $already = @(Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue)
     if ($already.Count -gt 0) { throw 'Skyrim is already running. Close it and run StockRoot again.' }
 
@@ -1024,24 +1046,50 @@ Nothing in the real install is written to. The new folder costs almost no disk w
     Write-Host "Launching $launchExe" -ForegroundColor Cyan
     Write-Host 'Get to the main menu, do NOT load or create a save, then quit to desktop.' -ForegroundColor Yellow
     $launchedAt = Get-Date
-    Start-Process -FilePath $launchExe -WorkingDirectory $stock
     $proc = $null
-    for ($t = 0; $t -lt 90 -and -not $proc; $t++) {
-        Start-Sleep -Seconds 2
-        $proc = Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue | Select-Object -First 1
-    }
     $processPath = $null
-    if ($proc) { try { $processPath = $proc.Path } catch { } }
-    $ranFromStock = ($processPath -and $processPath.StartsWith($stock, [StringComparison]::OrdinalIgnoreCase))
-    if ($proc) {
-        Write-Host "SkyrimSE.exe is running from: $processPath"
-        Write-Host 'Waiting for Skyrim to close...'
-        while (Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }
-    } else {
-        Write-Warning 'SkyrimSE.exe never appeared within three minutes.'
+    $lingered = $false
+    $endedByScript = $false
+    $reachedMenu = $null
+    $errors = $null
+    $changedUserFiles = @()
+    try {
+        Start-Process -FilePath $launchExe -WorkingDirectory $stock
+        for ($t = 0; $t -lt 90 -and -not $proc; $t++) {
+            Start-Sleep -Seconds 2
+            $proc = Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+        if ($proc) {
+            try { $processPath = $proc.Path } catch { }
+            Write-Host "SkyrimSE.exe is running from: $processPath"
+        } else {
+            Write-Warning 'SkyrimSE.exe never appeared within three minutes.'
+        }
+        $reachedMenu = Read-Host 'Did Skyrim reach the main menu? (y/n)'
+        [void](Read-Host 'Quit Skyrim to the desktop, then press Enter')
+        # Skyrim often keeps running in the background after "Quit to desktop"; never wait on it forever.
+        for ($t = 0; $t -lt 15 -and (Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue); $t++) { Start-Sleep -Seconds 2 }
+        if (Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue) {
+            $lingered = $true
+            $kill = Read-Host 'SkyrimSE.exe is still running 30 seconds after quitting. End it now? (y/n)'
+            if ($kill -eq 'y') {
+                Get-Process -Name 'SkyrimSE' -ErrorAction SilentlyContinue | Stop-Process -Force
+                $endedByScript = $true
+                Start-Sleep -Seconds 2
+            }
+        }
+        $errors = Read-Host 'Any error dialogs or odd behaviour? (describe, or press Enter for none)'
+    } finally {
+        # Restore user files whatever happened above (including Ctrl+C), noting which ones the game changed.
+        foreach ($b in $backups) {
+            $nowHash = $null
+            if (Test-Path -LiteralPath $b.original) { $nowHash = (Get-FileHash -LiteralPath $b.original -Algorithm SHA256).Hash }
+            if ($nowHash -ne $b.hash) { $changedUserFiles += (Split-Path -Leaf $b.original) }
+            Copy-Item -LiteralPath $b.backup -Destination $b.original -Force
+        }
+        Write-Host "Restored $($backups.Count) user files."
     }
-    $reachedMenu = Read-Host 'Did Skyrim reach the main menu? (y/n)'
-    $errors = Read-Host 'Any error dialogs or odd behaviour? (describe, or press Enter for none)'
+    $ranFromStock = ($processPath -and $processPath.StartsWith($stock, [StringComparison]::OrdinalIgnoreCase))
 
     # SKSE log for this run
     $skseLog = Join-Parts $myGames 'SKSE' 'skse64.log'
@@ -1064,21 +1112,12 @@ Nothing in the real install is written to. The new folder costs almost no disk w
         if ($f.Name -eq $MarkerName) { continue }
         if (-not $created.Contains($f.FullName)) { $newInStock += (Get-RelativePath $stock $f.FullName) }
     }
-    # Restore user files, noting which ones the game changed
-    $changedUserFiles = @()
-    foreach ($b in $backups) {
-        $nowHash = $null
-        if (Test-Path -LiteralPath $b.original) { $nowHash = (Get-FileHash -LiteralPath $b.original -Algorithm SHA256).Hash }
-        if ($nowHash -ne $b.hash) { $changedUserFiles += (Split-Path -Leaf $b.original) }
-        Copy-Item -LiteralPath $b.backup -Destination $b.original -Force
-    }
-    Write-Host "Restored $($backups.Count) user files."
 
     $report = [ordered]@{
         spikeVersion           = $SpikeVersion
         mode                   = 'StockRoot'
         flavor                 = $install.flavor
-        exeVersion             = Get-FileVersionString (Join-Path $source 'SkyrimSE.exe')
+        exeVersion             = Get-FileVersionString (Join-Parts $source 'SkyrimSE.exe')
         method                 = $method
         steamAppIdFileWritten  = [bool]($AddSteamAppId -and $install.flavor -eq 'Steam')
         stockRoot              = $stock
@@ -1088,6 +1127,8 @@ Nothing in the real install is written to. The new folder costs almost no disk w
         processPath            = $processPath
         ranFromStockRoot       = [bool]$ranFromStock
         reachedMainMenu        = $reachedMenu
+        keptRunningAfterQuit   = $lingered
+        endedByScript          = $endedByScript
         userNotes              = $errors
         skse                   = $skse
         realInstallFilesChanged = $originalsChanged
@@ -1132,14 +1173,24 @@ function Invoke-ToolRecord {
     $roots = @()
     if ($Root) { $roots = $Root }
     else {
-        $install = Select-SkyrimInstall 'SkyrimSteam' 'SkyrimGOG'
-        $roots += $install.installDir
-        $roots += (Join-Path $env:LOCALAPPDATA $install.appDataName)
-        $roots += (Join-Parts (Get-DocumentsPath) 'My Games' $install.appDataName)
-        $mo2 = Get-Mo2Setups
-        foreach ($inst in @($mo2.instances)) {
-            if ($inst.gameName -match 'Skyrim' -and $inst.instanceDir) { $roots += (Join-Path $inst.instanceDir 'overwrite') }
+        # Prefer MO2: a tool run through MO2 writes into its overwrite folder or a chosen output mod,
+        # and reads the game folder MO2 points at, which may not be the Steam or GOG default.
+        $mo2Skyrim = @(@((Get-Mo2Setups).instances) | Where-Object { $_.gameName -match 'Skyrim' -and $_.modsDir })
+        $appDataName = 'Skyrim Special Edition'
+        if ($mo2Skyrim.Count -gt 0) {
+            foreach ($inst in $mo2Skyrim) {
+                Write-Host "MO2 instance: $($inst.instanceDir) (game: $($inst.gamePath))"
+                $roots += $inst.modsDir, $inst.overwriteDir, $inst.profilesDir
+                if ($inst.gamePath) { $roots += $inst.gamePath }
+                if ($inst.gameEdition -match 'GOG') { $appDataName = 'Skyrim Special Edition GOG' }
+            }
+        } else {
+            $install = Select-SkyrimInstall 'SkyrimSteam' 'SkyrimGOG'
+            $roots += $install.installDir
+            $appDataName = $install.appDataName
         }
+        $roots += (Join-Parts $env:LOCALAPPDATA $appDataName)
+        $roots += (Join-Parts (Get-DocumentsPath) 'My Games' $appDataName)
     }
     $roots = @($roots | Where-Object { $_ } | Sort-Object -Unique)
     Write-Host 'Watching:' -ForegroundColor Cyan
@@ -1225,7 +1276,7 @@ function Invoke-LinkArm([int]$Id) {
         if (-not $identity) { continue }
         if ($identity.Links -gt 1) { $skippedLinked++; continue }   # already hardlinked by something else (e.g. Vortex)
         $rel = Get-RelativePath $source $f.FullName
-        $dest = Join-Path $side $rel
+        $dest = Join-Parts $side $rel
         $destDir = Split-Path -Parent $dest
         if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
         try { [AgoraSpikeNative]::HardLink($dest, $f.FullName) } catch { continue }
@@ -1251,8 +1302,8 @@ function Invoke-LinkCheck([int]$Id, [string]$FocusRel) {
     $details = @()
     $focus = $null
     foreach ($e in @($state.entries)) {
-        $orig = Join-Path $state.source $e.rel
-        $link = Join-Path $state.side $e.rel
+        $orig = Join-Parts $state.source $e.rel
+        $link = Join-Parts $state.side $e.rel
         $outcome = 'unchanged'
         if (-not (Test-Path -LiteralPath $orig)) { $outcome = 'deleted' }
         elseif (-not (Test-Path -LiteralPath $link)) { $outcome = 'link-missing' }
@@ -1305,7 +1356,7 @@ VerifyTest on $($app.name) will:
     $victim = @($state.entries | Where-Object { $_.length -ge 16 -and $_.rel -notlike '*.exe' } | Sort-Object length | Select-Object -First 1)
     if ($victim.Count -eq 0) { throw 'No suitable file to corrupt.' }
     $victim = $victim[0]
-    $path = Join-Path $state.source $victim.rel
+    $path = Join-Parts $state.source $victim.rel
     $fs = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
     try {
         [void]$fs.Seek(-1, [IO.SeekOrigin]::End)
@@ -1331,6 +1382,45 @@ VerifyTest on $($app.name) will:
 }
 
 # --------------------------------------------------------------------------------------------
+# Mode: RestoreUserFiles
+# --------------------------------------------------------------------------------------------
+
+function Invoke-RestoreUserFiles {
+    $latest = @(Get-ChildItem -LiteralPath $SpikeHome -Directory -Filter 'backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1)
+    if ($latest.Count -eq 0) { throw "No backups in $SpikeHome." }
+    $dir = $latest[0].FullName
+    $plan = @()
+    $manifest = Join-Parts $dir 'manifest.json'
+    if (Test-Path -LiteralPath $manifest) {
+        foreach ($b in @(Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json)) { $plan += [pscustomobject]@{ backup = $b.backup; original = $b.original } }
+    } else {
+        # Backups from spike version 1 carry no manifest; the file names say where each one came from.
+        if (-not $Game) { throw "$dir has no manifest. Pass -Game SkyrimSteam or -Game SkyrimGOG to say which install it belongs to." }
+        $appDataName = 'Skyrim Special Edition'
+        if ($Game -eq 'SkyrimGOG') { $appDataName = 'Skyrim Special Edition GOG' }
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -File)) {
+            $leaf = $f.Name -replace '^\d{2}-', ''
+            $target = $null
+            if ($leaf -in 'plugins.txt', 'loadorder.txt', 'DLCList.txt') { $target = Join-Parts $env:LOCALAPPDATA $appDataName $leaf }
+            elseif ($leaf -like '*.ini') { $target = Join-Parts (Get-DocumentsPath) 'My Games' $appDataName $leaf }
+            if ($target) { $plan += [pscustomobject]@{ backup = $f.FullName; original = $target } }
+        }
+    }
+    $differs = @()
+    foreach ($p in $plan) {
+        $same = (Test-Path -LiteralPath $p.original) -and ((Get-FileHash -LiteralPath $p.original).Hash -eq (Get-FileHash -LiteralPath $p.backup).Hash)
+        $state = 'differs'
+        if ($same) { $state = 'already identical' }
+        else { $differs += $p }
+        Write-Host ("  {0,-18} {1}" -f $state, $p.original)
+    }
+    if ($differs.Count -eq 0) { Write-Host "Nothing to restore: every file already matches $dir." -ForegroundColor Green; return }
+    Confirm-Yes "Restore $($differs.Count) file(s) from $dir over the current versions?"
+    foreach ($p in $differs) { Copy-Item -LiteralPath $p.backup -Destination $p.original -Force }
+    Write-Host "Restored $($differs.Count) file(s)." -ForegroundColor Green
+}
+
+# --------------------------------------------------------------------------------------------
 # Mode: Cleanup
 # --------------------------------------------------------------------------------------------
 
@@ -1338,10 +1428,10 @@ function Invoke-Cleanup {
     $removed = @()
     foreach ($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
         if ($drive.Root -notmatch '^[A-Za-z]:\\$') { continue }
-        $spike = Join-Path $drive.Root 'AgoraSpike'
+        $spike = Join-Parts $drive.Root 'AgoraSpike'
         if (-not (Test-Path -LiteralPath $spike)) { continue }
         foreach ($d in @(Get-ChildItem -LiteralPath $spike -Directory -Force -ErrorAction SilentlyContinue)) {
-            if (Test-Path -LiteralPath (Join-Path $d.FullName $MarkerName)) {
+            if (Test-Path -LiteralPath (Join-Parts $d.FullName $MarkerName)) {
                 # Removing a hardlink removes that name only; the game's own files are untouched.
                 Remove-Item -LiteralPath $d.FullName -Recurse -Force
                 $removed += $d.FullName
@@ -1349,7 +1439,7 @@ function Invoke-Cleanup {
         }
         if (@(Get-ChildItem -LiteralPath $spike -Force -ErrorAction SilentlyContinue).Count -eq 0) { Remove-Item -LiteralPath $spike -Force }
     }
-    $state = Join-Path $SpikeHome 'state'
+    $state = Join-Parts $SpikeHome 'state'
     if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Recurse -Force }
     $removed | ForEach-Object { Write-Host "Removed $_" }
     Write-Host "Done. Reports and user-file backups are kept in $SpikeHome."
@@ -1367,5 +1457,6 @@ switch ($Mode) {
     'LinkArm' { Invoke-LinkArm $SteamAppId | Out-Null }
     'LinkCheck' { Save-Report 'linkcheck' (Invoke-LinkCheck $SteamAppId $null) | Out-Null }
     'VerifyTest' { Invoke-VerifyTest $SteamAppId }
+    'RestoreUserFiles' { Invoke-RestoreUserFiles }
     'Cleanup' { Invoke-Cleanup }
 }

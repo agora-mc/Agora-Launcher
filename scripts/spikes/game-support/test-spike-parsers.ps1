@@ -87,6 +87,8 @@ version=2.5.2
     Assert-Equal 1 $inst.modsWithArchive 'mo2 mods with archive'
     Assert-Equal 'versionlib-1-6-1170-0.bin' ($inst.addressLibraries -join ',') 'mo2 address library'
     Assert-Equal 1 $inst.overwriteFiles 'mo2 overwrite files'
+    Assert-Equal (Join-Path $mo2 'mods') $inst.modsDir 'mo2 mods folder defaults to the instance'
+    Assert-Equal (Join-Path $mo2 'overwrite') $inst.overwriteDir 'mo2 overwrite folder defaults to the instance'
     $p = $inst.profiles[0]
     Assert-Equal '2/1/1' "$($p.modsEnabled)/$($p.modsDisabled)/$($p.unmanaged)" 'mo2 modlist counts'
     Assert-Equal '2/1' "$($p.pluginsListed)/$($p.pluginsEnabled)" 'mo2 plugins counts'
