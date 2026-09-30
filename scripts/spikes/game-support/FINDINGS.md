@@ -42,17 +42,36 @@ identity and the hardlinked copy kept the old content.
 **Design:** a hardlinked pinned copy survives Steam repairs. Pending: the same check across a real
 update (Baldur's Gate 3 has a hotfix waiting).
 
-## 4. Under MO2's VFS, a tool's edits to existing files land in the mod's own folder
+## 4. Under MO2's VFS, new files go to `overwrite`; edits to existing files stay where the file is
 
-BodySlide, run through MO2 (portable instance `C:\Modding\MO2`), rewrote `BodySlide.xml` and
-`Log_BS.txt` **in place inside its own mod folder**; nothing went to `overwrite`. MO2 rewrote seven
-profile files by replacing them.
+**BodySlide** (portable instance `C:\Modding\MO2`) rewrote `BodySlide.xml` and `Log_BS.txt` in place
+inside its own mod folder; nothing went to `overwrite`.
 
-`toolrecord-20260929-224110.json`
+**Nemesis** (complete pack at `D:\Skyrim-MO2-Salvage\MO2`: 214,592 files under `mods`, profile
+*Grounded Apocalypse*), re-run over a previous run's output:
 
-**Design:** Agora's content store is shared between instances, so it cannot be the live folder a
-VFS exposes for writing. Modified files need copy-on-write into an instance layer. Pending: a Nemesis
-run on a complete pack, to see generated-output volume and where it lands.
+| Where | What changed |
+|---|---|
+| `overwrite\meshes\...`, `overwrite\scripts` | 46 generated behaviour files (`.hkx` under `meshes\actors\character`, a few scripts) rewritten **in place** |
+| `overwrite\Nemesis_Engine\...` | 79 cache, temp and log files **replaced** |
+| Nemesis's own mod folder | `nemesis.ini` edited in place |
+| MO2 profile | 5 profile files replaced by MO2 |
+| Game folder | `d3dx9_42.log` rewritten in place, **through a hardlink** (it is also linked into the spike's stock copy), so it is written by more than the game |
+| Everything else in 214,592 mod files | untouched |
+
+`toolrecord-20260929-224110.json`, `toolrecord-20260929-231653.json`
+
+**Design:**
+- A behaviour tool's real output is small and identifiable: a few dozen files under
+  `meshes\actors\character` plus its own cache. The first run creates them (so they land in
+  `overwrite`); later runs rewrite them in place. That makes "generated output" a layer Agora can
+  own per profile: record the inputs (enabled mods and plugins) when it runs, flag it stale when
+  they change, snapshot and roll it back as a unit.
+- Tools also edit their own config inside their mod folder. Agora's content store is shared
+  between instances, so it cannot be the live folder a VFS exposes for writing: modified files
+  need copy-on-write into the instance's layer.
+- Files like `d3dx9_42.log` are written into the game root by more than the game. The pinned base
+  must be read-only, with those paths redirected or copied.
 
 ## 5. A game's runtime identity is store + exact version
 
@@ -108,6 +127,5 @@ game definition declares its engine and loaders instead of relying on detection.
 
 ## Still to run
 
-- `ToolRecord -Mo2Instance <complete pack>` around a Nemesis run.
 - `LinkArm -SteamAppId 1086940` before applying Baldur's Gate 3's pending hotfix, then `LinkCheck`.
 - `StoreProbe -Name "Crusader Kings III" -TryLaunch -Exe binaries\ck3.exe`.
