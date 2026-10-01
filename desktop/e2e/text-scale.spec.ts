@@ -208,7 +208,10 @@ for (const [w, h] of [[1024, 700], [1280, 800]] as const) {
     const panel = page.getByRole('dialog');
     await expect(panel.getByText('Review Instance Changes')).toBeVisible();
     await maybeShoot(page, 'install-review');
-    const box = await panel.boundingBox();
+    // The review re-renders as its plan arrives; wait until it has a layout box.
+    await expect(panel).toBeVisible();
+    let box: Awaited<ReturnType<typeof panel.boundingBox>> = null;
+    await expect.poll(async () => (box = await panel.boundingBox())).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.x + box!.width).toBeLessThanOrEqual(w);
     // Nothing inside the dialog may spill past its right edge.
