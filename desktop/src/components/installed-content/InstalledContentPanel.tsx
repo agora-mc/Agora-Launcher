@@ -331,8 +331,8 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
           <div className="flex items-start gap-2">
             {icon ? <img src={icon} alt="" className="h-8 w-8 shrink-0 rounded border border-border object-cover" /> : null}
             <button type="button" disabled={!detailAvailable} onClick={() => props.onOpenDetails?.(row)} className="min-w-0 text-left disabled:cursor-default enabled:cursor-pointer">
-              <span className={`block truncate font-medium ${detailAvailable ? 'hover:text-primary' : ''}`}>{row.display_name}</span>
-              <span className="block truncate text-xs text-muted-foreground">{row.filename}</span>
+              <span title={row.display_name} className={`block truncate font-medium ${detailAvailable ? 'hover:text-primary' : ''}`}>{row.display_name}</span>
+              <span title={row.filename} className="block truncate text-xs text-muted-foreground">{row.filename}</span>
               <span className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
                 {row.curation_status !== 'unknown' ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-primary">{curationLabel(row.curation_status)}</span> : null}
                 {!row.file_present ? <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-destructive">Missing file</span> : null}
