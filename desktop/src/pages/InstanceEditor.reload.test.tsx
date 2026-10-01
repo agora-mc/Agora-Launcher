@@ -96,7 +96,7 @@ beforeEach(() => {
       case 'list_snapshots':
         return [{
           id: 'snap-1', label: 'Before', created_at: '2026-01-01', file_count: 1,
-          is_lkg: false, is_current_lkg: false, is_pre_restore: false,
+          effective_origin: 'user', is_lkg: false, is_current_lkg: false, is_pre_restore: false,
         }];
       case 'apply_instance_template':
         current = detail({ jvm_always_pre_touch: false });

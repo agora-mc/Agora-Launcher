@@ -558,6 +558,12 @@ enum ModsCmd {
         replace_conflicts: bool,
         #[arg(long, help = "Abort on any unresolved conflict")]
         abort_conflicts: bool,
+        #[arg(
+            long,
+            conflicts_with = "abort_conflicts",
+            help = "Remove the file even if an installed mod still requires it (those mods will show a health alert)"
+        )]
+        remove_anyway: bool,
         #[arg(long, help = "Resolve plan and print it without executing")]
         dry_run: bool,
     },
@@ -2388,6 +2394,7 @@ async fn run_command(
                 skip_health_scan,
                 replace_conflicts,
                 abort_conflicts,
+                remove_anyway,
                 dry_run,
             } => {
                 let svc = InstallService::new(ctx.clone());
@@ -2414,11 +2421,12 @@ async fn run_command(
                     target_instance: instance.clone(),
                     optional_deps: agora_core::install_pipeline::OptionalDepsPolicy::ExcludeAll,
                     requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides {
+                    overrides: remove_overrides(
+                        &target_filename,
                         allow_replace,
                         skip_health_scan,
-                        ..Default::default()
-                    },
+                        remove_anyway,
+                    ),
                 };
 
                 let reporter = SilentReporter;
@@ -2428,6 +2436,18 @@ async fn run_command(
 
                 // Apply --replace-conflicts / --abort-conflicts override
                 apply_conflict_overrides(&mut plan, replace_conflicts, abort_conflicts)?;
+
+                // --remove-anyway: the core already resolved the broken
+                // dependency conflict as RemoveAnyway; say what that means.
+                if remove_anyway && !json {
+                    for warning in plan
+                        .warnings
+                        .iter()
+                        .filter(|warning| warning.code == "WARN_BROKEN_REVERSE_DEP")
+                    {
+                        eprintln!("[WARN] {}", warning.message);
+                    }
+                }
 
                 // Dry-run: print the plan and exit
                 if dry_run {
@@ -4082,6 +4102,29 @@ fn resolve_optional_deps(
     agora_core::install_pipeline::OptionalDepsPolicy::Prompt
 }
 
+/// Overrides for `mod remove`. `--remove-anyway` pre-selects RemoveAnyway for
+/// the broken-required-dependency conflict of the file being removed, and for
+/// no other conflict.
+fn remove_overrides(
+    target_filename: &str,
+    allow_replace: bool,
+    skip_health_scan: bool,
+    remove_anyway: bool,
+) -> agora_core::install_pipeline::PlanOverrides {
+    let mut overrides = agora_core::install_pipeline::PlanOverrides {
+        allow_replace,
+        skip_health_scan,
+        ..Default::default()
+    };
+    if remove_anyway {
+        overrides.force_conflict_resolution.insert(
+            format!("broken-dependency:{target_filename}"),
+            agora_core::install_pipeline::ConflictResolution::RemoveAnyway,
+        );
+    }
+    overrides
+}
+
 /// Apply --replace-conflicts / --abort-conflicts to a resolved plan.
 fn apply_conflict_overrides(
     plan: &mut agora_core::install_pipeline::ResolvedInstallPlan,
@@ -5437,6 +5480,54 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn mod_remove_with_remove_anyway_parses_and_excludes_abort() {
+        let cli = Cli::try_parse_from([
+            "agora",
+            "mod",
+            "remove",
+            "fabric-api",
+            "my-instance",
+            "--remove-anyway",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Mods {
+                action: ModsCmd::Remove { remove_anyway, .. },
+            } => assert!(remove_anyway),
+            _ => panic!("wrong variant"),
+        }
+        assert!(Cli::try_parse_from([
+            "agora",
+            "mod",
+            "remove",
+            "fabric-api",
+            "my-instance",
+            "--remove-anyway",
+            "--abort-conflicts",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn remove_anyway_only_selects_the_broken_dependency_conflict() {
+        use agora_core::install_pipeline::ConflictResolution;
+        let overrides = super::remove_overrides("fabric-api.jar", false, true, true);
+        assert_eq!(overrides.force_conflict_resolution.len(), 1);
+        assert_eq!(
+            overrides
+                .force_conflict_resolution
+                .get("broken-dependency:fabric-api.jar"),
+            Some(&ConflictResolution::RemoveAnyway)
+        );
+        assert!(overrides.skip_health_scan);
+        assert!(
+            super::remove_overrides("fabric-api.jar", false, false, false)
+                .force_conflict_resolution
+                .is_empty()
+        );
     }
 
     #[test]

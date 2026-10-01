@@ -2244,7 +2244,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Snapshots you create and migration recovery points are kept (up to 10). Automatic ones taken around launches, installs and templates rotate, so only the latest is kept.
+            Snapshots without a badge are yours and are kept (up to 10), as are those badged Migration. Those badged Automatic, taken around launches, installs and templates, rotate so only the latest is kept.
           </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -2257,6 +2257,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <div className="min-w-0 flex-1">
                     <span className="font-medium flex items-center gap-2">
                       <span>{snap.label}</span>
+                      {snap.effective_origin === 'automatic' && (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground" title="Taken by Agora; rotates, so only the latest is kept">Automatic</span>
+                      )}
+                      {snap.effective_origin === 'migration' && (
+                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
+                      )}
                       {snap.is_current_lkg && (
                         <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] text-green-700 dark:text-green-300">Current LKG</span>
                       )}

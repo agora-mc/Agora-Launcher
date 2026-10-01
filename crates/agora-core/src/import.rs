@@ -395,6 +395,19 @@ pub fn suggest_unique_import_name(instances_root: &Path, name: &str) -> Launcher
     ))
 }
 
+/// The same "<name> (2)" scheme for callers that know the taken names
+/// themselves (the other-launcher import plan): `name` when `is_taken`
+/// rejects nothing, otherwise the first free numbered variant.
+pub fn next_free_name(name: &str, is_taken: impl Fn(&str) -> bool) -> String {
+    if !is_taken(name) {
+        return name.to_string();
+    }
+    (2..10_000)
+        .map(|n| format!("{name} ({n})"))
+        .find(|candidate| !is_taken(candidate))
+        .unwrap_or_else(|| format!("{name} ({})", uuid::Uuid::new_v4()))
+}
+
 /// Allocate an isolated, same-volume staging directory below the instances
 /// root.  Existing instances are never overwritten by an import.
 fn prepare_import_target(instances_root: &Path, name: &str) -> LauncherResult<ImportTarget> {
@@ -1578,8 +1591,10 @@ fn safe_download_filename(url: &str) -> Option<String> {
 pub fn import_technic_solder_pack(
     pack: &TechnicSolderPack,
     instances_root: &Path,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
-    let target = prepare_import_target(instances_root, &pack.display_name)?;
+    let instance_name = apply_name_override(pack.display_name.clone(), name_override);
+    let target = prepare_import_target(instances_root, &instance_name)?;
     let mods_dir = target.staging_dir.join("mods");
     fs::create_dir_all(&mods_dir).map_err(|e| {
         cleanup_staging(&target);
@@ -1682,7 +1697,7 @@ pub fn import_technic_solder_pack(
             manifest_version: CURRENT_MANIFEST_VERSION,
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -1714,7 +1729,7 @@ pub fn import_technic_solder_pack(
     match result {
         Ok(imported_mods) => Ok(ImportResult {
             instance_id: target.instance_id,
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -1738,7 +1753,9 @@ pub fn import_technic_zip_pack(
     pack: &TechnicZipPack,
     instances_root: &Path,
     policy: OverridePolicy,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
+    let instance_name = apply_name_override(pack.display_name.clone(), name_override);
     let bytes = crate::download::download_consented_bytes_blocking(&pack.download_url)?;
     if let Some(pinned) = pack.sha256.as_deref().filter(|sha| !sha.trim().is_empty()) {
         if pinned.len() != 64 || !pinned.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1758,7 +1775,7 @@ pub fn import_technic_zip_pack(
         }
     }
 
-    let target = prepare_import_target(instances_root, &pack.display_name)?;
+    let target = prepare_import_target(instances_root, &instance_name)?;
 
     let reader = io::Cursor::new(bytes);
     let mut archive = match ZipArchive::new(reader) {
@@ -1829,7 +1846,7 @@ pub fn import_technic_zip_pack(
             manifest_version: CURRENT_MANIFEST_VERSION,
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -1861,7 +1878,7 @@ pub fn import_technic_zip_pack(
     match result {
         Ok(imported_mods) => Ok(ImportResult {
             instance_id: target.instance_id,
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -2987,6 +3004,42 @@ mod tests {
     }
 
     #[test]
+    fn technic_pack_name_collision_needs_a_new_name_and_never_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let instances_root = tmp.path().join("instances");
+        let pack = TechnicSolderPack {
+            display_name: "Solder Test".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "forge".into(),
+            loader_version: "47.1.0".into(),
+            mods: vec![],
+            slug: "solder-pack".into(),
+            solder_url: "https://solder.example.com/api".into(),
+            build: "1.2.3".into(),
+        };
+        let first = import_technic_solder_pack(&pack, &instances_root, None).unwrap();
+        assert_eq!(first.instance_id, "Solder-Test");
+        std::fs::write(instances_root.join("Solder-Test").join("keep.txt"), b"mine").unwrap();
+
+        let collision = import_technic_solder_pack(&pack, &instances_root, None).unwrap_err();
+        assert!(
+            collision.to_string().contains("already exists"),
+            "{collision}"
+        );
+        assert!(import_name_taken(&instances_root, "Solder Test").unwrap());
+        let suggested = suggest_unique_import_name(&instances_root, "Solder Test").unwrap();
+        assert_eq!(suggested, "Solder Test (2)");
+
+        let second = import_technic_solder_pack(&pack, &instances_root, Some(&suggested)).unwrap();
+        assert_eq!(second.name, "Solder Test (2)");
+        assert_ne!(second.instance_id, first.instance_id);
+        assert_eq!(
+            std::fs::read(instances_root.join("Solder-Test").join("keep.txt")).unwrap(),
+            b"mine"
+        );
+    }
+
+    #[test]
     fn test_technic_solder_pack_origin_with_empty_mods() {
         let tmp = tempfile::tempdir().unwrap();
         let instances_root = tmp.path().join("instances");
@@ -3000,7 +3053,7 @@ mod tests {
             solder_url: "https://solder.example.com/api?token=secret#frag".into(),
             build: "1.2.3".into(),
         };
-        let result = import_technic_solder_pack(&pack, &instances_root).unwrap();
+        let result = import_technic_solder_pack(&pack, &instances_root, None).unwrap();
         assert_eq!(result.instance_id, "Solder-Test");
         let manifest: InstanceManifest = serde_json::from_str(
             // allow-raw-instance-manifest
@@ -3204,13 +3257,15 @@ fn provider_pack_path_allowed(path: &str, policy: OverridePolicy) -> LauncherRes
 pub fn import_provider_pack(
     pack: &ProviderPackImport,
     instances_root: &Path,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
     let plan = &pack.plan;
+    let instance_name = apply_name_override(plan.name.clone(), name_override);
     let clients = crate::http_client::HttpClients::new().map_err(|e| LauncherError::Generic {
         code: "ERR_HTTP_CLIENT_INIT".into(),
         message: format!("Failed to initialize HTTP clients: {e}"),
     })?;
-    let target = prepare_import_target(instances_root, &plan.name)?;
+    let target = prepare_import_target(instances_root, &instance_name)?;
 
     let result = (|| -> LauncherResult<usize> {
         let mut imported = 0usize;
@@ -3278,7 +3333,7 @@ pub fn import_provider_pack(
             manifest_version: CURRENT_MANIFEST_VERSION,
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
-            name: plan.name.clone(),
+            name: instance_name.clone(),
             minecraft_version: plan.minecraft_version.clone(),
             loader: plan.loader.clone(),
             loader_version: plan.loader_version.clone(),
@@ -3309,7 +3364,7 @@ pub fn import_provider_pack(
     match result {
         Ok(imported_mods) => Ok(ImportResult {
             instance_id: target.instance_id,
-            name: plan.name.clone(),
+            name: instance_name.clone(),
             minecraft_version: plan.minecraft_version.clone(),
             loader: plan.loader.clone(),
             loader_version: plan.loader_version.clone(),

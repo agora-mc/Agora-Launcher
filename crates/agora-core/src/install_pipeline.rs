@@ -307,6 +307,12 @@ pub struct ResolvedDep {
     /// two items need incompatible files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requested_by: Vec<String>,
+    /// Exact upstream version id the requesting parent declared for this
+    /// dependency (a Modrinth `version_id`), when the pin could be honoured.
+    /// Absent when the parent accepts any version. Registry manifests declare
+    /// dependencies by id only, so curated dependencies never carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_version: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +659,12 @@ pub struct BatchInstallItem {
     pub source_type: SourceType,
     pub item_id: String,
     pub candidate_version: Option<String>,
+    /// What kind of content this item is (`resourcepack`, `shader`,
+    /// `datapack`, ...). Absent means a mod. Decides which Modrinth version
+    /// `loaders` tags are acceptable and which folder the file lands in.
+    /// Curated and provider items take their type from their own metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 /// Pure input — what the user wants to do.
@@ -2486,53 +2498,143 @@ fn same_project(a: &ResolvedArtifact, b: &ResolvedArtifact) -> bool {
 /// curated registry id from one parent, a Modrinth project id from another),
 /// so the resolver keeps two entries that install one and the same file. They
 /// become one entry. When the entries are different files of the same project
-/// (two parents wanting different versions) one coherent file is kept,
-/// the first in stable order, and a warning says so. Two different files
-/// that share a filename are left alone so the duplicate-target check blocks
-/// them with a message naming the parents.
+/// (two parents wanting different versions) one file is chosen for all of
+/// them: a version every parent accepts (a parent that pinned a version
+/// accepts only that one; the rest accept any), the newest such. Every entry
+/// was already compatible with the instance's Minecraft version and loader.
+/// Only when no single version satisfies every pin is one kept anyway (the
+/// first in stable order) with a warning naming the parents that disagree.
+/// Two different files that share a filename are left alone so the
+/// duplicate-target check blocks them with a message naming the parents.
 fn collapse_duplicate_dependencies(
     dependencies: &mut Vec<ResolvedDep>,
     warnings: &mut Vec<PlanWarning>,
 ) {
     let mut kept: Vec<ResolvedDep> = Vec::with_capacity(dependencies.len());
     for dependency in std::mem::take(dependencies) {
-        let Some(artifact) = dependency_candidate(&dependency) else {
-            kept.push(dependency);
-            continue;
-        };
-        let filename = artifact_filename(artifact);
-        let same_file = kept.iter().position(|existing| {
-            dependency_candidate(existing).is_some_and(|other| {
-                artifact_filename(other) == filename && same_artifact_content(other, artifact)
+        let same_file = dependency_candidate(&dependency).and_then(|artifact| {
+            let filename = artifact_filename(artifact);
+            kept.iter().position(|existing| {
+                dependency_candidate(existing).is_some_and(|other| {
+                    artifact_filename(other) == filename && same_artifact_content(other, artifact)
+                })
             })
         });
-        let other_version = kept.iter().position(|existing| {
-            dependency_candidate(existing).is_some_and(|other| {
-                artifact_filename(other) != filename && same_project(other, artifact)
-            })
-        });
-        match (same_file, other_version) {
-            (Some(index), _) => merge_dependency(&mut kept[index], dependency),
-            (None, Some(index)) => {
-                let chosen = dependency_candidate(&kept[index])
-                    .map(|other| artifact_filename(other).to_string())
-                    .unwrap_or_default();
-                warnings.push(PlanWarning {
-                    code: "WARN_DEPENDENCY_VERSION_CHOSEN".into(),
-                    message: format!(
-                        "Selected mods need different versions of {}; using {chosen} for all of them instead of also adding {filename}.",
-                        dependency
-                            .display_name
-                            .as_deref()
-                            .unwrap_or(&dependency.mod_jar_id)
-                    ),
-                });
-                merge_dependency(&mut kept[index], dependency);
-            }
-            (None, None) => kept.push(dependency),
+        match same_file {
+            Some(index) => merge_dependency(&mut kept[index], dependency),
+            None => kept.push(dependency),
         }
     }
-    *dependencies = kept;
+
+    // Group the remaining entries by project. A group member must differ in
+    // filename from the others; same-name files stay standalone.
+    let mut groups: Vec<Vec<ResolvedDep>> = Vec::new();
+    for dependency in kept {
+        let slot = dependency_candidate(&dependency).and_then(|artifact| {
+            let filename = artifact_filename(artifact);
+            groups.iter().position(|group| {
+                group.iter().all(|member| {
+                    dependency_candidate(member).is_some_and(|other| {
+                        artifact_filename(other) != filename && same_project(other, artifact)
+                    })
+                })
+            })
+        });
+        match slot {
+            Some(index) => groups[index].push(dependency),
+            None => groups.push(vec![dependency]),
+        }
+    }
+
+    for group in groups {
+        dependencies.push(choose_dependency_version(group, warnings));
+    }
+}
+
+fn dependency_version_label(dependency: &ResolvedDep) -> String {
+    dependency_candidate(dependency)
+        .map(|artifact| {
+            artifact_metadata(artifact)
+                .version
+                .clone()
+                .unwrap_or_else(|| artifact_version_id(artifact).to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Pick the single file to install from several entries for one project.
+fn choose_dependency_version(
+    mut group: Vec<ResolvedDep>,
+    warnings: &mut Vec<PlanWarning>,
+) -> ResolvedDep {
+    if group.len() == 1 {
+        return group.remove(0);
+    }
+    let pins: Vec<&str> = group
+        .iter()
+        .filter_map(|member| member.pinned_version.as_deref())
+        .collect();
+    let accepted = |member: &ResolvedDep| {
+        dependency_candidate(member)
+            .is_some_and(|artifact| pins.iter().all(|pin| *pin == artifact_version_id(artifact)))
+    };
+    // The newest acceptable version; ties keep the earlier entry.
+    let mut chosen: Option<usize> = None;
+    for (index, member) in group.iter().enumerate() {
+        if !accepted(member) {
+            continue;
+        }
+        let newer = chosen.is_none_or(|current| {
+            crate::version_match::compare_versions(
+                &dependency_version_label(member),
+                &dependency_version_label(&group[current]),
+            ) == std::cmp::Ordering::Greater
+        });
+        if newer {
+            chosen = Some(index);
+        }
+    }
+    let satisfied = chosen.is_some();
+    let chosen = chosen.unwrap_or(0);
+
+    let name = group[chosen]
+        .display_name
+        .clone()
+        .unwrap_or_else(|| group[chosen].mod_jar_id.clone());
+    let chosen_file = dependency_candidate(&group[chosen])
+        .map(|artifact| artifact_filename(artifact).to_string())
+        .unwrap_or_default();
+    let message = if satisfied {
+        format!(
+            "Selected mods need different versions of {name}; using {chosen_file}, which every one of them accepts."
+        )
+    } else {
+        let wants = group
+            .iter()
+            .map(|member| {
+                let who = if member.requested_by.is_empty() {
+                    "another selected mod".to_string()
+                } else {
+                    member.requested_by.join(", ")
+                };
+                format!("{who} needs {}", dependency_version_label(member))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Selected mods need versions of {name} that cannot be installed together ({wants}); using {chosen_file} for all of them. Some of them may not work."
+        )
+    };
+    warnings.push(PlanWarning {
+        code: "WARN_DEPENDENCY_VERSION_CHOSEN".into(),
+        message,
+    });
+
+    let mut result = group.remove(chosen);
+    for other in group {
+        merge_dependency(&mut result, other);
+    }
+    result
 }
 
 fn merge_dependency(target: &mut ResolvedDep, incoming: ResolvedDep) {
@@ -3788,6 +3890,7 @@ mod tests {
             },
             dependencies: vec![ResolvedDep {
                 requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "required-dep".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -3905,6 +4008,7 @@ mod tests {
             dependencies: vec![
                 ResolvedDep {
                     requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: "required-dep".into(),
                     requirement: Requirement::Required,
                     source: DepSource::Manifest,
@@ -3924,6 +4028,7 @@ mod tests {
                 },
                 ResolvedDep {
                     requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: "optional-dep".into(),
                     requirement: Requirement::Optional,
                     source: DepSource::Manifest,
@@ -3981,6 +4086,7 @@ mod tests {
             },
             dependencies: vec![ResolvedDep {
                 requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "fabric-api".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -4084,6 +4190,7 @@ mod tests {
             },
             dependencies: vec![ResolvedDep {
                 requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "terrablender".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -4143,6 +4250,7 @@ mod tests {
             },
             dependencies: vec![ResolvedDep {
                 requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "missing-required".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -4418,6 +4526,7 @@ mod tests {
             },
             dependencies: vec![ResolvedDep {
                 requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "missing-dep".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -4729,6 +4838,101 @@ mod tests {
         );
         assert!(!instance_dir.join("mods/alpha-2.jar").exists());
         assert!(!instance_dir.join("mods/beta-2.jar").exists());
+    }
+
+    #[test]
+    fn batch_install_item_content_type_defaults_to_mod_and_round_trips() {
+        let item: BatchInstallItem = serde_json::from_str(
+            r#"{"sourceType":"modrinth","itemId":"x","candidateVersion":null}"#,
+        )
+        .unwrap();
+        assert_eq!(item.content_type, None);
+        let json = serde_json::to_string(&BatchInstallItem {
+            content_type: Some("resourcepack".into()),
+            ..item
+        })
+        .unwrap();
+        assert!(json.contains(r#""contentType":"resourcepack""#), "{json}");
+    }
+
+    #[test]
+    fn batch_install_mixing_a_mod_and_other_content_lands_in_each_folder() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let files = [
+            ("sodium", "sodium-1.jar", "mod", &b"mod bytes"[..]),
+            (
+                "faithful",
+                "faithful.zip",
+                "resourcepack",
+                &b"pack bytes"[..],
+            ),
+            ("bsl", "bsl.zip", "shader", &b"shader bytes"[..]),
+        ];
+        let mut operations = Vec::new();
+        let mut items = Vec::new();
+        for (id, filename, content_type, bytes) in files {
+            let source = tmp.path().join(filename);
+            std::fs::write(&source, bytes).unwrap();
+            let mut artifact = test_artifact_with_version(
+                id,
+                filename,
+                "1.0",
+                crate::download::sha256_hex(bytes),
+                ArtifactSource::LocalFile {
+                    path: source.to_string_lossy().into_owned(),
+                },
+                SourceType::Curated,
+            );
+            if let ResolvedArtifact::Download(download) = &mut artifact {
+                download.metadata.content_type = content_type.into();
+            }
+            operations.push(ResolvedOperation::Install { artifact });
+            items.push(BatchInstallItem {
+                source_type: SourceType::Curated,
+                item_id: id.into(),
+                candidate_version: None,
+                content_type: Some(content_type.into()),
+            });
+        }
+        let mut intent = local_intent("sodium");
+        intent.action = InstallAction::BatchInstall { items };
+        intent.overrides.skip_health_scan = true;
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchInstall { operations },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .unwrap();
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let outcome = runtime.block_on(InstallPipeline.execute_plan(
+            &plan,
+            &instance_dir,
+            "registry-rev",
+            &NoopReporter,
+            &CancellationToken::new(),
+        ));
+        assert!(
+            matches!(outcome, InstallOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        assert!(instance_dir.join("mods/sodium-1.jar").is_file());
+        assert!(instance_dir.join("resourcepacks/faithful.zip").is_file());
+        assert!(instance_dir.join("shaderpacks/bsl.zip").is_file());
+        assert!(!instance_dir.join("mods/faithful.zip").exists());
+        let manifest =
+            crate::helpers::read_manifest(&instance_dir.join("instance_manifest.json")).unwrap();
+        assert_eq!(manifest.mods.len(), 1);
+        assert_eq!(manifest.resourcepacks.len(), 1);
+        assert_eq!(manifest.shaders.len(), 1);
     }
 
     #[test]
@@ -5718,6 +5922,7 @@ mod tests {
     fn candidate_dep(id: &str, requested_by: &str, artifact: ResolvedArtifact) -> ResolvedDep {
         ResolvedDep {
             requested_by: vec![requested_by.into()],
+            pinned_version: None,
             mod_jar_id: id.into(),
             requirement: Requirement::Required,
             source: DepSource::Manifest,
@@ -5757,11 +5962,13 @@ mod tests {
                     source_type: SourceType::Curated,
                     item_id: "sodium".into(),
                     candidate_version: None,
+                    content_type: None,
                 },
                 BatchInstallItem {
                     source_type: SourceType::Curated,
                     item_id: "lithium".into(),
                     candidate_version: None,
+                    content_type: None,
                 },
             ],
         };
@@ -5868,6 +6075,91 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "WARN_DEPENDENCY_VERSION_CHOSEN"));
+    }
+
+    fn pinned_to(mut dep: ResolvedDep, version_id: &str) -> ResolvedDep {
+        dep.pinned_version = Some(version_id.into());
+        dep
+    }
+
+    fn fabric_api(requested_by: &str, version: &str, sha: &str, pin: Option<&str>) -> ResolvedDep {
+        let dep = candidate_dep(
+            "p7dR8mSH",
+            requested_by,
+            shared_dep_artifact(
+                None,
+                Some("P7dR8mSH"),
+                version,
+                &format!("fabric-api-{version}.jar"),
+                &sha.repeat(64),
+                SourceType::Modrinth,
+            ),
+        );
+        match pin {
+            Some(pin) => pinned_to(dep, pin),
+            None => dep,
+        }
+    }
+
+    #[test]
+    fn a_pinned_older_version_wins_over_a_parent_that_accepts_any() {
+        let plan = resolve_shared_dependency_batch(vec![
+            fabric_api("sodium", "0.161.0", "a", None),
+            fabric_api("lithium", "0.160.0", "c", Some("0.160.0")),
+        ]);
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert_eq!(plan.dependencies.len(), 1);
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.160.0.jar"));
+        assert!(!plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.161.0.jar"));
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "WARN_DEPENDENCY_VERSION_CHOSEN")
+            .expect("version choice is reported");
+        assert!(warning.message.contains("accepts"), "{}", warning.message);
+    }
+
+    #[test]
+    fn unpinned_parents_get_the_newest_version_regardless_of_order() {
+        let plan = resolve_shared_dependency_batch(vec![
+            fabric_api("lithium", "0.160.0", "c", None),
+            fabric_api("sodium", "0.161.0", "a", None),
+        ]);
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.161.0.jar"));
+        assert!(!plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.160.0.jar"));
+    }
+
+    #[test]
+    fn incompatible_pins_warn_and_name_both_parents() {
+        let plan = resolve_shared_dependency_batch(vec![
+            fabric_api("sodium", "0.161.0", "a", Some("0.161.0")),
+            fabric_api("lithium", "0.160.0", "c", Some("0.160.0")),
+        ]);
+        assert_eq!(plan.dependencies.len(), 1);
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "WARN_DEPENDENCY_VERSION_CHOSEN")
+            .expect("conflict is reported");
+        assert!(warning.message.contains("sodium"), "{}", warning.message);
+        assert!(warning.message.contains("lithium"), "{}", warning.message);
+        assert!(warning.message.contains("0.160.0") && warning.message.contains("0.161.0"));
     }
 
     #[test]

@@ -3359,6 +3359,9 @@ pub fn compute_gc_args(
 pub struct SnapshotView {
     #[serde(flatten)]
     pub snapshot: agora_core::snapshot::Snapshot,
+    /// The recorded origin, or for older snapshots the one inferred from the
+    /// label, so the UI never has to guess.
+    pub effective_origin: agora_core::snapshot::SnapshotOrigin,
     pub is_lkg: bool,
     pub is_current_lkg: bool,
     pub is_pre_restore: bool,
@@ -3390,6 +3393,7 @@ pub async fn list_snapshots(
                         .as_deref()
                         .is_some_and(|label| label.starts_with("pre-restore-"));
                     SnapshotView {
+                        effective_origin: snapshot.effective_origin(),
                         snapshot,
                         is_lkg,
                         is_current_lkg,
@@ -4872,6 +4876,18 @@ pub async fn preview_import_name(
         .preview_import_name(std::path::Path::new(&source_path))
 }
 
+/// The same name check for packs that have no file to inspect (Technic and
+/// provider packs): is `name` taken, and what free name would be suggested.
+#[tauri::command]
+pub async fn preview_pack_instance_name(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    name: String,
+) -> LauncherResult<agora_core::import_service::ImportNamePreview> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::import_service::ImportService::new(ctx).preview_name(&name)
+}
+
 struct TauriCoreProgressSink {
     app: tauri::AppHandle,
     event_name: &'static str,
@@ -6032,6 +6048,7 @@ pub async fn import_lockfile(
             source_type,
             item_id,
             candidate_version: artifact.version.clone(),
+            content_type: Some(artifact.content_type.clone()),
         });
     }
     let intent = InstallIntent {

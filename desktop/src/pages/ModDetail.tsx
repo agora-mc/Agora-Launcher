@@ -59,6 +59,7 @@ import {
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
 import { useConfirm } from '../components/ui/confirm';
+import { choosePackInstanceName } from '../lib/packInstanceName';
 
 /**
  * Whether any of an item's download sources uses `strategy`.
@@ -263,7 +264,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   const [technicDetail, setTechnicDetail] = useState<TechnicPackDetail | null>(null);
   const [technicInstalling, setTechnicInstalling] = useState(false);
   const [providerPackInstalling, setProviderPackInstalling] = useState(false);
-  const { confirm } = useConfirm();
+  const { confirm, prompt } = useConfirm();
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
 
   // Full Modrinth project data (primary source when modrinth_id exists)
@@ -893,7 +894,12 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
     if (!technicDetail) return;
     setTechnicInstalling(true);
     try {
-      const outcome = await installTechnicPack(technicDetail.slug, allowUnverifiedPacks);
+      const outcome = await installTechnicPack(
+        technicDetail.slug,
+        allowUnverifiedPacks,
+        (title) => choosePackInstanceName(prompt, title),
+      );
+      if (!outcome) return;
       showToast(
         `Imported "${outcome.name}" — ${outcome.imported_mods} mods; review before launch.`,
         'success',
@@ -910,9 +916,11 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
   const handleProviderPackInstall = async () => {
     setProviderPackInstalling(true);
     try {
+      const instanceName = await choosePackInstanceName(prompt, item.name);
+      if (instanceName === null) return;
       let outcome;
       try {
-        outcome = await installCatalogProviderPack(item.id, false);
+        outcome = await installCatalogProviderPack(item.id, false, instanceName);
       } catch (e) {
         if (!hasErrorCode(e, 'ERR_PROVIDER_PACK_CHANGED')) throw e;
         const proceed = await confirm({
@@ -922,7 +930,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
           tone: 'danger',
         });
         if (!proceed) return;
-        outcome = await installCatalogProviderPack(item.id, true);
+        outcome = await installCatalogProviderPack(item.id, true, instanceName);
       }
       showToast(`Imported "${outcome.name}" — review before launch.`, 'success');
       onOpenInstanceEditor?.(outcome.instance_id);

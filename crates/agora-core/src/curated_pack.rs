@@ -105,6 +105,7 @@ impl CuratedPackPlan {
                 source_type: planned.source_type.clone(),
                 item_id: planned.item_id.clone(),
                 candidate_version: Some(planned.version.clone()),
+                content_type: None,
             })
             .collect()
     }

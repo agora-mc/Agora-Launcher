@@ -617,6 +617,7 @@ function BrowseContent({
         ? 'curated'
         : isProviderItemId(item.id) ? 'provider' : 'modrinth',
       itemId: item.id,
+      ...(item.contentType && item.contentType !== 'mod' ? { contentType: item.contentType } : {}),
     }));
     return {
       action: { type: 'batch-install', items: batchItems },
