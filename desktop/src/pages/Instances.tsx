@@ -302,7 +302,7 @@ export function Instances({
           </div>
         </div>
       ) : (
-        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,calc(16rem*var(--font-scale))),1fr))] gap-4">
           {instances.map((instance) => {
             const sessionCount = liveSessions.filter((session) => session.instance_id === instance.instance_id).length;
             const isRunning = sessionCount > 0

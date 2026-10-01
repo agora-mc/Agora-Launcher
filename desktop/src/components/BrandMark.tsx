@@ -14,7 +14,7 @@ export function BrandMark({ className = '', compact = false }: BrandMarkProps) {
       />
       {!compact && (
         <div className="min-w-0">
-          <p className="truncate text-base font-semibold tracking-[0.08em] text-foreground">Agora Launcher</p>
+          <p className="break-words text-base font-semibold leading-tight tracking-[0.08em] text-foreground">Agora Launcher</p>
           <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.2em] text-primary">Open to all</p>
         </div>
       )}
