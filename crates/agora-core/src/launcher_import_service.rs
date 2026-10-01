@@ -988,6 +988,7 @@ impl LauncherImportService {
 
         let mut items: Vec<PerItemPlan> = Vec::new();
         let mut used_ids: Vec<String> = Vec::new();
+        let mut used_names: Vec<String> = Vec::new();
         let mut peak_bytes: u64 = 0;
         let mut total_files: u64 = 0;
 
@@ -1080,6 +1081,11 @@ impl LauncherImportService {
                 .unwrap_or_default();
 
             // Also account for IDs already claimed in this plan batch.
+            let existing_names: Vec<String> = conn
+                .as_ref()
+                .and_then(|c| crate::db::list_instances(c).ok())
+                .map(|rows| rows.into_iter().map(|r| r.name).collect())
+                .unwrap_or_default();
             let all_used: Vec<String> = existing_ids
                 .iter()
                 .cloned()
@@ -1172,6 +1178,29 @@ impl LauncherImportService {
             if !used_ids.contains(&dest_id) {
                 used_ids.push(dest_id.clone());
             }
+
+            // A new copy never reuses another instance's display name: the
+            // folder id is already made unique above, and the name gets the
+            // same "(2)" suffix `.mrpack` imports suggest. Updates keep the
+            // name of the instance they update.
+            let dest_name = if matches!(action, ItemAction::New) {
+                let normalized = |name: &str| name.trim().to_lowercase();
+                let unique = crate::import::next_free_name(&dest_name, |candidate| {
+                    existing_names
+                        .iter()
+                        .chain(used_names.iter())
+                        .any(|taken| normalized(taken) == normalized(candidate))
+                });
+                if unique != dest_name {
+                    warnings.push(format!(
+                        "An instance named \"{dest_name}\" already exists; importing as \"{unique}\". Edit the name to choose another."
+                    ));
+                }
+                used_names.push(unique.clone());
+                unique
+            } else {
+                dest_name
+            };
 
             // Build source path string for provenance.
             let source_path = candidate.payload_root.to_string_lossy().to_string();
@@ -2879,6 +2908,62 @@ mod tests {
         assert_eq!(item.destination_name, "Plan Instance");
         assert!(!item.fingerprint.is_empty());
         assert!(!plan.batch_fingerprint.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_plan_gives_a_repeated_display_name_a_numbered_suffix() {
+        let ctx = test_ctx();
+        let svc = LauncherImportService::new(ctx.clone());
+
+        let root = test_tmp("plan-dup-name");
+        let pd = root.join("PrismLauncher");
+        std::fs::create_dir_all(&pd).unwrap();
+        std::fs::write(
+            pd.join("prismlauncher.cfg"),
+            "[General]
+InstanceDir=instances
+",
+        )
+        .unwrap();
+        let inst_dir = pd.join("instances");
+        let mc = inst_dir.join("DupInst").join("minecraft");
+        std::fs::create_dir_all(mc.join("mods")).unwrap();
+        std::fs::write(
+            inst_dir.join("DupInst").join("instance.cfg"),
+            "[Minecraft]
+name=Dup Instance
+",
+        )
+        .unwrap();
+        std::fs::write(
+            inst_dir.join("DupInst").join("mmc-pack.json"),
+            r#"{"components":[{"uid":"net.minecraft","version":"1.21"},{"uid":"net.fabricmc.fabric-loader","version":"0.16.0"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(mc.join("mods").join("a.jar"), b"mod content").unwrap();
+
+        let discovery = svc.discover(Some(pd));
+        let candidate = &discovery.prism.candidates[0];
+        let selection = ImportSelection {
+            source_key: candidate.source_key.clone(),
+            launcher_kind: candidate.launcher,
+            installation_key: discovery
+                .prism
+                .launcher
+                .as_ref()
+                .unwrap()
+                .installation_key
+                .clone(),
+            destination_name: None,
+            preserve_settings: true,
+        };
+
+        let plan = svc
+            .plan(vec![selection.clone(), selection.clone()])
+            .unwrap();
+        assert_eq!(plan.items[0].destination_name, "Dup Instance");
+        assert_eq!(plan.items[1].destination_name, "Dup Instance (2)");
+        assert_ne!(plan.items[0].destination_id, plan.items[1].destination_id);
     }
 
     #[tokio::test]

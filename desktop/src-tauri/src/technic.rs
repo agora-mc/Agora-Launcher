@@ -43,10 +43,11 @@ pub async fn install_technic_solder_pack(
     slug: String,
     solder: String,
     build: String,
+    instance_name: Option<String>,
 ) -> LauncherResult<agora_core::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     let pack = technic::resolve_solder_build(&ctx, &solder, &slug, &build).await?;
-    technic::install_solder_pack(&ctx, pack).await
+    technic::install_solder_pack(&ctx, pack, instance_name).await
 }
 
 /// Install a consented Technic zip (Tier Z, or Tier C when `sha256` is pinned)
@@ -61,6 +62,7 @@ pub async fn install_technic_zip_pack(
     minecraft_version: String,
     loader: String,
     loader_version: String,
+    instance_name: Option<String>,
 ) -> LauncherResult<agora_core::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     let pack = agora_core::import::TechnicZipPack {
@@ -71,5 +73,5 @@ pub async fn install_technic_zip_pack(
         loader,
         loader_version,
     };
-    technic::install_zip_pack(&ctx, pack).await
+    technic::install_zip_pack(&ctx, pack, instance_name).await
 }

@@ -225,8 +225,24 @@ impl ImportService {
         })
     }
 
+    /// The same name check for a pack that has no file to inspect (a Technic
+    /// or provider pack): its display name, whether that is taken, and a free
+    /// "<name> (2)" style suggestion.
+    pub fn preview_name(&self, default_name: &str) -> LauncherResult<ImportNamePreview> {
+        let instances_root = self.ctx.paths.instances_root();
+        Ok(ImportNamePreview {
+            default_name: default_name.to_string(),
+            name_taken: crate::import::import_name_taken(&instances_root, default_name)?,
+            suggested_name: crate::import::suggest_unique_import_name(
+                &instances_root,
+                default_name,
+            )?,
+        })
+    }
+
     /// [`ImportService::run_import_with_sink`] with an optional user-chosen
-    /// instance name, honoured for `.mrpack`, Prism zip and directory imports.
+    /// instance name, honoured for `.mrpack`, Prism zip, directory, Technic
+    /// and provider pack imports.
     /// A name that collides with an existing instance still fails; the
     /// existing instance is never overwritten.
     pub async fn run_import_named(
@@ -341,17 +357,22 @@ impl ImportService {
                 message: "PackManifest imports must use ImportService::install_pack (async)."
                     .into(),
             }),
-            ImportSource::TechnicSolder(pack) => {
-                crate::import::import_technic_solder_pack(&pack, &blocking_instances_root)
-            }
+            ImportSource::TechnicSolder(pack) => crate::import::import_technic_solder_pack(
+                &pack,
+                &blocking_instances_root,
+                name_override.as_deref(),
+            ),
             ImportSource::TechnicZip(pack) => crate::import::import_technic_zip_pack(
                 &pack,
                 &blocking_instances_root,
                 override_policy,
+                name_override.as_deref(),
             ),
-            ImportSource::ProviderPack(pack) => {
-                crate::import::import_provider_pack(&pack, &blocking_instances_root)
-            }
+            ImportSource::ProviderPack(pack) => crate::import::import_provider_pack(
+                &pack,
+                &blocking_instances_root,
+                name_override.as_deref(),
+            ),
         })
         .await
         {

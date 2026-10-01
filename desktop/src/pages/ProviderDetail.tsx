@@ -25,6 +25,7 @@ import type { InstallIntent } from '../lib/installFlow';
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
 import { useConfirm } from '@/components/ui/confirm';
+import { choosePackInstanceName } from '@/lib/packInstanceName';
 
 /**
  * Detail page for a project from any content provider that is not one of the
@@ -176,7 +177,7 @@ export function ProviderDetail({
   onBack: () => void;
   onOpenInstanceEditor?: (instanceId: string) => void;
 }) {
-  const { confirm } = useConfirm();
+  const { confirm, prompt } = useConfirm();
   const providerId = providerIdOf(itemId);
   const [descriptor, setDescriptor] = useState<ProviderDescriptor | null>(null);
   const [detail, setDetail] = useState<ProviderProjectDetail | null>(null);
@@ -315,7 +316,9 @@ export function ProviderDetail({
     if (!ok) return;
     setBusy(true);
     try {
-      const result = await providerInstallPack(itemId, versionId || undefined);
+      const instanceName = await choosePackInstanceName(prompt, detail.project.title);
+      if (instanceName === null) return;
+      const result = await providerInstallPack(itemId, versionId || undefined, instanceName);
       showToast(`Created ${result.name}.`, 'success');
       onOpenInstanceEditor?.(result.instance_id);
     } catch (e) {

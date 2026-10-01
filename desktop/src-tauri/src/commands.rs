@@ -4859,6 +4859,18 @@ pub async fn preview_import_name(
         .preview_import_name(std::path::Path::new(&source_path))
 }
 
+/// The same name check for packs that have no file to inspect (Technic and
+/// provider packs): is `name` taken, and what free name would be suggested.
+#[tauri::command]
+pub async fn preview_pack_instance_name(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    name: String,
+) -> LauncherResult<agora_core::import_service::ImportNamePreview> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::import_service::ImportService::new(ctx).preview_name(&name)
+}
+
 struct TauriCoreProgressSink {
     app: tauri::AppHandle,
     event_name: &'static str,

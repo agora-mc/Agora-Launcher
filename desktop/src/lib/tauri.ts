@@ -1597,8 +1597,8 @@ export const technicSearch = (query: string, limit?: number) =>
   invoke<TechnicSearchResult[]>('technic_search', { query, limit });
 export const technicPackDetail = (slug: string) =>
   invoke<TechnicPackDetail>('technic_pack_detail', { slug });
-export const installTechnicSolderPack = (slug: string, solder: string, build: string) =>
-  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build });
+export const installTechnicSolderPack = (slug: string, solder: string, build: string, instanceName?: string) =>
+  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build, instanceName: instanceName ?? null });
 export const installTechnicZipPack = (
   name: string,
   downloadUrl: string,
@@ -1606,6 +1606,7 @@ export const installTechnicZipPack = (
   minecraftVersion: string,
   loader: string,
   loaderVersion: string,
+  instanceName?: string,
 ) =>
   invoke<ImportResult>('install_technic_zip_pack', {
     name,
@@ -1614,6 +1615,7 @@ export const installTechnicZipPack = (
     minecraftVersion,
     loader,
     loaderVersion,
+    instanceName: instanceName ?? null,
   });
 
 // --- Phase 7: Curated annotation overlay for registry-backed items ---
@@ -2671,6 +2673,10 @@ export interface ImportNamePreview {
 export const previewImportName = (sourcePath: string) =>
   invoke<ImportNamePreview>('preview_import_name', { sourcePath });
 
+/** The same name check for Technic and provider packs, which have no file to inspect. */
+export const previewPackInstanceName = (name: string) =>
+  invoke<ImportNamePreview>('preview_pack_instance_name', { name });
+
 export const cancelOperation = (operationId: string) =>
   invoke<boolean>('cancel_operation', { operationId });
 
@@ -2978,16 +2984,16 @@ export const providerInstallPreview = (
     loader: loader ?? null,
   });
 
-export const providerInstallPack = (itemId: string, versionId?: string) =>
-  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null });
+export const providerInstallPack = (itemId: string, versionId?: string, instanceName?: string) =>
+  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null, instanceName: instanceName ?? null });
 
 /**
  * Install a catalog entry that pins one version of a provider's pack.
  * Fails with `ERR_PROVIDER_PACK_CHANGED` when the source now serves something
  * other than what was reviewed; `acceptChanged` is the user's answer to that.
  */
-export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean) =>
-  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged });
+export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean, instanceName?: string) =>
+  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged, instanceName: instanceName ?? null });
 
 // --- Repair loader ---
 
