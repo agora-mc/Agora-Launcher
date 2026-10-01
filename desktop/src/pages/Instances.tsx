@@ -34,6 +34,8 @@ import { emitTourSignal } from '../features/tour/tourSignals';
 import { offerBrowseContext } from '../lib/browseContextHandoff';
 import { type ProcessState } from '../lib/useProcessController';
 import { type RunningProcess } from '../lib/tauri';
+import { type LaunchProgressInfo } from '../lib/launchProgress';
+import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -348,6 +350,7 @@ export function Instances({
                 controllerRecoverableJavaIssue={isCurrentThisInstance ? processState.recoverableJavaIssue : null}
                 controllerAvailableActions={isCurrentFailed ? processState.availableActions : []}
                 runtimeProgress={isCurrentThisInstance ? processState.runtimeProgress : null}
+                launchProgress={isCurrentThisInstance && (processState.phase === 'launching' || processState.phase === 'running') ? processState.launchProgress ?? null : null}
                 onDismissError={onClearError}
                 onRepairAndRetry={onRepairAndRetry}
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
@@ -442,6 +445,7 @@ function InstanceCard({
   controllerRecoverableJavaIssue,
   controllerAvailableActions,
   runtimeProgress,
+  launchProgress,
   onDismissError,
   onRepairAndRetry,
   onUseDelegatedLaunch,
@@ -479,6 +483,8 @@ function InstanceCard({
   controllerRecoverableJavaIssue: RecoverableJavaIssue | null;
   controllerAvailableActions: LauncherAction[];
   runtimeProgress: JavaRuntimeProgressEvent | null;
+  /** Stage of this card's launch in flight, or of the game still loading. */
+  launchProgress: LaunchProgressInfo | null;
   onDismissError: () => void;
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
@@ -814,6 +820,10 @@ function InstanceCard({
             </p>
           )}
         </div>
+      )}
+
+      {launchProgress && !runtimeProgress && (
+        <LaunchProgressPanel className="mt-3" progress={launchProgress} onOpenConsole={onOpenConsole} />
       )}
 
       {/* ── Java runtime provisioning panel ── */}

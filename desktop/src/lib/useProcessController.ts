@@ -20,6 +20,12 @@ import {
   type RecoverableProfileIssue,
   type RunningProcess,
 } from './tauri';
+import {
+  applyLaunchProgressEvent,
+  STARTING_PROGRESS,
+  type LaunchProgressEventPayload,
+  type LaunchProgressInfo,
+} from './launchProgress';
 import { activeHealthWarnings, loadHealthPreferences } from './healthPreferences';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +62,8 @@ export interface ProcessState {
   runtimeProgress: JavaRuntimeProgressEvent | null;
   /** Available user actions for the current recoverable issue. */
   availableActions: LauncherAction[];
+  /** Stage of the launch in flight (or of the game still loading); null otherwise. */
+  launchProgress?: LaunchProgressInfo | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +161,7 @@ const INITIAL_STATE: ProcessState = {
   recoverableJavaIssue: null,
   runtimeProgress: null,
   availableActions: [],
+  launchProgress: null,
 };
 
 // Bounded log buffer per instance ID.
@@ -316,6 +325,35 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
         });
       },
     );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Track the stage of the launch in flight. Begin a fresh record when the
+  // phase becomes 'launching' and drop it once the process is no longer
+  // launching or running, so nothing stale shows on the next launch.
+  const previousPhaseRef = useRef<LaunchPhase>(state.phase);
+  useEffect(() => {
+    const previous = previousPhaseRef.current;
+    previousPhaseRef.current = state.phase;
+    if (state.phase === 'launching' && previous !== 'launching') {
+      setState((prev) => ({ ...prev, launchProgress: STARTING_PROGRESS(Date.now()) }));
+    } else if (state.phase !== 'launching' && state.phase !== 'running' && state.launchProgress) {
+      setState((prev) => ({ ...prev, launchProgress: null }));
+    }
+  }, [state.phase, state.launchProgress]);
+
+  useEffect(() => {
+    const unlisten = listen<LaunchProgressEventPayload>('launch-progress', (event) => {
+      const current = stateRef.current;
+      if (current.instanceId !== event.payload.instance_id) return;
+      if (current.phase !== 'launching' && current.phase !== 'running') return;
+      setState((prev) => {
+        const next = applyLaunchProgressEvent(prev.launchProgress ?? null, event.payload, Date.now());
+        return next === (prev.launchProgress ?? null) ? prev : { ...prev, launchProgress: next };
+      });
+    });
     return () => {
       unlisten.then((fn) => fn());
     };

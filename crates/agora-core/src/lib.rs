@@ -57,6 +57,7 @@ pub mod launch;
 pub mod launch_history;
 pub mod launch_planner;
 pub mod launch_service;
+pub mod launch_stage;
 pub mod launcher_import;
 pub mod launcher_import_service;
 pub mod launcher_profiles;

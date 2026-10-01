@@ -79,6 +79,8 @@ pub trait LaunchProgress: Send + Sync {
     fn phase_completed(&self, _name: &str, _duration_ms: u128) {}
     fn started(&self, _started: &LaunchStarted) {}
     fn log(&self, _stream: &str, _line: &str) {}
+    /// Verified-file counts while the `materializing` phase runs.
+    fn files(&self, _progress: &crate::launch_stage::FileProgress) {}
     fn finished(&self, _result: &LaunchResult) {}
     /// Called when a delegated launch is ready. The adapter must invoke
     /// the external Mojang launcher and return `Ok(())`. The default
@@ -507,7 +509,13 @@ impl LaunchService {
             return Ok(result);
         }
 
-        progress.phase("resolving", "Resolving Minecraft metadata and Java");
+        // The loader profile is adopted inside the same resolve step that picks
+        // Java, so name the loader in the label instead of inventing a split.
+        let resolve_message = match request.manifest.loader.as_str() {
+            "" | "vanilla" | "none" => "Preparing Java and Minecraft".to_string(),
+            loader => format!("Preparing Java and the {loader} mod loader"),
+        };
+        progress.phase("resolving", &resolve_message);
         let resolve_started = Instant::now();
         // An explicit Java override is authoritative. Do not scan unrelated
         // system/Mojang runtimes first: on macOS, Java shims can block while
@@ -613,7 +621,31 @@ impl LaunchService {
             crate::lock_manager::LockResource::Materialization,
             "launch-materialize",
         )?;
-        let materialized = crate::launch_planner::materialize(resolved).await?;
+        // Asset verification can report thousands of updates in a second; keep
+        // the first, last and roughly ten per second so adapters stay cheap.
+        let last_files_report = Mutex::new(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
+        let on_files = |update: crate::launch_stage::FileProgress| {
+            let finished = update.done >= update.total;
+            let due = last_files_report
+                .lock()
+                .map(|mut last| {
+                    let due = last.elapsed() >= Duration::from_millis(100);
+                    if due {
+                        *last = Instant::now();
+                    }
+                    due
+                })
+                .unwrap_or(true);
+            if finished || due {
+                progress.files(&update);
+            }
+        };
+        let materialized =
+            crate::launch_planner::materialize_with_progress(resolved, Some(&on_files)).await?;
         progress.phase_completed("materializing", materialize_started.elapsed().as_millis());
         let java_path = materialized.resolved.java.path.clone();
         let gc_args = crate::gc::compute_gc(
@@ -724,9 +756,19 @@ impl LaunchService {
                 pid: Some(pid),
             });
 
-        progress.phase("running", "Waiting for Minecraft to exit");
+        progress.phase("running", "Minecraft is running and still loading");
         let secret = request.identity.access_token.as_str();
-        let output_progress = |stream: &str, line: &str| progress.log(stream, line);
+        let readiness = std::sync::Mutex::new(crate::launch_stage::ReadinessDetector::new());
+        let output_progress = |stream: &str, line: &str| {
+            progress.log(stream, line);
+            let became_ready = readiness
+                .lock()
+                .map(|mut detector| detector.observe(line))
+                .unwrap_or(false);
+            if became_ready {
+                progress.phase("ready", "Minecraft has finished loading");
+            }
+        };
         let outcome = crate::launch_planner::wait_and_classify_with_progress(
             child,
             &request.game_dir,
