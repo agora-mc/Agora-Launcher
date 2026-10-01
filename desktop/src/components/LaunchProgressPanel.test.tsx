@@ -23,6 +23,16 @@ describe('LaunchProgressPanel', () => {
     expect(screen.getByText(/libraries 20 \/ 80/)).toBeTruthy();
   });
 
+  it('shows the Java download percentage and status', () => {
+    render(
+      <LaunchProgressPanel
+        progress={{ ...base, stage: 'java', label: 'Downloading Java', percent: 40, detail: 'Downloading Java 21: 20 of 52 MB' }}
+      />,
+    );
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('40');
+    expect(screen.getByText(/20 of 52 MB/)).toBeTruthy();
+  });
+
   it('says plainly that loading is unconfirmed, and opens the Console', () => {
     const onOpenConsole = vi.fn();
     render(<LaunchProgressPanel progress={{ ...base, stage: 'loading', label: 'Running — loading' }} onOpenConsole={onOpenConsole} />);

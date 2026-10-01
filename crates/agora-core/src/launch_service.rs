@@ -81,6 +81,9 @@ pub trait LaunchProgress: Send + Sync {
     fn log(&self, _stream: &str, _line: &str) {}
     /// Verified-file counts while the `materializing` phase runs.
     fn files(&self, _progress: &crate::launch_stage::FileProgress) {}
+    /// Managed Java provisioning progress while `provisioning-java` runs:
+    /// a status message and 0–100 for the whole provisioning step.
+    fn java_progress(&self, _message: &str, _percent: Option<f64>) {}
     fn finished(&self, _result: &LaunchResult) {}
     /// Called when a delegated launch is ready. The adapter must invoke
     /// the external Mojang launcher and return `Ok(())`. The default
@@ -91,6 +94,59 @@ pub trait LaunchProgress: Send + Sync {
             message: "Delegated launch not supported by this adapter.".into(),
         })
     }
+}
+
+/// Provision a managed Java runtime on a blocking thread, forwarding its
+/// progress to the launch's [`LaunchProgress`]. The provisioner runs off the
+/// async task and the launch progress is only borrowed, so its reports travel
+/// over a channel and are delivered here while the provisioning future runs.
+async fn provision_java_reporting(
+    ctx: &crate::ctx::Ctx,
+    runtimes_root: std::path::PathBuf,
+    major: u32,
+    policy: crate::network::NetworkPolicy,
+    progress: &dyn LaunchProgress,
+) -> LauncherResult<crate::java::JavaInstallation> {
+    struct ChannelProgress(tokio::sync::mpsc::UnboundedSender<(String, Option<f64>)>);
+    impl RuntimeProgress for ChannelProgress {
+        fn on_progress(&self, message: &str, percent: Option<f64>) {
+            let _ = self.0.send((message.to_string(), percent));
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let catalog = ctx.runtime_catalog.snapshot();
+    let lock_manager = ctx.lock_manager.clone();
+    let task = ctx
+        .task_scheduler
+        .run_blocking(BlockingPriority::Launch, move || {
+            let reporter = ChannelProgress(sender);
+            crate::runtime_manager::ensure_runtime(
+                &runtimes_root,
+                major,
+                &catalog,
+                &policy,
+                Some(&reporter as &dyn RuntimeProgress),
+                Some(&lock_manager),
+            )
+        });
+    tokio::pin!(task);
+    let joined = loop {
+        tokio::select! {
+            joined = &mut task => break joined,
+            Some((message, percent)) = reports.recv() => progress.java_progress(&message, percent),
+        }
+    };
+    while let Ok((message, percent)) = reports.try_recv() {
+        progress.java_progress(&message, percent);
+    }
+    joined.map_err(|error| LauncherError::Generic {
+        code: "ERR_JAVA_PROVISION".into(),
+        message: format!("Java provisioning task failed: {error}"),
+    })?
 }
 
 /// No-op progress implementation for callers that only need the result.
@@ -230,25 +286,7 @@ impl LaunchService {
                 let policy = crate::network::NetworkPolicy::from_ctx(&self.ctx)?;
                 policy.check(crate::network::NetworkCategory::JavaRuntime)?;
                 let runtimes_root = self.ctx.paths.java_runtimes_root();
-                let catalog = self.ctx.runtime_catalog.snapshot();
-                let lock_manager = self.ctx.lock_manager.clone();
-                self.ctx
-                    .task_scheduler
-                    .run_blocking(BlockingPriority::Launch, move || {
-                        crate::runtime_manager::ensure_runtime(
-                            &runtimes_root,
-                            major,
-                            &catalog,
-                            &policy,
-                            None::<&dyn crate::runtime_manager::RuntimeProgress>,
-                            Some(&lock_manager),
-                        )
-                    })
-                    .await
-                    .map_err(|error| LauncherError::Generic {
-                        code: "ERR_JAVA_PROVISION".into(),
-                        message: format!("Java provisioning task failed: {error}"),
-                    })??;
+                provision_java_reporting(&self.ctx, runtimes_root, major, policy, progress).await?;
             }
             LaunchRecoveryAction::RepairLoader => {
                 progress.phase("recovery", "Repairing loader installation");
@@ -568,28 +606,14 @@ impl LaunchService {
                 request
                     .network_policy
                     .check(crate::network::NetworkCategory::JavaRuntime)?;
-                let runtime_root = request.runtimes_root.clone();
-                let network_policy = request.network_policy.clone();
-                let catalog = self.ctx.runtime_catalog.snapshot();
-                let lock_manager = self.ctx.lock_manager.clone();
-                let ensured = self
-                    .ctx
-                    .task_scheduler
-                    .run_blocking(BlockingPriority::Launch, move || {
-                        crate::runtime_manager::ensure_runtime(
-                            &runtime_root,
-                            major,
-                            &catalog,
-                            &network_policy,
-                            None::<&dyn RuntimeProgress>,
-                            Some(&lock_manager),
-                        )
-                    })
-                    .await
-                    .map_err(|error| LauncherError::Generic {
-                        code: "ERR_JAVA_PROVISION".into(),
-                        message: format!("Java provisioning task failed: {error}"),
-                    })??;
+                let ensured = provision_java_reporting(
+                    &self.ctx,
+                    request.runtimes_root.clone(),
+                    major,
+                    request.network_policy.clone(),
+                    progress,
+                )
+                .await?;
                 let mut refreshed = java_candidates.clone();
                 refreshed.push(JavaInstallation {
                     path: ensured.path,

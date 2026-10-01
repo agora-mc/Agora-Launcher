@@ -30,6 +30,10 @@ export interface LaunchProgressInfo {
   /** Epoch ms when this launch began, for the elapsed-time readout. */
   startedAt: number;
   files: LaunchFilesProgress | null;
+  /** 0-100 for stages that report a percentage rather than file counts (Java). */
+  percent?: number | null;
+  /** Status text to show beside the label, e.g. "Downloading Java 21: 40 of 52 MB". */
+  detail?: string | null;
 }
 
 export interface LaunchProgressEventPayload {
@@ -37,6 +41,7 @@ export interface LaunchProgressEventPayload {
   phase: string;
   message?: string;
   files?: LaunchFilesProgress;
+  percent?: number | null;
 }
 
 export const STARTING_PROGRESS = (now: number): LaunchProgressInfo => ({
@@ -67,8 +72,16 @@ export function applyLaunchProgressEvent(
       return { ...base, stage: 'checking', label: 'Checking the instance' };
     case 'resolving':
       return { ...base, stage: 'preparing', label: event.message || 'Preparing Java and the mod loader' };
-    case 'provisioning-java':
-      return { ...base, stage: 'java', label: 'Downloading Java' };
+    case 'provisioning-java': {
+      const reported = typeof event.percent === 'number';
+      return {
+        ...base,
+        stage: 'java',
+        label: 'Downloading Java',
+        percent: reported ? Math.max(0, Math.min(100, Math.round(event.percent as number))) : null,
+        detail: reported ? event.message ?? null : null,
+      };
+    }
     case 'materializing':
       return {
         ...base,

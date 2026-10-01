@@ -975,6 +975,19 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         );
     }
 
+    fn java_progress(&self, message: &str, percent: Option<f64>) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "launch-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "phase": "provisioning-java",
+                "message": message,
+                "percent": percent,
+            }),
+        );
+    }
+
     fn files(&self, progress: &agora_core::launch_stage::FileProgress) {
         use tauri::Emitter;
         let _ = self.app.emit(

@@ -26,8 +26,8 @@ export function LaunchProgressPanel({
     return () => clearInterval(timer);
   }, [progress.stage]);
 
-  const percent = filesPercent(progress.files);
-  const detail = filesDetail(progress.files);
+  const percent = filesPercent(progress.files) ?? progress.percent ?? null;
+  const detail = filesDetail(progress.files) ?? progress.detail ?? null;
   const showBar = progress.stage !== 'ready';
 
   return (

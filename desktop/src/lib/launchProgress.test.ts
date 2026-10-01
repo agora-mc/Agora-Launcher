@@ -28,6 +28,16 @@ describe('applyLaunchProgressEvent', () => {
     expect(p).toMatchObject({ stage: 'ready', label: 'Ready', startedAt: 2000 });
   });
 
+  it('carries the Java download percentage and status', () => {
+    let p = applyLaunchProgressEvent(STARTING_PROGRESS(1), ev('provisioning-java', { message: 'Provisioning the required Java runtime' }), 2);
+    expect(p).toMatchObject({ stage: 'java', percent: null, detail: null });
+    p = applyLaunchProgressEvent(p, ev('provisioning-java', { message: 'Downloading Java 21: 20 of 52 MB', percent: 31.5 }), 3);
+    expect(p).toMatchObject({ stage: 'java', percent: 32, detail: 'Downloading Java 21: 20 of 52 MB' });
+    p = applyLaunchProgressEvent(p, ev('materializing'), 4);
+    expect(p?.stage).toBe('files');
+    expect(p?.percent).toBeUndefined();
+  });
+
   it('ignores completion and unknown events', () => {
     const p = STARTING_PROGRESS(1);
     expect(applyLaunchProgressEvent(p, ev('resolving-complete'), 2)).toBe(p);
