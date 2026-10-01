@@ -164,8 +164,8 @@ describe('live readAdapters — DTO redaction (SOL-2 §14.3.6)', () => {
 
   it('snapshotsToVisual adds an authoritative sortKey and never leaks object metadata', () => {
     const rows: Snapshot[] = [
-      { id: 's1', label: null, created_at: '2026-08-08T10:00:00Z', file_count: 100, size_estimate: 5 * 1024 * 1024, is_lkg: true, is_current_lkg: false, is_pre_restore: false },
-      { id: 's2', label: 'Manual', created_at: '2026-08-09T10:00:00Z', file_count: 200, size_estimate: 200 * 1024 * 1024, is_lkg: false, is_current_lkg: false, is_pre_restore: true },
+      { id: 's1', label: null, created_at: '2026-08-08T10:00:00Z', file_count: 100, size_estimate: 5 * 1024 * 1024, effective_origin: 'automatic', is_lkg: true, is_current_lkg: false, is_pre_restore: false },
+      { id: 's2', label: 'Manual', created_at: '2026-08-09T10:00:00Z', file_count: 200, size_estimate: 200 * 1024 * 1024, effective_origin: 'user', is_lkg: false, is_current_lkg: false, is_pre_restore: true },
     ];
     const visuals = snapshotsToVisual(rows);
     expect(visuals[0].sortKey).toBe('2026-08-08T10:00:00Z');

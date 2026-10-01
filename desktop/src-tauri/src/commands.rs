@@ -3342,6 +3342,9 @@ pub fn compute_gc_args(
 pub struct SnapshotView {
     #[serde(flatten)]
     pub snapshot: agora_core::snapshot::Snapshot,
+    /// The recorded origin, or for older snapshots the one inferred from the
+    /// label, so the UI never has to guess.
+    pub effective_origin: agora_core::snapshot::SnapshotOrigin,
     pub is_lkg: bool,
     pub is_current_lkg: bool,
     pub is_pre_restore: bool,
@@ -3373,6 +3376,7 @@ pub async fn list_snapshots(
                         .as_deref()
                         .is_some_and(|label| label.starts_with("pre-restore-"));
                     SnapshotView {
+                        effective_origin: snapshot.effective_origin(),
                         snapshot,
                         is_lkg,
                         is_current_lkg,
