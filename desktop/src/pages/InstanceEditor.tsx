@@ -1,3 +1,4 @@
+import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
@@ -1926,6 +1927,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           </div>
 
           {packInstall && <PackInstallProgressBar task={packInstall} />}
+
+          {(processLaunching || processRunning) && processState?.launchProgress && (
+            <LaunchProgressPanel
+              className="mt-4"
+              progress={processState.launchProgress}
+              onOpenConsole={() => setActiveTab('console')}
+            />
+          )}
 
           {detail?.snapshot_readiness === 'pending' && (
             <div className="mt-4 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm" role="status">
