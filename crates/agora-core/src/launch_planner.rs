@@ -979,9 +979,22 @@ pub async fn resolve(request: ResolveRequest) -> LauncherResult<ResolvedLaunchPl
 ///
 /// Every download is gated by the policy embedded in `resolved.network_policy`.
 /// Cache hits are validated and returned without network access.
-pub async fn materialize(
+pub async fn materialize(resolved: ResolvedLaunchPlan) -> LauncherResult<MaterializedLaunchPlan> {
+    materialize_with_progress(resolved, None).await
+}
+
+/// [`materialize`] that reports verified-file counts for the client JAR,
+/// libraries and assets through `on_files`.
+pub async fn materialize_with_progress(
     mut resolved: ResolvedLaunchPlan,
+    on_files: Option<&crate::launch_stage::FileProgressFn<'_>>,
 ) -> LauncherResult<MaterializedLaunchPlan> {
+    use crate::launch_stage::{FileKind, FileProgress};
+    let report = |kind: FileKind, done: usize, total: usize| {
+        if let Some(callback) = on_files {
+            callback(FileProgress { kind, done, total });
+        }
+    };
     let clients = LaunchHttpClients::new()?;
     let libraries_dir = resolved.cache_dir.join("libraries");
     let versions_dir = resolved.cache_dir.join("versions");
@@ -1007,6 +1020,7 @@ pub async fn materialize(
             &versions_dir,
             &logging_dir,
             &natives_dir,
+            on_files,
         )
         .await;
     }
@@ -1042,15 +1056,19 @@ pub async fn materialize(
         sha1: client_download.sha1.clone(),
         size: client_download.size,
     };
+    report(FileKind::ClientJar, 1, 1);
 
     let mut classpath = Vec::new();
     let mut native_archives = Vec::new();
-    for library in resolved
+    let allowed_libraries: Vec<_> = resolved
         .version
         .libraries
         .iter()
         .filter(|library| rules_allow(library.rules.as_deref(), &BTreeMap::new()))
-    {
+        .collect();
+    let library_total = allowed_libraries.len();
+    report(FileKind::Libraries, 0, library_total);
+    for (library_index, library) in allowed_libraries.into_iter().enumerate() {
         if let Some(artifact) = resolve_library_artifact(library)? {
             let path = libraries_dir.join(&artifact.path);
             // Classify the library URL to use the correct policy category.
@@ -1125,6 +1143,7 @@ pub async fn materialize(
                 sha256: artifact.sha256.clone(),
             });
         }
+        report(FileKind::Libraries, library_index + 1, library_total);
     }
 
     // Minecraft expects client.jar after libraries on the classpath.
@@ -1162,6 +1181,7 @@ pub async fn materialize(
         &resolved.assets_dir,
         &asset_index_path,
         policy,
+        on_files,
     )
     .await?;
 
@@ -1217,7 +1237,14 @@ async fn materialize_adopted_profile(
     versions_dir: &Path,
     logging_dir: &Path,
     natives_dir: &Path,
+    on_files: Option<&crate::launch_stage::FileProgressFn<'_>>,
 ) -> LauncherResult<MaterializedLaunchPlan> {
+    use crate::launch_stage::{FileKind, FileProgress};
+    let report = |kind: FileKind, done: usize, total: usize| {
+        if let Some(callback) = on_files {
+            callback(FileProgress { kind, done, total });
+        }
+    };
     let materialize_started = std::time::Instant::now();
     let source = crate::installed_artifact::InstalledArtifactSource::new(
         adopted_profile.minecraft_dir.clone(),
@@ -1328,12 +1355,16 @@ async fn materialize_adopted_profile(
 
     let src = &source;
 
-    for library in resolved
+    report(FileKind::ClientJar, 1, 1);
+    let allowed_libraries: Vec<_> = resolved
         .version
         .libraries
         .iter()
         .filter(|library| rules_allow(library.rules.as_deref(), &BTreeMap::new()))
-    {
+        .collect();
+    let library_total = allowed_libraries.len();
+    report(FileKind::Libraries, 0, library_total);
+    for (library_index, library) in allowed_libraries.into_iter().enumerate() {
         if let Some(artifact) = resolve_library_artifact(library)? {
             let path = libraries_dir.join(&artifact.path);
             let lib_category =
@@ -1514,6 +1545,7 @@ async fn materialize_adopted_profile(
                 sha256: artifact.sha256.clone(),
             });
         }
+        report(FileKind::Libraries, library_index + 1, library_total);
     }
 
     classpath.push(client_jar.clone());
@@ -1614,7 +1646,13 @@ async fn materialize_adopted_profile(
             index.map_to_resources,
         );
         if !completion_is_current {
-            for (logical_name, object) in &index.objects {
+            let asset_total = index.objects.len();
+            for (asset_position, (logical_name, object)) in index.objects.iter().enumerate() {
+                // Most objects are cache hits that `continue` below, so report
+                // on a stride at the top of the loop rather than after each.
+                if asset_position % 64 == 0 {
+                    report(FileKind::Assets, asset_position, asset_total);
+                }
                 if object.hash.len() < 2
                     || !object.hash.bytes().all(|b| b.is_ascii_hexdigit())
                     || object.size < 0
@@ -1699,6 +1737,7 @@ async fn materialize_adopted_profile(
                 )
                 .await?;
             }
+            report(FileKind::Assets, asset_total, asset_total);
         }
         // This adoption path materializes content-addressed objects but does
         // not author legacy virtual/resource copies. It may consume a marker
@@ -2573,6 +2612,7 @@ async fn materialize_assets(
     assets_dir: &Path,
     index_path: &Path,
     policy: &NetworkPolicy,
+    on_files: Option<&crate::launch_stage::FileProgressFn<'_>>,
 ) -> LauncherResult<()> {
     let bytes = std::fs::read(index_path).map_err(|error| LauncherError::Generic {
         code: "ERR_ASSET_INDEX_READ".into(),
@@ -2621,10 +2661,24 @@ async fn materialize_assets(
     }
 
     const MAX_CONCURRENT_ASSETS: usize = 8;
+    let asset_total = grouped.len();
+    let mut asset_done = 0_usize;
+    let report_assets = |done: usize| {
+        if let Some(callback) = on_files {
+            callback(crate::launch_stage::FileProgress {
+                kind: crate::launch_stage::FileKind::Assets,
+                done,
+                total: asset_total,
+            });
+        }
+    };
+    report_assets(0);
     let mut pending = tokio::task::JoinSet::new();
     for (hash, (size, logical_names)) in &grouped {
         while pending.len() >= MAX_CONCURRENT_ASSETS {
             join_asset_task(&mut pending).await?;
+            asset_done += 1;
+            report_assets(asset_done);
         }
         let client = client.clone();
         let assets_dir = assets_dir.to_path_buf();
@@ -2679,6 +2733,8 @@ async fn materialize_assets(
     }
     while !pending.is_empty() {
         join_asset_task(&mut pending).await?;
+        asset_done += 1;
+        report_assets(asset_done);
     }
     write_asset_completion_marker(
         assets_dir,

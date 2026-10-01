@@ -975,6 +975,23 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         );
     }
 
+    fn files(&self, progress: &agora_core::launch_stage::FileProgress) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "launch-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "phase": "materializing",
+                "message": format!("Verifying {}", progress.kind.as_str()),
+                "files": {
+                    "kind": progress.kind.as_str(),
+                    "done": progress.done,
+                    "total": progress.total,
+                },
+            }),
+        );
+    }
+
     fn started(&self, started: &agora_core::launch_service::LaunchStarted) {
         use tauri::Emitter;
         let sender = self.started.lock().ok().and_then(|mut value| value.take());
