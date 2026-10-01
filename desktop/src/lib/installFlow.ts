@@ -19,7 +19,8 @@ export type InstallAction =
   | { type: 'repair-lockfile'; contentHash: string };
 
 export interface BatchUpdateItem { itemId: string; targetVersion: string; }
-export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; }
+/** `contentType` is absent for a mod; resource packs, shaders and data packs say so, which picks their folder. */
+export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; contentType?: string; }
 
 /**
  * `provider` is any content provider — Agora's official ones or a plugin's.

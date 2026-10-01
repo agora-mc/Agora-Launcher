@@ -2105,7 +2105,7 @@ pinned_version: None,
                                 &item.item_id,
                                 item.candidate_version.as_deref(),
                                 allow_closest_version,
-                                "mod",
+                                item.content_type.as_deref().unwrap_or("mod"),
                             )
                             .await?;
                         (artifact, Some(candidate))
@@ -2167,8 +2167,12 @@ pinned_version: None,
                 Err(error) => return Err(error),
             };
             let native_metadata = match candidate.as_ref() {
-                Some(candidate) => self.native_loader_metadata(manifest, candidate).await,
-                None => None,
+                Some(candidate)
+                    if is_mod_content(item.content_type.as_deref().unwrap_or("mod")) =>
+                {
+                    self.native_loader_metadata(manifest, candidate).await
+                }
+                _ => None,
             };
             roots.push((item.clone(), artifact, candidate, native_metadata));
         }

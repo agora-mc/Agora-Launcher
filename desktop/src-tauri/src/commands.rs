@@ -6015,6 +6015,7 @@ pub async fn import_lockfile(
             source_type,
             item_id,
             candidate_version: artifact.version.clone(),
+            content_type: Some(artifact.content_type.clone()),
         });
     }
     let intent = InstallIntent {

@@ -659,6 +659,12 @@ pub struct BatchInstallItem {
     pub source_type: SourceType,
     pub item_id: String,
     pub candidate_version: Option<String>,
+    /// What kind of content this item is (`resourcepack`, `shader`,
+    /// `datapack`, ...). Absent means a mod. Decides which Modrinth version
+    /// `loaders` tags are acceptable and which folder the file lands in.
+    /// Curated and provider items take their type from their own metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 /// Pure input — what the user wants to do.
@@ -4835,6 +4841,101 @@ mod tests {
     }
 
     #[test]
+    fn batch_install_item_content_type_defaults_to_mod_and_round_trips() {
+        let item: BatchInstallItem = serde_json::from_str(
+            r#"{"sourceType":"modrinth","itemId":"x","candidateVersion":null}"#,
+        )
+        .unwrap();
+        assert_eq!(item.content_type, None);
+        let json = serde_json::to_string(&BatchInstallItem {
+            content_type: Some("resourcepack".into()),
+            ..item
+        })
+        .unwrap();
+        assert!(json.contains(r#""contentType":"resourcepack""#), "{json}");
+    }
+
+    #[test]
+    fn batch_install_mixing_a_mod_and_other_content_lands_in_each_folder() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let files = [
+            ("sodium", "sodium-1.jar", "mod", &b"mod bytes"[..]),
+            (
+                "faithful",
+                "faithful.zip",
+                "resourcepack",
+                &b"pack bytes"[..],
+            ),
+            ("bsl", "bsl.zip", "shader", &b"shader bytes"[..]),
+        ];
+        let mut operations = Vec::new();
+        let mut items = Vec::new();
+        for (id, filename, content_type, bytes) in files {
+            let source = tmp.path().join(filename);
+            std::fs::write(&source, bytes).unwrap();
+            let mut artifact = test_artifact_with_version(
+                id,
+                filename,
+                "1.0",
+                crate::download::sha256_hex(bytes),
+                ArtifactSource::LocalFile {
+                    path: source.to_string_lossy().into_owned(),
+                },
+                SourceType::Curated,
+            );
+            if let ResolvedArtifact::Download(download) = &mut artifact {
+                download.metadata.content_type = content_type.into();
+            }
+            operations.push(ResolvedOperation::Install { artifact });
+            items.push(BatchInstallItem {
+                source_type: SourceType::Curated,
+                item_id: id.into(),
+                candidate_version: None,
+                content_type: Some(content_type.into()),
+            });
+        }
+        let mut intent = local_intent("sodium");
+        intent.action = InstallAction::BatchInstall { items };
+        intent.overrides.skip_health_scan = true;
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchInstall { operations },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .unwrap();
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let outcome = runtime.block_on(InstallPipeline.execute_plan(
+            &plan,
+            &instance_dir,
+            "registry-rev",
+            &NoopReporter,
+            &CancellationToken::new(),
+        ));
+        assert!(
+            matches!(outcome, InstallOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        assert!(instance_dir.join("mods/sodium-1.jar").is_file());
+        assert!(instance_dir.join("resourcepacks/faithful.zip").is_file());
+        assert!(instance_dir.join("shaderpacks/bsl.zip").is_file());
+        assert!(!instance_dir.join("mods/faithful.zip").exists());
+        let manifest =
+            crate::helpers::read_manifest(&instance_dir.join("instance_manifest.json")).unwrap();
+        assert_eq!(manifest.mods.len(), 1);
+        assert_eq!(manifest.resourcepacks.len(), 1);
+        assert_eq!(manifest.shaders.len(), 1);
+    }
+
+    #[test]
     fn test_batch_update_second_artifact_failure_keeps_every_original_version() {
         let tmp = tempfile::TempDir::new().unwrap();
         let instance_dir = make_instance(&tmp);
@@ -5861,11 +5962,13 @@ mod tests {
                     source_type: SourceType::Curated,
                     item_id: "sodium".into(),
                     candidate_version: None,
+                    content_type: None,
                 },
                 BatchInstallItem {
                     source_type: SourceType::Curated,
                     item_id: "lithium".into(),
                     candidate_version: None,
+                    content_type: None,
                 },
             ],
         };
