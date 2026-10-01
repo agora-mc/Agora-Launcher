@@ -985,8 +985,9 @@ html[data-input-modality="gamepad"] :is(
   gap: 0.2rem;
   width: fit-content;
   max-width: 100%;
-  overflow-x: auto;
-  border-radius: 999px;
+  /* Wrap instead of clipping behind a hidden scrollbar when text is scaled up. */
+  flex-wrap: wrap;
+  border-radius: 1.25rem;
   border: calc(1px * var(--border-scale)) solid hsl(var(--border));
   background-color: hsl(var(--muted));
   padding: 0.25rem;
