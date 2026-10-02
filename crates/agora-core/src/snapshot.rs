@@ -104,6 +104,68 @@ pub struct Snapshot {
     pub created_at: String,
     pub file_count: usize,
     pub size_estimate: u64,
+    /// Why the snapshot exists. Absent on snapshots written before origins
+    /// were recorded; [`Snapshot::effective_origin`] infers those from the label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SnapshotOrigin>,
+}
+
+/// Why a snapshot was taken. Retention uses it so a rotation of automatic
+/// restore points never evicts one a person asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotOrigin {
+    /// Created on request from the Snapshots tab or CLI.
+    User,
+    /// Recovery point taken before a version migration.
+    Migration,
+    /// Taken by Agora around a launch, install, template, merge or import.
+    Automatic,
+}
+
+impl Snapshot {
+    /// The recorded origin, or for older snapshots a best guess from the
+    /// label: the labels Agora itself has always used are automatic, and any
+    /// other label was typed by a person.
+    pub fn effective_origin(&self) -> SnapshotOrigin {
+        if let Some(origin) = self.origin {
+            return origin;
+        }
+        let Some(label) = self.label.as_deref() else {
+            return SnapshotOrigin::Automatic;
+        };
+        if label.starts_with("migration-") {
+            return SnapshotOrigin::Migration;
+        }
+        const AUTOMATIC_EXACT: &[&str] = &[
+            "pre-launch",
+            "prelaunch",
+            "pre-template",
+            "pack-merge",
+            "before-loadout",
+            "Initial import state",
+            "Before launcher import update",
+        ];
+        const AUTOMATIC_PREFIX: &[&str] = &["pre-restore-", "crash-doctor-", "install-"];
+        if AUTOMATIC_EXACT.contains(&label)
+            || AUTOMATIC_PREFIX
+                .iter()
+                .any(|prefix| label.starts_with(prefix))
+        {
+            SnapshotOrigin::Automatic
+        } else {
+            SnapshotOrigin::User
+        }
+    }
+
+    /// User-created and migration snapshots: the ones automatic snapshots
+    /// must never push out.
+    pub fn is_preserved(&self) -> bool {
+        matches!(
+            self.effective_origin(),
+            SnapshotOrigin::User | SnapshotOrigin::Migration
+        )
+    }
 }
 
 /// Whether an instance's initial recovery snapshot is usable.
@@ -1109,7 +1171,19 @@ fn walk_and_hash(
 /// backups. The mandatory pre-launch path should use
 /// [`create_snapshot_scoped`] with [`PRELAUNCH_TRACKED_ENTRIES`] instead.
 pub fn create_snapshot(instance_dir: &Path, label: Option<&str>) -> Result<Snapshot, String> {
-    create_snapshot_scoped(instance_dir, label, TRACKED_ENTRIES)
+    create_snapshot_with_origin(instance_dir, label, SnapshotOrigin::Automatic)
+}
+
+/// [`create_snapshot`] recording why it was taken. Callers acting on a
+/// person's request, or preserving a migration's pre-state, pass
+/// [`SnapshotOrigin::User`] / [`SnapshotOrigin::Migration`] so automatic
+/// snapshots never evict it.
+pub fn create_snapshot_with_origin(
+    instance_dir: &Path,
+    label: Option<&str>,
+    origin: SnapshotOrigin,
+) -> Result<Snapshot, String> {
+    create_snapshot_scoped_with_origin(instance_dir, label, TRACKED_ENTRIES, origin)
 }
 
 /// [`create_snapshot`] restricted to an explicit tracked-entry set.
@@ -1117,6 +1191,15 @@ pub fn create_snapshot_scoped(
     instance_dir: &Path,
     label: Option<&str>,
     entries: &[&str],
+) -> Result<Snapshot, String> {
+    create_snapshot_scoped_with_origin(instance_dir, label, entries, SnapshotOrigin::Automatic)
+}
+
+fn create_snapshot_scoped_with_origin(
+    instance_dir: &Path,
+    label: Option<&str>,
+    entries: &[&str],
+    origin: SnapshotOrigin,
 ) -> Result<Snapshot, String> {
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -1169,6 +1252,7 @@ pub fn create_snapshot_scoped(
         created_at: chrono::Utc::now().to_rfc3339(),
         file_count: files.len(),
         size_estimate: total_size,
+        origin: Some(origin),
     };
 
     let manifest = SnapshotManifest {
@@ -2930,6 +3014,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             file_count: 1,
             size_estimate: contents.len() as u64,
+            origin: None,
         };
         let legacy_manifest = serde_json::json!({
             "snapshot": snapshot,

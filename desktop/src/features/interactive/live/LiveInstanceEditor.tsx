@@ -35,6 +35,8 @@ export interface LiveInstanceEditorProps {
   onIntent: (intent: VisualIntent) => void;
   onUseStandardView: () => void;
   onLaunch?: () => Promise<void> | void;
+  /** Stops the running game (the same kill the Standard view uses). */
+  onStop?: () => Promise<void> | void;
   launchAvailable?: boolean;
   reducedMotion?: boolean;
   presentation?: 'standard' | 'simple' | 'high-interaction';
@@ -116,6 +118,7 @@ export function LiveInstanceEditor({
   onSelect,
   onIntent,
   onLaunch,
+  onStop,
   launchAvailable = true,
   reducedMotion = false,
   presentation = 'high-interaction',
@@ -240,9 +243,13 @@ export function LiveInstanceEditor({
   // "could not be verified" for the first second of every visit would be a
   // false alarm, so the pending case gets its own honest wording.
   const healthUnverified = !pending && data.health.status !== 'ok';
+  // A crash verdict describes the PREVIOUS run: it must not show while the
+  // game is starting or running (the evidence on disk is from an earlier
+  // launch), and there is nothing to report for a never-launched instance.
+  const crashShown = editor.hasCrash && !runningState;
   const statusText = pending
     ? 'Checking things over…'
-    : editor.hasCrash
+    : crashShown
       ? 'Your game stopped last time — find out why'
       : healthUnverified
         ? 'Health could not be verified'
@@ -251,7 +258,7 @@ export function LiveInstanceEditor({
           : findings.length > 0
             ? `${findings.length} thing${findings.length === 1 ? '' : 's'} need a look`
             : 'Everything looks ready';
-  const statusOk = !pending && !editor.hasCrash && !healthUnverified && !blocker && findings.length === 0;
+  const statusOk = !pending && !crashShown && !healthUnverified && !blocker && findings.length === 0;
 
 
   const achievementsOn = decor.achievements;
@@ -692,11 +699,11 @@ export function LiveInstanceEditor({
   }, [pickedSuspect, suspects, onTrialSuspect, onIntent]);
 
   const statusClick = useCallback(() => {
-    if (editor.hasCrash) { openDoctor(); return; }
+    if (crashShown) { openDoctor(); return; }
     if (statusOk) return;
     if (blocker) { showMe(); return; }
     runPreflight();
-  }, [editor.hasCrash, statusOk, blocker, showMe, runPreflight, openDoctor]);
+  }, [crashShown, statusOk, blocker, showMe, runPreflight, openDoctor]);
 
   const playClick = useCallback(() => {
     if (playDisabled) return;
@@ -787,11 +794,24 @@ export function LiveInstanceEditor({
             </ul>
           ) : null}
         </div>
-        <button type="button" className="inst-play" onClick={playClick} disabled={playDisabled} aria-label="Play this instance">
-          {decor.meter ? <span className="shine" aria-hidden="true" /> : null}
-          <span className="tri" aria-hidden="true" />
-          {runningState ? (launchState === 'delegated' ? 'Delegated' : launchState === 'running' ? 'Running' : 'Starting…') : 'Play'}
-        </button>
+        <div className="inst-play-wrap">
+          <button type="button" className="inst-play" onClick={playClick} disabled={playDisabled} aria-label="Play this instance">
+            {decor.meter ? <span className="shine" aria-hidden="true" /> : null}
+            <span className="tri" aria-hidden="true" />
+            {runningState ? (launchState === 'delegated' ? 'Delegated' : launchState === 'running' ? 'Running' : launchState === 'stopping' ? 'Stopping…' : 'Starting…') : 'Play'}
+          </button>
+          {onStop && (launchState === 'running' || launchState === 'stopping') ? (
+            <button
+              type="button"
+              className="inst-btn danger"
+              onClick={() => { void onStop(); }}
+              disabled={launchState === 'stopping'}
+              aria-label="Stop this instance"
+            >
+              {launchState === 'stopping' ? 'Stopping…' : 'Stop game'}
+            </button>
+          ) : null}
+        </div>
       </section>
 
       {/* ── shelf ── */}

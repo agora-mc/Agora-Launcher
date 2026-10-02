@@ -349,6 +349,11 @@ function AppContent() {
       && previous.type === 'mod-detail'
       && modDetailOriginRef.current?.type === 'instance-detail';
 
+    if (destination.type === 'mod-detail' && previous.type !== 'mod-detail') {
+      // Remember where a project page was opened from so the sidebar can keep
+      // highlighting that section.
+      modDetailOriginRef.current = previous;
+    }
     if (destination.type === 'mod-detail' && (cameFromBrowse || cameFromInstanceEditor)) {
       modDetailOriginRef.current = previous;
       mainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
@@ -491,6 +496,19 @@ function AppContent() {
   // silently fall to home. This is a defense-in-depth check; the type system
   // already prevents invalid Destination types at compile time.
   const isKnownDestType = KNOWN_DEST_TYPES.has(destination.type);
+
+  // A project page belongs to the section it was opened from (Browse, Home or
+  // an instance), not to Home. On the first render the ref below still holds the
+  // previous destination; afterwards the origin recorded by the effect.
+  const sidebarTab: Tab = (() => {
+    if (destination.type !== 'mod-detail') return effectiveTab;
+    const origin = previousDestinationRef.current.type !== 'mod-detail'
+      ? previousDestinationRef.current
+      : modDetailOriginRef.current;
+    if (origin?.type === 'tab') return origin.tab;
+    if (origin?.type === 'instance-detail') return 'instances';
+    return 'browse';
+  })();
 
   const showModDetail = destination.type === 'mod-detail';
   const previousDestination = previousDestinationRef.current;
@@ -752,9 +770,9 @@ function AppContent() {
     }
   };
 
-  const handleBrowseSelectMod = (id: string, instanceId?: string) => {
+  const handleBrowseSelectMod = (id: string, instanceId?: string, contentType?: string) => {
     browseScrollTopRef.current = mainRef.current?.scrollTop ?? 0;
-    navigateToModDetail(id, instanceId);
+    navigateToModDetail(id, instanceId, contentType);
   };
 
   const handleInstanceEditorOpenMod = (id: string) => {
@@ -819,7 +837,7 @@ function AppContent() {
           activePluginPage={destination.type === 'plugin-page' ? destination.contributionId : null}
           onSelectPluginPage={navigateToPluginPage}
           tabs={tabs}
-          activeTab={effectiveTab}
+          activeTab={sidebarTab}
           onSelectTab={navigateToTab}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           collapsed={shellLayout.sidebar.collapsed}
@@ -911,6 +929,7 @@ function AppContent() {
                 <ModDetail
                   itemId={destination.itemId}
                   initialInstanceId={modDetailBrowseInstanceId}
+                  requestedContentType={destination.browseContentType}
                   onBack={handleModDetailBack}
                   onOpenInstanceEditor={(id) => {
                     navigateToInstanceDetail(id);

@@ -308,6 +308,106 @@ fn instance_id_for_import(name: &str) -> LauncherResult<String> {
     Ok(instance_id)
 }
 
+/// Use the user's chosen name when one was supplied, else the source's own.
+fn apply_name_override(default_name: String, name_override: Option<&str>) -> String {
+    match name_override.map(str::trim) {
+        Some(chosen) if !chosen.is_empty() => chosen.to_string(),
+        _ => default_name,
+    }
+}
+
+/// The instance name an import of `source` would use by default: the pack
+/// name for `.mrpack`, the `instance.cfg` name for a Prism zip, or the folder
+/// name for a directory.
+pub fn default_import_name(source: &Path) -> LauncherResult<String> {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    let file_stem = || {
+        source
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    };
+    match extension.as_deref() {
+        Some("mrpack") => {
+            let file = fs::File::open(source)
+                .map_err(|e| import_error("ERR_IMPORT_OPEN", format!("Cannot open mrpack: {e}")))?;
+            let mut archive = ZipArchive::new(file)
+                .map_err(|e| import_error("ERR_IMPORT_ZIP", format!("Invalid zip: {e}")))?;
+            let entry = archive.by_name("modrinth.index.json").map_err(|_| {
+                import_error("ERR_IMPORT_MISSING_INDEX", "Missing modrinth.index.json")
+            })?;
+            let index: MrpackIndex = serde_json::from_reader(entry).map_err(|e| {
+                import_error(
+                    "ERR_IMPORT_PARSE_INDEX",
+                    format!("Invalid modrinth.index.json: {e}"),
+                )
+            })?;
+            Ok(if index.name.is_empty() {
+                file_stem()
+            } else {
+                index.name
+            })
+        }
+        Some("zip") => {
+            let file = fs::File::open(source).map_err(|e| {
+                import_error("ERR_IMPORT_OPEN_ZIP", format!("Cannot open zip: {e}"))
+            })?;
+            let mut archive = ZipArchive::new(file)
+                .map_err(|e| import_error("ERR_IMPORT_ZIP", format!("Invalid zip: {e}")))?;
+            let mut cfg = String::new();
+            if let Ok(mut entry) = archive.by_name("instance.cfg") {
+                let _ = entry.read_to_string(&mut cfg);
+            }
+            Ok(parse_prism_cfg(&cfg, "name").unwrap_or_else(file_stem))
+        }
+        _ => Ok(source
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()),
+    }
+}
+
+/// Whether importing under `name` would collide with an existing instance.
+pub fn import_name_taken(instances_root: &Path, name: &str) -> LauncherResult<bool> {
+    Ok(instances_root.join(instance_id_for_import(name)?).exists())
+}
+
+/// A free name for `name`: itself when unused, otherwise "<name> (2)",
+/// "<name> (3)", ...  The existing instance is never touched.
+pub fn suggest_unique_import_name(instances_root: &Path, name: &str) -> LauncherResult<String> {
+    if !import_name_taken(instances_root, name)? {
+        return Ok(name.to_string());
+    }
+    for n in 2..10_000 {
+        let candidate = format!("{name} ({n})");
+        if !import_name_taken(instances_root, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+    Err(import_error(
+        "ERR_INSTANCE_EXISTS",
+        "Could not find a free instance name; choose a different name.",
+    ))
+}
+
+/// The same "<name> (2)" scheme for callers that know the taken names
+/// themselves (the other-launcher import plan): `name` when `is_taken`
+/// rejects nothing, otherwise the first free numbered variant.
+pub fn next_free_name(name: &str, is_taken: impl Fn(&str) -> bool) -> String {
+    if !is_taken(name) {
+        return name.to_string();
+    }
+    (2..10_000)
+        .map(|n| format!("{name} ({n})"))
+        .find(|candidate| !is_taken(candidate))
+        .unwrap_or_else(|| format!("{name} ({})", uuid::Uuid::new_v4()))
+}
+
 /// Allocate an isolated, same-volume staging directory below the instances
 /// root.  Existing instances are never overwritten by an import.
 fn prepare_import_target(instances_root: &Path, name: &str) -> LauncherResult<ImportTarget> {
@@ -324,7 +424,7 @@ fn prepare_import_target(instances_root: &Path, name: &str) -> LauncherResult<Im
         return Err(import_error(
             "ERR_INSTANCE_EXISTS",
             format!(
-                "An instance named '{instance_id}' already exists. Choose a different name before importing so no existing saves or settings are overwritten."
+                "An instance named '{instance_id}' already exists. Import it under a different name (for example as a copy) so no existing saves or settings are overwritten."
             ),
         ));
     }
@@ -528,9 +628,11 @@ pub fn import_mrpack(
         None,
         None,
         OverridePolicy::Standard,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn import_mrpack_with_progress(
     mrpack_path: &Path,
     instances_root: &Path,
@@ -539,6 +641,7 @@ pub fn import_mrpack_with_progress(
     operation_id: Option<OperationId>,
     origin_url: Option<String>,
     override_policy: OverridePolicy,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
     let file = fs::File::open(mrpack_path).map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_OPEN".into(),
@@ -571,6 +674,7 @@ pub fn import_mrpack_with_progress(
     } else {
         index.name.clone()
     };
+    let name = apply_name_override(name, name_override);
 
     let (minecraft_version, loader, loader_version) = parse_mrpack_deps(&index.dependencies);
     let target = prepare_import_target(instances_root, &name)?;
@@ -892,6 +996,16 @@ pub fn import_prism_zip(
     instances_root: &Path,
     symlink_saves: bool,
 ) -> LauncherResult<ImportResult> {
+    import_prism_zip_named(zip_path, instances_root, symlink_saves, None)
+}
+
+/// [`import_prism_zip`] with an optional user-chosen instance name.
+pub fn import_prism_zip_named(
+    zip_path: &Path,
+    instances_root: &Path,
+    symlink_saves: bool,
+    name_override: Option<&str>,
+) -> LauncherResult<ImportResult> {
     let file = fs::File::open(zip_path).map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_OPEN_ZIP".into(),
         message: format!("Cannot open zip: {e}"),
@@ -947,6 +1061,7 @@ pub fn import_prism_zip(
             .to_string_lossy()
             .to_string()
     });
+    let name = apply_name_override(name, name_override);
 
     let (minecraft_version, loader, loader_version) = parse_prism_components(&pack_json);
     let target = prepare_import_target(instances_root, &name)?;
@@ -1161,6 +1276,16 @@ pub fn import_directory(
     instances_root: &Path,
     symlink_saves: bool,
 ) -> LauncherResult<ImportResult> {
+    import_directory_named(source_dir, instances_root, symlink_saves, None)
+}
+
+/// [`import_directory`] with an optional user-chosen instance name.
+pub fn import_directory_named(
+    source_dir: &Path,
+    instances_root: &Path,
+    symlink_saves: bool,
+    name_override: Option<&str>,
+) -> LauncherResult<ImportResult> {
     if !source_dir.is_dir() {
         return Err(LauncherError::Generic {
             code: "ERR_IMPORT_NOT_DIR".into(),
@@ -1173,6 +1298,7 @@ pub fn import_directory(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
+    let name = apply_name_override(name, name_override);
     let target = prepare_import_target(instances_root, &name)?;
 
     // Avoid recursively copying the staging directory when a user selects the
@@ -1465,8 +1591,10 @@ fn safe_download_filename(url: &str) -> Option<String> {
 pub fn import_technic_solder_pack(
     pack: &TechnicSolderPack,
     instances_root: &Path,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
-    let target = prepare_import_target(instances_root, &pack.display_name)?;
+    let instance_name = apply_name_override(pack.display_name.clone(), name_override);
+    let target = prepare_import_target(instances_root, &instance_name)?;
     let mods_dir = target.staging_dir.join("mods");
     fs::create_dir_all(&mods_dir).map_err(|e| {
         cleanup_staging(&target);
@@ -1569,7 +1697,7 @@ pub fn import_technic_solder_pack(
             manifest_version: CURRENT_MANIFEST_VERSION,
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -1601,7 +1729,7 @@ pub fn import_technic_solder_pack(
     match result {
         Ok(imported_mods) => Ok(ImportResult {
             instance_id: target.instance_id,
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -1625,7 +1753,9 @@ pub fn import_technic_zip_pack(
     pack: &TechnicZipPack,
     instances_root: &Path,
     policy: OverridePolicy,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
+    let instance_name = apply_name_override(pack.display_name.clone(), name_override);
     let bytes = crate::download::download_consented_bytes_blocking(&pack.download_url)?;
     if let Some(pinned) = pack.sha256.as_deref().filter(|sha| !sha.trim().is_empty()) {
         if pinned.len() != 64 || !pinned.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1645,7 +1775,7 @@ pub fn import_technic_zip_pack(
         }
     }
 
-    let target = prepare_import_target(instances_root, &pack.display_name)?;
+    let target = prepare_import_target(instances_root, &instance_name)?;
 
     let reader = io::Cursor::new(bytes);
     let mut archive = match ZipArchive::new(reader) {
@@ -1716,7 +1846,7 @@ pub fn import_technic_zip_pack(
             manifest_version: CURRENT_MANIFEST_VERSION,
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -1748,7 +1878,7 @@ pub fn import_technic_zip_pack(
     match result {
         Ok(imported_mods) => Ok(ImportResult {
             instance_id: target.instance_id,
-            name: pack.display_name.clone(),
+            name: instance_name.clone(),
             minecraft_version: pack.minecraft_version.clone(),
             loader: pack.loader.clone(),
             loader_version: pack.loader_version.clone(),
@@ -2321,6 +2451,41 @@ mod tests {
     }
 
     #[test]
+    fn test_import_directory_named_copy_preserves_existing_instance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("same-name");
+        fs::create_dir_all(src.join("mods")).unwrap();
+        fs::write(src.join("mods").join("incoming.jar"), b"incoming").unwrap();
+
+        let instances_root = tmp.path().join("instances");
+        let existing = instances_root.join("same-name");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("sentinel.txt"), b"keep this").unwrap();
+
+        assert_eq!(default_import_name(&src).unwrap(), "same-name");
+        assert!(import_name_taken(&instances_root, "same-name").unwrap());
+        let suggested = suggest_unique_import_name(&instances_root, "same-name").unwrap();
+        assert_eq!(suggested, "same-name (2)");
+
+        let result =
+            import_directory_named(&src, &instances_root, false, Some(&suggested)).unwrap();
+        assert_eq!(result.name, "same-name (2)");
+        assert_eq!(
+            fs::read(existing.join("sentinel.txt")).unwrap(),
+            b"keep this"
+        );
+        assert!(instances_root
+            .join(&result.instance_id)
+            .join("mods")
+            .join("incoming.jar")
+            .exists());
+        assert_eq!(
+            suggest_unique_import_name(&instances_root, "same-name").unwrap(),
+            "same-name (3)"
+        );
+    }
+
+    #[test]
     fn test_import_directory_collision_never_deletes_existing_instance() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("same-name");
@@ -2629,6 +2794,7 @@ mod tests {
             None,
             Some(presigned.to_string()),
             OverridePolicy::Standard,
+            None,
         )
         .unwrap();
 
@@ -2838,6 +3004,42 @@ mod tests {
     }
 
     #[test]
+    fn technic_pack_name_collision_needs_a_new_name_and_never_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let instances_root = tmp.path().join("instances");
+        let pack = TechnicSolderPack {
+            display_name: "Solder Test".into(),
+            minecraft_version: "1.20.1".into(),
+            loader: "forge".into(),
+            loader_version: "47.1.0".into(),
+            mods: vec![],
+            slug: "solder-pack".into(),
+            solder_url: "https://solder.example.com/api".into(),
+            build: "1.2.3".into(),
+        };
+        let first = import_technic_solder_pack(&pack, &instances_root, None).unwrap();
+        assert_eq!(first.instance_id, "Solder-Test");
+        std::fs::write(instances_root.join("Solder-Test").join("keep.txt"), b"mine").unwrap();
+
+        let collision = import_technic_solder_pack(&pack, &instances_root, None).unwrap_err();
+        assert!(
+            collision.to_string().contains("already exists"),
+            "{collision}"
+        );
+        assert!(import_name_taken(&instances_root, "Solder Test").unwrap());
+        let suggested = suggest_unique_import_name(&instances_root, "Solder Test").unwrap();
+        assert_eq!(suggested, "Solder Test (2)");
+
+        let second = import_technic_solder_pack(&pack, &instances_root, Some(&suggested)).unwrap();
+        assert_eq!(second.name, "Solder Test (2)");
+        assert_ne!(second.instance_id, first.instance_id);
+        assert_eq!(
+            std::fs::read(instances_root.join("Solder-Test").join("keep.txt")).unwrap(),
+            b"mine"
+        );
+    }
+
+    #[test]
     fn test_technic_solder_pack_origin_with_empty_mods() {
         let tmp = tempfile::tempdir().unwrap();
         let instances_root = tmp.path().join("instances");
@@ -2851,7 +3053,7 @@ mod tests {
             solder_url: "https://solder.example.com/api?token=secret#frag".into(),
             build: "1.2.3".into(),
         };
-        let result = import_technic_solder_pack(&pack, &instances_root).unwrap();
+        let result = import_technic_solder_pack(&pack, &instances_root, None).unwrap();
         assert_eq!(result.instance_id, "Solder-Test");
         let manifest: InstanceManifest = serde_json::from_str(
             // allow-raw-instance-manifest
@@ -3055,13 +3257,15 @@ fn provider_pack_path_allowed(path: &str, policy: OverridePolicy) -> LauncherRes
 pub fn import_provider_pack(
     pack: &ProviderPackImport,
     instances_root: &Path,
+    name_override: Option<&str>,
 ) -> LauncherResult<ImportResult> {
     let plan = &pack.plan;
+    let instance_name = apply_name_override(plan.name.clone(), name_override);
     let clients = crate::http_client::HttpClients::new().map_err(|e| LauncherError::Generic {
         code: "ERR_HTTP_CLIENT_INIT".into(),
         message: format!("Failed to initialize HTTP clients: {e}"),
     })?;
-    let target = prepare_import_target(instances_root, &plan.name)?;
+    let target = prepare_import_target(instances_root, &instance_name)?;
 
     let result = (|| -> LauncherResult<usize> {
         let mut imported = 0usize;
@@ -3129,7 +3333,7 @@ pub fn import_provider_pack(
             manifest_version: CURRENT_MANIFEST_VERSION,
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
-            name: plan.name.clone(),
+            name: instance_name.clone(),
             minecraft_version: plan.minecraft_version.clone(),
             loader: plan.loader.clone(),
             loader_version: plan.loader_version.clone(),
@@ -3160,7 +3364,7 @@ pub fn import_provider_pack(
     match result {
         Ok(imported_mods) => Ok(ImportResult {
             instance_id: target.instance_id,
-            name: plan.name.clone(),
+            name: instance_name.clone(),
             minecraft_version: plan.minecraft_version.clone(),
             loader: plan.loader.clone(),
             loader_version: plan.loader_version.clone(),

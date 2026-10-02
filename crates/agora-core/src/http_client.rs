@@ -105,6 +105,9 @@ pub(crate) fn category_allowlist(category: ClientCategory) -> &'static [&'static
         ClientCategory::Plugin | ClientCategory::PluginUpdate | ClientCategory::PluginPackage => {
             &[]
         }
+        // Deliberately empty: any public host is authorized per request by
+        // `HostPolicy::AnyPublicHost`, and only for this category.
+        ClientCategory::CommunityImage => &[],
     }
 }
 
@@ -140,6 +143,11 @@ pub enum HostPolicy<'a> {
     /// downloads travel in, so the list cannot authorize anything else.
     /// Enabling the provider is the consent; its declared hosts are the scope.
     ProviderDeclared(&'a [String]),
+    /// Any public host. Valid only for `CommunityImage`: pictures embedded in
+    /// community-written About text point anywhere, and the response is used
+    /// only after it has been confirmed to be an image. Every other gate,
+    /// including the private/loopback DNS floor and Lockdown, still applies.
+    AnyPublicHost,
 }
 
 /// Friendly name for each HTTP client category, used in logging and errors.
@@ -180,6 +188,10 @@ pub enum ClientCategory {
     /// Plugin update packages. The response is streamed and bounded by the
     /// installer's package-size limit.
     PluginPackage,
+    /// Images embedded in community-written About text, from any public host.
+    /// Reached only through `community_image`, which checks the bytes are an
+    /// image before anything displays them.
+    CommunityImage,
 }
 
 /// How a category's requests are bounded in time.
@@ -221,7 +233,7 @@ impl ClientCategory {
     ///
     /// This is the single definition that client construction and
     /// [`Self::index`] are both derived from — see [`HttpClients`].
-    const ALL: [ClientCategory; 14] = [
+    const ALL: [ClientCategory; 15] = [
         ClientCategory::MojangMetadata,
         ClientCategory::MojangContent,
         ClientCategory::Loader,
@@ -236,6 +248,7 @@ impl ClientCategory {
         ClientCategory::Plugin,
         ClientCategory::PluginUpdate,
         ClientCategory::PluginPackage,
+        ClientCategory::CommunityImage,
     ];
 
     /// Position of this category in [`Self::ALL`].
@@ -257,6 +270,7 @@ impl ClientCategory {
             ClientCategory::Plugin => 11,
             ClientCategory::PluginUpdate => 12,
             ClientCategory::PluginPackage => 13,
+            ClientCategory::CommunityImage => 14,
         }
     }
 
@@ -319,6 +333,9 @@ impl ClientCategory {
             // megabytes before it gives up on a file that should be tiny.
             ClientCategory::PluginUpdate => Some(1024 * 1024),
             ClientCategory::PluginPackage => Some(crate::plugins::install::MAX_TOTAL_BYTES),
+            // A banner or badge; anything larger is not worth fetching from
+            // an arbitrary host for decoration.
+            ClientCategory::CommunityImage => Some(crate::community_image::MAX_IMAGE_BYTES),
             _ => Some(10 * 1024 * 1024),
         }
     }
@@ -633,6 +650,7 @@ fn host_authorized(category: ClientCategory, host: &str, policy: HostPolicy<'_>)
             // keeps the generic Allowlist path failed-closed.
             category == ClientCategory::ConsentedContent
         }
+        HostPolicy::AnyPublicHost => category == ClientCategory::CommunityImage,
         HostPolicy::ProviderDeclared(hosts) => {
             category == ClientCategory::ConsentedContent
                 && hosts

@@ -1208,6 +1208,7 @@ export type EvidenceSourceKind =
   | 'LatestLog'
   | 'DebugLog'
   | 'JvmFatalErrorLog'
+  | 'LaunchOutput'
   | 'UserAdded'
   | 'UserPasted';
 
@@ -1306,6 +1307,9 @@ export const setCustomModIcon = (instanceId: string, filename: string, sourcePat
   invoke<string>('set_custom_mod_icon', { instanceId, filename, sourcePath });
 export const getCustomIcon = (instanceId: string, target: 'instance' | 'mod', filename?: string) =>
   invoke<string | null>('get_custom_icon', { instanceId, target, filename: filename ?? null });
+/** An About-text image from any public host as a `data:` URL; core rejects anything that is not an image. */
+export const fetchCommunityImage = (url: string) =>
+  invoke<string>('fetch_community_image', { url });
 
 export type LauncherKind = 'prism' | 'curse_forge' | 'modrinth';
 export type CandidateStatus = 'ready' | 'needs_review' | { unsupported: { reasons: string[] } };
@@ -1593,8 +1597,8 @@ export const technicSearch = (query: string, limit?: number) =>
   invoke<TechnicSearchResult[]>('technic_search', { query, limit });
 export const technicPackDetail = (slug: string) =>
   invoke<TechnicPackDetail>('technic_pack_detail', { slug });
-export const installTechnicSolderPack = (slug: string, solder: string, build: string) =>
-  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build });
+export const installTechnicSolderPack = (slug: string, solder: string, build: string, instanceName?: string) =>
+  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build, instanceName: instanceName ?? null });
 export const installTechnicZipPack = (
   name: string,
   downloadUrl: string,
@@ -1602,6 +1606,7 @@ export const installTechnicZipPack = (
   minecraftVersion: string,
   loader: string,
   loaderVersion: string,
+  instanceName?: string,
 ) =>
   invoke<ImportResult>('install_technic_zip_pack', {
     name,
@@ -1610,6 +1615,7 @@ export const installTechnicZipPack = (
     minecraftVersion,
     loader,
     loaderVersion,
+    instanceName: instanceName ?? null,
   });
 
 // --- Phase 7: Curated annotation overlay for registry-backed items ---
@@ -2061,6 +2067,10 @@ export interface Snapshot {
   created_at: string;
   file_count: number;
   size_estimate: number;
+  /** Absent on snapshots taken before origins were recorded. */
+  origin?: 'user' | 'migration' | 'automatic';
+  /** The recorded origin, or the one inferred from the label for older snapshots. */
+  effective_origin: 'user' | 'migration' | 'automatic';
   is_lkg: boolean;
   is_current_lkg: boolean;
   is_pre_restore: boolean;
@@ -2651,8 +2661,21 @@ export const applyLoadoutProfile = (instanceId: string, profileName: string) =>
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });
 
-export const importInstance = (sourcePath: string, symlinkSaves: boolean) =>
-  invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves });
+export const importInstance = (sourcePath: string, symlinkSaves: boolean, name?: string) =>
+  invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves, name: name ?? null });
+
+export interface ImportNamePreview {
+  default_name: string;
+  name_taken: boolean;
+  suggested_name: string;
+}
+
+export const previewImportName = (sourcePath: string) =>
+  invoke<ImportNamePreview>('preview_import_name', { sourcePath });
+
+/** The same name check for Technic and provider packs, which have no file to inspect. */
+export const previewPackInstanceName = (name: string) =>
+  invoke<ImportNamePreview>('preview_pack_instance_name', { name });
 
 export const cancelOperation = (operationId: string) =>
   invoke<boolean>('cancel_operation', { operationId });
@@ -2961,16 +2984,16 @@ export const providerInstallPreview = (
     loader: loader ?? null,
   });
 
-export const providerInstallPack = (itemId: string, versionId?: string) =>
-  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null });
+export const providerInstallPack = (itemId: string, versionId?: string, instanceName?: string) =>
+  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null, instanceName: instanceName ?? null });
 
 /**
  * Install a catalog entry that pins one version of a provider's pack.
  * Fails with `ERR_PROVIDER_PACK_CHANGED` when the source now serves something
  * other than what was reviewed; `acceptChanged` is the user's answer to that.
  */
-export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean) =>
-  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged });
+export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean, instanceName?: string) =>
+  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged, instanceName: instanceName ?? null });
 
 // --- Repair loader ---
 
@@ -3134,7 +3157,7 @@ export interface JavaRuntimeDownloadDisabledDetails {
 }
 
 /** Serialized `launch_history::LaunchResult`. */
-export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'unknown';
+export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'stopped' | 'unknown';
 
 /** Serialized `launch_history::LaunchRecord`. */
 export interface LaunchRecord {

@@ -19,7 +19,8 @@ export type InstallAction =
   | { type: 'repair-lockfile'; contentHash: string };
 
 export interface BatchUpdateItem { itemId: string; targetVersion: string; }
-export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; }
+/** `contentType` is absent for a mod; resource packs, shaders and data packs say so, which picks their folder. */
+export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; contentType?: string; }
 
 /**
  * `provider` is any content provider — Agora's official ones or a plugin's.
@@ -35,6 +36,12 @@ export interface PlanOverrides {
   allowReplace: boolean;
   skipHealthScan: boolean;
   allowClosestVersion?: boolean;
+  /**
+   * What a raw Modrinth install is (`resourcepack`, `shader`, `datapack`).
+   * Absent means a mod. Decides which Modrinth loader tags are acceptable and
+   * which folder the file installs into.
+   */
+  contentType?: string;
   skipItems?: string[];
   forceConflictResolution: Record<string, string>;
   /**
@@ -134,6 +141,8 @@ export interface ResolvedDep {
   displayName?: string | null;
   /** Canonical upstream page URL when known. */
   pageUrl?: string | null;
+  /** Selected batch items that pulled this dependency in. */
+  requestedBy?: string[];
 }
 
 export type DepDisposition =
@@ -155,7 +164,7 @@ export interface DepConflict {
 }
 
 export type ConflictKind = 'version-conflict' | 'duplicate-mod' | 'loader-mismatch' | 'game-version-mismatch' | 'incompatible-mod' | 'broken-reverse-dep';
-export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort';
+export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort' | 'remove-anyway';
 
 export interface FileAdd { targetFilename: string; stagingFilename: string; artifact: ResolvedArtifact; hashes: HashSpec; size: number; }
 export interface FileRemove { filename: string; }

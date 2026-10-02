@@ -152,4 +152,23 @@ describe('InstanceTemplatePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save template' }));
     await waitFor(() => expect(screen.getByText(/disk full/)).toBeInTheDocument());
   });
+  it('describes what a Java-only template contains instead of "0 files"', async () => {
+    const javaOnly = { ...template('tpl-jvm', 'Heap', 0), jvm: { jvm_memory_mb: 6144 } };
+    tauriMocks.listInstanceTemplates.mockResolvedValue([javaOnly, template('tpl-f', 'Files', 2)]);
+    render(<InstanceTemplatePanel instanceId="alpha" />);
+    expect(await screen.findByText('Java & memory settings')).toBeInTheDocument();
+    expect(screen.getByText('2 files')).toBeInTheDocument();
+  });
+
+  it('keeps Save template labelled Save template while applying', async () => {
+    tauriMocks.listInstanceTemplates.mockResolvedValue([template('tpl-9', 'Perf', 2)]);
+    let finish: (value: unknown) => void = () => {};
+    tauriMocks.applyInstanceTemplate.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<InstanceTemplatePanel instanceId="alpha" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    expect(await screen.findByRole('button', { name: 'Applying…' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save template' })).toBeInTheDocument();
+    finish({ jvm_applied: false, files_applied: 2, files_missing: 0, undo_snapshot_id: null });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Apply' })).toBeInTheDocument());
+  });
 });

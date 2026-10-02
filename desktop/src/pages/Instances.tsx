@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Boxes, Copy, Download, LifeBuoy, Pencil, Play, Plus, Square, Trash2 } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
+import { requestEditorTab } from '../lib/editorDeepLink';
 import {
   cancelJavaRuntime,
   cloneInstance,
@@ -33,6 +34,8 @@ import { emitTourSignal } from '../features/tour/tourSignals';
 import { offerBrowseContext } from '../lib/browseContextHandoff';
 import { type ProcessState } from '../lib/useProcessController';
 import { type RunningProcess } from '../lib/tauri';
+import { type LaunchProgressInfo } from '../lib/launchProgress';
+import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
@@ -301,7 +304,7 @@ export function Instances({
           </div>
         </div>
       ) : (
-        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,calc(16rem*var(--font-scale))),1fr))] gap-4">
           {instances.map((instance) => {
             const sessionCount = liveSessions.filter((session) => session.instance_id === instance.instance_id).length;
             const isRunning = sessionCount > 0
@@ -327,6 +330,15 @@ export function Instances({
                 isRunning={isRunning}
                 runningPid={isRunning ? processState.pid : null}
                 launchBusy={isLaunchBusy}
+                startingThis={isCurrentLaunchBusy}
+                launchFailedExit={
+                  isCurrentThisInstance
+                  && processState.phase === 'exited'
+                  && processState.outcome === 'crash'
+                    ? { exitCode: processState.exitCode }
+                    : null
+                }
+                onOpenConsole={() => { requestEditorTab('console'); onEditInstance(instance.instance_id); }}
                 onLaunch={() => onStartLaunch(
                   instance.instance_id,
                   instance.launch_mode_override === 'direct'
@@ -338,6 +350,7 @@ export function Instances({
                 controllerRecoverableJavaIssue={isCurrentThisInstance ? processState.recoverableJavaIssue : null}
                 controllerAvailableActions={isCurrentFailed ? processState.availableActions : []}
                 runtimeProgress={isCurrentThisInstance ? processState.runtimeProgress : null}
+                launchProgress={isCurrentThisInstance && (processState.phase === 'launching' || processState.phase === 'running') ? processState.launchProgress ?? null : null}
                 onDismissError={onClearError}
                 onRepairAndRetry={onRepairAndRetry}
                 onUseDelegatedLaunch={onUseDelegatedLaunch}
@@ -422,6 +435,9 @@ function InstanceCard({
   isRunning,
   runningPid,
   launchBusy,
+  startingThis,
+  launchFailedExit,
+  onOpenConsole,
   onLaunch,
   onKill,
   controllerError,
@@ -429,6 +445,7 @@ function InstanceCard({
   controllerRecoverableJavaIssue,
   controllerAvailableActions,
   runtimeProgress,
+  launchProgress,
   onDismissError,
   onRepairAndRetry,
   onUseDelegatedLaunch,
@@ -454,6 +471,11 @@ function InstanceCard({
   isRunning: boolean;
   runningPid: number | null;
   launchBusy: boolean;
+  /** This card's own instance is the one starting (other cards only disable). */
+  startingThis: boolean;
+  /** The last launch of this instance ended abnormally (e.g. exited right away). */
+  launchFailedExit: { exitCode: number | null } | null;
+  onOpenConsole: () => void;
   onLaunch: () => void;
   onKill: () => void;
   controllerError: string | null;
@@ -461,6 +483,8 @@ function InstanceCard({
   controllerRecoverableJavaIssue: RecoverableJavaIssue | null;
   controllerAvailableActions: LauncherAction[];
   runtimeProgress: JavaRuntimeProgressEvent | null;
+  /** Stage of this card's launch in flight, or of the game still loading. */
+  launchProgress: LaunchProgressInfo | null;
   onDismissError: () => void;
   onRepairAndRetry: () => Promise<void>;
   onUseDelegatedLaunch: () => Promise<void>;
@@ -798,6 +822,10 @@ function InstanceCard({
         </div>
       )}
 
+      {launchProgress && !runtimeProgress && (
+        <LaunchProgressPanel className="mt-3" progress={launchProgress} onOpenConsole={onOpenConsole} />
+      )}
+
       {/* ── Java runtime provisioning panel ── */}
       {runtimeProgress && !controllerRecoverableJavaIssue && (
         <div className="mt-3 rounded-lg border border-blue-500 bg-blue-500/10 p-3 space-y-2">
@@ -907,6 +935,37 @@ function InstanceCard({
         </div>
       )}
 
+      {launchFailedExit && !displayError && !isRunning && (
+        <div
+          className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-destructive/60 bg-destructive/10 px-3 py-2 text-xs"
+          role="alert"
+          aria-label="Launch failed"
+        >
+          <div className="min-w-0">
+            <p className="font-medium text-destructive">Launch failed</p>
+            <p className="text-muted-foreground">
+              The game exited with an error{launchFailedExit.exitCode != null ? ` (code ${launchFailedExit.exitCode})` : ''} before you could play.
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              onClick={onOpenConsole}
+              className="rounded border border-current/30 px-2 py-1 font-medium text-destructive hover:bg-background/40"
+            >
+              Open Console
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenCrashInvestigator(instance.instance_id)}
+              className="rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
+            >
+              Investigate
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Plain error display (fallback, non-recoverable) ── */}
       {displayError && !controllerRecoverableIssue && !controllerRecoverableJavaIssue
         && !controllerAvailableActions.includes('restart_mojang_launcher') && (
@@ -939,7 +998,7 @@ function InstanceCard({
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             <Play className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
-            {effectiveBusy && !repairing ? 'Starting…' : 'Launch'}
+            {startingThis && !repairing ? 'Starting…' : 'Launch'}
           </button>
         )}
         <button

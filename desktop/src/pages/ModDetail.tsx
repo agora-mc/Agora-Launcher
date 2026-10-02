@@ -5,6 +5,8 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { defaultSchema, type Schema } from 'hast-util-sanitize';
 import { ArrowDown, ArrowUp } from 'lucide-react';
+import { HideOnErrorImage } from '../components/HideOnErrorImage';
+import { peekParkedBrowseFilter, pickDefaultPackRelease } from './browseSession';
 import {
   downloadSourceLabel,
   downloadSourcesOf,
@@ -57,6 +59,7 @@ import {
 import { InstallFlow } from '../components/InstallFlow';
 import { showToast } from '../components/Toast';
 import { useConfirm } from '../components/ui/confirm';
+import { choosePackInstanceName } from '../lib/packInstanceName';
 
 /**
  * Whether any of an item's download sources uses `strategy`.
@@ -90,6 +93,7 @@ function externalLinkLabel(url: string): string {
 import { formatDate, sortLoaderVersionsLatestFirst } from '../lib/utils';
 import { usePackInstall } from '../components/PackInstallProgress';
 import type { InstallIntent, SourceType } from '../lib/installFlow';
+import { contentTypeLabel, installContentType, projectFormats, type ModrinthFormat } from '../lib/modrinthFormats';
 
 // Whether a candidate version is a pre-release (alpha/beta/rc/snapshot) —
 // mirrors `agora_core::models::is_prerelease_version` and the backend
@@ -161,8 +165,16 @@ const SANITIZE_SCHEMA: Schema = {
 
 type CuratorNotesRegistryItem = RegistryItem & { curator_notes?: string | null };
 
-export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
+export function ModDetail({ itemId, initialInstanceId, requestedContentType, onBack, onOpenInstanceEditor }: { itemId: string; initialInstanceId?: string; requestedContentType?: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void }) {
   const [item, setItem] = useState<RegistryItem | null>(null);
+  // Which format of a multi-format project the user is after. Seeded from the
+  // type Browse was showing, so "Add Data Pack" lands on the data pack.
+  const [formatChoice, setFormatChoice] = useState<ModrinthFormat | null>(
+    requestedContentType === 'datapack' ? 'datapack' : null,
+  );
+  useEffect(() => {
+    setFormatChoice(requestedContentType === 'datapack' ? 'datapack' : null);
+  }, [itemId, requestedContentType]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // True only when the item was resolved from registry_items via
@@ -252,7 +264,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   const [technicDetail, setTechnicDetail] = useState<TechnicPackDetail | null>(null);
   const [technicInstalling, setTechnicInstalling] = useState(false);
   const [providerPackInstalling, setProviderPackInstalling] = useState(false);
-  const { confirm } = useConfirm();
+  const { confirm, prompt } = useConfirm();
   const [allowUnverifiedPacks, setAllowUnverifiedPacks] = useState(false);
 
   // Full Modrinth project data (primary source when modrinth_id exists)
@@ -667,6 +679,20 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
    */
   const isModrinthInstall = !!(item?.modrinth_id && modrinthProject && !isRegistryBacked);
 
+  // Modrinth types a mod with a companion data pack as "mod"; its data-pack
+  // versions are only distinguishable by their loader tags. Offer a choice when
+  // the versions really contain both, and install as whichever was chosen.
+  const availableFormats: ModrinthFormat[] =
+    isModrinthInstall && item?.content_type === 'mod' ? projectFormats(modrinthVersions) : [];
+  const activeFormat: ModrinthFormat =
+    formatChoice !== null && (availableFormats.length === 0 || availableFormats.includes(formatChoice))
+      ? formatChoice
+      : (availableFormats[0] ?? 'mod');
+  const installType: string =
+    isModrinthInstall && item?.content_type === 'mod' && activeFormat === 'datapack'
+      ? 'datapack'
+      : (item?.content_type ?? 'mod');
+
   // Find the manifest entry (if any) that corresponds to this mod in an
   // instance detail. Matches registry id, Modrinth project id, or the
   // resolved jar id so curated, Modrinth-linked, and raw installs all work.
@@ -868,7 +894,12 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     if (!technicDetail) return;
     setTechnicInstalling(true);
     try {
-      const outcome = await installTechnicPack(technicDetail.slug, allowUnverifiedPacks);
+      const outcome = await installTechnicPack(
+        technicDetail.slug,
+        allowUnverifiedPacks,
+        (title) => choosePackInstanceName(prompt, title),
+      );
+      if (!outcome) return;
       showToast(
         `Imported "${outcome.name}" — ${outcome.imported_mods} mods; review before launch.`,
         'success',
@@ -885,9 +916,11 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
   const handleProviderPackInstall = async () => {
     setProviderPackInstalling(true);
     try {
+      const instanceName = await choosePackInstanceName(prompt, item.name);
+      if (instanceName === null) return;
       let outcome;
       try {
-        outcome = await installCatalogProviderPack(item.id, false);
+        outcome = await installCatalogProviderPack(item.id, false, instanceName);
       } catch (e) {
         if (!hasErrorCode(e, 'ERR_PROVIDER_PACK_CHANGED')) throw e;
         const proceed = await confirm({
@@ -897,7 +930,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           tone: 'danger',
         });
         if (!proceed) return;
-        outcome = await installCatalogProviderPack(item.id, true);
+        outcome = await installCatalogProviderPack(item.id, true, instanceName);
       }
       showToast(`Imported "${outcome.name}" — review before launch.`, 'success');
       onOpenInstanceEditor?.(outcome.instance_id);
@@ -949,7 +982,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
       const detail = await getInstanceDetail(selectedInstanceId).catch(() => null);
       setFlowInstalledEntry(findInstalledEntry(detail));
       if (isModrinthInstall) {
-        const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, item.content_type);
+        const vers = await listRawModrinthVersions(selectedInstanceId, item.modrinth_id!, installType);
         setModrinthCandidates(vers);
       } else {
         const page = await listModVersions(selectedInstanceId, itemId);
@@ -968,6 +1001,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
     sourceType: SourceType,
     sourceItemId: string,
     candidateVersion: string,
+    contentType?: string,
   ) => {
     const instance = instances.find((candidate) => candidate.instance_id === instanceId)
       ?? versionsTabInstances.find((candidate) => candidate.instance_id === instanceId);
@@ -987,6 +1021,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
           allowReplace: false,
           skipHealthScan: false,
           forceConflictResolution: {},
+          ...(contentType && contentType !== 'mod' ? { contentType } : {}),
         },
       },
     });
@@ -1001,6 +1036,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         'modrinth',
         item.modrinth_id,
         selectedModrinthCandidate.version_id,
+        installContentType(item.content_type, selectedModrinthCandidate.loaders),
       );
       return;
     }
@@ -1086,6 +1122,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
         'modrinth',
         item.modrinth_id,
         selectedVersion.version_id,
+        installContentType(item.content_type, selectedVersion.loaders),
       );
     }
   };
@@ -1218,7 +1255,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
               </h2>
               {modrinthProject && (
                 <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-primary-foreground">
-                  {item.content_type}
+                  {installType === item.content_type ? item.content_type : contentTypeLabel(installType)}
                 </span>
               )}
               {isRegistryBacked && (
@@ -1247,6 +1284,32 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                 </span>
               )}
             </div>
+            {availableFormats.length > 1 && (
+              <div
+                role="group"
+                aria-label="Install as"
+                className="mt-2 inline-flex overflow-hidden rounded-md border border-border text-xs"
+              >
+                {availableFormats.map((format) => (
+                  <button
+                    key={format}
+                    type="button"
+                    aria-pressed={activeFormat === format}
+                    onClick={() => {
+                      setFormatChoice(format);
+                      setSelectedModrinthCandidate(null);
+                    }}
+                    className={`px-3 py-1 font-medium ${
+                      activeFormat === format
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-card text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {format === 'datapack' ? 'Data pack' : 'Mod'}
+                  </button>
+                ))}
+              </div>
+            )}
             <p className="text-xs text-muted-foreground mt-1 break-all">
               {modrinthProject ? item.id : item.source_identifier}
             </p>
@@ -1825,7 +1888,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                           <a {...props} target="_blank" rel="noopener noreferrer" />
                         ),
                         img: ({ node, ...props }) => (
-                          <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+                          <HideOnErrorImage {...props} />
                         ),
                       }}
                     >
@@ -1857,7 +1920,7 @@ export function ModDetail({ itemId, initialInstanceId, onBack, onOpenInstanceEdi
                           <a {...props} target="_blank" rel="noopener noreferrer" />
                         ),
                         img: ({ node, ...props }) => (
-                          <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+                          <HideOnErrorImage {...props} />
                         ),
                       }}
                     >
@@ -2701,6 +2764,8 @@ function PackCreateDialog({
   const [packVersion, setPackVersion] = useState('');
   const [packPlan, setPackPlan] = useState<CuratedPackPlan | null>(null);
   const [planning, setPlanning] = useState(false);
+  // The Browse filter this dialog was opened under, read once.
+  const [browseFilter] = useState(() => peekParkedBrowseFilter());
   const selectedRelease = packMode === 'locked'
     ? packVersions.find((release) => release.version === packVersion) ?? null
     : null;
@@ -2713,12 +2778,15 @@ function PackCreateDialog({
         if (cancelled || releases.length === 0) return;
         setPackVersions(releases);
         setPackMode('locked');
-        setPackVersion(releases[0].version);
+        // Prefer the newest release for the Minecraft version/loader Browse was
+        // filtered to; otherwise the newest release (the mismatch is shown).
+        const { index } = pickDefaultPackRelease(releases, browseFilter);
+        setPackVersion(releases[Math.max(index, 0)].version);
       })
       // An older registry has no releases: the flexible recipe is all there is.
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [isModrinth, item.id]);
+  }, [isModrinth, item.id, browseFilter]);
 
   // A plan answers one exact question; changing the question discards it.
   useEffect(() => {
@@ -3003,6 +3071,15 @@ function PackCreateDialog({
                         Minecraft {selectedRelease.minecraft_version} · {selectedRelease.loader}{' '}
                         {selectedRelease.loader_version}
                       </p>
+                      {browseFilter?.mcVersion && selectedRelease.minecraft_version !== browseFilter.mcVersion && (
+                        <p role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+                          You were browsing Minecraft {browseFilter.mcVersion}, but this release is for
+                          Minecraft {selectedRelease.minecraft_version}.
+                          {packVersions.some((release) => release.minecraft_version === browseFilter.mcVersion)
+                            ? ' Pick another release above for the version you were browsing.'
+                            : ' This pack has no release for that version.'}
+                        </p>
+                      )}
                       {selectedRelease.changelog && (
                         <p className="whitespace-pre-line text-xs text-muted-foreground">{selectedRelease.changelog}</p>
                       )}

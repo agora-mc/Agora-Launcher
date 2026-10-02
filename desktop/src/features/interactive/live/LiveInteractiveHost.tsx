@@ -122,7 +122,19 @@ export function buildHostData(reads: LiveReads, contentIcons: import('./readAdap
         : err<import('../domain/models').VisualSnapshot[]>(),
     crashEvidence:
       reads.investigation.status === 'ok'
-        ? ok(reads.investigation.value ? crashToVisual(reads.investigation.value) : null)
+        ? ok(
+            // "No evidence" is not a crash, and neither is an ordinary
+            // latest.log: a never-launched (or cleanly exited) instance must
+            // not be told its game stopped. Only a crash report, JVM fatal log
+            // or the output of a launch that exited abnormally counts.
+            reads.investigation.value
+              && reads.investigation.value.evidence.sources.some((source) =>
+                source.meta.kind === 'CrashReport'
+                || source.meta.kind === 'JvmFatalErrorLog'
+                || source.meta.kind === 'LaunchOutput')
+              ? crashToVisual(reads.investigation.value)
+              : null,
+          )
         : err<import('../domain/models').VisualCrashEvidence | null>(),
     runtime:
       reads.detail.status === 'ok' && reads.detail.value && reads.memory.status === 'ok' && reads.javas.status === 'ok'
@@ -173,6 +185,8 @@ export interface LiveInteractiveHostProps {
   installActive?: boolean;
   /** Runs the real launch (the Standard launch flow) from the Play button. */
   onLaunch?: () => Promise<void> | void;
+  /** Stops the running game with the Standard view's kill command. */
+  onStop?: () => Promise<void> | void;
   /** Mirrors the Standard editor's complete launch gate, including local busy state. */
   launchAvailable?: boolean;
   onTrialSuspect?: (suspectName: string) => Promise<{ snapshotId: string | null; disabled: string[]; error?: string }>;
@@ -258,6 +272,7 @@ export function LiveInteractiveHost({
   processState = null,
   installActive = false,
   onLaunch,
+  onStop,
   launchAvailable = true,
   onTrialSuspect,
   onUndoTrial,
@@ -561,6 +576,7 @@ export function LiveInteractiveHost({
           onUseStandardView={onUseStandardView}
           onNavigateStandard={onNavigateStandard}
           onLaunch={onLaunch}
+          onStop={onStop}
           launchAvailable={launchAvailable}
           reducedMotion={reducedMotion}
           presentation={presentation}

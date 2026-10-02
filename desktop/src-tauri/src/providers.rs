@@ -120,9 +120,17 @@ pub async fn install_catalog_provider_pack(
     app: AppHandle,
     item_id: String,
     accept_changed: bool,
+    instance_name: Option<String>,
 ) -> LauncherResult<agora_core::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
-    install::install_catalog_pack(&ctx, &registry(&app)?, &item_id, accept_changed).await
+    install::install_catalog_pack(
+        &ctx,
+        &registry(&app)?,
+        &item_id,
+        accept_changed,
+        instance_name.as_deref(),
+    )
+    .await
 }
 
 /// Install a provider's modpack as a new instance.
@@ -131,7 +139,15 @@ pub async fn provider_install_pack(
     app: AppHandle,
     item_id: String,
     version_id: Option<String>,
+    instance_name: Option<String>,
 ) -> LauncherResult<agora_core::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
-    install::install_pack(&ctx, &registry(&app)?, &item_id, version_id.as_deref()).await
+    install::install_pack(
+        &ctx,
+        &registry(&app)?,
+        &item_id,
+        version_id.as_deref(),
+        instance_name.as_deref(),
+    )
+    .await
 }

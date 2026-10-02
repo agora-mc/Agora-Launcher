@@ -38,6 +38,7 @@ import {
   type InteractionPreference,
 } from '../features/interactive/live/presentationPreference';
 import { pinnedMotion } from '../components/presentation-capabilities';
+import { motionAfterPinEnds, rememberMotionBeforePin, takeMotionBeforePin } from '../components/motion-before-pin';
 import { useConfirm } from '@/components/ui/confirm';
 
 type Step = 'welcome' | 'appearance' | 'services' | 'launch' | 'java' | 'github' | 'registry' | 'import';
@@ -349,7 +350,13 @@ function AppearanceStep({
     // continuously, but onboarding runs before the user reaches Settings, so
     // applying it here makes the choice visible on the very next screen.
     const pin = pinnedMotion(value);
-    if (pin) setPreferences({ motion: pin });
+    if (pin) {
+      rememberMotionBeforePin(preferences.motion);
+      setPreferences({ motion: pin });
+    } else {
+      const saved = takeMotionBeforePin();
+      if (saved !== null) setPreferences({ motion: motionAfterPinEnds(preferences.motion, 'reduced', saved) });
+    }
   };
 
   return (

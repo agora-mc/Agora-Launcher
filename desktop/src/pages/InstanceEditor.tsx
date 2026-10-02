@@ -1,8 +1,10 @@
+import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useAdvancedMode } from '../components/AdvancedModeContext';
 import { PluginInstancePanels } from '../features/plugins/PluginSurfaces';
 import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
+import { takeRequestedEditorTab } from '../lib/editorDeepLink';
 import { InstallFlow } from '../components/InstallFlow';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { DependencyPrompt } from '../components/DependencyPrompt';
@@ -39,6 +41,7 @@ import {
   setCustomInstanceIcon,
   setCustomModIcon,
   importInstance,
+  previewImportName,
   exportLockfile,
   verifyLockfile,
   repairLockfile,
@@ -235,6 +238,18 @@ function storedGcMode(value: string | undefined): GcMode {
   }
 }
 
+function javaSettingsKey(row: InstanceDetail['row']): string {
+  return JSON.stringify([
+    row.java_path, row.jvm_custom_args, row.jvm_memory_mb, row.jvm_memory_mode,
+    row.jvm_gc, row.jvm_always_pre_touch, row.java_incompatible_override,
+  ]);
+}
+
+function wrapperCommandOf(detail: InstanceDetail): string {
+  const value = detail.manifest?.user_preferences?.agora_wrapper_command;
+  return typeof value === 'string' ? value : '';
+}
+
 function previewJavaMajor(version: string | undefined): number {
   const parts = (version ?? '').split('.');
   const first = Number(parts[0]);
@@ -248,6 +263,8 @@ function previewJavaMajor(version: string | undefined): number {
 
 export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
+  const detailRef = useRef<InstanceDetail | null>(null);
+  detailRef.current = detail;
   const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
   const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
   const [contentAuthors, setContentAuthors] = useState<Record<string, string>>({});
@@ -270,12 +287,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const { confirm, prompt } = useConfirm();
 
   // Sub-sidebar active tab
-  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>('mods');
+  const [activeTab, setActiveTab] = useState<'mods' | 'resourcepacks' | 'shaders' | 'datapacks' | 'snapshots' | 'loadout-profiles' | 'templates' | 'migrate' | 'import' | 'export' | 'console' | 'java-args'>(() => (takeRequestedEditorTab() === 'console' ? 'console' : 'mods'));
 
   // Snapshots state (Phase 6)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [snapshotLabelInput, setSnapshotLabelInput] = useState('');
   const [snapshotBusy, setSnapshotBusy] = useState<string | null>(null);
+  // Loading a diff is its own operation; it must not make Restore read "Restoring".
+  const [snapshotDiffBusy, setSnapshotDiffBusy] = useState<string | null>(null);
   const [confirmDeleteSnapshot, setConfirmDeleteSnapshot] = useState<string | null>(null);
   const [snapshotDiff, setSnapshotDiff] = useState<{ snapshotId: string; diff: SnapshotDiff } | null>(null);
 
@@ -287,6 +306,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   // Import state (Phase 6)
   const [importBusy, setImportBusy] = useState(false);
+  const [importPending, setImportPending] = useState<{
+    path: string;
+    name: string;
+    nameTaken: boolean;
+    originalName: string;
+  } | null>(null);
   const [launcherImportOpen, setLauncherImportOpen] = useState(false);
   const [lockfileText, setLockfileText] = useState('');
   const [lockfileBusy, setLockfileBusy] = useState<'export' | 'verify' | 'repair' | 'clone' | 'copy' | null>(null);
@@ -357,6 +382,20 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     return () => document.removeEventListener('mousedown', handler);
   }, [packDropdownOpen]);
 
+  /** Copy the persisted Java/launch settings into the Java & Args tab's editable state. */
+  const seedJavaSettings = (result: InstanceDetail | null) => {
+    setInstanceJavaPath(result?.row?.java_path ?? '');
+    setInstanceJavaArgs(result?.row?.jvm_custom_args ?? '');
+    setWrapperCommand(typeof result?.manifest?.user_preferences?.agora_wrapper_command === 'string'
+      ? (result.manifest.user_preferences.agora_wrapper_command as string)
+      : '');
+    setInstanceJvmMemory(result?.row?.jvm_memory_mb ?? 4096);
+    setInstanceMemoryMode(result?.row?.jvm_memory_mode ?? 'manual');
+    setInstanceGcMode(storedGcMode(result?.row?.jvm_gc));
+    setInstanceAlwaysPreTouch(result?.row?.jvm_always_pre_touch ?? true);
+    setInstanceJavaAllowOverride(result?.row?.java_incompatible_override ?? false);
+  };
+
   useEffect(() => {
     setContentRowsLoaded(false);
     setContentAuthors({});
@@ -377,16 +416,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           } else {
             setInstanceCustomIcon(null);
           }
-          setInstanceJavaPath(result?.row?.java_path ?? '');
-          setInstanceJavaArgs(result?.row?.jvm_custom_args ?? '');
-          setWrapperCommand(typeof result?.manifest?.user_preferences?.agora_wrapper_command === 'string'
-            ? (result.manifest.user_preferences.agora_wrapper_command as string)
-            : '');
-          setInstanceJvmMemory(result?.row?.jvm_memory_mb ?? 4096);
-          setInstanceMemoryMode(result?.row?.jvm_memory_mode ?? 'manual');
-          setInstanceGcMode(storedGcMode(result?.row?.jvm_gc));
-          setInstanceAlwaysPreTouch(result?.row?.jvm_always_pre_touch ?? true);
-          setInstanceJavaAllowOverride(result?.row?.java_incompatible_override ?? false);
+          seedJavaSettings(result);
           if (!result) setError('Instance not found.');
         }
       } catch (e) {
@@ -469,12 +499,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
   useEffect(() => {
     if (packInstallRevision === 0) return;
-    void getInstanceDetail(instanceId)
-      .then((result) => {
-        setDetail(result);
-        return refreshContent();
-      })
-      .catch((cause) => setError(formatError(cause)));
+    void reloadInstance().catch((cause) => setError(formatError(cause)));
   }, [instanceId, packInstallRevision]);
 
   // Crash Doctor's guided bisect renames JARs from a global overlay, outside
@@ -485,12 +510,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     const onContentChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ instanceId?: string }>).detail;
       if (detail?.instanceId && detail.instanceId !== instanceId) return;
-      void getInstanceDetail(instanceId)
-        .then((result) => {
-          setDetail(result);
-          return refreshContent();
-        })
-        .catch((cause) => setError(formatError(cause)));
+      void reloadInstance().catch((cause) => setError(formatError(cause)));
     };
     window.addEventListener('agora-instance-content-changed', onContentChanged);
     return () => window.removeEventListener('agora-instance-content-changed', onContentChanged);
@@ -689,7 +709,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         tone: 'danger',
       })) {
         await restoreSnapshot(instanceId, imported.id);
-        setSnapshots(await listSnapshots(instanceId));
+        await reloadInstance();
         setStatus(`Backup imported and restored. The previous state is saved as an undo snapshot.`);
       } else {
         setStatus('Backup imported as a restorable snapshot. Nothing in the instance changed.');
@@ -851,10 +871,10 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         else await disableInstanceMod(instanceId, target.filename);
       }
     } catch (error) {
-      await refreshDetail().catch(() => undefined);
+      await reloadInstance().catch(() => undefined);
       throw error;
     }
-    await refreshDetail();
+    await reloadInstance();
     return true;
   };
 
@@ -873,7 +893,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       for (const filename of filenames) {
         await disableInstanceMod(instanceId, filename);
       }
-      await refreshDetail();
+      await reloadInstance();
       setDisablePlanTarget(null);
     } catch (error) {
       setError(formatError(error));
@@ -921,7 +941,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       if (!sourcePath) return;
       const icon = await setCustomInstanceIcon(instanceId, sourcePath);
       setInstanceCustomIcon(icon);
-      await refreshDetail();
+      await reloadInstance();
     } catch (e) {
       setError(formatError(e));
     }
@@ -935,7 +955,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       if (!sourcePath) return;
       const icon = await setCustomModIcon(instanceId, mod.filename, sourcePath);
       setModCustomIcons((current) => ({ ...current, [installedModKey(mod)]: icon }));
-      await refreshDetail();
+      await reloadInstance();
     } catch (e) {
       setError(formatError(e));
     }
@@ -1014,14 +1034,30 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setPackIdInput('');
     setError(null);
     // Reload manifest
-    getInstanceDetail(instanceId).then((result) => setDetail(result));
+    void reloadInstance().catch((cause) => setError(formatError(cause)));
   };
 
-  // Refresh detail (row + manifest) after lock/unlock/revert.
-  const refreshDetail = async () => {
+  // The single refresh every mutating operation in the editor calls. It
+  // re-reads everything the editor shows: header/manifest, installed content
+  // for every type, the Java & launch settings the Java tab edits, snapshots
+  // and loadout profiles, so no tab is left on a pre-operation copy.
+  const reloadInstance = async () => {
+    const previous = detailRef.current;
     const result = await getInstanceDetail(instanceId);
     setDetail(result);
-    await refreshContent();
+    // The Java tab edits a local copy of these fields. Re-seed it when the
+    // persisted values changed underneath it (template apply, snapshot restore,
+    // migration) but keep unsaved edits when they did not.
+    if (!previous || !result
+      || javaSettingsKey(previous.row) !== javaSettingsKey(result.row)
+      || wrapperCommandOf(previous) !== wrapperCommandOf(result)) {
+      seedJavaSettings(result);
+    }
+    await Promise.all([
+      refreshContent(),
+      listSnapshots(instanceId).then(setSnapshots).catch(() => undefined),
+      listLoadoutProfiles(instanceId).then(setProfiles).catch(() => undefined),
+    ]);
   };
 
   const handleUnlock = async () => {
@@ -1044,7 +1080,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     })) return;
     try {
       await unlockInstance(instanceId);
-      await refreshDetail();
+      await reloadInstance();
     } catch (e) {
       setError(formatError(e));
     }
@@ -1054,7 +1090,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setError(null);
     try {
       await lockInstance(instanceId);
-      await refreshDetail();
+      await reloadInstance();
     } catch (e) {
       setError(formatError(e));
     }
@@ -1070,7 +1106,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setError(null);
     try {
       await renameInstance(instanceId, newName.trim());
-      await refreshDetail();
+      await reloadInstance();
       setStatus(`Renamed to "${newName.trim()}".`);
     } catch (e) {
       setError(formatError(e));
@@ -1089,7 +1125,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setError(null);
     try {
       await revertInstance(instanceId);
-      await refreshDetail();
+      await reloadInstance();
     } catch (e) {
       setError(formatError(e));
     }
@@ -1117,7 +1153,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     try {
       await changeLoaderVersion(instanceId, version, indeterminate);
       setLoaderChooserOpen(false);
-      await refreshDetail();
+      await reloadInstance();
     } catch (e) {
       setLoaderSwitchError(formatError(e));
     } finally {
@@ -1130,6 +1166,22 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setStatus(null);
     const path = await pickOpenFile('Import Pack', ['mrpack', 'agora-pack.json', 'json']);
     if (path === null) return;
+    if (path.toLowerCase().endsWith('.mrpack')) {
+      // Same name review as the Import tab, so a name clash can be renamed.
+      try {
+        const preview = await previewImportName(path);
+        setImportPending({
+          path,
+          name: preview.suggested_name,
+          nameTaken: preview.name_taken,
+          originalName: preview.default_name,
+        });
+        setActiveTab('import');
+      } catch (e) {
+        setError(formatError(e));
+      }
+      return;
+    }
     startPackFile(path, path.split(/[\\/]/).pop() ?? 'Pack import');
     setStatus('Pack import started in the background.');
   };
@@ -1283,7 +1335,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     try {
       const outcome = await repairLockfile(instanceId, text);
       if (outcome.type === 'success') {
-        await refreshDetail();
+        await reloadInstance();
         const report = await verifyLockfile(instanceId, text);
         setLockfileReport(report);
         setLockfileNotice(
@@ -1466,6 +1518,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     try {
       await restoreSnapshot(instanceId, snapshotId);
       try { await deleteSnapshot(instanceId, snapshotId); } catch { /* best effort */ }
+      void reloadInstance().catch(() => undefined);
     } catch (e) {
       setError(formatError(e));
       throw e;
@@ -1587,6 +1640,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           processState={processState}
           installActive={packInstall?.status === 'running'}
           launchAvailable={!playDisabled}
+          onStop={onKillProcess && processRunning ? () => onKillProcess() : undefined}
           onLaunch={async () => {
             if (!onLaunch || playDisabled) return;
             setPlayBusy(true);
@@ -1812,7 +1866,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 disabled={recoveryBlocked}
                 className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium"
               >
-                📦 Install all mods from pack
+                📦 Add mods from a pack…
               </button>
               <button
                 onClick={handleImportPack}
@@ -1874,6 +1928,14 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
           {packInstall && <PackInstallProgressBar task={packInstall} />}
 
+          {(processLaunching || processRunning) && processState?.launchProgress && (
+            <LaunchProgressPanel
+              className="mt-4"
+              progress={processState.launchProgress}
+              onOpenConsole={() => setActiveTab('console')}
+            />
+          )}
+
           {detail?.snapshot_readiness === 'pending' && (
             <div className="mt-4 rounded-lg border border-amber-500 bg-amber-500/10 p-3 text-sm" role="status">
               <p className="font-medium text-amber-700 dark:text-amber-300">Finalizing recovery snapshot…</p>
@@ -1891,7 +1953,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 onClick={async () => {
                   try {
                     await createSnapshot(instanceId, 'Initial import retry');
-                    setDetail(await getInstanceDetail(instanceId));
+                    await reloadInstance();
                     setStatus('Recovery snapshot ready.');
                   } catch (cause) {
                     setError(formatError(cause));
@@ -2181,6 +2243,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             </div>
           </div>
 
+          <p className="text-xs text-muted-foreground">
+            Snapshots without a badge are yours and are kept (up to 10), as are those badged Migration. Those badged Automatic, taken around launches, installs and templates, rotate so only the latest is kept.
+          </p>
           {snapshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No snapshots yet. Create one to save a restore point.
@@ -2192,6 +2257,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <div className="min-w-0 flex-1">
                     <span className="font-medium flex items-center gap-2">
                       <span>{snap.label}</span>
+                      {snap.effective_origin === 'automatic' && (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground" title="Taken by Agora; rotates, so only the latest is kept">Automatic</span>
+                      )}
+                      {snap.effective_origin === 'migration' && (
+                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-700 dark:text-sky-300" title="Recovery point from a version move; kept">Migration</span>
+                      )}
                       {snap.is_current_lkg && (
                         <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] text-green-700 dark:text-green-300">Current LKG</span>
                       )}
@@ -2209,7 +2280,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                   <div className="flex gap-2 ml-3">
                     <button
                       onClick={async () => {
-                        setSnapshotBusy(snap.id);
+                        setSnapshotDiffBusy(snap.id);
                         setError(null);
                         try {
                           const diff = await detectDrift(instanceId, snap.id);
@@ -2217,13 +2288,13 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         } catch (e) {
                           setError(formatError(e));
                         } finally {
-                          setSnapshotBusy(null);
+                          setSnapshotDiffBusy(null);
                         }
                       }}
-                       disabled={snapshotBusy === snap.id}
+                       disabled={snapshotDiffBusy === snap.id || snapshotBusy === snap.id}
                       className="text-xs text-primary hover:underline disabled:opacity-50"
                     >
-                      Show diff
+                      {snapshotDiffBusy === snap.id ? 'Loading diff…' : 'Show diff'}
                     </button>
                     <button
                       onClick={async () => {
@@ -2231,9 +2302,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         setError(null);
                         try {
                           await restoreSnapshot(instanceId, snap.id);
-                          const result = await listSnapshots(instanceId);
-                          setSnapshots(result);
-                          setDetail(await getInstanceDetail(instanceId));
+                          await reloadInstance();
                           setStatus('Snapshot restored.');
                         } catch (e) {
                           setError(formatError(e));
@@ -2352,7 +2421,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           instanceId={instanceId}
           row={detail?.row}
           disabled={recoveryBlocked}
-          onApplied={() => { void refreshDetail(); }}
+          onApplied={() => { void reloadInstance(); }}
         />
       )}
 
@@ -2410,9 +2479,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         setError(null);
                         try {
                           await applyLoadoutProfile(instanceId, prof.name);
-                          const result = await listLoadoutProfiles(instanceId);
-                          setProfiles(result);
-                          setDetail(await getInstanceDetail(instanceId));
+                          await reloadInstance();
                           setStatus(`Profile "${prof.name}" applied.`);
                         } catch (e) {
                           setError(formatError(e));
@@ -2481,6 +2548,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             instanceId={instanceId}
             currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
             loader={detail?.row.loader}
+            onMigrated={() => { void reloadInstance().catch((cause) => setError(formatError(cause))); }}
           />
         </div>
       )}
@@ -2498,30 +2566,93 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           >
             Import from Installed Launchers
           </button>
-          <button
-            onClick={async () => {
-              setImportBusy(true);
-              setError(null);
-              try {
-                const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
-                if (path === null) { setImportBusy(false); return; }
-                const result = await importInstance(path, false);
-                if (onOpenInstanceEditor) {
-                  onOpenInstanceEditor(result.instance_id);
-                } else {
-                  setStatus(`Imported "${result.name}" (MC ${result.minecraft_version}).`);
+          {importPending ? (
+            <div className="rounded-lg border border-border p-3 space-y-3">
+              <label className="block text-xs font-medium" htmlFor="import-instance-name">
+                Instance name
+              </label>
+              <input
+                id="import-instance-name"
+                value={importPending.name}
+                onChange={(e) =>
+                  setImportPending({ ...importPending, name: e.target.value })
                 }
-              } catch (e) {
-                setError(formatError(e));
-              } finally {
-                setImportBusy(false);
-              }
-            }}
-            disabled={importBusy}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 w-full"
-          >
-            {importBusy ? 'Importing…' : 'Select File & Import'}
-          </button>
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              />
+              {importPending.nameTaken && (
+                <p className="text-xs text-muted-foreground">
+                  An instance named &quot;{importPending.originalName}&quot; already exists, so
+                  this will be imported as a separate copy. The existing instance is not changed.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    setImportBusy(true);
+                    setError(null);
+                    try {
+                      const result = await importInstance(
+                        importPending.path,
+                        false,
+                        importPending.name.trim(),
+                      );
+                      setImportPending(null);
+                      if (onOpenInstanceEditor) {
+                        onOpenInstanceEditor(result.instance_id);
+                      } else {
+                        setStatus(`Imported "${result.name}" (MC ${result.minecraft_version}).`);
+                      }
+                    } catch (e) {
+                      setError(formatError(e));
+                    } finally {
+                      setImportBusy(false);
+                    }
+                  }}
+                  disabled={importBusy || importPending.name.trim() === ''}
+                  className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {importBusy
+                    ? 'Importing…'
+                    : importPending.nameTaken
+                      ? 'Import as a copy'
+                      : 'Import'}
+                </button>
+                <button
+                  onClick={() => setImportPending(null)}
+                  disabled={importBusy}
+                  className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={async () => {
+                setImportBusy(true);
+                setError(null);
+                try {
+                  const path = await pickOpenFile('Import Instance', ['mrpack', 'zip']);
+                  if (path === null) return;
+                  const preview = await previewImportName(path);
+                  setImportPending({
+                    path,
+                    name: preview.suggested_name,
+                    nameTaken: preview.name_taken,
+                    originalName: preview.default_name,
+                  });
+                } catch (e) {
+                  setError(formatError(e));
+                } finally {
+                  setImportBusy(false);
+                }
+              }}
+              disabled={importBusy}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 w-full"
+            >
+              {importBusy ? 'Reading…' : 'Select File & Import'}
+            </button>
+          )}
           <p className="text-xs text-muted-foreground">
             Agora always copies imported data. Source instances and saves are never linked or modified.
           </p>
@@ -3012,9 +3143,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     );
                     await setInstanceWrapperCommand(instanceId, wrapperCommand.trim());
                     setStatus('Java settings saved.');
-                    // Refresh to update the displayed detail
-                    const fresh = await getInstanceDetail(instanceId);
-                    setDetail(fresh);
+                    await reloadInstance();
                   } catch (e) {
                     setInstanceJavaInspectError(formatError(e));
                   } finally {
@@ -3043,8 +3172,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         instanceMemoryMode,
                      );
                     setStatus('Java settings cleared.');
-                    const fresh = await getInstanceDetail(instanceId);
-                    setDetail(fresh);
+                    await reloadInstance();
                   } catch (e) {
                     setInstanceJavaInspectError(formatError(e));
                   }
@@ -3152,12 +3280,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           }}
            onClose={() => {
               setCanonicalOperation(null);
-              void getInstanceDetail(instanceId)
-                .then((result) => {
-                  setDetail(result);
-                  return refreshContent();
-                })
-                .catch((cause) => setError(formatError(cause)));
+              void reloadInstance().catch((cause) => setError(formatError(cause)));
             }}
         />
       )}
