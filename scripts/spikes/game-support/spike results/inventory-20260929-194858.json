@@ -1,0 +1,2393 @@
+{
+    "spikeVersion":  1,
+    "mode":  "Inventory",
+    "startedUtc":  "2026-09-30T01:48:53.5273690Z",
+    "system":  {
+                   "os":  "Microsoft Windows 11 Pro 10.0.26200",
+                   "powershell":  "5.1.26100.9444",
+                   "elevated":  false,
+                   "developerMode":  null,
+                   "longPathsEnabled":  1,
+                   "antivirus":  [
+                                     "Windows Defender"
+                                 ],
+                   "projectedFsFeature":  "unknown (needs an elevated shell to query)",
+                   "documentsFolder":  "C:\\Users\\<user>\\Documents",
+                   "localAppData":  "C:\\Users\\<user>\\AppData\\Local",
+                   "volumes":  [
+                                   {
+                                       "drive":  "C:\\",
+                                       "fileSystem":  "NTFS",
+                                       "type":  "Fixed",
+                                       "sizeGB":  1862,
+                                       "freeGB":  638
+                                   },
+                                   {
+                                       "drive":  "D:\\",
+                                       "fileSystem":  "NTFS",
+                                       "type":  "Fixed",
+                                       "sizeGB":  1863,
+                                       "freeGB":  526
+                                   }
+                               ]
+               },
+    "games":  [
+                  {
+                      "store":  "steam",
+                      "appId":  "1086940",
+                      "name":  "Baldur\u0027s Gate 3",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Baldurs Gate 3",
+                      "installed":  true,
+                      "buildId":  "24532579",
+                      "sizeOnDiskGB":  144.67,
+                      "lastUpdatedUtc":  "2026-08-18T18:24:46.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1203620",
+                      "name":  "Enshrouded",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Enshrouded",
+                      "installed":  true,
+                      "buildId":  "23966345",
+                      "sizeOnDiskGB":  41.91,
+                      "lastUpdatedUtc":  "2026-07-02T19:28:10.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1244460",
+                      "name":  "Jurassic World Evolution 2",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Jurassic World Evolution 2",
+                      "installed":  true,
+                      "buildId":  "18857191",
+                      "sizeOnDiskGB":  10.77,
+                      "lastUpdatedUtc":  "2025-07-09T21:32:56.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1260590",
+                      "name":  "Hadean Tactics",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Hadean Tactics",
+                      "installed":  true,
+                      "buildId":  "25371729",
+                      "sizeOnDiskGB":  1.83,
+                      "lastUpdatedUtc":  "2026-09-19T17:55:05.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-mono"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1604030",
+                      "name":  "V Rising",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\VRising",
+                      "installed":  true,
+                      "buildId":  "23521359",
+                      "sizeOnDiskGB":  17.48,
+                      "lastUpdatedUtc":  "2026-06-10T08:49:57.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "218230",
+                      "name":  "PlanetSide 2",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\PlanetSide 2",
+                      "installed":  true,
+                      "buildId":  "25357842",
+                      "sizeOnDiskGB":  20.16,
+                      "lastUpdatedUtc":  "2026-09-27T18:49:07.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "2379780",
+                      "name":  "Balatro",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Balatro",
+                      "installed":  true,
+                      "buildId":  "17459173",
+                      "sizeOnDiskGB":  0.06,
+                      "lastUpdatedUtc":  "2025-12-02T02:32:40.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "love2d"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "281990",
+                      "name":  "Stellaris",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Stellaris",
+                      "installed":  true,
+                      "buildId":  "25505771",
+                      "sizeOnDiskGB":  28.84,
+                      "lastUpdatedUtc":  "2026-09-24T15:22:03.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "paradox"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "294100",
+                      "name":  "RimWorld",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\RimWorld",
+                      "installed":  true,
+                      "buildId":  "23969874",
+                      "sizeOnDiskGB":  0.6,
+                      "lastUpdatedUtc":  "2026-06-30T17:41:13.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-mono"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "346010",
+                      "name":  "Besiege",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Besiege",
+                      "installed":  true,
+                      "buildId":  "25434581",
+                      "sizeOnDiskGB":  6.51,
+                      "lastUpdatedUtc":  "2026-09-25T16:08:23.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-mono"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "365670",
+                      "name":  "Blender",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Blender",
+                      "installed":  true,
+                      "buildId":  "25315940",
+                      "sizeOnDiskGB":  0.88,
+                      "lastUpdatedUtc":  "2026-09-24T15:22:00.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "526870",
+                      "name":  "Satisfactory",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Satisfactory",
+                      "installed":  true,
+                      "buildId":  "24656030",
+                      "sizeOnDiskGB":  28.12,
+                      "lastUpdatedUtc":  "2026-08-12T18:42:41.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: FactoryGame"
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "646570",
+                      "name":  "Slay the Spire",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\SlayTheSpire",
+                      "installed":  true,
+                      "buildId":  "10180494",
+                      "sizeOnDiskGB":  0.5,
+                      "lastUpdatedUtc":  "2025-11-08T02:54:22.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "java"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "960090",
+                      "name":  "Bloons TD 6",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\BloonsTD6",
+                      "installed":  true,
+                      "buildId":  "24829026",
+                      "sizeOnDiskGB":  2.61,
+                      "lastUpdatedUtc":  "2026-08-21T00:59:42.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "993090",
+                      "name":  "Lossless Scaling",
+                      "installDir":  "c:\\program files (x86)\\steam\\steamapps\\common\\Lossless Scaling",
+                      "installed":  true,
+                      "buildId":  "19655272",
+                      "sizeOnDiskGB":  0.17,
+                      "lastUpdatedUtc":  "2025-08-23T00:45:21.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "c:\\program files (x86)\\steam",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "c:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1088850",
+                      "name":  "Marvel\u0027s Guardians of the Galaxy",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Marvel\u0027s Guardians of the Galaxy",
+                      "installed":  true,
+                      "buildId":  "10413039",
+                      "sizeOnDiskGB":  75.6,
+                      "lastUpdatedUtc":  "2026-03-30T05:38:28.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1265820",
+                      "name":  "Fights in Tight Spaces",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Fights in Tight Spaces",
+                      "installed":  true,
+                      "buildId":  "20785972",
+                      "sizeOnDiskGB":  2.2,
+                      "lastUpdatedUtc":  "2026-05-19T02:50:26.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "1623730",
+                      "name":  "Palworld",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Palworld",
+                      "installed":  true,
+                      "buildId":  "25246127",
+                      "sizeOnDiskGB":  37.16,
+                      "lastUpdatedUtc":  "2026-09-22T18:06:49.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+                                                          "pak-mods(~mods)",
+                                                          "ue4ss-logicmods"
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: Pal"
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "2075800",
+                      "name":  "STAR WARS Zero Company™",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Star Wars Zero Company",
+                      "installed":  true,
+                      "buildId":  "25513890",
+                      "sizeOnDiskGB":  39.67,
+                      "lastUpdatedUtc":  "2026-09-30T01:29:28.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: SWZeroCompany"
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "220200",
+                      "name":  "Kerbal Space Program",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Kerbal Space Program",
+                      "installed":  true,
+                      "buildId":  "10132464",
+                      "sizeOnDiskGB":  5.51,
+                      "lastUpdatedUtc":  "2026-05-15T23:19:26.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-mono"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "GameData",
+                                                             "Plugins"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "2400510",
+                      "name":  "Dungeons \u0026 Degenerate Gamblers",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Dungeons \u0026 Degenerate Gamblers",
+                      "installed":  true,
+                      "buildId":  "25426714",
+                      "sizeOnDiskGB":  0.68,
+                      "lastUpdatedUtc":  "2026-09-30T01:29:30.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "godot"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "261550",
+                      "name":  "Mount \u0026 Blade II: Bannerlord",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Mount \u0026 Blade II Bannerlord",
+                      "installed":  true,
+                      "buildId":  "24573425",
+                      "sizeOnDiskGB":  88.89,
+                      "lastUpdatedUtc":  "2026-08-23T22:21:01.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "bannerlord"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "Modules"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "4704690",
+                      "name":  "MECCHA CHAMELEON",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\MECCHA CHAMELEON",
+                      "installed":  true,
+                      "buildId":  "25293176",
+                      "sizeOnDiskGB":  3.27,
+                      "lastUpdatedUtc":  "2026-09-25T16:08:29.0000000Z",
+                      "autoUpdateBehavior":  "Always keep this game updated",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: Chameleon"
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "steam",
+                      "appId":  "489830",
+                      "name":  "The Elder Scrolls V: Skyrim Special Edition",
+                      "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Skyrim Special Edition",
+                      "installed":  true,
+                      "buildId":  "24914197",
+                      "sizeOnDiskGB":  14.99,
+                      "lastUpdatedUtc":  "2026-08-28T18:28:26.0000000Z",
+                      "autoUpdateBehavior":  "Only update this game when I launch it",
+                      "library":  "D:\\SteamLibrary",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "creation"
+                                                     ],
+                                          "loaders":  [
+                                                          "skse64"
+                                                      ],
+                                          "modFolders":  [
+                                                             "Data",
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "gog",
+                      "appId":  "1256837418",
+                      "name":  "Cyberpunk 2077: Phantom Liberty",
+                      "installDir":  "D:\\GOG Games\\Cyberpunk 2077",
+                      "installed":  true,
+                      "version":  "2.31a",
+                      "buildId":  "58989493373906337",
+                      "exe":  null,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "redengine4"
+                                                     ],
+                                          "loaders":  [
+                                                          "cyber-engine-tweaks",
+                                                          "red4ext",
+                                                          "redscript-folder"
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "gog",
+                      "appId":  "1423049311",
+                      "name":  "Cyberpunk 2077",
+                      "installDir":  "D:\\GOG Games\\Cyberpunk 2077",
+                      "installed":  true,
+                      "version":  "2.31a",
+                      "buildId":  "58989493373906337",
+                      "exe":  "D:\\GOG Games\\Cyberpunk 2077\\REDprelauncher.exe",
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "redengine4"
+                                                     ],
+                                          "loaders":  [
+                                                          "cyber-engine-tweaks",
+                                                          "red4ext",
+                                                          "redscript-folder"
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "gog",
+                      "appId":  "1495134320",
+                      "name":  "The Witcher 3: Wild Hunt - Game of the Year Edition",
+                      "installDir":  "D:\\GOG Games\\The Witcher 3 Wild Hunt GOTY",
+                      "installed":  false,
+                      "version":  "4.04a_REDkit_Update_2",
+                      "buildId":  "57606063263997132",
+                      "exe":  "D:\\GOG Games\\The Witcher 3 Wild Hunt GOTY\\REDprelauncher.exe",
+                      "fingerprint":  null,
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "gog",
+                      "appId":  "1597316373",
+                      "name":  "Cyberpunk 2077 REDmod",
+                      "installDir":  "D:\\GOG Games\\Cyberpunk 2077",
+                      "installed":  true,
+                      "version":  "2.31a",
+                      "buildId":  "58989493373906337",
+                      "exe":  null,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "redengine4"
+                                                     ],
+                                          "loaders":  [
+                                                          "cyber-engine-tweaks",
+                                                          "red4ext",
+                                                          "redscript-folder"
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "EelSoundPack",
+                      "name":  "HD Sound Pack",
+                      "installDir":  "D:\\Epic_games\\KingdomComeDeliverance",
+                      "installed":  true,
+                      "version":  "1.9.8",
+                      "exe":  "",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "EelTexturePack",
+                      "name":  "HD Texture Pack",
+                      "installDir":  "D:\\Epic_games\\KingdomComeDeliverance",
+                      "installed":  true,
+                      "version":  "1.9.4.404-502",
+                      "exe":  "",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "UE_5.6",
+                      "name":  "Unreal Engine",
+                      "installDir":  "C:\\Program Files\\Epic Games\\UE_5.6",
+                      "installed":  true,
+                      "version":  "5.6.1-44394996+++UE5+Release-5.6-Windows",
+                      "exe":  "Engine/Binaries/Win64/UnrealEditor.exe",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "EelVoiceEnglish",
+                      "name":  "HD Voice Pack - English",
+                      "installDir":  "D:\\Epic_games\\KingdomComeDeliverance",
+                      "installed":  true,
+                      "version":  "1.9.4.404-502",
+                      "exe":  "",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "Eel",
+                      "name":  "Kingdom Come Deliverance",
+                      "installDir":  "D:\\Epic_games\\KingdomComeDeliverance",
+                      "installed":  true,
+                      "version":  "1.9.8b",
+                      "exe":  "bin/Win64MasterMasterEpicPGO/KingdomCome.exe",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "mods"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "D:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "FabPlugin_5.6",
+                      "name":  "Fab UE Plugin",
+                      "installDir":  "C:\\Program Files\\Epic Games\\UE_5.6",
+                      "installed":  true,
+                      "version":  "5.6.0-43139311+++UE5+Release-5.6-0.0.9-53082900-Windows",
+                      "exe":  "",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "epic",
+                      "appId":  "QuixelBridge_5.6",
+                      "name":  "Quixel Bridge",
+                      "installDir":  "C:\\Program Files\\Epic Games\\UE_5.6",
+                      "installed":  true,
+                      "version":  "5.6.0-43139311+++UE5+Release-5.6-2025.0.1-43139311-Windows",
+                      "exe":  "",
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Abiotic Factor",
+                      "installDir":  "C:\\XboxGames\\Abiotic Factor\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "AbioticFactor.exe",
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: AbioticFactor"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Brotato",
+                      "installDir":  "C:\\XboxGames\\Brotato\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "Brotato.exe",
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "paradox"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- All Under Heaven",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- All Under Heaven\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Couture of The Capets",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Couture of The Capets\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Elegance of the Empire",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Elegance of the Empire\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Fashion of the Abbasid Court",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Fashion of the Abbasid Court\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Flavor Pack 2",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Flavor Pack 2\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Garments of the Holy Roman Empire",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Garments of the Holy Roman Empire\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Khans of the Steppe",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Khans of the Steppe\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Legacy of Persia",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Legacy of Persia\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Legends of the Dead",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Legends of the Dead\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Roads to Power",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Roads to Power\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Royal Court",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Royal Court\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- The Northern Lords",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- The Northern Lords\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Tours and Tournaments",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Tours and Tournaments\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Wandering Nobles",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Wandering Nobles\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Crusader Kings III- Wards and Wardens",
+                      "installDir":  "C:\\XboxGames\\Crusader Kings III- Wards and Wardens\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "CrusaderKingsIII.BoosterPack1",
+                      "installDir":  "C:\\XboxGames\\CrusaderKingsIII.BoosterPack1\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Deep Rock Galactic",
+                      "installDir":  "C:\\XboxGames\\Deep Rock Galactic\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: FSD"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Deep Rock Galactic - Supporter II Upgrade",
+                      "installDir":  "C:\\XboxGames\\Deep Rock Galactic - Supporter II Upgrade\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Deep Rock Galactic- Survivor",
+                      "installDir":  "C:\\XboxGames\\Deep Rock Galactic- Survivor\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "DRG Survivor.exe",
+                                                  "gamelaunchhelper.exe",
+                                                  "UnityCrashHandler64.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "GameSave",
+                      "installDir":  "C:\\XboxGames\\GameSave\\Content",
+                      "installed":  false,
+                      "contentReadable":  false,
+                      "contentWritable":  false,
+                      "microsoftGameConfig":  false,
+                      "topLevelExecutables":  [
+
+                                              ],
+                      "fingerprint":  null,
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Grounded",
+                      "installDir":  "C:\\XboxGames\\Grounded\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: Maine"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Minecraft Dungeons",
+                      "installDir":  "C:\\XboxGames\\Minecraft Dungeons\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "Dungeons.exe",
+                                                  "gamelaunchhelper.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: Dungeons"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Minecraft Launcher",
+                      "installDir":  "C:\\XboxGames\\Minecraft Launcher\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe",
+                                                  "Minecraft.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox",
+                      "name":  "Vampire Survivors",
+                      "installDir":  "C:\\XboxGames\\Vampire Survivors\\Content",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "microsoftGameConfig":  true,
+                      "topLevelExecutables":  [
+                                                  "gamelaunchhelper.exe",
+                                                  "UnityCrashHandler64.exe",
+                                                  "VampireSurvivors.exe"
+                                              ],
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "Microsoft.Lovika",
+                      "version":  "1.17.0.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\Microsoft.Lovika_1.17.0.0_x64__8wekyb3d8bbwe",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: Dungeons"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "CoffeeStainStudios.DeepRockGalactic-SupporterIIUpg",
+                      "version":  "1.0.0.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\CoffeeStainStudios.DeepRockGalactic-SupporterIIUpg_1.0.0.0_x64__496a1srhmar9w",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "Microsoft.Maine",
+                      "version":  "2.4.438.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\Microsoft.Maine_2.4.438.0_x64__8wekyb3d8bbwe",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: Maine"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "Microsoft.4297127D64EC6",
+                      "version":  "2.6.2.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\Microsoft.4297127D64EC6_2.6.2.0_x64__8wekyb3d8bbwe",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "PlayStack.AbioticFactor",
+                      "version":  "1.3.26036.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\PlayStack.AbioticFactor_1.3.26036.0_x64__3wcqaesafpzfy",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: AbioticFactor"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "poncle.VampireSurvivors",
+                      "version":  "1.14.112.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\poncle.VampireSurvivors_1.14.112.0_x64__9pv5cyp4vwdsr",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "GhostShipPublishing.DeepRockGalacticSurvivor",
+                      "version":  "1.1.56.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\GhostShipPublishing.DeepRockGalacticSurvivor_1.1.56.0_x64__ea2gzvszrg5sg",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unity-il2cpp"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "19886SeavenStudio.Brotato",
+                      "version":  "1.154.0.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\19886SeavenStudio.Brotato_1.154.0.0_x64__fahzzgrzfd3xc",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.ProjectTitus",
+                      "version":  "1.1.289.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.ProjectTitus_1.1.289.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "paradox"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIII-EleganceoftheE",
+                      "version":  "1.1.1.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-EleganceoftheE_1.1.1.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIII-ToursTournamen",
+                      "version":  "1.1.5.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-ToursTournamen_1.1.5.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIII-WardsWardens",
+                      "version":  "1.1.4.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-WardsWardens_1.1.4.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIII-FlavorPack3",
+                      "version":  "1.1.5.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII-FlavorPack3_1.1.5.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack1",
+                      "version":  "1.1.6.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIFlavorPack1_1.1.6.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.29199FB5DFDDF",
+                      "version":  "1.0.9.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.29199FB5DFDDF_1.0.9.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIIFlavorPack2",
+                      "version":  "1.1.5.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIFlavorPack2_1.1.5.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIIExpansion1",
+                      "version":  "1.1.4.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIExpansion1_1.1.4.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIII.BoosterPack1",
+                      "version":  "1.1.4.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIII.BoosterPack1_1.1.4.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIICoutureoftheCap",
+                      "version":  "1.1.1.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIICoutureoftheCap_1.1.1.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIITravels",
+                      "version":  "1.1.1.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIITravels_1.1.1.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIIPathstoPower",
+                      "version":  "1.1.8.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIIPathstoPower_1.1.8.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIILegendsoftheDea",
+                      "version":  "1.1.4.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIILegendsoftheDea_1.1.4.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CrusaderKingsIIICoreExpansion2",
+                      "version":  "1.1.6.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CrusaderKingsIIICoreExpansion2_1.1.6.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.281122D138B03",
+                      "version":  "1.0.9.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.281122D138B03_1.0.9.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "ParadoxInteractive.CursaderKingsIIIExpansion4",
+                      "version":  "1.1.7.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\ParadoxInteractive.CursaderKingsIIIExpansion4_1.1.7.0_x64__zfnrdv2de78ny",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+                                                             "dlc"
+                                                         ],
+                                          "notes":  [
+
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  },
+                  {
+                      "store":  "xbox-windowsapps",
+                      "name":  "CoffeeStainStudios.DeepRockGalactic",
+                      "version":  "40.2.23462.0",
+                      "installDir":  "C:\\Program Files\\WindowsApps\\CoffeeStainStudios.DeepRockGalactic_40.2.23462.0_x64__496a1srhmar9w",
+                      "installed":  true,
+                      "contentReadable":  true,
+                      "contentWritable":  true,
+                      "fingerprint":  {
+                                          "engine":  [
+                                                         "unreal"
+                                                     ],
+                                          "loaders":  [
+
+                                                      ],
+                                          "modFolders":  [
+
+                                                         ],
+                                          "notes":  [
+                                                        "unreal project folder: FSD"
+                                                    ]
+                                      },
+                      "drive":  "C:\\"
+                  }
+              ],
+    "modManagers":  {
+                        "nxmHandler":  {
+                                           "key":  "HKCU:\\Software\\Classes\\nxm\\shell\\open\\command",
+                                           "command":  "\"C:\\Program Files\\Black Tree Gaming Ltd\\Vortex\\Vortex.exe\" -d \"%1\""
+                                       },
+                        "mo2":  {
+                                    "installs":  [
+                                                     {
+                                                         "dir":  "C:\\Modding\\MO2",
+                                                         "version":  "2.5.2",
+                                                         "portable":  false,
+                                                         "usvfs":  [
+                                                                       "usvfs_proxy_x64.exe",
+                                                                       "usvfs_proxy_x86.exe",
+                                                                       "usvfs_x64.dll",
+                                                                       "usvfs_x86.dll"
+                                                                   ]
+                                                     }
+                                                 ],
+                                    "instances":  [
+
+                                                  ]
+                                },
+                        "vortex":  {
+                                       "installed":  true,
+                                       "version":  "2.6.3",
+                                       "dataFolder":  true,
+                                       "stateDbMB":  24.2,
+                                       "staging":  [
+                                                       {
+                                                           "gameId":  "kingdomcomedeliverance",
+                                                           "modCount":  1
+                                                       }
+                                                   ]
+                                   }
+                    },
+    "skyrim":  [
+                   {
+                       "flavor":  "Steam",
+                       "installDir":  "D:\\SteamLibrary\\steamapps\\common\\Skyrim Special Edition",
+                       "drive":  "D:\\",
+                       "exeVersion":  "1.6.1170.0",
+                       "steamBuildId":  "24914197",
+                       "steamAutoUpdate":  "Only update this game when I launch it",
+                       "skseLoaderPresent":  true,
+                       "skseLoaderVersion":  "0.2.2.6",
+                       "skseRuntimeTargets":  [
+                                                  "1.6.1170"
+                                              ],
+                       "skseMatchesGame":  true,
+                       "addressLibrariesInData":  [
+
+                                                  ],
+                       "expectedAddressLibrary":  "versionlib-1-6-1170-0.bin",
+                       "addressLibraryMatches":  false,
+                       "nemesisEngineInData":  false,
+                       "pandoraEngineInData":  false,
+                       "dataFileCount":  89,
+                       "dataFilesHardlinked":  0,
+                       "dataTopLevelPlugins":  29,
+                       "creationClubPlugins":  23,
+                       "pluginsTxtEntries":  2,
+                       "pluginsTxtEnabled":  0,
+                       "myGamesExists":  true,
+                       "saveCount":  7,
+                       "skseLogLastWriteUtc":  "2026-09-19T03:55:30.5938457Z",
+                       "vortexDeployments":  [
+
+                                             ]
+                   }
+               ],
+    "paradox":  {
+                    "documentsRoot":  "C:\\Users\\<user>\\Documents\\Paradox Interactive",
+                    "games":  [
+                                  {
+                                      "game":  "Crusader Kings III",
+                                      "userDir":  "C:\\Users\\<user>\\Documents\\Paradox Interactive\\Crusader Kings III",
+                                      "descriptors":  0,
+                                      "modFolders":  0,
+                                      "dlcLoadJson":  true,
+                                      "contentLoadJson":  false
+                                  },
+                                  {
+                                      "game":  "Stellaris",
+                                      "userDir":  "C:\\Users\\<user>\\Documents\\Paradox Interactive\\Stellaris",
+                                      "descriptors":  17,
+                                      "modFolders":  1,
+                                      "dlcLoadJson":  true,
+                                      "contentLoadJson":  false
+                                  }
+                              ],
+                    "launcherV2Folder":  true,
+                    "launcherDatabase":  [
+
+                                         ]
+                },
+    "finishedUtc":  "2026-09-30T01:48:58.2720263Z"
+}

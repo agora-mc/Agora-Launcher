@@ -1,0 +1,188 @@
+{
+    "spikeVersion":  2,
+    "mode":  "ToolRecord",
+    "tool":  "BodySlide",
+    "roots":  [
+                  {
+                      "root":  "C:\\Modding\\MO2\\mods",
+                      "filesBefore":  13497,
+                      "filesAfter":  13497,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  2,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+                                              "BodySlide and Outfit Studio\\CalienteTools\\BodySlide":  2
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+                                                    "BodySlide and Outfit Studio\\CalienteTools\\BodySlide\\BodySlide.xml",
+                                                    "BodySlide and Outfit Studio\\CalienteTools\\BodySlide\\Log_BS.txt"
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "C:\\Modding\\MO2\\overwrite",
+                      "filesBefore":  155,
+                      "filesAfter":  155,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "C:\\Modding\\MO2\\profiles",
+                      "filesBefore":  458,
+                      "filesAfter":  458,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  7,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+                                              "Default":  7
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+                                             "Default\\archives.txt",
+                                             "Default\\initweaks.ini",
+                                             "Default\\loadorder.txt",
+                                             "Default\\lockedorder.txt",
+                                             "Default\\modlist.txt",
+                                             "Default\\plugins.txt",
+                                             "Default\\settings.ini"
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Skyrim Special Edition",
+                      "filesBefore":  2844,
+                      "filesAfter":  2844,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "C:\\Users\\<user>\\AppData\\Local\\Skyrim Special Edition",
+                      "filesBefore":  6,
+                      "filesAfter":  6,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  },
+                  {
+                      "root":  "C:\\Users\\<user>\\Documents\\My Games\\Skyrim Special Edition",
+                      "filesBefore":  254,
+                      "filesAfter":  254,
+                      "added":  0,
+                      "addedMB":  0,
+                      "removed":  0,
+                      "modifiedInPlace":  0,
+                      "replaced":  0,
+                      "modifiedThroughHardlink":  0,
+                      "changesByFolder":  {
+
+                                          },
+                      "sampleAdded":  [
+
+                                      ],
+                      "sampleRemoved":  [
+
+                                        ],
+                      "sampleModifiedInPlace":  [
+
+                                                ],
+                      "sampleReplaced":  [
+
+                                         ],
+                      "sampleThroughHardlink":  [
+
+                                                ]
+                  }
+              ]
+}
