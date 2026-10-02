@@ -46442,6 +46442,22 @@
           "lowcodefml": "66"
         },
         "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.9",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.9/forge-26.3-66.0.9-installer.jar",
+        "sha256": "0ef95a8a9ceea98e6c789e130d9061ed35a6dae3ad7599b5d66e30b0f7ad18cf",
+        "file_name": "forge-26.3-66.0.9-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d0c5319f39d3937568380f4a2e4e075607e23bebee761b488861e7d1d8883f29",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.9",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable"
       }
     ]
   }

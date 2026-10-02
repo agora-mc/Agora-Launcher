@@ -3596,7 +3596,8 @@
       "forge-26.3-66.0.4-installer.jar": "sha256:df99efb91bf239b8e2fe0b6d6a54ee963ff5966f76142dc6845b508b85a40381",
       "forge-26.3-66.0.5-installer.jar": "sha256:0dac35b3d6bda5a3bf15cd3393639b01f1976a958fb4afc064061098063f0eb4",
       "forge-26.3-66.0.6-installer.jar": "sha256:bc7c8892eb2c6d098dc313f99a76cbcd6f2951a0a249dec43f4e8439cd98604f",
-      "forge-26.3-66.0.8-installer.jar": "sha256:4d9b709c42f82220871672529afbda102c58289b3be5b02a19da7734039564df"
+      "forge-26.3-66.0.8-installer.jar": "sha256:4d9b709c42f82220871672529afbda102c58289b3be5b02a19da7734039564df",
+      "forge-26.3-66.0.9-installer.jar": "sha256:0ef95a8a9ceea98e6c789e130d9061ed35a6dae3ad7599b5d66e30b0f7ad18cf"
     }
   },
   "_source": "Generated from loader_manifests.json by scripts/fetch_loader_manifests.py. Do not edit manually."
