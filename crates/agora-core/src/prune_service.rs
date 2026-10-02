@@ -424,6 +424,7 @@ fn collect_reachable_version_ids(
         };
         // Extract the three fields without requiring the full struct so a
         // missing optional field does not fail the whole manifest.
+        let value = value.get("minecraft").unwrap_or(&value);
         let mc_version = value
             .get("minecraft_version")
             .and_then(|v| v.as_str())
@@ -1674,6 +1675,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let manifest = InstanceManifest {
             manifest_version: CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: instance_id.to_string(),
             name: "Test".to_string(),
@@ -1690,7 +1692,7 @@ mod tests {
             user_preferences: serde_json::json!({}),
         };
         let path = paths.instance_manifest(instance_id).unwrap();
-        fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        crate::helpers::atomic_write_manifest(&path, &manifest).unwrap();
     }
 
     fn write_version_json(

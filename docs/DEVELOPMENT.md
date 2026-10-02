@@ -9,6 +9,7 @@ This page covers local builds and validation. Player instructions belong in the 
 | `crates/agora-core/` | Shared business logic |
 | `crates/agora/` | Standalone CLI |
 | `crates/agora-plugin-api/`, `crates/agora-plugin-host/` | Plugin contract, and the QuickJS host that runs plugin scripts |
+| `crates/agora-game-api/` | Experimental game package/host contract; [manifest v3 design](architecture/game-api.md) |
 | `sdk/`, `examples/plugins/`, `docs/plugins/` | Plugin author types, runnable examples (exercised by core's end-to-end tests), and the author guide |
 | `desktop/` | Tauri desktop application and React UI |
 | `web/` | Public static directory |

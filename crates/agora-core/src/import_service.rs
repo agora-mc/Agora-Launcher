@@ -481,9 +481,10 @@ impl ImportService {
                             if needs_patch {
                                 if let Some(origin) = manifest.pack_origin.as_mut() {
                                     origin.pack_content_hash = computed_hash;
-                                    if let Ok(json) = serde_json::to_string_pretty(&manifest) {
-                                        let _ = std::fs::write(&manifest_path, json);
-                                    }
+                                    crate::helpers::atomic_write_manifest(
+                                        &manifest_path,
+                                        &manifest,
+                                    )?;
                                 }
                             }
                         }

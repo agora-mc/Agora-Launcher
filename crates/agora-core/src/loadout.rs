@@ -263,6 +263,7 @@ mod tests {
             .collect();
         InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".to_string(),
             name: "Test".to_string(),

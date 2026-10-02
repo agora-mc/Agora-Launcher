@@ -219,6 +219,7 @@ mod tests {
     fn manifest_with(loader: &str, mods: Vec<InstalledMod>) -> InstanceManifest {
         InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "inst-1".into(),
             name: "Test".into(),

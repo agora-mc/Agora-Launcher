@@ -2111,6 +2111,7 @@ mod tests {
     ) {
         let m = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: id.to_string(),
             name: id.to_string(),
             created_from_pack: None,
@@ -3442,6 +3443,7 @@ mod tests {
         };
         let old = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,
@@ -3573,6 +3575,7 @@ mod tests {
         };
         let old = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,
@@ -3669,6 +3672,7 @@ mod tests {
         };
         let old = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,
@@ -3732,6 +3736,7 @@ mod tests {
     fn bare_manifest(mods: Vec<crate::models::InstalledMod>) -> crate::models::InstanceManifest {
         crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,
@@ -4042,6 +4047,7 @@ mod tests {
         };
         let old = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,
@@ -4126,6 +4132,7 @@ mod tests {
 
         let old = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,
@@ -4210,6 +4217,7 @@ mod tests {
         };
         let old = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             instance_id: "inst".into(),
             name: "Inst".into(),
             created_from_pack: None,

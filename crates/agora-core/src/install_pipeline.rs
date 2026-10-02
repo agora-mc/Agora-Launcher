@@ -2852,7 +2852,7 @@ fn prepare_manifest(
     }
 
     check_test_failpoint("manifest-serialize")?;
-    let bytes = serde_json::to_vec_pretty(&manifest)
+    let bytes = serde_json::to_vec_pretty(&manifest.to_disk_value().map_err(|e| e.to_string())?)
         .map_err(|e| format!("failed to serialize future manifest: {e}"))?;
     let path = staging_dir.join("instance_manifest.next.json");
     let mut file = std::fs::File::create(&path)
@@ -2881,6 +2881,9 @@ fn apply_transaction(
         .map_err(|e| format!("failed to read current manifest during apply: {e}"))?;
     let manifest = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("failed to parse current manifest during apply: {e}"))?;
+    if manifest.is_read_only() {
+        return Err("instance manifest is read-only: written by a newer Agora".into());
+    }
     let manifest_backup = staging_dir.join("instance_manifest.original.json");
     std::fs::write(&manifest_backup, original_text.as_bytes())
         .map_err(|e| format!("failed to back up current manifest: {e}"))?;
@@ -2963,14 +2966,9 @@ fn apply_transaction(
         if !prepared.is_file() {
             return Err("prepared manifest vanished before commit".into());
         }
-        let temporary = instance_dir.join(format!(
-            "instance_manifest.json.tmp.{}",
-            &plan.fingerprint[..16]
-        ));
         check_test_failpoint("manifest-rename")?;
-        std::fs::rename(&prepared, &temporary)
-            .map_err(|e| format!("failed to move prepared manifest to commit location: {e}"))?;
-        std::fs::rename(&temporary, &manifest_path)
+        let next = crate::helpers::read_manifest(&prepared).map_err(|e| e.to_string())?;
+        crate::helpers::atomic_write_manifest(&manifest_path, &next)
             .map_err(|e| format!("failed to commit instance manifest: {e}"))?;
         Ok(())
     })();
@@ -4662,6 +4660,7 @@ mod tests {
         std::fs::create_dir_all(directory.join("mods")).unwrap();
         let manifest = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),

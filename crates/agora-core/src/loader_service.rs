@@ -1126,6 +1126,7 @@ mod tests {
         }
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: instance_id.into(),
             name: "Test".into(),
@@ -1326,6 +1327,7 @@ mod tests {
         std::fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "ghost".into(),
             name: "Ghost".into(),

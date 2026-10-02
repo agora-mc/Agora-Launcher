@@ -2496,14 +2496,7 @@ fn load_manifest<R: tauri::Runtime>(
 ) -> LauncherResult<InstanceManifest> {
     let manifest_path = paths::instance_manifest_path(app, instance_id)
         .map_err(|_| LauncherError::InstanceCreateFailed)?;
-    let text = std::fs::read_to_string(&manifest_path).map_err(|_| LauncherError::Generic {
-        code: "ERR_MANIFEST_MISSING".to_string(),
-        message: format!("Instance manifest not found for '{}'.", instance_id),
-    })?;
-    serde_json::from_str(&text).map_err(|_| LauncherError::Generic {
-        code: "ERR_MANIFEST_PARSE".to_string(),
-        message: "Failed to parse instance manifest.".to_string(),
-    })
+    agora_core::helpers::read_manifest(&manifest_path)
 }
 
 /// Investigate a crash for an instance using the auto-detected or provided
@@ -6129,8 +6122,6 @@ fn apply_lockfile_metadata(
     instance_dir: &std::path::Path,
     lockfile: &agora_core::lockfile::InstanceLockfile,
 ) -> Result<(), String> {
-    use std::io::Write;
-
     for artifact in lockfile
         .artifacts
         .iter()
@@ -6186,18 +6177,7 @@ fn apply_lockfile_metadata(
             entry.enabled = locked.enabled;
         }
     }
-    let bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| format!("Could not serialize imported manifest: {error}"))?;
-    let temporary = manifest_path.with_extension("json.tmp");
-    let mut output = std::fs::File::create(&temporary)
-        .map_err(|error| format!("Could not create imported manifest: {error}"))?;
-    output
-        .write_all(&bytes)
-        .map_err(|error| format!("Could not write imported manifest: {error}"))?;
-    output
-        .sync_all()
-        .map_err(|error| format!("Could not sync imported manifest: {error}"))?;
-    std::fs::rename(&temporary, &manifest_path)
+    agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)
         .map_err(|error| format!("Could not commit imported manifest: {error}"))
 }
 
@@ -7582,6 +7562,7 @@ mod command_helper_tests {
     fn test_manifest() -> agora_core::models::InstanceManifest {
         agora_core::models::InstanceManifest {
             manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),

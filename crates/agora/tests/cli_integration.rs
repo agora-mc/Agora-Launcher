@@ -1430,6 +1430,34 @@ fn launch_fake_java_success() {
 }
 
 #[test]
+fn launch_migrated_manifest_uses_cold_and_warm_plan_cache() {
+    let (_tmp, data_dir) = temp_data_dir();
+    run_agora(&data_dir, &["paths"]);
+    let instance_id = prepare_launch_state(&data_dir, 0, 21);
+    let manifest_path = data_dir
+        .join("instances")
+        .join(&instance_id)
+        .join("instance_manifest.json");
+    let manifest = agora_core::helpers::read_manifest(&manifest_path).unwrap();
+    agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest).unwrap();
+
+    for cache_state in ["miss", "hit"] {
+        let output =
+            run_agora_json_with_test_credentials(&data_dir, &["launch", &instance_id, "--yes"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "{cache_state} launch failed:\n{stderr}"
+        );
+        assert_json_stdout(&output);
+        assert!(
+            stderr.contains(&format!("durable plan cache {cache_state}")),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn launch_fake_java_crash() {
     let (_tmp, data_dir) = temp_data_dir();
     run_agora(&data_dir, &["paths"]);

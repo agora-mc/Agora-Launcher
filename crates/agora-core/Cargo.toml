@@ -17,6 +17,7 @@ test-support = []
 # The plugin contract. Types only: no script engine, no transport, nothing
 # that would breach the "no tauri/clap/MCP in core" rule.
 agora-plugin-api = { path = "../agora-plugin-api" }
+agora-game-api = { path = "../agora-game-api" }
 
 # Pure logic only. NO tauri, clap, or MCP-protocol crates may appear here —
 # the core must stay UI-agnostic so all three front-ends (Tauri GUI, agora

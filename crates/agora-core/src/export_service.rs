@@ -202,6 +202,7 @@ mod tests {
 
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test-export".into(),
             name: "Test Export".into(),
@@ -236,6 +237,7 @@ mod tests {
 
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test-mrp".into(),
             name: "Test MRP".into(),
@@ -287,6 +289,7 @@ mod tests {
         std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
@@ -321,6 +324,7 @@ mod tests {
     fn export_fixture(pack_origin: Option<crate::models::PackOrigin>) -> InstanceManifest {
         InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin,
             instance_id: "ver-id".into(),
             name: "Version Id".into(),

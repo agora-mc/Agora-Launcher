@@ -1031,9 +1031,7 @@ pub async fn install_raw_modrinth(
     let manifest_path = crate::paths::instance_manifest_path(app_data_dir, instance_id)
         .map_err(|_| LauncherError::InstanceCreateFailed)?;
     let mut manifest: InstanceManifest = if manifest_path.exists() {
-        let text = std::fs::read_to_string(&manifest_path)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?
+        crate::helpers::read_manifest(&manifest_path)?
     } else {
         return Err(LauncherError::Generic {
             code: "ERR_MANIFEST_MISSING".to_string(),
@@ -1078,11 +1076,7 @@ pub async fn install_raw_modrinth(
 
     manifest.mods.push(installed_mod.clone());
 
-    let tmp_path = manifest_path.with_extension("json.tmp");
-    let text =
-        serde_json::to_string_pretty(&manifest).map_err(|_| LauncherError::InstanceCreateFailed)?;
-    std::fs::write(&tmp_path, text).map_err(|_| LauncherError::InstanceCreateFailed)?;
-    std::fs::rename(&tmp_path, &manifest_path).map_err(|_| LauncherError::InstanceCreateFailed)?;
+    crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
 
     Ok(installed_mod)
 }

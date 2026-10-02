@@ -183,6 +183,8 @@ jobs:
           python-version: "3.12"
       - name: Architecture boundary analysis (hard failures)
         run: python scripts/check_architecture.py
+      - name: Architecture game boundary regression tests
+        run: python -m unittest discover -s scripts -p test_check_architecture.py
 
   tauri-bindings:
     runs-on: ubuntu-latest

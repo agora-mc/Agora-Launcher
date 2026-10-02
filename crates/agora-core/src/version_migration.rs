@@ -790,13 +790,7 @@ pub async fn execute_migration(
         "instance_manifest.json.tmp.migration-{}",
         &plan.fingerprint[..16.min(plan.fingerprint.len())]
     ));
-    let applied = apply_migration_moves(
-        plan,
-        &instance_dir,
-        &staging_dir,
-        &commit_temp_path,
-        &mut journal,
-    );
+    let applied = apply_migration_moves(plan, &instance_dir, &staging_dir, &mut journal);
     if let Err(error) = applied {
         let undo = undo_migration(
             &journal,
@@ -1380,7 +1374,7 @@ fn build_future_manifest(
     if let Some(loader_version) = &plan.target_loader_version {
         future.loader_version = loader_version.clone();
     }
-    let bytes = serde_json::to_vec_pretty(&future)
+    let bytes = serde_json::to_vec_pretty(&future.to_disk_value().map_err(|e| e.to_string())?)
         .map_err(|e| format!("failed to serialize future manifest: {e}"))?;
     Ok((future, bytes))
 }
@@ -1397,7 +1391,6 @@ fn apply_migration_moves(
     plan: &MigrationPlan,
     instance_dir: &Path,
     staging_dir: &Path,
-    commit_temp_path: &Path,
     journal: &mut ApplyJournal,
 ) -> Result<(), String> {
     let manifest_path = instance_dir.join("instance_manifest.json");
@@ -1408,6 +1401,9 @@ fn apply_migration_moves(
     // entries may live under a `.disabled` name).
     let current = crate::helpers::read_manifest(&manifest_path)
         .map_err(|e| format!("failed to read manifest during apply: {e}"))?;
+    if current.is_read_only() {
+        return Err("instance manifest is read-only: written by a newer Agora".into());
+    }
 
     for swap in &plan.swaps {
         let live = current
@@ -1471,15 +1467,14 @@ fn apply_migration_moves(
         journal.added.push((live, staged));
     }
 
-    // Commit: two renames so the visible swap is the atomic manifest move.
+    // Commit through the canonical writer, including the schema upgrade backup.
     let prepared = staging_dir.join("instance_manifest.next.json");
     if !prepared.is_file() {
         return Err("prepared manifest vanished before commit".into());
     }
     check_failpoint("manifest-commit")?;
-    std::fs::rename(prepared, commit_temp_path)
-        .map_err(|e| format!("failed to move prepared manifest to commit location: {e}"))?;
-    std::fs::rename(commit_temp_path, &manifest_path)
+    let next = crate::helpers::read_manifest(&prepared).map_err(|e| e.to_string())?;
+    crate::helpers::atomic_write_manifest(&manifest_path, &next)
         .map_err(|e| format!("failed to commit instance manifest: {e}"))
 }
 
@@ -1896,6 +1891,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("mods")).unwrap();
         let mut manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: instance_id.into(),
             name: "Mig".into(),

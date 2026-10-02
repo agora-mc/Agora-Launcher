@@ -84,6 +84,10 @@ This ensures the core owns the **interface and policy** while the adapter provid
 
 ## Dependency Direction
 
+The experimental game contract is in `agora-game-api`, below core and future game packages.
+Core must not reference `agora-game-minecraft`; packages will register through the contract.
+Minecraft still lives in core in this first slice. See [game API and manifest v3](game-api.md).
+
 ```
 agora-plugin-api  ←  agora-core
 agora-plugin-api  ←  agora-plugin-host

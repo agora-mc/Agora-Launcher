@@ -327,7 +327,7 @@ pub struct PackOrigin {
 /// `1` is the implicit version of every manifest written before pack
 /// provenance existed; those files have no version field at all, so absence is
 /// what identifies them.
-pub const CURRENT_MANIFEST_VERSION: u32 = 2;
+pub const CURRENT_MANIFEST_VERSION: u32 = 3;
 
 /// Version assumed for a manifest that predates the field.
 fn legacy_manifest_version() -> u32 {
@@ -335,12 +335,16 @@ fn legacy_manifest_version() -> u32 {
 }
 
 /// The lightweight JSON manifest that lives in each instance directory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InstanceManifest {
     /// Absent in manifests written before pack provenance; see
     /// [`CURRENT_MANIFEST_VERSION`].
     #[serde(default = "legacy_manifest_version")]
     pub manifest_version: u32,
+    /// Generic v3 fields. Minecraft callers keep their existing field access and
+    /// IPC shape until the package move; disk writes use `to_disk_value`.
+    #[serde(flatten)]
+    pub game_data: GameManifestFields,
     pub instance_id: String,
     pub name: String,
     /// Display-name-only provenance from before [`PackOrigin`] existed. Kept
@@ -370,6 +374,271 @@ pub struct InstanceManifest {
     pub user_preferences: serde_json::Value,
 }
 
+/// Generic manifest fields shared with future game packages. The flattened
+/// extension map preserves fields this build does not own on normal writes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameManifestFields {
+    #[serde(default = "minecraft_game_id", rename = "game")]
+    pub game: agora_game_api::GameId,
+    #[serde(default)]
+    pub runtime_identity: Option<agora_game_api::RuntimeIdentity>,
+    #[serde(default)]
+    pub base: Option<agora_game_api::BaseReference>,
+    #[serde(default)]
+    pub frameworks: Vec<agora_game_api::InstalledFramework>,
+    #[serde(default)]
+    pub layers: agora_game_api::LayerStack,
+    #[serde(flatten)]
+    pub extensions: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Retain the entire future document, even if its known fields cannot be
+    /// decoded. Its presence also prevents a caller lowering the version to write.
+    #[serde(skip)]
+    pub read_only_source: Option<serde_json::Value>,
+    #[serde(skip)]
+    pub minecraft_extensions: serde_json::Map<String, serde_json::Value>,
+}
+
+fn minecraft_game_id() -> agora_game_api::GameId {
+    agora_game_api::GameId::minecraft()
+}
+
+impl Default for GameManifestFields {
+    fn default() -> Self {
+        Self {
+            game: minecraft_game_id(),
+            runtime_identity: None,
+            base: None,
+            frameworks: Vec::new(),
+            layers: Default::default(),
+            extensions: Default::default(),
+            read_only_source: None,
+            minecraft_extensions: Default::default(),
+        }
+    }
+}
+
+const MINECRAFT_MANIFEST_FIELDS: &[&str] = &[
+    "minecraft_version",
+    "loader",
+    "loader_version",
+    "mods",
+    "resourcepacks",
+    "shaders",
+    "datapacks",
+    "worlds",
+];
+
+impl InstanceManifest {
+    pub fn is_read_only(&self) -> bool {
+        self.manifest_version > CURRENT_MANIFEST_VERSION
+            || self.game_data.read_only_source.is_some()
+    }
+
+    /// Populate the generic description without moving existing content.
+    pub(crate) fn refresh_game_projection(&mut self) {
+        let current = self;
+        if current.game_data.game == "minecraft" {
+            let store = current
+                .game_data
+                .runtime_identity
+                .as_ref()
+                .map(|r| r.store.clone())
+                .unwrap_or_else(agora_game_api::StoreId::mojang);
+            let build = current
+                .game_data
+                .runtime_identity
+                .as_ref()
+                .filter(|r| r.version == current.minecraft_version)
+                .and_then(|r| r.build.clone());
+            current.game_data.runtime_identity = Some(agora_game_api::RuntimeIdentity {
+                game: agora_game_api::GameId::minecraft(),
+                store,
+                version: current.minecraft_version.clone(),
+                build,
+            });
+            // For Minecraft, `frameworks` is derived entirely from `loader`: an
+            // instance runs one loader at a time, and things layered on top of it
+            // (Fabric API, Connector) are mods, not frameworks. So the projection
+            // keeps only the current loader, which also drops a previous loader
+            // whatever its id. Vanilla is the absence of a framework, not one
+            // named "vanilla".
+            if current.loader.is_empty() || current.loader == "vanilla" {
+                current.game_data.frameworks.clear();
+            } else {
+                current
+                    .game_data
+                    .frameworks
+                    .retain(|f| f.id == current.loader);
+                if let Some(framework) = current
+                    .game_data
+                    .frameworks
+                    .iter_mut()
+                    .find(|f| f.id == current.loader)
+                {
+                    if framework.version != current.loader_version {
+                        framework.version = current.loader_version.clone();
+                        framework.supported_runtimes.clear();
+                        framework.layers.clear();
+                    }
+                } else if let Ok(loader_id) = agora_game_api::FrameworkId::new(&current.loader) {
+                    current
+                        .game_data
+                        .frameworks
+                        .push(agora_game_api::InstalledFramework {
+                            id: loader_id,
+                            version: current.loader_version.clone(),
+                            supported_runtimes: Vec::new(),
+                            layers: Vec::new(),
+                        });
+                }
+            }
+            if current.game_data.layers.is_empty() {
+                let default_layers: Vec<agora_game_api::Layer> = [
+                    ("mods", "mod"),
+                    ("resourcepacks", "resourcepack"),
+                    ("shaderpacks", "shader"),
+                    ("datapacks", "datapack"),
+                    ("saves", "world"),
+                ]
+                .into_iter()
+                .map(|(path, kind)| agora_game_api::Layer {
+                    id: format!("minecraft:{kind}").try_into().unwrap(),
+                    enabled: true,
+                    mount_path: path.try_into().unwrap(),
+                    source: agora_game_api::LayerSource::InstanceContent {
+                        path: path.try_into().unwrap(),
+                        content_kind: kind.into(),
+                    },
+                    whiteouts: Vec::new(),
+                })
+                .collect();
+                current.game_data.layers = agora_game_api::LayerStack::new(default_layers)
+                    .expect("default minecraft layers form a valid layer stack");
+            }
+        }
+    }
+
+    /// Canonical disk schema. Minecraft adapter fields go in the Minecraft
+    /// section; this slice derives generic runtime/framework metadata from them.
+    /// No file or directory is inspected or materialised here.
+    pub fn to_disk_value(&self) -> Result<serde_json::Value, serde_json::Error> {
+        if self.is_read_only() {
+            return Err(<serde_json::Error as serde::ser::Error>::custom(
+                "a manifest from a newer Agora is read-only",
+            ));
+        }
+        let mut current = self.clone();
+        heal_pack_managed(&mut current);
+        current.refresh_game_projection();
+        current.manifest_version = CURRENT_MANIFEST_VERSION;
+        let mut value = serde_json::to_value(&current)?;
+        let object = value
+            .as_object_mut()
+            .expect("manifest serializes as an object");
+        let mut minecraft = current.game_data.minecraft_extensions;
+        for field in MINECRAFT_MANIFEST_FIELDS {
+            if let Some(value) = object.remove(*field) {
+                minecraft.insert((*field).into(), value);
+            }
+        }
+        if current.game_data.game == "minecraft" {
+            object.insert("minecraft".into(), serde_json::Value::Object(minecraft));
+        }
+        Ok(value)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "InstanceManifest")]
+struct InstanceManifestWire {
+    #[serde(default = "legacy_manifest_version")]
+    pub manifest_version: u32,
+    #[serde(flatten)]
+    pub game_data: GameManifestFields,
+    pub instance_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub created_from_pack: Option<String>,
+    #[serde(default)]
+    pub pack_origin: Option<PackOrigin>,
+    pub minecraft_version: String,
+    pub loader: String,
+    pub loader_version: String,
+    #[serde(default)]
+    pub is_locked: bool,
+    pub mods: Vec<InstalledMod>,
+    #[serde(default)]
+    pub resourcepacks: Vec<InstalledMod>,
+    #[serde(default)]
+    pub shaders: Vec<InstalledMod>,
+    #[serde(default)]
+    pub datapacks: Vec<InstalledMod>,
+    #[serde(default)]
+    pub worlds: Vec<InstalledMod>,
+    #[serde(default)]
+    pub user_preferences: serde_json::Value,
+}
+
+impl<'de> Deserialize<'de> for InstanceManifest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let original = serde_json::Value::deserialize(deserializer)?;
+        let version = original
+            .get("manifest_version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1);
+        let future = version > u64::from(CURRENT_MANIFEST_VERSION);
+        let mut value = original.clone();
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| D::Error::custom("manifest must be an object"))?;
+        let mut minecraft_extensions = serde_json::Map::new();
+        if let Some(serde_json::Value::Object(mut minecraft)) = object.remove("minecraft") {
+            for field in MINECRAFT_MANIFEST_FIELDS {
+                if let Some(value) = minecraft.remove(*field) {
+                    object.insert((*field).into(), value);
+                }
+            }
+            minecraft_extensions = minecraft;
+        }
+        // Non-Minecraft and future documents need no Minecraft-only fields.
+        if future
+            || object
+                .get("game")
+                .and_then(|v| v.as_str())
+                .is_some_and(|g| g != "minecraft")
+        {
+            for field in ["minecraft_version", "loader", "loader_version"] {
+                object.entry(field).or_insert_with(|| serde_json::json!(""));
+            }
+            object
+                .entry("mods")
+                .or_insert_with(|| serde_json::json!([]));
+        }
+        let decoded = InstanceManifestWire::deserialize(value);
+        let mut manifest = match decoded {
+            Ok(manifest) => manifest,
+            Err(_) if future => {
+                // A future schema may change enums/types or remove our fields.
+                // Expose a read-only identity/summary without interpreting it.
+                InstanceManifestWire::deserialize(serde_json::json!({
+                    "manifest_version": version.min(u64::from(u32::MAX)),
+                    "instance_id": original.get("instance_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "name": original.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "game": original.get("game").and_then(|v| v.as_str()).unwrap_or("minecraft"),
+                    "minecraft_version": "", "loader": "", "loader_version": "", "mods": []
+                })).map_err(D::Error::custom)?
+            }
+            Err(error) => return Err(D::Error::custom(error)),
+        };
+        manifest.game_data.minecraft_extensions = minecraft_extensions;
+        if future {
+            manifest.game_data.read_only_source = Some(original);
+        }
+        Ok(manifest)
+    }
+}
+
 /// Whether a legacy `source` string implies the entry came from a pack.
 ///
 /// Only used to heal manifests written before `pack_managed` existed. Hyphens
@@ -386,7 +655,7 @@ pub fn source_implies_pack_managed(source: &str) -> bool {
 /// deliberate user override survives a reload. Newer manifests already carry
 /// the field and are left alone.
 pub fn heal_pack_managed(manifest: &mut InstanceManifest) {
-    if manifest.manifest_version >= CURRENT_MANIFEST_VERSION {
+    if manifest.manifest_version >= 2 {
         return;
     }
     for entry in manifest
@@ -522,6 +791,7 @@ mod tests {
     fn test_instance_manifest_roundtrip() {
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "rt-instance".to_string(),
             name: "RoundTrip".to_string(),
@@ -813,5 +1083,164 @@ mod tests {
         assert_eq!(origin.platform, PackPlatform::Unknown);
         assert!(origin.project_id.is_none());
         assert!(origin.version_id.is_none());
+    }
+
+    #[test]
+    fn game_manifest_contract_retains_skyrim_and_bepinex_tracer_data() {
+        for (game, version, framework, store) in [
+            ("skyrim", "1.6.1170.0", "skse", "steam"),
+            ("valheim", "0.218.15", "bepinex", "community-store"),
+        ] {
+            let runtime = serde_json::json!({"game": game, "store": store, "version": version, "build": "build-7"});
+            let value = serde_json::json!({
+                "manifest_version": 3, "instance_id": "tracer", "name": "Tracer", "game": game,
+                "runtime_identity": runtime,
+                "base": {"kind": "pinned", "id": "base-7", "runtime": runtime, "mode": "linked"},
+                "frameworks": [{"id": framework, "version": "2.2.6", "layers": ["framework"],
+                    "supported_runtimes": [{"game": game, "stores": [store],
+                        "versions": {"kind": "exact", "value": [version]}, "builds": ["build-7"]}]}],
+                "layers": [
+                    {"id": "mod-2", "enabled": true, "mount_path": "Data", "whiteouts": [],
+                        "source": {"kind": "content", "content": "sha256:content"}},
+                    {"id": "nemesis", "enabled": true, "mount_path": "Data", "whiteouts": [],
+                        "source": {"kind": "generated", "tool": "nemesis", "generation": "imported",
+                            "inputs": {"kind": "unknown"}}},
+                    {"id": "writes", "enabled": true, "mount_path": "", "whiteouts": ["removed.txt"],
+                        "source": {"kind": "writable", "path": "writable"}},
+                    {"id": "tool-run", "enabled": true, "mount_path": "", "whiteouts": [],
+                        "source": {"kind": "staging", "tool": "nemesis", "run": "7", "path": "staging/7"}}
+                ],
+                "load_order": {"entries": [{"id": "plugin-1", "enabled": true, "locked": true}],
+                    "rules": [{"kind": "requires", "item": "plugin-1", "master": "master.esm"}]},
+                "user_preferences": {"local_saves": true}
+            });
+            let manifest: InstanceManifest = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(manifest.game_data.game, game);
+            assert!(
+                manifest.mods.is_empty(),
+                "other games need no Minecraft content section"
+            );
+            let identity = manifest.game_data.runtime_identity.as_ref().unwrap();
+            assert_eq!(
+                manifest.game_data.frameworks[0].supported_runtimes[0].check(identity),
+                agora_game_api::Support::Supported
+            );
+            assert!(manifest.game_data.frameworks[0].supported_runtimes[0].matches(identity));
+            assert!(!manifest.game_data.layers[1].is_write_target());
+            assert!(manifest.game_data.layers[2].is_write_target());
+            let order: agora_game_api::LoadOrder =
+                serde_json::from_value(value["load_order"].clone()).unwrap();
+            assert_eq!(order.entries[0].id, "plugin-1");
+            assert_eq!(
+                manifest.game_data.layers[0].id, "mod-2",
+                "the two orders are independent"
+            );
+            let written = manifest.to_disk_value().unwrap();
+            for field in [
+                "runtime_identity",
+                "base",
+                "frameworks",
+                "layers",
+                "load_order",
+                "user_preferences",
+            ] {
+                assert_eq!(written[field], value[field], "{game}: preserve {field}");
+            }
+            assert!(written.get("minecraft").is_none());
+            assert!(written.get("minecraft_version").is_none());
+        }
+    }
+
+    #[test]
+    fn test_refresh_game_projection_removes_unfamiliar_loader_when_switching() {
+        let mut manifest = InstanceManifest {
+            manifest_version: 3,
+            game_data: Default::default(),
+            instance_id: "mc-1".into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.20.1".into(),
+            loader: "liteloader".into(),
+            loader_version: "0.1.0".into(),
+            is_locked: false,
+            mods: Vec::new(),
+            resourcepacks: Vec::new(),
+            shaders: Vec::new(),
+            datapacks: Vec::new(),
+            worlds: Vec::new(),
+            user_preferences: serde_json::Value::Null,
+        };
+
+        // First projection with unfamiliar loader
+        manifest.refresh_game_projection();
+        assert_eq!(manifest.game_data.frameworks.len(), 1);
+        assert_eq!(manifest.game_data.frameworks[0].id, "liteloader");
+
+        // Switch to fabric: unfamiliar loader must be removed
+        manifest.loader = "fabric".into();
+        manifest.loader_version = "0.15.11".into();
+        manifest.refresh_game_projection();
+        assert_eq!(manifest.game_data.frameworks.len(), 1);
+        assert_eq!(manifest.game_data.frameworks[0].id, "fabric");
+        assert_eq!(manifest.game_data.frameworks[0].version, "0.15.11");
+
+        // Switch to vanilla: all loader frameworks must be removed
+        manifest.loader = "vanilla".into();
+        manifest.loader_version = "".into();
+        manifest.refresh_game_projection();
+        assert!(manifest.game_data.frameworks.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_game_projection_version_bump_clears_stale_runtimes_and_layers() {
+        let mut manifest = InstanceManifest {
+            manifest_version: 3,
+            game_data: Default::default(),
+            instance_id: "mc-1".into(),
+            name: "Test".into(),
+            created_from_pack: None,
+            pack_origin: None,
+            minecraft_version: "1.20.1".into(),
+            loader: "fabric".into(),
+            loader_version: "0.14.0".into(),
+            is_locked: false,
+            mods: Vec::new(),
+            resourcepacks: Vec::new(),
+            shaders: Vec::new(),
+            datapacks: Vec::new(),
+            worlds: Vec::new(),
+            user_preferences: serde_json::Value::Null,
+        };
+
+        manifest.refresh_game_projection();
+        assert_eq!(manifest.game_data.frameworks.len(), 1);
+
+        // Record supported_runtimes and layers describing 0.14.0
+        manifest.game_data.frameworks[0].supported_runtimes.push(
+            agora_game_api::RuntimeConstraint {
+                game: agora_game_api::GameId::minecraft(),
+                stores: vec![],
+                versions: agora_game_api::VersionConstraint::Exact(vec!["1.20.1".into()]),
+                builds: vec![],
+            },
+        );
+        manifest.game_data.frameworks[0]
+            .layers
+            .push(agora_game_api::LayerId::new("fabric-layer").unwrap());
+
+        // Refresh without bumping version: records must be kept
+        manifest.refresh_game_projection();
+        assert_eq!(manifest.game_data.frameworks[0].supported_runtimes.len(), 1);
+        assert_eq!(manifest.game_data.frameworks[0].layers.len(), 1);
+
+        // Bump loader version: records must be cleared
+        manifest.loader_version = "0.15.0".into();
+        manifest.refresh_game_projection();
+        assert_eq!(manifest.game_data.frameworks[0].version, "0.15.0");
+        assert!(manifest.game_data.frameworks[0]
+            .supported_runtimes
+            .is_empty());
+        assert!(manifest.game_data.frameworks[0].layers.is_empty());
     }
 }

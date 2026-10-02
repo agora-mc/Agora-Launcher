@@ -115,19 +115,15 @@ fn world() -> World {
 }
 
 impl World {
-    fn instance_manifest(&self) -> serde_json::Value {
-        let text =
-            std::fs::read_to_string(self.ctx.paths.instance_manifest(INSTANCE).unwrap()).unwrap();
-        serde_json::from_str(&text).unwrap()
-    }
-
     fn mod_enabled(&self, filename: &str) -> bool {
-        self.instance_manifest()["mods"]
-            .as_array()
+        // Read the public model so assertions work across the v2 -> v3 disk
+        // migration performed by the plugin's first content write.
+        agora_core::helpers::read_manifest(&self.ctx.paths.instance_manifest(INSTANCE).unwrap())
             .unwrap()
+            .mods
             .iter()
-            .find(|entry| entry["filename"] == filename)
-            .map(|entry| entry["enabled"].as_bool().unwrap_or(true))
+            .find(|entry| entry.filename == filename)
+            .map(|entry| entry.enabled)
             .unwrap_or(false)
     }
 }

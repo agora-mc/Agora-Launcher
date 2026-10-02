@@ -1163,6 +1163,7 @@ mod tests {
         std::fs::create_dir_all(&instance_dir).unwrap();
         let manifest = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "gc-fixture".into(),
             name: "GC Fixture".into(),

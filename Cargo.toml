@@ -19,6 +19,7 @@ resolver = "2"
 members = [
     "crates/agora-core",
     "crates/agora-plugin-api",
+    "crates/agora-game-api",
     "crates/agora-plugin-host",
     "desktop/src-tauri",
     "crates/agora",

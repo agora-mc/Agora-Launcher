@@ -887,6 +887,7 @@ impl InstanceService {
             // Synthesise a minimal manifest from the DB row.
             InstanceManifest {
                 manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+                game_data: Default::default(),
                 pack_origin: None,
                 instance_id: new_id.clone(),
                 name: request.new_name.trim().to_owned(),
@@ -984,9 +985,10 @@ impl InstanceService {
         }
 
         // Write updated manifest
-        let manifest_bytes = serde_json::to_vec_pretty(&new_manifest)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        if let Err(error) = std::fs::write(staging.join("instance_manifest.json"), manifest_bytes) {
+        if let Err(error) = crate::helpers::atomic_write_manifest(
+            &staging.join("instance_manifest.json"),
+            &new_manifest,
+        ) {
             let _ = std::fs::remove_dir_all(&staging);
             op.fail(format!("Cannot write clone manifest: {error}"));
             return Err(LauncherError::Generic {
@@ -1381,9 +1383,7 @@ impl InstanceService {
                 .map_err(|_| LauncherError::InstanceCreateFailed)?;
         }
         let path = dir.join("instance_manifest.json");
-        let bytes =
-            serde_json::to_vec_pretty(manifest).map_err(|_| LauncherError::InstanceCreateFailed)?;
-        std::fs::write(path, bytes).map_err(|_| LauncherError::InstanceCreateFailed)
+        crate::helpers::atomic_write_manifest(&path, manifest)
     }
 }
 
@@ -1468,6 +1468,7 @@ fn manifest_from_request(instance_id: &str, request: &CreateInstanceRequest) -> 
     }
     InstanceManifest {
         manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+        game_data: Default::default(),
         pack_origin: None,
         instance_id: instance_id.into(),
         name: request.name.clone(),
@@ -1505,10 +1506,7 @@ fn read_manifest(path: &std::path::Path) -> LauncherResult<Option<InstanceManife
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(path).map_err(|_| LauncherError::InstanceCreateFailed)?;
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|_| LauncherError::InstanceCreateFailed)
+    crate::helpers::read_manifest(path).map(Some)
 }
 
 #[cfg(test)]
@@ -1553,13 +1551,18 @@ mod tests {
         let manifest = manifest_from_request("test", &request);
         let dir = ctx.paths.instance_dir("test").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            ctx.paths.instance_manifest("test").unwrap(),
-            serde_json::to_vec(&manifest).unwrap(),
+        let service = InstanceService::new(ctx.clone());
+        service.prepare_files(&dir, &manifest).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(ctx.paths.instance_manifest("test").unwrap()).unwrap(),
         )
         .unwrap();
-
-        let service = InstanceService::new(ctx.clone());
+        assert_eq!(document["manifest_version"], 3);
+        assert_eq!(document["game"], "minecraft");
+        assert_eq!(document["runtime_identity"]["version"], "1.21");
+        assert_eq!(document["minecraft"]["minecraft_version"], "1.21");
+        assert!(document.get("minecraft_version").is_none());
+        assert!(document["frameworks"].as_array().unwrap().is_empty());
         assert_eq!(service.list().unwrap().len(), 1);
         assert!(service.get("test").unwrap().is_some());
         service.lock("test").unwrap();

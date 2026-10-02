@@ -1897,6 +1897,7 @@ mod tests {
     fn health_empty_instance_is_green() {
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
@@ -1924,6 +1925,7 @@ mod tests {
     fn health_missing_required_dep_is_red() {
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
@@ -2119,6 +2121,7 @@ mod tests {
             .collect();
         InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),

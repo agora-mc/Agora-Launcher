@@ -1449,6 +1449,7 @@ mod tests {
 
         let manifest = crate::models::InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: instance_id.to_string(),
             name: instance_id.to_string(),

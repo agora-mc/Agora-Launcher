@@ -1590,6 +1590,7 @@ impl LauncherImportService {
 
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: Some(pack_origin),
             instance_id: dest_id.clone(),
             name: dest_name.clone(),
@@ -1606,16 +1607,10 @@ impl LauncherImportService {
             user_preferences: serde_json::json!({}),
         };
 
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-                code: "ERR_IMPORT_SERIALIZE".into(),
-                message: format!("Cannot serialize manifest: {e}"),
-            })?;
-        std::fs::write(staging.join("instance_manifest.json"), &manifest_json).map_err(|e| {
-            LauncherError::Generic {
-                code: "ERR_IMPORT_WRITE".into(),
-                message: format!("Cannot write manifest: {e}"),
-            }
+        crate::helpers::atomic_write_manifest(&staging.join("instance_manifest.json"), &manifest)
+            .map_err(|e| LauncherError::Generic {
+            code: "ERR_IMPORT_WRITE".into(),
+            message: format!("Cannot write manifest: {e}"),
         })?;
 
         // Update job state.

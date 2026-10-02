@@ -4335,6 +4335,7 @@ mod tests {
     fn test_find_installed_by_identity_empty_manifest() {
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),
@@ -4357,6 +4358,7 @@ mod tests {
     fn test_all_installed() {
         let manifest = InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test".into(),
             name: "Test".into(),

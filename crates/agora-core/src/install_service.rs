@@ -776,6 +776,7 @@ mod curated_conflict_tests {
     fn manifest_with(mods: Vec<InstalledMod>) -> InstanceManifest {
         InstanceManifest {
             manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "inst".into(),
             name: "Inst".into(),

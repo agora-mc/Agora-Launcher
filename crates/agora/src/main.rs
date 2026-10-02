@@ -5185,6 +5185,7 @@ mod tests {
 
         let manifest = InstanceManifest {
             manifest_version: agora_core::models::CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: None,
             instance_id: "test-instance".into(),
             name: "Test".into(),

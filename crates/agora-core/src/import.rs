@@ -783,6 +783,7 @@ pub fn import_mrpack_with_progress(
         pack_origin.pack_content_hash = pack_hash;
         let manifest = InstanceManifest {
             manifest_version: CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: name.clone(),
@@ -799,14 +800,11 @@ pub fn import_mrpack_with_progress(
             user_preferences: serde_json::json!({}),
         };
         let manifest_path = target_dir.join("instance_manifest.json");
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-                code: "ERR_IMPORT_SERIALIZE".into(),
-                message: format!("Cannot serialize manifest: {e}"),
-            })?;
-        fs::write(&manifest_path, manifest_json).map_err(|e| LauncherError::Generic {
-            code: "ERR_IMPORT_WRITE".into(),
-            message: format!("Cannot write manifest: {e}"),
+        crate::helpers::atomic_write_manifest(&manifest_path, &manifest).map_err(|e| {
+            LauncherError::Generic {
+                code: "ERR_IMPORT_WRITE".into(),
+                message: format!("Cannot write manifest: {e}"),
+            }
         })?;
         Ok(imported_mods)
     })();
@@ -1043,6 +1041,7 @@ pub fn import_prism_zip(
         };
         let manifest = InstanceManifest {
             manifest_version: CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: name.clone(),
@@ -1059,14 +1058,11 @@ pub fn import_prism_zip(
             user_preferences: serde_json::json!({}),
         };
         let manifest_path = target_dir.join("instance_manifest.json");
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-                code: "ERR_IMPORT_SERIALIZE".into(),
-                message: format!("Cannot serialize manifest: {e}"),
-            })?;
-        fs::write(&manifest_path, manifest_json).map_err(|e| LauncherError::Generic {
-            code: "ERR_IMPORT_WRITE".into(),
-            message: format!("Cannot write manifest: {e}"),
+        crate::helpers::atomic_write_manifest(&manifest_path, &manifest).map_err(|e| {
+            LauncherError::Generic {
+                code: "ERR_IMPORT_WRITE".into(),
+                message: format!("Cannot write manifest: {e}"),
+            }
         })?;
         Ok(imported_mods)
     })();
@@ -1248,6 +1244,7 @@ pub fn import_directory(
             };
             let manifest = InstanceManifest {
                 manifest_version: CURRENT_MANIFEST_VERSION,
+                game_data: Default::default(),
                 pack_origin: Some(pack_origin),
                 instance_id: target.instance_id.clone(),
                 name: name.clone(),
@@ -1263,14 +1260,11 @@ pub fn import_directory(
                 worlds: vec![],
                 user_preferences: serde_json::json!({}),
             };
-            let manifest_json =
-                serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-                    code: "ERR_IMPORT_SERIALIZE".into(),
-                    message: format!("Cannot serialize manifest: {e}"),
-                })?;
-            fs::write(&manifest_path, manifest_json).map_err(|e| LauncherError::Generic {
-                code: "ERR_IMPORT_WRITE".into(),
-                message: format!("Cannot write manifest: {e}"),
+            crate::helpers::atomic_write_manifest(&manifest_path, &manifest).map_err(|e| {
+                LauncherError::Generic {
+                    code: "ERR_IMPORT_WRITE".into(),
+                    message: format!("Cannot write manifest: {e}"),
+                }
             })?;
         } else {
             // Existing manifest (e.g., importing an existing Agora instance directory) —
@@ -1307,9 +1301,7 @@ pub fn import_directory(
                     needs_write = true;
                 }
                 if needs_write {
-                    if let Ok(json) = serde_json::to_string_pretty(&manifest) {
-                        let _ = fs::write(&manifest_path, json);
-                    }
+                    crate::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
                 }
             }
         }
@@ -1567,6 +1559,7 @@ pub fn import_technic_solder_pack(
         pack_origin.pack_content_hash = pack_hash;
         let manifest = InstanceManifest {
             manifest_version: CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: pack.display_name.clone(),
@@ -1582,14 +1575,9 @@ pub fn import_technic_solder_pack(
             worlds: vec![],
             user_preferences: serde_json::json!({}),
         };
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-                code: "ERR_IMPORT_SERIALIZE".into(),
-                message: format!("Cannot serialize manifest: {e}"),
-            })?;
-        fs::write(
-            target.staging_dir.join("instance_manifest.json"),
-            manifest_json,
+        crate::helpers::atomic_write_manifest(
+            &target.staging_dir.join("instance_manifest.json"),
+            &manifest,
         )
         .map_err(|e| LauncherError::Generic {
             code: "ERR_IMPORT_WRITE".into(),
@@ -1714,6 +1702,7 @@ pub fn import_technic_zip_pack(
         pack_origin.pack_content_hash = pack_hash;
         let manifest = InstanceManifest {
             manifest_version: CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: pack.display_name.clone(),
@@ -1729,14 +1718,9 @@ pub fn import_technic_zip_pack(
             worlds: vec![],
             user_preferences: serde_json::json!({}),
         };
-        let manifest_json =
-            serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-                code: "ERR_IMPORT_SERIALIZE".into(),
-                message: format!("Cannot serialize manifest: {e}"),
-            })?;
-        fs::write(
-            target.staging_dir.join("instance_manifest.json"),
-            manifest_json,
+        crate::helpers::atomic_write_manifest(
+            &target.staging_dir.join("instance_manifest.json"),
+            &manifest,
         )
         .map_err(|e| LauncherError::Generic {
             code: "ERR_IMPORT_WRITE".into(),
@@ -1895,6 +1879,7 @@ fn write_import_manifest(
 ) -> LauncherResult<()> {
     let manifest = InstanceManifest {
         manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+        game_data: Default::default(),
         pack_origin: None,
         instance_id: target.instance_id.clone(),
         name: name.to_string(),
@@ -1910,14 +1895,9 @@ fn write_import_manifest(
         worlds: vec![],
         user_preferences: serde_json::json!({}),
     };
-    let manifest_json =
-        serde_json::to_string_pretty(&manifest).map_err(|e| LauncherError::Generic {
-            code: "ERR_IMPORT_SERIALIZE".into(),
-            message: format!("Cannot serialize manifest: {e}"),
-        })?;
-    fs::write(
-        target.staging_dir.join("instance_manifest.json"),
-        manifest_json,
+    crate::helpers::atomic_write_manifest(
+        &target.staging_dir.join("instance_manifest.json"),
+        &manifest,
     )
     .map_err(|e| LauncherError::Generic {
         code: "ERR_IMPORT_WRITE".into(),
@@ -3127,6 +3107,7 @@ pub fn import_provider_pack(
         }
         let manifest = InstanceManifest {
             manifest_version: CURRENT_MANIFEST_VERSION,
+            game_data: Default::default(),
             pack_origin: Some(pack_origin),
             instance_id: target.instance_id.clone(),
             name: plan.name.clone(),

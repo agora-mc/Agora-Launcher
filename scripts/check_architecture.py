@@ -14,12 +14,17 @@ Checks:
 6. No direct HTTP request building in mod_install/modrinth_raw/crash_investigator
 7. Core crate has no tauri dependency
 8. Tauri binding name-manifest check runs (typed signatures explicitly waived)
+9. Update checks have one core implementation
+10. Live instance reads use the canonical manifest loader
+11. Game API depends only on serde, semver and thiserror (all dependency sections)
+12. Core must not reference the future Minecraft package's modules or crate
 """
 
 import json
 import os
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +34,7 @@ CORE_SRC = REPO_ROOT / "crates" / "agora-core" / "src"
 CLI_SRC = REPO_ROOT / "crates" / "agora" / "src"
 
 CORE_CARGO = REPO_ROOT / "crates" / "agora-core" / "Cargo.toml"
+GAME_API_CARGO = REPO_ROOT / "crates" / "agora-game-api" / "Cargo.toml"
 
 # ---- Documented thin adapter modules ---------------------------------------
 # These modules share a name with a crate/agora-core module but are explicitly
@@ -443,9 +449,84 @@ def check_instance_manifest_raw() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# 11–12. Game package dependency boundaries
 # ---------------------------------------------------------------------------
 
+def dependency_tables(manifest: dict):
+    """Include development/build and target-specific dependencies, too."""
+    for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+        yield from manifest.get(kind, {}).items()
+    for target in manifest.get("target", {}).values():
+        yield from dependency_tables(target)
+
+
+def resolved_dependency(name: str, specification, workspace: dict) -> tuple[str, dict]:
+    if isinstance(specification, dict) and specification.get("workspace"):
+        specification = workspace.get("workspace", {}).get("dependencies", {}).get(name, specification)
+    details = specification if isinstance(specification, dict) else {}
+    return details.get("package", name), details
+
+
+def check_game_api_dependencies() -> None:
+    allowed = {"serde", "semver", "thiserror"}
+    if not GAME_API_CARGO.exists():
+        err("agora-game-api Cargo.toml missing")
+        return
+    try:
+        manifest = tomllib.loads(GAME_API_CARGO.read_text(encoding="utf-8"))
+        workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        err(f"Cannot inspect agora-game-api dependencies: {exc}")
+        return
+    forbidden = []
+    for alias, specification in dependency_tables(manifest):
+        package, details = resolved_dependency(alias, specification, workspace)
+        # A local crate named serde is not the approved contract dependency.
+        if package not in allowed or "path" in details or "git" in details:
+            forbidden.append(alias)
+    if forbidden:
+        err(f"agora-game-api dependencies must be serde, semver or thiserror only: {sorted(forbidden)}")
+    else:
+        print("OK: agora-game-api depends only on serde, semver and thiserror")
+
+
+def check_core_no_minecraft_package() -> None:
+    """The future package's crate/module references are banned now, while the
+    existing Minecraft modules may stay in core until the separate module move.
+    Check renamed dependencies as well as direct/import/include references."""
+    hits = []
+    if CORE_CARGO.exists():
+        try:
+            manifest = tomllib.loads(CORE_CARGO.read_text(encoding="utf-8"))
+            workspace = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            err(f"Cannot inspect core game package dependencies: {exc}")
+            return
+        for alias, specification in dependency_tables(manifest):
+            package, details = resolved_dependency(alias, specification, workspace)
+            if package == "agora-game-minecraft" or "agora-game-minecraft" in details.get("path", ""):
+                hits.append(f"  {CORE_CARGO.relative_to(REPO_ROOT)}: dependency {alias}")
+    pattern = re.compile(r"\bagora_game_minecraft\b|agora-game-minecraft")
+    # Tests and build scripts are part of core's dependency boundary too.
+    for path in sorted(CORE_CARGO.parent.rglob("*.rs")):
+        # Ignore comments (including multi-line block comments), but retain
+        # newlines so reported source locations remain useful.
+        source = path.read_text(encoding="utf-8")
+        source = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group().count("\n"), source, flags=re.S)
+        for lineno, line in enumerate(source.splitlines(), 1):
+            if pattern.search(line.split("//", 1)[0]):
+                hits.append(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+    if hits:
+        err("agora-core references Minecraft package modules — packages register through agora-game-api")
+        for hit in hits:
+            print(hit, file=sys.stderr)
+    else:
+        print("OK: agora-core does not reference the Minecraft package's modules")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main() -> int:
     print("=== Architecture Boundary Checks ===\n")
 
@@ -487,6 +568,14 @@ def main() -> int:
 
     print("--- 10. Single InstanceManifest loader (lazy backfill) ---")
     check_instance_manifest_raw()
+    print()
+
+    print("--- 11. Game API contract dependencies ---")
+    check_game_api_dependencies()
+    print()
+
+    print("--- 12. Core has no Minecraft package references ---")
+    check_core_no_minecraft_package()
     print()
 
     if EXIT_CODE == 0:

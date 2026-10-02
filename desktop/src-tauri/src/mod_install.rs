@@ -1,7 +1,7 @@
 use crate::auth;
 use crate::error::{LauncherError, LauncherResult};
 use crate::instances;
-use crate::models::{InstalledMod, InstanceManifest, InstanceRow, ModVersionCandidate};
+use crate::models::{InstalledMod, InstanceRow, ModVersionCandidate};
 use crate::paths;
 use crate::registry;
 use std::path::Path;
@@ -320,11 +320,7 @@ pub async fn export_instance_pack(
             message: "Instance manifest not found.".into(),
         });
     }
-    let manifest: InstanceManifest = {
-        let text = std::fs::read_to_string(&manifest_path)
-            .map_err(|_| LauncherError::InstanceCreateFailed)?;
-        serde_json::from_str(&text).map_err(|_| LauncherError::InstanceCreateFailed)?
-    };
+    let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
     let instance_dir = ctx.paths.instance_dir(instance_id)?;
     let exports_dir = ctx.paths.root().join("exports");
     agora_core::export_service::export_instance_pack(&instance_dir, &manifest, &exports_dir, format)
@@ -519,9 +515,7 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
         };
         manifest.pack_origin = Some(pack_origin);
         manifest.manifest_version = agora_core::models::CURRENT_MANIFEST_VERSION;
-        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
-            let _ = std::fs::write(&manifest_path, json);
-        }
+        agora_core::helpers::atomic_write_manifest(&manifest_path, &manifest)?;
     }
     Ok(instance_id)
 }
