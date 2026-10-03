@@ -3459,10 +3459,25 @@ user whose store already updated past the version their mods need. Researched 20
 | **Download a specific build** | Steam: [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (`-app -depot -manifest`) or the client's own `download_depot`; old manifests need an owning account ([request codes](https://steamdb.info/blog/manifest-request-codes), since 2022). GOG: Galaxy Gen 2 builds through [lgogdownloader](https://pkgsrc.se/games/lgogdownloader) or Heroic's gogdl; Gen 1 builds are not reachable | A store sign-in, opt-in only. DepotDownloader's QR login (`-qr`) means Agora never sees a password. Which manifest is which version needs a map, best kept as curated catalog data and checked by hash after download. A downloaded base is a full copy: nothing to hardlink to |
 | **Community downgrade patchers** | Skyrim's [downgrade patcher](https://www.pcgamer.com/uk/this-mod-rolls-back-skyrim-anniversary-edition-to-special-edition-version-1597/) binary-patches a valid install back to 1.5.97, shipping no game files | Runs as a declared tool (§26.9) into a new base. Known trap: patching the executable but not the data gives a 1.5 engine reading 1.6 content |
 
-Each route is a **runtime source** a package supplies, not built into core, consistent with §26.7:
-core stages the download, verifies it, and builds a Copied base from it; the source plugin knows
-the store. DepotDownloader is GPL-2.0 and .NET, so it is fetched as a separate component
-(§26.5, *components are fetched*), never linked, and its licence is checked before Agora offers it.
+**One pipeline, a transport per store** (decided with the user, 2026-10-03):
+
+- **Agora owns everything around the bytes:** the curated map (a catalog entry names the store,
+  product and build, and the expected hash of every file), staging, progress, verification, the
+  base build, and the sign-in UI. Because every file is checked against curated hashes, a transport
+  is never trusted for correctness, only for moving bytes.
+- **Transport is a core host service, not a package's.** It holds a store session, and a community
+  plugin should not hold someone's Steam sign-in. Packages and the catalog supply data only.
+- **GOG: Agora's own Rust client.** The content system is HTTP and JSON (a builds list per product,
+  zlib-compressed manifests, CDN chunks), documented by the community
+  ([gogapidocs](https://github.com/Yepoleb/gogapidocs)); a few hundred lines beat shipping a Python
+  or C++ runtime.
+- **Steam: not written from scratch.** Its protocol (CM login with Steam Guard or QR, manifest
+  request codes, AES chunks, Valve LZMA) is large and Valve changes it. **A spike decides between**
+  [`steamroom`](https://docs.rs/crate/steamroom/latest) (Rust, MIT/Apache, young: 0.3.0, July 2026)
+  and [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (.NET, GPL-2.0, mature): can
+  steamroom sign in by QR and download an old manifest of an owned Skyrim? If so, Steam stays in
+  Rust with an in-app sign-in; if not, DepotDownloader is fetched as a separate component (§26.5,
+  *components are fetched*), never linked, behind the same interface.
 
 ### 26.5 Deployment: How Mods Reach the Game
 
