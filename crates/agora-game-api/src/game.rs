@@ -340,6 +340,18 @@ impl GameDefinition {
             .iter()
             .any(|pattern| glob_match(pattern.as_str(), normalized))
     }
+
+    /// Whether `path` (relative to the install root) matches a linked archive pattern.
+    /// Runs on the normalized path, comparing ASCII case-insensitively.
+    pub fn is_linked_archive(&self, path: &str) -> bool {
+        let Ok(rel) = RelPath::new(path) else {
+            return false;
+        };
+        let normalized = rel.as_str().to_ascii_lowercase();
+        self.linked_archive_patterns
+            .iter()
+            .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &normalized))
+    }
 }
 
 fn glob_match(pattern: &str, path: &str) -> bool {
@@ -554,5 +566,46 @@ mod tests {
         assert!(!def.allows_native_code_at("../mods/evil.dll"));
         assert!(!def.allows_native_code_at("C:/evil.dll"));
         assert!(!def.allows_native_code_at("Data/foo.dll"));
+    }
+
+    #[test]
+    fn linked_archive_matching_is_case_insensitive() {
+        let def = GameDefinition {
+            id: GameId::new("skyrim-se").unwrap(),
+            name: "Skyrim SE".into(),
+            stores: vec![],
+            version_sources: vec![],
+            deployment: DeploymentStrategy::VirtualFileSystem,
+            content_rules: vec![],
+            native_code_patterns: vec![],
+            framework_ids: vec![],
+            tool_ids: vec![],
+            launch: None,
+            log_paths: vec![],
+            crash_paths: vec![],
+            user_files: vec![],
+            save_paths: vec![],
+            linked_archive_patterns: vec![
+                "Data/*.bsa".into(),
+                "Data/*.esm".into(),
+                "Data/*.esl".into(),
+                "Data/*.bik".into(),
+            ],
+        };
+
+        // Matches exact and mixed cases
+        assert!(def.is_linked_archive("Data/Skyrim - Textures.bsa"));
+        assert!(def.is_linked_archive("data/skyrim - textures.BSA"));
+        assert!(def.is_linked_archive("DATA\\b.ESM"));
+        assert!(def.is_linked_archive("data/c.esl"));
+        assert!(def.is_linked_archive("Data/video.bik"));
+        assert!(def.is_linked_archive("DATA/VIDEO.BIK"));
+
+        // Non-matches
+        assert!(!def.is_linked_archive("SkyrimSE.exe"));
+        assert!(!def.is_linked_archive("Data/Sub/d.txt"));
+        assert!(!def.is_linked_archive("Data/plugin.dll"));
+        // Path traversal rejected
+        assert!(!def.is_linked_archive("Data/../../evil.bsa"));
     }
 }

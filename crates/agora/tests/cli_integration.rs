@@ -263,6 +263,11 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plugin", "sign"],
     &["games", "discover"],
     &["games", "list"],
+    &["games", "base"],
+    &["games", "base", "build"],
+    &["games", "base", "list"],
+    &["games", "base", "verify"],
+    &["games", "base", "remove"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -3036,4 +3041,33 @@ fn removal_reports_whether_stored_data_was_kept() {
         stdout.to_lowercase().contains("kept"),
         "removal should state that data was kept: {stdout}"
     );
+}
+
+#[test]
+fn games_base_cli_list_verify_remove() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. List when empty
+    let output = run_agora(&data_dir, &["games", "base", "list"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No pinned bases found"));
+
+    let output_json = run_agora_json(&data_dir, &["games", "base", "list"]);
+    assert!(output_json.status.success());
+    let json_val: serde_json::Value =
+        serde_json::from_slice(&output_json.stdout).expect("valid json array");
+    assert_eq!(json_val, serde_json::json!([]));
+
+    // 2. Verify nonexistent base -> error
+    let output_ver = run_agora(&data_dir, &["games", "base", "verify", "nonexistent-base"]);
+    assert!(!output_ver.status.success());
+
+    // 3. Remove nonexistent base -> error
+    let output_rem = run_agora(&data_dir, &["games", "base", "remove", "nonexistent-base"]);
+    assert!(!output_rem.status.success());
+
+    // 4. Build with nonexistent install -> error
+    let output_build = run_agora(&data_dir, &["games", "base", "build", "steam:nonexistent"]);
+    assert!(!output_build.status.success());
 }

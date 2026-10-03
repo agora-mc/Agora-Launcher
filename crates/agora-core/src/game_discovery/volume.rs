@@ -33,34 +33,10 @@ impl VolumeDetector {
 
     #[cfg(windows)]
     fn get_windows_volume_info(&self, path: &Path) -> Option<VolumeInfo> {
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-        let wide_path: Vec<u16> = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+        use std::os::windows::ffi::OsStrExt;
 
         // 1. Get volume path name
-        let mut volume_path_buf = [0u16; 512];
-        let ok = unsafe {
-            windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW(
-                wide_path.as_ptr(),
-                volume_path_buf.as_mut_ptr(),
-                volume_path_buf.len() as u32,
-            )
-        };
-        if ok == 0 {
-            return None;
-        }
-
-        let volume_path_len = volume_path_buf
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(volume_path_buf.len());
-        let volume_root = PathBuf::from(std::ffi::OsString::from_wide(
-            &volume_path_buf[..volume_path_len],
-        ));
+        let volume_root = get_volume_mount_root(path)?;
 
         // Check cache
         if let Ok(guard) = self.cache.lock() {
@@ -134,5 +110,44 @@ impl VolumeDetector {
             supports_hardlinks: true,
             supports_file_clones: false,
         })
+    }
+}
+
+/// Query the volume mount root for a path (e.g. `C:\` or `D:\` on Windows via GetVolumePathNameW).
+pub fn get_volume_mount_root(path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut volume_path_buf = [0u16; 512];
+        let ok = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW(
+                wide_path.as_ptr(),
+                volume_path_buf.as_mut_ptr(),
+                volume_path_buf.len() as u32,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+
+        let volume_path_len = volume_path_buf
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(volume_path_buf.len());
+        Some(PathBuf::from(std::ffi::OsString::from_wide(
+            &volume_path_buf[..volume_path_len],
+        )))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
     }
 }

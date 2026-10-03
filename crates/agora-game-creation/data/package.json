@@ -50,7 +50,10 @@
       "user_files": [],
       "save_paths": [],
       "linked_archive_patterns": [
-        "Data/*.bsa"
+        "Data/*.bsa",
+        "Data/*.esm",
+        "Data/*.esl",
+        "Data/*.bik"
       ]
     }
   ],

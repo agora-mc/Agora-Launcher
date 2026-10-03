@@ -69,7 +69,10 @@ mod tests {
             game.native_code_patterns,
             vec![RelPath::new("Data/SKSE/Plugins/*.dll").unwrap()]
         );
-        assert_eq!(game.linked_archive_patterns, vec!["Data/*.bsa"]);
+        assert_eq!(
+            game.linked_archive_patterns,
+            vec!["Data/*.bsa", "Data/*.esm", "Data/*.esl", "Data/*.bik",]
+        );
 
         // Launch recipe
         let launch = game.launch.as_ref().expect("launch recipe should be Some");

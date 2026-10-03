@@ -182,6 +182,21 @@ impl AppPaths {
         self.root.join("instances")
     }
 
+    /// Root directory for pinned bases when placed in the data folder (`bases/`).
+    pub fn bases_dir(&self) -> PathBuf {
+        self.root.join("bases")
+    }
+
+    /// Directory for pinned base manifests (`bases/manifests/`).
+    pub fn base_manifests_dir(&self) -> PathBuf {
+        self.root.join("bases").join("manifests")
+    }
+
+    /// Manifest path for a specific pinned base (`bases/manifests/<base_id>.json`).
+    pub fn base_manifest_path(&self, base_id: &str) -> PathBuf {
+        self.base_manifests_dir().join(format!("{base_id}.json"))
+    }
+
     /// Root directory for the Agora-owned Minecraft runtime (`minecraft-runtime/`).
     pub fn minecraft_runtime_root(&self) -> PathBuf {
         self.root.join("minecraft-runtime")

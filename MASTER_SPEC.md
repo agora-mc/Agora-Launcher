@@ -3406,6 +3406,45 @@ unpinned, with the VFS mounted over that folder where the game needs one, as MO2
 page says the instance is unpinned and why. Microsoft Store mods rarely need the game folder anyway
 (CK3 and Dungeons read Documents and AppData).
 
+**As built (Phase 2, slice 3).** `agora_core::game_base`, shown by `agora games base
+build|list|verify|remove`:
+
+- **Where a base lives.** A base's files sit on the install's volume, because hardlinks cannot cross
+  volumes: in the data folder's `bases/` when it is on that volume, otherwise in
+  `<volume root>\AgoraBases\`, the way Steam keeps a library per drive. Manifests always live in the
+  data folder, so Agora finds bases on every drive without scanning. A base id is
+  `{game}_{store}_{version}_{build}`, one per exact runtime, shared by every instance pinned to it.
+- **What is linked.** Skyrim's definition links `Data/*.bsa`, `*.esm`, `*.esl` and `*.bik`, matched
+  case-insensitively; everything else is copied. Linking only `.bsa` would have copied ~440 MB per
+  base, most of it the `.esm` masters.
+- **Building** walks the install without following links or junctions, stages into
+  `<id>.partial-*`, hashes every file in parallel, renames the folder into place, then writes the
+  manifest. Any error deletes the staging folder. A folder left by a build interrupted between the
+  rename and the manifest is cleared and rebuilt. Linked never falls back to copying silently: when
+  linking is impossible it fails with the size a Copied base would take.
+- **Removing** deletes only a folder named after the base, directly inside a bases root, and not
+  overlapping its source install, because the manifest that names it is a user-writable file.
+- **Measured on the spike machine** (debug build, throwaway data folder on C:, games on D:):
+
+  | | GOG 1.6.1179 | Steam 1.6.1170 |
+  |---|---|---|
+  | Files | 224 | 117 |
+  | Linked | 32.01 GB | 16.09 GB |
+  | Copied | 78 MB | 197 MB |
+  | Build (mostly hashing) | 144 s | 99 s |
+  | Quick verify | 0.1 s, no file hashed | the same |
+  | Store install afterwards | unchanged: all 224 files' size, time, attributes and hashes | unchanged, all 117 |
+
+  An archive patched in place in the GOG install was reported by name (`Data/ccQDRSSE002-Firewood.bsa:
+  size changed`), as was a stray file written into the base; an `.esl` the "store" replaced by
+  rename left the base clean. Restoring the archive's bytes changed its modified time, so the quick
+  check hashed that one file and passed.
+- **Open: a store folder is not always pristine.** 130 MB of the Steam base's copies are
+  `Data/SSEEdit Backups/`, left by a mod tool, and its masters were cleaned in place by xEdit
+  before Agora saw them. A base records exactly what is there. Whether a game definition should
+  exclude known tool leftovers, and whether Agora should check an install against the store's own
+  file list before pinning it, are open questions (§26.15).
+
 ### 26.5 Deployment: How Mods Reach the Game
 
 Deployment is a strategy chosen by the game definition, implemented in core, one interface with
@@ -3853,6 +3892,10 @@ support, themes and plugin views carry over, since they are app-wide already (§
 - **CK3 without its launcher** (F7): `ck3.exe` started directly most likely loads either no mods or
   the playset last set in the launcher. Checked in Phase 5, together with whether Agora can supply
   the list itself (playset database or `dlc_load.json`).
+- **Pinning a modified store folder** (§26.4, as built): Steam Skyrim held 130 MB of xEdit
+  backups and xEdit-cleaned masters, and its base pinned them as found. Options: definitions list
+  tool leftovers to exclude, and Agora checks an install against the store's own manifest (Steam
+  depot manifests, GOG's file lists) before pinning, offering a store repair first.
 - **Anti-cheat**: out of scope. Games that forbid modification are not supported for modding.
 
 ---

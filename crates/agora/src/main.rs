@@ -281,6 +281,38 @@ enum GamesCmd {
     Discover,
     /// List supported games and their identified installs.
     List,
+    /// Manage pinned bases for games.
+    Base {
+        #[command(subcommand)]
+        action: BaseCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BaseCmd {
+    /// Build a pinned base from a game install.
+    Build {
+        /// Install ID of the game to build a base for.
+        install_id: String,
+        /// Mode for the base: linked (default, using hardlinks for archives) or copied (full copy).
+        #[arg(long, default_value = "linked")]
+        mode: String,
+    },
+    /// List all pinned bases.
+    List,
+    /// Verify the integrity of a pinned base.
+    Verify {
+        /// Base ID to verify.
+        base_id: String,
+        /// Run full verification (hash all files).
+        #[arg(long)]
+        full: bool,
+    },
+    /// Remove a pinned base and its manifest.
+    Remove {
+        /// Base ID to remove.
+        base_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4126,6 +4158,258 @@ async fn run_command(
                     print_games_list(&ctx.games, &inventory);
                 }
             }
+            GamesCmd::Base { action } => match action {
+                BaseCmd::Build { install_id, mode } => {
+                    let report = agora_core::game_discovery::discover_all();
+                    let inventory = agora_core::game_registry::identify_installs(
+                        &ctx.games,
+                        &report,
+                        &agora_core::game_discovery::file_version::read_file_version,
+                    );
+                    let install = inventory
+                        .installs
+                        .iter()
+                        .find(|i| i.install_id.as_str() == install_id);
+                    let Some(install) = install else {
+                        anyhow::bail!("Install '{install_id}' not found.");
+                    };
+                    let game_def = ctx.games.game(&install.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", install.game)
+                    })?;
+                    let base_mode: agora_core::game_base::BaseMode =
+                        mode.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+                    let start = std::time::Instant::now();
+                    let result = agora_core::game_base::build_base(
+                        &ctx.paths,
+                        install,
+                        game_def,
+                        base_mode,
+                        None,
+                        &|p: agora_core::game_base::BuildProgress| {
+                            // Hashing a large game takes a while; say so about once a second.
+                            use std::sync::atomic::{AtomicU64, Ordering};
+                            static LAST_MS: AtomicU64 = AtomicU64::new(0);
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            let last = LAST_MS.load(Ordering::Relaxed);
+                            if (now.saturating_sub(last) >= 1000 || p.files_done == p.files_total)
+                                && LAST_MS
+                                    .compare_exchange(
+                                        last,
+                                        now,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    )
+                                    .is_ok()
+                                && !json
+                            {
+                                eprintln!(
+                                    "  hashing: {}/{} files, {:.1}/{:.1} GB",
+                                    p.files_done,
+                                    p.files_total,
+                                    p.bytes_hashed as f64 / 1e9,
+                                    p.bytes_total as f64 / 1e9
+                                );
+                            }
+                        },
+                    );
+
+                    match result {
+                        Ok(agora_core::game_base::BuildOutcome::Built {
+                            manifest,
+                            linked_bytes,
+                            copied_bytes,
+                        }) => {
+                            let linked_gb = (linked_bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                            let copied_mb = (copied_bytes as f64) / (1024.0 * 1024.0);
+                            let secs = start.elapsed().as_secs_f64();
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "built",
+                                    "mode": manifest.mode,
+                                    "base_id": manifest.base_id,
+                                    "location": manifest.location,
+                                    "file_count": manifest.files.len(),
+                                    "linked_bytes": linked_bytes,
+                                    "linked_gb": linked_gb,
+                                    "copied_bytes": copied_bytes,
+                                    "copied_mb": copied_mb,
+                                    "seconds_taken": secs,
+                                    "manifest": manifest,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!("Mode:          {}", manifest.mode);
+                                println!("Base ID:       {}", manifest.base_id);
+                                println!("Location:      {}", manifest.location.display());
+                                println!("Files:         {}", manifest.files.len());
+                                println!("Linked:        {linked_gb:.2} GB");
+                                println!("Copied:        {copied_mb:.2} MB");
+                                println!("Seconds taken: {secs:.2}s");
+                            }
+                        }
+                        Ok(agora_core::game_base::BuildOutcome::Existing(manifest)) => {
+                            let secs = start.elapsed().as_secs_f64();
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "existing",
+                                    "mode": manifest.mode,
+                                    "base_id": manifest.base_id,
+                                    "location": manifest.location,
+                                    "file_count": manifest.files.len(),
+                                    "seconds_taken": secs,
+                                    "manifest": manifest,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!("Mode:          {}", manifest.mode);
+                                println!("Base ID:       {}", manifest.base_id);
+                                println!("Location:      {}", manifest.location.display());
+                                println!("Files:         {} (existing)", manifest.files.len());
+                                println!("Seconds taken: {secs:.2}s");
+                            }
+                        }
+                        Err(agora_core::game_base::BaseError::LinkUnavailable {
+                            reason,
+                            copied_bytes,
+                        }) => {
+                            let copied_gb = (copied_bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": "link_unavailable",
+                                    "reason": reason,
+                                    "copied_bytes": copied_bytes,
+                                    "hint": "re-run with --mode copied",
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Hardlinks unavailable: {reason}");
+                                eprintln!(
+                                    "A copied base would require {copied_gb:.2} GB ({copied_bytes} bytes)."
+                                );
+                                eprintln!("Hint: re-run with --mode copied to build a full copy.");
+                            }
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            anyhow::bail!("{e}");
+                        }
+                    }
+                }
+                BaseCmd::List => {
+                    let listings = agora_core::game_base::list_bases(&ctx.paths);
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&listings)?);
+                    } else if listings.is_empty() {
+                        println!("No pinned bases found.");
+                    } else {
+                        for b in listings {
+                            let status = if b.present { "present" } else { "missing" };
+                            println!(
+                                "{} ({}, {}, {} files, {})",
+                                b.manifest.base_id,
+                                b.manifest.mode,
+                                b.manifest.location.display(),
+                                b.manifest.files.len(),
+                                status
+                            );
+                        }
+                    }
+                }
+                BaseCmd::Verify { base_id, full } => {
+                    let manifest_path = ctx.paths.base_manifest_path(&base_id);
+                    if !manifest_path.exists() {
+                        if json {
+                            let out = serde_json::json!({
+                                "error": format!("Base '{base_id}' not found."),
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Error: Base '{base_id}' not found.");
+                        }
+                        std::process::exit(1);
+                    }
+                    let content = std::fs::read_to_string(&manifest_path)?;
+                    let manifest: agora_core::game_base::BaseManifest =
+                        serde_json::from_str(&content)?;
+                    let depth = if full {
+                        agora_core::game_base::VerifyDepth::Full
+                    } else {
+                        agora_core::game_base::VerifyDepth::Quick
+                    };
+                    let ver = agora_core::game_base::verify_base(&manifest, depth);
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&ver)?);
+                    } else if ver.problems.is_empty() {
+                        println!(
+                            "Base '{base_id}' verified clean (checked {}, hashed {}).",
+                            ver.checked, ver.hashed
+                        );
+                    } else {
+                        eprintln!("Base '{base_id}' has {} problem(s):", ver.problems.len());
+                        for p in &ver.problems {
+                            match &p.kind {
+                                agora_core::game_base::ProblemKind::Missing => {
+                                    eprintln!("  - {}: missing", p.path);
+                                }
+                                agora_core::game_base::ProblemKind::SizeChanged {
+                                    expected,
+                                    actual,
+                                } => {
+                                    eprintln!(
+                                        "  - {}: size changed (expected {expected}, actual {actual})",
+                                        p.path
+                                    );
+                                }
+                                agora_core::game_base::ProblemKind::ContentChanged => {
+                                    eprintln!("  - {}: content changed", p.path);
+                                }
+                                agora_core::game_base::ProblemKind::Unexpected => {
+                                    eprintln!("  - {}: unexpected file", p.path);
+                                }
+                            }
+                        }
+                    }
+                    if !ver.problems.is_empty() {
+                        std::process::exit(1);
+                    }
+                }
+                BaseCmd::Remove { base_id } => {
+                    match agora_core::game_base::remove_base(&ctx.paths, &base_id) {
+                        Ok(()) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "removed",
+                                    "base_id": base_id,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!("Base '{base_id}' removed.");
+                            }
+                        }
+                        Err(agora_core::game_base::BaseError::NotFound(_)) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("Base '{base_id}' not found."),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: Base '{base_id}' not found.");
+                            }
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            anyhow::bail!("{e}");
+                        }
+                    }
+                }
+            },
         },
     }
 
@@ -4276,8 +4560,9 @@ fn print_games_list(
             };
 
             println!(
-                "  - {}: {}, {}, {}, {}, {}",
+                "  - {} [{}]: {}, {}, {}, {}, {}",
                 inst.discovered.store,
+                inst.install_id,
                 version_str,
                 build_str,
                 inst.discovered.location.display(),

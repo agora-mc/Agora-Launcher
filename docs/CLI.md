@@ -158,14 +158,18 @@ agora plugin install package ./example-plugin.zip
 
 ### Games
 
-Read-only. Lists the game installs Steam, GOG, Epic and the Microsoft Store know about, each
-classified as a base game, add-on or tool (MASTER_SPEC §26.3). `--json` adds locations, store
-versions, declared executables, volume and capabilities.
+Lists the game installs Steam, GOG, Epic and the Microsoft Store know about, each
+classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinned bases
+(MASTER_SPEC §26.4). `--json` is supported on discovery, listing, and all base commands.
 
 | Command | What it does |
 |---|---|
 | `agora games discover` | List game installs across supported stores |
 | `agora games list` | List supported games and their identified installs |
+| `agora games base build <install-id> [--mode linked\|copied]` | Build a pinned base from an identified install (default mode: linked) |
+| `agora games base list` | List all pinned bases and their availability |
+| `agora games base verify <base-id> [--full]` | Verify base integrity (quick cheap check by default, full hashes all files) |
+| `agora games base remove <base-id>` | Delete a pinned base and its manifest |
 
 ### Catalog
 
