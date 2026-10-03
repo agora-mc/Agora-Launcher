@@ -1,6 +1,6 @@
 # Game contract and manifest v3
 
-This is the first slice of [multi-game support](../../.kilo/plans/MASTER_SPEC.md#26-multi-game-support).
+This is the first slice of [multi-game support](../../MASTER_SPEC.md#26-multi-game-support).
 Minecraft has not moved out of core. There is no package registry, host implementation, store
 discovery, base provisioning or VFS in this slice. The contract remains experimental until
 Minecraft and a tracer from another family exercise it, and the write-isolation spike completes.

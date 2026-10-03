@@ -4,7 +4,7 @@ description: 'Architecture overview of the Agora Minecraft mod launcher monorepo
 ---
 # Agora Architecture
 
-This skill describes the Agora project layout and data flow. Refer to `.kilo/plans/MASTER_SPEC.md` for the authoritative blueprint.
+This skill describes the Agora project layout and data flow. Refer to `MASTER_SPEC.md` for the authoritative blueprint.
 
 ## Monorepo Layout
 

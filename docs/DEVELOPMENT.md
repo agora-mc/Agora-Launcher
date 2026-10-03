@@ -20,7 +20,7 @@ This page covers local builds and validation. Player instructions belong in the 
 | `loader-manifests/` | Pinned loader catalog inputs |
 | `scripts/` | Validation and maintenance helpers |
 | `docs/` | User, developer, release, and operator reference |
-| `.kilo/` | AI tooling configuration; `.kilo/plans/MASTER_SPEC.md` is the engineering blueprint |
+| `.kilo/` | AI tooling configuration; `MASTER_SPEC.md` is the engineering blueprint |
 | `BACKLOG.md` | Phase-by-phase task tracker |
 
 Keep reusable behavior in `agora-core`, and game-specific behavior in that game's package. Desktop, CLI, and MCP hosts should adapt the same services rather than implement parallel business rules.
