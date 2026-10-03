@@ -286,6 +286,17 @@ enum GamesCmd {
         #[command(subcommand)]
         action: BaseCmd,
     },
+    /// Launch a game from its pinned base.
+    Launch {
+        /// Base ID of the pinned base to launch.
+        base_id: String,
+        /// Wait for the game process to exit.
+        #[arg(long)]
+        wait: bool,
+        /// Launch even if the base fails verification.
+        #[arg(long)]
+        launch_anyway: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4342,7 +4353,10 @@ async fn run_command(
                     } else {
                         agora_core::game_base::VerifyDepth::Quick
                     };
-                    let ver = agora_core::game_base::verify_base(&manifest, depth);
+                    let game_def = ctx.games.game(&manifest.runtime.game);
+                    let ver = agora_core::game_base::verify_base(&manifest, depth, &|p| {
+                        game_def.map(|d| d.is_declared_write(p)).unwrap_or(false)
+                    });
                     if json {
                         println!("{}", serde_json::to_string_pretty(&ver)?);
                     } else if ver.problems.is_empty() {
@@ -4350,6 +4364,12 @@ async fn run_command(
                             "Base '{base_id}' verified clean (checked {}, hashed {}).",
                             ver.checked, ver.hashed
                         );
+                        if !ver.game_writes.is_empty() {
+                            println!("Game writes ({}):", ver.game_writes.len());
+                            for w in &ver.game_writes {
+                                println!("  - {w}");
+                            }
+                        }
                     } else {
                         eprintln!("Base '{base_id}' has {} problem(s):", ver.problems.len());
                         for p in &ver.problems {
@@ -4372,6 +4392,12 @@ async fn run_command(
                                 agora_core::game_base::ProblemKind::Unexpected => {
                                     eprintln!("  - {}: unexpected file", p.path);
                                 }
+                            }
+                        }
+                        if !ver.game_writes.is_empty() {
+                            println!("Game writes ({}):", ver.game_writes.len());
+                            for w in &ver.game_writes {
+                                println!("  - {w}");
                             }
                         }
                     }
@@ -4410,6 +4436,298 @@ async fn run_command(
                     }
                 }
             },
+            GamesCmd::Launch {
+                base_id,
+                wait,
+                launch_anyway,
+            } => {
+                let manifest_path = ctx.paths.base_manifest_path(&base_id);
+                if !manifest_path.exists() {
+                    if json {
+                        let out = serde_json::json!({
+                            "error": format!("Base '{base_id}' not found."),
+                            "exitCode": 1,
+                        });
+                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        eprintln!("Error: Base '{base_id}' not found.");
+                    }
+                    std::process::exit(1);
+                }
+                let content = std::fs::read_to_string(&manifest_path)?;
+                let manifest: agora_core::game_base::BaseManifest = serde_json::from_str(&content)?;
+                let game_def = ctx.games.game(&manifest.runtime.game).ok_or_else(|| {
+                    anyhow::anyhow!("Game definition not found for {}", manifest.runtime.game)
+                })?;
+
+                let prepared = match agora_core::game_launch::prepare_base_launch(
+                    &manifest,
+                    game_def,
+                    launch_anyway,
+                ) {
+                    Ok(p) => p,
+                    Err(agora_core::game_launch::LaunchError::BaseDamaged { problems }) => {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": "base_damaged",
+                                "base_id": base_id,
+                                "problems": problems,
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Base '{base_id}' has {} problem(s):", problems.len());
+                            for p in &problems {
+                                match &p.kind {
+                                    agora_core::game_base::ProblemKind::Missing => {
+                                        eprintln!("  - {}: missing", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::SizeChanged {
+                                        expected,
+                                        actual,
+                                    } => {
+                                        eprintln!(
+                                            "  - {}: size changed (expected {expected}, actual {actual})",
+                                            p.path
+                                        );
+                                    }
+                                    agora_core::game_base::ProblemKind::ContentChanged => {
+                                        eprintln!("  - {}: content changed", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::Unexpected => {
+                                        eprintln!("  - {}: unexpected file", p.path);
+                                    }
+                                }
+                            }
+                        }
+                        std::process::exit(1);
+                    }
+                    Err(agora_core::game_launch::LaunchError::NoRecipe) => {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": "no_recipe",
+                                "message": "Game definition has no launch recipe.",
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Error: Game definition has no launch recipe.");
+                        }
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": format!("{e}"),
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Error: {e}");
+                        }
+                        std::process::exit(1);
+                    }
+                };
+
+                let mut launched = match agora_core::game_launch::launch(&prepared) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": format!("{e}"),
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Launch failed: {e}");
+                        }
+                        std::process::exit(1);
+                    }
+                };
+
+                let env_map: std::collections::BTreeMap<String, String> = prepared
+                    .resolved
+                    .env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_string_lossy().to_string()))
+                    .collect();
+
+                if !wait {
+                    if json {
+                        let out = serde_json::json!({
+                            "status": "launched",
+                            "base_id": base_id,
+                            "pid": launched.pid(),
+                            "program": prepared.resolved.program,
+                            "cwd": prepared.resolved.cwd,
+                            "env": env_map,
+                            "warnings": prepared.warnings,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        if !prepared.warnings.is_empty() {
+                            eprintln!(
+                                "Warning: Launching damaged base ({} problem(s)):",
+                                prepared.warnings.len()
+                            );
+                            for p in &prepared.warnings {
+                                match &p.kind {
+                                    agora_core::game_base::ProblemKind::Missing => {
+                                        eprintln!("  - {}: missing", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::SizeChanged {
+                                        expected,
+                                        actual,
+                                    } => {
+                                        eprintln!(
+                                            "  - {}: size changed (expected {expected}, actual {actual})",
+                                            p.path
+                                        );
+                                    }
+                                    agora_core::game_base::ProblemKind::ContentChanged => {
+                                        eprintln!("  - {}: content changed", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::Unexpected => {
+                                        eprintln!("  - {}: unexpected file", p.path);
+                                    }
+                                }
+                            }
+                        }
+                        println!("Program:           {}", prepared.resolved.program.display());
+                        println!("Working Directory: {}", prepared.resolved.cwd.display());
+                        println!("PID:               {}", launched.pid());
+                        if !prepared.resolved.env.is_empty() {
+                            println!("Environment:");
+                            for (k, v) in &prepared.resolved.env {
+                                println!("  {k}={}", v.to_string_lossy());
+                            }
+                        }
+                    }
+                } else {
+                    if !json {
+                        if !prepared.warnings.is_empty() {
+                            eprintln!(
+                                "Warning: Launching damaged base ({} problem(s)):",
+                                prepared.warnings.len()
+                            );
+                            for p in &prepared.warnings {
+                                match &p.kind {
+                                    agora_core::game_base::ProblemKind::Missing => {
+                                        eprintln!("  - {}: missing", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::SizeChanged {
+                                        expected,
+                                        actual,
+                                    } => {
+                                        eprintln!(
+                                            "  - {}: size changed (expected {expected}, actual {actual})",
+                                            p.path
+                                        );
+                                    }
+                                    agora_core::game_base::ProblemKind::ContentChanged => {
+                                        eprintln!("  - {}: content changed", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::Unexpected => {
+                                        eprintln!("  - {}: unexpected file", p.path);
+                                    }
+                                }
+                            }
+                        }
+                        println!("Program:           {}", prepared.resolved.program.display());
+                        println!("Working Directory: {}", prepared.resolved.cwd.display());
+                        println!("PID:               {}", launched.pid());
+                        if !prepared.resolved.env.is_empty() {
+                            println!("Environment:");
+                            for (k, v) in &prepared.resolved.env {
+                                println!("  {k}={}", v.to_string_lossy());
+                            }
+                        }
+                    }
+
+                    let exit_report = agora_core::game_launch::wait_for_exit(
+                        &manifest.location,
+                        &mut launched,
+                        Duration::from_millis(250),
+                        Duration::from_secs(5),
+                    );
+
+                    let ver = agora_core::game_base::verify_base(
+                        &manifest,
+                        agora_core::game_base::VerifyDepth::Quick,
+                        &|p| game_def.is_declared_write(p),
+                    );
+
+                    if json {
+                        let out = serde_json::json!({
+                            "status": "exited",
+                            "base_id": base_id,
+                            "pid": launched.pid(),
+                            "program": prepared.resolved.program,
+                            "cwd": prepared.resolved.cwd,
+                            "env": env_map,
+                            "warnings": prepared.warnings,
+                            "processes": exit_report.processes,
+                            "relaunched_outside": exit_report.relaunched_outside,
+                            "game_writes": ver.game_writes,
+                            "problems": ver.problems,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        println!("Processes running from base:");
+                        if exit_report.processes.is_empty() {
+                            println!("  (none)");
+                        } else {
+                            for p in &exit_report.processes {
+                                println!("  - PID {}: {}", p.pid, p.exe.display());
+                            }
+                        }
+                        if exit_report.relaunched_outside {
+                            eprintln!("Warning: A process with the game's executable name ran outside the base folder (possible relaunch from store).");
+                        }
+                        if !ver.game_writes.is_empty() {
+                            println!("Game writes ({}):", ver.game_writes.len());
+                            for w in &ver.game_writes {
+                                println!("  - {w}");
+                            }
+                        }
+                        if ver.problems.is_empty() {
+                            println!("Base verified clean after launch.");
+                        } else {
+                            eprintln!("Base has {} problem(s) after launch:", ver.problems.len());
+                            for p in &ver.problems {
+                                match &p.kind {
+                                    agora_core::game_base::ProblemKind::Missing => {
+                                        eprintln!("  - {}: missing", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::SizeChanged {
+                                        expected,
+                                        actual,
+                                    } => {
+                                        eprintln!(
+                                            "  - {}: size changed (expected {expected}, actual {actual})",
+                                            p.path
+                                        );
+                                    }
+                                    agora_core::game_base::ProblemKind::ContentChanged => {
+                                        eprintln!("  - {}: content changed", p.path);
+                                    }
+                                    agora_core::game_base::ProblemKind::Unexpected => {
+                                        eprintln!("  - {}: unexpected file", p.path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !ver.problems.is_empty() {
+                        std::process::exit(1);
+                    }
+                }
+            }
         },
     }
 

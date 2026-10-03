@@ -1,0 +1,440 @@
+//! Generic game launch recipe resolution, launch preparation, process execution,
+//! and process watching (MASTER_SPEC §26.3, §26.4, §26.13).
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use agora_game_api::{GameDefinition, GamePath, LaunchRecipe, LaunchValue, UserDataLocation};
+use serde::{Deserialize, Serialize};
+
+use crate::game_base::{verify_base, BaseManifest, BaseProblem, VerifyDepth};
+use crate::process_identity::{self, ProcessIdentity};
+
+/// Host-resolved roots for recipe resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchRoots {
+    pub runtime: PathBuf,
+    pub install: Option<PathBuf>,
+    pub base: Option<PathBuf>,
+}
+
+/// A fully resolved launch configuration ready to be executed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLaunch {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+    pub env: BTreeMap<String, OsString>,
+    pub cwd: PathBuf,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LaunchError {
+    #[error("unsupported launch root: {0}")]
+    UnsupportedRoot(String),
+    #[error("program missing or not a file: {path}")]
+    ProgramMissing { path: PathBuf },
+    #[error("game definition has no launch recipe")]
+    NoRecipe,
+    #[error("base is damaged ({} problem(s))", problems.len())]
+    BaseDamaged { problems: Vec<BaseProblem> },
+    #[error("root '{0}' is not configured")]
+    RootNotConfigured(String),
+    #[error("user data location '{0:?}' could not be resolved")]
+    UserDataNotFound(UserDataLocation),
+    #[error("process capture failed: {0}")]
+    ProcessCapture(String),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// A prepared launch from a base with warnings (if launched anyway).
+#[derive(Debug, Clone)]
+pub struct PreparedLaunch {
+    pub resolved: ResolvedLaunch,
+    pub warnings: Vec<BaseProblem>,
+}
+
+/// A spawned game process and its captured OS identity.
+pub struct LaunchedGame {
+    pub child: std::process::Child,
+    pub identity: ProcessIdentity,
+    pub program: PathBuf,
+}
+
+impl LaunchedGame {
+    pub fn pid(&self) -> u32 {
+        self.identity.pid
+    }
+}
+
+/// A running process whose executable lies inside a target directory.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RunningGameProcess {
+    pub pid: u32,
+    pub exe: PathBuf,
+}
+
+/// Exit and process monitoring summary for a game launch session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionExitReport {
+    pub processes: Vec<RunningGameProcess>,
+    pub relaunched_outside: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Path and recipe resolution
+// ---------------------------------------------------------------------------
+
+fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, LaunchError> {
+    match path {
+        GamePath::Runtime { path } => {
+            let rel = path.as_str();
+            if rel.is_empty() {
+                Ok(roots.runtime.clone())
+            } else {
+                Ok(roots.runtime.join(rel))
+            }
+        }
+        GamePath::Base { path, .. } => {
+            let Some(base_root) = &roots.base else {
+                return Err(LaunchError::RootNotConfigured("base".to_string()));
+            };
+            let rel = path.as_str();
+            if rel.is_empty() {
+                Ok(base_root.clone())
+            } else {
+                Ok(base_root.join(rel))
+            }
+        }
+        GamePath::Install { path, .. } => {
+            let Some(install_root) = &roots.install else {
+                return Err(LaunchError::RootNotConfigured("install".to_string()));
+            };
+            let rel = path.as_str();
+            if rel.is_empty() {
+                Ok(install_root.clone())
+            } else {
+                Ok(install_root.join(rel))
+            }
+        }
+        GamePath::UserData { location, path } => {
+            let dir = match location {
+                UserDataLocation::Documents => dirs::document_dir(),
+                UserDataLocation::RoamingAppData => dirs::data_dir(),
+                UserDataLocation::LocalAppData => dirs::data_local_dir(),
+                UserDataLocation::Home => dirs::home_dir(),
+            };
+            let Some(base) = dir else {
+                return Err(LaunchError::UserDataNotFound(location.clone()));
+            };
+            let rel = path.as_str();
+            if rel.is_empty() {
+                Ok(base)
+            } else {
+                Ok(base.join(rel))
+            }
+        }
+        GamePath::Instance { .. } => Err(LaunchError::UnsupportedRoot("instance".to_string())),
+        GamePath::Layer { .. } => Err(LaunchError::UnsupportedRoot("layer".to_string())),
+        GamePath::RuntimeComponent { .. } => Err(LaunchError::UnsupportedRoot(
+            "runtime_component".to_string(),
+        )),
+        GamePath::Artifact { .. } => Err(LaunchError::UnsupportedRoot("artifact".to_string())),
+    }
+}
+
+fn resolve_launch_value(val: &LaunchValue, roots: &LaunchRoots) -> Result<OsString, LaunchError> {
+    match val {
+        LaunchValue::Literal { value } => Ok(OsString::from(value)),
+        LaunchValue::Path {
+            path,
+            prefix,
+            suffix,
+        } => {
+            let resolved = resolve_game_path(path, roots)?;
+            let mut s = OsString::from(prefix);
+            s.push(resolved.as_os_str());
+            s.push(suffix);
+            Ok(s)
+        }
+        LaunchValue::PathList { paths, prefix } => {
+            #[cfg(windows)]
+            const SEP: &str = ";";
+            #[cfg(not(windows))]
+            const SEP: &str = ":";
+
+            let mut s = OsString::from(prefix);
+            for (i, p) in paths.iter().enumerate() {
+                let resolved = resolve_game_path(p, roots)?;
+                if i > 0 {
+                    s.push(SEP);
+                }
+                s.push(resolved.as_os_str());
+            }
+            Ok(s)
+        }
+    }
+}
+
+/// Resolve a declarative launch recipe against available roots.
+pub fn resolve_recipe(
+    recipe: &LaunchRecipe,
+    roots: &LaunchRoots,
+) -> Result<ResolvedLaunch, LaunchError> {
+    let program = resolve_game_path(&recipe.executable, roots)?;
+    if !program.is_file() {
+        return Err(LaunchError::ProgramMissing { path: program });
+    }
+
+    let cwd = resolve_game_path(&recipe.working_directory, roots)?;
+
+    let mut args = Vec::with_capacity(recipe.arguments.len());
+    for arg in &recipe.arguments {
+        args.push(resolve_launch_value(arg, roots)?);
+    }
+
+    let mut env = BTreeMap::new();
+    for (k, v) in &recipe.environment {
+        env.insert(k.clone(), resolve_launch_value(v, roots)?);
+    }
+
+    Ok(ResolvedLaunch {
+        program,
+        args,
+        env,
+        cwd,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Base launch preparation
+// ---------------------------------------------------------------------------
+
+/// Prepare a launch from a pinned base, verifying base integrity and setting up store environment.
+pub fn prepare_base_launch(
+    manifest: &BaseManifest,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+) -> Result<PreparedLaunch, LaunchError> {
+    let Some(recipe) = &definition.launch else {
+        return Err(LaunchError::NoRecipe);
+    };
+
+    let ver = verify_base(manifest, VerifyDepth::Quick, &|p| {
+        definition.is_declared_write(p)
+    });
+    if !ver.problems.is_empty() && !launch_anyway {
+        return Err(LaunchError::BaseDamaged {
+            problems: ver.problems,
+        });
+    }
+    let warnings = ver.problems;
+
+    let roots = LaunchRoots {
+        runtime: manifest.location.clone(),
+        install: Some(manifest.source_location.clone()),
+        base: Some(manifest.location.clone()),
+    };
+
+    let mut resolved = resolve_recipe(recipe, &roots)?;
+
+    // Store launch environment:
+    // for runtime.store == "steam", set SteamAppId and SteamGameId to the store product.
+    if manifest.runtime.store.as_str() == "steam" {
+        let product = manifest.source_product.as_deref().or_else(|| {
+            definition
+                .stores
+                .iter()
+                .find(|s| s.store == manifest.runtime.store)
+                .map(|s| s.product.as_str())
+        });
+        if let Some(prod) = product {
+            resolved
+                .env
+                .insert("SteamAppId".to_string(), OsString::from(prod));
+            resolved
+                .env
+                .insert("SteamGameId".to_string(), OsString::from(prod));
+        }
+    }
+
+    Ok(PreparedLaunch { resolved, warnings })
+}
+
+// ---------------------------------------------------------------------------
+// Spawning and process watching
+// ---------------------------------------------------------------------------
+
+/// Spawn the game process according to a prepared launch.
+pub fn launch(prepared: &PreparedLaunch) -> Result<LaunchedGame, LaunchError> {
+    let mut cmd = std::process::Command::new(&prepared.resolved.program);
+    cmd.args(&prepared.resolved.args);
+    cmd.current_dir(&prepared.resolved.cwd);
+    cmd.envs(&prepared.resolved.env);
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    let child = cmd.spawn().map_err(LaunchError::Io)?;
+    let pid = child.id();
+    let identity =
+        process_identity::capture(pid).map_err(|e| LaunchError::ProcessCapture(format!("{e}")))?;
+
+    Ok(LaunchedGame {
+        child,
+        identity,
+        program: prepared.resolved.program.clone(),
+    })
+}
+
+fn clean_path_for_comparison(p: &Path) -> PathBuf {
+    let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let s = canon.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        canon
+    }
+}
+
+/// Check whether `path` is inside `dir` (canonicalised, case-insensitive on Windows).
+pub fn is_subpath(path: &Path, dir: &Path) -> bool {
+    let norm_path = clean_path_for_comparison(path);
+    let norm_dir = clean_path_for_comparison(dir);
+
+    #[cfg(windows)]
+    {
+        let p_str = norm_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let mut d_str = norm_dir
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        if !d_str.ends_with('/') {
+            d_str.push('/');
+        }
+        p_str.starts_with(&d_str)
+    }
+    #[cfg(not(windows))]
+    {
+        norm_path.starts_with(&norm_dir)
+    }
+}
+
+/// List all running processes whose executable path lies inside `dir`.
+pub fn processes_running_from(dir: &Path) -> Vec<RunningGameProcess> {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes();
+    let mut running = Vec::new();
+    for (pid, process) in sys.processes() {
+        if let Some(exe) = process.exe() {
+            if is_subpath(exe, dir) {
+                running.push(RunningGameProcess {
+                    pid: pid.as_u32(),
+                    exe: exe.to_path_buf(),
+                });
+            }
+        }
+    }
+    running.sort_by_key(|p| p.pid);
+    running
+}
+
+/// Wait for a launched game to exit and ensure no processes are running from `dir` for `grace`.
+pub fn wait_for_exit(
+    dir: &Path,
+    launched: &mut LaunchedGame,
+    poll: Duration,
+    grace: Duration,
+) -> SessionExitReport {
+    let main_exe_name = launched
+        .program
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut seen_processes: Vec<RunningGameProcess> = Vec::new();
+    if is_subpath(&launched.program, dir) {
+        seen_processes.push(RunningGameProcess {
+            pid: launched.pid(),
+            exe: launched.program.clone(),
+        });
+    }
+
+    let mut relaunched_outside = false;
+    let mut child_exited = false;
+    let mut last_activity = std::time::Instant::now();
+
+    loop {
+        // 1. Check child status
+        if !child_exited {
+            match launched.child.try_wait() {
+                Ok(Some(_status)) => {
+                    child_exited = true;
+                    last_activity = std::time::Instant::now();
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    child_exited = true;
+                    last_activity = std::time::Instant::now();
+                }
+            }
+        }
+
+        // 2. Poll processes on system
+        let mut sys = sysinfo::System::new();
+        sys.refresh_processes();
+
+        let mut current_in_dir_count = 0;
+        for (pid, process) in sys.processes() {
+            if let Some(exe) = process.exe() {
+                if is_subpath(exe, dir) {
+                    current_in_dir_count += 1;
+                    let entry = RunningGameProcess {
+                        pid: pid.as_u32(),
+                        exe: exe.to_path_buf(),
+                    };
+                    if !seen_processes.contains(&entry) {
+                        seen_processes.push(entry);
+                    }
+                } else if !main_exe_name.is_empty()
+                    // Only a process started by this launch counts: a copy of the
+                    // game the user already had running elsewhere is not a relaunch.
+                    && process.start_time() >= launched.identity.start_time
+                {
+                    if let Some(name) = exe.file_name().and_then(|n| n.to_str()) {
+                        #[cfg(windows)]
+                        let matches_name = name.eq_ignore_ascii_case(&main_exe_name);
+                        #[cfg(not(windows))]
+                        let matches_name = name == main_exe_name;
+                        if matches_name {
+                            relaunched_outside = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if current_in_dir_count > 0 || !child_exited {
+            last_activity = std::time::Instant::now();
+        }
+
+        // 3. Exit condition: child exited AND no processes in dir for >= grace
+        if child_exited && current_in_dir_count == 0 && last_activity.elapsed() >= grace {
+            break;
+        }
+
+        std::thread::sleep(poll);
+    }
+
+    seen_processes.sort_by_key(|p| p.pid);
+
+    SessionExitReport {
+        processes: seen_processes,
+        relaunched_outside,
+    }
+}

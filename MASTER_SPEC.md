@@ -3340,6 +3340,31 @@ without the Paradox Launcher, and Minecraft Dungeons starts from its own executa
 tracking reuses `process_identity` and `process_session_manager`, and treats "the game kept running
 after it was quitted" as a normal state to resolve rather than an error.
 
+**Launching, as built (Phase 2, slice 4).** `agora_core::game_launch`, shown by
+`agora games launch <base> [--wait] [--launch-anyway]`:
+
+- The definition's recipe resolves against host roots (runtime and base are the base folder,
+  install the store folder, user data through the OS); roots that need instances or layers are
+  refused until they exist. A game whose package prepares its own recipe (Minecraft) has none.
+- **Before launch, the base is quick-verified.** Problems refuse the launch, naming each file;
+  `--launch-anyway` is the explicit override, with the problems shown as warnings.
+- **Declared writes** (`GameDefinition::declared_writes`; Skyrim: `d3dx9_42.log`) are files the
+  game writes into its own folder. Until Phase 3's write layer, they land in the base's own copy and
+  verification reports them as game writes, not damage. A declared write may never match a linked
+  file: that would write into the store install, so `build_base` refuses such a definition.
+- **Running means a process whose executable is inside the base**, not the spawned PID, because
+  launchers re-exec. A copy of the game's executable started after the launch from anywhere else is
+  reported as having relaunched outside the base.
+- Steam games get `SteamAppId`/`SteamGameId` set to their app id, as MO2 does, so the relocated
+  game attaches to Steam instead of relaunching from Steam's folder.
+- **Measured on the spike machine:** vanilla Skyrim reached the main menu from both bases. GOG
+  1.6.1179 ran as one process from the base and wrote nothing into it. Steam 1.6.1170 ran from the
+  base, did not relaunch through Steam, and wrote only `d3dx9_42.log`: the file that, in the spike,
+  went through a hardlink into the real Steam install (F2), now in the base's own copy. Both store
+  installs were unchanged afterwards (GOG's only difference was an archive timestamp from an earlier
+  deliberate tamper test). With an archive patched in place, launch was refused naming
+  `Data/ccQDRSSE002-Firewood.bsa`, exit code 1, and no game process started.
+
 **Discovery, as built (Phase 2, slice 1).** `agora_core::game_discovery`, shown by
 `agora games discover`. Read-only: unlike the spike, it writes no probe files. Each store's
 classification uses the signal that store itself records, measured on the spike machine:

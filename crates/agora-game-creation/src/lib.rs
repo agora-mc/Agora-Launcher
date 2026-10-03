@@ -73,6 +73,9 @@ mod tests {
             game.linked_archive_patterns,
             vec!["Data/*.bsa", "Data/*.esm", "Data/*.esl", "Data/*.bik",]
         );
+        assert_eq!(game.declared_writes, vec!["d3dx9_42.log"]);
+        assert!(game.is_declared_write("d3dx9_42.log"));
+        assert!(game.is_declared_write("D3DX9_42.LOG"));
 
         // Launch recipe
         let launch = game.launch.as_ref().expect("launch recipe should be Some");

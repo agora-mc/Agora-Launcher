@@ -68,6 +68,8 @@ pub struct BaseManifest {
     pub runtime: RuntimeIdentity,
     pub mode: BaseMode,
     pub source_install: InstallId,
+    #[serde(default)]
+    pub source_product: Option<String>,
     pub source_location: PathBuf,
     pub location: PathBuf, // the base's own folder
     pub created_unix_ms: i64,
@@ -129,6 +131,8 @@ pub struct BaseProblem {
 pub struct BaseVerification {
     pub checked: usize,
     pub hashed: usize,
+    #[serde(default)]
+    pub game_writes: Vec<String>,
     pub problems: Vec<BaseProblem>,
 }
 
@@ -146,6 +150,8 @@ pub enum BaseError {
     LinkUnavailable { reason: String, copied_bytes: u64 },
     #[error("base not found: {0}")]
     NotFound(String),
+    #[error("declared write matches linked file: {path}")]
+    DeclaredWriteLinked { path: String },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -515,6 +521,17 @@ pub fn build_base(
         }
     }
 
+    // Refuse definition where any file it would link also matches declared_writes
+    if mode == BaseMode::Linked {
+        for entry in &entries {
+            if entry.is_archive && definition.is_declared_write(&entry.rel_path) {
+                return Err(BaseError::DeclaredWriteLinked {
+                    path: entry.rel_path.clone(),
+                });
+            }
+        }
+    }
+
     std::fs::create_dir_all(&base_root)?;
 
     // 4. Staging folder <root>/<base_id>.partial-<unique>
@@ -630,6 +647,7 @@ pub fn build_base(
         runtime: runtime.clone(),
         mode,
         source_install: install.install_id.clone(),
+        source_product: Some(install.discovered.product.clone()),
         source_location: source_dir.clone(),
         location: final_base_dir,
         created_unix_ms,
@@ -753,21 +771,34 @@ fn walk_base_dir(base_root: &Path, rel_dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-pub fn verify_base(manifest: &BaseManifest, depth: VerifyDepth) -> BaseVerification {
+pub fn verify_base(
+    manifest: &BaseManifest,
+    depth: VerifyDepth,
+    is_declared_write: &dyn Fn(&str) -> bool,
+) -> BaseVerification {
     let mut problems = Vec::new();
+    let mut game_writes = Vec::new();
     let mut checked = 0;
     let mut hashed = 0;
 
     if !manifest.location.exists() || !manifest.location.is_dir() {
         for file in &manifest.files {
-            problems.push(BaseProblem {
-                path: file.path.clone(),
-                kind: ProblemKind::Missing,
-            });
+            if is_declared_write(&file.path) {
+                game_writes.push(file.path.clone());
+            } else {
+                problems.push(BaseProblem {
+                    path: file.path.clone(),
+                    kind: ProblemKind::Missing,
+                });
+            }
         }
+        game_writes.sort();
+        game_writes.dedup();
+        problems.sort_by(|a, b| a.path.cmp(&b.path));
         return BaseVerification {
             checked: manifest.files.len(),
             hashed: 0,
+            game_writes,
             problems,
         };
     }
@@ -778,31 +809,43 @@ pub fn verify_base(manifest: &BaseManifest, depth: VerifyDepth) -> BaseVerificat
         let meta = match std::fs::symlink_metadata(&file_path) {
             Ok(m) => m,
             Err(_) => {
-                problems.push(BaseProblem {
-                    path: file.path.clone(),
-                    kind: ProblemKind::Missing,
-                });
+                if is_declared_write(&file.path) {
+                    game_writes.push(file.path.clone());
+                } else {
+                    problems.push(BaseProblem {
+                        path: file.path.clone(),
+                        kind: ProblemKind::Missing,
+                    });
+                }
                 continue;
             }
         };
 
         if !meta.is_file() {
-            problems.push(BaseProblem {
-                path: file.path.clone(),
-                kind: ProblemKind::Missing,
-            });
+            if is_declared_write(&file.path) {
+                game_writes.push(file.path.clone());
+            } else {
+                problems.push(BaseProblem {
+                    path: file.path.clone(),
+                    kind: ProblemKind::Missing,
+                });
+            }
             continue;
         }
 
         let actual_size = meta.len();
         if actual_size != file.size {
-            problems.push(BaseProblem {
-                path: file.path.clone(),
-                kind: ProblemKind::SizeChanged {
-                    expected: file.size,
-                    actual: actual_size,
-                },
-            });
+            if is_declared_write(&file.path) {
+                game_writes.push(file.path.clone());
+            } else {
+                problems.push(BaseProblem {
+                    path: file.path.clone(),
+                    kind: ProblemKind::SizeChanged {
+                        expected: file.size,
+                        actual: actual_size,
+                    },
+                });
+            }
             continue;
         }
 
@@ -817,11 +860,17 @@ pub fn verify_base(manifest: &BaseManifest, depth: VerifyDepth) -> BaseVerificat
                     hashed += 1;
                     if let Ok(actual_hash) = hash_file(&file_path) {
                         if actual_hash != file.sha256 {
-                            problems.push(BaseProblem {
-                                path: file.path.clone(),
-                                kind: ProblemKind::ContentChanged,
-                            });
+                            if is_declared_write(&file.path) {
+                                game_writes.push(file.path.clone());
+                            } else {
+                                problems.push(BaseProblem {
+                                    path: file.path.clone(),
+                                    kind: ProblemKind::ContentChanged,
+                                });
+                            }
                         }
+                    } else if is_declared_write(&file.path) {
+                        game_writes.push(file.path.clone());
                     } else {
                         problems.push(BaseProblem {
                             path: file.path.clone(),
@@ -834,11 +883,17 @@ pub fn verify_base(manifest: &BaseManifest, depth: VerifyDepth) -> BaseVerificat
                 hashed += 1;
                 if let Ok(actual_hash) = hash_file(&file_path) {
                     if actual_hash != file.sha256 {
-                        problems.push(BaseProblem {
-                            path: file.path.clone(),
-                            kind: ProblemKind::ContentChanged,
-                        });
+                        if is_declared_write(&file.path) {
+                            game_writes.push(file.path.clone());
+                        } else {
+                            problems.push(BaseProblem {
+                                path: file.path.clone(),
+                                kind: ProblemKind::ContentChanged,
+                            });
+                        }
                     }
+                } else if is_declared_write(&file.path) {
+                    game_writes.push(file.path.clone());
                 } else {
                     problems.push(BaseProblem {
                         path: file.path.clone(),
@@ -855,18 +910,25 @@ pub fn verify_base(manifest: &BaseManifest, depth: VerifyDepth) -> BaseVerificat
     walk_base_dir(&manifest.location, Path::new(""), &mut actual_files);
     for actual_rel in actual_files {
         if !manifest_file_set.contains(actual_rel.as_str()) {
-            problems.push(BaseProblem {
-                path: actual_rel,
-                kind: ProblemKind::Unexpected,
-            });
+            if is_declared_write(&actual_rel) {
+                game_writes.push(actual_rel);
+            } else {
+                problems.push(BaseProblem {
+                    path: actual_rel,
+                    kind: ProblemKind::Unexpected,
+                });
+            }
         }
     }
 
+    game_writes.sort();
+    game_writes.dedup();
     problems.sort_by(|a, b| a.path.cmp(&b.path));
 
     BaseVerification {
         checked,
         hashed,
+        game_writes,
         problems,
     }
 }

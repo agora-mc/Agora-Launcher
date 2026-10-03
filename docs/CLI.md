@@ -170,6 +170,7 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games base list` | List all pinned bases and their availability |
 | `agora games base verify <base-id> [--full]` | Verify base integrity (quick cheap check by default, full hashes all files) |
 | `agora games base remove <base-id>` | Delete a pinned base and its manifest |
+| `agora games launch <base-id> [--wait] [--launch-anyway]` | Launch a game from its pinned base |
 
 ### Catalog
 

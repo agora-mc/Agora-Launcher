@@ -268,6 +268,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "base", "list"],
     &["games", "base", "verify"],
     &["games", "base", "remove"],
+    &["games", "launch"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -3070,4 +3071,8 @@ fn games_base_cli_list_verify_remove() {
     // 4. Build with nonexistent install -> error
     let output_build = run_agora(&data_dir, &["games", "base", "build", "steam:nonexistent"]);
     assert!(!output_build.status.success());
+
+    // 5. Launch with nonexistent base -> error
+    let output_launch = run_agora(&data_dir, &["games", "launch", "nonexistent-base"]);
+    assert!(!output_launch.status.success());
 }

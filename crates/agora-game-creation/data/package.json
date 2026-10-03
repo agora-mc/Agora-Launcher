@@ -54,6 +54,9 @@
         "Data/*.esm",
         "Data/*.esl",
         "Data/*.bik"
+      ],
+      "declared_writes": [
+        "d3dx9_42.log"
       ]
     }
   ],

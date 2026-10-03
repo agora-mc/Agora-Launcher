@@ -60,6 +60,7 @@ fn dummy_game(id: &str, stores: Vec<(&str, &str)>) -> GameDefinition {
         user_files: vec![],
         save_paths: vec![],
         linked_archive_patterns: vec![],
+        declared_writes: vec![],
     }
 }
 
@@ -417,6 +418,7 @@ fn spike_machine_skyrim_steam_and_gog_identification() {
         user_files: vec![],
         save_paths: vec![],
         linked_archive_patterns: vec![],
+        declared_writes: vec![],
     };
 
     builder
@@ -564,6 +566,7 @@ fn unreadable_executable_falls_back_to_store_record_and_nothing_usable_gives_uni
         user_files: vec![],
         save_paths: vec![],
         linked_archive_patterns: vec![],
+        declared_writes: vec![],
     };
     builder
         .add(

@@ -543,6 +543,7 @@ pub mod test_support {
                 user_files: Vec::new(),
                 save_paths: Vec::new(),
                 linked_archive_patterns: Vec::new(),
+                declared_writes: Vec::new(),
             }],
             frameworks: Vec::new(),
             tools: Vec::new(),

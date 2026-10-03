@@ -94,6 +94,7 @@ fn test_definition() -> GameDefinition {
             "Data/*.esl".into(),
             "Data/*.bik".into(),
         ],
+        declared_writes: vec![],
     }
 }
 
@@ -358,11 +359,11 @@ fn linked_and_copied_base_build_and_snapshot_rule() {
     assert_eq!(snapshot_tree(&install_dir), snapshot_before);
 
     // 3. Quick verify of a fresh base -> no problems
-    let ver = verify_base(&manifest, VerifyDepth::Quick);
+    let ver = verify_base(&manifest, VerifyDepth::Quick, &|_| false);
     assert_eq!(ver.problems, vec![], "fresh base should verify cleanly");
 
     // Full verify of a fresh base -> no problems
-    let ver_full = verify_base(&manifest, VerifyDepth::Full);
+    let ver_full = verify_base(&manifest, VerifyDepth::Full, &|_| false);
     assert_eq!(
         ver_full.problems,
         vec![],
@@ -444,7 +445,7 @@ fn in_place_store_patch_and_store_update_by_replacement() {
     let manifest = outcome.manifest();
 
     // Verify initially clean
-    let ver0 = verify_base(manifest, VerifyDepth::Quick);
+    let ver0 = verify_base(manifest, VerifyDepth::Quick, &|_| false);
     assert!(ver0.problems.is_empty());
 
     // 1. In-place store patch: append to the source's Data/A.bsa (a hardlink target)
@@ -458,7 +459,7 @@ fn in_place_store_patch_and_store_update_by_replacement() {
         f.write_all(b"CORRUPTED PATCH BY STEAM").unwrap();
     }
 
-    let ver_patch = verify_base(manifest, VerifyDepth::Quick);
+    let ver_patch = verify_base(manifest, VerifyDepth::Quick, &|_| false);
     assert!(!ver_patch.problems.is_empty());
     assert!(
         ver_patch.problems.iter().any(|p| p.path == "Data/A.bsa"
@@ -476,7 +477,7 @@ fn in_place_store_patch_and_store_update_by_replacement() {
     std::fs::rename(&tmp_file, install_dir.join("Data/c.esl")).unwrap();
 
     // Verify base: Data/c.esl in the base is frozen and still completely valid!
-    let bsa_problem_only = verify_base(manifest, VerifyDepth::Quick);
+    let bsa_problem_only = verify_base(manifest, VerifyDepth::Quick, &|_| false);
     assert!(
         !bsa_problem_only
             .problems
@@ -537,14 +538,14 @@ fn modified_time_set_back_detection() {
     drop(f);
 
     // Quick verify passes because size and modified time match
-    let q_ver = verify_base(manifest, VerifyDepth::Quick);
+    let q_ver = verify_base(manifest, VerifyDepth::Quick, &|_| false);
     assert!(
         !q_ver.problems.iter().any(|p| p.path == "Game.exe"),
         "quick verify skips hashing when size and mtime match"
     );
 
     // Full verify reports ContentChanged
-    let f_ver = verify_base(manifest, VerifyDepth::Full);
+    let f_ver = verify_base(manifest, VerifyDepth::Full, &|_| false);
     assert!(
         f_ver
             .problems
@@ -596,7 +597,7 @@ fn missing_file_and_unexpected_file_detection() {
     )
     .unwrap();
 
-    let ver = verify_base(manifest, VerifyDepth::Quick);
+    let ver = verify_base(manifest, VerifyDepth::Quick, &|_| false);
     assert!(
         ver.problems
             .iter()
@@ -615,7 +616,7 @@ fn missing_file_and_unexpected_file_detection() {
         location: tmp.path().join("non_existent_base_dir"),
         ..manifest.clone()
     };
-    let ver_missing = verify_base(&missing_base_manifest, VerifyDepth::Quick);
+    let ver_missing = verify_base(&missing_base_manifest, VerifyDepth::Quick, &|_| false);
     assert_eq!(ver_missing.problems.len(), manifest.files.len());
     assert!(ver_missing
         .problems
@@ -857,7 +858,7 @@ fn an_interrupted_build_does_not_brick_its_base_id() {
     )
     .unwrap();
     assert!(matches!(again, BuildOutcome::Built { .. }));
-    assert!(verify_base(again.manifest(), VerifyDepth::Full)
+    assert!(verify_base(again.manifest(), VerifyDepth::Full, &|_| false)
         .problems
         .is_empty());
     assert_eq!(snapshot_tree(&install_dir), before);
@@ -878,4 +879,142 @@ fn base_id_parts_never_start_or_end_with_a_dot() {
         );
     }
     assert_eq!(sanitize_base_id_part("1.6.1179.0"), "1.6.1179.0");
+}
+
+#[test]
+fn build_base_refuses_declared_write_matching_linked_file() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    let install_dir = tmp.path().join("source_install");
+    let base_root = tmp.path().join("bases_root");
+
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&install_dir).unwrap();
+    let paths = AppPaths::from_root(data_dir);
+    setup_fake_install(&install_dir);
+
+    let mut def = test_definition();
+    // Data/A.bsa matches linked_archive_patterns ("Data/*.bsa")
+    def.declared_writes = vec!["Data/*.bsa".into()];
+
+    let runtime = RuntimeIdentity {
+        game: GameId::new("skyrim-se").unwrap(),
+        store: StoreId::new("steam").unwrap(),
+        version: "1.0.0".into(),
+        build: None,
+    };
+    let install = make_test_install(&install_dir, runtime);
+
+    let err = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Linked,
+        Some(&base_root),
+        &|_| {},
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, BaseError::DeclaredWriteLinked { ref path } if path == "Data/A.bsa"),
+        "expected DeclaredWriteLinked error for Data/A.bsa, got: {err:?}"
+    );
+}
+
+#[test]
+fn declared_writes_in_verification() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    let install_dir = tmp.path().join("source_install");
+    let base_root = tmp.path().join("bases_root");
+
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&install_dir).unwrap();
+    let paths = AppPaths::from_root(data_dir);
+    setup_fake_install(&install_dir);
+
+    // Write d3dx9_42.log into the install
+    std::fs::write(install_dir.join("d3dx9_42.log"), b"original log content").unwrap();
+
+    let mut def = test_definition();
+    def.declared_writes = vec!["d3dx9_42.log".into()];
+
+    let runtime = RuntimeIdentity {
+        game: GameId::new("skyrim-se").unwrap(),
+        store: StoreId::new("steam").unwrap(),
+        version: "1.0.0".into(),
+        build: None,
+    };
+    let install = make_test_install(&install_dir, runtime);
+
+    let outcome = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&base_root),
+        &|_| {},
+    )
+    .unwrap();
+    let manifest = outcome.manifest();
+
+    // Fresh verify -> clean, no game writes
+    let ver_fresh = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    assert!(ver_fresh.problems.is_empty());
+    assert!(ver_fresh.game_writes.is_empty());
+
+    // 1. Changed d3dx9_42.log (case variant D3DX9_42.LOG) -> game_writes, NOT problems
+    std::fs::write(
+        manifest.location.join("d3dx9_42.log"),
+        b"rewritten log by game with different content and size",
+    )
+    .unwrap();
+
+    let ver_changed = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    assert!(
+        ver_changed.problems.is_empty(),
+        "changed declared write must not be a problem"
+    );
+    assert_eq!(ver_changed.game_writes, vec!["d3dx9_42.log"]);
+
+    // 2. Deleted d3dx9_42.log -> game_writes, NOT problems
+    std::fs::remove_file(manifest.location.join("d3dx9_42.log")).unwrap();
+
+    let ver_deleted = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    assert!(
+        ver_deleted.problems.is_empty(),
+        "deleted declared write must not be a problem"
+    );
+    assert_eq!(ver_deleted.game_writes, vec!["d3dx9_42.log"]);
+
+    // 3. New / unexpected file matching declared write in uppercase
+    std::fs::write(
+        manifest.location.join("D3DX9_42.LOG"),
+        b"newly created uppercase log",
+    )
+    .unwrap();
+
+    let ver_new = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    // Note: on Windows, d3dx9_42.log and D3DX9_42.LOG refer to the same file.
+    assert!(
+        ver_new.problems.is_empty(),
+        "new declared write must not be a problem"
+    );
+    assert!(
+        ver_new
+            .game_writes
+            .iter()
+            .any(|w| w.eq_ignore_ascii_case("d3dx9_42.log")),
+        "must be listed in game_writes"
+    );
+
+    // 4. Any other unexpected change IS a problem
+    std::fs::write(manifest.location.join("stray.dll"), b"bad dll").unwrap();
+    let ver_with_stray = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    assert_eq!(ver_with_stray.problems.len(), 1);
+    assert_eq!(ver_with_stray.problems[0].path, "stray.dll");
+    assert!(ver_with_stray
+        .game_writes
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case("d3dx9_42.log")));
 }

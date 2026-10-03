@@ -326,6 +326,8 @@ pub struct GameDefinition {
     pub user_files: Vec<UserFileMapping>,
     pub save_paths: Vec<GamePath>,
     pub linked_archive_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_writes: Vec<String>,
 }
 
 impl GameDefinition {
@@ -349,6 +351,18 @@ impl GameDefinition {
         };
         let normalized = rel.as_str().to_ascii_lowercase();
         self.linked_archive_patterns
+            .iter()
+            .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &normalized))
+    }
+
+    /// Whether `path` (relative to the runtime root) matches a declared write pattern.
+    /// Runs on the normalized path, comparing ASCII case-insensitively.
+    pub fn is_declared_write(&self, path: &str) -> bool {
+        let Ok(rel) = RelPath::new(path) else {
+            return false;
+        };
+        let normalized = rel.as_str().to_ascii_lowercase();
+        self.declared_writes
             .iter()
             .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &normalized))
     }
@@ -553,6 +567,7 @@ mod tests {
             user_files: vec![],
             save_paths: vec![],
             linked_archive_patterns: vec![],
+            declared_writes: vec![],
         };
 
         // Normal valid paths
@@ -591,6 +606,7 @@ mod tests {
                 "Data/*.esl".into(),
                 "Data/*.bik".into(),
             ],
+            declared_writes: vec![],
         };
 
         // Matches exact and mixed cases
@@ -607,5 +623,37 @@ mod tests {
         assert!(!def.is_linked_archive("Data/plugin.dll"));
         // Path traversal rejected
         assert!(!def.is_linked_archive("Data/../../evil.bsa"));
+    }
+
+    #[test]
+    fn declared_write_matching_is_case_insensitive() {
+        let def = GameDefinition {
+            id: GameId::new("skyrim-se").unwrap(),
+            name: "Skyrim SE".into(),
+            stores: vec![],
+            version_sources: vec![],
+            deployment: DeploymentStrategy::VirtualFileSystem,
+            content_rules: vec![],
+            native_code_patterns: vec![],
+            framework_ids: vec![],
+            tool_ids: vec![],
+            launch: None,
+            log_paths: vec![],
+            crash_paths: vec![],
+            user_files: vec![],
+            save_paths: vec![],
+            linked_archive_patterns: vec![],
+            declared_writes: vec!["d3dx9_42.log".into(), "logs/*.log".into()],
+        };
+
+        assert!(def.is_declared_write("d3dx9_42.log"));
+        assert!(def.is_declared_write("D3DX9_42.LOG"));
+        assert!(def.is_declared_write("D3dx9_42.log"));
+        assert!(def.is_declared_write("logs/render.log"));
+        assert!(def.is_declared_write("LOGS\\RENDER.LOG"));
+
+        assert!(!def.is_declared_write("SkyrimSE.exe"));
+        assert!(!def.is_declared_write("Data/d3dx9_42.log"));
+        assert!(!def.is_declared_write("../d3dx9_42.log"));
     }
 }
