@@ -3439,11 +3439,30 @@ build|list|verify|remove`:
   size changed`), as was a stray file written into the base; an `.esl` the "store" replaced by
   rename left the base clean. Restoring the archive's bytes changed its modified time, so the quick
   check hashed that one file and passed.
-- **Open: a store folder is not always pristine.** 130 MB of the Steam base's copies are
-  `Data/SSEEdit Backups/`, left by a mod tool, and its masters were cleaned in place by xEdit
-  before Agora saw them. A base records exactly what is there. Whether a game definition should
-  exclude known tool leftovers, and whether Agora should check an install against the store's own
-  file list before pinning it, are open questions (§26.15).
+- **A store folder is not always pristine** (decided with the user, 2026-10-03). 130 MB of the
+  Steam base's copies were `Data/SSEEdit Backups/`, left by a mod tool, and its masters had been
+  cleaned in place by xEdit before Agora saw them. So:
+  - **Known tool leftovers are skipped by default.** A game definition lists them (Skyrim:
+    `Data/SSEEdit Backups/`, xEdit's `*.backup.*` files), the manifest records each skipped path,
+    and a setting turns skipping off for users who want the folder pinned exactly as found.
+  - **Agora offers to check an install before pinning it,** against the store's own file list
+    (Steam depot manifests, GOG's build files), and offers the store's repair when it differs.
+    It is an offer the user can decline: pinning a deliberately modified install is legitimate
+    (*Modding is user customization*), and the base then says it was modified.
+
+**Fetching older versions (planned).** Pinning keeps a version; fetching gets one back, for the
+user whose store already updated past the version their mods need. Researched 2026-10-03:
+
+| Route | What exists | Cost |
+|---|---|---|
+| **Store branches and rollback** | Many Steam games keep old versions as beta branches (listed in `appinfo.vdf`); GOG Galaxy offers rollback, and GOG's content system lists a product's builds | No credentials in Agora. Switching a Steam branch changes the store install, so Agora guides it: pin the current version, switch, pin the old one, switch back. Pinning is what makes this safe |
+| **Download a specific build** | Steam: [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (`-app -depot -manifest`) or the client's own `download_depot`; old manifests need an owning account ([request codes](https://steamdb.info/blog/manifest-request-codes), since 2022). GOG: Galaxy Gen 2 builds through [lgogdownloader](https://pkgsrc.se/games/lgogdownloader) or Heroic's gogdl; Gen 1 builds are not reachable | A store sign-in, opt-in only. DepotDownloader's QR login (`-qr`) means Agora never sees a password. Which manifest is which version needs a map, best kept as curated catalog data and checked by hash after download. A downloaded base is a full copy: nothing to hardlink to |
+| **Community downgrade patchers** | Skyrim's [downgrade patcher](https://www.pcgamer.com/uk/this-mod-rolls-back-skyrim-anniversary-edition-to-special-edition-version-1597/) binary-patches a valid install back to 1.5.97, shipping no game files | Runs as a declared tool (§26.9) into a new base. Known trap: patching the executable but not the data gives a 1.5 engine reading 1.6 content |
+
+Each route is a **runtime source** a package supplies, not built into core, consistent with §26.7:
+core stages the download, verifies it, and builds a Copied base from it; the source plugin knows
+the store. DepotDownloader is GPL-2.0 and .NET, so it is fetched as a separate component
+(§26.5, *components are fetched*), never linked, and its licence is checked before Agora offers it.
 
 ### 26.5 Deployment: How Mods Reach the Game
 
@@ -3892,10 +3911,9 @@ support, themes and plugin views carry over, since they are app-wide already (§
 - **CK3 without its launcher** (F7): `ck3.exe` started directly most likely loads either no mods or
   the playset last set in the launcher. Checked in Phase 5, together with whether Agora can supply
   the list itself (playset database or `dlc_load.json`).
-- **Pinning a modified store folder** (§26.4, as built): Steam Skyrim held 130 MB of xEdit
-  backups and xEdit-cleaned masters, and its base pinned them as found. Options: definitions list
-  tool leftovers to exclude, and Agora checks an install against the store's own manifest (Steam
-  depot manifests, GOG's file lists) before pinning, offering a store repair first.
+- **Fetching older versions** (§26.4): which routes ship first, where the version → manifest map
+  lives, and whether a store sign-in through a fetched tool fits the no-forced-sign-in position
+  when it is strictly opt-in.
 - **Anti-cheat**: out of scope. Games that forbid modification are not supported for modding.
 
 ---
