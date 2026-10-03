@@ -22,6 +22,7 @@ pub mod dependency_ops;
 pub mod download;
 pub mod error;
 pub mod event_sink;
+pub mod game_discovery;
 pub mod game_hooks;
 pub mod github_ratelimit;
 pub mod governance;

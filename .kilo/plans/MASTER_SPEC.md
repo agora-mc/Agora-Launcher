@@ -3340,6 +3340,22 @@ without the Paradox Launcher, and Minecraft Dungeons starts from its own executa
 tracking reuses `process_identity` and `process_session_manager`, and treats "the game kept running
 after it was quitted" as a normal state to resolve rather than an error.
 
+**Discovery, as built (Phase 2, slice 1).** `agora_core::game_discovery`, shown by
+`agora games discover`. Read-only: unlike the spike, it writes no probe files. Each store's
+classification uses the signal that store itself records, measured on the spike machine:
+
+| Store | Found through | Add-on when | Tool when |
+|---|---|---|---|
+| Steam | `libraryfolders.vdf`, `appmanifest_*.acf` | `appinfo.vdf` type is `dlc` | type is anything but `game`, `demo` or `dlc` (Blender, Proton, redistributables) |
+| GOG | registry `GOG.com\Games` | `dependsOn` names a product | — |
+| Epic | launcher `.item` manifests | `MainGameAppName` names another app | `AppCategories` lacks `games` (the Unreal editor, its plugins) |
+| Microsoft Store | `.GamingRoot`/`XboxGames` per drive, then AppModel packages | `MicrosoftGame.config` has `MainPackageDependency` | — |
+
+A broken file skips its entry with a warning naming it; a store that is not installed adds nothing.
+Steam's binary `appinfo.vdf` (v28/v29) is parsed for types and launch executables; without it,
+known tool app ids are the fallback. The real-machine run listed 64 installs with no warnings: 35
+base games, 23 add-ons (CK3's 16 Store DLC under the game), 6 tools.
+
 ### 26.4 Pinned Bases
 
 **Every instance of a game whose install is readable and relocatable runs from a pinned base**: a

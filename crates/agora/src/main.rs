@@ -268,6 +268,17 @@ enum Commands {
         #[command(subcommand)]
         action: LockfileCmd,
     },
+    /// Discover installed games across supported stores.
+    Games {
+        #[command(subcommand)]
+        action: GamesCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GamesCmd {
+    /// Discover all game installs on the machine.
+    Discover,
 }
 
 #[derive(Subcommand)]
@@ -4074,9 +4085,94 @@ async fn run_command(
                 }
             }
         },
+        Commands::Games { action } => match action {
+            GamesCmd::Discover => {
+                let report = agora_core::game_discovery::discover_all();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_discovery_report(&report);
+                }
+            }
+        },
     }
 
     Ok(())
+}
+
+fn print_discovery_report(report: &agora_core::game_discovery::DiscoveryReport) {
+    use agora_core::game_discovery::InstallKind;
+
+    let mut store_ids: Vec<_> = report.installs.iter().map(|i| i.store.clone()).collect();
+    store_ids.sort();
+    store_ids.dedup();
+
+    let mut found_any = false;
+
+    for store in &store_ids {
+        let base_games: Vec<_> = report
+            .installs
+            .iter()
+            .filter(|i| &i.store == store && i.kind == InstallKind::BaseGame)
+            .collect();
+
+        if base_games.is_empty() {
+            continue;
+        }
+
+        found_any = true;
+        let count_str = if base_games.len() == 1 {
+            "1 game".to_string()
+        } else {
+            format!("{} games", base_games.len())
+        };
+        println!("{} ({}):", store, count_str);
+
+        for bg in base_games {
+            let add_on_count = report
+                .installs
+                .iter()
+                .filter(|i| {
+                    &i.store == store
+                        && i.kind == InstallKind::AddOn
+                        && i.parent_product.as_deref() == Some(&bg.product)
+                })
+                .count();
+
+            if add_on_count == 0 {
+                println!("  - {}", bg.name);
+            } else if add_on_count == 1 {
+                println!("  - {} (1 add-on)", bg.name);
+            } else {
+                println!("  - {} ({} add-ons)", bg.name, add_on_count);
+            }
+        }
+    }
+
+    let tools: Vec<_> = report
+        .installs
+        .iter()
+        .filter(|i| i.kind == InstallKind::Tool)
+        .collect();
+
+    if !tools.is_empty() {
+        found_any = true;
+        println!("Tools ({}):", tools.len());
+        for tool in tools {
+            println!("  - {} ({})", tool.name, tool.store);
+        }
+    }
+
+    if !found_any {
+        println!("No game installs discovered.");
+    }
+
+    if !report.warnings.is_empty() {
+        println!("Warnings:");
+        for w in &report.warnings {
+            println!("  - [{}]: {}", w.store, w.message);
+        }
+    }
 }
 
 /// Resolve optional deps policy from CLI flags.

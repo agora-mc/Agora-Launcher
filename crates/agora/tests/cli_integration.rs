@@ -197,6 +197,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "lockfile",
     "plugin",
     "provider",
+    "games",
 ];
 
 const NESTED_COMMANDS: &[&[&str]] = &[
@@ -260,6 +261,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plugin", "restore-data"],
     &["plugin", "keygen"],
     &["plugin", "sign"],
+    &["games", "discover"],
 ];
 
 // ---------------------------------------------------------------------------

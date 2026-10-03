@@ -85,6 +85,7 @@ dependencies = [
  "keyring",
  "md-5",
  "pbkdf2 0.12.2",
+ "quick-xml",
  "rand 0.8.6",
  "regex",
  "reqwest 0.12.28",
@@ -102,6 +103,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "windows-sys 0.59.0",
+ "winreg",
  "zip 0.6.6",
 ]
 

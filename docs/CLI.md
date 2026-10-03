@@ -156,6 +156,16 @@ agora plugin install package ./example-plugin.zip
 | `agora inventory <INSTANCE>` | Inspect installed content |
 | `agora health <INSTANCE>` | Run the local health scanner |
 
+### Games
+
+Read-only. Lists the game installs Steam, GOG, Epic and the Microsoft Store know about, each
+classified as a base game, add-on or tool (MASTER_SPEC §26.3). `--json` adds locations, store
+versions, declared executables, volume and capabilities.
+
+| Command | What it does |
+|---|---|
+| `agora games discover` | List game installs across supported stores |
+
 ### Catalog
 
 | Command | Purpose |

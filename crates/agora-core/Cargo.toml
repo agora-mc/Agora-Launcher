@@ -51,12 +51,18 @@ semver = { workspace = true }
 tar = "0.4"
 flate2 = "1"
 
+# MicrosoftGame.config, read by Microsoft Store game discovery.
+quick-xml = "0.39"
+
 # Directory junctions for shared folders on Windows. `std`'s symlink_dir needs
 # Developer Mode or elevation and, when it fails, callers silently fall back to
 # copying — which for a *shared* folder means two trees that drift apart with no
 # error. Junctions need no elevation and are not in std.
 [target.'cfg(windows)'.dependencies]
 junction = "2"
+
+# Store discovery reads Steam, GOG and Microsoft Store install records from the registry.
+winreg = "0.55"
 
 # DPAPI for the credential fallback. Windows Credential Manager caps a secret at
 # CRED_MAX_CREDENTIAL_BLOB_SIZE (2560 bytes, so 1280 chars once keyring encodes
@@ -66,6 +72,7 @@ junction = "2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
 ] }
 
 [dev-dependencies]
