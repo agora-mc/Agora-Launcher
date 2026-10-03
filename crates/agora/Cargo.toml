@@ -12,7 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 agora-core = { path = "../agora-core" }
+agora-game-api = { path = "../agora-game-api" }
 agora-game-minecraft = { path = "../agora-game-minecraft" }
+agora-game-creation = { path = "../agora-game-creation" }
 agora-plugin-api = { path = "../agora-plugin-api" }
 agora-plugin-host = { path = "../agora-plugin-host" }
 clap = { version = "4", features = ["derive"] }

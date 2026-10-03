@@ -92,6 +92,19 @@ class GameBoundaryTests(unittest.TestCase):
                 self.assertEqual(self.check(architecture.check_core_no_minecraft_package), 1)
                 source.unlink()
 
+    def test_core_cannot_reference_creation_or_other_game_packages(self):
+        for pkg in ["agora_game_creation", "agora_game_skyrim"]:
+            with self.subTest(pkg=pkg):
+                (self.core / "lib.rs").write_text(f"use {pkg}::game_package;\n", encoding="utf-8")
+                self.assertEqual(self.check(architecture.check_core_no_game_packages), 1)
+        (self.core / "lib.rs").write_text("use agora_game_api::GamePackage;\n", encoding="utf-8")
+        self.assertEqual(self.check(architecture.check_core_no_game_packages), 0)
+        (self.core.parent / "Cargo.toml").write_text(
+            '[dependencies]\ncreation = { package = "agora-game-creation", path = "../agora-game-creation" }\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(self.check(architecture.check_core_no_game_packages), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

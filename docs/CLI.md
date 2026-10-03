@@ -165,6 +165,7 @@ versions, declared executables, volume and capabilities.
 | Command | What it does |
 |---|---|
 | `agora games discover` | List game installs across supported stores |
+| `agora games list` | List supported games and their identified installs |
 
 ### Catalog
 

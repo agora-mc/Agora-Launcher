@@ -1,4 +1,5 @@
 pub mod epic;
+pub mod file_version;
 pub mod gog;
 pub mod microsoft_store;
 pub mod platform;

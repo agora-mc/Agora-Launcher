@@ -172,7 +172,9 @@ pub struct GameInstall {
     /// Display/discovery data only; services take an InstallId and a relative
     /// path, never trust this absolute path as permission to access the disk.
     pub location: String,
-    pub volume: VolumeInfo,
+    /// `None` when the volume could not be inspected. Unknown is never the
+    /// same volume as another install, so it never qualifies for hardlinks.
+    pub volume: Option<VolumeInfo>,
     pub capabilities: InstallCapabilities,
 }
 
@@ -312,7 +314,13 @@ pub struct GameDefinition {
     pub native_code_patterns: Vec<RelPath>,
     pub framework_ids: Vec<FrameworkId>,
     pub tool_ids: Vec<ToolId>,
-    pub launch: LaunchRecipe,
+    /// Declarative launch recipe for this game, if any.
+    ///
+    /// `None` means the package's [`GamePackage::prepare_launch`](crate::GamePackage::prepare_launch)
+    /// provides the recipe (Minecraft builds its command line from version metadata, so a declarative
+    /// recipe would be fiction).
+    #[serde(default)]
+    pub launch: Option<LaunchRecipe>,
     pub log_paths: Vec<GamePath>,
     pub crash_paths: Vec<GamePath>,
     pub user_files: Vec<UserFileMapping>,
@@ -518,7 +526,7 @@ mod tests {
             ],
             framework_ids: vec![],
             tool_ids: vec![],
-            launch: LaunchRecipe {
+            launch: Some(LaunchRecipe {
                 executable: GamePath::Runtime {
                     path: RelPath::new("SkyrimSE.exe").unwrap(),
                 },
@@ -527,7 +535,7 @@ mod tests {
                 working_directory: GamePath::Runtime {
                     path: RelPath::default(),
                 },
-            },
+            }),
             log_paths: vec![],
             crash_paths: vec![],
             user_files: vec![],

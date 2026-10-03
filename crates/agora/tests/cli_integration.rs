@@ -262,6 +262,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["plugin", "keygen"],
     &["plugin", "sign"],
     &["games", "discover"],
+    &["games", "list"],
 ];
 
 // ---------------------------------------------------------------------------

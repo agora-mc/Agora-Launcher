@@ -3777,6 +3777,34 @@ out of `agora-core`. It differs from the table above in three ways.
    Minecraft's modules: until then, `AGENTS.md`'s "SQL lives in `agora-core`" is true only of new
    SQL.
 
+**Phase 2, the registry as built (slice 2).** `agora_core::game_registry::GameRegistry` is the one
+place a game package registers, compiled or plugin. It is held by each context
+(`CoreContext::games`), built by the adapter, and keyed by game:
+
+- **A package is admitted whole or not at all.** `add` refuses it, leaving the registry as it was,
+  if its `api_range` excludes the running API, it defines no game, a game id is taken, a
+  `(store, product)` is claimed by another game, or a framework or tool names a game it does not
+  define. A community package therefore cannot displace or half-register over another.
+- **Skyrim SE is data.** `agora-game-creation` deserializes `data/package.json` into a
+  `PackageDefinition` and has no `agora-core` dependency, not even in tests: the route a community
+  package takes. Its game id is `skyrim-se`, since Legendary Edition and VR are separate runtimes.
+- **Minecraft is registered too,** with no store claims and `launch: None`. `GameDefinition.launch`
+  became optional because Minecraft's command line comes from version metadata through
+  `prepare_launch`; a declarative recipe would be fiction.
+- **Matching** (`identify_installs`) turns a discovered base game a definition claims into an
+  identified install with its add-ons, and lists the rest as unsupported. Runtime identity follows
+  the definition's version sources: the executable's PE file version when readable, then the store
+  record. On the spike machine: Steam 1.6.1170.0 and GOG 1.6.1179.0. `GameInstall.volume` became
+  optional, because an unknown volume must never compare equal to another.
+- **Install ids** are `{store}:{product}`, stable across runs because bases and instances will
+  refer to them. A product that is not already a valid id part is sanitised and suffixed with a
+  hash of the original, so `A.B` and `a-b` never collide.
+
+`game_hooks` still exists beside the registry: the next slice moves Minecraft's catalog, startup,
+provider and instance-backend hooks onto its registry entry and removes the process-global path.
+Per-store user paths (Steam's `Skyrim Special Edition` and GOG's `Skyrim Special Edition GOG`
+under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 needs them.
+
 ### 26.13 Phases
 
 Each phase ends with a run on a real Windows machine, because that is where every surprise in the

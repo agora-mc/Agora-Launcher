@@ -8,6 +8,7 @@ This page covers local builds and validation. Player instructions belong in the 
 | --- | --- |
 | `crates/agora-core/` | Shared, game-agnostic business logic |
 | `crates/agora-game-minecraft/` | Minecraft support, as a game package that registers into core |
+| `crates/agora-game-creation/` | Creation Engine support (Skyrim SE), as a game package that registers into core |
 | `crates/agora/` | Standalone CLI |
 | `crates/agora-plugin-api/`, `crates/agora-plugin-host/` | Plugin contract, and the QuickJS host that runs plugin scripts |
 | `crates/agora-game-api/` | Experimental game package/host contract; [manifest v3 design](architecture/game-api.md) |
@@ -138,9 +139,9 @@ Rust:
 
 ```bash
 cargo fmt --all --check
-cargo clippy -p agora-core -p agora-game-api -p agora-game-minecraft -p agora-cli --all-targets --all-features -- -D warnings
+cargo clippy -p agora-core -p agora-game-api -p agora-game-minecraft -p agora-game-creation -p agora-cli --all-targets --all-features -- -D warnings
 cargo test -p agora-core --lib --tests
-cargo test -p agora-game-api -p agora-game-minecraft --lib --tests
+cargo test -p agora-game-api -p agora-game-minecraft -p agora-game-creation --lib --tests
 cargo test -p agora-cli
 cargo check -p agora-desktop
 ```

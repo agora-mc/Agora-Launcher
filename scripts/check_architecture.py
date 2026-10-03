@@ -504,7 +504,18 @@ def check_game_api_dependencies() -> None:
         print("OK: agora-game-api depends only on serde, semver and thiserror")
 
 
-def check_core_no_minecraft_package() -> None:
+def is_game_package(name: str, path: str = "") -> bool:
+    if name in ("agora-game-api", "agora_game_api"):
+        return False
+    if name.startswith("agora-game-") or name.startswith("agora_game_"):
+        return True
+    path_norm = path.replace("\\", "/").rstrip("/")
+    if "agora-game-" in path_norm and not path_norm.endswith("agora-game-api"):
+        return True
+    return False
+
+
+def check_core_no_game_packages() -> None:
     """Core never references a game package: packages register into core
     through `game_hooks` and agora-game-api, never the other way round.
     Check renamed dependencies as well as direct/import/include references."""
@@ -518,9 +529,10 @@ def check_core_no_minecraft_package() -> None:
             return
         for alias, specification in dependency_tables(manifest):
             package, details = resolved_dependency(alias, specification, workspace)
-            if package == "agora-game-minecraft" or "agora-game-minecraft" in details.get("path", ""):
+            path_str = details.get("path", "")
+            if is_game_package(package, path_str):
                 hits.append(f"  {CORE_CARGO.relative_to(REPO_ROOT)}: dependency {alias}")
-    pattern = re.compile(r"\bagora_game_minecraft\b|agora-game-minecraft")
+    pattern = re.compile(r"\bagora_game_(?!api\b)\w+\b|agora-game-(?!api\b)[\w-]+")
     # Tests and build scripts are part of core's dependency boundary too.
     for path in sorted(CORE_CARGO.parent.rglob("*.rs")):
         # Ignore comments (including multi-line block comments), but retain
@@ -531,11 +543,14 @@ def check_core_no_minecraft_package() -> None:
             if pattern.search(line.split("//", 1)[0]):
                 hits.append(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
     if hits:
-        err("agora-core references Minecraft package modules — packages register through agora-game-api")
+        err("agora-core references game package modules — packages register through agora-game-api")
         for hit in hits:
             print(hit, file=sys.stderr)
     else:
-        print("OK: agora-core does not reference the Minecraft package's modules")
+        print("OK: agora-core does not reference any game package modules")
+
+
+check_core_no_minecraft_package = check_core_no_game_packages
 
 
 # ---------------------------------------------------------------------------
@@ -688,8 +703,8 @@ def main() -> int:
     check_game_api_dependencies()
     print()
 
-    print("--- 12. Core has no Minecraft package references ---")
-    check_core_no_minecraft_package()
+    print("--- 12. Core has no game package references ---")
+    check_core_no_game_packages()
 
     print("\n--- 13. Game packages' agora-core budget ---")
     check_game_package_core_budget()

@@ -108,6 +108,8 @@ pub struct CoreContext {
     pub task_scheduler: TaskScheduler,
     /// Process session manager for direct-launch lifecycle tracking.
     pub process_session_manager: ProcessSessionManager,
+    /// Registry of supported games and their packages.
+    pub games: Arc<crate::game_registry::GameRegistry>,
 }
 
 /// The canonical context type alias — use `Ctx` throughout the codebase.
@@ -128,7 +130,10 @@ impl CoreContext {
     ///
     /// Warnings are returned as `Vec<String>` — genuinely recoverable
     /// observations that did not prevent initialization.
-    pub fn initialize(paths: AppPaths) -> LauncherResult<(Self, Vec<String>)> {
+    pub fn initialize(
+        paths: AppPaths,
+        games: Arc<crate::game_registry::GameRegistry>,
+    ) -> LauncherResult<(Self, Vec<String>)> {
         let mut warnings = Vec::new();
 
         // 1. Create required directories.
@@ -262,6 +267,7 @@ impl CoreContext {
             operation_manager: OperationManager::new(),
             task_scheduler: TaskScheduler::default(),
             process_session_manager: ProcessSessionManager::new(),
+            games,
         };
 
         // 6. Let game packages load their catalogs from the signed registry
@@ -309,7 +315,14 @@ impl CoreContext {
             operation_manager: OperationManager::new(),
             task_scheduler: TaskScheduler::default(),
             process_session_manager: ProcessSessionManager::new(),
+            games: Arc::new(crate::game_registry::GameRegistry::empty()),
         }
+    }
+
+    /// Replace the game registry.
+    pub fn with_games(mut self, games: Arc<crate::game_registry::GameRegistry>) -> Self {
+        self.games = games;
+        self
     }
 
     /// Replace the progress sink (e.g., to wire in a Tauri event emitter).
@@ -424,7 +437,9 @@ mod tests {
         }
         crate::game_hooks::register_catalog_hook(hook);
 
-        let (ctx, warnings) = CoreContext::initialize(paths).unwrap();
+        let (ctx, warnings) =
+            CoreContext::initialize(paths, Arc::new(crate::game_registry::GameRegistry::empty()))
+                .unwrap();
         assert!(ctx.paths.root().exists(), "root should exist");
         assert!(
             ctx.paths.local_state_db().exists(),
@@ -502,7 +517,8 @@ mod tests {
         // Create root dir but make local_state.db path unwritable by
         // creating it as a directory beforehand.
         std::fs::create_dir_all(tmp.join("local_state.db")).unwrap();
-        let result = CoreContext::initialize(paths);
+        let result =
+            CoreContext::initialize(paths, Arc::new(crate::game_registry::GameRegistry::empty()));
         assert!(result.is_err(), "should fail when db cannot be created");
         let err = result.unwrap_err();
         assert_eq!(err.code(), "ERR_LOCAL_STATE_FAILED");

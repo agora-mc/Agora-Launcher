@@ -279,6 +279,8 @@ enum Commands {
 enum GamesCmd {
     /// Discover all game installs on the machine.
     Discover,
+    /// List supported games and their identified installs.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -1006,7 +1008,26 @@ async fn main() {
     }
 
     agora_game_minecraft::register();
-    let (ctx, warnings) = match agora_core::ctx::CoreContext::initialize(paths.clone()) {
+    let mut registry_builder = agora_core::game_registry::GameRegistry::builder();
+    registry_builder
+        .add(
+            agora_core::game_registry::PackageSource::Compiled {
+                crate_name: "agora-game-minecraft".to_string(),
+            },
+            agora_game_minecraft::game_package(),
+        )
+        .expect("build bug: failed to register compiled minecraft package");
+    registry_builder
+        .add(
+            agora_core::game_registry::PackageSource::Compiled {
+                crate_name: "agora-game-creation".to_string(),
+            },
+            agora_game_creation::game_package(),
+        )
+        .expect("build bug: failed to register compiled creation package");
+    let games = std::sync::Arc::new(registry_builder.build());
+
+    let (ctx, warnings) = match agora_core::ctx::CoreContext::initialize(paths.clone(), games) {
         Ok(result) => result,
         Err(error) => {
             progress.log("error", &format!("Core initialization failed: {error}"));
@@ -4094,6 +4115,23 @@ async fn run_command(
                     print_discovery_report(&report);
                 }
             }
+            GamesCmd::List => {
+                let report = agora_core::game_discovery::discover_all();
+                let inventory = agora_core::game_registry::identify_installs(
+                    &ctx.games,
+                    &report,
+                    &agora_core::game_discovery::file_version::read_file_version,
+                );
+                if json {
+                    let out = serde_json::json!({
+                        "games": ctx.games.games().collect::<Vec<_>>(),
+                        "inventory": inventory,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    print_games_list(&ctx.games, &inventory);
+                }
+            }
         },
     }
 
@@ -4172,6 +4210,95 @@ fn print_discovery_report(report: &agora_core::game_discovery::DiscoveryReport) 
         for w in &report.warnings {
             println!("  - [{}]: {}", w.store, w.message);
         }
+    }
+}
+
+fn print_games_list(
+    registry: &agora_core::game_registry::GameRegistry,
+    inventory: &agora_core::game_registry::GameInventory,
+) {
+    for game in registry.games() {
+        println!("{} ({})", game.name, game.id);
+        if game.stores.is_empty() {
+            println!("  Agora manages its installs itself");
+            continue;
+        }
+
+        let matching_installs: Vec<_> = inventory
+            .installs
+            .iter()
+            .filter(|i| i.game == game.id)
+            .collect();
+
+        if matching_installs.is_empty() {
+            println!("  No installs found.");
+            continue;
+        }
+
+        for inst in matching_installs {
+            let (version_str, build_str) = match &inst.runtime {
+                agora_core::game_registry::RuntimeResolution::Identified { runtime, .. } => {
+                    let v = runtime.version.clone();
+                    let b = runtime
+                        .build
+                        .as_deref()
+                        .map(|b| format!("build {b}"))
+                        .unwrap_or_else(|| "no build".to_string());
+                    (v, b)
+                }
+                agora_core::game_registry::RuntimeResolution::Unidentified { reasons } => {
+                    let v = if reasons.is_empty() {
+                        "version unknown".to_string()
+                    } else {
+                        format!("version unknown ({})", reasons.join(", "))
+                    };
+                    let b = inst
+                        .discovered
+                        .store_build
+                        .as_deref()
+                        .map(|b| format!("build {b}"))
+                        .unwrap_or_else(|| "no build".to_string());
+                    (v, b)
+                }
+            };
+
+            let vol_str = match &inst.discovered.volume {
+                Some(v) => format!(
+                    "{} ({})",
+                    v.filesystem,
+                    if v.supports_hardlinks {
+                        "hardlinks supported"
+                    } else {
+                        "hardlinks unsupported"
+                    }
+                ),
+                None => "unknown volume".to_string(),
+            };
+
+            let add_ons_str = match inst.add_ons.len() {
+                0 => "0 add-ons".to_string(),
+                1 => "1 add-on".to_string(),
+                n => format!("{n} add-ons"),
+            };
+
+            println!(
+                "  - {}: {}, {}, {}, {}, {}",
+                inst.discovered.store,
+                version_str,
+                build_str,
+                inst.discovered.location.display(),
+                vol_str,
+                add_ons_str,
+            );
+        }
+    }
+
+    println!(
+        "Other games found (not supported yet): {}",
+        inventory.unsupported.len()
+    );
+    for u in &inventory.unsupported {
+        println!("  - {}", u.name);
     }
 }
 

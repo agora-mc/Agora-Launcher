@@ -30,6 +30,27 @@ use tauri::Manager;
 /// Shared type alias for the managed core context.
 type ManagedCoreContext = std::sync::Arc<std::sync::Mutex<agora_core::ctx::CoreContext>>;
 
+fn build_game_registry() -> std::sync::Arc<agora_core::game_registry::GameRegistry> {
+    let mut builder = agora_core::game_registry::GameRegistry::builder();
+    builder
+        .add(
+            agora_core::game_registry::PackageSource::Compiled {
+                crate_name: "agora-game-minecraft".to_string(),
+            },
+            agora_game_minecraft::game_package(),
+        )
+        .expect("build bug: failed to register compiled minecraft package");
+    builder
+        .add(
+            agora_core::game_registry::PackageSource::Compiled {
+                crate_name: "agora-game-creation".to_string(),
+            },
+            agora_game_creation::game_package(),
+        )
+        .expect("build bug: failed to register compiled creation package");
+    std::sync::Arc::new(builder.build())
+}
+
 /// Return a clone of the initialized core context for adapter commands.
 pub fn core_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -50,7 +71,9 @@ pub fn core_context<R: tauri::Runtime>(
         }
     })?;
     agora_game_minecraft::register();
-    agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| plugins::with_events(app, ctx))
+    let games = build_game_registry();
+    agora_core::ctx::CoreContext::initialize(paths, games)
+        .map(|(ctx, _)| plugins::with_events(app, ctx))
 }
 
 /// Pull the instance id out of a `--launch <id>` / `--launch=<id>` argv.
@@ -416,7 +439,7 @@ pub fn run() {
             // Keep one clone for startup maintenance after the managed state is
             // installed; maintenance is optional and must never delay setup.
             let startup_maintenance_ctx = match crate::paths::app_paths(app.handle()) {
-                Ok(paths) => match agora_core::ctx::CoreContext::initialize(paths) {
+                Ok(paths) => match agora_core::ctx::CoreContext::initialize(paths, build_game_registry()) {
                     Ok((ctx, warnings)) => {
                         for w in &warnings {
                             eprintln!("[core] {w}");

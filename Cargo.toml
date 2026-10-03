@@ -21,6 +21,7 @@ members = [
     "crates/agora-plugin-api",
     "crates/agora-game-api",
     "crates/agora-game-minecraft",
+    "crates/agora-game-creation",
     "crates/agora-plugin-host",
     "desktop/src-tauri",
     "crates/agora",

@@ -48,6 +48,7 @@ uuid = { workspace = true }
 sysinfo = { workspace = true }
 rand = { workspace = true }
 semver = { workspace = true }
+thiserror = { workspace = true }
 tar = "0.4"
 flate2 = "1"
 

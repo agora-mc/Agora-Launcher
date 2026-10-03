@@ -48,6 +48,8 @@ name = "agora-cli"
 version = "0.1.0"
 dependencies = [
  "agora-core",
+ "agora-game-api",
+ "agora-game-creation",
  "agora-game-minecraft",
  "agora-plugin-api",
  "agora-plugin-host",
@@ -98,6 +100,7 @@ dependencies = [
  "sysinfo",
  "tar",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "toml 0.8.2",
  "urlencoding",
@@ -113,6 +116,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "agora-core",
+ "agora-game-creation",
  "agora-game-minecraft",
  "agora-plugin-api",
  "agora-plugin-host",
@@ -152,6 +156,15 @@ dependencies = [
  "semver",
  "serde",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "agora-game-creation"
+version = "0.1.0"
+dependencies = [
+ "agora-game-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

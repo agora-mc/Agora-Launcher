@@ -64,7 +64,11 @@ fn declarative_skyrim_and_valheim_packages_need_no_discovered_install_ids() {
             definition
         );
         assert!(matches!(
-            registered.definition().games[0].launch.executable,
+            registered.definition().games[0]
+                .launch
+                .as_ref()
+                .unwrap()
+                .executable,
             GamePath::Runtime { .. }
         ));
         assert_eq!(

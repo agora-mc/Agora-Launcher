@@ -48,6 +48,7 @@ pub mod pack_install;
 pub mod pack_inventory;
 pub mod pack_merge;
 pub mod pack_update;
+pub mod package;
 pub mod plugin_backend;
 pub mod providers;
 pub mod prune_service;
@@ -63,6 +64,7 @@ pub mod update_cache;
 pub mod version_migration;
 
 pub use context::register;
+pub use package::game_package;
 
 /// Unit tests run without an adapter, so nothing else would register
 /// Minecraft's hosts, providers and catalogs with core.

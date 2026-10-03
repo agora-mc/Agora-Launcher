@@ -99,7 +99,7 @@ jobs:
         with:
           workspaces: . -> target
       - name: Clippy core, game packages and CLI (no Tauri system libs required)
-        run: cargo clippy -p agora-core -p agora-game-api -p agora-game-minecraft -p agora-cli --all-targets --all-features -- -D warnings
+        run: cargo clippy -p agora-core -p agora-game-api -p agora-game-minecraft -p agora-game-creation -p agora-cli --all-targets --all-features -- -D warnings
 
   desktop-clippy:
     runs-on: windows-latest
@@ -129,7 +129,7 @@ jobs:
       - name: Core unit and integration tests
         run: cargo test -p agora-core --lib --tests
       - name: Game contract and Minecraft package tests
-        run: cargo test -p agora-game-api -p agora-game-minecraft --lib --tests
+        run: cargo test -p agora-game-api -p agora-game-minecraft -p agora-game-creation --lib --tests
       - name: CLI tests
         run: cargo test -p agora-cli
       - name: Build CLI

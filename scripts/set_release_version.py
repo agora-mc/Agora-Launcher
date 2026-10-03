@@ -60,6 +60,7 @@ WORKSPACE_MEMBERS = (
     "agora-plugin-host",
     "agora-game-api",
     "agora-game-minecraft",
+    "agora-game-creation",
 )
 
 
