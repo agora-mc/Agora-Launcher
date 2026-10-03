@@ -63,13 +63,5 @@ pub mod template_service;
 pub mod update_cache;
 pub mod version_migration;
 
-pub use context::register;
+pub use context::{register_into, registry, testing_context};
 pub use package::game_package;
-
-/// Unit tests run without an adapter, so nothing else would register
-/// Minecraft's hosts, providers and catalogs with core.
-#[cfg(test)]
-#[ctor::ctor]
-fn register_for_tests() {
-    register();
-}

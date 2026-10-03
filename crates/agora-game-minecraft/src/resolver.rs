@@ -4498,7 +4498,7 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_github_versions_batch_empty_pages() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = agora_core::ctx::Ctx::for_testing(tmp.path().to_path_buf());
+        let ctx = crate::testing_context(tmp.path().to_path_buf());
         let resolver = Resolver::new(ctx);
         let result = resolver
             .fetch_github_versions_batch("owner/repo", "1.20.1", "fabric", &[])
@@ -4513,7 +4513,7 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_github_versions_batch_single_page() {
         let tmp = tempfile::tempdir().unwrap();
-        let ctx = agora_core::ctx::Ctx::for_testing(tmp.path().to_path_buf());
+        let ctx = crate::testing_context(tmp.path().to_path_buf());
         let resolver = Resolver::new(ctx);
         // A single page for a non-existent repo — will error but must not panic
         let result = resolver

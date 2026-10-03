@@ -741,7 +741,6 @@ fn remove_promoted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agora_core::ctx::CoreContext;
     use agora_core::event_sink::CollectingProgressSink;
     use agora_core::operation_manager::OpStatus;
     use std::io::Write;
@@ -759,7 +758,7 @@ mod tests {
     fn test_ctx() -> Ctx {
         let tmp = test_tmp("ctx");
         let _ = std::fs::create_dir_all(&tmp);
-        let ctx = CoreContext::for_testing(tmp);
+        let ctx = crate::testing_context(tmp);
         let _ = agora_core::db::init_local_state_db(&ctx.paths.local_state_db());
         ctx
     }
@@ -944,7 +943,7 @@ mod tests {
         let tmp = test_tmp("brokendb");
         let _ = std::fs::create_dir_all(&tmp);
         std::fs::write(tmp.join("local_state.db"), b"not a database").unwrap();
-        let ctx = CoreContext::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
         let svc = ImportService::new(ctx);
 
         let src = tmp.join("to-import");
@@ -979,7 +978,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let ctx = CoreContext::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
         let svc = ImportService::new(ctx);
 
         let mrpack_path = tmp.join("polfail-pack.mrpack");

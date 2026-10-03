@@ -6,13 +6,7 @@ use agora_game_api::{GameId, StoreId};
 fn registers_minecraft_and_skyrim_packages_together() {
     let mut builder = GameRegistry::builder();
 
-    builder
-        .add(
-            PackageSource::Compiled {
-                crate_name: "agora-game-minecraft".to_string(),
-            },
-            agora_game_minecraft::game_package(),
-        )
+    agora_game_minecraft::register_into(&mut builder)
         .expect("Minecraft package must register successfully");
 
     builder

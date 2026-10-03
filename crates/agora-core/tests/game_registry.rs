@@ -870,3 +870,41 @@ fn an_add_on_from_another_store_does_not_attach() {
         .volume
         .is_none());
 }
+
+#[test]
+fn a_registry_without_instance_services_says_so() {
+    let error = match GameRegistry::empty().instance_backend() {
+        Ok(_) => panic!("no package provides instances"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), "ERR_NO_GAME_PACKAGE");
+}
+
+#[test]
+fn a_refused_compiled_package_attaches_no_services() {
+    struct Loud;
+    impl agora_core::game_hooks::CompiledServices for Loud {
+        fn recover_at_startup(&self, _: &agora_core::app_paths::AppPaths) -> Vec<String> {
+            vec!["ran".into()]
+        }
+    }
+    let mut builder = GameRegistry::builder();
+    builder
+        .add_compiled(
+            "first",
+            make_package("first", vec![dummy_game("same", vec![])], vec![], vec![]),
+            Arc::new(Loud),
+        )
+        .unwrap();
+    assert!(builder
+        .add_compiled(
+            "second",
+            make_package("second", vec![dummy_game("same", vec![])], vec![], vec![]),
+            Arc::new(Loud),
+        )
+        .is_err());
+    let registry = builder.build();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = agora_core::app_paths::AppPaths::from_root(tmp.path().to_path_buf());
+    assert_eq!(registry.recover_at_startup(&paths), ["ran"]);
+}

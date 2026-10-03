@@ -34,7 +34,7 @@ const INSTANCE: &str = "skyblock";
 
 fn world() -> World {
     let dir = tempfile::tempdir().expect("temp dir");
-    let ctx = Ctx::for_testing(dir.path().to_path_buf());
+    let ctx = agora_game_minecraft::testing_context(dir.path().to_path_buf());
     ctx.paths.create_required_dirs().expect("data dirs");
     agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).expect("db");
 
@@ -2228,11 +2228,4 @@ fn nothing_is_woken_by_an_event_while_plugins_are_switched_off() {
     );
     assert!(!world.service.list()[0].running);
     assert_eq!(world.service.notify_instance_opened(), 0);
-}
-
-/// Integration tests run without an adapter; register Minecraft with core when
-/// this test binary loads.
-#[ctor::ctor]
-fn register_minecraft_for_tests() {
-    agora_game_minecraft::register();
 }

@@ -3124,10 +3124,3 @@ fn adoption_fails_when_base_version_missing() {
         err.kind
     );
 }
-
-/// Integration tests run without an adapter; register Minecraft with core when
-/// this test binary loads.
-#[ctor::ctor]
-fn register_minecraft_for_tests() {
-    agora_game_minecraft::register();
-}

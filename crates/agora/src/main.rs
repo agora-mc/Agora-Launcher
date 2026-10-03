@@ -1007,16 +1007,10 @@ async fn main() {
         return;
     }
 
-    agora_game_minecraft::register();
+    // A refused compiled package is a build bug, not user input.
     let mut registry_builder = agora_core::game_registry::GameRegistry::builder();
-    registry_builder
-        .add(
-            agora_core::game_registry::PackageSource::Compiled {
-                crate_name: "agora-game-minecraft".to_string(),
-            },
-            agora_game_minecraft::game_package(),
-        )
-        .expect("build bug: failed to register compiled minecraft package");
+    agora_game_minecraft::register_into(&mut registry_builder)
+        .expect("build bug: the Minecraft package was refused");
     registry_builder
         .add(
             agora_core::game_registry::PackageSource::Compiled {
@@ -1024,7 +1018,7 @@ async fn main() {
             },
             agora_game_creation::game_package(),
         )
-        .expect("build bug: failed to register compiled creation package");
+        .expect("build bug: the Creation Engine package was refused");
     let games = std::sync::Arc::new(registry_builder.build());
 
     let (ctx, warnings) = match agora_core::ctx::CoreContext::initialize(paths.clone(), games) {

@@ -1981,7 +1981,12 @@ impl PluginService {
     /// Check that an action still makes sense before performing it.
     fn revalidate(&self, action: &RepairAction) -> Result<(), String> {
         let instance_id = action.instance_id();
-        let backend = crate::game_hooks::instance_backend().map_err(|e| e.to_string())?;
+        let backend = self
+            .inner
+            .ctx
+            .games
+            .instance_backend()
+            .map_err(|e| e.to_string())?;
         let (row, manifest) = match backend.get(&self.inner.ctx, instance_id) {
             Ok(Some(found)) => found,
             Ok(None) => return Err(format!("instance `{instance_id}` no longer exists")),
@@ -2032,7 +2037,10 @@ impl PluginService {
             | RepairAction::UnpinContentUpdate { instance_id, key } => {
                 let filename = self.filename_for(instance_id, key)?;
                 let pinned = matches!(action, RepairAction::PinContentUpdate { .. });
-                crate::game_hooks::instance_backend()?
+                self.inner
+                    .ctx
+                    .games
+                    .instance_backend()?
                     .set_update_pinned(&ctx, instance_id, &filename, pinned)
                     .map(|_| ())
             }
@@ -2040,7 +2048,7 @@ impl PluginService {
                 instance_id,
                 memory_mb,
             } => {
-                let backend = crate::game_hooks::instance_backend()?;
+                let backend = self.inner.ctx.games.instance_backend()?;
                 let Some((row, _)) = backend.get(&ctx, instance_id)? else {
                     return Err(LauncherError::Generic {
                         code: "ERR_INSTANCE_NOT_FOUND".into(),
@@ -2058,7 +2066,7 @@ impl PluginService {
                 )
             }
             RepairAction::ResetJvmArgs { instance_id } => {
-                let backend = crate::game_hooks::instance_backend()?;
+                let backend = self.inner.ctx.games.instance_backend()?;
                 let Some((row, _)) = backend.get(&ctx, instance_id)? else {
                     return Err(LauncherError::Generic {
                         code: "ERR_INSTANCE_NOT_FOUND".into(),
@@ -2084,7 +2092,7 @@ impl PluginService {
     }
 
     fn filename_for(&self, instance_id: &str, key: &str) -> LauncherResult<String> {
-        let backend = crate::game_hooks::instance_backend()?;
+        let backend = self.inner.ctx.games.instance_backend()?;
         let Some((_, manifest)) = backend.get(&self.inner.ctx, instance_id)? else {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTANCE_NOT_FOUND".into(),

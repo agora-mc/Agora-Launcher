@@ -1478,7 +1478,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let ctx = Ctx::for_testing(root.clone());
+        let ctx = crate::testing_context(root.clone());
         agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
         // modrinth_enabled must be explicitly true (default is off)
@@ -1510,7 +1510,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let ctx = Ctx::for_testing(root.clone());
+        let ctx = crate::testing_context(root.clone());
         agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         // Never set modrinth_enabled -> defaults to off
         let svc = ModrinthService::new(ctx);
@@ -1525,7 +1525,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let ctx = Ctx::for_testing(root.clone());
+        let ctx = crate::testing_context(root.clone());
         agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
         agora_core::db::set_setting(&conn, "modrinth_enabled", &serde_json::Value::Bool(true))
@@ -1558,7 +1558,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let ctx = Ctx::for_testing(root.clone());
+        let ctx = crate::testing_context(root.clone());
         agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         let svc = ModrinthService::new(ctx);
         assert!(!svc.is_modrinth_enabled());

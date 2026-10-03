@@ -1145,7 +1145,7 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let ctx = Ctx::for_testing(root.clone());
+        let ctx = crate::testing_context(root.clone());
         agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         let row = agora_core::models::InstanceRow {
             instance_id: "gc-fixture".into(),

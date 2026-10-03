@@ -2385,7 +2385,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::launcher_import::{ContentInventory, LaunchStrategy};
-    use agora_core::ctx::CoreContext;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn test_tmp(label: &str) -> PathBuf {
@@ -2400,7 +2399,7 @@ mod tests {
     fn test_ctx() -> Ctx {
         let tmp = test_tmp("ctx");
         let _ = std::fs::create_dir_all(&tmp);
-        let ctx = CoreContext::for_testing(tmp);
+        let ctx = crate::testing_context(tmp);
         let _ = agora_core::db::init_local_state_db(&ctx.paths.local_state_db());
         ctx
     }

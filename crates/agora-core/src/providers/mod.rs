@@ -178,8 +178,7 @@ impl ProviderRegistry {
     /// Agora's official providers plus every provider an enabled, granted
     /// plugin contributes.
     pub fn new(ctx: &Ctx, plugins: Option<&crate::plugins::PluginService>) -> Self {
-        let mut providers: Vec<Arc<dyn ContentProvider>> =
-            crate::game_hooks::builtin_providers(ctx);
+        let mut providers: Vec<Arc<dyn ContentProvider>> = ctx.games.builtin_providers(ctx);
         if let Some(service) = plugins {
             providers.extend(plugin::PluginProvider::discover(ctx, service));
         }

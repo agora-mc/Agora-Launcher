@@ -284,7 +284,7 @@ fn to_summary(row: &crate::models::InstanceRow) -> dto::InstanceSummary {
 }
 
 fn instance_list(cx: &DispatchContext<'_>) -> PluginResult<serde_json::Value> {
-    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    let backend = cx.ctx.games.instance_backend().map_err(operation_failed)?;
     let rows = backend.list(cx.ctx).map_err(operation_failed)?;
     json(rows.iter().map(to_summary).collect::<Vec<_>>())
 }
@@ -294,7 +294,7 @@ fn instance_get(
     args: &serde_json::Value,
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
-    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    let backend = cx.ctx.games.instance_backend().map_err(operation_failed)?;
     let Some((row, manifest)) = backend
         .get(cx.ctx, &instance_id)
         .map_err(operation_failed)?
@@ -345,7 +345,9 @@ fn instance_rename(
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
     let name = arg_str(args, "name")?;
-    crate::game_hooks::instance_backend()
+    cx.ctx
+        .games
+        .instance_backend()
         .and_then(|backend| backend.rename(cx.ctx, &instance_id, &name))
         .map_err(operation_failed)?;
     Ok(serde_json::json!({ "renamed": true }))
@@ -357,7 +359,7 @@ fn instance_set_memory(
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
     let memory_mb = arg_i64(args, "memoryMb")?;
-    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    let backend = cx.ctx.games.instance_backend().map_err(operation_failed)?;
     // Read-modify-write through the same service the settings page uses, so
     // the other JVM fields keep their values and core's own clamping applies.
     let Some((row, _)) = backend
@@ -395,7 +397,7 @@ fn read_content(
     instance_id: &str,
     content_type: Option<&str>,
 ) -> PluginResult<Vec<dto::ContentEntry>> {
-    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    let backend = cx.ctx.games.instance_backend().map_err(operation_failed)?;
     backend
         .content(cx.ctx, instance_id, content_type)
         .map_err(operation_failed)?
@@ -462,7 +464,10 @@ fn content_set_pinned(
     let key = arg_str(args, "key")?;
     let pinned = arg_bool(args, "pinned")?;
     let filename = filename_for_key(cx, &instance_id, &key)?;
-    let changed = crate::game_hooks::instance_backend()
+    let changed = cx
+        .ctx
+        .games
+        .instance_backend()
         .and_then(|backend| backend.set_update_pinned(cx.ctx, &instance_id, &filename, pinned))
         .map_err(operation_failed)?;
     Ok(serde_json::json!({ "key": key, "pinned": pinned, "changed": changed }))

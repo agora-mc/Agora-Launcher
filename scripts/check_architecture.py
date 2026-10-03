@@ -516,8 +516,8 @@ def is_game_package(name: str, path: str = "") -> bool:
 
 
 def check_core_no_game_packages() -> None:
-    """Core never references a game package: packages register into core
-    through `game_hooks` and agora-game-api, never the other way round.
+    """Core never references a game package: adapters register packages into
+    core's `GameRegistry` through agora-game-api, never the other way round.
     Check renamed dependencies as well as direct/import/include references."""
     hits = []
     if CORE_CARGO.exists():

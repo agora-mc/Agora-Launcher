@@ -52,7 +52,5 @@ flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"
-# Registers Minecraft with core when a test binary loads (see lib.rs).
-ctor = "0.8"
 agora-plugin-host = { path = "../agora-plugin-host" }
 agora-core = { path = "../agora-core", features = ["test-support"] }

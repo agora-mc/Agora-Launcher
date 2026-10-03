@@ -30,16 +30,12 @@ use tauri::Manager;
 /// Shared type alias for the managed core context.
 type ManagedCoreContext = std::sync::Arc<std::sync::Mutex<agora_core::ctx::CoreContext>>;
 
+/// The games this build supports. A refused compiled package is a build bug,
+/// not user input.
 fn build_game_registry() -> std::sync::Arc<agora_core::game_registry::GameRegistry> {
     let mut builder = agora_core::game_registry::GameRegistry::builder();
-    builder
-        .add(
-            agora_core::game_registry::PackageSource::Compiled {
-                crate_name: "agora-game-minecraft".to_string(),
-            },
-            agora_game_minecraft::game_package(),
-        )
-        .expect("build bug: failed to register compiled minecraft package");
+    agora_game_minecraft::register_into(&mut builder)
+        .expect("build bug: the Minecraft package was refused");
     builder
         .add(
             agora_core::game_registry::PackageSource::Compiled {
@@ -47,7 +43,7 @@ fn build_game_registry() -> std::sync::Arc<agora_core::game_registry::GameRegist
             },
             agora_game_creation::game_package(),
         )
-        .expect("build bug: failed to register compiled creation package");
+        .expect("build bug: the Creation Engine package was refused");
     std::sync::Arc::new(builder.build())
 }
 
@@ -70,7 +66,6 @@ pub fn core_context<R: tauri::Runtime>(
             message: error.to_string(),
         }
     })?;
-    agora_game_minecraft::register();
     let games = build_game_registry();
     agora_core::ctx::CoreContext::initialize(paths, games)
         .map(|(ctx, _)| plugins::with_events(app, ctx))
@@ -114,7 +109,6 @@ pub struct PendingCliLaunch(pub std::sync::Mutex<Option<String>>);
 pub fn run() {
     // Minecraft is a game package; register it with core before any context
     // is built (idempotent, so the helper below may repeat it).
-    agora_game_minecraft::register();
     // Log startup so the user can verify from the log file that they are
     // actually running the freshly-compiled binary (not a stale one). When
     // diagnosing OAuth issues, the absence of this line means the running

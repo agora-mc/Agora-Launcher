@@ -30,7 +30,7 @@ struct World {
 
 fn world() -> World {
     let dir = tempfile::tempdir().expect("temp dir");
-    let ctx = Ctx::for_testing(dir.path().to_path_buf());
+    let ctx = agora_game_minecraft::testing_context(dir.path().to_path_buf());
     ctx.paths.create_required_dirs().expect("data dirs");
     agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).expect("db");
     set(&ctx, PLUGINS_ENABLED_SETTING, true);
@@ -695,11 +695,4 @@ async fn plans_from_a_plugin_are_the_same_type_the_official_providers_return() {
     )
     .unwrap();
     accepts(&technic_plan);
-}
-
-/// Integration tests run without an adapter; register Minecraft with core when
-/// this test binary loads.
-#[ctor::ctor]
-fn register_minecraft_for_tests() {
-    agora_game_minecraft::register();
 }

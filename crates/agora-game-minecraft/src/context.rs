@@ -10,7 +10,9 @@
 use crate::loader_manifests::LoaderCatalog;
 use crate::runtime_catalog::{RuntimeCatalog, RuntimeCatalogHandle};
 use agora_core::ctx::Ctx;
-use agora_core::game_hooks::{self, CatalogEvent};
+use agora_core::error::LauncherResult;
+use agora_core::game_hooks::{CatalogEvent, CompiledServices};
+use agora_core::game_registry::{GameRegistry, GameRegistryBuilder, GameRegistryError};
 use agora_core::network::NetworkCategory;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -61,27 +63,62 @@ pub fn set_launcher_profiles_path(ctx: &Ctx, path: Option<PathBuf>) {
         .unwrap_or_else(|e| e.into_inner()) = path;
 }
 
-/// Register Minecraft with core. Idempotent; adapters call it before building
-/// their context, and tests may call it freely.
-pub fn register() {
-    // Guarded rather than relying on the hooks' own duplicate check, which
-    // compares function addresses: closures are not guaranteed one address.
-    static REGISTERED: std::sync::Once = std::sync::Once::new();
-    REGISTERED.call_once(register_once);
+/// What Minecraft still provides through core's own types (§26.12): its
+/// catalogs, interrupted-import recovery, the Modrinth and Technic providers,
+/// and its instances.
+struct MinecraftServices;
+
+impl CompiledServices for MinecraftServices {
+    fn load_catalogs(
+        &self,
+        ctx: &Ctx,
+        registry: Option<&rusqlite::Connection>,
+        event: CatalogEvent,
+    ) -> LauncherResult<Vec<String>> {
+        load_catalogs(ctx, registry, event)
+    }
+
+    fn recover_at_startup(&self, paths: &agora_core::app_paths::AppPaths) -> Vec<String> {
+        crate::launcher_import_service::recover_interrupted_jobs(paths)
+    }
+
+    fn providers(&self, ctx: &Ctx) -> Vec<Arc<dyn agora_core::providers::ContentProvider>> {
+        vec![
+            Arc::new(crate::providers::modrinth::ModrinthProvider::new(
+                ctx.clone(),
+            )),
+            Arc::new(crate::providers::technic::TechnicProvider::new(ctx.clone())),
+        ]
+    }
+
+    fn instances(&self) -> Option<Arc<dyn agora_core::game_hooks::InstanceBackend>> {
+        Some(Arc::new(crate::plugin_backend::MinecraftInstances))
+    }
 }
 
-fn register_once() {
-    game_hooks::register_catalog_hook(load_catalogs);
-    game_hooks::register_startup_hook(crate::launcher_import_service::recover_interrupted_jobs);
-    game_hooks::register_provider(|ctx| {
-        Arc::new(crate::providers::modrinth::ModrinthProvider::new(
-            ctx.clone(),
-        ))
-    });
-    game_hooks::register_provider(|ctx| {
-        Arc::new(crate::providers::technic::TechnicProvider::new(ctx.clone()))
-    });
-    game_hooks::set_instance_backend(Arc::new(crate::plugin_backend::MinecraftInstances));
+/// Register Minecraft into a context's game registry: its definition and the
+/// services it still provides through core's types. Adapters call this while
+/// building the registry they pass to `CoreContext::initialize`.
+pub fn register_into(builder: &mut GameRegistryBuilder) -> Result<(), GameRegistryError> {
+    builder.add_compiled(
+        "agora-game-minecraft",
+        crate::package::game_package(),
+        Arc::new(MinecraftServices),
+    )
+}
+
+/// A registry holding only Minecraft, for tests and tools that build a
+/// context without an adapter.
+pub fn registry() -> Arc<GameRegistry> {
+    let mut builder = GameRegistry::builder();
+    register_into(&mut builder).expect("Minecraft alone always registers");
+    Arc::new(builder.build())
+}
+
+/// A test context with Minecraft registered: `CoreContext::for_testing` plus
+/// [`registry`].
+pub fn testing_context(root: PathBuf) -> Ctx {
+    agora_core::ctx::CoreContext::for_testing(root).with_games(registry())
 }
 
 /// The network category of one of Minecraft's hosts (Mojang's, or a pinned
@@ -264,7 +301,7 @@ mod tests {
     fn test_runtime_catalog_handle_snapshot_via_ctx() {
         let tmp = std::env::temp_dir().join(format!("agora-ctx-snap-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
-        let ctx = agora_core::ctx::CoreContext::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
         let catalog = super::runtime_catalog(&ctx).snapshot();
         assert!(
             !catalog.entries.is_empty(),
@@ -281,7 +318,7 @@ mod tests {
         let tmp =
             std::env::temp_dir().join(format!("agora-ctx-reload-nodb-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
-        let ctx = agora_core::ctx::CoreContext::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
         let warnings = ctx.reload_game_catalogs().unwrap();
         assert!(
             warnings
@@ -325,7 +362,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let ctx = agora_core::ctx::CoreContext::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
 
         // Confirm we start with embedded.
         let before = super::runtime_catalog(&ctx).snapshot();
@@ -368,7 +405,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let ctx = agora_core::ctx::CoreContext::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
 
         // Snapshot before reload is the embedded catalog.
         let before = super::runtime_catalog(&ctx).snapshot();

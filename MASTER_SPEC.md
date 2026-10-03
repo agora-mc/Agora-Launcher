@@ -3800,8 +3800,14 @@ place a game package registers, compiled or plugin. It is held by each context
   refer to them. A product that is not already a valid id part is sanitised and suffixed with a
   hash of the original, so `A.B` and `a-b` never collide.
 
-`game_hooks` still exists beside the registry: the next slice moves Minecraft's catalog, startup,
-provider and instance-backend hooks onto its registry entry and removes the process-global path.
+**The scaffold is gone (slice 2b).** The process-global hooks of Phase 1 are now
+`CompiledServices` attached to a compiled package's registry entry (`add_compiled`): catalog
+loading, startup recovery, content providers and instances, each still in core's own types until it
+moves onto a `GameHost` service. Nothing is process-global any more, so `register()`, its `Once` and
+the test binaries' `ctor` registration are deleted; tests ask for `testing_context`. Instances fan
+out across every package that provides them: listing concatenates, and an operation goes to the
+backend that owns the instance, so a second game can never displace Minecraft's. The package's
+core budget fell to 1,160.
 Per-store user paths (Steam's `Skyrim Special Edition` and GOG's `Skyrim Special Edition GOG`
 under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 needs them.
 

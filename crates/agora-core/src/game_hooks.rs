@@ -1,61 +1,81 @@
-//! Where game packages plug into core's lifecycle (MASTER_SPEC §26.12).
+//! Where compiled game packages plug into core's lifecycle (MASTER_SPEC §26.12).
 //!
-//! Core knows no game. A package that needs to load data from the signed
-//! registry (Minecraft's loader and Java runtime catalogs, for example) or to
-//! recover its own interrupted work at startup registers a hook here before the
-//! adapter builds its [`Ctx`](crate::ctx::Ctx). Package-owned state lives in
-//! [`Extensions`] on the context rather than in fields core would have to name.
+//! Core knows no game. A compiled package that still works through core's own
+//! types (Minecraft's catalogs, providers and instances) attaches
+//! [`CompiledServices`] to its entry in the context's
+//! [`GameRegistry`](crate::game_registry::GameRegistry). Nothing here is
+//! process-global: each context sees exactly the packages it was built with.
+//! Package-owned state lives in [`Extensions`] on the context rather than in
+//! fields core would have to name.
 
 use crate::app_paths::AppPaths;
 use crate::ctx::Ctx;
+use crate::error::LauncherResult;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
-/// Why a catalog hook is being run.
+/// Why a package's catalogs are being loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEvent {
     /// The context is being built.
     Startup,
-    /// A fresh registry was installed; the hook should replace its catalogs
+    /// A fresh registry was installed; the package should replace its catalogs
     /// only if every one of them parses, and otherwise keep the active ones.
     Reload,
 }
 
-/// Loads a package's catalogs from the signed registry. `registry` is `None`
-/// when there is no usable cached registry, so the package can fall back to
-/// embedded data. Returns human-readable warnings, or an error when a catalog
-/// that parsed could not be activated: a reload reports that to its caller
-/// (so `registry sync` fails), while startup keeps going on embedded data.
-pub type CatalogHook = fn(
-    ctx: &Ctx,
-    registry: Option<&rusqlite::Connection>,
-    event: CatalogEvent,
-) -> crate::error::LauncherResult<Vec<String>>;
+/// What a compiled package provides through core's own types. Each part moves
+/// onto a `GameHost` service as Phase 2 builds the generic version of what it
+/// uses (§26.12). Plugin packages have no equivalent because these are seams
+/// for code that still depends on `agora-core`, not privileges.
+pub trait CompiledServices: Send + Sync {
+    /// Load the package's catalogs from the signed registry. `registry` is
+    /// `None` when there is no usable cached registry, so the package can fall
+    /// back to embedded data. Returns human-readable warnings, or an error when
+    /// a catalog that parsed could not be activated: a reload reports that to
+    /// its caller (so `registry sync` fails), while startup keeps going.
+    fn load_catalogs(
+        &self,
+        _ctx: &Ctx,
+        _registry: Option<&rusqlite::Connection>,
+        _event: CatalogEvent,
+    ) -> LauncherResult<Vec<String>> {
+        Ok(Vec::new())
+    }
 
-/// Runs once while the context is built, before any command. Returns warnings.
-pub type StartupHook = fn(paths: &AppPaths) -> Vec<String>;
+    /// Runs once while the context is built, before any command, to recover
+    /// the package's interrupted work. Returns warnings.
+    fn recover_at_startup(&self, _paths: &AppPaths) -> Vec<String> {
+        Vec::new()
+    }
 
-/// Builds one of a package's compiled-in content providers for a context.
-/// Plugin providers are discovered separately, by the plugin service.
-pub type ProviderFactory = fn(ctx: &Ctx) -> Arc<dyn crate::providers::ContentProvider>;
+    /// The package's compiled-in content providers for a context. Plugin
+    /// providers are discovered separately, by the plugin service.
+    fn providers(&self, _ctx: &Ctx) -> Vec<Arc<dyn crate::providers::ContentProvider>> {
+        Vec::new()
+    }
 
-/// The instance operations the plugin host and repair actions perform. One
-/// game package supplies them today; per-game routing arrives with the second
-/// game (Phase 2).
+    /// The package's instances, for the plugin host and repair actions.
+    fn instances(&self) -> Option<Arc<dyn InstanceBackend>> {
+        None
+    }
+}
+
+/// The instance operations the plugin host and repair actions perform.
 pub trait InstanceBackend: Send + Sync {
-    fn list(&self, ctx: &Ctx) -> crate::error::LauncherResult<Vec<crate::models::InstanceRow>>;
+    fn list(&self, ctx: &Ctx) -> LauncherResult<Vec<crate::models::InstanceRow>>;
     fn get(
         &self,
         ctx: &Ctx,
         instance_id: &str,
-    ) -> crate::error::LauncherResult<
+    ) -> LauncherResult<
         Option<(
             crate::models::InstanceRow,
             Option<crate::models::InstanceManifest>,
         )>,
     >;
-    fn rename(&self, ctx: &Ctx, instance_id: &str, name: &str) -> crate::error::LauncherResult<()>;
+    fn rename(&self, ctx: &Ctx, instance_id: &str, name: &str) -> LauncherResult<()>;
     #[allow(clippy::too_many_arguments)]
     fn update_jvm(
         &self,
@@ -66,7 +86,7 @@ pub trait InstanceBackend: Send + Sync {
         always_pre_touch: bool,
         custom_args: &str,
         memory_mode: &str,
-    ) -> crate::error::LauncherResult<()>;
+    ) -> LauncherResult<()>;
     /// The instance's installed content, or `None` when there is no such
     /// instance. An instance without a manifest has no content.
     fn content(
@@ -74,129 +94,106 @@ pub trait InstanceBackend: Send + Sync {
         ctx: &Ctx,
         instance_id: &str,
         content_type: Option<&str>,
-    ) -> crate::error::LauncherResult<Option<Vec<agora_plugin_api::dto::ContentEntry>>>;
+    ) -> LauncherResult<Option<Vec<agora_plugin_api::dto::ContentEntry>>>;
     fn set_update_pinned(
         &self,
         ctx: &Ctx,
         instance_id: &str,
         filename: &str,
         pinned: bool,
-    ) -> crate::error::LauncherResult<bool>;
+    ) -> LauncherResult<bool>;
 }
 
-static INSTANCE_BACKEND: RwLock<Option<Arc<dyn InstanceBackend>>> = RwLock::new(None);
+/// Every registered package's instances behind one [`InstanceBackend`].
+/// Listing concatenates them; an operation on one instance goes to the backend
+/// that owns it, so a second game's backend can never displace the first.
+/// An instance no backend owns goes to the first one, whose own not-found
+/// handling applies, exactly as with a single backend.
+pub(crate) struct InstanceBackends(pub(crate) Vec<Arc<dyn InstanceBackend>>);
 
-/// Install the instance backend. Replaces any earlier one.
-pub fn set_instance_backend(backend: Arc<dyn InstanceBackend>) {
-    *INSTANCE_BACKEND.write().unwrap_or_else(|e| e.into_inner()) = Some(backend);
-}
-
-/// The installed instance backend, or an error naming the missing setup.
-pub fn instance_backend() -> crate::error::LauncherResult<Arc<dyn InstanceBackend>> {
-    INSTANCE_BACKEND
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .ok_or_else(|| crate::error::LauncherError::Generic {
-            code: "ERR_NO_GAME_PACKAGE".into(),
-            message: "No game package is registered to handle instances.".into(),
-        })
-}
-
-#[derive(Default)]
-struct Hooks {
-    catalog: Vec<CatalogHook>,
-    startup: Vec<StartupHook>,
-    providers: Vec<ProviderFactory>,
-}
-
-fn hooks() -> &'static Mutex<Hooks> {
-    static HOOKS: OnceLock<Mutex<Hooks>> = OnceLock::new();
-    HOOKS.get_or_init(|| Mutex::new(Hooks::default()))
-}
-
-/// Register a catalog hook. Registering the same function twice is a no-op, so
-/// adapters and tests can call a package's `register` freely.
-pub fn register_catalog_hook(hook: CatalogHook) {
-    let mut hooks = hooks().lock().unwrap_or_else(|e| e.into_inner());
-    if !hooks.catalog.iter().any(|h| *h as usize == hook as usize) {
-        hooks.catalog.push(hook);
-    }
-}
-
-/// Register a startup hook. Idempotent, like [`register_catalog_hook`].
-pub fn register_startup_hook(hook: StartupHook) {
-    let mut hooks = hooks().lock().unwrap_or_else(|e| e.into_inner());
-    if !hooks.startup.iter().any(|h| *h as usize == hook as usize) {
-        hooks.startup.push(hook);
-    }
-}
-
-/// Register a compiled-in content provider. Idempotent; providers keep the
-/// order they were first registered in.
-pub fn register_provider(factory: ProviderFactory) {
-    let mut hooks = hooks().lock().unwrap_or_else(|e| e.into_inner());
-    if !hooks
-        .providers
-        .iter()
-        .any(|h| *h as usize == factory as usize)
-    {
-        hooks.providers.push(factory);
-    }
-}
-
-pub(crate) fn builtin_providers(ctx: &Ctx) -> Vec<Arc<dyn crate::providers::ContentProvider>> {
-    let providers = hooks()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .providers
-        .clone();
-    providers.iter().map(|factory| factory(ctx)).collect()
-}
-
-/// Run every catalog hook. All hooks run even if one fails; the first error
-/// is returned after the others have had their turn.
-pub(crate) fn run_catalog_hooks(
-    ctx: &Ctx,
-    registry: Option<&rusqlite::Connection>,
-    event: CatalogEvent,
-) -> crate::error::LauncherResult<Vec<String>> {
-    let catalog = hooks()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .catalog
-        .clone();
-    let mut warnings = Vec::new();
-    let mut first_error = None;
-    for hook in &catalog {
-        match hook(ctx, registry, event) {
-            Ok(mut more) => warnings.append(&mut more),
-            Err(error) => {
-                first_error.get_or_insert(error);
+impl InstanceBackends {
+    fn owner(&self, ctx: &Ctx, instance_id: &str) -> LauncherResult<&Arc<dyn InstanceBackend>> {
+        for backend in &self.0 {
+            if backend.get(ctx, instance_id)?.is_some() {
+                return Ok(backend);
             }
         }
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(warnings),
+        Ok(&self.0[0])
     }
 }
 
-/// Whether any game package has registered with core. Core runs without one,
-/// but an adapter that forgot to register would lose every game's catalogs
-/// and providers without an error, so startup says so.
-pub fn any_package_registered() -> bool {
-    let hooks = hooks().lock().unwrap_or_else(|e| e.into_inner());
-    !hooks.catalog.is_empty() || !hooks.providers.is_empty() || !hooks.startup.is_empty()
-}
+impl InstanceBackend for InstanceBackends {
+    fn list(&self, ctx: &Ctx) -> LauncherResult<Vec<crate::models::InstanceRow>> {
+        let mut all = Vec::new();
+        for backend in &self.0 {
+            all.extend(backend.list(ctx)?);
+        }
+        Ok(all)
+    }
 
-pub(crate) fn run_startup_hooks(paths: &AppPaths) -> Vec<String> {
-    let startup = hooks()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .startup
-        .clone();
-    startup.iter().flat_map(|hook| hook(paths)).collect()
+    fn get(
+        &self,
+        ctx: &Ctx,
+        instance_id: &str,
+    ) -> LauncherResult<
+        Option<(
+            crate::models::InstanceRow,
+            Option<crate::models::InstanceManifest>,
+        )>,
+    > {
+        for backend in &self.0 {
+            if let Some(found) = backend.get(ctx, instance_id)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    fn rename(&self, ctx: &Ctx, instance_id: &str, name: &str) -> LauncherResult<()> {
+        self.owner(ctx, instance_id)?.rename(ctx, instance_id, name)
+    }
+
+    fn update_jvm(
+        &self,
+        ctx: &Ctx,
+        instance_id: &str,
+        memory_mb: i64,
+        gc: &str,
+        always_pre_touch: bool,
+        custom_args: &str,
+        memory_mode: &str,
+    ) -> LauncherResult<()> {
+        self.owner(ctx, instance_id)?.update_jvm(
+            ctx,
+            instance_id,
+            memory_mb,
+            gc,
+            always_pre_touch,
+            custom_args,
+            memory_mode,
+        )
+    }
+
+    fn content(
+        &self,
+        ctx: &Ctx,
+        instance_id: &str,
+        content_type: Option<&str>,
+    ) -> LauncherResult<Option<Vec<agora_plugin_api::dto::ContentEntry>>> {
+        self.owner(ctx, instance_id)?
+            .content(ctx, instance_id, content_type)
+    }
+
+    fn set_update_pinned(
+        &self,
+        ctx: &Ctx,
+        instance_id: &str,
+        filename: &str,
+        pinned: bool,
+    ) -> LauncherResult<bool> {
+        self.owner(ctx, instance_id)?
+            .set_update_pinned(ctx, instance_id, filename, pinned)
+    }
 }
 
 /// Package-owned state carried on the context, keyed by type. Clones share the
@@ -259,5 +256,102 @@ mod tests {
         let second = ext.get_or_insert_with(|| String::from("b"));
         assert_eq!(*first, "a");
         assert_eq!(*second, "a", "the first insert wins");
+    }
+
+    use std::sync::Mutex;
+
+    /// One game's instances, recording the renames it is asked to do.
+    struct Backend {
+        ids: Vec<&'static str>,
+        renamed: Mutex<Vec<String>>,
+    }
+
+    fn row(id: &str) -> crate::models::InstanceRow {
+        serde_json::from_value(serde_json::json!({
+            "instance_id": id, "name": id, "minecraft_version": "", "loader": "",
+            "loader_version": "", "is_modpack": false, "is_locked": false,
+            "last_launched_at": null, "jvm_memory_mb": 0, "jvm_memory_mode": "",
+            "jvm_gc": "", "jvm_custom_args": "", "jvm_always_pre_touch": false,
+            "created_at": ""
+        }))
+        .unwrap()
+    }
+
+    impl InstanceBackend for Backend {
+        fn list(&self, _: &Ctx) -> LauncherResult<Vec<crate::models::InstanceRow>> {
+            Ok(self.ids.iter().map(|id| row(id)).collect())
+        }
+        fn get(
+            &self,
+            _: &Ctx,
+            id: &str,
+        ) -> LauncherResult<
+            Option<(
+                crate::models::InstanceRow,
+                Option<crate::models::InstanceManifest>,
+            )>,
+        > {
+            Ok(self.ids.contains(&id).then(|| (row(id), None)))
+        }
+        fn rename(&self, _: &Ctx, id: &str, _: &str) -> LauncherResult<()> {
+            self.renamed.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+        fn update_jvm(
+            &self,
+            _: &Ctx,
+            _: &str,
+            _: i64,
+            _: &str,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> LauncherResult<()> {
+            Ok(())
+        }
+        fn content(
+            &self,
+            _: &Ctx,
+            _: &str,
+            _: Option<&str>,
+        ) -> LauncherResult<Option<Vec<agora_plugin_api::dto::ContentEntry>>> {
+            Ok(None)
+        }
+        fn set_update_pinned(&self, _: &Ctx, _: &str, _: &str, _: bool) -> LauncherResult<bool> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn a_second_game_s_instances_never_displace_the_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = crate::ctx::CoreContext::for_testing(tmp.path().to_path_buf());
+        let first = Arc::new(Backend {
+            ids: vec!["mc-1", "mc-2"],
+            renamed: Mutex::default(),
+        });
+        let second = Arc::new(Backend {
+            ids: vec!["sky-1"],
+            renamed: Mutex::default(),
+        });
+        let all = InstanceBackends(vec![first.clone(), second.clone()]);
+
+        let listed: Vec<_> = all
+            .list(&ctx)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.instance_id)
+            .collect();
+        assert_eq!(listed, ["mc-1", "mc-2", "sky-1"]);
+        assert!(all.get(&ctx, "sky-1").unwrap().is_some());
+        assert!(all.get(&ctx, "nobody").unwrap().is_none());
+
+        all.rename(&ctx, "sky-1", "x").unwrap();
+        all.rename(&ctx, "mc-2", "x").unwrap();
+        // An instance nobody owns goes to the first backend, whose own
+        // not-found handling applies, as it did with a single backend.
+        all.rename(&ctx, "nobody", "x").unwrap();
+        assert_eq!(*first.renamed.lock().unwrap(), ["mc-2", "nobody"]);
+        assert_eq!(*second.renamed.lock().unwrap(), ["sky-1"]);
     }
 }

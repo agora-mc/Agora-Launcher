@@ -10,7 +10,11 @@ use agora_game_api::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::app_paths::AppPaths;
+use crate::ctx::Ctx;
+use crate::error::{LauncherError, LauncherResult};
 use crate::game_discovery::{DiscoveredInstall, DiscoveryReport};
+use crate::game_hooks::{CatalogEvent, CompiledServices, InstanceBackend, InstanceBackends};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -50,6 +54,8 @@ pub struct GameRegistry {
     packages: Vec<(PackageSource, Arc<dyn GamePackage>)>,
     games: BTreeMap<GameId, (usize, GameDefinition)>,
     store_products: HashMap<(StoreId, String), GameId>,
+    /// In registration order, which is the order catalogs load and providers list.
+    services: Vec<Arc<dyn CompiledServices>>,
 }
 
 #[derive(Default)]
@@ -57,9 +63,29 @@ pub struct GameRegistryBuilder {
     packages: Vec<(PackageSource, Arc<dyn GamePackage>)>,
     games: BTreeMap<GameId, (usize, GameDefinition)>,
     store_products: HashMap<(StoreId, String), GameId>,
+    services: Vec<Arc<dyn CompiledServices>>,
 }
 
 impl GameRegistryBuilder {
+    /// Register a compiled package together with the services it still
+    /// provides through core's own types. Validated exactly like [`Self::add`];
+    /// a refused package attaches no services.
+    pub fn add_compiled(
+        &mut self,
+        crate_name: &str,
+        package: Arc<dyn GamePackage>,
+        services: Arc<dyn CompiledServices>,
+    ) -> Result<(), GameRegistryError> {
+        self.add(
+            PackageSource::Compiled {
+                crate_name: crate_name.to_string(),
+            },
+            package,
+        )?;
+        self.services.push(services);
+        Ok(())
+    }
+
     pub fn add(
         &mut self,
         source: PackageSource,
@@ -154,6 +180,7 @@ impl GameRegistryBuilder {
             packages: self.packages,
             games: self.games,
             store_products: self.store_products,
+            services: self.services,
         }
     }
 }
@@ -168,6 +195,72 @@ impl GameRegistry {
             packages: Vec::new(),
             games: BTreeMap::new(),
             store_products: HashMap::new(),
+            services: Vec::new(),
+        }
+    }
+
+    /// Whether any game is registered. Core runs without one, but an adapter
+    /// that forgot to register would lose every game's catalogs and providers
+    /// without an error, so startup says so.
+    pub fn is_empty(&self) -> bool {
+        self.games.is_empty()
+    }
+
+    /// Run every package's startup recovery. Returns warnings.
+    pub fn recover_at_startup(&self, paths: &AppPaths) -> Vec<String> {
+        self.services
+            .iter()
+            .flat_map(|services| services.recover_at_startup(paths))
+            .collect()
+    }
+
+    /// Load every package's catalogs. All packages run even if one fails; the
+    /// first error is returned after the others have had their turn.
+    pub fn load_catalogs(
+        &self,
+        ctx: &Ctx,
+        registry: Option<&rusqlite::Connection>,
+        event: CatalogEvent,
+    ) -> LauncherResult<Vec<String>> {
+        let mut warnings = Vec::new();
+        let mut first_error = None;
+        for services in &self.services {
+            match services.load_catalogs(ctx, registry, event) {
+                Ok(mut more) => warnings.append(&mut more),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(warnings),
+        }
+    }
+
+    /// Every compiled package's content providers, in registration order.
+    pub fn builtin_providers(&self, ctx: &Ctx) -> Vec<Arc<dyn crate::providers::ContentProvider>> {
+        self.services
+            .iter()
+            .flat_map(|services| services.providers(ctx))
+            .collect()
+    }
+
+    /// Every package's instances behind one backend, or an error naming the
+    /// missing setup when no package provides any.
+    pub fn instance_backend(&self) -> LauncherResult<Arc<dyn InstanceBackend>> {
+        let backends: Vec<_> = self
+            .services
+            .iter()
+            .filter_map(|services| services.instances())
+            .collect();
+        match backends.len() {
+            0 => Err(LauncherError::Generic {
+                code: "ERR_NO_GAME_PACKAGE".into(),
+                message: "No game package is registered to handle instances.".into(),
+            }),
+            1 => Ok(backends.into_iter().next().expect("one backend")),
+            _ => Ok(Arc::new(InstanceBackends(backends))),
         }
     }
 
@@ -409,4 +502,50 @@ fn resolve_runtime(
     }
 
     RuntimeResolution::Unidentified { reasons }
+}
+
+/// A minimal package for tests that need a registered game but not its data.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use agora_game_api::{
+        DeploymentStrategy, GameDefinition, GameId, GamePackage, PackageDefinition,
+    };
+    use std::sync::Arc;
+
+    struct Package(PackageDefinition);
+
+    impl GamePackage for Package {
+        fn definition(&self) -> &PackageDefinition {
+            &self.0
+        }
+    }
+
+    /// A package defining one game, `game_id`, with no stores and no data.
+    pub fn package(game_id: &str) -> Arc<dyn GamePackage> {
+        Arc::new(Package(PackageDefinition {
+            id: format!("test.{game_id}"),
+            version: semver::Version::new(0, 1, 0),
+            api_range: semver::VersionReq::parse(">=0.1, <0.2").expect("valid range"),
+            parents: Vec::new(),
+            games: vec![GameDefinition {
+                id: GameId::new(game_id).expect("valid game id"),
+                name: game_id.to_string(),
+                stores: Vec::new(),
+                version_sources: Vec::new(),
+                deployment: DeploymentStrategy::Redirect,
+                content_rules: Vec::new(),
+                native_code_patterns: Vec::new(),
+                framework_ids: Vec::new(),
+                tool_ids: Vec::new(),
+                launch: None,
+                log_paths: Vec::new(),
+                crash_paths: Vec::new(),
+                user_files: Vec::new(),
+                save_paths: Vec::new(),
+                linked_archive_patterns: Vec::new(),
+            }],
+            frameworks: Vec::new(),
+            tools: Vec::new(),
+        }))
+    }
 }

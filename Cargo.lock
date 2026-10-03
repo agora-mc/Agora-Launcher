@@ -180,7 +180,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "ctor",
  "dirs 5.0.1",
  "ed25519-dalek",
  "flate2",

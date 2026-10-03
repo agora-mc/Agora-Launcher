@@ -13,7 +13,7 @@ Canonical reference for which code belongs where.
 ### Core and game packages — own everything below
 
 `agora-core` is game-agnostic. Minecraft's behaviour lives in the `agora-game-minecraft` package,
-which core never references; it registers into core at startup through `agora_core::game_hooks`
+which core never references; the adapter registers it into the context's `GameRegistry` at startup
 (MASTER_SPEC §26.12). Where a row below names the Minecraft package, a second game supplies its own
 equivalent.
 
@@ -90,7 +90,7 @@ This ensures the core owns the **interface and policy** while the adapter provid
 ## Dependency Direction
 
 The game contract is in `agora-game-api`, below core and game packages. Core must not reference
-`agora-game-minecraft`; packages register into core through `game_hooks` and the contract. Until
+`agora-game-minecraft`; packages register into each context's `GameRegistry` through the contract. Until
 Phase 2, `agora-game-minecraft` may still use `agora-core` within a budget that only shrinks
 (`scripts/game_package_core_budget.json`). See [game API and manifest v3](game-api.md).
 

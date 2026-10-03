@@ -1138,7 +1138,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("agora-mcp-test-{}-{}", std::process::id(), n));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        let ctx = Ctx::for_testing(tmp.clone());
+        let ctx = crate::testing_context(tmp.clone());
         agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
         (ctx, tmp)
     }

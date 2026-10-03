@@ -158,7 +158,7 @@ impl CoreContext {
                 message: msg,
             }
         })?;
-        warnings.extend(crate::game_hooks::run_startup_hooks(&paths));
+        warnings.extend(games.recover_at_startup(&paths));
 
         // 3. Verify the cached registry's Ed25519 signature before anything
         //    reads it. Download-time verification only covers transit; the
@@ -272,16 +272,15 @@ impl CoreContext {
 
         // 6. Let game packages load their catalogs from the signed registry
         //    (or fall back to embedded data when there is none).
-        if !crate::game_hooks::any_package_registered() {
+        if ctx.games.is_empty() {
             warnings.push(
                 "No game package is registered; no game catalogs or providers are available".into(),
             );
         }
-        match crate::game_hooks::run_catalog_hooks(
-            &ctx,
-            registry_conn.as_ref(),
-            CatalogEvent::Startup,
-        ) {
+        match ctx
+            .games
+            .load_catalogs(&ctx, registry_conn.as_ref(), CatalogEvent::Startup)
+        {
             Ok(more) => warnings.extend(more),
             Err(error) => warnings.push(format!("Cannot load game catalogs: {error}")),
         }
@@ -379,7 +378,8 @@ impl CoreContext {
         };
         // The wording above predates game packages; the CLI's JSON output
         // carries it as `catalog_warnings`, so it is kept.
-        crate::game_hooks::run_catalog_hooks(self, Some(&conn), CatalogEvent::Reload)
+        self.games
+            .load_catalogs(self, Some(&conn), CatalogEvent::Reload)
     }
 
     /// The lock manager reference.
@@ -423,23 +423,32 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("agora-ctx-init-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let paths = AppPaths::from_root(tmp.clone());
-        fn hook(
-            _: &CoreContext,
-            registry: Option<&rusqlite::Connection>,
-            event: crate::game_hooks::CatalogEvent,
-        ) -> crate::error::LauncherResult<Vec<String>> {
-            Ok(match (registry, event) {
-                (None, crate::game_hooks::CatalogEvent::Startup) => {
-                    vec!["test catalog hook: startup without a registry".into()]
-                }
-                _ => Vec::new(),
-            })
+        struct TestServices;
+        impl crate::game_hooks::CompiledServices for TestServices {
+            fn load_catalogs(
+                &self,
+                _: &CoreContext,
+                registry: Option<&rusqlite::Connection>,
+                event: CatalogEvent,
+            ) -> crate::error::LauncherResult<Vec<String>> {
+                Ok(match (registry, event) {
+                    (None, CatalogEvent::Startup) => {
+                        vec!["test catalog hook: startup without a registry".into()]
+                    }
+                    _ => Vec::new(),
+                })
+            }
         }
-        crate::game_hooks::register_catalog_hook(hook);
+        let mut games = crate::game_registry::GameRegistry::builder();
+        games
+            .add_compiled(
+                "test",
+                crate::game_registry::test_support::package("test-game"),
+                Arc::new(TestServices),
+            )
+            .unwrap();
 
-        let (ctx, warnings) =
-            CoreContext::initialize(paths, Arc::new(crate::game_registry::GameRegistry::empty()))
-                .unwrap();
+        let (ctx, warnings) = CoreContext::initialize(paths, Arc::new(games.build())).unwrap();
         assert!(ctx.paths.root().exists(), "root should exist");
         assert!(
             ctx.paths.local_state_db().exists(),
