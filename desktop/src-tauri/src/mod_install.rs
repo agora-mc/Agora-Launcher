@@ -12,7 +12,7 @@ pub fn load_instance_info(
     instance_id: &str,
 ) -> LauncherResult<InstanceRow> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::instance_service::InstanceService::new(ctx);
+    let svc = agora_game_minecraft::instance_service::InstanceService::new(ctx);
     svc.get(instance_id)?
         .map(|detail| detail.row)
         .ok_or_else(|| LauncherError::Generic {
@@ -38,7 +38,7 @@ pub fn load_registry_item(
 /// Check instance is not locked via core InstallService.
 pub(crate) fn check_not_locked(app: &tauri::AppHandle, instance_id: &str) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::install_service::InstallService::new(ctx);
+    let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
     svc.check_not_locked(instance_id)
 }
 
@@ -69,14 +69,14 @@ pub async fn list_mod_versions_for(
 ) -> LauncherResult<Vec<ModVersionCandidate>> {
     let ctx = crate::core_context(app)?;
     let item = load_registry_item(app, item_id)?;
-    let resolver = agora_core::resolver::Resolver::new(ctx);
+    let resolver = agora_game_minecraft::resolver::Resolver::new(ctx);
     resolver
         .list_curated_versions(&item, mc_version, loader)
         .await
 }
 
 // The bounded candidate set for update checks is resolved by
-// `agora_core::update_cache::check_single_instance_updates_with`, which owns
+// `agora_game_minecraft::update_cache::check_single_instance_updates_with`, which owns
 // the caching and the matching rules for both the background sweep and the
 // `check_instance_updates` command. Adapters must not open a second door to
 // `Resolver::list_curated_versions_for_update` — see check 9 in
@@ -91,7 +91,7 @@ pub async fn check_mod_compat(
     let ctx = crate::core_context(app)?;
     let instance = load_instance_info(app, instance_id)?;
     let item = load_registry_item(app, item_id)?;
-    let resolver = agora_core::resolver::Resolver::new(ctx);
+    let resolver = agora_game_minecraft::resolver::Resolver::new(ctx);
     list_curated_versions_tolerant(
         &resolver,
         &item,
@@ -102,7 +102,7 @@ pub async fn check_mod_compat(
 }
 
 async fn list_curated_versions_tolerant(
-    resolver: &agora_core::resolver::Resolver,
+    resolver: &agora_game_minecraft::resolver::Resolver,
     item: &registry::RegistryItem,
     mc_version: &str,
     loader: &str,
@@ -122,8 +122,8 @@ async fn list_curated_versions_tolerant(
 async fn make_resolver(
     ctx: agora_core::ctx::Ctx,
     app: &tauri::AppHandle,
-) -> agora_core::resolver::Resolver {
-    let base = agora_core::resolver::Resolver::new(ctx);
+) -> agora_game_minecraft::resolver::Resolver {
+    let base = agora_game_minecraft::resolver::Resolver::new(ctx);
     match auth::get_valid_access_token(app).await {
         Some(tok) => base.with_stored_github_token(tok),
         None => base,
@@ -155,7 +155,7 @@ pub fn enabled_download_sources(
     item: &registry::RegistryItem,
 ) -> LauncherResult<Vec<agora_core::registry::DownloadSource>> {
     let ctx = crate::core_context(app)?;
-    Ok(agora_core::resolver::Resolver::new(ctx).enabled_download_sources(item))
+    Ok(agora_game_minecraft::resolver::Resolver::new(ctx).enabled_download_sources(item))
 }
 
 /// The source an item lists versions from: the curator's preferred source
@@ -225,7 +225,7 @@ pub async fn install_mod_version(
             .as_deref()
             .or(Some(pinned).filter(|hash| !hash.is_empty())),
     };
-    let svc = agora_core::install_service::InstallService::new(ctx);
+    let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
     svc.install_artifact(
         instance_id,
         &candidate.filename,
@@ -250,7 +250,7 @@ pub async fn remove_mod_from_instance(
     let ctx = crate::core_context(app)?;
     let (iid, fn_own) = (instance_id.to_string(), filename.to_string());
     let removed = tokio::task::spawn_blocking(move || {
-        let svc = agora_core::install_service::InstallService::new(ctx);
+        let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
         svc.remove_artifact(&iid, &fn_own)
     })
     .await
@@ -295,7 +295,7 @@ pub async fn add_manual_mod(
     let ctx = crate::core_context(app)?;
     let (iid, sp) = (instance_id.to_string(), source_path.to_string());
     tokio::task::spawn_blocking(move || {
-        let svc = agora_core::install_service::InstallService::new(ctx);
+        let svc = agora_game_minecraft::install_service::InstallService::new(ctx);
         svc.add_manual_artifact(&iid, &sp)
     })
     .await
@@ -323,8 +323,13 @@ pub async fn export_instance_pack(
     let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
     let instance_dir = ctx.paths.instance_dir(instance_id)?;
     let exports_dir = ctx.paths.root().join("exports");
-    agora_core::export_service::export_instance_pack(&instance_dir, &manifest, &exports_dir, format)
-        .await
+    agora_game_minecraft::export_service::export_instance_pack(
+        &instance_dir,
+        &manifest,
+        &exports_dir,
+        format,
+    )
+    .await
 }
 
 /// Import a pack file.  .mrpack → core ImportService.  .agora-pack.json → local orchestrator.
@@ -347,9 +352,9 @@ pub async fn import_instance_pack(
 
 async fn import_mrpack(app: &tauri::AppHandle, source_path: &str) -> LauncherResult<String> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::import_service::ImportService::new(ctx);
-    let request = agora_core::import_service::ImportRequest {
-        source: agora_core::import_service::ImportSource::mrpack(
+    let svc = agora_game_minecraft::import_service::ImportService::new(ctx);
+    let request = agora_game_minecraft::import_service::ImportRequest {
+        source: agora_game_minecraft::import_service::ImportSource::mrpack(
             Path::new(source_path).to_path_buf(),
         ),
         symlink_saves: false,
@@ -484,12 +489,14 @@ async fn import_agora_json(app: &tauri::AppHandle, source_path: &str) -> Launche
     // Honest identity is display name only; every id stays None so
     // pack-update can distinguish "unknown" from "known".
     let instance_dir = ctx.paths.instance_dir(&instance_id)?;
-    let pack_files =
-        agora_core::pack_inventory::collect_pack_inventory(&instance_dir).unwrap_or_default();
+    let pack_files = agora_game_minecraft::pack_inventory::collect_pack_inventory(&instance_dir)
+        .unwrap_or_default();
     let pack_hash = if pack_files.is_empty() {
         None
     } else {
-        Some(agora_core::pack_inventory::pack_content_hash(&pack_files))
+        Some(agora_game_minecraft::pack_inventory::pack_content_hash(
+            &pack_files,
+        ))
     };
     if let Ok(conn) = agora_core::db::local_state_connection(&ctx.paths.local_state_db()) {
         let _ = agora_core::db::replace_instance_pack_files(&conn, &instance_id, &pack_files);

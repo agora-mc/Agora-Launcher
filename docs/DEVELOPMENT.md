@@ -6,7 +6,8 @@ This page covers local builds and validation. Player instructions belong in the 
 
 | Path | Purpose |
 | --- | --- |
-| `crates/agora-core/` | Shared business logic |
+| `crates/agora-core/` | Shared, game-agnostic business logic |
+| `crates/agora-game-minecraft/` | Minecraft support, as a game package that registers into core |
 | `crates/agora/` | Standalone CLI |
 | `crates/agora-plugin-api/`, `crates/agora-plugin-host/` | Plugin contract, and the QuickJS host that runs plugin scripts |
 | `crates/agora-game-api/` | Experimental game package/host contract; [manifest v3 design](architecture/game-api.md) |
@@ -21,7 +22,7 @@ This page covers local builds and validation. Player instructions belong in the 
 | `.kilo/` | AI tooling configuration; `.kilo/plans/MASTER_SPEC.md` is the engineering blueprint |
 | `BACKLOG.md` | Phase-by-phase task tracker |
 
-Keep reusable behavior in `agora-core`. Desktop, CLI, and MCP hosts should adapt the same services rather than implement parallel business rules.
+Keep reusable behavior in `agora-core`, and game-specific behavior in that game's package. Desktop, CLI, and MCP hosts should adapt the same services rather than implement parallel business rules.
 
 ## Prerequisites
 
@@ -137,8 +138,9 @@ Rust:
 
 ```bash
 cargo fmt --all --check
-cargo clippy -p agora-core -p agora-cli --all-targets --all-features -- -D warnings
+cargo clippy -p agora-core -p agora-game-api -p agora-game-minecraft -p agora-cli --all-targets --all-features -- -D warnings
 cargo test -p agora-core --lib --tests
+cargo test -p agora-game-api -p agora-game-minecraft --lib --tests
 cargo test -p agora-cli
 cargo check -p agora-desktop
 ```

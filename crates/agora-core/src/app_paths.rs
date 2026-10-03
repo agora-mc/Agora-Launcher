@@ -229,7 +229,7 @@ impl AppPaths {
 
     /// Root directory for reusable instance templates (`templates/`).
     pub fn templates_root(&self) -> PathBuf {
-        crate::template_service::templates_root(&self.root)
+        self.root.join("templates")
     }
 
     /// Shared screenshot folder (`screenshots/`).

@@ -29,8 +29,9 @@ on:
       - "crates/**"
       - "desktop/**"
       - "compiler/**"
-      # Embedded at compile time into agora-core via include_str!/include_bytes!
-      # (loader_manifests.rs, runtime_catalog.rs, crash_diagnostics.rs), so a
+      # Embedded at compile time via include_str!/include_bytes! (agora-core's
+      # crash_diagnostics.rs; agora-game-minecraft's loader_manifests.rs and
+      # runtime_catalog.rs), so a
       # change here changes every Rust artifact the release ships.
       - "crash-signatures/**"
       - "loader-manifests/**"
@@ -50,8 +51,9 @@ on:
       - "crates/**"
       - "desktop/**"
       - "compiler/**"
-      # Embedded at compile time into agora-core via include_str!/include_bytes!
-      # (loader_manifests.rs, runtime_catalog.rs, crash_diagnostics.rs), so a
+      # Embedded at compile time via include_str!/include_bytes! (agora-core's
+      # crash_diagnostics.rs; agora-game-minecraft's loader_manifests.rs and
+      # runtime_catalog.rs), so a
       # change here changes every Rust artifact the release ships.
       - "crash-signatures/**"
       - "loader-manifests/**"
@@ -96,8 +98,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: . -> target
-      - name: Clippy core and CLI (no Tauri system libs required)
-        run: cargo clippy -p agora-core -p agora-cli --all-targets --all-features -- -D warnings
+      - name: Clippy core, game packages and CLI (no Tauri system libs required)
+        run: cargo clippy -p agora-core -p agora-game-api -p agora-game-minecraft -p agora-cli --all-targets --all-features -- -D warnings
 
   desktop-clippy:
     runs-on: windows-latest
@@ -126,6 +128,8 @@ jobs:
           workspaces: . -> target
       - name: Core unit and integration tests
         run: cargo test -p agora-core --lib --tests
+      - name: Game contract and Minecraft package tests
+        run: cargo test -p agora-game-api -p agora-game-minecraft --lib --tests
       - name: CLI tests
         run: cargo test -p agora-cli
       - name: Build CLI

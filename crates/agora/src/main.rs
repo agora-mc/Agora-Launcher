@@ -5,27 +5,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agora_core::clone::ClonePrefs;
 use agora_core::crash_service::CrashService;
-use agora_core::install_service::InstallService;
-use agora_core::instance_service::{CreateInstanceRequest, InstanceService};
-use agora_core::loader_service::LoaderService;
 use agora_core::plugins::{CapabilityDescription, InstallPreview, PluginService, PluginSummary};
 use agora_core::registry::RegistryService;
-use agora_core::runtime_service::RuntimeService;
 use agora_core::settings::SettingsService;
+use agora_game_minecraft::clone::ClonePrefs;
+use agora_game_minecraft::install_service::InstallService;
+use agora_game_minecraft::instance_service::{CreateInstanceRequest, InstanceService};
+use agora_game_minecraft::loader_service::LoaderService;
+use agora_game_minecraft::runtime_service::RuntimeService;
 
 /// A silent progress reporter for the CLI — no progress events are emitted.
 struct SilentReporter;
 
-impl agora_core::install_pipeline::ProgressReporter for SilentReporter {
-    fn report(&self, _event: agora_core::install_pipeline::ProgressEvent) {}
+impl agora_game_minecraft::install_pipeline::ProgressReporter for SilentReporter {
+    fn report(&self, _event: agora_game_minecraft::install_pipeline::ProgressEvent) {}
 }
 
 /// A console progress reporter for runtime operations.
 struct ConsoleRuntimeProgress;
 
-impl agora_core::runtime_manager::RuntimeProgress for ConsoleRuntimeProgress {
+impl agora_game_minecraft::runtime_manager::RuntimeProgress for ConsoleRuntimeProgress {
     fn on_progress(&self, message: &str, percent: Option<f64>) {
         if let Some(pct) = percent {
             eprintln!("[{}%] {}", pct, message);
@@ -78,7 +78,7 @@ impl agora_core::event_sink::ProgressSink for CliProgressSink {
     }
 }
 
-impl agora_core::launch_service::LaunchProgress for ConsoleLaunchProgress {
+impl agora_game_minecraft::launch_service::LaunchProgress for ConsoleLaunchProgress {
     fn phase(&self, _name: &str, message: &str) {
         if !self.json {
             eprintln!("[..] {message}");
@@ -994,6 +994,7 @@ async fn main() {
         return;
     }
 
+    agora_game_minecraft::register();
     let (ctx, warnings) = match agora_core::ctx::CoreContext::initialize(paths.clone()) {
         Ok(result) => result,
         Err(error) => {
@@ -1904,7 +1905,7 @@ async fn run_command(
                     use_hard_links: hard_links,
                     use_sym_links: sym_links,
                 };
-                let request = agora_core::instance_service::CloneRequest {
+                let request = agora_game_minecraft::instance_service::CloneRequest {
                     source_instance_id: source,
                     new_name: name,
                     prefs,
@@ -1990,16 +1991,19 @@ async fn run_command(
         },
         Commands::Loader { action } => match action {
             LoaderCmd::List { mc_version } => {
-                let loaders = agora_core::loader_manifests::list_loaders();
+                let loaders = agora_game_minecraft::loader_manifests::list_loaders();
                 if let Some(mc_version) = mc_version {
                     let entries: Vec<serde_json::Value> = loaders
                         .into_iter()
                         .filter_map(|loader| {
                             let versions: Vec<String> =
-                                agora_core::loader_manifests::list_versions(&loader, &mc_version)
-                                    .into_iter()
-                                    .map(|entry| entry.loader_version)
-                                    .collect();
+                                agora_game_minecraft::loader_manifests::list_versions(
+                                    &loader,
+                                    &mc_version,
+                                )
+                                .into_iter()
+                                .map(|entry| entry.loader_version)
+                                .collect();
                             (!versions.is_empty()).then(|| {
                                 serde_json::json!({
                                     "loader": loader,
@@ -2105,9 +2109,10 @@ async fn run_command(
                     }
                 }
                 ProviderCmd::PlanDigest { identifier } => {
-                    let digest =
-                        agora_core::providers::install::curated_pack_digest(&registry, identifier)
-                            .await?;
+                    let digest = agora_game_minecraft::providers::install::curated_pack_digest(
+                        &registry, identifier,
+                    )
+                    .await?;
                     if json {
                         println!("{}", serde_json::json!({ "planDigest": digest }));
                     } else {
@@ -2232,14 +2237,14 @@ async fn run_command(
                 let svc = InstallService::new(ctx.clone());
                 let requested_version = version.clone().unwrap_or_else(|| "selected".into());
                 let optional_deps = resolve_optional_deps(include_optional, exclude_optional);
-                let intent = agora_core::install_pipeline::InstallIntent {
-                    action: agora_core::install_pipeline::InstallAction::Install {
+                let intent = agora_game_minecraft::install_pipeline::InstallIntent {
+                    action: agora_game_minecraft::install_pipeline::InstallAction::Install {
                         source_type: match source {
                             ModSourceArg::Curated => {
-                                agora_core::install_pipeline::SourceType::Curated
+                                agora_game_minecraft::install_pipeline::SourceType::Curated
                             }
                             ModSourceArg::Modrinth => {
-                                agora_core::install_pipeline::SourceType::Modrinth
+                                agora_game_minecraft::install_pipeline::SourceType::Modrinth
                             }
                         },
                         item_id: project.clone(),
@@ -2247,8 +2252,8 @@ async fn run_command(
                     },
                     target_instance: instance.clone(),
                     optional_deps,
-                    requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides {
+                    requested_by: agora_game_minecraft::install_pipeline::RequestSource::CLI,
+                    overrides: agora_game_minecraft::install_pipeline::PlanOverrides {
                         allow_replace,
                         skip_health_scan,
                         ..Default::default()
@@ -2256,7 +2261,7 @@ async fn run_command(
                 };
 
                 let reporter = SilentReporter;
-                let cancel = agora_core::install_pipeline::CancellationToken::new();
+                let cancel = agora_game_minecraft::install_pipeline::CancellationToken::new();
 
                 let mut plan = svc.resolve(intent, &reporter).await?;
 
@@ -2289,7 +2294,7 @@ async fn run_command(
                 let outcome = svc.execute(&plan, &reporter, &cancel).await;
 
                 match outcome {
-                    agora_core::install_pipeline::InstallOutcome::Success {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Success {
                         warnings,
                         snapshot_id,
                         ..
@@ -2314,7 +2319,7 @@ async fn run_command(
                             println!("Installed {} ({})", filename, requested_version);
                         }
                     }
-                    agora_core::install_pipeline::InstallOutcome::HealthRollback {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
                         snapshot_id,
                         warnings,
@@ -2351,10 +2356,13 @@ async fn run_command(
                             snapshot_id
                         );
                     }
-                    agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Cancelled {
+                        phase,
+                        ..
+                    } => {
                         anyhow::bail!("Install was cancelled during {}.", phase);
                     }
-                    agora_core::install_pipeline::InstallOutcome::Failed {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Failed {
                         error,
                         rollback_performed,
                         ..
@@ -2394,21 +2402,22 @@ async fn run_command(
                 );
 
                 let target_filename = match &prepared.operation {
-                    agora_core::install_pipeline::ResolvedOperation::Remove {
+                    agora_game_minecraft::install_pipeline::ResolvedOperation::Remove {
                         target_filename,
                         ..
                     } => target_filename.clone(),
                     _ => project.clone(),
                 };
 
-                let intent = agora_core::install_pipeline::InstallIntent {
-                    action: agora_core::install_pipeline::InstallAction::Remove {
+                let intent = agora_game_minecraft::install_pipeline::InstallIntent {
+                    action: agora_game_minecraft::install_pipeline::InstallAction::Remove {
                         filename: target_filename.clone(),
                     },
                     target_instance: instance.clone(),
-                    optional_deps: agora_core::install_pipeline::OptionalDepsPolicy::ExcludeAll,
-                    requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides {
+                    optional_deps:
+                        agora_game_minecraft::install_pipeline::OptionalDepsPolicy::ExcludeAll,
+                    requested_by: agora_game_minecraft::install_pipeline::RequestSource::CLI,
+                    overrides: agora_game_minecraft::install_pipeline::PlanOverrides {
                         allow_replace,
                         skip_health_scan,
                         ..Default::default()
@@ -2416,7 +2425,7 @@ async fn run_command(
                 };
 
                 let reporter = SilentReporter;
-                let cancel = agora_core::install_pipeline::CancellationToken::new();
+                let cancel = agora_game_minecraft::install_pipeline::CancellationToken::new();
 
                 let mut plan = svc.resolve(intent, &reporter).await?;
 
@@ -2447,7 +2456,7 @@ async fn run_command(
                 let outcome = svc.execute(&plan, &reporter, &cancel).await;
 
                 match outcome {
-                    agora_core::install_pipeline::InstallOutcome::Success { .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Success { .. } => {
                         if json {
                             println!(
                                 "{}",
@@ -2460,7 +2469,10 @@ async fn run_command(
                             println!("Removed {}", target_filename);
                         }
                     }
-                    agora_core::install_pipeline::InstallOutcome::Failed { error, .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Failed {
+                        error,
+                        ..
+                    } => {
                         if json {
                             eprintln!(
                                 "{}",
@@ -2547,15 +2559,15 @@ async fn run_command(
                 let svc = InstallService::new(ctx.clone());
                 let target_version = version.clone().unwrap_or_else(|| "latest".into());
                 let optional_deps = resolve_optional_deps(include_optional, exclude_optional);
-                let intent = agora_core::install_pipeline::InstallIntent {
-                    action: agora_core::install_pipeline::InstallAction::Update {
+                let intent = agora_game_minecraft::install_pipeline::InstallIntent {
+                    action: agora_game_minecraft::install_pipeline::InstallAction::Update {
                         item_id: item.clone(),
                         target_version: target_version.clone(),
                     },
                     target_instance: instance.clone(),
                     optional_deps,
-                    requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides {
+                    requested_by: agora_game_minecraft::install_pipeline::RequestSource::CLI,
+                    overrides: agora_game_minecraft::install_pipeline::PlanOverrides {
                         allow_replace: true,
                         skip_health_scan: false,
                         ..Default::default()
@@ -2563,7 +2575,7 @@ async fn run_command(
                 };
 
                 let reporter = SilentReporter;
-                let cancel = agora_core::install_pipeline::CancellationToken::new();
+                let cancel = agora_game_minecraft::install_pipeline::CancellationToken::new();
 
                 let mut plan = svc.resolve(intent, &reporter).await?;
 
@@ -2596,7 +2608,7 @@ async fn run_command(
                 let outcome = svc.execute(&plan, &reporter, &cancel).await;
 
                 match outcome {
-                    agora_core::install_pipeline::InstallOutcome::Success {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Success {
                         warnings,
                         snapshot_id,
                         installed_items,
@@ -2618,7 +2630,7 @@ async fn run_command(
                             println!("Updated {} ({})", item, target_version);
                         }
                     }
-                    agora_core::install_pipeline::InstallOutcome::HealthRollback {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
                         snapshot_id,
                         warnings,
@@ -2655,10 +2667,13 @@ async fn run_command(
                             snapshot_id
                         );
                     }
-                    agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Cancelled {
+                        phase,
+                        ..
+                    } => {
                         anyhow::bail!("Update was cancelled during {}.", phase);
                     }
-                    agora_core::install_pipeline::InstallOutcome::Failed {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Failed {
                         error,
                         rollback_performed,
                         ..
@@ -2712,7 +2727,7 @@ async fn run_command(
                 let svc = InstallService::new(ctx.clone());
                 let load = svc.load_instance(&instance)?;
 
-                let items: Vec<agora_core::install_pipeline::BatchUpdateItem> = load
+                let items: Vec<agora_game_minecraft::install_pipeline::BatchUpdateItem> = load
                     .manifest
                     .mods
                     .iter()
@@ -2724,10 +2739,12 @@ async fn run_command(
                             .as_ref()
                             .or(m.modrinth_id.as_ref())
                             .or(m.mod_jar_id.as_ref())
-                            .map(|id| agora_core::install_pipeline::BatchUpdateItem {
-                                item_id: id.clone(),
-                                target_version: "latest".into(),
-                            })
+                            .map(
+                                |id| agora_game_minecraft::install_pipeline::BatchUpdateItem {
+                                    item_id: id.clone(),
+                                    target_version: "latest".into(),
+                                },
+                            )
                     })
                     .collect();
 
@@ -2739,19 +2756,21 @@ async fn run_command(
                 }
 
                 let optional_deps = resolve_optional_deps(include_optional, exclude_optional);
-                let intent = agora_core::install_pipeline::InstallIntent {
-                    action: agora_core::install_pipeline::InstallAction::BatchUpdate { items },
+                let intent = agora_game_minecraft::install_pipeline::InstallIntent {
+                    action: agora_game_minecraft::install_pipeline::InstallAction::BatchUpdate {
+                        items,
+                    },
                     target_instance: instance.clone(),
                     optional_deps,
-                    requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides {
+                    requested_by: agora_game_minecraft::install_pipeline::RequestSource::CLI,
+                    overrides: agora_game_minecraft::install_pipeline::PlanOverrides {
                         skip_health_scan: false,
                         ..Default::default()
                     },
                 };
 
                 let reporter = SilentReporter;
-                let cancel = agora_core::install_pipeline::CancellationToken::new();
+                let cancel = agora_game_minecraft::install_pipeline::CancellationToken::new();
 
                 let mut plan = svc.resolve(intent, &reporter).await?;
 
@@ -2785,7 +2804,7 @@ async fn run_command(
                 let outcome = svc.execute(&plan, &reporter, &cancel).await;
 
                 match outcome {
-                    agora_core::install_pipeline::InstallOutcome::Success {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Success {
                         warnings,
                         snapshot_id,
                         installed_items,
@@ -2808,7 +2827,7 @@ async fn run_command(
                             );
                         }
                     }
-                    agora_core::install_pipeline::InstallOutcome::HealthRollback {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
                         snapshot_id,
                         warnings,
@@ -2845,10 +2864,13 @@ async fn run_command(
                             snapshot_id
                         );
                     }
-                    agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Cancelled {
+                        phase,
+                        ..
+                    } => {
                         anyhow::bail!("Batch update was cancelled during {}.", phase);
                     }
-                    agora_core::install_pipeline::InstallOutcome::Failed {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Failed {
                         error,
                         rollback_performed,
                         ..
@@ -2886,7 +2908,8 @@ async fn run_command(
             } else {
                 None
             };
-            let report = agora_core::health::health(&instance_dir, &manifest, reg_opt.as_deref());
+            let report =
+                agora_game_minecraft::health::health(&instance_dir, &manifest, reg_opt.as_deref());
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -2901,7 +2924,7 @@ async fn run_command(
                     println!("  [RECOMMEND] {}", recommendation.message);
                 }
             }
-            if report.score == agora_core::health::HealthScore::Red {
+            if report.score == agora_game_minecraft::health::HealthScore::Red {
                 anyhow::bail!("Health score is {:?} (see report above)", report.score);
             }
         }
@@ -2912,7 +2935,7 @@ async fn run_command(
             }
             let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
             let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
-            let inventory = agora_core::health::inventory(&instance_dir, &manifest);
+            let inventory = agora_game_minecraft::health::inventory(&instance_dir, &manifest);
             if json {
                 let artifacts: Vec<_> = inventory
                     .artifacts
@@ -3009,7 +3032,7 @@ async fn run_command(
                     ctx.lock_manager(),
                 )
                 .await?;
-                let catalog_warnings = ctx.reload_runtime_catalog()?;
+                let catalog_warnings = ctx.reload_game_catalogs()?;
                 if json {
                     println!(
                         "{}",
@@ -3138,7 +3161,7 @@ async fn run_command(
             url,
             symlink_saves,
         } => {
-            let svc = agora_core::import_service::ImportService::new(ctx.clone());
+            let svc = agora_game_minecraft::import_service::ImportService::new(ctx.clone());
             if let Some(url) = url {
                 if symlink_saves {
                     anyhow::bail!("--symlink-saves is not supported for URL imports");
@@ -3157,18 +3180,18 @@ async fn run_command(
                 anyhow::bail!("Path '{}' does not exist", path.display());
             }
             let import_source = if path.is_dir() {
-                agora_core::import_service::ImportSource::Directory(path)
+                agora_game_minecraft::import_service::ImportSource::Directory(path)
             } else {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 match ext {
-                    "mrpack" => agora_core::import_service::ImportSource::mrpack(path),
-                    "zip" => agora_core::import_service::ImportSource::PrismZip(path),
+                    "mrpack" => agora_game_minecraft::import_service::ImportSource::mrpack(path),
+                    "zip" => agora_game_minecraft::import_service::ImportSource::PrismZip(path),
                     _ => anyhow::bail!(
                         "Unsupported file type '.{ext}'. Use .mrpack, .zip, or a directory"
                     ),
                 }
             };
-            let request = agora_core::import_service::ImportRequest {
+            let request = agora_game_minecraft::import_service::ImportRequest {
                 source: import_source,
                 symlink_saves,
             };
@@ -3190,7 +3213,8 @@ async fn run_command(
         Commands::Auth { action } => match action {
             AuthCmd::Login { no_browser } => {
                 let db_path = data_dir.join("local_state.db");
-                let flow = agora_core::msa::begin_login(&ctx.http_clients, &db_path).await?;
+                let flow =
+                    agora_game_minecraft::msa::begin_login(&ctx.http_clients, &db_path).await?;
 
                 // In --json mode stdout must stay machine-readable, so the
                 // human-facing prompt goes to stderr.
@@ -3219,7 +3243,7 @@ async fn run_command(
 
                 // Ctrl-C stops the polling loop cleanly instead of leaving a
                 // half-finished sign-in behind.
-                let cancel = agora_core::msa::MsaLoginCancel::new();
+                let cancel = agora_game_minecraft::msa::MsaLoginCancel::new();
                 let on_signal = cancel.clone();
                 tokio::spawn(async move {
                     if tokio::signal::ctrl_c().await.is_ok() {
@@ -3227,9 +3251,13 @@ async fn run_command(
                     }
                 });
 
-                let credentials =
-                    agora_core::msa::poll_login(&ctx.http_clients, &flow, &db_path, &cancel)
-                        .await?;
+                let credentials = agora_game_minecraft::msa::poll_login(
+                    &ctx.http_clients,
+                    &flow,
+                    &db_path,
+                    &cancel,
+                )
+                .await?;
                 if json {
                     println!(
                         "{}",
@@ -3243,7 +3271,7 @@ async fn run_command(
                     println!("Signed in as {}", credentials.username);
                 }
             }
-            AuthCmd::Status => match agora_core::msa::load_credentials()? {
+            AuthCmd::Status => match agora_game_minecraft::msa::load_credentials()? {
                 Some(creds) => {
                     if creds.needs_reauth() {
                         // Stored by the pre-migration flow: no refresh token
@@ -3254,12 +3282,12 @@ async fn run_command(
                                 serde_json::json!({
                                     "status": "sign_in_required",
                                     "username": creds.username,
-                                    "reason": agora_core::msa::LEGACY_CREDENTIALS_MESSAGE,
+                                    "reason": agora_game_minecraft::msa::LEGACY_CREDENTIALS_MESSAGE,
                                 })
                             );
                         } else {
                             println!("Signed in as {} — sign-in required", creds.username);
-                            println!("{}", agora_core::msa::LEGACY_CREDENTIALS_MESSAGE);
+                            println!("{}", agora_game_minecraft::msa::LEGACY_CREDENTIALS_MESSAGE);
                         }
                     } else if creds.is_expired() {
                         if json {
@@ -3300,7 +3328,7 @@ async fn run_command(
                 }
             },
             AuthCmd::Logout => {
-                agora_core::msa::clear_credentials()?;
+                agora_game_minecraft::msa::clear_credentials()?;
                 if json {
                     println!("{}", serde_json::json!({"status": "logged_out"}));
                 } else {
@@ -3325,7 +3353,7 @@ async fn run_command(
                 ctx.lock_manager(),
             )
             .await?;
-            let catalog_warnings = ctx.reload_runtime_catalog()?;
+            let catalog_warnings = ctx.reload_game_catalogs()?;
             if json {
                 println!(
                     "{}",
@@ -3607,141 +3635,149 @@ async fn run_command(
                 }
             }
         }
-        Commands::Pack { action } => match action {
-            PackCmd::Install { path, instance } => {
-                let json_text = std::fs::read_to_string(&path).map_err(|e| {
-                    anyhow::anyhow!("Cannot read pack manifest '{}': {}", path.display(), e)
-                })?;
-                let svc = agora_core::import_service::ImportService::new(ctx.clone());
-                let request = agora_core::import_service::ImportRequest {
-                    source: agora_core::import_service::ImportSource::PackManifest {
-                        manifest_json: json_text,
-                        target_instance_id: instance.clone(),
-                    },
-                    symlink_saves: false,
-                };
-                let result = svc.install_pack(request).await?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
-                    println!(
-                        "Installed pack '{}' ({} mods)",
-                        result.name, result.mods_installed
-                    );
-                }
-            }
-            PackCmd::Versions { pack } => {
-                let releases = agora_core::curated_pack::CuratedPackService::new(ctx.clone())
-                    .versions(&pack)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&releases)?);
-                } else if releases.is_empty() {
-                    println!("'{pack}' has no locked releases; it installs in flexible mode only.");
-                } else {
-                    let rows: Vec<Vec<String>> = releases
-                        .iter()
-                        .map(|release| {
-                            vec![
-                                release.version.clone(),
-                                release.minecraft_version.clone(),
-                                format!("{} {}", release.loader, release.loader_version),
-                            ]
-                        })
-                        .collect();
-                    print_table(&["Release", "Minecraft", "Loader"], &rows);
-                }
-            }
-            PackCmd::Curated {
-                pack,
-                instance,
-                release,
-                dry_run,
-            } => {
-                use agora_core::curated_pack::{CuratedPackSelection, CuratedPackService};
-                let detail = InstanceService::new(ctx.clone())
-                    .get(&instance)?
-                    .ok_or_else(|| anyhow::anyhow!("Instance '{}' not found", instance))?;
-                let selection = match release {
-                    Some(pack_version) => CuratedPackSelection::Locked { pack_version },
-                    None => CuratedPackSelection::Flexible {
-                        minecraft_version: detail.row.minecraft_version.clone(),
-                        loader: detail.row.loader.clone(),
-                    },
-                };
-                let plan = CuratedPackService::new(ctx.clone())
-                    .plan(&pack, &selection)
-                    .await?;
-                if plan.target.minecraft_version != detail.row.minecraft_version
-                    || plan.target.loader != detail.row.loader
-                {
-                    anyhow::bail!(
-                        "Release {} targets Minecraft {} with {}, but '{}' is on {} with {}.",
-                        plan.pack_version.as_deref().unwrap_or("?"),
-                        plan.target.minecraft_version,
-                        plan.target.loader,
-                        instance,
-                        detail.row.minecraft_version,
-                        detail.row.loader
-                    );
-                }
-
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&plan)?);
-                } else {
-                    println!(
-                        "{} mod(s) resolved for Minecraft {} with {}.",
-                        plan.mods.len(),
-                        plan.target.minecraft_version,
-                        plan.target.loader
-                    );
-                    for dropped in &plan.dropped {
+        Commands::Pack { action } => {
+            match action {
+                PackCmd::Install { path, instance } => {
+                    let json_text = std::fs::read_to_string(&path).map_err(|e| {
+                        anyhow::anyhow!("Cannot read pack manifest '{}': {}", path.display(), e)
+                    })?;
+                    let svc = agora_game_minecraft::import_service::ImportService::new(ctx.clone());
+                    let request = agora_game_minecraft::import_service::ImportRequest {
+                        source: agora_game_minecraft::import_service::ImportSource::PackManifest {
+                            manifest_json: json_text,
+                            target_instance_id: instance.clone(),
+                        },
+                        symlink_saves: false,
+                    };
+                    let result = svc.install_pack(request).await?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
                         println!(
-                            "  [LEFT OUT] {} ({}): {}",
-                            dropped.mod_id, dropped.status, dropped.reason
-                        );
-                    }
-                    for blocking in &plan.blocking {
-                        eprintln!(
-                            "  [BLOCK] {} (required): {}",
-                            blocking.mod_id, blocking.reason
+                            "Installed pack '{}' ({} mods)",
+                            result.name, result.mods_installed
                         );
                     }
                 }
-                if !plan.can_install() {
-                    anyhow::bail!("Pack '{}' cannot be installed on this instance.", pack);
+                PackCmd::Versions { pack } => {
+                    let releases =
+                        agora_game_minecraft::curated_pack::CuratedPackService::new(ctx.clone())
+                            .versions(&pack)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&releases)?);
+                    } else if releases.is_empty() {
+                        println!(
+                            "'{pack}' has no locked releases; it installs in flexible mode only."
+                        );
+                    } else {
+                        let rows: Vec<Vec<String>> = releases
+                            .iter()
+                            .map(|release| {
+                                vec![
+                                    release.version.clone(),
+                                    release.minecraft_version.clone(),
+                                    format!("{} {}", release.loader, release.loader_version),
+                                ]
+                            })
+                            .collect();
+                        print_table(&["Release", "Minecraft", "Loader"], &rows);
+                    }
                 }
-                if dry_run {
-                    return Ok(());
-                }
+                PackCmd::Curated {
+                    pack,
+                    instance,
+                    release,
+                    dry_run,
+                } => {
+                    use agora_game_minecraft::curated_pack::{
+                        CuratedPackSelection, CuratedPackService,
+                    };
+                    let detail = InstanceService::new(ctx.clone())
+                        .get(&instance)?
+                        .ok_or_else(|| anyhow::anyhow!("Instance '{}' not found", instance))?;
+                    let selection = match release {
+                        Some(pack_version) => CuratedPackSelection::Locked { pack_version },
+                        None => CuratedPackSelection::Flexible {
+                            minecraft_version: detail.row.minecraft_version.clone(),
+                            loader: detail.row.loader.clone(),
+                        },
+                    };
+                    let plan = CuratedPackService::new(ctx.clone())
+                        .plan(&pack, &selection)
+                        .await?;
+                    if plan.target.minecraft_version != detail.row.minecraft_version
+                        || plan.target.loader != detail.row.loader
+                    {
+                        anyhow::bail!(
+                            "Release {} targets Minecraft {} with {}, but '{}' is on {} with {}.",
+                            plan.pack_version.as_deref().unwrap_or("?"),
+                            plan.target.minecraft_version,
+                            plan.target.loader,
+                            instance,
+                            detail.row.minecraft_version,
+                            detail.row.loader
+                        );
+                    }
 
-                let svc = InstallService::new(ctx.clone());
-                let intent = agora_core::install_pipeline::InstallIntent {
-                    action: agora_core::install_pipeline::InstallAction::BatchInstall {
-                        items: plan.batch_items(),
-                    },
-                    target_instance: instance.clone(),
-                    // The pack names its mods explicitly; a CLI run cannot answer a
-                    // prompt for extra optional dependencies, so it takes none.
-                    optional_deps: agora_core::install_pipeline::OptionalDepsPolicy::ExcludeAll,
-                    requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides::default(),
-                };
-                let reporter = SilentReporter;
-                let cancel = agora_core::install_pipeline::CancellationToken::new();
-                let resolved = svc.resolve(intent, &reporter).await?;
-                if !resolved.is_fully_resolved() {
-                    report_unresolved_plan(&resolved, json);
-                    anyhow::bail!(
-                        "Install blocked: unresolved errors, conflicts, or pending choices"
-                    );
-                }
-                match svc.execute(&resolved, &reporter, &cancel).await {
-                    agora_core::install_pipeline::InstallOutcome::Success { .. } => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&plan)?);
+                    } else {
+                        println!(
+                            "{} mod(s) resolved for Minecraft {} with {}.",
+                            plan.mods.len(),
+                            plan.target.minecraft_version,
+                            plan.target.loader
+                        );
+                        for dropped in &plan.dropped {
+                            println!(
+                                "  [LEFT OUT] {} ({}): {}",
+                                dropped.mod_id, dropped.status, dropped.reason
+                            );
+                        }
+                        for blocking in &plan.blocking {
+                            eprintln!(
+                                "  [BLOCK] {} (required): {}",
+                                blocking.mod_id, blocking.reason
+                            );
+                        }
+                    }
+                    if !plan.can_install() {
+                        anyhow::bail!("Pack '{}' cannot be installed on this instance.", pack);
+                    }
+                    if dry_run {
+                        return Ok(());
+                    }
+
+                    let svc = InstallService::new(ctx.clone());
+                    let intent = agora_game_minecraft::install_pipeline::InstallIntent {
+                        action:
+                            agora_game_minecraft::install_pipeline::InstallAction::BatchInstall {
+                                items: plan.batch_items(),
+                            },
+                        target_instance: instance.clone(),
+                        // The pack names its mods explicitly; a CLI run cannot answer a
+                        // prompt for extra optional dependencies, so it takes none.
+                        optional_deps:
+                            agora_game_minecraft::install_pipeline::OptionalDepsPolicy::ExcludeAll,
+                        requested_by: agora_game_minecraft::install_pipeline::RequestSource::CLI,
+                        overrides: agora_game_minecraft::install_pipeline::PlanOverrides::default(),
+                    };
+                    let reporter = SilentReporter;
+                    let cancel = agora_game_minecraft::install_pipeline::CancellationToken::new();
+                    let resolved = svc.resolve(intent, &reporter).await?;
+                    if !resolved.is_fully_resolved() {
+                        report_unresolved_plan(&resolved, json);
+                        anyhow::bail!(
+                            "Install blocked: unresolved errors, conflicts, or pending choices"
+                        );
+                    }
+                    match svc.execute(&resolved, &reporter, &cancel).await {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Success { .. } => {
                         if !json {
                             println!("Installed pack '{}' into '{}'.", pack, instance);
                         }
                     }
-                    agora_core::install_pipeline::InstallOutcome::HealthRollback {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::HealthRollback {
                         health_report,
                         snapshot_id,
                         ..
@@ -3752,15 +3788,16 @@ async fn run_command(
                             snapshot_id
                         );
                     }
-                    agora_core::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Cancelled { phase, .. } => {
                         anyhow::bail!("Install was cancelled during {}.", phase);
                     }
-                    agora_core::install_pipeline::InstallOutcome::Failed { error, .. } => {
+                    agora_game_minecraft::install_pipeline::InstallOutcome::Failed { error, .. } => {
                         anyhow::bail!("Install failed and rolled back: {}", error);
                     }
                 }
+                }
             }
-        },
+        }
         Commands::Export { instance, dest } => {
             let instance_dir = agora_core::paths::instance_dir(data_dir, &instance)?;
             if !instance_dir.exists() {
@@ -3771,7 +3808,7 @@ async fn run_command(
             })?;
             let manifest_path = agora_core::paths::instance_manifest_path(data_dir, &instance)?;
             let manifest = agora_core::helpers::read_manifest(&manifest_path)?;
-            let result = agora_core::server_export::export_server_environment(
+            let result = agora_game_minecraft::server_export::export_server_environment(
                 &instance_dir,
                 &dest,
                 &manifest.loader,
@@ -3872,7 +3909,7 @@ async fn run_command(
                 if !instance_dir.exists() {
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
-                let lockfile = agora_core::lockfile::build_from_instance(&instance_dir)
+                let lockfile = agora_game_minecraft::lockfile::build_from_instance(&instance_dir)
                     .map_err(|e| anyhow::anyhow!("Failed to build lockfile: {e}"))?;
                 let lockfile_json = lockfile
                     .to_pretty_json()
@@ -3898,7 +3935,9 @@ async fn run_command(
             LockfileCmd::Verify { path } => {
                 let json_text = std::fs::read_to_string(&path)
                     .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path.display(), e))?;
-                match agora_core::lockfile::InstanceLockfile::parse_and_validate(&json_text) {
+                match agora_game_minecraft::lockfile::InstanceLockfile::parse_and_validate(
+                    &json_text,
+                ) {
                     Ok(lockfile) => {
                         if json {
                             println!(
@@ -3951,7 +3990,7 @@ async fn run_command(
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
                 // Repair re-exports the lockfile from the current state.
-                let lockfile = agora_core::lockfile::build_from_instance(&instance_dir)
+                let lockfile = agora_game_minecraft::lockfile::build_from_instance(&instance_dir)
                     .map_err(|e| anyhow::anyhow!("Failed to rebuild lockfile: {e}"))?;
                 let lockfile_json = lockfile
                     .to_pretty_json()
@@ -3986,11 +4025,13 @@ async fn run_command(
                 let json_text = std::fs::read_to_string(&path)
                     .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", path.display(), e))?;
                 let lockfile =
-                    agora_core::lockfile::InstanceLockfile::parse_and_validate(&json_text)
-                        .map_err(|e| anyhow::anyhow!("Invalid lockfile: {e}"))?;
+                    agora_game_minecraft::lockfile::InstanceLockfile::parse_and_validate(
+                        &json_text,
+                    )
+                    .map_err(|e| anyhow::anyhow!("Invalid lockfile: {e}"))?;
 
                 // Build a lockfile from the current instance to detect drift.
-                let _current = agora_core::lockfile::build_from_instance(&instance_dir)
+                let _current = agora_game_minecraft::lockfile::build_from_instance(&instance_dir)
                     .map_err(|e| anyhow::anyhow!("Cannot read current instance: {e}"))?;
 
                 // Compute the drift between the lockfile and current instance
@@ -4017,11 +4058,12 @@ async fn run_command(
                     }
                 }
 
-                let drift = agora_core::lockfile::detect_drift(&lockfile, &live_files, None);
+                let drift =
+                    agora_game_minecraft::lockfile::detect_drift(&lockfile, &live_files, None);
                 if json {
                     println!("{}", serde_json::to_string_pretty(&drift)?);
                 } else {
-                    if drift.status == agora_core::lockfile::DriftStatus::InSync {
+                    if drift.status == agora_game_minecraft::lockfile::DriftStatus::InSync {
                         println!("Instance is already in sync with lockfile");
                     } else {
                         println!("Drift detected ({} differences):", drift.differences.len());
@@ -4041,9 +4083,9 @@ async fn run_command(
 fn resolve_optional_deps(
     include: Option<String>,
     exclude: bool,
-) -> agora_core::install_pipeline::OptionalDepsPolicy {
+) -> agora_game_minecraft::install_pipeline::OptionalDepsPolicy {
     if exclude {
-        return agora_core::install_pipeline::OptionalDepsPolicy::ExcludeAll;
+        return agora_game_minecraft::install_pipeline::OptionalDepsPolicy::ExcludeAll;
     }
     if let Some(list) = include {
         let deps: Vec<String> = list
@@ -4051,14 +4093,14 @@ fn resolve_optional_deps(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        return agora_core::install_pipeline::OptionalDepsPolicy::Include { deps };
+        return agora_game_minecraft::install_pipeline::OptionalDepsPolicy::Include { deps };
     }
-    agora_core::install_pipeline::OptionalDepsPolicy::Prompt
+    agora_game_minecraft::install_pipeline::OptionalDepsPolicy::Prompt
 }
 
 /// Apply --replace-conflicts / --abort-conflicts to a resolved plan.
 fn apply_conflict_overrides(
-    plan: &mut agora_core::install_pipeline::ResolvedInstallPlan,
+    plan: &mut agora_game_minecraft::install_pipeline::ResolvedInstallPlan,
     replace: bool,
     abort: bool,
 ) -> anyhow::Result<()> {
@@ -4069,19 +4111,24 @@ fn apply_conflict_overrides(
         if replace {
             if conflict
                 .resolution_options
-                .contains(&agora_core::install_pipeline::ConflictResolution::Replace)
+                .contains(&agora_game_minecraft::install_pipeline::ConflictResolution::Replace)
             {
-                conflict.chosen = Some(agora_core::install_pipeline::ConflictResolution::Replace);
+                conflict.chosen =
+                    Some(agora_game_minecraft::install_pipeline::ConflictResolution::Replace);
             }
         } else if abort {
-            conflict.chosen = Some(agora_core::install_pipeline::ConflictResolution::Abort);
+            conflict.chosen =
+                Some(agora_game_minecraft::install_pipeline::ConflictResolution::Abort);
         }
     }
     Ok(())
 }
 
 /// Print unresolved plan diagnostics to stderr.
-fn report_unresolved_plan(plan: &agora_core::install_pipeline::ResolvedInstallPlan, json: bool) {
+fn report_unresolved_plan(
+    plan: &agora_game_minecraft::install_pipeline::ResolvedInstallPlan,
+    json: bool,
+) {
     if json {
         eprintln!(
             "{}",
@@ -4104,13 +4151,13 @@ fn report_unresolved_plan(plan: &agora_core::install_pipeline::ResolvedInstallPl
         }
         for choice in &plan.pending_choices {
             let label: std::borrow::Cow<'_, str> = match choice {
-                agora_core::install_pipeline::PendingChoice::OptionalDependencies { .. } => {
-                    "Optional dependencies".into()
-                }
-                agora_core::install_pipeline::PendingChoice::Conflict { .. } => {
+                agora_game_minecraft::install_pipeline::PendingChoice::OptionalDependencies {
+                    ..
+                } => "Optional dependencies".into(),
+                agora_game_minecraft::install_pipeline::PendingChoice::Conflict { .. } => {
                     "Conflict resolution".into()
                 }
-                agora_core::install_pipeline::PendingChoice::LoaderChange {
+                agora_game_minecraft::install_pipeline::PendingChoice::LoaderChange {
                     current_version,
                     recommended_version,
                     ..
@@ -4127,7 +4174,7 @@ fn report_unresolved_plan(plan: &agora_core::install_pipeline::ResolvedInstallPl
 
 /// Print a resolved plan (used by --dry-run).
 fn print_plan(
-    plan: &agora_core::install_pipeline::ResolvedInstallPlan,
+    plan: &agora_game_minecraft::install_pipeline::ResolvedInstallPlan,
     json: bool,
 ) -> anyhow::Result<()> {
     if json {
@@ -4135,7 +4182,7 @@ fn print_plan(
     } else {
         println!("=== Dry-run plan ({}): ===", plan.fingerprint);
         print!("  Operation: ");
-        use agora_core::install_pipeline::ResolvedArtifact;
+        use agora_game_minecraft::install_pipeline::ResolvedArtifact;
         fn artifact_id(artifact: &ResolvedArtifact) -> String {
             match artifact {
                 ResolvedArtifact::Download(d) => d.item_id.clone(),
@@ -4149,22 +4196,26 @@ fn print_plan(
             }
         }
         match &plan.operation {
-            agora_core::install_pipeline::ResolvedOperation::Install { artifact } => {
+            agora_game_minecraft::install_pipeline::ResolvedOperation::Install { artifact } => {
                 println!(
                     "install {} v{}",
                     artifact_id(artifact),
                     artifact_version(artifact)
                 );
             }
-            agora_core::install_pipeline::ResolvedOperation::Update { new_artifact, .. } => {
+            agora_game_minecraft::install_pipeline::ResolvedOperation::Update {
+                new_artifact,
+                ..
+            } => {
                 println!(
                     "update {} v{}",
                     artifact_id(new_artifact),
                     artifact_version(new_artifact)
                 );
             }
-            agora_core::install_pipeline::ResolvedOperation::Remove {
-                target_filename, ..
+            agora_game_minecraft::install_pipeline::ResolvedOperation::Remove {
+                target_filename,
+                ..
             } => {
                 println!("remove {}", target_filename);
             }
@@ -4228,19 +4279,19 @@ async fn run_launch_service(
     output_fmt: OutputFormat,
 ) -> anyhow::Result<()> {
     let json = output_fmt.is_json_output();
-    let request = agora_core::launch_service::LaunchRequest {
+    let request = agora_game_minecraft::launch_service::LaunchRequest {
         instance_id: instance.to_owned(),
-        mode: agora_core::launch_service::LaunchMode::Direct,
+        mode: agora_game_minecraft::launch_service::LaunchMode::Direct,
         health_policy: if yes {
-            agora_core::launch_service::HealthPolicy::WarnOnly
+            agora_game_minecraft::launch_service::HealthPolicy::WarnOnly
         } else {
-            agora_core::launch_service::HealthPolicy::BlockOnRed
+            agora_game_minecraft::launch_service::HealthPolicy::BlockOnRed
         },
         health_scan_token: None,
     };
     let progress = ConsoleLaunchProgress { json, timings };
     let launch_started = std::time::Instant::now();
-    let result = agora_core::launch_service::LaunchService::new(ctx.clone())
+    let result = agora_game_minecraft::launch_service::LaunchService::new(ctx.clone())
         .launch(request, &progress)
         .await?;
     eprintln!(
@@ -4348,11 +4399,11 @@ fn build_jsonrpc_error(id: &serde_json::Value, code: i64, message: &str) -> serd
 /// Run the MCP stdio transport loop.
 ///
 /// Reads newline-delimited JSON-RPC 2.0 requests from stdin, dispatches via
-/// [`agora_core::mcp_dispatcher::McpDispatcher`], writes responses to
+/// [`agora_game_minecraft::mcp_dispatcher::McpDispatcher`], writes responses to
 /// stdout, and prints diagnostics to stderr.  Notifications (requests without
 /// an `id` field) do not receive a response.  Exits cleanly on EOF.
 async fn run_mcp_stdio(ctx: &agora_core::ctx::Ctx) -> anyhow::Result<()> {
-    let dispatcher = agora_core::mcp_dispatcher::McpDispatcher::new(ctx.clone());
+    let dispatcher = agora_game_minecraft::mcp_dispatcher::McpDispatcher::new(ctx.clone());
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
     let mut stdout = std::io::stdout();
@@ -4477,14 +4528,14 @@ mod tests {
     use super::SilentReporter;
     use agora_core::dependency_ops;
     use agora_core::error::LauncherError;
-    use agora_core::install_pipeline::{
+    use agora_core::models::InstalledMod;
+    use agora_game_minecraft::install_pipeline::{
         ArtifactMetadata, ArtifactSource, CancellationToken, ConflictKind, ConflictResolution,
         DepConflict, DiskSpaceEstimate, HashSpec, InstallAction, InstallIntent, OptionalDepsPolicy,
         PlanOverrides, ProgressEvent, ProgressPhase, ProgressReporter, RequestSource,
         ResolvedArtifact, ResolvedDownload, ResolvedInstallPlan, ResolvedOperation, SnapshotPlan,
         SourceType,
     };
-    use agora_core::models::InstalledMod;
     use clap::Parser;
 
     #[test]
@@ -4585,7 +4636,7 @@ mod tests {
         assert_eq!(plan.dependents[0].mod_id, "dependent-mod");
         assert_eq!(
             plan.dependents[0].requirement,
-            agora_core::install_pipeline::Requirement::Required
+            agora_game_minecraft::install_pipeline::Requirement::Required
         );
     }
 
@@ -5738,7 +5789,7 @@ mod tests {
 
     #[test]
     fn resolve_optional_deps_include_list() {
-        use agora_core::install_pipeline::OptionalDepsPolicy;
+        use agora_game_minecraft::install_pipeline::OptionalDepsPolicy;
         let policy = super::resolve_optional_deps(Some("fabric-api,indium".into()), false);
         match policy {
             OptionalDepsPolicy::Include { deps } => {
@@ -5750,21 +5801,21 @@ mod tests {
 
     #[test]
     fn resolve_optional_deps_exclude_all() {
-        use agora_core::install_pipeline::OptionalDepsPolicy;
+        use agora_game_minecraft::install_pipeline::OptionalDepsPolicy;
         let policy = super::resolve_optional_deps(None, true);
         assert_eq!(policy, OptionalDepsPolicy::ExcludeAll);
     }
 
     #[test]
     fn resolve_optional_deps_prompt_when_no_flags() {
-        use agora_core::install_pipeline::OptionalDepsPolicy;
+        use agora_game_minecraft::install_pipeline::OptionalDepsPolicy;
         let policy = super::resolve_optional_deps(None, false);
         assert_eq!(policy, OptionalDepsPolicy::Prompt);
     }
 
     #[test]
     fn resolve_optional_deps_empty_include_is_exclude() {
-        use agora_core::install_pipeline::OptionalDepsPolicy;
+        use agora_game_minecraft::install_pipeline::OptionalDepsPolicy;
         let policy = super::resolve_optional_deps(Some(String::new()), false);
         match policy {
             OptionalDepsPolicy::Include { deps } => {
@@ -5778,7 +5829,7 @@ mod tests {
 
     #[test]
     fn apply_replace_resolves_conflicts() {
-        use agora_core::install_pipeline::*;
+        use agora_game_minecraft::install_pipeline::*;
         let mut plan = ResolvedInstallPlan {
             fingerprint: "test".into(),
             intent: todo_placeholder_intent(),

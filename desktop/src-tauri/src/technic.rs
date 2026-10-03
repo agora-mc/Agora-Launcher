@@ -1,4 +1,4 @@
-//! Thin Tauri adapter for `agora_core::technic` + the Technic import paths.
+//! Thin Tauri adapter for `agora_game_minecraft::technic` + the Technic import paths.
 //!
 //! Every function extracts the [`agora_core::ctx::Ctx`] from the
 //! `tauri::AppHandle` and delegates to core. Consent for Technic browsing and
@@ -6,7 +6,7 @@
 //! privacy lockdown); the frontend cannot widen it.
 
 use crate::error::LauncherResult;
-use agora_core::technic::{self, TechnicPackDetail, TechnicSearchResult};
+use agora_game_minecraft::technic::{self, TechnicPackDetail, TechnicSearchResult};
 use tauri::AppHandle;
 
 /// Search Technic, classifying each result into its consent tier.
@@ -43,7 +43,7 @@ pub async fn install_technic_solder_pack(
     slug: String,
     solder: String,
     build: String,
-) -> LauncherResult<agora_core::import::ImportResult> {
+) -> LauncherResult<agora_game_minecraft::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     let pack = technic::resolve_solder_build(&ctx, &solder, &slug, &build).await?;
     technic::install_solder_pack(&ctx, pack).await
@@ -61,9 +61,9 @@ pub async fn install_technic_zip_pack(
     minecraft_version: String,
     loader: String,
     loader_version: String,
-) -> LauncherResult<agora_core::import::ImportResult> {
+) -> LauncherResult<agora_game_minecraft::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
-    let pack = agora_core::import::TechnicZipPack {
+    let pack = agora_game_minecraft::import::TechnicZipPack {
         display_name: name,
         download_url,
         sha256: sha256.filter(|value| !value.trim().is_empty()),

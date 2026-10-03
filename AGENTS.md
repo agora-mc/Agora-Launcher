@@ -18,8 +18,9 @@ two files, or in the user's own request), raise it with the user rather than fol
   users choose to let them do. Protect people with clear warnings and explicit opt-in — for
   anything Agora has not authorized or verified itself — rather than by blocking. Only refuse
   something outright when its risk/reward is genuinely poor, and ask the user before deciding that.
-- **Business logic lives in `agora-core`.** The desktop app, CLI and MCP server are thin adapters
-  over the same core services.
+- **Business logic lives in `agora-core`, game-specific logic in that game's package**
+  (`agora-game-minecraft`). The desktop app, CLI and MCP server are thin adapters over the same
+  core services and packages.
 - **Smallest change that does the job.** No drive-by refactoring.
 - **Large architectural changes get their own section in `MASTER_SPEC.md`**, not another
   subsection appended to §19.
@@ -42,7 +43,8 @@ Kilo agent profiles, commands and skills live in `.kilo/`.
 ## Security defaults worth keeping in mind on every task
 
 - Secrets (signing keys, tokens, webhook URLs) never go in source, manifests, docs or screenshots.
-- SQL lives in `agora-core`, parameterized. React reaches it through `invoke()`.
+- SQL lives in `agora-core`, parameterized. React reaches it through `invoke()`. (Until §26 Phase 2,
+  `agora-game-minecraft` still holds the queries that moved with it from core; new SQL goes in core.)
 - Community content is never rendered with `dangerouslySetInnerHTML`.
 - Downloads are checked against the hash their source published, and the user is told when
   there is none.

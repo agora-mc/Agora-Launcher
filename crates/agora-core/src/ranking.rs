@@ -450,11 +450,16 @@ mod tests {
     fn a_provider_declared_scale_changes_how_its_endorsements_count() {
         let mean = 0.5;
         // complex-pixelmon-reforged on Technic: 1_582_592 installs, 1_730
-        // ratings, scored with Technic's declared profile.
+        // ratings, scored with Technic's declared profile (its values are
+        // copied here; the Technic provider lives in the Minecraft package).
         let technic = RankingInput {
             downloads: Some(1_582_592),
             endorsements: Some(1_730),
-            profile: crate::providers::technic::ranking_profile(),
+            profile: RankingProfile {
+                downloads_ceiling: 250_000_000,
+                endorsements_ceiling: 2_000,
+                library_categories: Vec::new(),
+            },
             ..Default::default()
         };
         let scored = score_item(&technic, mean);

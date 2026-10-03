@@ -3,6 +3,7 @@
 Run: python -m unittest discover -s scripts -p test_check_architecture.py
 """
 import contextlib
+import json
 import io
 from pathlib import Path
 import tempfile
@@ -94,3 +95,74 @@ class GameBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GamePackageCoreBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.crates = self.root / "crates"
+        self.package = self.crates / "agora-game-test"
+        (self.package / "src").mkdir(parents=True)
+        (self.root / "Cargo.toml").write_text("[workspace.dependencies]\n", encoding="utf-8")
+        self.budget = self.root / "scripts" / "game_package_core_budget.json"
+        self.budget.parent.mkdir()
+        for name, value in {
+            "REPO_ROOT": self.root, "CRATES_DIR": self.crates,
+            "GAME_PACKAGE_CORE_BUDGET": self.budget, "EXIT_CODE": 0,
+        }.items():
+            patcher = patch.object(architecture, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def write(self, uses: int, depends: bool = True, budget=None):
+        dependency = 'agora-core = { path = "../agora-core" }\n' if depends else ""
+        (self.package / "Cargo.toml").write_text(f"[dependencies]\n{dependency}", encoding="utf-8")
+        (self.package / "src" / "lib.rs").write_text(
+            "// agora_core in a comment does not count\n/* nor agora_core here */\n"
+            + "use agora_core::x;\n" * uses,
+            encoding="utf-8",
+        )
+        if budget is None:
+            self.budget.unlink(missing_ok=True)
+        else:
+            self.budget.write_text(json.dumps(budget), encoding="utf-8")
+
+    def check(self):
+        architecture.EXIT_CODE = 0
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            architecture.check_game_package_core_budget()
+        return architecture.EXIT_CODE
+
+    def test_comments_do_not_count(self):
+        self.write(2, budget={"agora-game-test": 2})
+        self.assertEqual(architecture.count_core_references(self.package), 2)
+
+    def test_package_on_core_without_a_budget_entry_fails(self):
+        self.write(3)
+        self.assertEqual(self.check(), 1)
+
+    def test_package_off_core_needs_no_entry(self):
+        self.write(0, depends=False)
+        self.assertEqual(self.check(), 0)
+
+    def test_at_budget_passes(self):
+        self.write(3, budget={"agora-game-test": 3})
+        self.assertEqual(self.check(), 0)
+
+    def test_over_budget_fails(self):
+        self.write(4, budget={"agora-game-test": 3})
+        self.assertEqual(self.check(), 1)
+
+    def test_under_budget_fails_until_lowered(self):
+        self.write(2, budget={"agora-game-test": 3})
+        self.assertEqual(self.check(), 1)
+
+    def test_zero_references_with_the_dependency_still_declared_fails(self):
+        self.write(0, depends=True, budget={"agora-game-test": 0})
+        self.assertEqual(self.check(), 1)
+
+    def test_entry_for_a_missing_package_fails(self):
+        self.write(1, budget={"agora-game-test": 1, "agora-game-gone": 5})
+        self.assertEqual(self.check(), 1)

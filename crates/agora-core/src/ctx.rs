@@ -11,11 +11,11 @@
 use crate::app_paths::AppPaths;
 use crate::error::{LauncherError, LauncherResult};
 use crate::event_sink::{EventSink, NoopEventSink, NoopProgressSink, ProgressSink};
+use crate::game_hooks::{CatalogEvent, Extensions};
 use crate::http_client::HttpClients;
 use crate::lock_manager::LockManager;
 use crate::operation_manager::OperationManager;
 use crate::process_session_manager::ProcessSessionManager;
-use crate::runtime_catalog::{RuntimeCatalog, RuntimeCatalogHandle};
 use crate::task_scheduler::TaskScheduler;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -83,19 +83,21 @@ impl Clock for TestClock {
 pub struct CoreContext {
     /// Canonical path layout for this host.
     pub paths: AppPaths,
-    /// Official Mojang launcher profile file. Test contexts point this at an
-    /// isolated fixture instead of the user's platform-default Minecraft data.
-    pub launcher_profiles_path: Option<std::path::PathBuf>,
+    /// Where game packages should look for a game's own user data (an official
+    /// launcher's files, a store's config) instead of the platform defaults.
+    /// `None` in production; test contexts set it. Only the Minecraft
+    /// package's launcher-profile path honours it so far: some read-only
+    /// lookups (the official `.minecraft` directory) still use the platform
+    /// default.
+    pub external_data_root: Option<std::path::PathBuf>,
     /// Category-aware pre-built HTTP clients.
     pub http_clients: HttpClients,
     /// Clock for time-sensitive operations.
     pub clock: Arc<dyn Clock>,
     /// Cross-process filesystem lock manager.
     pub lock_manager: LockManager,
-    /// Validated Java runtime catalog active for this context.
-    /// Wrapped in an `Arc<RwLock>` so any holder can take an atomic snapshot
-    /// and so the catalog can be reloaded at runtime without process restart.
-    pub runtime_catalog: RuntimeCatalogHandle,
+    /// State owned by game packages (catalogs, caches), keyed by type.
+    pub extensions: Extensions,
     /// Sink for progress events emitted during long-running operations.
     pub progress_sink: Arc<dyn ProgressSink>,
     /// Sink for significant core events.
@@ -151,9 +153,7 @@ impl CoreContext {
                 message: msg,
             }
         })?;
-        warnings.extend(crate::launcher_import_service::recover_interrupted_jobs(
-            &paths,
-        ));
+        warnings.extend(crate::game_hooks::run_startup_hooks(&paths));
 
         // 3. Verify the cached registry's Ed25519 signature before anything
         //    reads it. Download-time verification only covers transit; the
@@ -170,7 +170,7 @@ impl CoreContext {
         //    Then validate the cached registry schema version (warning only —
         //    the cached db may be absent or stale, which is recoverable).
         let reg_path = paths.registry_db();
-        let mut runtime_catalog = RuntimeCatalog::embedded();
+        let mut registry_conn = None;
         if reg_path.exists() {
             match crate::db::registry_connection(&reg_path) {
                 Ok(conn) => {
@@ -187,33 +187,12 @@ impl CoreContext {
                             ));
                         }
                     }
-                    match crate::loader_manifests::LoaderCatalog::init_from_registry(&conn) {
-                        Ok(true) => {
-                            warnings.push("Using merged signed and embedded loader catalogs".into())
-                        }
-                        Ok(false) => warnings.push("Using embedded loader catalog".into()),
-                        Err(error) => warnings.push(format!(
-                            "Cannot load signed loader catalog; using embedded fallback: {error}"
-                        )),
-                    }
-                    match RuntimeCatalog::from_registry_db(&conn) {
-                        Ok(Some(catalog)) => {
-                            runtime_catalog = catalog;
-                            warnings.push("Using signed registry Java runtime catalog".into());
-                        }
-                        Ok(None) => warnings.push("Using embedded Java runtime catalog".into()),
-                        Err(errors) => warnings.push(format!(
-                            "Cannot load signed Java runtime catalog; using embedded fallback: {errors:?}"
-                        )),
-                    }
+                    registry_conn = Some(conn);
                 }
                 Err(e) => {
                     warnings.push(format!("Cannot open cached registry: {e}"));
-                    warnings.push("Using embedded loader and Java runtime catalogs".into());
                 }
             }
-        } else {
-            warnings.push("Using embedded loader and Java runtime catalogs".into());
         }
 
         // 4. Conservative stale-staging cleanup.
@@ -267,7 +246,7 @@ impl CoreContext {
 
         let ctx = Self {
             lock_manager: LockManager::new(paths.locks_root()),
-            launcher_profiles_path: crate::paths::launcher_profiles_path(),
+            external_data_root: None,
             paths,
             http_clients: HttpClients::new().map_err(|e| {
                 // Convert HTTP client init failure to a fatal error.
@@ -276,7 +255,7 @@ impl CoreContext {
                     message: format!("Failed to build HTTP clients: {e}"),
                 }
             })?,
-            runtime_catalog: RuntimeCatalogHandle::new(runtime_catalog),
+            extensions: Extensions::default(),
             clock: Arc::new(WallClock),
             progress_sink: Arc::new(NoopProgressSink),
             event_sink: Arc::new(NoopEventSink),
@@ -284,6 +263,22 @@ impl CoreContext {
             task_scheduler: TaskScheduler::default(),
             process_session_manager: ProcessSessionManager::new(),
         };
+
+        // 6. Let game packages load their catalogs from the signed registry
+        //    (or fall back to embedded data when there is none).
+        if !crate::game_hooks::any_package_registered() {
+            warnings.push(
+                "No game package is registered; no game catalogs or providers are available".into(),
+            );
+        }
+        match crate::game_hooks::run_catalog_hooks(
+            &ctx,
+            registry_conn.as_ref(),
+            CatalogEvent::Startup,
+        ) {
+            Ok(more) => warnings.extend(more),
+            Err(error) => warnings.push(format!("Cannot load game catalogs: {error}")),
+        }
 
         Ok((ctx, warnings))
     }
@@ -293,9 +288,7 @@ impl CoreContext {
     /// The caller should create a temp directory and pass its path.
     /// Uses a fast single-client HTTP client (no policy enforcement).
     pub fn for_testing(root: std::path::PathBuf) -> Self {
-        let launcher_profiles_path = root
-            .join("official-minecraft")
-            .join("launcher_profiles.json");
+        let external_data_root = Some(root.clone());
         let paths = AppPaths::from_root(root);
         let lock_manager = LockManager::new(paths.locks_root());
         let _ = std::fs::create_dir_all(paths.locks_root());
@@ -306,9 +299,9 @@ impl CoreContext {
         crate::network_gate::install(std::sync::Arc::new(crate::network_gate::AllowAll));
         Self {
             paths,
-            launcher_profiles_path: Some(launcher_profiles_path),
+            external_data_root,
             http_clients: HttpClients::for_testing(reqwest::Client::new()),
-            runtime_catalog: RuntimeCatalogHandle::new(RuntimeCatalog::embedded()),
+            extensions: Extensions::default(),
             clock: Arc::new(WallClock),
             lock_manager,
             progress_sink: Arc::new(NoopProgressSink),
@@ -350,83 +343,30 @@ impl CoreContext {
         self
     }
 
-    /// Atomically reload the Java runtime catalog from the signed
-    /// `registry.db`, preserving the current catalog on validation failure.
+    /// Re-run every game package's catalog hook against the freshly installed
+    /// registry. Each package replaces its catalogs only if all of them parse.
     ///
-    /// The loader catalog is also reloaded through the existing
-    /// [`LoaderCatalog::init_from_registry`] path so both catalogs stay
-    /// coordinated after a fresh registry download.
-    ///
-    /// Returns a list of human-readable warnings (e.g. fallback to embedded).
-    /// Errors are reserved for I/O failures opening the database.
-    pub fn reload_runtime_catalog(&self) -> LauncherResult<Vec<String>> {
-        let mut warnings = Vec::new();
+    /// Returns human-readable warnings; errors opening the database are
+    /// reported as warnings too, leaving the active catalogs in place. An error
+    /// means a package's catalogs parsed but could not be activated.
+    pub fn reload_game_catalogs(&self) -> LauncherResult<Vec<String>> {
         let reg_path = self.paths.registry_db();
         if !reg_path.exists() {
-            warnings.push("No registry database found; runtime catalog unchanged".into());
-            return Ok(warnings);
+            return Ok(vec![
+                "No registry database found; runtime catalog unchanged".into(),
+            ]);
         }
         let conn = match crate::db::registry_connection(&reg_path) {
             Ok(conn) => conn,
             Err(e) => {
-                warnings.push(format!(
+                return Ok(vec![format!(
                     "Cannot open registry database; runtime catalog unchanged: {e}"
-                ));
-                return Ok(warnings);
+                )]);
             }
         };
-
-        // Parse both catalogs before replacing either active snapshot. This
-        // keeps loader and runtime data consistent when one catalog is corrupt.
-        let registry_loader_catalog = match crate::loader_manifests::LoaderCatalog::from_registry(
-            &conn,
-        ) {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                warnings.push(format!(
-                    "Cannot load signed loader catalog; preserving existing active catalogs: {error}"
-                ));
-                return Ok(warnings);
-            }
-        };
-        let has_registry_loader_catalog = registry_loader_catalog.is_some();
-        let loader_catalog = match crate::loader_manifests::LoaderCatalog::merge_with_embedded(
-            registry_loader_catalog,
-        ) {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                warnings.push(format!(
-                    "Cannot merge signed loader catalog; preserving existing active catalogs: {error}"
-                ));
-                return Ok(warnings);
-            }
-        };
-        let runtime_catalog = match RuntimeCatalog::from_registry_db(&conn) {
-            Ok(Some(catalog)) => {
-                warnings.push("Using signed registry Java runtime catalog".into());
-                catalog
-            }
-            Ok(None) => {
-                warnings.push("No runtime catalog in registry; using embedded".into());
-                RuntimeCatalog::embedded()
-            }
-            Err(errors) => {
-                warnings.push(format!(
-                    "Cannot reload Java runtime catalog; preserving existing active catalogs: {errors:?}"
-                ));
-                return Ok(warnings);
-            }
-        };
-
-        crate::loader_manifests::LoaderCatalog::replace_active(Some(loader_catalog))?;
-        self.runtime_catalog.replace(runtime_catalog);
-        warnings.push(if has_registry_loader_catalog {
-            "Using merged signed and embedded loader catalogs".into()
-        } else {
-            "Using embedded loader catalog".into()
-        });
-
-        Ok(warnings)
+        // The wording above predates game packages; the CLI's JSON output
+        // carries it as `catalog_warnings`, so it is kept.
+        crate::game_hooks::run_catalog_hooks(self, Some(&conn), CatalogEvent::Reload)
     }
 
     /// The lock manager reference.
@@ -449,10 +389,10 @@ impl std::fmt::Debug for CoreContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoreContext")
             .field("paths", &self.paths)
-            .field("launcher_profiles_path", &self.launcher_profiles_path)
+            .field("external_data_root", &self.external_data_root)
             .field("http_clients", &self.http_clients)
             .field("lock_manager", &self.lock_manager)
-            .field("runtime_catalog", &self.runtime_catalog)
+            .field("extensions", &self.extensions)
             .finish_non_exhaustive()
     }
 }
@@ -470,6 +410,19 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("agora-ctx-init-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let paths = AppPaths::from_root(tmp.clone());
+        fn hook(
+            _: &CoreContext,
+            registry: Option<&rusqlite::Connection>,
+            event: crate::game_hooks::CatalogEvent,
+        ) -> crate::error::LauncherResult<Vec<String>> {
+            Ok(match (registry, event) {
+                (None, crate::game_hooks::CatalogEvent::Startup) => {
+                    vec!["test catalog hook: startup without a registry".into()]
+                }
+                _ => Vec::new(),
+            })
+        }
+        crate::game_hooks::register_catalog_hook(hook);
 
         let (ctx, warnings) = CoreContext::initialize(paths).unwrap();
         assert!(ctx.paths.root().exists(), "root should exist");
@@ -485,8 +438,8 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("embedded loader and Java runtime catalogs")),
-            "clean init should report embedded catalog sources: {:?}",
+                .any(|warning| warning == "test catalog hook: startup without a registry"),
+            "registered catalog hooks run at startup: {:?}",
             warnings
         );
 
@@ -553,139 +506,6 @@ mod tests {
         assert!(result.is_err(), "should fail when db cannot be created");
         let err = result.unwrap_err();
         assert_eq!(err.code(), "ERR_LOCAL_STATE_FAILED");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_runtime_catalog_handle_snapshot_via_ctx() {
-        let tmp = std::env::temp_dir().join(format!("agora-ctx-snap-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&tmp);
-        let ctx = CoreContext::for_testing(tmp.clone());
-        let catalog = ctx.runtime_catalog.snapshot();
-        assert!(
-            !catalog.entries.is_empty(),
-            "snapshot should have embedded entries"
-        );
-        // A second snapshot is independent
-        let catalog2 = ctx.runtime_catalog.snapshot();
-        assert_eq!(catalog, catalog2);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_reload_no_registry_db_returns_warning() {
-        let tmp =
-            std::env::temp_dir().join(format!("agora-ctx-reload-nodb-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&tmp);
-        let ctx = CoreContext::for_testing(tmp.clone());
-        let warnings = ctx.reload_runtime_catalog().unwrap();
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("No registry database found")),
-            "should warn when registry.db is absent: {:?}",
-            warnings
-        );
-        // Snapshot should still return embedded catalog (unchanged).
-        let catalog = ctx.runtime_catalog.snapshot();
-        assert!(!catalog.entries.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_reload_runtime_catalog_with_valid_registry() {
-        let tmp = std::env::temp_dir().join(format!("agora-ctx-reload-ok-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        // Create a minimal registry.db with runtime_catalog and loader_catalog tables.
-        let reg_path = tmp.join("registry.db");
-        let conn = rusqlite::Connection::open(&reg_path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE runtime_catalog (singleton_id INTEGER PRIMARY KEY, catalog_json TEXT NOT NULL);
-             CREATE TABLE loader_catalog (singleton_id INTEGER PRIMARY KEY, catalog_json TEXT NOT NULL);
-             CREATE TABLE schema_version (version INTEGER PRIMARY KEY);"
-        ).unwrap();
-
-        let embedded_json = include_str!("../../../runtime-catalog/runtime_catalog.json");
-        conn.execute(
-            "INSERT INTO runtime_catalog (singleton_id, catalog_json) VALUES (1, ?1)",
-            [embedded_json],
-        )
-        .unwrap();
-        let manifests = include_str!("../../../loader-manifests/loader_manifests.json");
-        conn.execute(
-            "INSERT INTO loader_catalog (singleton_id, catalog_json) VALUES (1, ?1)",
-            [manifests],
-        )
-        .unwrap();
-        drop(conn);
-
-        let ctx = CoreContext::for_testing(tmp.clone());
-
-        // Confirm we start with embedded.
-        let before = ctx.runtime_catalog.snapshot();
-        assert!(!before.entries.is_empty());
-
-        // Reload from the registry.db we just placed.
-        let warnings = ctx.reload_runtime_catalog().unwrap();
-        assert!(
-            warnings.iter().any(|w| w.contains("signed registry")),
-            "should report signed registry load: {:?}",
-            warnings
-        );
-
-        // After reload, the catalog should still be valid (same data).
-        let after = ctx.runtime_catalog.snapshot();
-        assert!(!after.entries.is_empty());
-        assert_eq!(after.schema_version, before.schema_version);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_reload_runtime_catalog_old_preserved_on_failure() {
-        let tmp =
-            std::env::temp_dir().join(format!("agora-ctx-reload-fail-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        // Create a registry.db with invalid runtime catalog JSON.
-        let reg_path = tmp.join("registry.db");
-        let conn = rusqlite::Connection::open(&reg_path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE runtime_catalog (singleton_id INTEGER PRIMARY KEY, catalog_json TEXT NOT NULL);
-             CREATE TABLE schema_version (version INTEGER PRIMARY KEY);"
-        ).unwrap();
-        conn.execute(
-            "INSERT INTO runtime_catalog (singleton_id, catalog_json) VALUES (1, ?1)",
-            [r#"{"invalid": "no schema version"}"#],
-        )
-        .unwrap();
-        drop(conn);
-
-        let ctx = CoreContext::for_testing(tmp.clone());
-
-        // Snapshot before reload is the embedded catalog.
-        let before = ctx.runtime_catalog.snapshot();
-        assert!(!before.entries.is_empty());
-
-        // Reload should fail validation but NOT replace the catalog.
-        let warnings = ctx.reload_runtime_catalog().unwrap();
-        assert!(
-            warnings.iter().any(|w| w.contains("preserving existing")),
-            "should warn about preserving existing catalog: {:?}",
-            warnings
-        );
-
-        // The catalog must still be the embedded one.
-        let after = ctx.runtime_catalog.snapshot();
-        assert!(!after.entries.is_empty());
-        assert_eq!(
-            after, before,
-            "catalog should be unchanged after failed reload"
-        );
-
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

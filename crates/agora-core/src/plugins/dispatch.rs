@@ -284,8 +284,8 @@ fn to_summary(row: &crate::models::InstanceRow) -> dto::InstanceSummary {
 }
 
 fn instance_list(cx: &DispatchContext<'_>) -> PluginResult<serde_json::Value> {
-    let service = crate::instance_service::InstanceService::new(cx.ctx.clone());
-    let rows = service.list().map_err(operation_failed)?;
+    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    let rows = backend.list(cx.ctx).map_err(operation_failed)?;
     json(rows.iter().map(to_summary).collect::<Vec<_>>())
 }
 
@@ -294,13 +294,16 @@ fn instance_get(
     args: &serde_json::Value,
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
-    let service = crate::instance_service::InstanceService::new(cx.ctx.clone());
-    let Some(detail) = service.get(&instance_id).map_err(operation_failed)? else {
+    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    let Some((row, manifest)) = backend
+        .get(cx.ctx, &instance_id)
+        .map_err(operation_failed)?
+    else {
         return Ok(serde_json::Value::Null);
     };
 
     let mut counts = dto::ContentCounts::default();
-    if let Some(manifest) = &detail.manifest {
+    if let Some(manifest) = &manifest {
         counts.mods = manifest.mods.len() as u32;
         counts.resourcepacks = manifest.resourcepacks.len() as u32;
         counts.shaders = manifest.shaders.len() as u32;
@@ -318,19 +321,18 @@ fn instance_get(
     }
 
     json(dto::InstanceDetail {
-        summary: to_summary(&detail.row),
+        summary: to_summary(&row),
         jvm: dto::JvmSettings {
-            memory_mb: detail.row.jvm_memory_mb,
-            memory_mode: detail.row.jvm_memory_mode.clone(),
-            gc: detail.row.jvm_gc.clone(),
-            custom_args: detail.row.jvm_custom_args.clone(),
-            always_pre_touch: detail.row.jvm_always_pre_touch,
+            memory_mb: row.jvm_memory_mb,
+            memory_mode: row.jvm_memory_mode.clone(),
+            gc: row.jvm_gc.clone(),
+            custom_args: row.jvm_custom_args.clone(),
+            always_pre_touch: row.jvm_always_pre_touch,
             // The path itself stays behind the boundary.
-            has_java_override: detail.row.java_path.is_some(),
+            has_java_override: row.java_path.is_some(),
         },
-        launch_mode: detail.row.launch_mode_override.clone(),
-        pack_origin: detail
-            .manifest
+        launch_mode: row.launch_mode_override.clone(),
+        pack_origin: manifest
             .as_ref()
             .and_then(|manifest| manifest.created_from_pack.clone()),
         content_counts: counts,
@@ -343,9 +345,8 @@ fn instance_rename(
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
     let name = arg_str(args, "name")?;
-    let service = crate::instance_service::InstanceService::new(cx.ctx.clone());
-    service
-        .rename(&instance_id, &name)
+    crate::game_hooks::instance_backend()
+        .and_then(|backend| backend.rename(cx.ctx, &instance_id, &name))
         .map_err(operation_failed)?;
     Ok(serde_json::json!({ "renamed": true }))
 }
@@ -356,22 +357,26 @@ fn instance_set_memory(
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
     let memory_mb = arg_i64(args, "memoryMb")?;
-    let service = crate::instance_service::InstanceService::new(cx.ctx.clone());
+    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
     // Read-modify-write through the same service the settings page uses, so
     // the other JVM fields keep their values and core's own clamping applies.
-    let Some(detail) = service.get(&instance_id).map_err(operation_failed)? else {
+    let Some((row, _)) = backend
+        .get(cx.ctx, &instance_id)
+        .map_err(operation_failed)?
+    else {
         return Err(PluginError::new(
             PluginErrorCode::OperationFailed,
             format!("no instance `{instance_id}`"),
         ));
     };
-    service
+    backend
         .update_jvm(
+            cx.ctx,
             &instance_id,
             memory_mb,
-            &detail.row.jvm_gc,
-            detail.row.jvm_always_pre_touch,
-            &detail.row.jvm_custom_args,
+            &row.jvm_gc,
+            row.jvm_always_pre_touch,
+            &row.jvm_custom_args,
             // A plugin setting an explicit ceiling means the user is no longer
             // on automatic sizing; saying so is more honest than leaving the
             // settings page claiming "auto" while showing a fixed number.
@@ -389,28 +394,17 @@ fn read_content(
     cx: &DispatchContext<'_>,
     instance_id: &str,
     content_type: Option<&str>,
-) -> PluginResult<Vec<crate::installed_content::InstalledContentRow>> {
-    let service = crate::instance_service::InstanceService::new(cx.ctx.clone());
-    let Some(detail) = service.get(instance_id).map_err(operation_failed)? else {
-        return Err(PluginError::new(
-            PluginErrorCode::OperationFailed,
-            format!("no instance `{instance_id}`"),
-        ));
-    };
-    let Some(manifest) = detail.manifest else {
-        return Ok(Vec::new());
-    };
-    let instance_dir = cx
-        .ctx
-        .paths
-        .instance_dir(instance_id)
-        .map_err(operation_failed)?;
-    Ok(crate::installed_content::list_installed_content(
-        &instance_dir,
-        &manifest,
-        content_type,
-        None,
-    ))
+) -> PluginResult<Vec<dto::ContentEntry>> {
+    let backend = crate::game_hooks::instance_backend().map_err(operation_failed)?;
+    backend
+        .content(cx.ctx, instance_id, content_type)
+        .map_err(operation_failed)?
+        .ok_or_else(|| {
+            PluginError::new(
+                PluginErrorCode::OperationFailed,
+                format!("no instance `{instance_id}`"),
+            )
+        })
 }
 
 fn content_list(
@@ -419,31 +413,7 @@ fn content_list(
 ) -> PluginResult<serde_json::Value> {
     let instance_id = arg_str(args, "instanceId")?;
     let content_type = arg_opt_str(args, "contentType");
-    let rows = read_content(cx, &instance_id, content_type.as_deref())?;
-    let entries: Vec<dto::ContentEntry> = rows
-        .into_iter()
-        .map(|row| dto::ContentEntry {
-            key: row.key,
-            filename: row.filename,
-            display_name: row.display_name,
-            version: row.version,
-            content_type: row.content_type,
-            enabled: row.enabled,
-            installed_at: row.installed_at,
-            source_label: row.source_label,
-            pack_managed: row.pack_managed,
-            installed_as_dependency: row.installed_as_dependency,
-            update_pinned: row.update_pinned,
-            file_present: row.file_present,
-            size_bytes: row.size_bytes,
-            author: row.author,
-            categories: row.categories,
-            source_url: row.source_url,
-            registry_id: row.registry_id,
-            modrinth_id: row.modrinth_id,
-            // `resolved_path` is deliberately dropped here.
-        })
-        .collect();
+    let entries = read_content(cx, &instance_id, content_type.as_deref())?;
     json(entries)
 }
 
@@ -492,9 +462,8 @@ fn content_set_pinned(
     let key = arg_str(args, "key")?;
     let pinned = arg_bool(args, "pinned")?;
     let filename = filename_for_key(cx, &instance_id, &key)?;
-    let service = crate::install_service::InstallService::new(cx.ctx.clone());
-    let changed = service
-        .set_update_pinned(&instance_id, &filename, pinned)
+    let changed = crate::game_hooks::instance_backend()
+        .and_then(|backend| backend.set_update_pinned(cx.ctx, &instance_id, &filename, pinned))
         .map_err(operation_failed)?;
     Ok(serde_json::json!({ "key": key, "pinned": pinned, "changed": changed }))
 }

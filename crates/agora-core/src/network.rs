@@ -7,7 +7,6 @@
 use crate::ctx::Ctx;
 use crate::db;
 use crate::error::{LauncherError, LauncherResult};
-use crate::loader_manifests;
 
 /// Categories of network access controlled by the launch planner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -162,34 +161,6 @@ fn category_bit(category: NetworkCategory) -> u8 {
     }
 }
 
-/// Classify a URL host into a network category.
-///
-/// This enables callers to map an already-validated URL to the right
-/// policy category before opening a socket. Returns `None` for hosts
-/// that are not recognised as a known launch-network endpoint.
-pub fn classify_host(host: &str) -> Option<NetworkCategory> {
-    if matches!(host, "piston-meta.mojang.com" | "launcher.mojang.com") {
-        return Some(NetworkCategory::MojangMetadata);
-    }
-    if matches!(
-        host,
-        "piston-data.mojang.com" | "libraries.minecraft.net" | "resources.download.minecraft.net"
-    ) {
-        return Some(NetworkCategory::MojangContent);
-    }
-    if loader_manifests::is_allowed_host(host) {
-        return Some(NetworkCategory::LoaderMetadataAndContent);
-    }
-    None
-}
-
-/// Classify a full URL string into a network category by parsing its host.
-pub fn classify_url(raw: &str) -> Option<NetworkCategory> {
-    let url = reqwest::Url::parse(raw).ok()?;
-    let host = url.host_str()?;
-    classify_host(host)
-}
-
 /// Remove credentials, query parameters, and fragments before writing a URL
 /// to diagnostic logs. Paths are retained so rejected artifacts can be
 /// identified without leaking signed URL parameters or tokens.
@@ -277,51 +248,6 @@ mod tests {
         let policy =
             NetworkPolicy::all_enabled().with_category(NetworkCategory::MojangMetadata, true);
         assert!(policy.is_enabled(NetworkCategory::MojangMetadata));
-    }
-
-    #[test]
-    fn classify_mojang_metadata_hosts() {
-        assert_eq!(
-            classify_host("piston-meta.mojang.com"),
-            Some(NetworkCategory::MojangMetadata)
-        );
-        assert_eq!(
-            classify_host("launcher.mojang.com"),
-            Some(NetworkCategory::MojangMetadata)
-        );
-    }
-
-    #[test]
-    fn classify_mojang_content_hosts() {
-        assert_eq!(
-            classify_host("piston-data.mojang.com"),
-            Some(NetworkCategory::MojangContent)
-        );
-        assert_eq!(
-            classify_host("libraries.minecraft.net"),
-            Some(NetworkCategory::MojangContent)
-        );
-        assert_eq!(
-            classify_host("resources.download.minecraft.net"),
-            Some(NetworkCategory::MojangContent)
-        );
-    }
-
-    #[test]
-    fn classify_loader_hosts() {
-        // Fabric Maven — should NOT classify as Mojang content
-        if let Some(cat) = classify_host("maven.fabricmc.net") {
-            assert_eq!(cat, NetworkCategory::LoaderMetadataAndContent);
-        }
-        if let Some(cat) = classify_host("maven.quiltmc.org") {
-            assert_eq!(cat, NetworkCategory::LoaderMetadataAndContent);
-        }
-    }
-
-    #[test]
-    fn classify_unknown_host_returns_none() {
-        assert_eq!(classify_host("example.com"), None);
-        assert_eq!(classify_host("127.0.0.1"), None);
     }
 
     #[test]
@@ -561,26 +487,5 @@ mod tests {
         assert!(policy.is_enabled(NetworkCategory::LoaderMetadataAndContent));
         assert!(policy.is_enabled(NetworkCategory::MicrosoftAuthentication));
         assert!(policy.is_enabled(NetworkCategory::JavaRuntime));
-    }
-
-    #[test]
-    fn classify_url_rejects_invalid_urls() {
-        assert_eq!(classify_url("not-a-url"), None);
-    }
-
-    #[test]
-    fn classify_url_parses_host() {
-        assert_eq!(
-            classify_url("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"),
-            Some(NetworkCategory::MojangMetadata)
-        );
-        assert_eq!(
-            classify_url("https://piston-data.mojang.com/v2/1.21/client.jar"),
-            Some(NetworkCategory::MojangContent)
-        );
-        assert_eq!(
-            classify_url("https://maven.fabricmc.net/v2/0.19.0/profile.json"),
-            Some(NetworkCategory::LoaderMetadataAndContent)
-        );
     }
 }

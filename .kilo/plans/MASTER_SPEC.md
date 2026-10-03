@@ -3709,9 +3709,57 @@ where manifest upgrades already happen (`models.rs`, which already upgrades vers
 - instance contents are not touched: a migrated Minecraft instance is byte-for-byte the same on disk
   apart from the manifest.
 
-**Enforced by script.** `scripts/check_architecture.py` gains two rules: `agora-core` does not
-reference the Minecraft package's modules, and `agora-game-api` depends only on `serde`, `semver` and
-`thiserror`, like `agora-plugin-api`.
+**Enforced by script.** `scripts/check_architecture.py` gains three rules:
+- `agora-core` does not reference the Minecraft package.
+- `agora-game-api` depends only on `serde`, `semver` and `thiserror`. (The spec once said "like
+  `agora-plugin-api`", but that crate also uses `serde_json`.)
+- A game package depends on `agora-core` only within a budget recorded in
+  `scripts/game_package_core_budget.json`. The budget counts the package's `agora_core` references,
+  may only fall, and must be lowered whenever the count drops. A package with no entry may not
+  depend on core at all.
+
+The rules that guard core's internals scan game packages too. Otherwise, code leaving core would
+escape them.
+
+**Phase 1, as built.** Slice 1 added the contract crate and manifest v3; slice 2 moved Minecraft
+out of `agora-core`. It differs from the table above in three ways.
+
+1. **The service layer moved whole.** `instance_service`, `launch_service`, `install_*`,
+   `resolver`, `health`, `import*`, `runtime_manager`/`runtime_catalog`, the browse and update
+   caches and MCP dispatch all live in `agora-game-minecraft` for now. Their generic halves are
+   extracted when the second game needs them, in Phase 2, because a generic instance or launch
+   service designed without one would be a guess. The pack modules (`pack_*`, `curated_pack`,
+   `export_service`) and `installed_profile` are Minecraft and moved too. `launch_planner` and
+   `installed_artifact` belong in the Split column: their process supervision, hash verification
+   and hardlinking are what bases and launch need for every game.
+2. **Core gained `game_hooks`, the seams a package registers into at startup:**
+   - catalog hooks, run at startup and on registry reload;
+   - startup hooks;
+   - compiled-in content providers;
+   - network host classifiers;
+   - typed context extensions, replacing core's Minecraft fields;
+   - an `InstanceBackend` for the plugin host.
+
+   Adapters call `agora_game_minecraft::register()` before building a context. This is a
+   scaffold, not §26.11's registry. Phase 2 reshapes it into that registry, because today the
+   hooks:
+   - are a second registration path beside `GamePackage`;
+   - take core types (`Ctx`, a raw registry connection, `ContentProvider`), which a package that
+     depends only on `agora-game-api` cannot implement;
+   - are process-global plain functions, not keyed by game, with no way to unregister, so a
+     second package would displace Minecraft's instance backend.
+
+   The registry Phase 2 builds is held by core per context, keyed by game, reached through
+   `GameHost`, and able to admit plugin packages. Network categories are still Minecraft-named
+   (`Mojang*`), and the host classification the launch planner trusts stays the package's own
+   function, not a hook another package could answer.
+3. **The package still depends on `agora-core`,** within the budget above: 1,162 references at
+   the end of Phase 1. Removing them means designing core's generic data model: the instance
+   table and manifest with an opaque per-game section, an error envelope, and a game-scoped
+   catalog. Each budget family moves onto a `GameHost` service when Phase 2 builds the generic
+   version of what it uses. That includes the 51 parameterized SQL statements that moved with
+   Minecraft's modules: until then, `AGENTS.md`'s "SQL lives in `agora-core`" is true only of new
+   SQL.
 
 ### 26.13 Phases
 
@@ -3731,8 +3779,8 @@ least one tracer from another family use it.**
 |---|---|---|
 | **0. Spike** | `scripts/spikes/game-support/` | Done (F1–F8). |
 | **0b. Spike 2: write isolation** | usvfs against content and base files: write an existing file, replace by rename, delete, create, and each from a child process; an archive in a Linked base changed in place | Runs alongside Phase 1. Its result picks copy-on-write or fail-closed (§26.5) **before** Phase 3 fixes the layer contract. |
-| **1. Game interface** | `agora-game-api` with `GamePackage` and `GameHost`; the dependency direction above; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass; migration tests cover interruption, re-running, and a manifest from a newer Agora. |
-| **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; Linked and Copied bases with verification; generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. A base archive changed in place is detected and the instance refuses to launch on it, naming the files. Tracers, **as external packages through the plugin path**: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store. |
+| **1. Game interface** | `agora-game-api` with `GamePackage` and `GameHost`; the dependency direction above; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass; migration tests cover interruption, re-running, and a manifest from a newer Agora. `agora-core` contains no Minecraft; `agora-game-minecraft` may still use core within its shrinking budget (§26.12, *as built*). |
+| **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; Linked and Copied bases with verification; generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. A base archive changed in place is detected and the instance refuses to launch on it, naming the files. Tracers, **as external packages through the plugin path**: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store. The generic halves of the instance and launch services exist and serve both Minecraft and Skyrim, and the Minecraft package's `agora-core` budget reaches zero. |
 | **3. Deployment** | Content store, archives, FOMOD, the layer stack, Redirect, VFS (Windows) with the isolation Spike 2 chose, per-user files | A Skyrim instance with SKSE and twenty mods runs; switching instances needs no redeploy. **Failure gates:** an unexpected write by a game or tool never changes a content or base file; two launches of one game contend on `GameUserFiles` and the second is told why; a failed launch restores per-user files; Agora killed while the game runs, then restarted, restores nothing under the running game; a file edited externally before recovery is kept, not overwritten. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
 | **4. Creation Engine (Skyrim complete)** | Load order (LOOT crates as a host service); framework and Address Library checks; per-profile INIs; save choice; tools with staging and generated layers; MO2 import including `overwrite` and both orders; the catalog for Skyrim (§26.8) | The 214,592-file salvage pack imports with its bytes, both orders and its Nemesis output (inputs unknown), and plays; changing a mod marks Nemesis output stale; rebuilding and rolling back both change the bytes the game reads; curated Skyrim mods install from a `github_release` and a `direct_hash` entry with verified hashes. |
 | **5. Plugin API 0.2** | Game packages, family parents, new capabilities, `GameTarget` providers, `nxm://` routing, published game-definition spec | The tracers become finished support written as plugins: Valheim (BepInEx) and Satisfactory (Unreal), then CK3 (Paradox, Microsoft Store) and Cyberpunk (REDengine). |

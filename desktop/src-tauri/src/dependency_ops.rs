@@ -1,8 +1,8 @@
 //! Desktop shim for dependency resolution.
 //!
 //! Re-exports all types and functions from `agora_core::dependency_ops`. The
-//! JAR metadata parser has been deduplicated to `agora_core::jar_metadata`;
-//! callers use `agora_core::jar_metadata::parse_jar_metadata` directly.
+//! JAR metadata parser has been deduplicated to `agora_game_minecraft::jar_metadata`;
+//! callers use `agora_game_minecraft::jar_metadata::parse_jar_metadata` directly.
 
 use agora_core::dependency_ops::JarDeps;
 
@@ -55,7 +55,7 @@ pub fn build_removal_plan(
 ///
 /// Delegates directly to `agora_core::dependency_ops::build_install_plan`.
 /// Callers pass `agora_core::dependency_ops::JarDeps` (from
-/// `agora_core::jar_metadata::parse_jar_metadata`) directly.
+/// `agora_game_minecraft::jar_metadata::parse_jar_metadata`) directly.
 pub fn build_install_plan(
     target_manifest_deps: Option<crate::registry::ManifestDeps>,
     target_jar_deps: &JarDeps,
@@ -191,7 +191,8 @@ pub fn refresh_installed_jar_metadata<R: tauri::Runtime>(
             }
         }
 
-        let parsed = agora_core::jar_metadata::parse_jar_metadata_for_loader(&jar_path, &loader);
+        let parsed =
+            agora_game_minecraft::jar_metadata::parse_jar_metadata_for_loader(&jar_path, &loader);
         // A valid mod metadata file has a primary ID. If parsing failed or the
         // file is not a recognized mod JAR, retain the manifest's cached data.
         if parsed.mod_jar_id.is_none() {

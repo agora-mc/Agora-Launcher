@@ -17,6 +17,8 @@ python scripts/check_architecture.py && python scripts/check_docs.py && python s
 
 ## Boundaries that are enforced by scripts
 
+- `agora-core` is game-agnostic and never references a game package; Minecraft lives in
+  `agora-game-minecraft`, whose use of core may only shrink (`scripts/game_package_core_budget.json`).
 - `agora-core` does not depend on `tauri`, `clap` or MCP protocol types. A platform primitive is a
   trait in core, implemented in the adapter.
 - `desktop/src/features/interactive/` has a stricter import boundary; see

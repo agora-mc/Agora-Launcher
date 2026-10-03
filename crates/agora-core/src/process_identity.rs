@@ -164,9 +164,9 @@ pub fn verify(identity: &ProcessIdentity) -> LauncherResult<()> {
 /// Identity of a spawned OS process, captured from the OS immediately after
 /// the child is created.
 ///
-/// This is stored internally in [`AppState`](crate::state::AppState) and is
+/// This is stored internally in the adapters' `AppState` and is
 /// **not** serialised to the frontend.  The public
-/// [`RunningProcess`](crate::state::RunningProcess) carries only the fields
+/// `RunningProcess` (in the Minecraft package's `state`) carries only the fields
 /// the UI needs (instance_id, pid, session_id).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProcessIdentity {

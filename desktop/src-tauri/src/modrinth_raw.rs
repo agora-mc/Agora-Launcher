@@ -1,4 +1,4 @@
-//! Thin Tauri adapter for [`agora_core::modrinth::ModrinthService`].
+//! Thin Tauri adapter for [`agora_game_minecraft::modrinth::ModrinthService`].
 //!
 //! Every function extracts the [`agora_core::ctx::Ctx`] from the
 //! `tauri::AppHandle`, constructs a [`ModrinthService`], and delegates.
@@ -7,7 +7,7 @@
 
 // Re-export all public types from core so existing command signatures
 // remain stable.
-pub use agora_core::modrinth::{
+pub use agora_game_minecraft::modrinth::{
     ModrinthCategoryInfo, ModrinthFileMetadata, ModrinthGameVersionInfo, ModrinthLoaderInfo,
     ModrinthProjectFull, ModrinthSearchPage, ModrinthSearchParams, ModrinthSearchResult,
     ModrinthSort, RawModrinthDependency, RawModrinthVersionCandidate,
@@ -16,8 +16,8 @@ pub use agora_core::modrinth::{
 use crate::error::LauncherResult;
 use crate::models::InstalledMod;
 use agora_core::http_client::HttpClients;
-use agora_core::modrinth::ModrinthService;
 use agora_core::settings::SettingsService;
+use agora_game_minecraft::modrinth::ModrinthService;
 
 /// Read the `modrinth_enabled` boolean setting from `local_state.db` via
 /// core-owned [`SettingsService`].
@@ -106,7 +106,7 @@ pub async fn resolve_modrinth_file_metadata(
     project_id: &str,
     filename: &str,
 ) -> Option<ModrinthFileMetadata> {
-    agora_core::modrinth::resolve_modrinth_file_metadata(project_id, filename).await
+    agora_game_minecraft::modrinth::resolve_modrinth_file_metadata(project_id, filename).await
 }
 
 /// Install a raw (uncurated) Modrinth mod file into an instance.

@@ -112,8 +112,8 @@ fn test_msa_credentials_json() -> String {
         access_token: "test_access_token".into(),
         refresh_token: "test_refresh_token".into(),
         expires: chrono::Utc::now() + chrono::Duration::hours(1),
-        client_id: agora_core::msa::AGORA_MSA_CLIENT_ID.into(),
-        auth_version: agora_core::msa::MSA_AUTH_VERSION,
+        client_id: agora_game_minecraft::msa::AGORA_MSA_CLIENT_ID.into(),
+        auth_version: agora_game_minecraft::msa::MSA_AUTH_VERSION,
     })
     .expect("serialize fake MSA credentials")
 }
@@ -1143,7 +1143,7 @@ fn registry_status_no_desktop_button_instruction() {
 // ---------------------------------------------------------------------------
 
 use agora_core::download::sha1_hex;
-use agora_core::msa::MsaCredentials;
+use agora_game_minecraft::msa::MsaCredentials;
 
 /// Platform key used in natives directory name.
 fn platform() -> &'static str {

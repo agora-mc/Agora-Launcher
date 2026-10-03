@@ -434,7 +434,7 @@ const LAUNCHER_EXCLUDED_FILENAMES: &[&str] = &[
 ];
 const LAUNCHER_EXCLUDED_DIRNAMES: &[&str] = &[".agora", ".agora_snapshots", ".agora-import"];
 
-pub(crate) fn is_excluded_source_name(name: &str, is_directory: bool) -> bool {
+pub fn is_excluded_source_name(name: &str, is_directory: bool) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.starts_with(".agora")
         || LAUNCHER_EXCLUDED_FILENAMES
@@ -446,7 +446,7 @@ pub(crate) fn is_excluded_source_name(name: &str, is_directory: bool) -> bool {
                 .any(|excluded| lower == excluded.to_ascii_lowercase()))
 }
 
-pub(crate) fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType) -> bool {
+pub fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType) -> bool {
     if file_type.is_symlink() {
         return true;
     }
@@ -466,7 +466,7 @@ pub(crate) fn unsafe_filesystem_entry(path: &Path, file_type: &std::fs::FileType
     false
 }
 
-pub(crate) fn hash_file_sha256(path: &Path) -> std::io::Result<String> {
+pub fn hash_file_sha256(path: &Path) -> std::io::Result<String> {
     use sha2::Digest;
     let mut input = std::fs::File::open(path)?;
     let mut hasher = sha2::Sha256::new();

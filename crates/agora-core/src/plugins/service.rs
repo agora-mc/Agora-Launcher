@@ -1981,9 +1981,9 @@ impl PluginService {
     /// Check that an action still makes sense before performing it.
     fn revalidate(&self, action: &RepairAction) -> Result<(), String> {
         let instance_id = action.instance_id();
-        let service = crate::instance_service::InstanceService::new(self.inner.ctx.clone());
-        let detail = match service.get(instance_id) {
-            Ok(Some(detail)) => detail,
+        let backend = crate::game_hooks::instance_backend().map_err(|e| e.to_string())?;
+        let (row, manifest) = match backend.get(&self.inner.ctx, instance_id) {
+            Ok(Some(found)) => found,
             Ok(None) => return Err(format!("instance `{instance_id}` no longer exists")),
             Err(error) => return Err(error.to_string()),
         };
@@ -1993,26 +1993,18 @@ impl PluginService {
             | RepairAction::EnableContent { key, .. }
             | RepairAction::PinContentUpdate { key, .. }
             | RepairAction::UnpinContentUpdate { key, .. } => {
-                if detail.row.is_locked {
+                if row.is_locked {
                     return Err("the instance is locked".to_string());
                 }
-                let Some(manifest) = detail.manifest else {
+                if manifest.is_none() {
                     return Err("the instance has no manifest to read".to_string());
-                };
-                let instance_dir = self
-                    .inner
-                    .ctx
-                    .paths
-                    .instance_dir(instance_id)
-                    .map_err(|e| e.to_string())?;
-                let present = crate::installed_content::list_installed_content(
-                    &instance_dir,
-                    &manifest,
-                    None,
-                    None,
-                )
-                .into_iter()
-                .any(|row| &row.key == key);
+                }
+                let present = backend
+                    .content(&self.inner.ctx, instance_id, None)
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|entry| &entry.key == key);
                 if !present {
                     return Err(format!("`{key}` is no longer installed"));
                 }
@@ -2040,45 +2032,47 @@ impl PluginService {
             | RepairAction::UnpinContentUpdate { instance_id, key } => {
                 let filename = self.filename_for(instance_id, key)?;
                 let pinned = matches!(action, RepairAction::PinContentUpdate { .. });
-                crate::install_service::InstallService::new(ctx)
-                    .set_update_pinned(instance_id, &filename, pinned)
+                crate::game_hooks::instance_backend()?
+                    .set_update_pinned(&ctx, instance_id, &filename, pinned)
                     .map(|_| ())
             }
             RepairAction::SetJvmMemory {
                 instance_id,
                 memory_mb,
             } => {
-                let service = crate::instance_service::InstanceService::new(ctx);
-                let Some(detail) = service.get(instance_id)? else {
+                let backend = crate::game_hooks::instance_backend()?;
+                let Some((row, _)) = backend.get(&ctx, instance_id)? else {
                     return Err(LauncherError::Generic {
                         code: "ERR_INSTANCE_NOT_FOUND".into(),
                         message: format!("no instance `{instance_id}`"),
                     });
                 };
-                service.update_jvm(
+                backend.update_jvm(
+                    &ctx,
                     instance_id,
                     *memory_mb,
-                    &detail.row.jvm_gc,
-                    detail.row.jvm_always_pre_touch,
-                    &detail.row.jvm_custom_args,
+                    &row.jvm_gc,
+                    row.jvm_always_pre_touch,
+                    &row.jvm_custom_args,
                     "manual",
                 )
             }
             RepairAction::ResetJvmArgs { instance_id } => {
-                let service = crate::instance_service::InstanceService::new(ctx);
-                let Some(detail) = service.get(instance_id)? else {
+                let backend = crate::game_hooks::instance_backend()?;
+                let Some((row, _)) = backend.get(&ctx, instance_id)? else {
                     return Err(LauncherError::Generic {
                         code: "ERR_INSTANCE_NOT_FOUND".into(),
                         message: format!("no instance `{instance_id}`"),
                     });
                 };
-                service.update_jvm(
+                backend.update_jvm(
+                    &ctx,
                     instance_id,
-                    detail.row.jvm_memory_mb,
-                    &detail.row.jvm_gc,
-                    detail.row.jvm_always_pre_touch,
+                    row.jvm_memory_mb,
+                    &row.jvm_gc,
+                    row.jvm_always_pre_touch,
                     "",
-                    &detail.row.jvm_memory_mode,
+                    &row.jvm_memory_mode,
                 )
             }
             RepairAction::CreateSnapshot { instance_id, label } => {
@@ -2090,21 +2084,23 @@ impl PluginService {
     }
 
     fn filename_for(&self, instance_id: &str, key: &str) -> LauncherResult<String> {
-        let service = crate::instance_service::InstanceService::new(self.inner.ctx.clone());
-        let Some(detail) = service.get(instance_id)? else {
+        let backend = crate::game_hooks::instance_backend()?;
+        let Some((_, manifest)) = backend.get(&self.inner.ctx, instance_id)? else {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTANCE_NOT_FOUND".into(),
                 message: format!("no instance `{instance_id}`"),
             });
         };
-        let Some(manifest) = detail.manifest else {
+        if manifest.is_none() {
             return Err(LauncherError::Generic {
                 code: "ERR_INSTANCE_MANIFEST_MISSING".into(),
                 message: format!("`{instance_id}` has no manifest"),
             });
-        };
-        let instance_dir = self.inner.ctx.paths.instance_dir(instance_id)?;
-        crate::installed_content::list_installed_content(&instance_dir, &manifest, None, None)
+        }
+        let entries = backend
+            .content(&self.inner.ctx, instance_id, None)?
+            .unwrap_or_default();
+        entries
             .into_iter()
             .find(|row| row.key == key)
             .map(|row| row.filename)

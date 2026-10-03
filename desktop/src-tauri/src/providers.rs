@@ -6,9 +6,9 @@
 
 use crate::error::LauncherResult;
 use agora_core::providers::{
-    self, install, ProjectDetail, ProviderDescriptor, ProviderRegistry, VersionsRequest,
-    VersionsResponse,
+    self, ProjectDetail, ProviderDescriptor, ProviderRegistry, VersionsRequest, VersionsResponse,
 };
+use agora_game_minecraft::providers::install;
 use tauri::AppHandle;
 
 /// The plugin service, when the user has plugins switched on. Providers work
@@ -120,7 +120,7 @@ pub async fn install_catalog_provider_pack(
     app: AppHandle,
     item_id: String,
     accept_changed: bool,
-) -> LauncherResult<agora_core::import::ImportResult> {
+) -> LauncherResult<agora_game_minecraft::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     install::install_catalog_pack(&ctx, &registry(&app)?, &item_id, accept_changed).await
 }
@@ -131,7 +131,7 @@ pub async fn provider_install_pack(
     app: AppHandle,
     item_id: String,
     version_id: Option<String>,
-) -> LauncherResult<agora_core::import::ImportResult> {
+) -> LauncherResult<agora_game_minecraft::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     install::install_pack(&ctx, &registry(&app)?, &item_id, version_id.as_deref()).await
 }

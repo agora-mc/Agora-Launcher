@@ -39,11 +39,7 @@
 //! single-file install, Technic's consent tiers, mrpack import) they are
 //! listed in `docs/plugins/providers.md` as migration debt, not hidden.
 
-pub mod browse;
-pub mod install;
-pub mod modrinth;
 pub mod plugin;
-pub mod technic;
 
 use crate::ctx::Ctx;
 use crate::error::{LauncherError, LauncherResult};
@@ -125,10 +121,24 @@ pub struct ProviderHit {
     pub native: Option<NativeHit>,
 }
 
-#[derive(Debug, Clone)]
-pub enum NativeHit {
-    Modrinth(crate::modrinth::ModrinthSearchResult),
-    Technic(crate::technic::TechnicSearchResult),
+#[derive(Clone)]
+pub struct NativeHit(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl NativeHit {
+    pub fn new<T: std::any::Any + Send + Sync>(value: T) -> Self {
+        Self(std::sync::Arc::new(value))
+    }
+
+    /// The provider's own result, if it is a `T`.
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+impl std::fmt::Debug for NativeHit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeHit(..)")
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -168,10 +178,8 @@ impl ProviderRegistry {
     /// Agora's official providers plus every provider an enabled, granted
     /// plugin contributes.
     pub fn new(ctx: &Ctx, plugins: Option<&crate::plugins::PluginService>) -> Self {
-        let mut providers: Vec<Arc<dyn ContentProvider>> = vec![
-            Arc::new(modrinth::ModrinthProvider::new(ctx.clone())),
-            Arc::new(technic::TechnicProvider::new(ctx.clone())),
-        ];
+        let mut providers: Vec<Arc<dyn ContentProvider>> =
+            crate::game_hooks::builtin_providers(ctx);
         if let Some(service) = plugins {
             providers.extend(plugin::PluginProvider::discover(ctx, service));
         }
@@ -538,7 +546,7 @@ pub fn verify_planned(
 }
 
 /// Lockdown and plugin-network state, as a reason a provider cannot be used.
-pub(crate) fn network_unavailable_reason(ctx: &Ctx, setting: Option<&str>) -> Option<String> {
+pub fn network_unavailable_reason(ctx: &Ctx, setting: Option<&str>) -> Option<String> {
     let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).ok()?;
     if crate::db::is_lockdown_enabled(&conn) {
         return Some("Privacy Lockdown Mode is on.".into());

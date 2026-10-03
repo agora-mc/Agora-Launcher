@@ -4,7 +4,8 @@ pub mod crash_diagnostics;
 pub mod crash_export;
 pub mod crash_investigator;
 pub mod dependency_ops;
-pub use agora_core::{download, error, loader_manifests, models};
+pub use agora_core::{download, error, models};
+pub use agora_game_minecraft::loader_manifests;
 
 pub mod governance;
 pub mod instances;
@@ -13,13 +14,13 @@ pub mod mod_install;
 pub mod modrinth_raw;
 pub mod mojang;
 pub mod providers;
-pub use agora_core::override_sanitizer;
+pub use agora_game_minecraft::override_sanitizer;
 pub mod mcp;
 pub mod paths;
 pub mod plugins;
 pub mod registry;
 pub mod registry_sync;
-pub use agora_core::state;
+pub use agora_game_minecraft::state;
 pub mod technic;
 pub mod version_cache;
 
@@ -48,6 +49,7 @@ pub fn core_context<R: tauri::Runtime>(
             message: error.to_string(),
         }
     })?;
+    agora_game_minecraft::register();
     agora_core::ctx::CoreContext::initialize(paths).map(|(ctx, _)| plugins::with_events(app, ctx))
 }
 
@@ -87,6 +89,9 @@ pub struct PendingCliLaunch(pub std::sync::Mutex<Option<String>>);
 
 /// Run the Tauri application.
 pub fn run() {
+    // Minecraft is a game package; register it with core before any context
+    // is built (idempotent, so the helper below may repeat it).
+    agora_game_minecraft::register();
     // Log startup so the user can verify from the log file that they are
     // actually running the freshly-compiled binary (not a stale one). When
     // diagnosing OAuth issues, the absence of this line means the running
@@ -447,7 +452,7 @@ pub fn run() {
                     // Prewarm remains bounded and launch never depends on it (maintenance.rs:1).
                     let prewarm_ctx = ctx.clone();
                     tauri::async_runtime::spawn(async move {
-                        match agora_core::maintenance::prewarm_recent_instances(prewarm_ctx).await {
+                        match agora_game_minecraft::maintenance::prewarm_recent_instances(prewarm_ctx).await {
                             Ok(summary) if summary.warmed > 0 => eprintln!(
                                 "[core] warmed {} recent instance cache(s) ({} skipped, {} failed)",
                                 summary.warmed, summary.skipped, summary.failed
@@ -464,7 +469,7 @@ pub fn run() {
                     // NetworkPolicy (network.rs), never errors.
                     let sweep_ctx = ctx.clone();
                     tauri::async_runtime::spawn(async move {
-                        match agora_core::update_cache::sweep_all_updates(sweep_ctx).await {
+                        match agora_game_minecraft::update_cache::sweep_all_updates(sweep_ctx).await {
                             Ok(summary) if summary.updated > 0 => eprintln!(
                                 "[core] update sweep refreshed {} instance(s) ({} skipped, {} failed, offline={})",
                                 summary.updated, summary.skipped, summary.failed, summary.offline_skipped
