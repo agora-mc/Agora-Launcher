@@ -154,6 +154,7 @@ impl CrashService {
         }
 
         let _ = crate::snapshot::mark_instance_mutated(&dir);
+        self.sync_world_datapacks_after_toggle(&sanitized, &dir, filename);
 
         Ok(())
     }
@@ -191,8 +192,37 @@ impl CrashService {
         }
 
         let _ = crate::snapshot::mark_instance_mutated(&dir);
+        self.sync_world_datapacks_after_toggle(&sanitized, &dir, filename);
 
         Ok(())
+    }
+
+    /// Enabling or disabling a data pack changes what its worlds should hold;
+    /// bring them in line now rather than at the next launch. Best effort: the
+    /// toggle has already succeeded and sync problems are only logged.
+    fn sync_world_datapacks_after_toggle(
+        &self,
+        instance_id: &str,
+        dir: &std::path::Path,
+        filename: &str,
+    ) {
+        let Ok(manifest_path) = self.ctx.paths.instance_manifest(instance_id) else {
+            return;
+        };
+        let Ok(manifest) = crate::helpers::read_manifest(&manifest_path) else {
+            return;
+        };
+        if !manifest
+            .datapacks
+            .iter()
+            .any(|entry| entry.filename == filename)
+            || crate::instance_runtime::check_idle(&self.ctx.paths, instance_id).is_err()
+        {
+            return;
+        }
+        for warning in crate::datapack_sync::sync_instance_datapacks(dir, &manifest).warnings {
+            eprintln!("[datapacks] {instance_id}: {warning}");
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -2537,6 +2537,41 @@ element) before the page receives them as a `data:` URL. SVG is accepted
 because it is displayed through `<img>`, where its scripts and external
 references do not run. Anything else is dropped and the image is hidden.
 
+### 20.6 Data Packs Reach Worlds by Sync
+
+Minecraft loads data packs only from `<instance>/saves/<world>/datapacks/`; the instance-root
+`datapacks/` folder is never read. An installed data pack therefore does nothing until it is
+copied into a world. The instance's data pack list (`datapacks/` plus `manifest.datapacks`) stays
+the source of truth, and `datapack_sync` in core mirrors it into worlds:
+
+- **Scope.** Each data pack goes to all worlds (default) or a chosen set of existing worlds. The
+  choice is stored in `manifest.user_preferences.datapack_world_scopes`, keyed by the pack's
+  catalog identity (registry or Modrinth id, else filename) so an update that renames the file
+  keeps it. Absent means all worlds, so existing manifests need no migration. It is a
+  per-instance preference, not content: it may be changed on pack-managed (locked) instances.
+- **Sync.** Every enabled data pack is copied (temp file, hash check, rename) into every
+  in-scope world; copies Agora placed earlier are removed when the pack is disabled, removed or
+  out of scope. A world is a folder under `saves/` containing `level.dat`.
+- **Only Agora's own files.** Each world keeps `<world>/datapacks/.agora-managed.json` (filename
+  and SHA-256 of what Agora placed). A file is removed or replaced only if it is recorded and
+  still has the recorded hash. A same-named file the user placed, or an Agora copy the user
+  edited, is left alone and reported as a warning. The record lives beside the files so a
+  restore of `saves/` brings both back together.
+- **When.** After the pre-launch snapshot and before the process or official-launcher handoff
+  starts; after an install, update or removal commits (after its health gate); after enabling or
+  disabling a data pack; and after a scope change or an explicit "sync now". Pre-launch snapshots
+  exclude `saves/`, so syncing neither invalidates their reuse nor enters them; full snapshots
+  that include `saves/` capture copies and record together, and the next sync reconciles after
+  any restore. Failures are warnings and never block a launch. Sync is skipped while the game
+  runs.
+- **New worlds.** A world created during a session receives the packs at the next sync, normally
+  the next launch (its second session); the UI says so.
+- **Pack instances.** Modpack-shipped data packs are inventoried into `manifest.datapacks` and
+  synced the same way. Sync does not change the instance's declared content, so locking does not
+  block it.
+- **Not covered.** Data packs that are directories, and files Agora did not install, are never
+  synced.
+
 ## 21. EXTENSIBILITY: PLUGINS & CONTENT PROVIDERS
 
 Community plugins and the content-provider interface built on them. Guiding principle (see AGENTS.md): modding is user customization — protect users with warnings and explicit opt-in rather than by blocking.

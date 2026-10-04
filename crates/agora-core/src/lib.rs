@@ -22,6 +22,7 @@ pub mod crash_service;
 pub mod ctx;
 pub mod curated_pack;
 pub mod data_migration;
+pub mod datapack_sync;
 pub mod db;
 pub mod dependency_ops;
 pub mod download;
