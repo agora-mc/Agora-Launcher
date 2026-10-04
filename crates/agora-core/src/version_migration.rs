@@ -1034,14 +1034,34 @@ impl VersionMigrationService {
         target_version: &str,
     ) -> Result<MigrationPlan, MigrationRejection> {
         let checker = crate::migration_report::LiveModrinthChecker::new(self.ctx.clone());
-        plan_migration(
+        let mut plan = plan_migration(
             &self.ctx,
             instance_id,
             target_version,
             &checker,
             self.successors.as_ref(),
         )
-        .await
+        .await?;
+        // Display-only (the fingerprint excludes the report), so it is done
+        // here rather than inside the pure planner.
+        if let Ok(manifest) = self
+            .ctx
+            .paths
+            .instance_manifest(&plan.instance_id)
+            .and_then(|path| crate::helpers::read_manifest(&path))
+        {
+            let installed: Vec<InstalledMod> = manifest
+                .mods
+                .iter()
+                .chain(manifest.resourcepacks.iter())
+                .chain(manifest.shaders.iter())
+                .chain(manifest.datapacks.iter())
+                .cloned()
+                .collect();
+            crate::migration_report::apply_friendly_names(&self.ctx, &installed, &mut plan.report)
+                .await;
+        }
+        Ok(plan)
     }
 
     /// `accept_blockers` is the user's answer to the plan's `blockers` list:

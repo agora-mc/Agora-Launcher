@@ -2282,6 +2282,9 @@ export interface ModMigrationEntry {
   last_updated?: string;
   has_target_build?: boolean;
   successor?: SuccessorInfo;
+  /** The build a migration would install; set only on `ready` entries whose
+   *  checker could name one. */
+  target_build?: TargetBuildInfo;
   /** Set only on `unknown` — why the check could not be made. */
   error_code?: string;
   error_message?: string;
@@ -2299,7 +2302,7 @@ export interface MigrationReport {
   warnings: string[];
 }
 
-/** Can this instance move to a newer Minecraft version, and what breaks?
+/** Can this instance move to another Minecraft version (newer or older), and what breaks?
  *  Read-only — running the migration is a separate, explicit step. */
 export const getMigrationReport = (instanceId: string, targetVersion: string) =>
   invoke<MigrationReport>('get_migration_report', { instanceId, targetVersion });
@@ -2404,6 +2407,7 @@ export interface TargetBuildInfo {
   sha1?: string;
   sha512?: string;
   size?: number;
+  is_prerelease?: boolean;
 }
 
 /** Serialized `version_migration::RejectionReason` (camelCase). */

@@ -184,12 +184,7 @@ fn build_row(
         .unwrap_or_else(|| filename_display_name(&entry.filename));
 
     InstalledContentRow {
-        key: format!(
-            "{}:{}:{}",
-            normalize_content_type(&entry.content_type),
-            entry.filename,
-            entry.sha256
-        ),
+        key: content_key(entry),
         filename: entry.filename.clone(),
         display_name,
         version: entry.version.clone(),
@@ -262,7 +257,18 @@ fn safe_filename(filename: &str) -> bool {
         && !filename.contains('\0')
 }
 
-fn filename_display_name(filename: &str) -> String {
+/// Stable identity of one installed entry; also the key of the Modrinth
+/// project-metadata cache, so every consumer of that cache must build it here.
+pub(crate) fn content_key(entry: &InstalledMod) -> String {
+    format!(
+        "{}:{}:{}",
+        normalize_content_type(&entry.content_type),
+        entry.filename,
+        entry.sha256
+    )
+}
+
+pub(crate) fn filename_display_name(filename: &str) -> String {
     Path::new(filename)
         .file_stem()
         .and_then(|value| value.to_str())
