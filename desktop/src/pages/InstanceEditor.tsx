@@ -125,6 +125,7 @@ import {
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { ImagePlus, Play } from 'lucide-react';
+import { showToast } from '../components/Toast';
 
 function installedModKey(mod: InstalledMod): string {
   return `${mod.filename}:${mod.sha256}`;
@@ -267,12 +268,17 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   detailRef.current = detail;
   const [contentRows, setContentRows] = useState<InstalledContentRow[]>([]);
   const [contentRowsLoaded, setContentRowsLoaded] = useState(false);
+  // True once author/name enrichment has finished (or failed) for this instance.
+  // Until then rows that can still gain details say so instead of "Unknown".
+  const [contentEnriched, setContentEnriched] = useState(false);
   const [contentAuthors, setContentAuthors] = useState<Record<string, string>>({});
   const [contentDisplayNames, setContentDisplayNames] = useState<Record<string, string>>({});
   const [contentIcons, setContentIcons] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const errorBannerRef = useRef<HTMLDivElement>(null);
+  const statusBannerRef = useRef<HTMLDivElement>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [instanceCustomIcon, setInstanceCustomIcon] = useState<string | null>(null);
   const [modCustomIcons, setModCustomIcons] = useState<Record<string, string>>({});
@@ -280,6 +286,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   // Optional dependencies ("recommends" edges between installed mods — the
   // standard-editor mirror of the high-interaction instance editor's optional overlay).
   const [optionalEdges, setOptionalEdges] = useState<DependencyEdge[] | null>(null);
+  const [optionalEdgesLoading, setOptionalEdgesLoading] = useState(true);
   const [optionalDepsOpen, setOptionalDepsOpen] = useState(false);
 
   const { advancedMode } = useAdvancedMode();
@@ -396,8 +403,33 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     setInstanceJavaAllowOverride(result?.row?.java_incompatible_override ?? false);
   };
 
+  // The banners belong to one instance: a status or error from the last one
+  // (an export, an import) must not follow the user to the next.
+  useEffect(() => {
+    setStatus(null);
+    setError(null);
+  }, [instanceId]);
+
+  // The banners sit at the top of the page, so feedback for something done far
+  // down a scrolled list (an export on a snapshot row) can land out of sight.
+  // An error is scrolled into view; a status message is repeated as a toast,
+  // which is always on screen and leaves the user's place alone.
+  useEffect(() => {
+    const banner = error ? errorBannerRef.current : statusBannerRef.current;
+    const message = error ?? status;
+    if (!message || !banner) return;
+    const box = banner.getBoundingClientRect();
+    const pane = banner.closest('main')?.getBoundingClientRect();
+    const top = Math.max(pane?.top ?? 0, 0);
+    const bottom = Math.min(pane?.bottom ?? window.innerHeight, window.innerHeight);
+    if (box.bottom >= top && box.top <= bottom) return;
+    if (error) banner.scrollIntoView?.({ block: 'nearest' });
+    else showToast(message, 'success');
+  }, [error, status]);
+
   useEffect(() => {
     setContentRowsLoaded(false);
+    setContentEnriched(false);
     setContentAuthors({});
     setContentDisplayNames({});
     setContentIcons({});
@@ -446,6 +478,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       if (Array.isArray(metadata)) applyContentMetadata(metadata);
     } catch {
       // Local inventory remains usable when Modrinth is offline or disabled.
+    } finally {
+      setContentEnriched(true);
     }
   };
 
@@ -487,12 +521,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             .then((metadata) => {
               if (!cancelled && Array.isArray(metadata)) applyContentMetadata(metadata);
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => { if (!cancelled) setContentEnriched(true); });
+        } else if (!cancelled) {
+          setContentEnriched(true);
         }
       })
       .catch(() => {
         // Existing manifest data remains usable when the inventory command is
         // unavailable during an older-webview upgrade or test fixture.
+        if (!cancelled) setContentEnriched(true);
       });
     return () => { cancelled = true; };
   }, [instanceId]);
@@ -566,12 +604,16 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   // Optional "recommends" edges refresh whenever the installed mod set changes.
   useEffect(() => {
     let cancelled = false;
+    setOptionalEdgesLoading(true);
     getDependencyGraph(instanceId)
       .then((edges) => {
         if (!cancelled) setOptionalEdges(edges.filter((edge) => edge.requirement === 'optional'));
       })
       .catch(() => {
         if (!cancelled) setOptionalEdges([]);
+      })
+      .finally(() => {
+        if (!cancelled) setOptionalEdgesLoading(false);
       });
     return () => { cancelled = true; };
   }, [instanceId, modMetadataKey]);
@@ -1425,11 +1467,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       }));
   }, [optionalEdges, filenameToDisplayName]);
 
-  const optionalDepsCount = useMemo(() => {
-    const targets = new Set<string>();
-    for (const edge of optionalEdges ?? []) targets.add(edge.to_filename);
-    return targets.size;
-  }, [optionalEdges]);
+  // The button counts exactly the entries the overlay lists, so the two cannot
+  // disagree; it shows a spinner-style placeholder while the graph resolves.
+  const optionalDepsCount = optionalDepsGroups.length;
   const packInstall = getTaskForInstance(instanceId);
   const recoveryBlocked = (
     detail?.snapshot_readiness !== undefined && detail.snapshot_readiness !== 'ready'
@@ -1967,12 +2007,12 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           )}
 
           {error && (
-            <div className="mt-4 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
+            <div ref={errorBannerRef} className="mt-4 rounded-lg bg-destructive p-3 text-sm text-destructive-foreground">
               {error}
             </div>
           )}
           {status && (
-            <div className="mt-4 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
+            <div ref={statusBannerRef} className="mt-4 rounded-lg bg-accent text-accent-foreground p-3 text-sm">
               {status}
             </div>
           )}
@@ -2020,6 +2060,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onApplyUpdate={handleApplyUpdate}
           onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget}
           initialUpdates={cachedUpdates}
+          metadataLoading={!contentEnriched}
           onSetCustomIcon={(content) => {
             const mod = mods.find((entry) => entry.filename === content.filename);
             if (mod) void handleSetModIcon(mod);
@@ -2027,7 +2068,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           onError={setError}
           onDrop={handleDrop}
           extraActions={<>
-            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button">Optional dependencies{optionalDepsCount > 0 ? ` (${optionalDepsCount})` : ''}</button>
+            <button type="button" onClick={() => setOptionalDepsOpen(true)} className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent" title="See which installed mods recommend optional add-ons" data-testid="optional-deps-button" aria-busy={optionalEdgesLoading}>Optional dependencies{optionalEdgesLoading ? <span className="animate-pulse text-muted-foreground"> (…)<span className="sr-only"> loading</span></span> : optionalDepsCount > 0 ? ` (${optionalDepsCount})` : ''}</button>
             <button type="button" onClick={() => onOpenBrowseForInstance?.(instanceId)} disabled={!!row?.is_locked || recoveryBlocked} className="rounded-lg border border-dashed border-border px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50" title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock the instance to add mods.' : undefined}>+ Add Mod</button>
           </>}
           iconForRow={(content) => {
@@ -2038,15 +2079,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} metadataLoading={!contentEnriched} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} metadataLoading={!contentEnriched} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} metadataLoading={!contentEnriched} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -3300,7 +3341,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
               A few installed mods can use extra add-ons. They're never required — this lists the ones that are already here.
             </DialogDescription>
             <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
-              {optionalDepsGroups.length === 0 ? (
+              {optionalEdgesLoading ? (
+                <p className="py-10 text-center text-sm text-muted-foreground" role="status">Checking installed mods…</p>
+              ) : optionalDepsGroups.length === 0 ? (
                 <p className="py-10 text-center text-sm text-muted-foreground">Nothing optional right now.</p>
               ) : (
                 <ul className="space-y-3">
