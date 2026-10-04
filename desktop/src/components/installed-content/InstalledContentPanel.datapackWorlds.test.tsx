@@ -18,6 +18,8 @@ function datapackRow(worldSync: InstalledContentRow['world_sync']): InstalledCon
     installed_at: '2026-01-01T00:00:00Z',
     source: 'modrinth',
     source_label: 'Modrinth',
+    pack_managed: false,
+    installed_as_dependency: false,
     update_pinned: false,
     source_url: null,
     registry_id: null,
@@ -33,9 +35,9 @@ function datapackRow(worldSync: InstalledContentRow['world_sync']): InstalledCon
     curation_status: 'unknown',
     agora_score: null,
     modrinth_downloads: null,
-    metadata_status: 'unknown',
+    metadata_status: 'unavailable',
     world_sync: worldSync,
-  } as InstalledContentRow;
+  };
 }
 
 const baseProps = {
@@ -76,7 +78,7 @@ describe('InstalledContentPanel data pack worlds', () => {
   });
 
   it('shows no world status on other content types', () => {
-    const row = { ...datapackRow(undefined), content_type: 'mod', filename: 'sodium.jar' } as InstalledContentRow;
+    const row: InstalledContentRow = { ...datapackRow(undefined), content_type: 'mod', filename: 'sodium.jar' };
     render(<InstalledContentPanel {...baseProps} contentType="mod" rows={[row]} />);
     expect(screen.queryByTestId('datapack-world-status')).toBeNull();
   });
