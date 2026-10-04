@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
   CircleCheck,
@@ -523,6 +524,18 @@ export function InstallFlow({
     onCancel: handleCancel,
   });
 
+  // A review opens at its title. Anything that scrolled the frame or its body
+  // beforehand (focus moving to a button further down, the guided tour
+  // bringing its target into view) must not leave the header out of sight.
+  useLayoutEffect(() => {
+    if (!awaitingUser) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.scrollTop = 0;
+    const body = panel.querySelector<HTMLElement>('[data-install-review-body]');
+    if (body) body.scrollTop = 0;
+  }, [awaitingUser]);
+
   const renderContent = () => {
     switch (state.phase) {
       case 'resolving':
@@ -639,8 +652,12 @@ export function InstallFlow({
     </div>
   );
 
+  // Both surfaces are portalled to <body>. They are `fixed`, but a fixed box is
+  // positioned against its nearest transformed or filtered ancestor rather than
+  // the window, so rendering in place tied the modal to wherever the page
+  // beneath it happened to be scrolled.
   if (awaitingUser) {
-    return (
+    return createPortal(
       <div className="fixed inset-0 z-[61] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
         <section
           ref={panelRef}
@@ -651,18 +668,19 @@ export function InstallFlow({
           aria-labelledby="install-review-title"
         >
           {header}
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div data-install-review-body className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             {renderContent()}
           </div>
         </section>
-      </div>
+      </div>,
+      document.body,
     );
   }
 
   // z-[61] keeps it above the pack-indicator stacking context when both are
   // visible; pack progress remains readable alongside via vertical stacking.
   // `aria-modal="false"` states that the rest of the app stays live behind it.
-  return (
+  return createPortal(
     <aside
       className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       data-tour="install-review-dialog"
@@ -675,7 +693,8 @@ export function InstallFlow({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {renderContent()}
       </div>
-    </aside>
+    </aside>,
+    document.body,
   );
 }
 

@@ -59,6 +59,28 @@ export function isAnchorDisabled(anchor: TourAnchor): boolean {
 }
 
 /**
+ * Whether the element's box lies inside the window *and* inside every
+ * scrolling ancestor that could be clipping it. A bare viewport check calls a
+ * sidebar button "visible" when its own list has scrolled it out of sight — it
+ * then sits over whatever follows the list (the sidebar footer at large text
+ * sizes), and the spotlight points at the wrong thing.
+ */
+export function isFullyInView(element: Element): boolean {
+  const rect = element.getBoundingClientRect();
+  let top = 0;
+  let bottom = window.innerHeight;
+  for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+    const style = window.getComputedStyle(parent);
+    if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+      const box = parent.getBoundingClientRect();
+      top = Math.max(top, box.top);
+      bottom = Math.min(bottom, box.bottom);
+    }
+  }
+  return rect.top >= top - 1 && rect.bottom <= bottom + 1;
+}
+
+/**
  * The app's motion rule, matching `index.css` and `tour.css`: the appearance
  * setting wins outright, and the OS preference applies unless the user has
  * explicitly asked for full motion.

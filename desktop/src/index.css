@@ -39,6 +39,8 @@
     --accent-foreground: 190 71% 22%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
+    /* Red as *text* on a panel; --destructive is tuned as a fill. */
+    --destructive-text: 0 72% 40%;
     --border: 190 20% 84%;
     --input: 190 20% 84%;
     --ring: 174 52% 48%;
@@ -72,6 +74,7 @@
     --accent-foreground: 174 60% 82%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
+    --destructive-text: 0 90% 80%;
     --border: 217.2 32.6% 18%;
     --input: 217.2 32.6% 18%;
     --ring: 212.7 26.8% 83.9%;
@@ -1272,3 +1275,14 @@ html[data-input-modality="gamepad"] :is(
   0%, 100% { opacity: 0.45; }
   50% { opacity: 0.9; }
 }
+
+/* Error text. `--destructive` is a fill colour: in dark themes it is a deep red
+   that disappears on a dark panel (and on Civic Gold's), and in light themes it
+   is too pale for body-size text. Text uses its own token instead; fills, borders
+   and `text-destructive-foreground` are untouched. */
+.text-destructive,
+.dark .dark\:text-destructive {
+  color: hsl(var(--destructive-text));
+}
+.text-destructive\/90 { color: hsl(var(--destructive-text) / 0.9); }
+.text-destructive\/80 { color: hsl(var(--destructive-text) / 0.8); }

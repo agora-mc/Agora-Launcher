@@ -2445,7 +2445,13 @@ export function Settings({
             )}
           </div>
 
-          {activeTab.footer}
+          {activeTab.footer && (
+            // Pinned to the bottom of the scrolling page: at large text sizes the
+            // sections above push an in-flow footer below the visible area.
+            <div className="sticky -bottom-6 z-10 border-t border-border bg-background py-3">
+              {activeTab.footer}
+            </div>
+          )}
         </div>
       </div>
     </div>
