@@ -441,7 +441,9 @@ def check_instance_manifest_raw() -> None:
                 #       serde_json::from_str(&text)...
                 # across two lines. Matching only the annotation's own line
                 # missed 28 real sites, so scan a small window.
-                if "InstanceManifest" not in line:
+                # A word match: `GameInstanceManifest` (generic instances) is a
+                # different type with no pack backfill, and must not trip this.
+                if not re.search(r"\bInstanceManifest\b", line):
                     continue
                 window = chr(10).join(lines[lineno - 1 : lineno + 2])
                 if "from_str" in window or "from_slice" in window or "from_reader" in window:

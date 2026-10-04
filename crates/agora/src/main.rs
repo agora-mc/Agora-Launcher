@@ -286,6 +286,11 @@ enum GamesCmd {
         #[command(subcommand)]
         action: BaseCmd,
     },
+    /// Manage game instances.
+    Instance {
+        #[command(subcommand)]
+        action: GameInstanceCmd,
+    },
     /// Launch a game from its pinned base.
     Launch {
         /// Base ID of the pinned base to launch.
@@ -296,6 +301,42 @@ enum GamesCmd {
         /// Launch even if the base fails verification.
         #[arg(long)]
         launch_anyway: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GameInstanceCmd {
+    /// Create a game instance from an install.
+    Create {
+        /// Install ID of the game to create an instance for.
+        install_id: String,
+        /// Name of the instance (defaults to game name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional explicit instance ID.
+        #[arg(long)]
+        id: Option<String>,
+        /// Mode for pinned base: linked (default) or copied.
+        #[arg(long, default_value = "linked")]
+        mode: String,
+    },
+    /// List all game instances, Minecraft included.
+    List,
+    /// Launch a game instance.
+    Launch {
+        /// Instance ID to launch.
+        instance_id: String,
+        /// Wait for the game process to exit.
+        #[arg(long)]
+        wait: bool,
+        /// Launch even if the base fails verification.
+        #[arg(long)]
+        launch_anyway: bool,
+    },
+    /// Delete a game instance.
+    Delete {
+        /// Instance ID to delete.
+        instance_id: String,
     },
 }
 
@@ -4418,6 +4459,22 @@ async fn run_command(
                                 println!("Base '{base_id}' removed.");
                             }
                         }
+                        Err(agora_core::game_base::BaseError::InUse { instances }) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("Base '{base_id}' is in use by instance(s): {}", instances.join(", ")),
+                                    "instances": instances,
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!(
+                                    "Error: Base '{base_id}' cannot be removed because it is in use by instance(s): {}",
+                                    instances.join(", ")
+                                );
+                            }
+                            std::process::exit(1);
+                        }
                         Err(agora_core::game_base::BaseError::NotFound(_)) => {
                             if json {
                                 let out = serde_json::json!({
@@ -4432,6 +4489,502 @@ async fn run_command(
                         }
                         Err(e) => {
                             anyhow::bail!("{e}");
+                        }
+                    }
+                }
+            },
+            GamesCmd::Instance { action } => match action {
+                GameInstanceCmd::Create {
+                    install_id,
+                    name,
+                    id,
+                    mode,
+                } => {
+                    let report = agora_core::game_discovery::discover_all();
+                    let inventory = agora_core::game_registry::identify_installs(
+                        &ctx.games,
+                        &report,
+                        &agora_core::game_discovery::file_version::read_file_version,
+                    );
+                    let install = inventory
+                        .installs
+                        .iter()
+                        .find(|i| i.install_id.as_str() == install_id);
+                    let Some(install) = install else {
+                        if json {
+                            let out = serde_json::json!({
+                                "error": format!("Install '{install_id}' not found."),
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Error: Install '{install_id}' not found.");
+                        }
+                        std::process::exit(1);
+                    };
+                    let game_def = ctx.games.game(&install.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", install.game)
+                    })?;
+                    let base_mode: agora_game_api::BaseMode =
+                        mode.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+                    let start = std::time::Instant::now();
+                    let record = match agora_core::game_instance::create(
+                        ctx,
+                        install,
+                        game_def,
+                        name.as_deref().unwrap_or(""),
+                        id,
+                        base_mode,
+                        &|p: agora_core::game_base::BuildProgress| {
+                            use std::sync::atomic::{AtomicU64, Ordering};
+                            static LAST_MS: AtomicU64 = AtomicU64::new(0);
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            let last = LAST_MS.load(Ordering::Relaxed);
+                            if (now.saturating_sub(last) >= 1000 || p.files_done == p.files_total)
+                                && LAST_MS
+                                    .compare_exchange(
+                                        last,
+                                        now,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    )
+                                    .is_ok()
+                                && !json
+                            {
+                                eprintln!(
+                                    "  hashing: {}/{} files, {:.1}/{:.1} GB",
+                                    p.files_done,
+                                    p.files_total,
+                                    p.bytes_hashed as f64 / 1e9,
+                                    p.bytes_total as f64 / 1e9
+                                );
+                            }
+                        },
+                    ) {
+                        Ok(rec) => rec,
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error creating instance: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    };
+
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&record)?);
+                    } else {
+                        println!(
+                            "Created instance '{}' for game '{}'.",
+                            record.instance_id, record.game
+                        );
+                        match &record.base {
+                            agora_game_api::BaseReference::Pinned { id, .. } => {
+                                println!("Pinned base: {id}");
+                            }
+                            agora_game_api::BaseReference::Unpinned { reason, .. } => {
+                                println!("unpinned: {reason}");
+                            }
+                        }
+                        if let Some(agora_core::game_base::BuildOutcome::Built {
+                            manifest,
+                            linked_bytes,
+                            copied_bytes,
+                        }) = &record.build_outcome
+                        {
+                            let linked_gb = (*linked_bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                            let copied_mb = (*copied_bytes as f64) / (1024.0 * 1024.0);
+                            let secs = start.elapsed().as_secs_f64();
+                            println!(
+                                "Built pinned base '{}' ({}) in {:.1}s: {} files, {:.2} GB linked, {:.1} MB copied",
+                                manifest.base_id,
+                                manifest.mode,
+                                secs,
+                                manifest.files.len(),
+                                linked_gb,
+                                copied_mb
+                            );
+                        }
+                    }
+                }
+                GameInstanceCmd::List => {
+                    let (instances, warnings) = agora_core::game_instance::list_all(ctx);
+                    for warning in &warnings {
+                        eprintln!("Warning: {warning}");
+                    }
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "instances": instances,
+                                "warnings": warnings,
+                            }))?
+                        );
+                    } else if instances.is_empty() && warnings.is_empty() {
+                        println!("No instances found.");
+                    } else {
+                        for inst in &instances {
+                            let pinned_str = match inst.pinned {
+                                Some(true) => "pinned",
+                                Some(false) => "unpinned",
+                                None => "-",
+                            };
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                inst.instance_id, inst.game, inst.name, inst.runtime, pinned_str
+                            );
+                        }
+                    }
+                }
+                GameInstanceCmd::Launch {
+                    instance_id,
+                    wait,
+                    launch_anyway,
+                } => {
+                    let in_mc = agora_core::game_instance::is_minecraft_instance(ctx, &instance_id);
+                    if in_mc {
+                        if json {
+                            let out = serde_json::json!({
+                                "error": format!("Instance '{instance_id}' is a Minecraft instance; use 'agora launch {instance_id}' instead."),
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Error: Instance '{instance_id}' is a Minecraft instance; use 'agora launch {instance_id}' instead.");
+                        }
+                        std::process::exit(1);
+                    }
+
+                    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+                        Some(r) => r,
+                        None => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("Instance '{instance_id}' not found."),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: Instance '{instance_id}' not found.");
+                            }
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+
+                    let prepared = match agora_core::game_instance::prepare_launch(
+                        ctx,
+                        &instance_id,
+                        game_def,
+                        launch_anyway,
+                    ) {
+                        Ok(p) => p,
+                        Err(agora_core::game_instance::InstanceError::LaunchError(
+                            agora_core::game_launch::LaunchError::BaseDamaged { problems },
+                        )) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": "base_damaged",
+                                    "instance_id": instance_id,
+                                    "problems": problems,
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Instance '{instance_id}' has base problem(s):");
+                                for p in &problems {
+                                    match &p.kind {
+                                        agora_core::game_base::ProblemKind::Missing => {
+                                            eprintln!("  - {}: missing", p.path);
+                                        }
+                                        agora_core::game_base::ProblemKind::SizeChanged {
+                                            expected,
+                                            actual,
+                                        } => {
+                                            eprintln!(
+                                                "  - {}: size changed (expected {expected}, actual {actual})",
+                                                p.path
+                                            );
+                                        }
+                                        agora_core::game_base::ProblemKind::ContentChanged => {
+                                            eprintln!("  - {}: content changed", p.path);
+                                        }
+                                        agora_core::game_base::ProblemKind::Unexpected => {
+                                            eprintln!("  - {}: unexpected file", p.path);
+                                        }
+                                    }
+                                }
+                            }
+                            std::process::exit(1);
+                        }
+                        Err(agora_core::game_instance::InstanceError::LaunchError(
+                            agora_core::game_launch::LaunchError::NoRecipe,
+                        )) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": "no_recipe",
+                                    "message": "Game definition has no launch recipe.",
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: Game definition has no launch recipe.");
+                            }
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let mut launched = match agora_core::game_launch::launch(&prepared) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Launch failed: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let _ = agora_core::game_instance::record_launch(ctx, &instance_id);
+
+                    let env_map: std::collections::BTreeMap<String, String> = prepared
+                        .resolved
+                        .env
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.to_string_lossy().to_string()))
+                        .collect();
+
+                    let base_id = match &record.base {
+                        agora_game_api::BaseReference::Pinned { id, .. } => Some(id.clone()),
+                        agora_game_api::BaseReference::Unpinned { .. } => None,
+                    };
+
+                    if !wait {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "launched",
+                                "instance_id": instance_id,
+                                "base_id": base_id,
+                                "pid": launched.pid(),
+                                "program": prepared.resolved.program,
+                                "cwd": prepared.resolved.cwd,
+                                "env": env_map,
+                                "warnings": prepared.warnings,
+                            });
+                            println!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            if !prepared.warnings.is_empty() {
+                                eprintln!(
+                                    "Warning: Launching damaged base ({} problem(s)):",
+                                    prepared.warnings.len()
+                                );
+                                for p in &prepared.warnings {
+                                    match &p.kind {
+                                        agora_core::game_base::ProblemKind::Missing => {
+                                            eprintln!("  - {}: missing", p.path);
+                                        }
+                                        agora_core::game_base::ProblemKind::SizeChanged {
+                                            expected,
+                                            actual,
+                                        } => {
+                                            eprintln!(
+                                                "  - {}: size changed (expected {expected}, actual {actual})",
+                                                p.path
+                                            );
+                                        }
+                                        agora_core::game_base::ProblemKind::ContentChanged => {
+                                            eprintln!("  - {}: content changed", p.path);
+                                        }
+                                        agora_core::game_base::ProblemKind::Unexpected => {
+                                            eprintln!("  - {}: unexpected file", p.path);
+                                        }
+                                    }
+                                }
+                            }
+                            println!("Program:           {}", prepared.resolved.program.display());
+                            println!("Working Directory: {}", prepared.resolved.cwd.display());
+                            println!("PID:               {}", launched.pid());
+                            if !prepared.resolved.env.is_empty() {
+                                println!("Environment:");
+                                for (k, v) in &prepared.resolved.env {
+                                    println!("  {k}={}", v.to_string_lossy());
+                                }
+                            }
+                        }
+                    } else {
+                        // A pinned instance is watched and re-verified through its
+                        // base; prepare_launch already loaded that manifest, so a
+                        // failure to read it now is an error, not a fallback.
+                        let base_manifest = match &record.base {
+                            agora_game_api::BaseReference::Pinned { id, .. } => {
+                                let text =
+                                    std::fs::read_to_string(ctx.paths.base_manifest_path(id))?;
+                                Some(serde_json::from_str::<agora_core::game_base::BaseManifest>(
+                                    &text,
+                                )?)
+                            }
+                            agora_game_api::BaseReference::Unpinned { .. } => None,
+                        };
+                        let watch_dir = base_manifest
+                            .as_ref()
+                            .map(|m| m.location.clone())
+                            .unwrap_or_else(|| prepared.resolved.cwd.clone());
+
+                        let exit_report = agora_core::game_launch::wait_for_exit(
+                            &watch_dir,
+                            &mut launched,
+                            std::time::Duration::from_millis(250),
+                            std::time::Duration::from_secs(5),
+                        );
+                        let after = base_manifest.as_ref().map(|m| {
+                            agora_core::game_base::verify_base(
+                                m,
+                                agora_core::game_base::VerifyDepth::Quick,
+                                &|p| game_def.is_declared_write(p),
+                            )
+                        });
+
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "exited",
+                                "instance_id": instance_id,
+                                "base_id": base_id,
+                                "pid": launched.pid(),
+                                "program": prepared.resolved.program,
+                                "cwd": prepared.resolved.cwd,
+                                "env": env_map,
+                                "warnings": prepared.warnings,
+                                "processes": exit_report.processes,
+                                "relaunched_outside": exit_report.relaunched_outside,
+                                "game_writes": after.as_ref().map(|v| &v.game_writes),
+                                "problems": after.as_ref().map(|v| &v.problems),
+                            });
+                            println!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            println!("Program:           {}", prepared.resolved.program.display());
+                            println!("PID:               {}", launched.pid());
+                            println!("Processes running from game directory:");
+                            if exit_report.processes.is_empty() {
+                                println!("  (none)");
+                            } else {
+                                for p in &exit_report.processes {
+                                    println!("  - PID {}: {}", p.pid, p.exe.display());
+                                }
+                            }
+                            if exit_report.relaunched_outside {
+                                eprintln!("Warning: A process with the game's executable name ran outside the game directory (possible relaunch from store).");
+                            }
+                            if let Some(ver) = &after {
+                                if !ver.game_writes.is_empty() {
+                                    println!("Game writes ({}):", ver.game_writes.len());
+                                    for w in &ver.game_writes {
+                                        println!("  - {w}");
+                                    }
+                                }
+                                if ver.problems.is_empty() {
+                                    println!("Base verified clean after launch.");
+                                } else {
+                                    eprintln!(
+                                        "Base has {} problem(s) after launch:",
+                                        ver.problems.len()
+                                    );
+                                    for p in &ver.problems {
+                                        eprintln!("  - {}: {:?}", p.path, p.kind);
+                                    }
+                                }
+                            }
+                        }
+                        if after.as_ref().is_some_and(|v| !v.problems.is_empty()) {
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                GameInstanceCmd::Delete { instance_id } => {
+                    match agora_core::game_instance::delete(ctx, &instance_id) {
+                        Ok(outcome) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "deleted",
+                                    "instance_id": instance_id,
+                                    "orphaned_base": outcome.orphaned_base,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!("Instance '{instance_id}' deleted.");
+                                if let Some(base_id) = outcome.orphaned_base {
+                                    println!("Base '{base_id}' is no longer used by any instance; run 'agora games base remove {base_id}' to remove it.");
+                                }
+                            }
+                        }
+                        Err(agora_core::game_instance::InstanceError::MinecraftInstance(_)) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("Instance '{instance_id}' is a Minecraft instance; use 'agora instance delete {instance_id}' instead."),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: Instance '{instance_id}' is a Minecraft instance; use 'agora instance delete {instance_id}' instead.");
+                            }
+                            std::process::exit(1);
+                        }
+                        Err(agora_core::game_instance::InstanceError::NotFound(_)) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("Instance '{instance_id}' not found."),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: Instance '{instance_id}' not found.");
+                            }
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
                         }
                     }
                 }

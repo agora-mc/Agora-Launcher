@@ -1,11 +1,33 @@
 use crate::{InstallId, LayerId, RelPath, RuntimeIdentity, ToolId};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseMode {
     Linked,
     Copied,
+}
+
+impl std::fmt::Display for BaseMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BaseMode::Linked => write!(f, "linked"),
+            BaseMode::Copied => write!(f, "copied"),
+        }
+    }
+}
+
+impl std::str::FromStr for BaseMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "linked" => Ok(BaseMode::Linked),
+            "copied" => Ok(BaseMode::Copied),
+            other => Err(format!(
+                "invalid base mode '{other}': expected 'linked' or 'copied'"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

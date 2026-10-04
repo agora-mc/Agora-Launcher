@@ -268,6 +268,11 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "base", "list"],
     &["games", "base", "verify"],
     &["games", "base", "remove"],
+    &["games", "instance"],
+    &["games", "instance", "create"],
+    &["games", "instance", "list"],
+    &["games", "instance", "launch"],
+    &["games", "instance", "delete"],
     &["games", "launch"],
 ];
 

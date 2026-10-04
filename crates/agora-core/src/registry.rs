@@ -2047,6 +2047,9 @@ fn collect_installed_registry_ids(
     for entry in entries.flatten() {
         let manifest_path = entry.path().join("instance_manifest.json");
         if let Ok(manifest) = crate::helpers::read_manifest(&manifest_path) {
+            if manifest.game_data.game.as_str() != "minecraft" {
+                continue;
+            }
             for m in &manifest.mods {
                 if let Some(rid) = &m.registry_id {
                     let rid = rid.trim();

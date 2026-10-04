@@ -41,6 +41,19 @@ class GameBoundaryTests(unittest.TestCase):
             function()
         return architecture.EXIT_CODE
 
+    def test_raw_manifest_rule_matches_the_minecraft_type_only(self):
+        for name in ["DESKTOP_SRC", "CLI_SRC", "MC_SRC"]:
+            patcher = patch.object(architecture, name, self.root / name.lower())
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        source = self.core / "instances.rs"
+        source.write_text(
+            "let m: GameInstanceManifest = serde_json::from_str(&text)?;\n", encoding="utf-8")
+        self.assertEqual(self.check(architecture.check_instance_manifest_raw), 0)
+        source.write_text(
+            "let m: InstanceManifest =\n    serde_json::from_str(&text)?;\n", encoding="utf-8")
+        self.assertEqual(self.check(architecture.check_instance_manifest_raw), 1)
+
     def test_allowed_contract_and_absent_minecraft_package(self):
         (self.core / "lib.rs").write_text('pub mod minecraft_runtime;\n', encoding="utf-8")
         self.assertEqual(self.check(architecture.check_game_api_dependencies), 0)

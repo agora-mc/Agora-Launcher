@@ -3909,6 +3909,28 @@ core budget fell to 1,160.
 Per-store user paths (Steam's `Skyrim Special Edition` and GOG's `Skyrim Special Edition GOG`
 under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 needs them.
 
+**Instances for every game, as built (Phase 2, slice 5).** `agora_core::game_instance`, shown by
+`agora games instance create|list|launch|delete`:
+
+- A game instance is a `game_instances` row (the index) and a folder holding a generic v3
+  `instance_manifest.json`: game, runtime identity, base reference, frameworks and layers (empty
+  for now), with no Minecraft section. Minecraft's instances keep their own table and manifest
+  until its package stops depending on core; ids never repeat across the two tables.
+- Whether an instance is pinned comes from its install: readable and relocatable installs pin
+  (building or reusing the one base of that runtime), others are unpinned with the reason recorded
+  and launch from the store's own folder without verification.
+- A base is kept while any instance pins it. "Which instances pin it" fails closed: an unreadable
+  instance table or row means the base is kept, never removed.
+- `list_all` shows every game's instances, Minecraft's through its registered backend, and reports
+  a source it could not read instead of showing it as empty.
+- Minecraft code that scans every instance folder (runtime pruning, the "installed" registry ids)
+  skips manifests of other games. Pruning would otherwise have marked its survey incomplete on the
+  first Skyrim instance and stopped pruning for good.
+- **Measured on the spike machine:** two GOG instances shared the existing base with no rebuild,
+  a Steam instance got the Steam base, removing the shared GOG base was refused naming both
+  instances, one list showed a Minecraft instance beside the three Skyrim ones, and the "Survival
+  Run" instance launched vanilla Skyrim from its base, recorded the launch, and left it clean.
+
 ### 26.13 Phases
 
 Each phase ends with a run on a real Windows machine, because that is where every surprise in the

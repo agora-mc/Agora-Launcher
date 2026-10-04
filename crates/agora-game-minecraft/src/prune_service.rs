@@ -422,6 +422,12 @@ fn collect_reachable_version_ids(
                 continue;
             }
         };
+        // Skip generic manifests for other games (absent means legacy Minecraft).
+        if let Some(game) = value.get("game").and_then(|g| g.as_str()) {
+            if game != "minecraft" {
+                continue;
+            }
+        }
         // Extract the three fields without requiring the full struct so a
         // missing optional field does not fail the whole manifest.
         let value = value.get("minecraft").unwrap_or(&value);
@@ -2248,5 +2254,52 @@ mod tests {
         );
         assert_eq!(asset_report.file_count, 0);
         assert!(report.warnings.iter().any(|w| w.contains("assets")));
+    }
+
+    #[test]
+    fn generic_game_instance_does_not_mark_survey_incomplete() {
+        let tmp = TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+
+        // Minecraft instance
+        write_instance_manifest(&paths, "mc1", "1.21", "vanilla", "");
+
+        // Generic game instance (Skyrim)
+        let skyrim_dir = paths.instance_dir("skyrim-inst").unwrap();
+        fs::create_dir_all(&skyrim_dir).unwrap();
+        let generic_manifest = serde_json::json!({
+            "manifest_version": 3,
+            "game": "skyrim-se",
+            "instance_id": "skyrim-inst",
+            "name": "Skyrim Instance",
+            "base": {
+                "type": "unpinned",
+                "install": {
+                    "install_id": "steam:489830",
+                    "game": "skyrim-se",
+                    "store": "steam",
+                    "install_path": "C:\\Games\\Skyrim",
+                    "executable_path": "C:\\Games\\Skyrim\\SkyrimSE.exe",
+                    "discovered_at": "2026-01-01T00:00:00Z"
+                },
+                "reason": "testing"
+            },
+            "frameworks": [],
+            "layers": { "layers": [] }
+        });
+        fs::write(
+            paths.instance_manifest("skyrim-inst").unwrap(),
+            serde_json::to_vec(&generic_manifest).unwrap(),
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let (reachable, complete) = collect_reachable_version_ids(&paths, &mut warnings);
+        assert!(complete, "generic instance must not mark survey incomplete");
+        assert!(
+            warnings.is_empty(),
+            "generic instance should produce no warnings: {warnings:?}"
+        );
+        assert!(reachable.contains("1.21"));
+        assert_eq!(reachable.len(), 1);
     }
 }

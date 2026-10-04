@@ -171,6 +171,10 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games base verify <base-id> [--full]` | Verify base integrity (quick cheap check by default, full hashes all files) |
 | `agora games base remove <base-id>` | Delete a pinned base and its manifest |
 | `agora games launch <base-id> [--wait] [--launch-anyway]` | Launch a game from its pinned base |
+| `agora games instance create <install-id> [--name N] [--id ID] [--mode linked\|copied]` | Create an instance for a game from an identified install |
+| `agora games instance list` | List all game instances, Minecraft included |
+| `agora games instance launch <id> [--wait] [--launch-anyway]` | Launch a game instance |
+| `agora games instance delete <id>` | Delete a game instance and its folder |
 
 ### Catalog
 

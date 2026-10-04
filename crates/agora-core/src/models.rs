@@ -279,6 +279,8 @@ fn legacy_manifest_version() -> u32 {
     1
 }
 
+pub use crate::game_instance::{GameInstanceManifest, GameInstanceRecord, InstanceSummary};
+
 /// The lightweight JSON manifest that lives in each instance directory.
 #[derive(Debug, Clone, Serialize)]
 pub struct InstanceManifest {

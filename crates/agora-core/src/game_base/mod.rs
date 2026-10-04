@@ -16,34 +16,7 @@ use crate::app_paths::AppPaths;
 use crate::game_discovery::volume::VolumeDetector;
 use crate::game_registry::IdentifiedInstall;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BaseMode {
-    Linked,
-    Copied,
-}
-
-impl std::fmt::Display for BaseMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BaseMode::Linked => write!(f, "linked"),
-            BaseMode::Copied => write!(f, "copied"),
-        }
-    }
-}
-
-impl std::str::FromStr for BaseMode {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "linked" => Ok(BaseMode::Linked),
-            "copied" => Ok(BaseMode::Copied),
-            other => Err(format!(
-                "invalid base mode '{other}': expected 'linked' or 'copied'"
-            )),
-        }
-    }
-}
+pub use agora_game_api::BaseMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FileIdentity {
@@ -77,7 +50,7 @@ pub struct BaseManifest {
     pub skipped: Vec<String>, // source entries not copied (symlinks, junctions), with reasons
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BuildOutcome {
     Built {
@@ -150,6 +123,8 @@ pub enum BaseError {
     LinkUnavailable { reason: String, copied_bytes: u64 },
     #[error("base not found: {0}")]
     NotFound(String),
+    #[error("base is in use by instance(s): {}", instances.join(", "))]
+    InUse { instances: Vec<String> },
     #[error("declared write matches linked file: {path}")]
     DeclaredWriteLinked { path: String },
     #[error("I/O error: {0}")]
@@ -977,7 +952,48 @@ fn is_own_base_folder(paths: &AppPaths, manifest: &BaseManifest, base_id: &str) 
     in_a_bases_root && !overlaps_source
 }
 
+/// The game instances pinned to `base_id`. Fails closed: if the instance table
+/// cannot be read, or a row's base reference cannot be parsed, the answer is an
+/// error rather than "none", because the caller may be about to delete the base.
+pub fn instances_pinning_base(paths: &AppPaths, base_id: &str) -> Result<Vec<String>, BaseError> {
+    let db_path = paths.local_state_db();
+    if !db_path.exists() {
+        // No state database means no instances were ever created here.
+        return Ok(Vec::new());
+    }
+    let unreadable = |e: &dyn std::fmt::Display| {
+        BaseError::Other(format!(
+            "cannot tell which instances use base {base_id}, so it is kept: {e}"
+        ))
+    };
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| unreadable(&e))?;
+    let mut stmt = conn
+        .prepare("SELECT instance_id, base_json FROM game_instances")
+        .map_err(|e| unreadable(&e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| unreadable(&e))?;
+    let mut instances = Vec::new();
+    for row in rows {
+        let (instance_id, base_json) = row.map_err(|e| unreadable(&e))?;
+        let base_ref: agora_game_api::BaseReference = serde_json::from_str(&base_json)
+            .map_err(|e| unreadable(&format!("instance {instance_id}: {e}")))?;
+        if matches!(&base_ref, agora_game_api::BaseReference::Pinned { id, .. } if id == base_id) {
+            instances.push(instance_id);
+        }
+    }
+    instances.sort();
+    Ok(instances)
+}
+
 pub fn remove_base(paths: &AppPaths, base_id: &str) -> Result<(), BaseError> {
+    let pinning = instances_pinning_base(paths, base_id)?;
+    if !pinning.is_empty() {
+        return Err(BaseError::InUse { instances: pinning });
+    }
+
     let manifest_path = paths.base_manifest_path(base_id);
     if !manifest_path.exists() {
         return Err(BaseError::NotFound(base_id.to_string()));
