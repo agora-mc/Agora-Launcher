@@ -32,7 +32,7 @@ type ManagedCoreContext = std::sync::Arc<std::sync::Mutex<agora_core::ctx::CoreC
 
 /// The games this build supports. A refused compiled package is a build bug,
 /// not user input.
-fn build_game_registry() -> std::sync::Arc<agora_core::game_registry::GameRegistry> {
+fn build_game_registry() -> agora_core::game_registry::GameRegistryBuilder {
     let mut builder = agora_core::game_registry::GameRegistry::builder();
     agora_game_minecraft::register_into(&mut builder)
         .expect("build bug: the Minecraft package was refused");
@@ -44,7 +44,7 @@ fn build_game_registry() -> std::sync::Arc<agora_core::game_registry::GameRegist
             agora_game_creation::game_package(),
         )
         .expect("build bug: the Creation Engine package was refused");
-    std::sync::Arc::new(builder.build())
+    builder
 }
 
 /// Return a clone of the initialized core context for adapter commands.

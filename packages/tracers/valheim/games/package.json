@@ -1,0 +1,49 @@
+{
+  "id": "agora-tracer.valheim",
+  "version": "0.1.0",
+  "api_range": ">=0.1, <0.2",
+  "parents": [],
+  "games": [
+    {
+      "id": "valheim",
+      "name": "Valheim",
+      "stores": [
+        {
+          "store": "steam",
+          "product": "892970"
+        }
+      ],
+      "version_sources": [
+        {
+          "kind": "store_record"
+        }
+      ],
+      "deployment": "redirect",
+      "content_rules": [],
+      "native_code_patterns": [],
+      "framework_ids": [],
+      "tool_ids": [],
+      "launch": {
+        "executable": {
+          "root": "runtime",
+          "path": "valheim.exe"
+        },
+        "arguments": [],
+        "environment": {},
+        "working_directory": {
+          "root": "runtime",
+          "path": ""
+        }
+      },
+      "log_paths": [],
+      "crash_paths": [],
+      "user_files": [],
+      "save_paths": [],
+      "linked_archive_patterns": [],
+      "declared_writes": [],
+      "excluded_paths": []
+    }
+  ],
+  "frameworks": [],
+  "tools": []
+}

@@ -3931,6 +3931,50 @@ under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 need
   instances, one list showed a Minecraft instance beside the three Skyrim ones, and the "Survival
   Run" instance launched vanilla Skyrim from its base, recorded the launch, and left it clean.
 
+**Tracers through the plugin path, as built (Phase 2, slice 6).** A plugin holding the new
+`game:define` capability contributes `game_packages`: JSON `PackageDefinition`s, the format the
+compiled Skyrim package uses. At startup core adds the enabled, granted ones to the registry as
+`PackageSource::Plugin`, after the compiled packages, so a community package never displaces a
+compiled one; a package that cannot be read or is refused is skipped with a warning naming it, and
+never stops startup. Five tracers live in `packages/tracers/` and were installed exactly as a user
+installs a plugin. A launch recipe's executable must be in the game's runtime, base or install
+folder: defining a game is not consent to run a program from the user's Documents or AppData.
+
+Measured on the spike machine, every installed reference game was discovered, identified and
+launched vanilla to its main menu by an instance: CK3 unpinned from the Microsoft Store folder
+through `binaries/ck3.exe` with no Paradox launcher (F7, now through Agora); Satisfactory, Cyberpunk
+and Witcher 3 from pinned bases, their store installs unchanged except where noted below. Valheim
+is not installed there; its definition waits for Phase 3. What the tracers taught:
+
+- **Launch what the store launches.** Satisfactory started from its Unreal shipping executable
+  exits before logging: Steam starts the root bootstrap `FactoryGameSteam.exe`, which passes the
+  project. Discovery already records each store's declared launch executable; a definition without
+  a recipe should default to it.
+- **Watch the base, not the PID.** Satisfactory ran as three processes (bootstrap, engine, crash
+  handler) and Cyberpunk as three (game, error reporter, script compiler), all tracked.
+- **Excluded paths give a mostly vanilla base, not a provably vanilla one.** Cyberpunk's base left
+  out 11,751 mod files, but the game still ran redscript: the mod hooks into vanilla paths
+  (`engine/tools`, `engine/config`, the compiled `r6/cache/final.redscripts`), same path, different
+  bytes. Only checking the install against the store's own file list (§26.4, offered before pinning)
+  makes a base provably vanilla.
+- **An undeclared write to a linked file reaches the store install.** Witcher 3 rewrote
+  `content/metadata.store` at startup; the tracer linked all of `content/`, so the write went
+  through the hardlink into the real GOG install (F2's failure mode, re-created by an over-broad
+  pattern; the file is a cache the game rebuilds, and GOG's repair restores it). Now: Witcher 3
+  links only `.w3speech`, `.cache` and `.bundle` (90.5 of 91 GB) and declares `metadata.store`
+  a game write; a declared write excuses a change only to a file the base copied, never to a linked
+  one; and every problem on a linked file says the store install changed too. A launch from the
+  rebuilt base left the GOG install with 0 differences in 1,765 files (that run did not rewrite the
+  cache, so the redirect itself is covered by a test, not this measurement). The protection
+  itself is Phase 3's write layer, decided by Spike 2; until then linking is safe only for files the
+  game never writes, so patterns name file types, not folders.
+- **Debug symbols are data.** Satisfactory ships 14 GB of `.pdb`, which its first base copied
+  (19 GB of copies); its definition now links them, which should leave about 5 GB (not yet
+  rebuilt).
+
+**Phase 2 status.** Its done-when is met on the spike machine except Valheim, which is not installed
+there, and the Minecraft budget, which moved to Phase 5. Phase 2 is closed.
+
 ### 26.13 Phases
 
 Each phase ends with a run on a real Windows machine, because that is where every surprise in the

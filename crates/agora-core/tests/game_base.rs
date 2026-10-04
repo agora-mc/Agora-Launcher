@@ -4,8 +4,8 @@ use std::time::SystemTime;
 use agora_core::app_paths::AppPaths;
 use agora_core::game_base::{
     build_base, evaluate_link_support, get_file_identity, make_base_id, remove_base,
-    sanitize_base_id_part, verify_base, BaseError, BaseMode, BuildOutcome, ProblemKind,
-    VerifyDepth,
+    sanitize_base_id_part, verify_base, BaseError, BaseMode, BuildOptions, BuildOutcome,
+    ProblemKind, VerifyDepth,
 };
 use agora_core::game_discovery::{DiscoveredInstall, InstallKind};
 use agora_core::game_registry::{IdentifiedInstall, RuntimeResolution};
@@ -95,6 +95,7 @@ fn test_definition() -> GameDefinition {
             "Data/*.bik".into(),
         ],
         declared_writes: vec![],
+        excluded_paths: vec![],
     }
 }
 
@@ -299,6 +300,7 @@ fn linked_and_copied_base_build_and_snapshot_rule() {
         &def,
         BaseMode::Linked,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .expect("build linked base succeeds");
@@ -345,6 +347,7 @@ fn linked_and_copied_base_build_and_snapshot_rule() {
         &def,
         BaseMode::Linked,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .expect("rebuild succeeds");
@@ -359,11 +362,11 @@ fn linked_and_copied_base_build_and_snapshot_rule() {
     assert_eq!(snapshot_tree(&install_dir), snapshot_before);
 
     // 3. Quick verify of a fresh base -> no problems
-    let ver = verify_base(&manifest, VerifyDepth::Quick, &|_| false);
+    let ver = verify_base(&manifest, VerifyDepth::Quick, &|_| false, &|_| false);
     assert_eq!(ver.problems, vec![], "fresh base should verify cleanly");
 
     // Full verify of a fresh base -> no problems
-    let ver_full = verify_base(&manifest, VerifyDepth::Full, &|_| false);
+    let ver_full = verify_base(&manifest, VerifyDepth::Full, &|_| false, &|_| false);
     assert_eq!(
         ver_full.problems,
         vec![],
@@ -385,6 +388,7 @@ fn linked_and_copied_base_build_and_snapshot_rule() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .expect("build copied base succeeds");
@@ -439,13 +443,14 @@ fn in_place_store_patch_and_store_update_by_replacement() {
         &def,
         BaseMode::Linked,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
     let manifest = outcome.manifest();
 
     // Verify initially clean
-    let ver0 = verify_base(manifest, VerifyDepth::Quick, &|_| false);
+    let ver0 = verify_base(manifest, VerifyDepth::Quick, &|_| false, &|_| false);
     assert!(ver0.problems.is_empty());
 
     // 1. In-place store patch: append to the source's Data/A.bsa (a hardlink target)
@@ -459,7 +464,7 @@ fn in_place_store_patch_and_store_update_by_replacement() {
         f.write_all(b"CORRUPTED PATCH BY STEAM").unwrap();
     }
 
-    let ver_patch = verify_base(manifest, VerifyDepth::Quick, &|_| false);
+    let ver_patch = verify_base(manifest, VerifyDepth::Quick, &|_| false, &|_| false);
     assert!(!ver_patch.problems.is_empty());
     assert!(
         ver_patch.problems.iter().any(|p| p.path == "Data/A.bsa"
@@ -477,7 +482,7 @@ fn in_place_store_patch_and_store_update_by_replacement() {
     std::fs::rename(&tmp_file, install_dir.join("Data/c.esl")).unwrap();
 
     // Verify base: Data/c.esl in the base is frozen and still completely valid!
-    let bsa_problem_only = verify_base(manifest, VerifyDepth::Quick, &|_| false);
+    let bsa_problem_only = verify_base(manifest, VerifyDepth::Quick, &|_| false, &|_| false);
     assert!(
         !bsa_problem_only
             .problems
@@ -514,6 +519,7 @@ fn modified_time_set_back_detection() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -538,14 +544,14 @@ fn modified_time_set_back_detection() {
     drop(f);
 
     // Quick verify passes because size and modified time match
-    let q_ver = verify_base(manifest, VerifyDepth::Quick, &|_| false);
+    let q_ver = verify_base(manifest, VerifyDepth::Quick, &|_| false, &|_| false);
     assert!(
         !q_ver.problems.iter().any(|p| p.path == "Game.exe"),
         "quick verify skips hashing when size and mtime match"
     );
 
     // Full verify reports ContentChanged
-    let f_ver = verify_base(manifest, VerifyDepth::Full, &|_| false);
+    let f_ver = verify_base(manifest, VerifyDepth::Full, &|_| false, &|_| false);
     assert!(
         f_ver
             .problems
@@ -582,6 +588,7 @@ fn missing_file_and_unexpected_file_detection() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -597,7 +604,7 @@ fn missing_file_and_unexpected_file_detection() {
     )
     .unwrap();
 
-    let ver = verify_base(manifest, VerifyDepth::Quick, &|_| false);
+    let ver = verify_base(manifest, VerifyDepth::Quick, &|_| false, &|_| false);
     assert!(
         ver.problems
             .iter()
@@ -616,7 +623,12 @@ fn missing_file_and_unexpected_file_detection() {
         location: tmp.path().join("non_existent_base_dir"),
         ..manifest.clone()
     };
-    let ver_missing = verify_base(&missing_base_manifest, VerifyDepth::Quick, &|_| false);
+    let ver_missing = verify_base(
+        &missing_base_manifest,
+        VerifyDepth::Quick,
+        &|_| false,
+        &|_| false,
+    );
     assert_eq!(ver_missing.problems.len(), manifest.files.len());
     assert!(ver_missing
         .problems
@@ -660,6 +672,7 @@ fn junction_in_source_is_skipped() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -716,6 +729,7 @@ fn remove_base_deletes_folder_and_manifest_leaves_source_intact() {
         &def,
         BaseMode::Linked,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -789,6 +803,7 @@ fn a_tampered_manifest_can_never_make_remove_delete_the_install() {
         &test_definition(),
         BaseMode::Linked,
         Some(&root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -839,6 +854,7 @@ fn an_interrupted_build_does_not_brick_its_base_id() {
         &def,
         BaseMode::Copied,
         Some(&root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -854,13 +870,16 @@ fn an_interrupted_build_does_not_brick_its_base_id() {
         &def,
         BaseMode::Copied,
         Some(&root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
     assert!(matches!(again, BuildOutcome::Built { .. }));
-    assert!(verify_base(again.manifest(), VerifyDepth::Full, &|_| false)
-        .problems
-        .is_empty());
+    assert!(
+        verify_base(again.manifest(), VerifyDepth::Full, &|_| false, &|_| false)
+            .problems
+            .is_empty()
+    );
     assert_eq!(snapshot_tree(&install_dir), before);
     let leftovers: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
@@ -911,6 +930,7 @@ fn build_base_refuses_declared_write_matching_linked_file() {
         &def,
         BaseMode::Linked,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap_err();
@@ -953,13 +973,19 @@ fn declared_writes_in_verification() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
     let manifest = outcome.manifest();
 
     // Fresh verify -> clean, no game writes
-    let ver_fresh = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    let ver_fresh = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| def.is_declared_write(p),
+        &|_| false,
+    );
     assert!(ver_fresh.problems.is_empty());
     assert!(ver_fresh.game_writes.is_empty());
 
@@ -970,7 +996,12 @@ fn declared_writes_in_verification() {
     )
     .unwrap();
 
-    let ver_changed = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    let ver_changed = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| def.is_declared_write(p),
+        &|_| false,
+    );
     assert!(
         ver_changed.problems.is_empty(),
         "changed declared write must not be a problem"
@@ -980,7 +1011,12 @@ fn declared_writes_in_verification() {
     // 2. Deleted d3dx9_42.log -> game_writes, NOT problems
     std::fs::remove_file(manifest.location.join("d3dx9_42.log")).unwrap();
 
-    let ver_deleted = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    let ver_deleted = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| def.is_declared_write(p),
+        &|_| false,
+    );
     assert!(
         ver_deleted.problems.is_empty(),
         "deleted declared write must not be a problem"
@@ -994,7 +1030,12 @@ fn declared_writes_in_verification() {
     )
     .unwrap();
 
-    let ver_new = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    let ver_new = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| def.is_declared_write(p),
+        &|_| false,
+    );
     // Note: on Windows, d3dx9_42.log and D3DX9_42.LOG refer to the same file.
     assert!(
         ver_new.problems.is_empty(),
@@ -1010,11 +1051,265 @@ fn declared_writes_in_verification() {
 
     // 4. Any other unexpected change IS a problem
     std::fs::write(manifest.location.join("stray.dll"), b"bad dll").unwrap();
-    let ver_with_stray = verify_base(manifest, VerifyDepth::Quick, &|p| def.is_declared_write(p));
+    let ver_with_stray = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| def.is_declared_write(p),
+        &|_| false,
+    );
     assert_eq!(ver_with_stray.problems.len(), 1);
     assert_eq!(ver_with_stray.problems[0].path, "stray.dll");
     assert!(ver_with_stray
         .game_writes
         .iter()
         .any(|w| w.eq_ignore_ascii_case("d3dx9_42.log")));
+}
+
+#[test]
+fn excluded_paths_in_build_and_verify() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("data");
+    let install_dir = tmp.path().join("source_install");
+    let base_root = tmp.path().join("bases_root");
+
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&install_dir).unwrap();
+    let paths = AppPaths::from_root(data_dir);
+    setup_fake_install(&install_dir);
+
+    // Create an excluded file and a normal file
+    let backup_dir = install_dir.join("Data").join("SSEEdit Backups");
+    std::fs::create_dir_all(&backup_dir).unwrap();
+    std::fs::write(backup_dir.join("x.esm.backup"), b"backup data").unwrap();
+    std::fs::write(install_dir.join("Data").join("Skyrim.esm"), b"master esm").unwrap();
+
+    let mut def = test_definition();
+    def.excluded_paths = vec!["Data/SSEEdit Backups/**".into()];
+
+    assert!(def.is_excluded("Data/SSEEdit Backups/x.esm.backup"));
+    assert!(!def.is_excluded("Data/Skyrim.esm"));
+
+    let runtime = RuntimeIdentity {
+        game: GameId::new("skyrim-se").unwrap(),
+        store: StoreId::new("steam").unwrap(),
+        version: "1.0.0".into(),
+        build: None,
+    };
+    let install = make_test_install(&install_dir, runtime);
+
+    // 1. Default build: excluded path is skipped and recorded in manifest.skipped
+    let outcome = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&base_root),
+        BuildOptions {
+            include_excluded: false,
+        },
+        &|_| {},
+    )
+    .unwrap();
+    let manifest = outcome.manifest();
+
+    assert!(
+        manifest
+            .skipped
+            .iter()
+            .any(|s| s.contains("Data/SSEEdit Backups/x.esm.backup")
+                && s.contains("excluded by the game definition")),
+        "excluded file must be in skipped with reason: {:?}",
+        manifest.skipped
+    );
+    assert!(
+        !manifest
+            .location
+            .join("Data/SSEEdit Backups/x.esm.backup")
+            .exists(),
+        "excluded file must not be in base"
+    );
+    assert!(
+        manifest.location.join("Data/Skyrim.esm").exists(),
+        "non-excluded file must be in base"
+    );
+
+    // Verify ignores excluded paths: stray excluded file in base is NOT Unexpected
+    std::fs::create_dir_all(manifest.location.join("Data").join("SSEEdit Backups")).unwrap();
+    std::fs::write(
+        manifest.location.join("Data/SSEEdit Backups/x.esm.backup"),
+        b"stray backup in base",
+    )
+    .unwrap();
+
+    let ver = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| def.is_declared_write(p),
+        &|p| def.is_excluded(p),
+    );
+    assert!(
+        ver.problems.is_empty(),
+        "stray excluded file appearing in base must be ignored by verify, got: {:?}",
+        ver.problems
+    );
+
+    // 2. Build with include_excluded: true -> excluded file IS copied into the base
+    let root2 = tmp.path().join("root2");
+    let paths2 = AppPaths::from_root(root2);
+    paths2.create_required_dirs().unwrap();
+    let base_root2 = tmp.path().join("bases_root2");
+    let outcome_included = build_base(
+        &paths2,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&base_root2),
+        BuildOptions {
+            include_excluded: true,
+        },
+        &|_| {},
+    )
+    .unwrap();
+    let manifest_included = outcome_included.manifest();
+
+    assert!(
+        manifest_included
+            .location
+            .join("Data/SSEEdit Backups/x.esm.backup")
+            .exists(),
+        "excluded file must be in base when include_excluded is true"
+    );
+    assert!(
+        !manifest_included
+            .skipped
+            .iter()
+            .any(|s| s.contains("x.esm.backup")),
+        "excluded file must not be skipped when include_excluded is true"
+    );
+}
+
+/// Default and unfiltered bases of one runtime hold different files, so each
+/// gets its own id, and an unfiltered base still verifies the excluded files
+/// it recorded.
+#[test]
+fn an_unfiltered_base_is_its_own_base_and_verifies_what_it_recorded() {
+    let tmp = TempDir::new().unwrap();
+    let (paths, install_dir, install) = built(&tmp, Some("9"));
+    std::fs::create_dir_all(install_dir.join("Data/SSEEdit Backups")).unwrap();
+    std::fs::write(
+        install_dir.join("Data/SSEEdit Backups/b.esm.backup"),
+        b"old master",
+    )
+    .unwrap();
+    let mut def = test_definition();
+    def.excluded_paths = vec!["Data/SSEEdit Backups/**".into()];
+    let root = tmp.path().join("AgoraBases");
+
+    let filtered = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&root),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap();
+    let unfiltered = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Copied,
+        Some(&root),
+        BuildOptions {
+            include_excluded: true,
+        },
+        &|_| {},
+    )
+    .unwrap();
+    assert!(
+        matches!(unfiltered, BuildOutcome::Built { .. }),
+        "not short-circuited by the filtered base"
+    );
+    assert_ne!(filtered.manifest().base_id, unfiltered.manifest().base_id);
+    let backup = "Data/SSEEdit Backups/b.esm.backup";
+    assert!(!filtered.manifest().files.iter().any(|f| f.path == backup));
+    assert!(unfiltered.manifest().files.iter().any(|f| f.path == backup));
+
+    let excluded = |p: &str| def.is_excluded(p);
+    let base_copy = unfiltered.manifest().location.join(backup);
+    std::fs::write(&base_copy, b"changed!!!").unwrap();
+    let ver = verify_base(
+        unfiltered.manifest(),
+        VerifyDepth::Full,
+        &|_| false,
+        &excluded,
+    );
+    assert!(
+        ver.problems.iter().any(|p| p.path == backup),
+        "a recorded file is verified even if the definition excludes its path: {:?}",
+        ver.problems
+    );
+    // In the filtered base, a stray excluded file is not Unexpected.
+    let stray = filtered.manifest().location.join(backup);
+    std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+    std::fs::write(&stray, b"appeared later").unwrap();
+    let ver = verify_base(
+        filtered.manifest(),
+        VerifyDepth::Quick,
+        &|_| false,
+        &excluded,
+    );
+    assert!(ver.problems.is_empty(), "{:?}", ver.problems);
+}
+
+/// Until the write layer exists, a write to a hardlinked file reaches the store
+/// install. Declaring the file a game write must not excuse that, and the
+/// problem must say the store changed too (measured: Witcher 3 rewrote a
+/// linked `content/metadata.store`).
+#[test]
+fn a_write_through_a_hardlink_is_never_excused_and_names_the_store() {
+    let tmp = TempDir::new().unwrap();
+    let (paths, install_dir, install) = built(&tmp, Some("10"));
+    let mut def = test_definition();
+    def.linked_archive_patterns = vec!["Data/*.bsa".into()];
+    let root = tmp.path().join("AgoraBases");
+    let outcome = build_base(
+        &paths,
+        &install,
+        &def,
+        BaseMode::Linked,
+        Some(&root),
+        BuildOptions::default(),
+        &|_| {},
+    )
+    .unwrap();
+    let manifest = outcome.manifest();
+    assert!(manifest
+        .files
+        .iter()
+        .any(|f| f.path == "Data/A.bsa" && f.linked));
+
+    // The game rewrites the linked archive in place, and the copied exe too.
+    std::fs::write(
+        install_dir.join("Data/A.bsa"),
+        b"REWRITTEN BY THE GAME 1234",
+    )
+    .unwrap();
+    std::fs::write(manifest.location.join("Game.exe"), b"rewritten copy").unwrap();
+    // Later the definition declares both as game writes.
+    let declared = |p: &str| p == "Data/A.bsa" || p == "Game.exe";
+    let ver = verify_base(manifest, VerifyDepth::Full, &declared, &|_| false);
+
+    let bsa = ver
+        .problems
+        .iter()
+        .find(|p| p.path == "Data/A.bsa")
+        .expect("linked write reported");
+    assert!(bsa.linked_to_store);
+    assert!(
+        ver.game_writes.contains(&"Game.exe".to_string()),
+        "a copied file's declared write is excused"
+    );
+    assert!(!ver.problems.iter().any(|p| p.path == "Game.exe"));
 }

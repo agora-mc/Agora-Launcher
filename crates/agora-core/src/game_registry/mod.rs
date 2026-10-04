@@ -23,6 +23,16 @@ pub enum PackageSource {
     Plugin { plugin_id: String },
 }
 
+/// A pure declarative package defined from deserialized JSON data.
+#[derive(Debug, Clone)]
+pub struct DeclarativePackage(pub agora_game_api::PackageDefinition);
+
+impl GamePackage for DeclarativePackage {
+    fn definition(&self) -> &agora_game_api::PackageDefinition {
+        &self.0
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum GameRegistryError {
     #[error("package {package_id} api_range {api_range} does not match GAME_API_VERSION {current_version}")]
@@ -544,6 +554,7 @@ pub mod test_support {
                 save_paths: Vec::new(),
                 linked_archive_patterns: Vec::new(),
                 declared_writes: Vec::new(),
+                excluded_paths: Vec::new(),
             }],
             frameworks: Vec::new(),
             tools: Vec::new(),

@@ -132,7 +132,7 @@ impl CoreContext {
     /// observations that did not prevent initialization.
     pub fn initialize(
         paths: AppPaths,
-        games: Arc<crate::game_registry::GameRegistry>,
+        mut game_builder: crate::game_registry::GameRegistryBuilder,
     ) -> LauncherResult<(Self, Vec<String>)> {
         let mut warnings = Vec::new();
 
@@ -158,6 +158,93 @@ impl CoreContext {
                 message: msg,
             }
         })?;
+
+        // 2b. Load plugin game packages into the registry builder before building it.
+        //     A plugin package never stops startup, but a failure to read
+        //     plugins is said out loud: silently losing games looks like a bug.
+        match crate::db::local_state_connection(&db_path) {
+            Err(e) => warnings.push(format!("Cannot read plugin game packages: {e}")),
+            Ok(conn) => {
+                let plugins_enabled =
+                    crate::db::get_setting(&conn, crate::plugins::PLUGINS_ENABLED_SETTING)
+                        .ok()
+                        .flatten()
+                        .and_then(|val| val.as_bool())
+                        .unwrap_or(false);
+
+                if plugins_enabled {
+                    match crate::plugins::store::list(&conn) {
+                        Err(e) => warnings.push(format!("Cannot read plugin game packages: {e}")),
+                        Ok(records) => {
+                            for record in records {
+                                if !record.enabled
+                                    || crate::plugins::store::is_tombstone(&record)
+                                    || !record
+                                        .granted
+                                        .contains(agora_plugin_api::Capability::GameDefine)
+                                {
+                                    continue;
+                                }
+
+                                for pkg_contrib in &record.manifest.contributions.game_packages {
+                                    // Validated at install, but the stored manifest is
+                                    // user-writable: never read outside the plugin.
+                                    let Ok(rel) = agora_game_api::RelPath::new(&pkg_contrib.path)
+                                    else {
+                                        warnings.push(format!(
+                                    "Plugin {}: game package path {:?} leaves the plugin folder; skipped",
+                                    record.id(),
+                                    pkg_contrib.path
+                                ));
+                                        continue;
+                                    };
+                                    let file_path = record.install_dir.join(rel.as_str());
+                                    let content = match std::fs::read_to_string(&file_path) {
+                                        Ok(c) => c,
+                                        Err(err) => {
+                                            warnings.push(format!(
+                                                "Plugin {}: cannot read game package {}: {err}",
+                                                record.id(),
+                                                file_path.display()
+                                            ));
+                                            continue;
+                                        }
+                                    };
+                                    let package_def: agora_game_api::PackageDefinition =
+                                        match serde_json::from_str(&content) {
+                                            Ok(d) => d,
+                                            Err(err) => {
+                                                warnings.push(format!(
+                                            "Plugin {}: failed to parse game package {}: {err}",
+                                            record.id(),
+                                            file_path.display()
+                                        ));
+                                                continue;
+                                            }
+                                        };
+                                    if let Err(err) = game_builder.add(
+                                        crate::game_registry::PackageSource::Plugin {
+                                            plugin_id: record.id().to_string(),
+                                        },
+                                        Arc::new(crate::game_registry::DeclarativePackage(
+                                            package_def,
+                                        )),
+                                    ) {
+                                        warnings.push(format!(
+                                            "Plugin {}: rejected game package {}: {err}",
+                                            record.id(),
+                                            file_path.display()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let games = Arc::new(game_builder.build());
         warnings.extend(games.recover_at_startup(&paths));
 
         // 3. Verify the cached registry's Ed25519 signature before anything
@@ -448,7 +535,7 @@ mod tests {
             )
             .unwrap();
 
-        let (ctx, warnings) = CoreContext::initialize(paths, Arc::new(games.build())).unwrap();
+        let (ctx, warnings) = CoreContext::initialize(paths, games).unwrap();
         assert!(ctx.paths.root().exists(), "root should exist");
         assert!(
             ctx.paths.local_state_db().exists(),
@@ -526,8 +613,7 @@ mod tests {
         // Create root dir but make local_state.db path unwritable by
         // creating it as a directory beforehand.
         std::fs::create_dir_all(tmp.join("local_state.db")).unwrap();
-        let result =
-            CoreContext::initialize(paths, Arc::new(crate::game_registry::GameRegistry::empty()));
+        let result = CoreContext::initialize(paths, crate::game_registry::GameRegistry::builder());
         assert!(result.is_err(), "should fail when db cannot be created");
         let err = result.unwrap_err();
         assert_eq!(err.code(), "ERR_LOCAL_STATE_FAILED");

@@ -1,26 +1,22 @@
 {
-  "id": "agora.creation-engine",
+  "id": "agora-tracer.cyberpunk-2077",
   "version": "0.1.0",
   "api_range": ">=0.1, <0.2",
   "parents": [],
   "games": [
     {
-      "id": "skyrim-se",
-      "name": "The Elder Scrolls V: Skyrim Special Edition",
+      "id": "cyberpunk-2077",
+      "name": "Cyberpunk 2077",
       "stores": [
         {
-          "store": "steam",
-          "product": "489830"
-        },
-        {
           "store": "gog",
-          "product": "1711230643"
+          "product": "1423049311"
         }
       ],
       "version_sources": [
         {
           "kind": "executable",
-          "path": "SkyrimSE.exe"
+          "path": "bin/x64/Cyberpunk2077.exe"
         },
         {
           "kind": "store_record"
@@ -28,15 +24,13 @@
       ],
       "deployment": "virtual_file_system",
       "content_rules": [],
-      "native_code_patterns": [
-        "Data/SKSE/Plugins/*.dll"
-      ],
+      "native_code_patterns": [],
       "framework_ids": [],
       "tool_ids": [],
       "launch": {
         "executable": {
           "root": "runtime",
-          "path": "SkyrimSE.exe"
+          "path": "bin/x64/Cyberpunk2077.exe"
         },
         "arguments": [],
         "environment": {},
@@ -50,16 +44,20 @@
       "user_files": [],
       "save_paths": [],
       "linked_archive_patterns": [
-        "Data/*.bsa",
-        "Data/*.esm",
-        "Data/*.esl",
-        "Data/*.bik"
+        "archive/pc/content/*.archive",
+        "archive/pc/ep1/*.archive"
       ],
       "declared_writes": [
-        "d3dx9_42.log"
+        "r6/cache/**",
+        "r6/logs/**"
       ],
       "excluded_paths": [
-        "Data/SSEEdit Backups/**"
+        "archive/pc/mod/**",
+        "mods/**",
+        "r6/scripts/**",
+        "r6/tweaks/**",
+        "red4ext/**",
+        "bin/x64/plugins/**"
       ]
     }
   ],

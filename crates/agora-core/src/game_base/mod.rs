@@ -78,6 +78,11 @@ pub struct BuildProgress {
     pub bytes_total: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildOptions {
+    pub include_excluded: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerifyDepth {
@@ -98,6 +103,11 @@ pub enum ProblemKind {
 pub struct BaseProblem {
     pub path: String,
     pub kind: ProblemKind,
+    /// The file is hardlinked to the store install, so a change to it is a
+    /// change to the store install too. Until the write layer of Phase 3
+    /// exists, an undeclared write to a linked file reaches the store.
+    #[serde(default)]
+    pub linked_to_store: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,6 +356,7 @@ fn walk_source_dir(
     source_root: &Path,
     rel_dir: &Path,
     definition: &GameDefinition,
+    options: BuildOptions,
     entries: &mut Vec<SourceEntry>,
     skipped: &mut Vec<String>,
 ) -> Result<(), std::io::Error> {
@@ -377,8 +388,19 @@ fn walk_source_dir(
         }
 
         if meta.is_dir() {
-            walk_source_dir(source_root, &rel_path, definition, entries, skipped)?;
+            walk_source_dir(
+                source_root,
+                &rel_path,
+                definition,
+                options,
+                entries,
+                skipped,
+            )?;
         } else if meta.is_file() {
+            if !options.include_excluded && definition.is_excluded(&rel_str) {
+                skipped.push(format!("{rel_str}: excluded by the game definition"));
+                continue;
+            }
             let is_archive = definition.is_linked_archive(&rel_str);
             entries.push(SourceEntry {
                 rel_path: rel_str,
@@ -431,6 +453,7 @@ pub fn build_base(
     definition: &GameDefinition,
     mode: BaseMode,
     root_override: Option<&Path>,
+    options: BuildOptions,
     progress: &(dyn Fn(BuildProgress) + Send + Sync),
 ) -> Result<BuildOutcome, BaseError> {
     // 1. Runtime must be Identified
@@ -441,7 +464,13 @@ pub fn build_base(
         }
     };
 
-    let base_id = make_base_id(runtime);
+    // An unfiltered base holds different files from the default one for the
+    // same runtime, so it gets its own id rather than whichever was built first.
+    let base_id = if options.include_excluded {
+        format!("{}_unfiltered", make_base_id(runtime))
+    } else {
+        make_base_id(runtime)
+    };
     let manifest_path = paths.base_manifest_path(&base_id);
 
     // 2. Existing manifest -> return without touching anything
@@ -468,6 +497,7 @@ pub fn build_base(
         source_dir,
         Path::new(""),
         definition,
+        options,
         &mut entries,
         &mut skipped,
     )?;
@@ -750,6 +780,7 @@ pub fn verify_base(
     manifest: &BaseManifest,
     depth: VerifyDepth,
     is_declared_write: &dyn Fn(&str) -> bool,
+    is_excluded: &dyn Fn(&str) -> bool,
 ) -> BaseVerification {
     let mut problems = Vec::new();
     let mut game_writes = Vec::new();
@@ -758,11 +789,12 @@ pub fn verify_base(
 
     if !manifest.location.exists() || !manifest.location.is_dir() {
         for file in &manifest.files {
-            if is_declared_write(&file.path) {
+            if is_declared_write(&file.path) && !file.linked {
                 game_writes.push(file.path.clone());
             } else {
                 problems.push(BaseProblem {
                     path: file.path.clone(),
+                    linked_to_store: file.linked,
                     kind: ProblemKind::Missing,
                 });
             }
@@ -784,11 +816,12 @@ pub fn verify_base(
         let meta = match std::fs::symlink_metadata(&file_path) {
             Ok(m) => m,
             Err(_) => {
-                if is_declared_write(&file.path) {
+                if is_declared_write(&file.path) && !file.linked {
                     game_writes.push(file.path.clone());
                 } else {
                     problems.push(BaseProblem {
                         path: file.path.clone(),
+                        linked_to_store: file.linked,
                         kind: ProblemKind::Missing,
                     });
                 }
@@ -797,11 +830,12 @@ pub fn verify_base(
         };
 
         if !meta.is_file() {
-            if is_declared_write(&file.path) {
+            if is_declared_write(&file.path) && !file.linked {
                 game_writes.push(file.path.clone());
             } else {
                 problems.push(BaseProblem {
                     path: file.path.clone(),
+                    linked_to_store: file.linked,
                     kind: ProblemKind::Missing,
                 });
             }
@@ -810,11 +844,12 @@ pub fn verify_base(
 
         let actual_size = meta.len();
         if actual_size != file.size {
-            if is_declared_write(&file.path) {
+            if is_declared_write(&file.path) && !file.linked {
                 game_writes.push(file.path.clone());
             } else {
                 problems.push(BaseProblem {
                     path: file.path.clone(),
+                    linked_to_store: file.linked,
                     kind: ProblemKind::SizeChanged {
                         expected: file.size,
                         actual: actual_size,
@@ -835,20 +870,22 @@ pub fn verify_base(
                     hashed += 1;
                     if let Ok(actual_hash) = hash_file(&file_path) {
                         if actual_hash != file.sha256 {
-                            if is_declared_write(&file.path) {
+                            if is_declared_write(&file.path) && !file.linked {
                                 game_writes.push(file.path.clone());
                             } else {
                                 problems.push(BaseProblem {
                                     path: file.path.clone(),
+                                    linked_to_store: file.linked,
                                     kind: ProblemKind::ContentChanged,
                                 });
                             }
                         }
-                    } else if is_declared_write(&file.path) {
+                    } else if is_declared_write(&file.path) && !file.linked {
                         game_writes.push(file.path.clone());
                     } else {
                         problems.push(BaseProblem {
                             path: file.path.clone(),
+                            linked_to_store: file.linked,
                             kind: ProblemKind::ContentChanged,
                         });
                     }
@@ -858,20 +895,22 @@ pub fn verify_base(
                 hashed += 1;
                 if let Ok(actual_hash) = hash_file(&file_path) {
                     if actual_hash != file.sha256 {
-                        if is_declared_write(&file.path) {
+                        if is_declared_write(&file.path) && !file.linked {
                             game_writes.push(file.path.clone());
                         } else {
                             problems.push(BaseProblem {
                                 path: file.path.clone(),
+                                linked_to_store: file.linked,
                                 kind: ProblemKind::ContentChanged,
                             });
                         }
                     }
-                } else if is_declared_write(&file.path) {
+                } else if is_declared_write(&file.path) && !file.linked {
                     game_writes.push(file.path.clone());
                 } else {
                     problems.push(BaseProblem {
                         path: file.path.clone(),
+                        linked_to_store: file.linked,
                         kind: ProblemKind::ContentChanged,
                     });
                 }
@@ -887,9 +926,12 @@ pub fn verify_base(
         if !manifest_file_set.contains(actual_rel.as_str()) {
             if is_declared_write(&actual_rel) {
                 game_writes.push(actual_rel);
+            } else if is_excluded(&actual_rel) {
+                // Stray excluded files appearing in the base later are ignored, not Unexpected.
             } else {
                 problems.push(BaseProblem {
                     path: actual_rel,
+                    linked_to_store: false,
                     kind: ProblemKind::Unexpected,
                 });
             }

@@ -35,6 +35,10 @@ pub enum LaunchError {
     UnsupportedRoot(String),
     #[error("program missing or not a file: {path}")]
     ProgramMissing { path: PathBuf },
+    #[error(
+        "the launch recipe's executable must be inside the game's runtime, base or install folder"
+    )]
+    ExecutableOutsideGame,
     #[error("game definition has no launch recipe")]
     NoRecipe,
     #[error("base is damaged ({} problem(s))", problems.len())]
@@ -87,6 +91,13 @@ pub struct SessionExitReport {
 // Path and recipe resolution
 // ---------------------------------------------------------------------------
 
+/// Join a `/`-separated relative path one component at a time, so the result
+/// uses the platform's separator throughout.
+fn join_rel(root: &Path, rel: &str) -> PathBuf {
+    rel.split('/')
+        .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
 fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, LaunchError> {
     match path {
         GamePath::Runtime { path } => {
@@ -94,7 +105,7 @@ fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, La
             if rel.is_empty() {
                 Ok(roots.runtime.clone())
             } else {
-                Ok(roots.runtime.join(rel))
+                Ok(join_rel(&roots.runtime, rel))
             }
         }
         GamePath::Base { path, .. } => {
@@ -105,7 +116,7 @@ fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, La
             if rel.is_empty() {
                 Ok(base_root.clone())
             } else {
-                Ok(base_root.join(rel))
+                Ok(join_rel(base_root, rel))
             }
         }
         GamePath::Install { path, .. } => {
@@ -116,7 +127,7 @@ fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, La
             if rel.is_empty() {
                 Ok(install_root.clone())
             } else {
-                Ok(install_root.join(rel))
+                Ok(join_rel(install_root, rel))
             }
         }
         GamePath::UserData { location, path } => {
@@ -133,7 +144,7 @@ fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, La
             if rel.is_empty() {
                 Ok(base)
             } else {
-                Ok(base.join(rel))
+                Ok(join_rel(&base, rel))
             }
         }
         GamePath::Instance { .. } => Err(LaunchError::UnsupportedRoot("instance".to_string())),
@@ -183,6 +194,16 @@ pub fn resolve_recipe(
     recipe: &LaunchRecipe,
     roots: &LaunchRoots,
 ) -> Result<ResolvedLaunch, LaunchError> {
+    // A game's executable lives in the game's own folders. A definition comes
+    // from a package (possibly a community plugin holding `game:define`), and
+    // consenting to "define a game" is not consenting to run any program in
+    // the user's Documents or AppData.
+    if !matches!(
+        recipe.executable,
+        GamePath::Runtime { .. } | GamePath::Base { .. } | GamePath::Install { .. }
+    ) {
+        return Err(LaunchError::ExecutableOutsideGame);
+    }
     let program = resolve_game_path(&recipe.executable, roots)?;
     if !program.is_file() {
         return Err(LaunchError::ProgramMissing { path: program });
@@ -222,9 +243,12 @@ pub fn prepare_base_launch(
         return Err(LaunchError::NoRecipe);
     };
 
-    let ver = verify_base(manifest, VerifyDepth::Quick, &|p| {
-        definition.is_declared_write(p)
-    });
+    let ver = verify_base(
+        manifest,
+        VerifyDepth::Quick,
+        &|p| definition.is_declared_write(p),
+        &|p| definition.is_excluded(p),
+    );
     if !ver.problems.is_empty() && !launch_anyway {
         return Err(LaunchError::BaseDamaged {
             problems: ver.problems,

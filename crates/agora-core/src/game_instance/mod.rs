@@ -178,6 +178,30 @@ pub fn create(
     mode: BaseMode,
     progress: &(dyn Fn(BuildProgress) + Send + Sync),
 ) -> Result<GameInstanceRecord, InstanceError> {
+    create_with_options(
+        ctx,
+        install,
+        definition,
+        name,
+        id,
+        mode,
+        crate::game_base::BuildOptions::default(),
+        progress,
+    )
+}
+
+/// Create a generic game instance from an identified install with build options.
+#[allow(clippy::too_many_arguments)]
+pub fn create_with_options(
+    ctx: &Ctx,
+    install: &IdentifiedInstall,
+    definition: &GameDefinition,
+    name: &str,
+    id: Option<String>,
+    mode: BaseMode,
+    options: crate::game_base::BuildOptions,
+    progress: &(dyn Fn(BuildProgress) + Send + Sync),
+) -> Result<GameInstanceRecord, InstanceError> {
     let runtime = match &install.runtime {
         RuntimeResolution::Identified { runtime, .. } => runtime.clone(),
         RuntimeResolution::Unidentified { reasons } => {
@@ -221,8 +245,9 @@ pub fn create(
     let (base_ref, build_outcome) = if install.discovered.capabilities.executables_readable
         && install.discovered.capabilities.relocatable
     {
-        let outcome =
-            crate::game_base::build_base(&ctx.paths, install, definition, mode, None, progress)?;
+        let outcome = crate::game_base::build_base(
+            &ctx.paths, install, definition, mode, None, options, progress,
+        )?;
         let manifest = outcome.manifest();
         let b_ref = BaseReference::Pinned {
             id: manifest.base_id.clone(),

@@ -46,6 +46,9 @@ pub struct Contributions {
     /// Content sources shown in Browse. Requires `content:provide`.
     #[serde(default)]
     pub content_providers: Vec<crate::provider::ProviderContribution>,
+    /// Game packages defined by this plugin. Requires `game:define`.
+    #[serde(default, alias = "game_packages")]
+    pub game_packages: Vec<GamePackageContribution>,
 }
 
 impl Contributions {
@@ -111,7 +114,15 @@ impl Contributions {
             && self.launch_checks.is_empty()
             && self.replacements.is_empty()
             && self.content_providers.is_empty()
+            && self.game_packages.is_empty()
     }
+}
+
+/// A game package definition contributed by a plugin. Requires `game:define`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GamePackageContribution {
+    pub path: String,
 }
 
 /// Which surface a contribution belongs to.

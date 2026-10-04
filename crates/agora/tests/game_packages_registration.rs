@@ -75,6 +75,68 @@ fn registers_minecraft_and_skyrim_packages_together() {
 }
 
 #[test]
+fn registers_minecraft_skyrim_and_all_tracer_packages_without_conflict() {
+    let mut builder = GameRegistry::builder();
+
+    agora_game_minecraft::register_into(&mut builder)
+        .expect("Minecraft package must register successfully");
+
+    builder
+        .add(
+            PackageSource::Compiled {
+                crate_name: "agora-game-creation".to_string(),
+            },
+            agora_game_creation::game_package(),
+        )
+        .expect("Skyrim package must register successfully");
+
+    let tracers_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/tracers");
+    let mut tracer_count = 0;
+    for entry in std::fs::read_dir(&tracers_dir).unwrap().flatten() {
+        if entry.path().is_dir() {
+            let pkg_path = entry.path().join("games/package.json");
+            let text = std::fs::read_to_string(&pkg_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", pkg_path.display()));
+            let def: agora_game_api::PackageDefinition = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("failed to deserialize {}: {e}", pkg_path.display()));
+            let game_folder = entry.file_name().to_string_lossy().to_string();
+            builder
+                .add(
+                    PackageSource::Plugin {
+                        plugin_id: format!("agora-tracer.{game_folder}"),
+                    },
+                    std::sync::Arc::new(agora_core::game_registry::DeclarativePackage(def)),
+                )
+                .unwrap_or_else(|e| panic!("failed to register tracer {game_folder}: {e}"));
+            tracer_count += 1;
+        }
+    }
+    assert_eq!(tracer_count, 5);
+
+    let registry = builder.build();
+    let games: Vec<_> = registry.games().collect();
+    // minecraft, skyrim-se, satisfactory, cyberpunk-2077, crusader-kings-3, valheim, witcher-3 = 7
+    assert_eq!(games.len(), 7);
+
+    for id_str in [
+        "minecraft",
+        "skyrim-se",
+        "satisfactory",
+        "cyberpunk-2077",
+        "crusader-kings-3",
+        "valheim",
+    ] {
+        let gid = GameId::new(id_str).unwrap();
+        assert!(registry.game(&gid).is_some(), "missing game {id_str}");
+        assert!(
+            registry.source_for(&gid).is_some(),
+            "missing source for {id_str}"
+        );
+    }
+}
+
+#[test]
 #[ignore]
 fn real_machine_discovery_and_inventory() {
     let mut builder = GameRegistry::builder();

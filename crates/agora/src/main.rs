@@ -319,6 +319,9 @@ enum GameInstanceCmd {
         /// Mode for pinned base: linked (default) or copied.
         #[arg(long, default_value = "linked")]
         mode: String,
+        /// Include files excluded by the game definition.
+        #[arg(long)]
+        include_excluded: bool,
     },
     /// List all game instances, Minecraft included.
     List,
@@ -349,6 +352,9 @@ enum BaseCmd {
         /// Mode for the base: linked (default, using hardlinks for archives) or copied (full copy).
         #[arg(long, default_value = "linked")]
         mode: String,
+        /// Include files excluded by the game definition.
+        #[arg(long)]
+        include_excluded: bool,
     },
     /// List all pinned bases.
     List,
@@ -1103,16 +1109,16 @@ async fn main() {
             agora_game_creation::game_package(),
         )
         .expect("build bug: the Creation Engine package was refused");
-    let games = std::sync::Arc::new(registry_builder.build());
 
-    let (ctx, warnings) = match agora_core::ctx::CoreContext::initialize(paths.clone(), games) {
-        Ok(result) => result,
-        Err(error) => {
-            progress.log("error", &format!("Core initialization failed: {error}"));
-            eprintln!("Error initializing Agora core: {error}");
-            std::process::exit(1);
-        }
-    };
+    let (ctx, warnings) =
+        match agora_core::ctx::CoreContext::initialize(paths.clone(), registry_builder) {
+            Ok(result) => result,
+            Err(error) => {
+                progress.log("error", &format!("Core initialization failed: {error}"));
+                eprintln!("Error initializing Agora core: {error}");
+                std::process::exit(1);
+            }
+        };
     let ctx = ctx.with_progress_sink(progress.clone());
     for warning in warnings {
         progress.log("warning", &warning);
@@ -4211,7 +4217,11 @@ async fn run_command(
                 }
             }
             GamesCmd::Base { action } => match action {
-                BaseCmd::Build { install_id, mode } => {
+                BaseCmd::Build {
+                    install_id,
+                    mode,
+                    include_excluded,
+                } => {
                     let report = agora_core::game_discovery::discover_all();
                     let inventory = agora_core::game_registry::identify_installs(
                         &ctx.games,
@@ -4232,12 +4242,14 @@ async fn run_command(
                         mode.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
 
                     let start = std::time::Instant::now();
+                    let options = agora_core::game_base::BuildOptions { include_excluded };
                     let result = agora_core::game_base::build_base(
                         &ctx.paths,
                         install,
                         game_def,
                         base_mode,
                         None,
+                        options,
                         &|p: agora_core::game_base::BuildProgress| {
                             // Hashing a large game takes a while; say so about once a second.
                             use std::sync::atomic::{AtomicU64, Ordering};
@@ -4395,9 +4407,12 @@ async fn run_command(
                         agora_core::game_base::VerifyDepth::Quick
                     };
                     let game_def = ctx.games.game(&manifest.runtime.game);
-                    let ver = agora_core::game_base::verify_base(&manifest, depth, &|p| {
-                        game_def.map(|d| d.is_declared_write(p)).unwrap_or(false)
-                    });
+                    let ver = agora_core::game_base::verify_base(
+                        &manifest,
+                        depth,
+                        &|p| game_def.map(|d| d.is_declared_write(p)).unwrap_or(false),
+                        &|p| game_def.map(|d| d.is_excluded(p)).unwrap_or(false),
+                    );
                     if json {
                         println!("{}", serde_json::to_string_pretty(&ver)?);
                     } else if ver.problems.is_empty() {
@@ -4413,28 +4428,7 @@ async fn run_command(
                         }
                     } else {
                         eprintln!("Base '{base_id}' has {} problem(s):", ver.problems.len());
-                        for p in &ver.problems {
-                            match &p.kind {
-                                agora_core::game_base::ProblemKind::Missing => {
-                                    eprintln!("  - {}: missing", p.path);
-                                }
-                                agora_core::game_base::ProblemKind::SizeChanged {
-                                    expected,
-                                    actual,
-                                } => {
-                                    eprintln!(
-                                        "  - {}: size changed (expected {expected}, actual {actual})",
-                                        p.path
-                                    );
-                                }
-                                agora_core::game_base::ProblemKind::ContentChanged => {
-                                    eprintln!("  - {}: content changed", p.path);
-                                }
-                                agora_core::game_base::ProblemKind::Unexpected => {
-                                    eprintln!("  - {}: unexpected file", p.path);
-                                }
-                            }
-                        }
+                        print_base_problems(&ver.problems);
                         if !ver.game_writes.is_empty() {
                             println!("Game writes ({}):", ver.game_writes.len());
                             for w in &ver.game_writes {
@@ -4499,6 +4493,7 @@ async fn run_command(
                     name,
                     id,
                     mode,
+                    include_excluded,
                 } => {
                     let report = agora_core::game_discovery::discover_all();
                     let inventory = agora_core::game_registry::identify_installs(
@@ -4529,13 +4524,15 @@ async fn run_command(
                         mode.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
 
                     let start = std::time::Instant::now();
-                    let record = match agora_core::game_instance::create(
+                    let options = agora_core::game_base::BuildOptions { include_excluded };
+                    let record = match agora_core::game_instance::create_with_options(
                         ctx,
                         install,
                         game_def,
                         name.as_deref().unwrap_or(""),
                         id,
                         base_mode,
+                        options,
                         &|p: agora_core::game_base::BuildProgress| {
                             use std::sync::atomic::{AtomicU64, Ordering};
                             static LAST_MS: AtomicU64 = AtomicU64::new(0);
@@ -4706,28 +4703,7 @@ async fn run_command(
                                 eprintln!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
                                 eprintln!("Instance '{instance_id}' has base problem(s):");
-                                for p in &problems {
-                                    match &p.kind {
-                                        agora_core::game_base::ProblemKind::Missing => {
-                                            eprintln!("  - {}: missing", p.path);
-                                        }
-                                        agora_core::game_base::ProblemKind::SizeChanged {
-                                            expected,
-                                            actual,
-                                        } => {
-                                            eprintln!(
-                                                "  - {}: size changed (expected {expected}, actual {actual})",
-                                                p.path
-                                            );
-                                        }
-                                        agora_core::game_base::ProblemKind::ContentChanged => {
-                                            eprintln!("  - {}: content changed", p.path);
-                                        }
-                                        agora_core::game_base::ProblemKind::Unexpected => {
-                                            eprintln!("  - {}: unexpected file", p.path);
-                                        }
-                                    }
-                                }
+                                print_base_problems(&problems);
                             }
                             std::process::exit(1);
                         }
@@ -4812,28 +4788,7 @@ async fn run_command(
                                     "Warning: Launching damaged base ({} problem(s)):",
                                     prepared.warnings.len()
                                 );
-                                for p in &prepared.warnings {
-                                    match &p.kind {
-                                        agora_core::game_base::ProblemKind::Missing => {
-                                            eprintln!("  - {}: missing", p.path);
-                                        }
-                                        agora_core::game_base::ProblemKind::SizeChanged {
-                                            expected,
-                                            actual,
-                                        } => {
-                                            eprintln!(
-                                                "  - {}: size changed (expected {expected}, actual {actual})",
-                                                p.path
-                                            );
-                                        }
-                                        agora_core::game_base::ProblemKind::ContentChanged => {
-                                            eprintln!("  - {}: content changed", p.path);
-                                        }
-                                        agora_core::game_base::ProblemKind::Unexpected => {
-                                            eprintln!("  - {}: unexpected file", p.path);
-                                        }
-                                    }
-                                }
+                                print_base_problems(&prepared.warnings);
                             }
                             println!("Program:           {}", prepared.resolved.program.display());
                             println!("Working Directory: {}", prepared.resolved.cwd.display());
@@ -4875,6 +4830,7 @@ async fn run_command(
                                 m,
                                 agora_core::game_base::VerifyDepth::Quick,
                                 &|p| game_def.is_declared_write(p),
+                                &|p| game_def.is_excluded(p),
                             )
                         });
 
@@ -4922,9 +4878,7 @@ async fn run_command(
                                         "Base has {} problem(s) after launch:",
                                         ver.problems.len()
                                     );
-                                    for p in &ver.problems {
-                                        eprintln!("  - {}: {:?}", p.path, p.kind);
-                                    }
+                                    print_base_problems(&ver.problems);
                                 }
                             }
                         }
@@ -5031,28 +4985,7 @@ async fn run_command(
                             eprintln!("{}", serde_json::to_string_pretty(&out)?);
                         } else {
                             eprintln!("Base '{base_id}' has {} problem(s):", problems.len());
-                            for p in &problems {
-                                match &p.kind {
-                                    agora_core::game_base::ProblemKind::Missing => {
-                                        eprintln!("  - {}: missing", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::SizeChanged {
-                                        expected,
-                                        actual,
-                                    } => {
-                                        eprintln!(
-                                            "  - {}: size changed (expected {expected}, actual {actual})",
-                                            p.path
-                                        );
-                                    }
-                                    agora_core::game_base::ProblemKind::ContentChanged => {
-                                        eprintln!("  - {}: content changed", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::Unexpected => {
-                                        eprintln!("  - {}: unexpected file", p.path);
-                                    }
-                                }
-                            }
+                            print_base_problems(&problems);
                         }
                         std::process::exit(1);
                     }
@@ -5127,28 +5060,7 @@ async fn run_command(
                                 "Warning: Launching damaged base ({} problem(s)):",
                                 prepared.warnings.len()
                             );
-                            for p in &prepared.warnings {
-                                match &p.kind {
-                                    agora_core::game_base::ProblemKind::Missing => {
-                                        eprintln!("  - {}: missing", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::SizeChanged {
-                                        expected,
-                                        actual,
-                                    } => {
-                                        eprintln!(
-                                            "  - {}: size changed (expected {expected}, actual {actual})",
-                                            p.path
-                                        );
-                                    }
-                                    agora_core::game_base::ProblemKind::ContentChanged => {
-                                        eprintln!("  - {}: content changed", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::Unexpected => {
-                                        eprintln!("  - {}: unexpected file", p.path);
-                                    }
-                                }
-                            }
+                            print_base_problems(&prepared.warnings);
                         }
                         println!("Program:           {}", prepared.resolved.program.display());
                         println!("Working Directory: {}", prepared.resolved.cwd.display());
@@ -5167,28 +5079,7 @@ async fn run_command(
                                 "Warning: Launching damaged base ({} problem(s)):",
                                 prepared.warnings.len()
                             );
-                            for p in &prepared.warnings {
-                                match &p.kind {
-                                    agora_core::game_base::ProblemKind::Missing => {
-                                        eprintln!("  - {}: missing", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::SizeChanged {
-                                        expected,
-                                        actual,
-                                    } => {
-                                        eprintln!(
-                                            "  - {}: size changed (expected {expected}, actual {actual})",
-                                            p.path
-                                        );
-                                    }
-                                    agora_core::game_base::ProblemKind::ContentChanged => {
-                                        eprintln!("  - {}: content changed", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::Unexpected => {
-                                        eprintln!("  - {}: unexpected file", p.path);
-                                    }
-                                }
-                            }
+                            print_base_problems(&prepared.warnings);
                         }
                         println!("Program:           {}", prepared.resolved.program.display());
                         println!("Working Directory: {}", prepared.resolved.cwd.display());
@@ -5212,6 +5103,7 @@ async fn run_command(
                         &manifest,
                         agora_core::game_base::VerifyDepth::Quick,
                         &|p| game_def.is_declared_write(p),
+                        &|p| game_def.is_excluded(p),
                     );
 
                     if json {
@@ -5251,28 +5143,7 @@ async fn run_command(
                             println!("Base verified clean after launch.");
                         } else {
                             eprintln!("Base has {} problem(s) after launch:", ver.problems.len());
-                            for p in &ver.problems {
-                                match &p.kind {
-                                    agora_core::game_base::ProblemKind::Missing => {
-                                        eprintln!("  - {}: missing", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::SizeChanged {
-                                        expected,
-                                        actual,
-                                    } => {
-                                        eprintln!(
-                                            "  - {}: size changed (expected {expected}, actual {actual})",
-                                            p.path
-                                        );
-                                    }
-                                    agora_core::game_base::ProblemKind::ContentChanged => {
-                                        eprintln!("  - {}: content changed", p.path);
-                                    }
-                                    agora_core::game_base::ProblemKind::Unexpected => {
-                                        eprintln!("  - {}: unexpected file", p.path);
-                                    }
-                                }
-                            }
+                            print_base_problems(&ver.problems);
                         }
                     }
 
@@ -5367,7 +5238,16 @@ fn print_games_list(
     inventory: &agora_core::game_registry::GameInventory,
 ) {
     for game in registry.games() {
-        println!("{} ({})", game.name, game.id);
+        let source_str = match registry.source_for(&game.id) {
+            Some(agora_core::game_registry::PackageSource::Compiled { crate_name }) => {
+                format!(" (compiled: {crate_name})")
+            }
+            Some(agora_core::game_registry::PackageSource::Plugin { plugin_id }) => {
+                format!(" (plugin: {plugin_id})")
+            }
+            None => String::new(),
+        };
+        println!("{} ({}){}", game.name, game.id, source_str);
         if game.stores.is_empty() {
             println!("  Agora manages its installs itself");
             continue;
@@ -5449,6 +5329,33 @@ fn print_games_list(
     );
     for u in &inventory.unsupported {
         println!("  - {}", u.name);
+    }
+}
+
+/// Print base problems one per line, and say plainly when any of them is on a
+/// file hardlinked to the store install: that change happened there too.
+fn print_base_problems(problems: &[agora_core::game_base::BaseProblem]) {
+    use agora_core::game_base::ProblemKind;
+    for p in problems {
+        let what = match &p.kind {
+            ProblemKind::Missing => "missing".to_string(),
+            ProblemKind::SizeChanged { expected, actual } => {
+                format!("size changed (expected {expected}, actual {actual})")
+            }
+            ProblemKind::ContentChanged => "content changed".to_string(),
+            ProblemKind::Unexpected => "unexpected file".to_string(),
+        };
+        let linked = if p.linked_to_store {
+            " [linked: the store install changed too]"
+        } else {
+            ""
+        };
+        eprintln!("  - {}: {what}{linked}", p.path);
+    }
+    if problems.iter().any(|p| p.linked_to_store) {
+        eprintln!(
+            "Warning: a file hardlinked to the store install changed, so the store install changed with it. Until Agora's write layer exists, declare files the game writes in its definition, or use a Copied base. A store's verify/repair restores the original."
+        );
     }
 }
 

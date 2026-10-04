@@ -77,6 +77,11 @@ mod tests {
         assert!(game.is_declared_write("d3dx9_42.log"));
         assert!(game.is_declared_write("D3DX9_42.LOG"));
 
+        assert_eq!(game.excluded_paths, vec!["Data/SSEEdit Backups/**"]);
+        assert!(game.is_excluded("Data/SSEEdit Backups/x.esm.backup"));
+        assert!(game.is_excluded("Data/SSEEdit Backups/sub/x.esm.backup"));
+        assert!(!game.is_excluded("Data/Skyrim.esm"));
+
         // Launch recipe
         let launch = game.launch.as_ref().expect("launch recipe should be Some");
         assert_eq!(

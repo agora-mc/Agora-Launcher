@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use agora_core::app_paths::AppPaths;
-use agora_core::game_base::{build_base, BaseMode};
+use agora_core::game_base::{build_base, BaseMode, BuildOptions};
 use agora_core::game_discovery::{DiscoveredInstall, InstallCapabilities};
 use agora_core::game_launch::{
     launch, prepare_base_launch, processes_running_from, resolve_recipe, wait_for_exit,
@@ -44,6 +44,7 @@ fn make_test_definition(recipe: Option<LaunchRecipe>) -> GameDefinition {
         save_paths: vec![],
         linked_archive_patterns: vec!["Data/*.bsa".into()],
         declared_writes: vec!["d3dx9_42.log".into()],
+        excluded_paths: vec![],
     }
 }
 
@@ -356,6 +357,7 @@ fn prepare_base_launch_no_recipe() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -404,6 +406,7 @@ fn prepare_base_launch_damaged_refusal_and_launch_anyway() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -475,6 +478,7 @@ fn prepare_base_launch_steam_env_only_for_steam() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -505,6 +509,7 @@ fn prepare_base_launch_steam_env_only_for_steam() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -571,6 +576,7 @@ fn launch_and_watch_standin_process() {
         &def,
         BaseMode::Copied,
         Some(&base_root),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -667,6 +673,7 @@ fn only_a_process_started_after_launch_counts_as_relaunched_outside() {
         &def,
         BaseMode::Copied,
         Some(&tmp.path().join("AgoraBases")),
+        BuildOptions::default(),
         &|_| {},
     )
     .unwrap();
@@ -704,4 +711,35 @@ fn only_a_process_started_after_launch_counts_as_relaunched_outside() {
         report.relaunched_outside,
         "a copy started after launch, elsewhere, is a relaunch"
     );
+}
+
+/// Defining a game is not consent to run any program in the user's folders.
+#[test]
+fn a_recipe_executable_outside_the_game_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let roots = agora_core::game_launch::LaunchRoots {
+        runtime: tmp.path().to_path_buf(),
+        install: None,
+        base: None,
+    };
+    for location in [
+        UserDataLocation::Documents,
+        UserDataLocation::RoamingAppData,
+    ] {
+        let recipe = LaunchRecipe {
+            executable: GamePath::UserData {
+                location,
+                path: RelPath::new("evil.exe").unwrap(),
+            },
+            arguments: vec![],
+            environment: BTreeMap::new(),
+            working_directory: GamePath::Runtime {
+                path: RelPath::default(),
+            },
+        };
+        assert!(matches!(
+            agora_core::game_launch::resolve_recipe(&recipe, &roots),
+            Err(LaunchError::ExecutableOutsideGame)
+        ));
+    }
 }

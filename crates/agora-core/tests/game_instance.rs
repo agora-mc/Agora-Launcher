@@ -53,6 +53,7 @@ fn make_test_definition() -> GameDefinition {
         save_paths: vec![],
         linked_archive_patterns: vec!["Data/*.bsa".into()],
         declared_writes: vec![],
+        excluded_paths: vec![],
     }
 }
 
