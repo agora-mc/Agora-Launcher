@@ -44,6 +44,14 @@ const EVENT_CLOSE = '</log4j:Event>';
 const LEGACY = /^\[(\d{1,2}:\d{2}:\d{2})\] \[([^\]/]+)\/([A-Za-z]+)\](?: \[([^\]]*)\])?: ?(.*)$/;
 const STACK_CONTINUATION =
   /^(\s+at\s|\s*Caused by:|\s*Suppressed:|\s*\.\.\. \d+ (more|common frames omitted)|\s+\.\.\. )/;
+/**
+ * Notices the JVM itself prints on stderr that are not failures: "OpenJDK
+ * 64-Bit Server VM warning: ...", "Ignoring option X; support was removed in N"
+ * and plain "WARNING:" lines. Treating every stderr line as an error buries the
+ * real ones in the Errors filter.
+ */
+const JVM_WARNING =
+  /^\s*(WARNING\b|\[WARN)|\bVM warning:|^\s*(OpenJDK|Java HotSpot\(TM\)|Eclipse OpenJ9)\b.*\bwarning\b|^\s*Ignoring option\b/i;
 const EXCEPTION_START = /^(Exception in thread\b|(?:[\w$]+\.)+[\w$]*(?:Exception|Error|Throwable)\b(?::|$))/;
 
 export function normalizeLevel(value: string | undefined): ConsoleLevel | undefined {
@@ -153,7 +161,7 @@ function plainEntry(id: number, raw: RawConsoleLine): ConsoleEntry {
   let level: ConsoleLevel = 'INFO';
   if (text.startsWith('[Agora]')) level = 'WARN';
   else if (EXCEPTION_START.test(text)) level = 'ERROR';
-  else if (raw.stream === 'stderr') level = /^\s*(WARNING|\[WARN)/i.test(text) ? 'WARN' : 'ERROR';
+  else if (raw.stream === 'stderr') level = JVM_WARNING.test(text) ? 'WARN' : 'ERROR';
   return { id, level, stream: raw.stream, message: text, rawLines: [text], structured: false };
 }
 
