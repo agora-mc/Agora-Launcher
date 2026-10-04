@@ -9,6 +9,37 @@ use crate::models::InstanceManifest;
 use std::io::Write;
 use std::path::Path;
 
+/// The `modrinth.index.json` `dependencies` key for a loader, or `None` when
+/// the format has no key for it (vanilla, or an unrecognised loader).
+fn mrpack_dependency_key(loader: &str) -> Option<&'static str> {
+    match loader.trim().to_ascii_lowercase().as_str() {
+        "fabric" => Some("fabric-loader"),
+        "quilt" => Some("quilt-loader"),
+        "forge" => Some("forge"),
+        "neoforge" => Some("neoforge"),
+        _ => None,
+    }
+}
+
+/// Streamed SHA-1 and SHA-512 of a file, or `None` if it cannot be read.
+fn sha1_and_sha512(path: &Path) -> Option<(String, String)> {
+    use sha2::Digest;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut sha1 = sha1::Sha1::new();
+    let mut sha512 = sha2::Sha512::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        sha1.update(&buf[..n]);
+        sha512.update(&buf[..n]);
+    }
+    Some((hex::encode(sha1.finalize()), hex::encode(sha512.finalize())))
+}
+
 /// Export an instance as a shareable pack file.
 ///
 /// - `format == "json"`: a custom `.agora-pack.json` manifest.
@@ -111,9 +142,17 @@ pub async fn export_instance_pack(
 
                     match stream_jar_into_zip(&mut zip, opts, &entry_name, &p) {
                         Ok((sha, size)) => {
+                            // The Modrinth format (and Agora's own importer)
+                            // verifies bundled files by sha1/sha512; sha256
+                            // alone made the pack impossible to re-import.
+                            let mut hashes = serde_json::json!({ "sha256": sha });
+                            if let Some((sha1, sha512)) = sha1_and_sha512(&p) {
+                                hashes["sha1"] = sha1.into();
+                                hashes["sha512"] = sha512.into();
+                            }
                             files_meta.push(serde_json::json!({
                                 "path": entry_name,
-                                "hashes": { "sha256": sha },
+                                "hashes": hashes,
                                 "downloads": [],
                                 "fileSize": size,
                             }));
@@ -134,10 +173,16 @@ pub async fn export_instance_pack(
                     "minecraft".to_string(),
                     serde_json::Value::String(manifest.minecraft_version.clone()),
                 );
-                deps.insert(
-                    manifest.loader.clone(),
-                    serde_json::Value::String(manifest.loader_version.clone()),
-                );
+                // The Modrinth spec keys the loader as `fabric-loader` /
+                // `quilt-loader` (not the bare loader name) and has no key for
+                // vanilla at all. Writing the bare name made a re-import
+                // produce an instance with no loader.
+                if let Some(key) = mrpack_dependency_key(&manifest.loader) {
+                    deps.insert(
+                        key.to_string(),
+                        serde_json::Value::String(manifest.loader_version.clone()),
+                    );
+                }
                 // `versionId` identifies the *pack* version, not the loader's.
                 // Writing `loader_version` here mislabels every exported pack
                 // for any launcher that reads it, and since import now records
@@ -402,5 +447,87 @@ mod tests {
             "1.4.2",
             "the human version is preferred over the opaque id when both are known"
         );
+    }
+
+    fn manifest_with_jar(loader: &str, loader_version: &str, with_mod: bool) -> InstanceManifest {
+        let mut manifest = export_fixture(None);
+        manifest.minecraft_version = "26.1.2".into();
+        manifest.loader = loader.into();
+        manifest.loader_version = loader_version.into();
+        if with_mod {
+            manifest.mods = vec![crate::models::InstalledMod {
+                provider: None,
+                update_pinned: false,
+                pack_managed: false,
+                installed_as_dependency: false,
+                filename: "test.jar".into(),
+                registry_id: None,
+                modrinth_id: None,
+                source: "test".into(),
+                source_url: None,
+                version: None,
+                sha256: "00".repeat(32),
+                installed_at: String::new(),
+                java_packages: vec![],
+                mod_jar_id: None,
+                depends_on: vec![],
+                optional_deps: vec![],
+                incompatible_deps: vec![],
+                provided_mod_ids: vec![],
+                enabled: true,
+                content_type: "mod".into(),
+            }];
+        }
+        manifest
+    }
+
+    /// Regression: the exporter keyed the loader by its bare name ("fabric"),
+    /// which the importer (and every other Modrinth-format reader) ignores, so
+    /// a round-trip dropped the loader and left a vanilla instance full of mods.
+    #[tokio::test]
+    async fn mrpack_round_trip_keeps_loader_and_version() {
+        for (loader, version, spec_key) in [
+            ("fabric", "0.19.5", Some("fabric-loader")),
+            ("quilt", "0.27.1", Some("quilt-loader")),
+            ("forge", "52.0.1", Some("forge")),
+            ("neoforge", "21.1.77", Some("neoforge")),
+            ("vanilla", "", None),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let instance_dir = tmp.path().join("instance");
+            std::fs::create_dir_all(instance_dir.join("mods")).unwrap();
+            std::fs::write(instance_dir.join("mods").join("test.jar"), b"fake jar").unwrap();
+            let manifest = manifest_with_jar(loader, version, loader != "vanilla");
+
+            let exported = export_instance_pack(
+                &instance_dir,
+                &manifest,
+                &tmp.path().join("exports"),
+                "mrpack",
+            )
+            .await
+            .unwrap();
+
+            let deps = read_exported_index(&exported)["dependencies"].clone();
+            assert_eq!(deps["minecraft"], "26.1.2");
+            match spec_key {
+                Some(key) => assert_eq!(deps[key], version, "{loader}: {deps}"),
+                None => assert_eq!(
+                    deps.as_object().unwrap().len(),
+                    1,
+                    "vanilla must not write a loader key: {deps}"
+                ),
+            }
+
+            let imported =
+                crate::import::import_mrpack(Path::new(&exported), &tmp.path().join("in"), false)
+                    .unwrap();
+            assert_eq!(imported.minecraft_version, "26.1.2");
+            assert_eq!(
+                imported.loader,
+                if loader == "vanilla" { "" } else { loader }
+            );
+            assert_eq!(imported.loader_version, version, "{loader}");
+        }
     }
 }

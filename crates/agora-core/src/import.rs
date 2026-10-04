@@ -824,6 +824,20 @@ pub fn import_mrpack_with_progress(
         }
 
         let mods = inventory_pack_content(target_dir, "mods", "mod", &modrinth_files)?;
+        // The Modrinth format requires the loader as a dependency. A pack that
+        // ships mod JARs without one would import as a vanilla instance that
+        // silently ignores every mod, so refuse it instead.
+        if loader.is_empty()
+            && mods.iter().any(|m| {
+                let name = m.filename.to_ascii_lowercase();
+                name.ends_with(".jar") || name.ends_with(".jar.disabled")
+            })
+        {
+            return Err(import_error(
+                "ERR_IMPORT_MISSING_LOADER",
+                "This pack contains mods but its modrinth.index.json names no mod loader                  (expected a fabric-loader, quilt-loader, forge or neoforge dependency),                  so Agora cannot tell which loader the mods need.",
+            ));
+        }
         let resourcepacks =
             inventory_pack_content(target_dir, "resourcepacks", "resourcepack", &modrinth_files)?;
         let shaders = inventory_pack_content(target_dir, "shaderpacks", "shader", &modrinth_files)?;
@@ -951,10 +965,20 @@ fn parse_mrpack_deps(deps: &Option<serde_json::Value>) -> (String, String, Strin
         .to_string();
     let loader;
     let loader_version;
-    if let Some(v) = deps_map.get("fabric-loader").and_then(|v| v.as_str()) {
+    // Bare `fabric` / `quilt` are not spec keys, but earlier Agora exports
+    // wrote them; accept them so those packs still import with their loader.
+    if let Some(v) = deps_map
+        .get("fabric-loader")
+        .or_else(|| deps_map.get("fabric"))
+        .and_then(|v| v.as_str())
+    {
         loader = "fabric".to_string();
         loader_version = v.to_string();
-    } else if let Some(v) = deps_map.get("quilt-loader").and_then(|v| v.as_str()) {
+    } else if let Some(v) = deps_map
+        .get("quilt-loader")
+        .or_else(|| deps_map.get("quilt"))
+        .and_then(|v| v.as_str())
+    {
         loader = "quilt".to_string();
         loader_version = v.to_string();
     } else if let Some(v) = deps_map.get("forge").and_then(|v| v.as_str()) {
@@ -2567,6 +2591,60 @@ mod tests {
         assert_eq!(mc, "1.20.1");
         assert_eq!(loader, "fabric");
         assert_eq!(lv, "0.15.0");
+    }
+
+    #[test]
+    fn test_parse_mrpack_deps_accepts_legacy_bare_loader_keys() {
+        // Earlier Agora exports wrote `fabric` / `quilt` instead of the
+        // spec's `fabric-loader` / `quilt-loader`.
+        let (_, loader, lv) = parse_mrpack_deps(&Some(
+            serde_json::json!({"minecraft": "26.1.2", "fabric": "0.19.5"}),
+        ));
+        assert_eq!((loader.as_str(), lv.as_str()), ("fabric", "0.19.5"));
+        let (_, loader, lv) = parse_mrpack_deps(&Some(
+            serde_json::json!({"minecraft": "1.21", "quilt": "0.27.1"}),
+        ));
+        assert_eq!((loader.as_str(), lv.as_str()), ("quilt", "0.27.1"));
+    }
+
+    fn write_mrpack_with_jar(path: &Path, dependencies: &str) {
+        let sha1 = crate::download::sha1_hex(b"jar");
+        let file = fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("modrinth.index.json", zip::write::FileOptions::default())
+            .unwrap();
+        writer
+            .write_all(
+                format!(
+                    r#"{{"name":"jars","dependencies":{dependencies},"files":[{{"path":"mods/a.jar","hashes":{{"sha1":"{sha1}"}},"downloads":[],"fileSize":3}}]}}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        writer
+            .start_file("mods/a.jar", zip::write::FileOptions::default())
+            .unwrap();
+        writer.write_all(b"jar").unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn test_mrpack_with_mods_but_no_loader_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mrpack = tmp.path().join("jars.mrpack");
+        write_mrpack_with_jar(&mrpack, r#"{"minecraft":"1.21"}"#);
+        let instances_root = tmp.path().join("instances");
+        let err = import_mrpack(&mrpack, &instances_root, false).unwrap_err();
+        assert_eq!(err.code(), "ERR_IMPORT_MISSING_LOADER");
+        // Nothing half-imported is left behind.
+        assert!(!instances_root.join("jars").exists());
+
+        // The same pack with a loader imports.
+        write_mrpack_with_jar(&mrpack, r#"{"minecraft":"1.21","fabric-loader":"0.16.0"}"#);
+        let result = import_mrpack(&mrpack, &instances_root, false).unwrap();
+        assert_eq!(result.loader, "fabric");
+        assert_eq!(result.imported_mods, 1);
     }
 
     #[test]
