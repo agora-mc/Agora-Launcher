@@ -448,6 +448,26 @@ export interface InstalledContentRow {
   agora_score: number | null;
   modrinth_downloads: number | null;
   metadata_status: MetadataStatus;
+  /** Data pack rows only: which worlds the pack is synced into. */
+  world_sync?: DatapackWorldStatus | null;
+}
+
+/** Where a data pack goes: Minecraft only loads data packs from inside each world. */
+export interface DatapackWorldStatus {
+  all_worlds: boolean;
+  /** Chosen world folders; only meaningful when `all_worlds` is false. */
+  selected_worlds: string[];
+  /** Every existing world of the instance. */
+  available_worlds: string[];
+  /** How many existing worlds the pack is synced into. */
+  covered_worlds: number;
+}
+
+export interface DatapackSyncReport {
+  worlds: number;
+  copied: number;
+  removed: number;
+  warnings: string[];
 }
 
 export interface InstalledContentMetadata {
@@ -1295,6 +1315,16 @@ export const disableInstanceMod = (instanceId: string, filename: string) =>
   invoke<void>('disable_instance_mod', { instanceId, filename });
 export const enableInstanceMod = (instanceId: string, filename: string) =>
   invoke<void>('enable_instance_mod', { instanceId, filename });
+
+/** Choose which worlds a data pack goes to (`null` = all worlds) and sync now. */
+export const setDatapackWorlds = (instanceId: string, filename: string, worlds: string[] | null) =>
+  invoke<DatapackSyncReport>('set_datapack_worlds', { instanceId, filename, worlds });
+/** Existing worlds of an instance (folders under saves/ with a level.dat). */
+export const listInstanceWorlds = (instanceId: string) =>
+  invoke<string[]>('list_instance_worlds', { instanceId });
+/** Copy the enabled data packs into the instance's worlds now. */
+export const syncInstanceDatapacks = (instanceId: string) =>
+  invoke<DatapackSyncReport>('sync_instance_datapacks', { instanceId });
 
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
   invoke<string>('export_instance_pack', { instanceId, format });

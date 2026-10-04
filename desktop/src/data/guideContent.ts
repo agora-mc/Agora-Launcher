@@ -582,6 +582,16 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Disabling is useful when diagnosing a conflict or keeping optional features available for later. Relaunch after changing enabled state; Minecraft cannot unload most mods from a running game.',
         },
         {
+          title: 'How data packs reach your worlds',
+          body: 'Minecraft only loads data packs from inside each world, not from the instance. Agora keeps the Data Packs list of the instance as the source of truth and copies every enabled data pack into your worlds: before each launch, and right after you install, remove, enable, disable, or change a data pack.',
+          bullets: [
+            'By default a data pack goes to all worlds. Select Worlds… on its row to pick specific worlds instead.',
+            'The row shows where it is, for example All worlds (3) or 2 of 3 worlds.',
+            'A world created while you play gets your data packs at the next sync, so a brand-new world has them from its second session. Select Sync now on the Data Packs tab to add them sooner.',
+            'Agora only ever removes or replaces data pack files it placed itself. If a world already has a different file with the same name, Agora leaves it alone and says so.',
+          ],
+        },
+        {
           title: 'Import a local file',
           body: 'Use Import Mod or the drop zone for a local JAR. Use the corresponding content picker for supported resource packs, shaders, and data packs. Confirm the file came from a trusted source and matches the instance.',
           callout: {

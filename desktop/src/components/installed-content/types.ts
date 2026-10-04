@@ -79,6 +79,10 @@ export interface InstalledContentPanelProps {
   onUpdateAll?: (updates: UpdateInfo[]) => void;
   /** Pin or unpin a row against updates. */
   onTogglePin?: (row: InstalledContentRow, pinned: boolean) => void;
+  /** Data packs: choose which worlds a row is synced into. */
+  onChooseWorlds?: (row: InstalledContentRow) => void;
+  /** Data packs: copy the enabled packs into the instance's worlds now. */
+  onSyncWorlds?: () => void;
   /** Open the "why is this mod here?" trace for a row. */
   onExplainPresence?: (row: InstalledContentRow) => void;
   /** User-defined groups for this instance, as group name -> filenames. */

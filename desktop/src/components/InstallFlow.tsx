@@ -33,6 +33,7 @@ import {
 } from '../lib/tauri';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
+import { DatapackWorldsNote } from './DatapackWorldsNote';
 import { useControllerLayer } from '@/features/controller/useControllerLayer';
 import { cn } from '@/lib/utils';
 
@@ -914,6 +915,9 @@ function ReviewView({
               </li>
             ))}
           </ul>
+        )}
+        {operationArtifacts(plan.operation).some((artifact) => artifact.metadata.contentType === 'datapack') && (
+          <DatapackWorldsNote instanceId={plan.intent.targetInstance} />
         )}
       </section>
 

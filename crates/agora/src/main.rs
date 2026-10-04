@@ -636,6 +636,26 @@ enum ModsCmd {
         instance: String,
         file: String,
     },
+    /// Choose which worlds a data pack is copied into (default: all worlds).
+    Worlds {
+        instance: String,
+        /// The installed data pack file, for example veinminer-1.3.4.zip.
+        file: String,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            conflicts_with = "all",
+            required_unless_present = "all",
+            help = "Only these world folders (comma-separated)"
+        )]
+        worlds: Option<Vec<String>>,
+        #[arg(long, help = "Sync into every world, including ones created later")]
+        all: bool,
+    },
+    /// Copy the enabled data packs into the instance's worlds now.
+    SyncDatapacks {
+        instance: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2727,6 +2747,21 @@ async fn run_command(
                     println!("Disabled {} in '{}'", file, instance);
                 }
             }
+            ModsCmd::Worlds {
+                instance,
+                file,
+                worlds,
+                all,
+            } => {
+                let worlds = if all { None } else { worlds };
+                let report =
+                    agora_core::datapack_sync::set_world_scope(ctx, &instance, &file, worlds)?;
+                print_datapack_sync(&instance, &report, json)?;
+            }
+            ModsCmd::SyncDatapacks { instance } => {
+                let report = agora_core::datapack_sync::sync_instance(ctx, &instance)?;
+                print_datapack_sync(&instance, &report, json)?;
+            }
             ModsCmd::UpdateAll {
                 instance,
                 include_optional,
@@ -4083,6 +4118,35 @@ async fn run_command(
     Ok(())
 }
 
+fn print_datapack_sync(
+    instance: &str,
+    report: &agora_core::datapack_sync::DatapackSyncReport,
+    json: bool,
+) -> anyhow::Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "synced",
+                "instanceId": instance,
+                "worlds": report.worlds,
+                "copied": report.copied,
+                "removed": report.removed,
+                "warnings": report.warnings,
+            })
+        );
+    } else {
+        println!(
+            "Data packs in '{instance}': {} world(s), {} added or updated, {} removed.",
+            report.worlds, report.copied, report.removed
+        );
+        for warning in &report.warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
+    Ok(())
+}
+
 /// Resolve optional deps policy from CLI flags.
 fn resolve_optional_deps(
     include: Option<String>,
@@ -5217,6 +5281,29 @@ mod tests {
                 action: ModsCmd::Enable { .. }
             }
         ));
+    }
+
+    #[test]
+    fn mod_worlds_parses_a_chosen_set_or_all() {
+        let cli = Cli::try_parse_from([
+            "agora", "mod", "worlds", "inst", "vm.zip", "--worlds", "A,B",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Mods {
+                action: ModsCmd::Worlds { worlds, all, .. },
+            } => {
+                assert_eq!(worlds, Some(vec!["A".to_string(), "B".to_string()]));
+                assert!(!all);
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert!(Cli::try_parse_from(["agora", "mod", "worlds", "inst", "vm.zip", "--all"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["agora", "mod", "worlds", "inst", "vm.zip"]).is_err(),
+            "choosing nothing is not a scope"
+        );
+        assert!(Cli::try_parse_from(["agora", "mod", "sync-datapacks", "inst"]).is_ok());
     }
 
     #[test]

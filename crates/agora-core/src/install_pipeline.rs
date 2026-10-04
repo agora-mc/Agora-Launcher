@@ -1704,6 +1704,8 @@ impl InstallPipeline {
                 // loader switch, or manual rollback) instead of silently
                 // reverting to the pre-install snapshot.
                 cleanup_staging_dir(scheduler, &staging_dir).await;
+                let mut warnings = plan.warnings.clone();
+                warnings.extend(sync_world_datapacks_after_install(scheduler, instance_dir).await);
                 reporter.report(ProgressEvent {
                     plan_id: plan.fingerprint.clone(),
                     phase: ProgressPhase::Done,
@@ -1716,13 +1718,15 @@ impl InstallPipeline {
                 return InstallOutcome::HealthRollback {
                     health_report: report,
                     snapshot_id: snapshot.id,
-                    warnings: plan.warnings.clone(),
+                    warnings,
                 };
             }
             HealthOutcome::Completed { report }
         };
 
         cleanup_staging_dir(scheduler, &staging_dir).await;
+        let mut warnings = plan.warnings.clone();
+        warnings.extend(sync_world_datapacks_after_install(scheduler, instance_dir).await);
         reporter.report(ProgressEvent {
             plan_id: plan.fingerprint.clone(),
             phase: ProgressPhase::Done,
@@ -1746,7 +1750,7 @@ impl InstallPipeline {
                     _ => None,
                 })
                 .collect(),
-            warnings: plan.warnings.clone(),
+            warnings,
             health,
             snapshot_id: snapshot.id,
         }
@@ -1773,6 +1777,31 @@ where
             .map_err(|error| format!("{label} worker failed: {error}"))?,
         None => task(),
     }
+}
+
+/// Data packs reach worlds by sync (MASTER_SPEC §20.6): after an install,
+/// update or removal has committed, bring the instance's worlds in line with its
+/// data pack list. Runs after the recovery snapshot and the health gate, so a
+/// rolled-back install never leaves worlds changed. Problems are warnings; the
+/// install has already succeeded.
+async fn sync_world_datapacks_after_install(
+    scheduler: Option<&TaskScheduler>,
+    instance_dir: &Path,
+) -> Vec<PlanWarning> {
+    let dir = instance_dir.to_path_buf();
+    run_blocking_phase(scheduler, "world data pack sync", move || {
+        let manifest = crate::helpers::read_manifest(&dir.join("instance_manifest.json"))
+            .map_err(|error| error.to_string())?;
+        Ok(crate::datapack_sync::sync_instance_datapacks(&dir, &manifest).warnings)
+    })
+    .await
+    .unwrap_or_else(|error| vec![format!("Data pack sync did not run: {error}")])
+    .into_iter()
+    .map(|message| PlanWarning {
+        code: "WARN_DATAPACK_SYNC".into(),
+        message,
+    })
+    .collect()
 }
 
 async fn cleanup_staging_dir(scheduler: Option<&TaskScheduler>, staging_dir: &Path) {

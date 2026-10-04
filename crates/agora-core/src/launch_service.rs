@@ -421,6 +421,51 @@ impl LaunchService {
         })
     }
 
+    /// Copy the instance's enabled data packs into its worlds (MASTER_SPEC §20.6).
+    ///
+    /// Runs *after* the pre-launch snapshot and before the process (or the
+    /// official-launcher handoff) starts. Order matters for recovery: the
+    /// pre-launch snapshot deliberately excludes `saves/` and this step only
+    /// writes under `saves/<world>/datapacks/`, so the snapshot still describes
+    /// the instance exactly (its O(1) reuse is unaffected), and a snapshot that
+    /// fails never leaves half-synced worlds behind. A later restore of that
+    /// snapshot rolls the instance-level `datapacks/` back; the next launch's
+    /// sync then reconciles the worlds, which is why the sync is derived state
+    /// rather than something a snapshot must capture.
+    ///
+    /// Never fails the launch: problems are logged as warnings.
+    async fn sync_world_datapacks(&self, request: &LaunchInputs, progress: &dyn LaunchProgress) {
+        let game_dir = request.game_dir.clone();
+        let manifest = request.manifest.clone();
+        let outcome = self
+            .ctx
+            .task_scheduler
+            .run_blocking(BlockingPriority::Launch, move || {
+                crate::datapack_sync::sync_instance_datapacks(&game_dir, &manifest)
+            })
+            .await;
+        let lines = match outcome {
+            Ok(report) => {
+                let mut lines = report.warnings;
+                if report.copied > 0 || report.removed > 0 {
+                    lines.insert(
+                        0,
+                        format!(
+                            "Data packs synced into {} world(s): {} added or updated, {} removed.",
+                            report.worlds, report.copied, report.removed
+                        ),
+                    );
+                }
+                lines
+            }
+            Err(error) => vec![format!("Data pack sync did not run: {error}")],
+        };
+        for line in lines {
+            eprintln!("[launch] data packs for {}: {line}", request.instance_id);
+            progress.log("stdout", &format!("[Agora] {line}"));
+        }
+    }
+
     async fn launch_inputs(
         &self,
         request: LaunchInputs,
@@ -500,6 +545,7 @@ impl LaunchService {
                     message: format!("Pre-launch snapshot task failed: {error}"),
                 })??;
             progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
+            self.sync_world_datapacks(&request, progress).await;
             let operation_id = _op_handle.id().clone();
 
             progress.phase("handoff", "Handing off to external launcher");
@@ -713,6 +759,7 @@ impl LaunchService {
                 message: format!("Pre-launch snapshot task failed: {error}"),
             })??;
         progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
+        self.sync_world_datapacks(&request, progress).await;
         let operation_id = _op_handle.id().clone();
 
         // -- Direct mode: spawn Java and attach --
@@ -1457,5 +1504,46 @@ mod tests {
         let third = create_or_reuse_snapshot(&inst).unwrap();
         assert_eq!(first, third);
         assert_eq!(crate::snapshot::list_snapshots(&inst).unwrap().len(), 1);
+    }
+    /// World data pack sync runs after the pre-launch snapshot and must not
+    /// disturb it: the snapshot scope excludes `saves/`, so syncing into a world
+    /// leaves the snapshot reusable and the snapshot never contains the copies.
+    #[test]
+    fn world_datapack_sync_after_prelaunch_snapshot_keeps_snapshot_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = tmp.path().join("instance");
+        std::fs::create_dir_all(inst.join("datapacks")).unwrap();
+        std::fs::write(inst.join("datapacks").join("vm.zip"), b"pack").unwrap();
+        std::fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
+        std::fs::write(inst.join("saves").join("world1").join("level.dat"), b"w").unwrap();
+        std::fs::write(inst.join("instance_manifest.json"), b"{}").unwrap();
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "t", "name": "t", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.1", "mods": [],
+            "datapacks": [{
+                "filename": "vm.zip", "source": "local", "sha256": "x",
+                "installed_at": "2024-01-01T00:00:00Z", "content_type": "datapack"
+            }],
+        }))
+        .unwrap();
+
+        let first = create_or_reuse_snapshot(&inst).unwrap();
+        let lkg = crate::lkg::LkgState {
+            current_lkg_snapshot_id: Some(first.clone()),
+            ..Default::default()
+        };
+        std::fs::write(inst.join("lkg.json"), serde_json::to_vec(&lkg).unwrap()).unwrap();
+
+        let report = crate::datapack_sync::sync_instance_datapacks(&inst, &manifest);
+        assert_eq!(report.copied, 1);
+        assert!(inst.join("saves/world1/datapacks/vm.zip").is_file());
+
+        let second = create_or_reuse_snapshot(&inst).unwrap();
+        assert_eq!(
+            first, second,
+            "sync must not invalidate the pre-launch snapshot"
+        );
+        let index = crate::snapshot::snapshot_file_index(&inst, &first).unwrap();
+        assert!(index.iter().all(|entry| !entry.path.starts_with("saves/")));
     }
 }
