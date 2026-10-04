@@ -307,6 +307,18 @@ function AppContent() {
   const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
   const registry = useRegistryState();
 
+  // The background interval is only a backstop. Content changes made anywhere
+  // (an install in Browse, a removal in the editor) must show up the moment
+  // the library or an editor is on screen, so re-scan on arrival.
+  const refreshHealth = healthMonitor.refresh;
+  const healthViewKey = destination.type === 'instance-detail'
+    ? `instance-detail:${destination.instanceId}`
+    : destination.type === 'tab' && destination.tab === 'instances' ? 'instances' : null;
+  useEffect(() => {
+    if (onboardingComplete !== true || !healthViewKey) return;
+    void refreshHealth();
+  }, [healthViewKey, onboardingComplete, refreshHealth]);
+
   // Fetch the latest signed catalog at launch so the app always starts on a
   // fresh one. Skipped when catalog sync is disabled in Privacy settings
   // (the backend errors on that case; a launch-time alert would nag every start).
@@ -1036,6 +1048,7 @@ function AppContent() {
                   processLogs={processLogs}
                   healthReport={healthMonitor.reports[instanceEditorId] ?? null}
                   onReviewHealth={openHealthReview}
+                  onRefreshHealth={healthMonitor.refreshInstance}
                 />
               </div>
             )}

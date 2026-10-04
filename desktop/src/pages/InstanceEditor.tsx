@@ -261,7 +261,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth, onRefreshHealth }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void; onRefreshHealth?: (instanceId: string) => Promise<void> | void }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const detailRef = useRef<InstanceDetail | null>(null);
   detailRef.current = detail;
@@ -1053,6 +1053,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       || wrapperCommandOf(previous) !== wrapperCommandOf(result)) {
       seedJavaSettings(result);
     }
+    // Whatever just changed the instance may have changed its health, so the
+    // alert is re-read now instead of waiting for the next background sweep.
+    void Promise.resolve(onRefreshHealth?.(instanceId)).catch(() => undefined);
     await Promise.all([
       refreshContent(),
       listSnapshots(instanceId).then(setSnapshots).catch(() => undefined),
