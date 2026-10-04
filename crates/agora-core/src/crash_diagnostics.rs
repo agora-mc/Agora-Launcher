@@ -19,6 +19,8 @@ pub const MAX_REGEX_LEN: usize = 256;
 // --- Embedded signature corpus (Phase 3 core) ---
 
 const SIG_FABRIC_API: &str = include_str!("../../../crash-signatures/fabric-api-missing.json");
+const SIG_MISSING_DEPENDENCY: &str =
+    include_str!("../../../crash-signatures/fabric-missing-dependency.json");
 const SIG_MIXIN_CONFLICT: &str = include_str!("../../../crash-signatures/mixin-conflict.json");
 const SIG_MOD_RESOLUTION: &str = include_str!("../../../crash-signatures/mod-resolution.json");
 const SIG_OUT_OF_MEMORY: &str = include_str!("../../../crash-signatures/out-of-memory.json");
@@ -56,6 +58,9 @@ fn corpus() -> &'static [CrashSignature] {
     SIG_CORPUS.get_or_init(|| {
         [
             SIG_FABRIC_API,
+            // Before the generic mod-resolution entry: a named missing mod is
+            // a more useful answer than "the mod set could not be resolved".
+            SIG_MISSING_DEPENDENCY,
             SIG_MIXIN_CONFLICT,
             SIG_MOD_RESOLUTION,
             SIG_OUT_OF_MEMORY,
@@ -133,11 +138,140 @@ pub fn triage(log: &str) -> CrashTriageResult {
         }
         if let Ok(re) = regex::Regex::new(&sig.regex_pattern) {
             if re.is_match(log) {
-                return CrashTriageResult::from_signature(sig);
+                let mut result = CrashTriageResult::from_signature(sig);
+                if sig.id == MISSING_DEPENDENCY_SIGNATURE_ID {
+                    describe_missing_dependencies(&mut result, log);
+                }
+                return result;
             }
         }
     }
     CrashTriageResult::no_match()
+}
+
+const MISSING_DEPENDENCY_SIGNATURE_ID: &str = "fabric-missing-dependency";
+
+/// One "mod A needs mod B, which is not installed" finding read from a Fabric
+/// or Quilt loader failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingDependency {
+    /// Loader id of the mod that is missing (for example `fabric-api`).
+    pub missing_id: String,
+    /// Human name for the missing mod when the loader printed one.
+    pub missing_name: Option<String>,
+    /// Version requirement as the loader phrased it ("any version",
+    /// "version 0.43.1 or later").
+    pub requirement: String,
+    /// Display name and loader id of the installed mod that needs it.
+    pub required_by_name: String,
+    pub required_by_id: String,
+}
+
+/// Read the "Unmet dependency listing" of a Fabric/Quilt resolution failure:
+/// `Mod 'Entity Culling' (entityculling) 1.11.2 requires any version of
+/// fabric-api, which is missing!`. Each (dependent, missing) pair is reported
+/// once, in log order.
+pub fn missing_dependencies(log: &str) -> Vec<MissingDependency> {
+    static LINE: OnceLock<regex::Regex> = OnceLock::new();
+    let line = LINE.get_or_init(|| {
+        regex::Regex::new(
+            r"Mod '(?P<name>[^\r\n]+?)' \((?P<id>[^)\s]+)\) \S+ requires (?P<need>[^\r\n]+?), which is missing!",
+        )
+        .expect("missing-dependency line pattern is valid")
+    });
+    let mut found: Vec<MissingDependency> = Vec::new();
+    for caps in line.captures_iter(log) {
+        let need = &caps["need"];
+        // "any version of fabric-api" / "version 0.43.1 or later of Fabric API (fabric-api)"
+        let (requirement, target) = match need.split_once(" of ") {
+            Some((requirement, target)) => (requirement.trim(), target.trim()),
+            None => ("any version", need.trim()),
+        };
+        let (missing_name, missing_id) = match target.rsplit_once(" (") {
+            Some((name, id)) if id.ends_with(')') => (
+                Some(name.trim_matches('\'').trim().to_string()),
+                id.trim_end_matches(')').trim().to_string(),
+            ),
+            _ => (None, target.trim_matches('\'').to_string()),
+        };
+        if missing_id.is_empty() {
+            continue;
+        }
+        let item = MissingDependency {
+            missing_id,
+            missing_name: missing_name.filter(|name| !name.is_empty()),
+            requirement: requirement.to_string(),
+            required_by_name: caps["name"].to_string(),
+            required_by_id: caps["id"].to_string(),
+        };
+        if !found.iter().any(|seen| {
+            seen.missing_id == item.missing_id && seen.required_by_id == item.required_by_id
+        }) {
+            found.push(item);
+        }
+    }
+    found
+}
+
+/// Keep text lifted from a log inside a single inline-code span.
+fn markdown_code(text: &str) -> String {
+    format!("`{}`", text.replace(['`', '\r', '\n'], ""))
+}
+
+/// Name the missing mod and the mods that need it in the answer, and point the
+/// action at the missing mod when there is exactly one.
+fn describe_missing_dependencies(result: &mut CrashTriageResult, log: &str) {
+    let missing = missing_dependencies(log);
+    if missing.is_empty() {
+        return;
+    }
+    let mut ids: Vec<&str> = Vec::new();
+    for item in &missing {
+        if !ids.contains(&item.missing_id.as_str()) {
+            ids.push(item.missing_id.as_str());
+        }
+    }
+    let mut details = Vec::new();
+    for id in &ids {
+        let group: Vec<&MissingDependency> = missing
+            .iter()
+            .filter(|item| item.missing_id == *id)
+            .collect();
+        let label = match group[0].missing_name.as_deref() {
+            Some(name) => format!("{} ({})", markdown_code(name), markdown_code(id)),
+            None => markdown_code(id),
+        };
+        let needed_by = group
+            .iter()
+            .map(|item| {
+                format!(
+                    "{} ({}, {})",
+                    markdown_code(&item.required_by_name),
+                    markdown_code(&item.required_by_id),
+                    item.requirement
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        details.push(format!("- **Missing:** {label}, needed by {needed_by}"));
+    }
+    if let Some(markdown) = result.solution_markdown.as_mut() {
+        markdown.push_str("\n\n");
+        markdown.push_str(&details.join("\n"));
+    }
+    if let [only] = ids.as_slice() {
+        let name = missing
+            .iter()
+            .find_map(|item| item.missing_name.clone())
+            .unwrap_or_else(|| (*only).to_string());
+        result.action_button_json = Some(
+            ActionButton {
+                label: format!("Install {name}"),
+                mod_id: Some((*only).to_string()),
+            }
+            .to_json_string(),
+        );
+    }
 }
 
 // --- Augmented triage (optional DB) ---
@@ -557,14 +691,92 @@ mod tests {
         );
     }
 
-    /// test_corpus_nonempty: the embedded corpus should have all 5 signatures.
+    /// Fabric Loader 0.16+ output as captured from the game's stdout/stderr.
+    const FABRIC_MISSING_API_LOG: &str = concat!(
+        "[stderr] net.fabricmc.loader.impl.FormattedException: net.fabricmc.loader.impl.discovery.ModResolutionException: Mod resolution encountered an incompatible mod set!\n",
+        "[stderr] A potential solution has been determined, this may resolve your problem:\n",
+        "[stderr] \t - Install fabric-api, any version.\n",
+        "[stderr] Unmet dependency listing:\n",
+        "[stderr] \t - Mod 'Entity Culling' (entityculling) 1.11.2 requires any version of fabric-api, which is missing!\n",
+        "[stderr] \t - Mod 'Xaero's Minimap' (xaerominimap) 26.5.0 requires version 0.43.1 or later of fabric-api, which is missing!\n",
+        "[stderr] More details: For further details, see the log.\n",
+    );
+
+    #[test]
+    fn test_triage_missing_fabric_api_names_the_missing_mod_and_who_needs_it() {
+        let r = triage(FABRIC_MISSING_API_LOG);
+        assert!(r.matched);
+        assert_eq!(r.signature_name.as_deref(), Some("Missing Required Mod"));
+        let markdown = r.solution_markdown.unwrap();
+        assert!(markdown.contains("`fabric-api`"), "{markdown}");
+        assert!(markdown.contains("`Entity Culling`"), "{markdown}");
+        assert!(markdown.contains("`entityculling`"), "{markdown}");
+        assert!(markdown.contains("`Xaero's Minimap`"), "{markdown}");
+        assert!(markdown.contains("version 0.43.1 or later"), "{markdown}");
+        let action: serde_json::Value =
+            serde_json::from_str(&r.action_button_json.unwrap()).unwrap();
+        assert_eq!(action["mod_id"], "fabric-api");
+        assert_eq!(action["label"], "Install fabric-api");
+    }
+
+    #[test]
+    fn test_missing_dependencies_reads_names_ids_and_versions() {
+        let found = missing_dependencies(FABRIC_MISSING_API_LOG);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].missing_id, "fabric-api");
+        assert_eq!(found[0].required_by_id, "entityculling");
+        assert_eq!(found[0].required_by_name, "Entity Culling");
+        assert_eq!(found[0].requirement, "any version");
+        assert_eq!(found[1].required_by_id, "xaerominimap");
+        assert_eq!(found[1].requirement, "version 0.43.1 or later");
+    }
+
+    #[test]
+    fn test_missing_dependencies_handles_named_targets_and_log4j_wrapping() {
+        let log = "<log4j:Message><![CDATA[Mod resolution encountered an incompatible mod set!\n\
+\t - Mod 'Mod Menu' (modmenu) 18.0.2 requires version 0.130.0 or later of Fabric API (fabric-api), which is missing!\n\
+\t - Mod 'Iris' (iris) 1.11.4 requires version 0.9.2 or later of 'Sodium' (sodium), which is missing!\n\
+\t - Mod 'Mod Menu' (modmenu) 18.0.2 requires version 0.130.0 or later of Fabric API (fabric-api), which is missing!\n\
+]]></log4j:Message>";
+        let r = triage(log);
+        assert_eq!(r.signature_name.as_deref(), Some("Missing Required Mod"));
+        let found = missing_dependencies(log);
+        assert_eq!(found.len(), 2, "duplicate lines collapse: {found:?}");
+        assert_eq!(found[0].missing_id, "fabric-api");
+        assert_eq!(found[0].missing_name.as_deref(), Some("Fabric API"));
+        assert_eq!(found[1].missing_id, "sodium");
+        assert_eq!(found[1].missing_name.as_deref(), Some("Sodium"));
+        // Two different mods are missing, so no single install action is named.
+        let action: serde_json::Value =
+            serde_json::from_str(&r.action_button_json.unwrap()).unwrap();
+        assert!(action["mod_id"].is_null());
+    }
+
+    #[test]
+    fn test_missing_dependency_signature_wins_over_generic_resolution() {
+        // Without a parsable listing the generic answer would still apply;
+        // with one, the specific signature must come first.
+        assert_eq!(
+            triage("ModResolutionException: Some of your mods are incompatible with the game or each other!")
+                .signature_name
+                .as_deref(),
+            Some("Mod Resolution Failure")
+        );
+        assert_eq!(
+            triage(FABRIC_MISSING_API_LOG).signature_name.as_deref(),
+            Some("Missing Required Mod")
+        );
+    }
+
+    /// test_corpus_nonempty: the embedded corpus should have all 6 signatures.
     #[test]
     fn test_corpus_nonempty() {
         let c = corpus();
-        assert_eq!(c.len(), 5);
+        assert_eq!(c.len(), 6);
         assert!(c.iter().any(|s| s.id == "duplicate-classpath-libraries"));
         let ids: Vec<&str> = c.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"fabric-api-missing"));
+        assert!(ids.contains(&"fabric-missing-dependency"));
         assert!(ids.contains(&"mixin-conflict"));
         assert!(ids.contains(&"mod-resolution"));
         assert!(ids.contains(&"out-of-memory"));
