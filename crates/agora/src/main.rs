@@ -2755,11 +2755,11 @@ async fn run_command(
             } => {
                 let worlds = if all { None } else { worlds };
                 let report =
-                    agora_core::datapack_sync::set_world_scope(&ctx, &instance, &file, worlds)?;
+                    agora_core::datapack_sync::set_world_scope(ctx, &instance, &file, worlds)?;
                 print_datapack_sync(&instance, &report, json)?;
             }
             ModsCmd::SyncDatapacks { instance } => {
-                let report = agora_core::datapack_sync::sync_instance(&ctx, &instance)?;
+                let report = agora_core::datapack_sync::sync_instance(ctx, &instance)?;
                 print_datapack_sync(&instance, &report, json)?;
             }
             ModsCmd::UpdateAll {
@@ -5281,6 +5281,29 @@ mod tests {
                 action: ModsCmd::Enable { .. }
             }
         ));
+    }
+
+    #[test]
+    fn mod_worlds_parses_a_chosen_set_or_all() {
+        let cli = Cli::try_parse_from([
+            "agora", "mod", "worlds", "inst", "vm.zip", "--worlds", "A,B",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Mods {
+                action: ModsCmd::Worlds { worlds, all, .. },
+            } => {
+                assert_eq!(worlds, Some(vec!["A".to_string(), "B".to_string()]));
+                assert!(!all);
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert!(Cli::try_parse_from(["agora", "mod", "worlds", "inst", "vm.zip", "--all"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["agora", "mod", "worlds", "inst", "vm.zip"]).is_err(),
+            "choosing nothing is not a scope"
+        );
+        assert!(Cli::try_parse_from(["agora", "mod", "sync-datapacks", "inst"]).is_ok());
     }
 
     #[test]
