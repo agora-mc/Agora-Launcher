@@ -68,6 +68,8 @@ import {
   pickDirectory,
   getOrphanedDependencies,
   setModGroup,
+  setDatapackWorlds,
+  syncInstanceDatapacks,
   listSnapshots,
   createSnapshot,
   restoreSnapshot,
@@ -107,6 +109,7 @@ import { InstanceTemplatePanel } from '../components/InstanceTemplatePanel';
 import { useConfirm } from '@/components/ui/confirm';
 import { OrphanCleanupDialog } from '../components/OrphanCleanupDialog';
 import { ModGroupDialog } from '../components/ModGroupDialog';
+import { DatapackWorldsDialog } from '../components/DatapackWorldsDialog';
 import { MigrationReportPanel } from '../components/MigrationReportPanel';
 import { PackUpdatePanel } from '../components/PackUpdatePanel';
 import { LaunchHistoryPanel } from '../components/LaunchHistoryPanel';
@@ -656,6 +659,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [modGroups, setModGroups] = useState<ModGroups>({});
   const [groupTarget, setGroupTarget] = useState<InstalledContentRow[] | null>(null);
   const [groupBusy, setGroupBusy] = useState(false);
+  const [worldsTarget, setWorldsTarget] = useState<InstalledContentRow | null>(null);
+  const [worldsBusy, setWorldsBusy] = useState(false);
 
   // Groups live in the manifest, so they are re-read whenever the installed set
   // changes — a removal can empty a group out from under the picker.
@@ -752,6 +757,37 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       setError(formatError(e));
     } finally {
       setGroupBusy(false);
+    }
+  };
+
+  const describeDatapackSync = (report: { copied: number; removed: number; warnings: string[] }) => {
+    const changes = report.copied + report.removed;
+    const summary = changes === 0 ? 'Data packs are already up to date in every world.' : `Data packs synced: ${report.copied} added or updated, ${report.removed} removed.`;
+    return report.warnings.length > 0 ? `${summary} ${report.warnings.join(' ')}` : summary;
+  };
+
+  const handleChooseWorlds = async (row: InstalledContentRow, worlds: string[] | null) => {
+    setWorldsBusy(true);
+    setError(null);
+    try {
+      const report = await setDatapackWorlds(instanceId, row.filename, worlds);
+      setWorldsTarget(null);
+      setStatus(describeDatapackSync(report));
+      await refreshContent();
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setWorldsBusy(false);
+    }
+  };
+
+  const handleSyncDatapacks = async () => {
+    setError(null);
+    try {
+      setStatus(describeDatapackSync(await syncInstanceDatapacks(instanceId)));
+      await refreshContent();
+    } catch (e) {
+      setError(formatError(e));
     }
   };
 
@@ -2046,7 +2082,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="datapack" onChooseWorlds={setWorldsTarget} onSyncWorlds={() => void handleSyncDatapacks()} rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -3237,6 +3273,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           busy={groupBusy}
           onClose={() => setGroupTarget(null)}
           onConfirm={(group) => void handleAssignGroup(groupTarget, group)}
+        />
+      )}
+
+      {worldsTarget && (
+        <DatapackWorldsDialog
+          row={worldsTarget}
+          busy={worldsBusy}
+          onClose={() => setWorldsTarget(null)}
+          onSave={(worlds) => void handleChooseWorlds(worldsTarget, worlds)}
         />
       )}
 

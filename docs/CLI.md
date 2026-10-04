@@ -202,6 +202,8 @@ agora mod update <INSTANCE> <ITEM>
 agora mod update-all <INSTANCE>
 agora mod enable <INSTANCE> <FILE>
 agora mod disable <INSTANCE> <FILE>
+agora mod worlds <INSTANCE> <FILE> --worlds <A,B> | --all
+agora mod sync-datapacks <INSTANCE>
 ```
 
 Common planning options:
@@ -224,6 +226,8 @@ Common planning options:
 The default source is Agora's curated strategy. Use `--source modrinth` only when the optional Modrinth integration and its network permissions are enabled.
 
 `mod enable` and `mod disable` fail with a clear error and a nonzero exit when the named file does not exist. Confirm the filename with `mod list` if the error is unexpected.
+
+Minecraft only loads data packs from inside a world, so Agora copies enabled data packs into the instance's worlds before each launch and after installs and removals. `mod worlds` limits one data pack to the named world folders (or `--all` to go back to every world), and `mod sync-datapacks` runs the copy now, for example for a world created since the last launch. Agora only removes or replaces data pack files it placed itself.
 
 ### Packs, import, and export
 

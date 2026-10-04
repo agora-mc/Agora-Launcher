@@ -2009,6 +2009,58 @@ pub async fn enable_instance_mod(
     .map_err(|_| LauncherError::LocalStateFailed)?
 }
 
+/// Choose which worlds a data pack is synced into (`worlds: None` = all worlds)
+/// and sync now. Allowed on locked instances: it is a preference, not content.
+#[tauri::command]
+pub async fn set_datapack_worlds(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+    worlds: Option<Vec<String>>,
+) -> LauncherResult<agora_core::datapack_sync::DatapackSyncReport> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::datapack_sync::set_world_scope(&ctx, &instance_id, &filename, worlds)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Existing worlds of an instance (folders under `saves/` with a `level.dat`).
+#[tauri::command]
+pub async fn list_instance_worlds(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let id = agora_core::paths::sanitize_id(&instance_id);
+        Ok(agora_core::datapack_sync::list_worlds(
+            &ctx.paths.instance_dir(&id)?,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Copy the instance's enabled data packs into its worlds now (for worlds
+/// created since the last sync).
+#[tauri::command]
+pub async fn sync_instance_datapacks(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<agora_core::datapack_sync::DatapackSyncReport> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::datapack_sync::sync_instance(&ctx, &instance_id)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
 /// Open a native file picker and return the chosen file path, or `None` if cancelled.
 #[tauri::command]
 pub async fn pick_open_file(
