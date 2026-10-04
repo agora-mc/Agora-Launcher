@@ -74,7 +74,7 @@ while testing.
 ## Security defaults worth keeping in mind on every task
 
 - Secrets (signing keys, tokens, webhook URLs) never go in source, manifests, docs or screenshots.
-- SQL lives in `agora-core`, parameterized. React reaches it through `invoke()`. (Until §26 Phase 2,
+- SQL lives in `agora-core`, parameterized. React reaches it through `invoke()`. (Until §26 Phase 5,
   `agora-game-minecraft` still holds the queries that moved with it from core; new SQL goes in core.)
 - Community content is never rendered with `dangerouslySetInnerHTML`.
 - Downloads are checked against the hash their source published, and the user is told when

@@ -91,7 +91,7 @@ This ensures the core owns the **interface and policy** while the adapter provid
 
 The game contract is in `agora-game-api`, below core and game packages. Core must not reference
 `agora-game-minecraft`; packages register into each context's `GameRegistry` through the contract. Until
-Phase 2, `agora-game-minecraft` may still use `agora-core` within a budget that only shrinks
+Phase 5, `agora-game-minecraft` may still use `agora-core` within a budget that only shrinks
 (`scripts/game_package_core_budget.json`). See [game API and manifest v3](game-api.md).
 
 ```

@@ -560,8 +560,9 @@ check_core_no_minecraft_package = check_core_no_game_packages
 # ---------------------------------------------------------------------------
 # MASTER_SPEC §26.12: a game package depends on agora-game-api, never on
 # agora-core. Slice 2 moved Minecraft out of core but left
-# agora-game-minecraft using core's types and services; Phase 2 replaces those
-# uses with host services as the second game needs them. Until a package's
+# agora-game-minecraft using core's types and services; each use moves onto a
+# host service when another game needs that service, and the budget is zero by
+# Phase 5. Until a package's
 # budget reaches zero it may depend on agora-core, and its count of
 # `agora_core` references may only fall. A lower count must be written back
 # into the budget file, so a gain cannot be quietly given back.

@@ -26,7 +26,7 @@ pub enum CatalogEvent {
 }
 
 /// What a compiled package provides through core's own types. Each part moves
-/// onto a `GameHost` service as Phase 2 builds the generic version of what it
+/// onto a `GameHost` service when another game needs the generic version of what it
 /// uses (§26.12). Plugin packages have no equivalent because these are seams
 /// for code that still depends on `agora-core`, not privileges.
 pub trait CompiledServices: Send + Sync {
