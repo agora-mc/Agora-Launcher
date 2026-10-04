@@ -753,7 +753,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Collect direct-launch evidence',
-          body: 'Use the Console tab to filter INFO, WARN, ERROR, or DEBUG output, then copy the relevant sequence. Preserve the earliest error and its surrounding context; the last line is often only a consequence. Pair console output with the generated crash report when available.',
+          body: 'Use the Console tab to filter between All, Warnings+, and Errors, and switch to Raw to see the original lines, then copy the relevant sequence. Preserve the earliest error and its surrounding context; the last line is often only a consequence. Pair console output with the generated crash report when available.',
         },
       ],
     },
@@ -1703,7 +1703,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Troubleshoot methodically',
-          body: 'Check that the server status is running, the URL uses 127.0.0.1 and port 39741, the client transport is SSE, the token is current, and local security software is not blocking the process. Do not disable system security or bind the server broadly to solve a client configuration error.',
+          body: 'Check that the server status is running, the URL uses 127.0.0.1 and port 39741, the client transport matches the URL (streamable HTTP for /mcp, SSE for /sse), the token is current, and local security software is not blocking the process. Do not disable system security or bind the server broadly to solve a client configuration error.',
           callout: {
             tone: 'note',
             title: 'Preserve Agora\'s safety rails',

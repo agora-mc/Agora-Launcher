@@ -92,6 +92,11 @@ export interface InstalledContentPanelProps {
    * re-seed on every parent render.
    */
   initialUpdates?: UpdateInfo[] | null;
+  /**
+   * True while author and display-name enrichment is still running, so rows
+   * that can still gain details show a loading state rather than "Unknown".
+   */
+  metadataLoading?: boolean;
   onError?: (message: string) => void;
   onDrop?: React.DragEventHandler<HTMLElement>;
   extraActions?: React.ReactNode;

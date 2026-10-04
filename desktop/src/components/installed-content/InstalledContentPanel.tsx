@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpCircle, ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, Search, Trash2 } from 'lucide-react';
 import { Switch } from '../ui/switch';
 import {
@@ -28,6 +28,12 @@ const columnLabels: Record<ContentColumn, string> = {
   enabled: 'Enabled', actions: 'Actions', version: 'Version', categories: 'Categories', curation: 'Curation',
   agora_score: 'Agora score', modrinth_downloads: 'Modrinth downloads', update_status: 'Update status', loader_mod_id: 'Loader mod ID',
 };
+
+/**
+ * The actions column stays pinned to the right edge while the table scrolls
+ * sideways, so a row's buttons never need a horizontal scroll to reach.
+ */
+const STICKY_ACTIONS = 'sticky right-0 bg-[hsl(var(--card))] shadow-[-8px_0_8px_-8px_hsl(var(--foreground)/0.25)]';
 
 const allColumns: ContentColumn[] = ['name', 'author', 'source', 'size', 'installed', 'enabled', 'update_status', 'actions', 'version', 'categories', 'curation', 'agora_score', 'modrinth_downloads', 'loader_mod_id'];
 const titleForType: Record<InstalledContentPanelProps['contentType'], string> = {
@@ -68,6 +74,38 @@ function SortIndicator({ column, sort }: { column: SortColumn; sort: SortState }
   return sort.direction === 'asc'
     ? <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
     : <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />;
+}
+
+/**
+ * A <details> menu whose panel stays inside the pane. The toolbar wraps, so the
+ * trigger can sit at either edge of the pane; a panel pinned to one side ran off
+ * the other. On open the panel is shifted just far enough to fit.
+ */
+function PopoverDetails({ label, panelClassName, children }: { label: string; panelClassName: string; children: React.ReactNode }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [offset, setOffset] = useState(0);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const details = detailsRef.current;
+    const panel = panelRef.current;
+    if (!details || !panel) return;
+    const pane = details.closest('main')?.getBoundingClientRect();
+    const minLeft = Math.max(pane?.left ?? 0, 0) + 8;
+    const maxRight = Math.min(pane?.right ?? window.innerWidth, window.innerWidth) - 8;
+    const anchor = details.getBoundingClientRect().left;
+    const target = Math.min(Math.max(anchor, minLeft), Math.max(minLeft, maxRight - panel.offsetWidth));
+    setOffset(target - anchor);
+  }, [open]);
+
+  return (
+    <details ref={detailsRef} className="relative" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="list-none cursor-pointer rounded-lg border border-input bg-background px-3 py-2 text-sm">{label}</summary>
+      <div ref={panelRef} className={panelClassName} style={{ left: offset }}>{children}</div>
+    </details>
+  );
 }
 
 export function InstalledContentPanel(props: InstalledContentPanelProps) {
@@ -307,7 +345,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
     const sortColumn = column === 'name' ? 'name' : column === 'size' ? 'size' : column === 'installed' ? 'installed' : column === 'author' ? 'author' : column === 'source' ? 'source' : column === 'enabled' ? 'enabled' : column === 'agora_score' ? 'agora_score' : column === 'modrinth_downloads' ? 'modrinth_downloads' : null;
     const active = sortColumn && sort.column === sortColumn && sort.direction;
     return (
-      <th key={column} scope="col" aria-sort={sortColumn ? (active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none') : 'none'} className="sticky top-0 z-10 bg-card px-3 py-2 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap">
+      <th key={column} scope="col" aria-sort={sortColumn ? (active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none') : 'none'} className={`sticky top-0 z-10 px-3 py-2 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap ${column === 'actions' ? STICKY_ACTIONS : 'bg-card'}`}>
         {sortColumn ? (
           <button
             type="button"
@@ -321,6 +359,12 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
       </th>
     );
   };
+
+  // A row can still gain an author and a real name while enrichment runs, but
+  // only if it has an id to look up; manual imports never will.
+  const detailsPending = (row: InstalledContentRow) => Boolean(
+    props.metadataLoading && (row.registry_id || row.modrinth_id || row.metadata_status === 'partial'),
+  );
 
   const renderCell = (row: InstalledContentRow, column: ContentColumn) => {
     switch (column) {
@@ -336,13 +380,13 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
               <span className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
                 {row.curation_status !== 'unknown' ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-primary">{curationLabel(row.curation_status)}</span> : null}
                 {!row.file_present ? <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-destructive">Missing file</span> : null}
-                {row.pack_managed ? <span className="rounded-full bg-muted px-1.5 py-0.5 text-muted-foreground" title="Contributed by the modpack, not added by you">Pack</span> : null}{updateForRow(row) ? <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">Update available</span> : null}
+                {detailsPending(row) && row.metadata_status !== 'complete' ? <span className="animate-pulse text-muted-foreground" data-testid="row-details-loading">Loading details…</span> : null}{row.pack_managed ? <span className="rounded-full bg-muted px-1.5 py-0.5 text-muted-foreground" title="Contributed by the modpack, not added by you">Pack</span> : null}{updateForRow(row) ? <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">Update available</span> : null}
               </span>
             </button>
           </div>
         </td>;
       }
-      case 'author': return <td key={column} className="px-3 py-2 text-sm">{row.author ?? 'Unknown'}</td>;
+      case 'author': return <td key={column} className="px-3 py-2 text-sm">{row.author ?? (detailsPending(row) ? <span className="inline-block h-3 w-16 animate-pulse rounded bg-muted align-middle" role="status" aria-label="Loading author" /> : 'Unknown')}</td>;
       case 'source': return <td key={column} className="px-3 py-2"><span className="rounded-full bg-primary/10 px-2 py-1 text-xs text-primary">{row.source_label}</span></td>;
       case 'size': return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap">{row.file_present ? formatBytes(row.size_bytes) : 'Missing'}</td>;
       case 'installed': return <td key={column} className="px-3 py-2 text-sm whitespace-nowrap" title={row.installed_at}>{formatInstalledDate(row.installed_at)}</td>;
@@ -354,7 +398,7 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
       // Rendered ONLY when an update actually exists, so the column stays quiet.
       const rowUpdate = updateForRow(row);
       const rowUpdatable = updateStatusForRow(row) === 'available' && rowUpdate;
-      return <td key={column} className="px-3 py-2 text-right"><div className="flex items-center justify-end gap-1">
+      return <td key={column} className={`px-3 py-2 text-right ${STICKY_ACTIONS}`}><div className="flex items-center justify-end gap-1">
         {rowUpdatable ? (
           <button
             type="button"
@@ -422,11 +466,11 @@ export function InstalledContentPanel(props: InstalledContentPanelProps) {
       <label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search installed content…" aria-label="Search installed content" className="w-full rounded-lg border border-input bg-background py-2 pl-9 pr-3 text-sm" /></label>
       <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
         {props.onCheckUpdates ? <button type="button" onClick={() => void handleCheckUpdates()} disabled={checkingUpdates} className="rounded-lg border border-input bg-background px-3 py-2 text-sm hover:bg-accent disabled:opacity-50">{checkingUpdates ? 'Checking…' : 'Check for updates'}</button> : null}
-        <details className="relative"><summary className="list-none cursor-pointer rounded-lg border border-input bg-background px-3 py-2 text-sm">Category ({filters.categories.length})</summary><div className="absolute right-0 z-20 mt-1 max-h-64 w-56 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">{available.categories.length === 0 ? <span className="px-2 text-xs text-muted-foreground">No categories</span> : available.categories.map((category) => <label key={category} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"><input type="checkbox" checked={filters.categories.includes(category)} onChange={() => toggleCategory(category)} />{category}</label>)}</div></details>
+        <PopoverDetails label={`Category (${filters.categories.length})`} panelClassName="absolute z-20 mt-1 max-h-64 w-56 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg">{available.categories.length === 0 ? <span className="px-2 text-xs text-muted-foreground">No categories</span> : available.categories.map((category) => <label key={category} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"><input type="checkbox" checked={filters.categories.includes(category)} onChange={() => toggleCategory(category)} />{category}</label>)}</PopoverDetails>
         <select value={filters.curation} onChange={(event) => setFilters((current) => ({ ...current, curation: event.target.value }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Curation filter"><option value="all">Curation: All</option><option value="curated">Curated</option><option value="under_review">Under review</option><option value="uncurated">Uncurated</option><option value="archived">Archived</option><option value="unknown">Unknown</option></select>
         <select value={filters.source} onChange={(event) => setFilters((current) => ({ ...current, source: event.target.value }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Source filter"><option value="all">Source: All</option>{available.sources.map((source) => <option key={source} value={source}>{source}</option>)}</select>
         <select value={filters.enabled} onChange={(event) => setFilters((current) => ({ ...current, enabled: event.target.value as ContentFilters['enabled'] }))} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Enabled state filter"><option value="all">State: All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="missing">Missing file</option></select><select value={groupBy} onChange={(event) => setGroupBy(event.target.value as GroupMode)} className="rounded-lg border border-input bg-background px-3 py-2 text-sm" aria-label="Group installed content"><option value="none">Group: None</option><option value="pack">Group: Pack vs you</option><option value="category">Group: Category</option><option value="source">Group: Source</option>{props.modGroups && Object.keys(props.modGroups).length > 0 ? <option value="custom">Group: My groups</option> : null}</select>
-        <details className="relative"><summary className="list-none cursor-pointer rounded-lg border border-input bg-background px-3 py-2 text-sm">Columns</summary><div className="absolute right-0 z-20 mt-1 w-56 rounded-lg border border-border bg-card p-2 shadow-lg">{allColumns.map((column) => <label key={column} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"><input type="checkbox" checked={columnVisible(column)} onChange={() => toggleColumn(column)} />{columnLabels[column]}</label>)}</div></details>
+        <PopoverDetails label="Columns" panelClassName="absolute z-20 mt-1 w-56 rounded-lg border border-border bg-card p-2 shadow-lg">{allColumns.map((column) => <label key={column} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"><input type="checkbox" checked={columnVisible(column)} onChange={() => toggleColumn(column)} />{columnLabels[column]}</label>)}</PopoverDetails>
       </div>
     </div>
     {(filterCount > 0 || query) ? <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">{query ? <span className="rounded-full bg-muted px-2 py-1">Search: {normalizeSearchText(query)} <button type="button" onClick={() => setQuery('')} aria-label="Clear search">×</button></span> : null}{filters.categories.map((category) => <button type="button" key={category} onClick={() => toggleCategory(category)} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Category: {category} ×</button>)}{filters.source !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, source: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Source: {filters.source} ×</button> : null}{filters.curation !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, curation: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">Curation: {curationLabel(filters.curation)} ×</button> : null}{filters.enabled !== 'all' ? <button type="button" onClick={() => setFilters((current) => ({ ...current, enabled: 'all' }))} className="rounded-full bg-primary/10 px-2 py-1 text-primary">State: {filters.enabled} ×</button> : null}<button type="button" onClick={clearFilters} className="font-medium text-primary hover:underline">Clear filters</button></div> : null}

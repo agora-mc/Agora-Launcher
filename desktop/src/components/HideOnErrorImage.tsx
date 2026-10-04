@@ -56,7 +56,7 @@ export function HideOnErrorImage({ node: _node, src, ...props }: React.ImgHTMLAt
       {...props}
       src={resolved}
       loading="lazy"
-      className="max-w-full h-auto rounded-lg"
+      className={props.className ?? 'max-w-full h-auto rounded-lg'}
       onError={() => setFailed(true)}
     />
   );
