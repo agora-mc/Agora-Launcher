@@ -127,6 +127,40 @@ function candidateIsPrerelease(c: ModVersionCandidate | RawModrinthVersionCandid
   return isPrereleaseVersion(c.version ?? '');
 }
 
+/**
+ * How well a curated version candidate fits the chosen instance: 0 = exact
+ * fit, 1 = same Minecraft major (may not match the exact version), 2 = not
+ * known to fit. Backends that predate `version_compat` fall back to
+ * `is_compatible`.
+ */
+function candidateFitRank(c: ModVersionCandidate): 0 | 1 | 2 {
+  if (c.version_compat === undefined) return c.is_compatible === false ? 2 : 0;
+  if (c.version_compat === 'compatible') return 0;
+  return c.version_compat === 'major_match' ? 1 : 2;
+}
+
+/**
+ * Order the install picker: versions that fit the instance first (releases
+ * before alpha/beta, newest first), everything else after. Done here as well as
+ * in the backend because the picker splits releases from betas for display,
+ * which on its own would put an incompatible release above a compatible beta.
+ */
+function orderVersionCandidates(list: ModVersionCandidate[], byDateOnly: boolean): ModVersionCandidate[] {
+  return list
+    .map((cand, index) => ({ cand, index }))
+    .sort((a, b) => {
+      const fit = candidateFitRank(a.cand) - candidateFitRank(b.cand);
+      if (fit !== 0) return fit;
+      if (!byDateOnly) {
+        const channel = Number(candidateIsPrerelease(a.cand)) - Number(candidateIsPrerelease(b.cand));
+        if (channel !== 0) return channel;
+      }
+      const date = (b.cand.release_date ?? '').localeCompare(a.cand.release_date ?? '');
+      return date !== 0 ? date : a.index - b.index;
+    })
+    .map(({ cand }) => cand);
+}
+
 
 // Allowlist schema for rendering community/upstream markdown (Modrinth body).
 // Built on rehype-sanitize's default (already strips <script>, on* handlers,
@@ -1476,7 +1510,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                   <p className="text-sm text-muted-foreground">Loading instances…</p>
                 </div>
               ) : (
-                <div>
+                <div data-tour={selectedInstanceId ? 'install-instance-chosen' : undefined}>
                   <label className="block text-xs font-medium mb-1">Select instance</label>
                   <select
                     value={selectedInstanceId ?? ''}
@@ -1704,16 +1738,21 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                   })()
                 ) : (
                   (() => {
-                    const stable = versionSortByDate ? candidates : candidates.filter(c => !candidateIsPrerelease(c));
-                    const prerelease = versionSortByDate ? [] : candidates.filter(c => candidateIsPrerelease(c));
+                    // Versions that fit the instance come first; the rest sit in a
+                    // collapsed group so they cannot be mistaken for the suggestion.
+                    const ordered = orderVersionCandidates(candidates, versionSortByDate);
+                    const fitting = ordered.filter((c) => candidateFitRank(c) === 0);
+                    const others = ordered.filter((c) => candidateFitRank(c) !== 0);
+                    const stable = versionSortByDate ? fitting : fitting.filter((c) => !candidateIsPrerelease(c));
+                    const prerelease = versionSortByDate ? [] : fitting.filter((c) => candidateIsPrerelease(c));
+                    const firstShown = stable[0] ?? prerelease[0] ?? others[0];
                     const renderList = (list: ModVersionCandidate[]) => (
                       <ul className="space-y-2">
                         {list.map((cand) => {
-                          const globalIdx = candidates.indexOf(cand);
                           return (
                             <li
                               key={`${cand.version}-${cand.filename}`}
-                              data-tour={globalIdx === 0 ? 'install-version-first' : undefined}
+                              data-tour={cand === firstShown ? 'install-version-first' : undefined}
                               role="button"
                               tabIndex={0}
                               aria-pressed={selectedCandidate?.filename === cand.filename && selectedCandidate?.version === cand.version}
@@ -1760,25 +1799,42 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
                         })}
                       </ul>
                     );
+                    const otherGroup = others.length > 0 && (
+                      <details open={fitting.length === 0} className="rounded-lg border border-border px-3 py-2">
+                        <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Other versions (may not work) · {others.length}
+                        </summary>
+                        <div className="mt-2">{renderList(others)}</div>
+                      </details>
+                    );
                     if (versionSortByDate) {
                       return (
-                        <div className="max-h-80 overflow-y-auto space-y-2" data-tour="install-version-list">
-                          {renderList(stable)}
+                        <div className="max-h-80 overflow-y-auto space-y-3" data-tour="install-version-list">
+                          {stable.length > 0 && renderList(stable)}
+                          {fitting.length === 0 && <p className="text-xs text-muted-foreground">No version is known to fit this instance exactly.</p>}
+                          {otherGroup}
                         </div>
                       );
                     }
                     return (
                       <div className="max-h-80 overflow-y-auto space-y-4" data-tour="install-version-list">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Release {stable.length > 0 ? `· ${stable.length}` : ''}</p>
-                          {stable.length > 0 ? renderList(stable) : <p className="text-xs text-muted-foreground">No stable releases.</p>}
-                        </div>
-                        {prerelease.length > 0 && (
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2">Alpha / Beta {prerelease.length > 0 ? `· ${prerelease.length}` : ''}</p>
-                            {renderList(prerelease)}
-                          </div>
+                        {fitting.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No version is known to fit this instance exactly.</p>
+                        ) : (
+                          <>
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">Release {stable.length > 0 ? `· ${stable.length}` : ''}</p>
+                              {stable.length > 0 ? renderList(stable) : <p className="text-xs text-muted-foreground">No stable releases.</p>}
+                            </div>
+                            {prerelease.length > 0 && (
+                              <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2">Alpha / Beta {prerelease.length > 0 ? `· ${prerelease.length}` : ''}</p>
+                                {renderList(prerelease)}
+                              </div>
+                            )}
+                          </>
                         )}
+                        {otherGroup}
                       </div>
                     );
                   })()
