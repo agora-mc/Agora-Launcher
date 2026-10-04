@@ -79,11 +79,38 @@ impl SnapshotService {
 
         let outcome =
             snapshot::restore_snapshot(&instance_dir, snapshot_id).map_err(snapshot_error)?;
+        self.sync_row_from_restored_manifest(instance_id)?;
 
         if let Err(error) = crate::lkg::run_retention(&instance_dir) {
             eprintln!("[snapshot] retention after restore failed: {error}");
         }
         Ok(outcome)
+    }
+
+    /// A restore replaces `instance_manifest.json` wholesale, but the
+    /// `user_instances` row caches the Minecraft version, loader and locked
+    /// flag the UI shows. Re-sync it from the restored manifest, or restoring
+    /// a migration snapshot leaves the old version on screen while the game
+    /// launches the restored one. Every user-facing restore (Snapshots tab,
+    /// Crash Doctor, backup import, undo) goes through [`Self::restore`].
+    fn sync_row_from_restored_manifest(&self, instance_id: &str) -> LauncherResult<()> {
+        let manifest_path = self.ctx.paths.instance_manifest(instance_id)?;
+        // A snapshot taken before the instance had a manifest restores none.
+        if !manifest_path.exists() {
+            return Ok(());
+        }
+        let manifest = crate::helpers::read_manifest(&manifest_path)?;
+        let conn = crate::db::local_state_connection(&self.ctx.paths.local_state_db())
+            .map_err(|_| LauncherError::LocalStateFailed)?;
+        crate::db::sync_instance_row_from_manifest(&conn, instance_id, &manifest).map_err(
+            |error| LauncherError::Generic {
+                code: "ERR_RESTORE_ROW_SYNC".into(),
+                message: format!(
+                    "The snapshot was restored, but the instance record could not be updated to match it: {error}"
+                ),
+            },
+        )?;
+        Ok(())
     }
 
     /// The roots a restore of this snapshot would cover.
@@ -154,6 +181,74 @@ mod tests {
             .expect("undo snapshot was not created");
         let undo_scope = service.scope(&id, &undo.id).unwrap();
         assert!(!undo_scope.iter().any(|r| r == "saves"));
+    }
+
+    /// Regression: restoring a 26.2 migration snapshot on a 26.1.2 instance
+    /// restored the manifest (the game launched 26.2) but left the DB row —
+    /// which the editor header and library card read — on 26.1.2.
+    #[test]
+    fn restore_resyncs_the_instance_row_from_the_restored_manifest() {
+        let (service, ctx, id) = service();
+        let dir = ctx.paths.instance_dir(&id).unwrap();
+        let manifest_path = ctx.paths.instance_manifest(&id).unwrap();
+        let write_manifest = |version: &str, loader_version: &str, locked: bool| {
+            let manifest = crate::models::InstanceManifest {
+                manifest_version: crate::models::CURRENT_MANIFEST_VERSION,
+                pack_origin: None,
+                instance_id: id.clone(),
+                name: "Demo".into(),
+                created_from_pack: None,
+                minecraft_version: version.into(),
+                loader: "fabric".into(),
+                loader_version: loader_version.into(),
+                is_locked: locked,
+                mods: vec![],
+                resourcepacks: vec![],
+                shaders: vec![],
+                datapacks: vec![],
+                worlds: vec![],
+                user_preferences: serde_json::json!({}),
+            };
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        };
+        let row = crate::models::InstanceRow {
+            instance_id: id.clone(),
+            name: "Demo".into(),
+            minecraft_version: "26.1.2".into(),
+            loader: "fabric".into(),
+            loader_version: "0.19.5".into(),
+            is_modpack: false,
+            is_locked: false,
+            last_launched_at: None,
+            jvm_memory_mb: 4096,
+            jvm_memory_mode: "auto".into(),
+            jvm_gc: "auto".into(),
+            jvm_custom_args: String::new(),
+            jvm_always_pre_touch: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            java_path: None,
+            java_incompatible_override: false,
+            icon_path: None,
+            launch_mode_override: "auto".into(),
+            import_source: None,
+        };
+        let conn = crate::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        crate::db::upsert_instance(&conn, &row).unwrap();
+
+        // Snapshot the 26.2 state, then move the instance back to 26.1.2.
+        write_manifest("26.2", "0.20.0", true);
+        let snap = snapshot::create_snapshot(&dir, Some("migration-26.2")).unwrap();
+        write_manifest("26.1.2", "0.19.5", false);
+
+        service.restore(&id, &snap.id).unwrap();
+
+        let restored = crate::db::get_instance(&conn, &id).unwrap().unwrap();
+        assert_eq!(restored.minecraft_version, "26.2");
+        assert_eq!(restored.loader_version, "0.20.0");
+        assert!(restored.is_locked);
+        // Columns that are not manifest-derived are left alone.
+        assert_eq!(restored.name, "Demo");
+        assert_eq!(restored.jvm_memory_mb, 4096);
     }
 
     /// A restore must not proceed while a game may be writing to the instance.

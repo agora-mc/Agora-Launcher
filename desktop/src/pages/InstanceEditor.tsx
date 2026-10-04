@@ -709,6 +709,8 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         tone: 'danger',
       })) {
         await restoreSnapshot(instanceId, imported.id);
+        // An open diff compared the pre-restore files; it no longer applies.
+        setSnapshotDiff(null);
         await reloadInstance();
         setStatus(`Backup imported and restored. The previous state is saved as an undo snapshot.`);
       } else {
@@ -1517,6 +1519,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const handleHighInteractionUndo = useCallback(async (snapshotId: string) => {
     try {
       await restoreSnapshot(instanceId, snapshotId);
+      setSnapshotDiff(null);
       try { await deleteSnapshot(instanceId, snapshotId); } catch { /* best effort */ }
       void reloadInstance().catch(() => undefined);
     } catch (e) {
@@ -2302,6 +2305,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                         setError(null);
                         try {
                           await restoreSnapshot(instanceId, snap.id);
+                          // An expanded diff compared the pre-restore files;
+                          // it would keep showing changes the restore undid.
+                          setSnapshotDiff(null);
                           await reloadInstance();
                           setStatus('Snapshot restored.');
                         } catch (e) {
