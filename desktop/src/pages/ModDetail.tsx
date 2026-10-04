@@ -6,6 +6,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import { defaultSchema, type Schema } from 'hast-util-sanitize';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { HideOnErrorImage } from '../components/HideOnErrorImage';
+import { GalleryGrid } from '../components/GalleryGrid';
 import { peekParkedBrowseFilter, pickDefaultPackRelease } from './browseSession';
 import {
   downloadSourceLabel,
@@ -2001,17 +2002,7 @@ export function ModDetail({ itemId, initialInstanceId, requestedContentType, onB
         <section className="rounded-xl border border-border bg-card p-4 space-y-3">
           <h3 className="font-semibold text-sm">Gallery</h3>
           {((modrinthProject && modrinthProject.gallery_urls.length > 0) || galleryUrls.length > 0) ? (
-            <div className="grid grid-cols-2 gap-3">
-              {(modrinthProject ? modrinthProject.gallery_urls : galleryUrls).map((url, index) => (
-                <img
-                  key={index}
-                  src={url}
-                  alt={`${item.name} screenshot ${index + 1}`}
-                  className="rounded-lg border border-border w-full h-48 object-cover"
-                  loading="lazy"
-                />
-              ))}
-            </div>
+            <GalleryGrid urls={modrinthProject ? modrinthProject.gallery_urls : galleryUrls} name={item.name} />
           ) : (
             <p className="text-sm text-muted-foreground">No gallery images available.</p>
           )}
