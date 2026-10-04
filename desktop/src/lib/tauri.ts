@@ -2458,9 +2458,17 @@ export type MigrationOutcome =
   | { type: 'blocked'; reasons: MigrationRejectionReason[] }
   /** Mutated mid-way and verifiably restored. */
   | { type: 'rolled-back'; phase: string; error: string; snapshotId?: string }
-  /** `rolledBack: false` means the instance may be mid-state and `snapshotId`
-   *  is the recovery point. */
-  | { type: 'failed'; phase: string; error: string; rolledBack: boolean; snapshotId?: string };
+  /** `instanceChanged: false` means it stopped before anything in the instance
+   *  was touched. Otherwise `rolledBack: false` means the instance may be
+   *  mid-state and `snapshotId` is the recovery point. */
+  | {
+      type: 'failed';
+      phase: string;
+      error: string;
+      rolledBack: boolean;
+      instanceChanged: boolean;
+      snapshotId?: string;
+    };
 
 /** Plan a migration without performing it. */
 export const planVersionMigration = (instanceId: string, targetVersion: string) =>

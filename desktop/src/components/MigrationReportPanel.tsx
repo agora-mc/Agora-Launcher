@@ -144,6 +144,12 @@ export function MigrationReportPanel({
           setError(`Migration failed during ${outcome.phase} and was rolled back — the instance is as it was. ${outcome.error}`);
           break;
         case 'failed':
+          if (!outcome.instanceChanged) {
+            // Stopped while preparing (loader, downloads, checks): nothing in
+            // the instance was touched, so there is nothing to undo.
+            setError(`Migration stopped before changing anything: ${outcome.error}`);
+            break;
+          }
           setError(outcome.rolledBack
             ? `Migration failed during ${outcome.phase} and was undone. ${outcome.error}`
             : `Migration failed during ${outcome.phase} and could NOT be undone automatically. ${outcome.error}`

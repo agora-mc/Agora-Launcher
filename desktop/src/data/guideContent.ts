@@ -1330,7 +1330,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Moving an instance to a new Minecraft version',
     shortTitle: 'Version migration',
     category: 'Manage',
-    description: 'Check whether every mod has a build for a newer version, then move across in one confirmed step.',
+    description: 'Check whether every mod has a build for another Minecraft version, then move across in one confirmed step.',
     keywords: ['migration', 'minecraft version', 'upgrade', 'move version', 'abandoned mod', 'successor'],
     basic: {
       summary: 'Moving to a new Minecraft version usually fails on one or two mods rather than all of them. Agora checks first, tells you which, and only moves when you say so.',
@@ -1363,7 +1363,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Make the move',
-          body: 'When you move, Agora takes a snapshot first, swaps every mod it can for its build on the target version, and updates the instance. If anything fails partway, the instance is returned to how it was rather than left half-migrated.',
+          body: 'When you move, Agora first prepares everything it needs (the loader, the replacement mods) without touching the instance, then takes a snapshot, swaps every mod it can for its build on the target version, and updates the instance. If something fails while preparing, the instance was never changed and the message says so. If it fails after the swap begins, Agora undoes the changes and restores the instance to how it was; only if that undo itself fails is the snapshot named so you can restore it by hand.',
         },
       ],
     },
