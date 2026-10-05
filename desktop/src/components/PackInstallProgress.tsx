@@ -30,6 +30,8 @@ export type PackInstallTask = {
   snapshotId?: string | null;
   /** Completion message for plan tasks ("Removed 7 files."). */
   doneMessage?: string;
+  /** Heading noun for plan tasks: "Removal complete", "Update failed". */
+  actionNoun?: string;
   /** False for plans that download nothing, e.g. removals: no "File N of M". */
   downloadsFiles?: boolean;
 };
@@ -285,6 +287,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       planId: plan.fingerprint,
       message: `${action.verb}…`,
       doneMessage: action.done,
+      actionNoun: action.noun,
       downloadsFiles: action.downloadsFiles,
     };
     setTaskMap((current) => ({ ...current, [id]: task }));
@@ -320,6 +323,7 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
             phase: 'staging',
             message: 'Loading files…',
             doneMessage: describePlanAction(plan).done,
+            actionNoun: describePlanAction(plan).noun,
             downloadsFiles: describePlanAction(plan).downloadsFiles,
           }),
         );
@@ -424,7 +428,11 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
     <div className={compact ? 'mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2' : 'space-y-2'} aria-live="polite">
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">
-          {task.status === 'completed' ? 'Installation complete' : task.status === 'failed' ? 'Installation failed' : phaseLabel(task.phase)}
+          {task.status === 'completed'
+            ? `${task.actionNoun ?? 'Installation'} complete`
+            : task.status === 'failed'
+              ? `${task.actionNoun ?? 'Installation'} failed`
+              : phaseLabel(task.phase)}
         </p>
         {percent !== null && <span className="shrink-0 text-xs text-muted-foreground">{percent}%</span>}
       </div>

@@ -437,7 +437,7 @@ test.describe('Release C4 — updating installed content', () => {
 
     // The editor runs the approved plan as a background task, so the failure
     // is reported there — with the backend's message, not a generic one.
-    await expect(page.getByText('Installation failed', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Update failed', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Corrupt download: SHA-256 mismatch for sodium-0.6.0.jar').first()).toBeVisible();
   });
 
@@ -455,8 +455,8 @@ test.describe('Release C4 — updating installed content', () => {
     const applyIdx = await lastInstallCall(page, 'apply_install_plan');
     await resolveInstallCall(page, applyIdx, makeSuccessOutcome());
 
-    await expect(page.getByText('Installation complete', { exact: true }).first()).toBeVisible();
-    await expect(page.getByText('Installation completed successfully.').first()).toBeVisible();
+    await expect(page.getByText('Update complete', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(/^Updated \d+ items?\.$/).first()).toBeVisible();
   });
 
   test('health-blocked batch keeps the install and offers a rollback', async ({ page }) => {

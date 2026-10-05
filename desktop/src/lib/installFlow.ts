@@ -94,6 +94,8 @@ export function describePlanAction(plan: ResolvedInstallPlan): {
   verb: string;
   /** "Removed 7 files.", for the completion message. */
   done: string;
+  /** Card headings: "Removal complete" / "Removal failed". */
+  noun: 'Installation' | 'Update' | 'Removal' | 'Repair';
   /** Whether per-file download progress applies. */
   downloadsFiles: boolean;
 } {
@@ -103,17 +105,17 @@ export function describePlanAction(plan: ResolvedInstallPlan): {
   const op = plan.operation.type;
   if (op === 'remove' || op === 'batch-remove') {
     const n = Math.max(removed, 1);
-    return { verb: `Removing ${count(n, 'file')}`, done: `Removed ${count(n, 'file')}.`, downloadsFiles: false };
+    return { verb: `Removing ${count(n, 'file')}`, done: `Removed ${count(n, 'file')}.`, noun: 'Removal', downloadsFiles: false };
   }
   if (op === 'update' || op === 'batch-update') {
     const n = op === 'batch-update' && plan.operation.type === 'batch-update' ? plan.operation.operations.length : 1;
-    return { verb: `Updating ${count(n, 'item')}`, done: `Updated ${count(n, 'item')}.`, downloadsFiles: added > 0 };
+    return { verb: `Updating ${count(n, 'item')}`, done: `Updated ${count(n, 'item')}.`, noun: 'Update', downloadsFiles: added > 0 };
   }
   if (op === 'reconcile') {
-    return { verb: 'Repairing to match the lockfile', done: 'Repair complete.', downloadsFiles: added > 0 };
+    return { verb: 'Repairing to match the lockfile', done: 'Repair complete.', noun: 'Repair', downloadsFiles: added > 0 };
   }
   const n = Math.max(added, 1);
-  return { verb: `Installing ${count(n, 'file')}`, done: `Installed ${count(n, 'file')}.`, downloadsFiles: added > 0 };
+  return { verb: `Installing ${count(n, 'file')}`, done: `Installed ${count(n, 'file')}.`, noun: 'Installation', downloadsFiles: added > 0 };
 }
 
 /**
