@@ -729,6 +729,37 @@ mod tests {
         assert!(svc.collect(&fx.path, &[]).sources.is_empty());
     }
 
+    #[test]
+    fn failed_launch_output_with_a_fabric_resolution_error_gets_a_specific_diagnosis() {
+        let fx = TestFixture::new();
+        let file = fx
+            .logs_dir()
+            .join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+        std::fs::write(
+            &file,
+            "# Agora captured Java output (sanitized, last 200 lines)\n# exit_code=1\n# runtime_ms=40111\n\
+[stderr] net.fabricmc.loader.impl.FormattedException: net.fabricmc.loader.impl.discovery.ModResolutionException: Mod resolution encountered an incompatible mod set!\n\
+[stderr] A potential solution has been determined, this may resolve your problem:\n\
+[stderr] \t - Install fabric-api, any version.\n\
+[stderr] Unmet dependency listing:\n\
+[stderr] \t - Mod 'Entity Culling' (entityculling) 1.11.2 requires any version of fabric-api, which is missing!\n",
+        )
+        .unwrap();
+        let evidence = CrashEvidenceService::new().collect(&fx.path, &[]);
+        let text: String = evidence
+            .sources
+            .iter()
+            .map(|source| format!("\n===== {} =====\n{}", source.meta.basename, source.text))
+            .collect();
+        let triage = crate::crash_diagnostics::triage(&text);
+        assert_eq!(
+            triage.signature_name.as_deref(),
+            Some("Missing Required Mod")
+        );
+        let markdown = triage.solution_markdown.unwrap();
+        assert!(markdown.contains("`fabric-api`") && markdown.contains("`entityculling`"));
+    }
+
     struct TestFixture {
         _dir: tempfile::TempDir,
         path: PathBuf,

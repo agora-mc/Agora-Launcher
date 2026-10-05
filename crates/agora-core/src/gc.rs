@@ -5,7 +5,7 @@
 //! instance's target JRE version, and computes optimal GC flags.
 //!
 //! Three engines:
-//! - **Low-Latency** (Java 21 Generational ZGC): `-XX:+UseZGC -XX:+ZGenerational`
+//! - **Low-Latency** (Generational ZGC, Java 21+): `-XX:+UseZGC`, plus `-XX:+ZGenerational` on Java 21-22 only
 //! - **High-Efficiency** (Aikar's G1GC derivation): dynamically sized from RAM
 //! - **Manual**: advanced users edit raw flags (Phase 10 Advanced toggle)
 //!
@@ -140,8 +140,8 @@ pub fn generate_args(profile: GcProfile, heap_mb: i64, manual_args: &str) -> Str
 }
 
 /// Generate arguments for a specific Java major. Explicit ZGC remains
-/// available on older Java releases, but Generational ZGC is only emitted on
-/// Java 21+.
+/// available on older Java releases, but the opt-in Generational ZGC flag is
+/// only emitted on Java 21 and 22 (it is the default from 23 and removed in 24).
 pub fn generate_args_for_java(
     profile: GcProfile,
     heap_mb: i64,
@@ -157,7 +157,11 @@ pub fn generate_args_for_java(
     match profile {
         GcProfile::LowLatency => {
             parts.push("-XX:+UseZGC".into());
-            if java_version >= 21 {
+            // Generational ZGC is opt-in on 21 and 22. Java 23 made it the
+            // default (the flag only warned) and Java 24 removed the flag, so
+            // newer runtimes get the generational collector without it and
+            // would print "Ignoring option ZGenerational" if it were passed.
+            if (21..=22).contains(&java_version) {
                 parts.push("-XX:+ZGenerational".into());
             }
             parts.push("-XX:+AlwaysPreTouch".into());
@@ -355,6 +359,25 @@ mod tests {
     }
 
     #[test]
+    fn zgenerational_is_only_passed_where_the_flag_exists() {
+        for (java, expected) in [
+            (17, false),
+            (21, true),
+            (22, true),
+            (23, false),
+            (25, false),
+        ] {
+            let args = generate_args_for_java(GcProfile::LowLatency, 4096, "", java);
+            assert!(args.contains("-XX:+UseZGC"), "Java {java}: {args}");
+            assert_eq!(
+                args.contains("ZGenerational"),
+                expected,
+                "Java {java}: {args}"
+            );
+        }
+    }
+
+    #[test]
     fn low_latency_uses_classic_zgc_on_java_17() {
         let result = compute_gc(17, 4096, "", Some(GcProfile::LowLatency));
         assert_eq!(result.profile, GcProfile::LowLatency);
@@ -398,11 +421,11 @@ mod tests {
     }
 
     #[test]
-    fn compute_gc_auto_uses_generational_zgc_for_java_25() {
+    fn compute_gc_auto_uses_zgc_for_java_25_without_the_removed_flag() {
         let result = compute_gc(25, 4096, "", None);
         assert_eq!(result.profile, GcProfile::LowLatency);
         assert!(result.jvm_args.contains("-XX:+UseZGC"));
-        assert!(result.jvm_args.contains("-XX:+ZGenerational"));
+        assert!(!result.jvm_args.contains("ZGenerational"));
     }
 
     #[test]

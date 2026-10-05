@@ -51,6 +51,7 @@ export function MigrationReportPanel({
   currentVersion,
   loader,
   onMigrated,
+  onMigratingChange,
 }: {
   instanceId: string;
   currentVersion: string;
@@ -59,6 +60,8 @@ export function MigrationReportPanel({
   loader?: string;
   /** Called once a migration has been applied, so the editor can reload. */
   onMigrated?: () => void;
+  /** True while a migration is being applied, so the editor can hold Play and Lock. */
+  onMigratingChange?: (migrating: boolean) => void;
 }) {
   const { confirm } = useConfirm();
   const [target, setTarget] = useState('');
@@ -133,6 +136,7 @@ export function MigrationReportPanel({
 
     setBusy(true);
     setError(null);
+    onMigratingChange?.(true);
     try {
       const outcome = await runVersionMigration(instanceId, plan.targetVersion, leaving.length > 0);
       switch (outcome.type) {
@@ -168,6 +172,7 @@ export function MigrationReportPanel({
       setError(formatError(e));
     } finally {
       setBusy(false);
+      onMigratingChange?.(false);
     }
   };
 

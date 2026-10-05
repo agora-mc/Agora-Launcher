@@ -39,6 +39,7 @@ import { LaunchProgressPanel } from '../components/LaunchProgressPanel';
 import { InstanceIcon, LoaderChip, MetaChip } from '../components/InstanceIcon';
 import { formatInstalledDate } from '../components/installed-content/contentTableState';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
+import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
 import { PackInstallProgressBar, usePackInstall, type PackInstallTask } from '../components/PackInstallProgress';
 import { useConfirm } from '@/components/ui/confirm';
 import {
@@ -59,6 +60,8 @@ export function Instances({
   onUseDelegatedLaunch,
   onRestartMojangLauncher,
   onClearError,
+  launchFailures,
+  onDismissLaunchFailure,
   healthReports,
   healthErrors,
   onReviewHealth,
@@ -80,6 +83,9 @@ export function Instances({
   onUseDelegatedLaunch: () => Promise<void>;
   onRestartMojangLauncher: () => Promise<void>;
   onClearError: () => void;
+  /** Abnormal exits by instance id; each stays until that instance relaunches or it is dismissed. */
+  launchFailures?: Record<string, { exitCode: number | null }>;
+  onDismissLaunchFailure?: (instanceId: string) => void;
   healthReports: Record<string, HealthReport>;
   healthErrors: Record<string, string>;
   onReviewHealth: (instanceId: string, instanceName: string, report: HealthReport) => void;
@@ -331,13 +337,8 @@ export function Instances({
                 runningPid={isRunning ? processState.pid : null}
                 launchBusy={isLaunchBusy}
                 startingThis={isCurrentLaunchBusy}
-                launchFailedExit={
-                  isCurrentThisInstance
-                  && processState.phase === 'exited'
-                  && processState.outcome === 'crash'
-                    ? { exitCode: processState.exitCode }
-                    : null
-                }
+                launchFailedExit={launchFailures?.[instance.instance_id] ?? null}
+                onDismissLaunchFailure={() => onDismissLaunchFailure?.(instance.instance_id)}
                 onOpenConsole={() => { requestEditorTab('console'); onEditInstance(instance.instance_id); }}
                 onLaunch={() => onStartLaunch(
                   instance.instance_id,
@@ -437,6 +438,7 @@ function InstanceCard({
   launchBusy,
   startingThis,
   launchFailedExit,
+  onDismissLaunchFailure,
   onOpenConsole,
   onLaunch,
   onKill,
@@ -475,6 +477,7 @@ function InstanceCard({
   startingThis: boolean;
   /** The last launch of this instance ended abnormally (e.g. exited right away). */
   launchFailedExit: { exitCode: number | null } | null;
+  onDismissLaunchFailure: () => void;
   onOpenConsole: () => void;
   onLaunch: () => void;
   onKill: () => void;
@@ -936,34 +939,12 @@ function InstanceCard({
       )}
 
       {launchFailedExit && !displayError && !isRunning && (
-        <div
-          className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-destructive/60 bg-destructive/10 px-3 py-2 text-xs"
-          role="alert"
-          aria-label="Launch failed"
-        >
-          <div className="min-w-0">
-            <p className="font-medium text-destructive">Launch failed</p>
-            <p className="text-muted-foreground">
-              The game exited with an error{launchFailedExit.exitCode != null ? ` (code ${launchFailedExit.exitCode})` : ''} before you could play.
-            </p>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <button
-              type="button"
-              onClick={onOpenConsole}
-              className="rounded border border-current/30 px-2 py-1 font-medium text-destructive hover:bg-background/40"
-            >
-              Open Console
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenCrashInvestigator(instance.instance_id)}
-              className="rounded border border-current/30 px-2 py-1 font-medium hover:bg-background/40"
-            >
-              Investigate
-            </button>
-          </div>
-        </div>
+        <LaunchFailedBanner
+          exitCode={launchFailedExit.exitCode}
+          onOpenConsole={onOpenConsole}
+          onInvestigate={() => onOpenCrashInvestigator(instance.instance_id)}
+          onDismiss={onDismissLaunchFailure}
+        />
       )}
 
       {/* ── Plain error display (fallback, non-recoverable) ── */}

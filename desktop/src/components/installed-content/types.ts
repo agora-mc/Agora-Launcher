@@ -59,6 +59,12 @@ export interface InstalledContentPanelProps {
   contentType: InstalledContentType;
   rows: InstalledContentRow[];
   locked: boolean;
+  /**
+   * Why the panel is locked when it is not the instance's own lock: an
+   * operation holding the instance or the game running. Shown instead of
+   * "unlock the instance".
+   */
+  lockedReason?: string | null;
   onAdd: () => void;
   addLabel: string;
   onToggle: (row: InstalledContentRow) => Promise<boolean | void>;

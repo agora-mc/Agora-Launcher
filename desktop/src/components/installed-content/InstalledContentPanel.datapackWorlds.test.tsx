@@ -83,3 +83,16 @@ describe('InstalledContentPanel data pack worlds', () => {
     expect(screen.queryByTestId('datapack-world-status')).toBeNull();
   });
 });
+
+describe('InstalledContentPanel held by an operation', () => {
+  it('says why it is unavailable instead of asking to unlock', () => {
+    const reason = 'Minecraft is running with this instance. Close the game before changing it.';
+    const row = datapackRow({ all_worlds: true, selected_worlds: [], available_worlds: ['A'], covered_worlds: 1 });
+    render(<InstalledContentPanel {...baseProps} rows={[row]} locked lockedReason={reason} />);
+    expect(screen.getByRole('status').textContent).toBe(reason);
+    const add = screen.getByRole('button', { name: 'Unavailable' });
+    expect(add).toBeDisabled();
+    expect(add.getAttribute('title')).toBe(reason);
+    expect(screen.getByRole('button', { name: /Remove VeinMiner/ }).getAttribute('title')).toBe(reason);
+  });
+});

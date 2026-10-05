@@ -6245,6 +6245,19 @@ mod tests {
                 name.as_bytes(),
             );
         }
+        let overrides = PlanOverrides {
+            skip_health_scan: true,
+            ..overrides
+        };
+        removal_plan_for(&instance_dir, filenames, dependents, overrides)
+    }
+
+    fn removal_plan_for(
+        instance_dir: &Path,
+        filenames: &[&str],
+        dependents: &[(&str, &[&str])],
+        overrides: PlanOverrides,
+    ) -> ResolvedInstallPlan {
         let operations = filenames
             .iter()
             .map(|file| ResolvedOperation::Remove {
@@ -6267,10 +6280,7 @@ mod tests {
         intent.action = InstallAction::BatchRemove {
             filenames: filenames.iter().map(|file| (*file).into()).collect(),
         };
-        intent.overrides = PlanOverrides {
-            skip_health_scan: true,
-            ..overrides
-        };
+        intent.overrides = overrides;
         let prepared = PreparedPlan {
             operation: ResolvedOperation::BatchRemove { operations },
             dependencies: vec![],
@@ -6279,7 +6289,7 @@ mod tests {
         };
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .block_on(InstallPipeline.resolve_plan(intent, instance_dir, prepared, &NoopReporter))
             .unwrap()
     }
 
@@ -6359,6 +6369,87 @@ mod tests {
             .blocking_errors
             .iter()
             .any(|error| error.code == "ERR_BROKEN_REVERSE_DEP"));
+    }
+
+    /// Removing a dependency on purpose (`RemoveAnyway`) must still leave the
+    /// instance reporting the missing dependency, on the removal itself and on
+    /// every later health read.
+    #[test]
+    fn remove_anyway_of_a_dependency_leaves_a_missing_dependency_blocker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        for (id, filename, depends) in [
+            ("fabric-api", "fabric-api.jar", serde_json::json!({})),
+            (
+                "entityculling",
+                "entityculling.jar",
+                serde_json::json!({ "fabric-api": "*" }),
+            ),
+        ] {
+            let source = tmp.path().join(filename);
+            write_fabric_test_jar(
+                &source,
+                serde_json::json!({
+                    "schemaVersion": 1, "id": id, "version": "1.0.0", "depends": depends
+                }),
+            );
+            seed_installed_mod(
+                &instance_dir,
+                id,
+                filename,
+                "1.0",
+                &std::fs::read(&source).unwrap(),
+            );
+        }
+        // A warm report from before the removal must not survive it.
+        let manifest =
+            crate::helpers::read_manifest(&instance_dir.join("instance_manifest.json")).unwrap();
+        let before = crate::health::cached_health(&instance_dir, &manifest, None, None);
+        assert!(before.blockers.is_empty(), "{:?}", before.blockers);
+
+        let mut plan = removal_plan_for(
+            &instance_dir,
+            &["fabric-api.jar"],
+            API_DEPENDENTS,
+            PlanOverrides {
+                force_conflict_resolution: BTreeMap::from([(
+                    "broken-dependency:fabric-api.jar".to_string(),
+                    ConflictResolution::RemoveAnyway,
+                )]),
+                skip_health_scan: false,
+                ..PlanOverrides::default()
+            },
+        );
+        plan.fingerprint = compute_plan_fingerprint(&plan).unwrap();
+        let outcome =
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.execute_plan(
+                    &plan,
+                    &instance_dir,
+                    "registry-rev",
+                    &NoopReporter,
+                    &CancellationToken::new(),
+                ));
+        match outcome {
+            InstallOutcome::HealthRollback { health_report, .. } => {
+                assert!(health_report.blockers.iter().any(|blocker| {
+                    blocker.kind == crate::health::BlockerKind::MissingRequiredDependency
+                        && blocker.mod_id.as_deref() == Some("fabric-api")
+                        && blocker.filename.as_deref() == Some("entityculling.jar")
+                }));
+            }
+            other => panic!("expected the removal to report a health blocker, got {other:?}"),
+        }
+        assert!(!instance_dir.join("mods/fabric-api.jar").exists());
+
+        let manifest =
+            crate::helpers::read_manifest(&instance_dir.join("instance_manifest.json")).unwrap();
+        let after = crate::health::cached_health(&instance_dir, &manifest, None, None);
+        assert!(after
+            .blockers
+            .iter()
+            .any(|blocker| blocker.kind == crate::health::BlockerKind::MissingRequiredDependency));
     }
 
     fn test_plan() -> ResolvedInstallPlan {

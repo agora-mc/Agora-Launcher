@@ -81,6 +81,19 @@ describe('parseConsoleLines', () => {
     expect(entries.map((e) => e.level)).toEqual(['ERROR', 'WARN', 'INFO']);
   });
 
+  it('classifies JVM notices on stderr as warnings, not errors', () => {
+    const entries = parseConsoleLines(
+      err(
+        'OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes',
+        'Java HotSpot(TM) 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated',
+        'Ignoring option ZGenerational; support was removed in 24.0',
+        'Exception in thread "main" java.lang.IllegalStateException: boom',
+        'Something broke',
+      ),
+    );
+    expect(entries.map((e) => e.level)).toEqual(['WARN', 'WARN', 'WARN', 'ERROR', 'ERROR']);
+  });
+
   it('parses legacy bracketed lines', () => {
     const entries = parseConsoleLines(
       out(

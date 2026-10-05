@@ -419,6 +419,20 @@ export function LiveInteractiveHost({
     void loadScene(instanceId, true);
   }, [loadScene, instanceId]);
 
+  // The base scene is read once, and a read taken while the game was running
+  // records the instance as busy. Canonical state only ever ADDS busy on top of
+  // it, so when the session ends the stale base would keep the "Busy" badge
+  // (and the disabled controls) until the user switched views. Read the
+  // instance again at the moment its session stops being active.
+  const processActive = processState !== null
+    && processState.instanceId === instanceId
+    && !TERMINAL_PHASES.has(processState.phase);
+  const wasProcessActiveRef = useRef(processActive);
+  useEffect(() => {
+    if (wasProcessActiveRef.current && !processActive) refresh();
+    wasProcessActiveRef.current = processActive;
+  }, [processActive, refresh]);
+
   const handleIntent = useCallback(
     (intent: VisualIntent) => {
       const scene = displayData?.scene;

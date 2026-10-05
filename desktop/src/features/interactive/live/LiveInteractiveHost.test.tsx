@@ -464,6 +464,37 @@ describe('LiveInteractiveHost (High Interaction live surface)', () => {
     expect(play()).toHaveTextContent('Play');
   });
 
+  it('drops the Busy badge when the session it was read from ends (stale base scene)', async () => {
+    // The first read happens while the game is running, so the base scene says
+    // "busy". After the game exits the instance must be read again; otherwise
+    // the badge outlives the session until the user switches views.
+    let reads = 0;
+    const load = vi.fn(async (): Promise<LiveHostData> => {
+      reads += 1;
+      return makeData({
+        instance: { ...baseScene().instance!, lockState: reads === 1 ? 'busy' : 'editable' },
+      });
+    });
+    const host = (phase: string) => (
+      <LiveInteractiveHost
+        instanceId="inst-1"
+        onUseStandardView={() => undefined}
+        load={load}
+        processState={{ phase, instanceId: 'inst-1' }}
+      />
+    );
+    const { rerender } = render(host('running'));
+    await waitFor(() => expect(screen.getAllByText('My World').length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByTestId('live-instance-editor')).toHaveAttribute('data-lock-state', 'busy');
+
+    rerender(host('stopping'));
+    rerender(host('exited'));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByTestId('live-instance-editor')).toHaveAttribute('data-lock-state', 'editable'),
+    );
+  });
+
   it('paints the world from the partial read before the enrichment lands', async () => {
     let finish: (d: LiveHostData) => void = () => undefined;
     const partial: LiveHostData = {
