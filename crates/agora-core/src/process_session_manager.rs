@@ -31,6 +31,10 @@ pub struct ProcessSessionManager {
     /// Used by delegated monitoring to detect same-instance replacement
     /// without cross-instance interference.
     latest_per_instance: Arc<RwLock<HashMap<String, u64>>>,
+    /// Sessions the user stopped through [`Self::terminate`]. `terminate`
+    /// removes the session itself, so the launch task that later observes the
+    /// process exit uses this to tell a requested stop from a crash.
+    user_stopped: Arc<RwLock<std::collections::HashSet<u64>>>,
 }
 
 impl ProcessSessionManager {
@@ -38,7 +42,16 @@ impl ProcessSessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             latest_per_instance: Arc::new(RwLock::new(HashMap::new())),
+            user_stopped: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Consume the "user requested stop" marker for `session_id`.
+    pub fn take_user_stop(&self, session_id: u64) -> bool {
+        self.user_stopped
+            .write()
+            .map(|mut set| set.remove(&session_id))
+            .unwrap_or(false)
     }
 
     /// Record that `session_id` is the latest session for `instance_id`.
@@ -153,6 +166,9 @@ impl ProcessSessionManager {
                 s.user_cancelled = true;
             }
         }
+        if let Ok(mut set) = self.user_stopped.write() {
+            set.insert(session_id);
+        }
 
         // Phase 4 — kill.
         let kill_result = Self::kill_pid(session.pid);
@@ -170,6 +186,9 @@ impl ProcessSessionManager {
                 })?;
                 if let Some(s) = map.get_mut(&session_id) {
                     s.user_cancelled = false;
+                }
+                if let Ok(mut set) = self.user_stopped.write() {
+                    set.remove(&session_id);
                 }
                 Err(LauncherError::Generic {
                     code: "ERR_KILL_FAILED".into(),

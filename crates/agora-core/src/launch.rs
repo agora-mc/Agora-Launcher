@@ -417,6 +417,28 @@ pub fn maven_name_to_path(name: &str) -> String {
 // Version merging
 // ---------------------------------------------------------------------------
 
+/// Identity used when a child profile overrides a parent library:
+/// `group:artifact[:classifier][@ext]` (the version is deliberately excluded).
+/// Names that are not Maven-shaped fall back to the full name.
+fn library_replacement_key(name: &str) -> String {
+    let (coords, ext) = match name.split_once('@') {
+        Some((coords, ext)) => (coords, Some(ext)),
+        None => (name, None),
+    };
+    let parts: Vec<&str> = coords.split(':').collect();
+    if parts.len() < 3 {
+        return name.to_string();
+    }
+    let classifier = parts.get(3).copied().unwrap_or("");
+    format!(
+        "{}:{}:{}@{}",
+        parts[0],
+        parts[1],
+        classifier,
+        ext.unwrap_or("jar")
+    )
+}
+
 /// Merge a partial version info (from a Forge/NeoForge install_profile) with
 /// the base Mojang version. The base version takes priority for most fields.
 pub fn merge_forge_version(partial: &VersionInfo, base: &VersionInfo) -> VersionInfo {
@@ -425,20 +447,44 @@ pub fn merge_forge_version(partial: &VersionInfo, base: &VersionInfo) -> Version
     // fields cannot be silently discarded as new metadata fields are added.
     let mut merged = base.clone();
 
-    // Preserve library order while allowing a partial profile to replace an
-    // exact Maven coordinate. Different versions remain distinct entries;
-    // collapsing by group:artifact would suppress legitimate loader libraries.
-    for partial_library in &partial.libraries {
-        if let Some(index) = merged
-            .libraries
-            .iter()
-            .position(|base_library| base_library.name == partial_library.name)
-        {
-            merged.libraries[index] = partial_library.clone();
-        } else {
-            merged.libraries.push(partial_library.clone());
+    // The child (loader) profile wins over the parent for the same
+    // group:artifact[:classifier][@ext], matching the official launcher and
+    // Prism. A different version of the same artifact must not stay on the
+    // classpath (Fabric ships asm 9.10.1 while vanilla 1.21.2 lists 9.3, and
+    // Knot aborts on duplicate ASM classes). The child's libraries take the
+    // first replaced base slot so ordering is preserved; other base entries with
+    // that key are dropped. Base-only duplicates (e.g. same coordinate with
+    // different OS rules) are untouched when the child does not declare the key,
+    // and duplicates within the child itself are all kept.
+    let partial_keys: std::collections::HashSet<String> = partial
+        .libraries
+        .iter()
+        .map(|library| library_replacement_key(&library.name))
+        .collect();
+    let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut libraries = Vec::with_capacity(merged.libraries.len() + partial.libraries.len());
+    for base_library in merged.libraries.drain(..) {
+        let key = library_replacement_key(&base_library.name);
+        if !partial_keys.contains(&key) {
+            libraries.push(base_library);
+        } else if placed.insert(key.clone()) {
+            libraries.extend(
+                partial
+                    .libraries
+                    .iter()
+                    .filter(|library| library_replacement_key(&library.name) == key)
+                    .cloned(),
+            );
         }
     }
+    libraries.extend(
+        partial
+            .libraries
+            .iter()
+            .filter(|library| !placed.contains(&library_replacement_key(&library.name)))
+            .cloned(),
+    );
+    merged.libraries = libraries;
 
     if !partial.main_class.is_empty() {
         merged.main_class = partial.main_class.clone();
@@ -747,24 +793,75 @@ mod tests {
     }
 
     #[test]
-    fn merge_loader_keeps_distinct_maven_versions() {
+    fn merge_loader_replaces_same_artifact_with_different_version() {
+        let lib = |name: &str| Library {
+            name: name.into(),
+            ..Default::default()
+        };
         let base = VersionInfo {
-            libraries: vec![Library {
-                name: "org.example:library:1.0".into(),
-                ..Default::default()
-            }],
+            libraries: vec![
+                lib("a:first:1"),
+                lib("org.ow2.asm:asm:9.3"),
+                lib("a:last:1"),
+            ],
             ..Default::default()
         };
         let partial = VersionInfo {
-            libraries: vec![Library {
-                name: "org.example:library:2.0".into(),
-                ..Default::default()
-            }],
+            libraries: vec![
+                lib("org.ow2.asm:asm:9.10.1"),
+                lib("org.ow2.asm:asm-tree:9.10.1"),
+            ],
             ..Default::default()
         };
 
         let merged = merge_forge_version(&partial, &base);
-        assert_eq!(merged.libraries.len(), 2);
+        let names: Vec<&str> = merged.libraries.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "a:first:1",
+                "org.ow2.asm:asm:9.10.1",
+                "a:last:1",
+                "org.ow2.asm:asm-tree:9.10.1"
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_loader_does_not_collapse_classifier_or_untouched_base_duplicates() {
+        let lib = |name: &str| Library {
+            name: name.into(),
+            ..Default::default()
+        };
+        let base = VersionInfo {
+            libraries: vec![
+                lib("org.lwjgl:lwjgl:3.3.3"),
+                lib("org.lwjgl:lwjgl:3.3.3:natives-windows"),
+                lib("x:y:1"),
+                lib("x:y:1"),
+            ],
+            ..Default::default()
+        };
+        let partial = VersionInfo {
+            libraries: vec![lib("org.lwjgl:lwjgl:3.3.4")],
+            ..Default::default()
+        };
+
+        let merged = merge_forge_version(&partial, &base);
+        let names: Vec<&str> = merged.libraries.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "org.lwjgl:lwjgl:3.3.4",
+                "org.lwjgl:lwjgl:3.3.3:natives-windows",
+                "x:y:1",
+                "x:y:1"
+            ]
+        );
+        assert_ne!(
+            library_replacement_key("a:b:1"),
+            library_replacement_key("a:b:1@zip")
+        );
     }
 
     // -----------------------------------------------------------------------

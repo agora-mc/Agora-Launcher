@@ -852,9 +852,10 @@ pub(crate) async fn list_raw_modrinth_versions_http(
         url.push_str("?game_versions=");
         url.push_str(&urlencoding::encode(&gv));
         let pt = project_type.unwrap_or("mod");
-        if pt == "mod" || pt == "modpack" {
-            let lv =
-                serde_json::to_string(&[inst.loader.as_str()]).unwrap_or_else(|_| "[]".to_string());
+        // Mods use the instance loader, data packs the `datapack` loader;
+        // resource packs and shaders are filtered by game version only.
+        if let Some(loader) = crate::resolver::modrinth_version_loaders(pt, &inst.loader) {
+            let lv = serde_json::to_string(&[loader.as_str()]).unwrap_or_else(|_| "[]".to_string());
             url.push_str("&loaders=");
             url.push_str(&urlencoding::encode(&lv));
         }

@@ -448,6 +448,26 @@ export interface InstalledContentRow {
   agora_score: number | null;
   modrinth_downloads: number | null;
   metadata_status: MetadataStatus;
+  /** Data pack rows only: which worlds the pack is synced into. */
+  world_sync?: DatapackWorldStatus | null;
+}
+
+/** Where a data pack goes: Minecraft only loads data packs from inside each world. */
+export interface DatapackWorldStatus {
+  all_worlds: boolean;
+  /** Chosen world folders; only meaningful when `all_worlds` is false. */
+  selected_worlds: string[];
+  /** Every existing world of the instance. */
+  available_worlds: string[];
+  /** How many existing worlds the pack is synced into. */
+  covered_worlds: number;
+}
+
+export interface DatapackSyncReport {
+  worlds: number;
+  copied: number;
+  removed: number;
+  warnings: string[];
 }
 
 export interface InstalledContentMetadata {
@@ -1208,6 +1228,7 @@ export type EvidenceSourceKind =
   | 'LatestLog'
   | 'DebugLog'
   | 'JvmFatalErrorLog'
+  | 'LaunchOutput'
   | 'UserAdded'
   | 'UserPasted';
 
@@ -1295,6 +1316,16 @@ export const disableInstanceMod = (instanceId: string, filename: string) =>
 export const enableInstanceMod = (instanceId: string, filename: string) =>
   invoke<void>('enable_instance_mod', { instanceId, filename });
 
+/** Choose which worlds a data pack goes to (`null` = all worlds) and sync now. */
+export const setDatapackWorlds = (instanceId: string, filename: string, worlds: string[] | null) =>
+  invoke<DatapackSyncReport>('set_datapack_worlds', { instanceId, filename, worlds });
+/** Existing worlds of an instance (folders under saves/ with a level.dat). */
+export const listInstanceWorlds = (instanceId: string) =>
+  invoke<string[]>('list_instance_worlds', { instanceId });
+/** Copy the enabled data packs into the instance's worlds now. */
+export const syncInstanceDatapacks = (instanceId: string) =>
+  invoke<DatapackSyncReport>('sync_instance_datapacks', { instanceId });
+
 export const exportInstancePack = (instanceId: string, format: 'json' | 'mrpack') =>
   invoke<string>('export_instance_pack', { instanceId, format });
 
@@ -1306,6 +1337,9 @@ export const setCustomModIcon = (instanceId: string, filename: string, sourcePat
   invoke<string>('set_custom_mod_icon', { instanceId, filename, sourcePath });
 export const getCustomIcon = (instanceId: string, target: 'instance' | 'mod', filename?: string) =>
   invoke<string | null>('get_custom_icon', { instanceId, target, filename: filename ?? null });
+/** An About-text image from any public host as a `data:` URL; core rejects anything that is not an image. */
+export const fetchCommunityImage = (url: string) =>
+  invoke<string>('fetch_community_image', { url });
 
 export type LauncherKind = 'prism' | 'curse_forge' | 'modrinth';
 export type CandidateStatus = 'ready' | 'needs_review' | { unsupported: { reasons: string[] } };
@@ -1593,8 +1627,8 @@ export const technicSearch = (query: string, limit?: number) =>
   invoke<TechnicSearchResult[]>('technic_search', { query, limit });
 export const technicPackDetail = (slug: string) =>
   invoke<TechnicPackDetail>('technic_pack_detail', { slug });
-export const installTechnicSolderPack = (slug: string, solder: string, build: string) =>
-  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build });
+export const installTechnicSolderPack = (slug: string, solder: string, build: string, instanceName?: string) =>
+  invoke<ImportResult>('install_technic_solder_pack', { slug, solder, build, instanceName: instanceName ?? null });
 export const installTechnicZipPack = (
   name: string,
   downloadUrl: string,
@@ -1602,6 +1636,7 @@ export const installTechnicZipPack = (
   minecraftVersion: string,
   loader: string,
   loaderVersion: string,
+  instanceName?: string,
 ) =>
   invoke<ImportResult>('install_technic_zip_pack', {
     name,
@@ -1610,6 +1645,7 @@ export const installTechnicZipPack = (
     minecraftVersion,
     loader,
     loaderVersion,
+    instanceName: instanceName ?? null,
   });
 
 // --- Phase 7: Curated annotation overlay for registry-backed items ---
@@ -2061,6 +2097,10 @@ export interface Snapshot {
   created_at: string;
   file_count: number;
   size_estimate: number;
+  /** Absent on snapshots taken before origins were recorded. */
+  origin?: 'user' | 'migration' | 'automatic';
+  /** The recorded origin, or the one inferred from the label for older snapshots. */
+  effective_origin: 'user' | 'migration' | 'automatic';
   is_lkg: boolean;
   is_current_lkg: boolean;
   is_pre_restore: boolean;
@@ -2272,6 +2312,9 @@ export interface ModMigrationEntry {
   last_updated?: string;
   has_target_build?: boolean;
   successor?: SuccessorInfo;
+  /** The build a migration would install; set only on `ready` entries whose
+   *  checker could name one. */
+  target_build?: TargetBuildInfo;
   /** Set only on `unknown` — why the check could not be made. */
   error_code?: string;
   error_message?: string;
@@ -2289,7 +2332,7 @@ export interface MigrationReport {
   warnings: string[];
 }
 
-/** Can this instance move to a newer Minecraft version, and what breaks?
+/** Can this instance move to another Minecraft version (newer or older), and what breaks?
  *  Read-only — running the migration is a separate, explicit step. */
 export const getMigrationReport = (instanceId: string, targetVersion: string) =>
   invoke<MigrationReport>('get_migration_report', { instanceId, targetVersion });
@@ -2394,6 +2437,7 @@ export interface TargetBuildInfo {
   sha1?: string;
   sha512?: string;
   size?: number;
+  is_prerelease?: boolean;
 }
 
 /** Serialized `version_migration::RejectionReason` (camelCase). */
@@ -2448,9 +2492,17 @@ export type MigrationOutcome =
   | { type: 'blocked'; reasons: MigrationRejectionReason[] }
   /** Mutated mid-way and verifiably restored. */
   | { type: 'rolled-back'; phase: string; error: string; snapshotId?: string }
-  /** `rolledBack: false` means the instance may be mid-state and `snapshotId`
-   *  is the recovery point. */
-  | { type: 'failed'; phase: string; error: string; rolledBack: boolean; snapshotId?: string };
+  /** `instanceChanged: false` means it stopped before anything in the instance
+   *  was touched. Otherwise `rolledBack: false` means the instance may be
+   *  mid-state and `snapshotId` is the recovery point. */
+  | {
+      type: 'failed';
+      phase: string;
+      error: string;
+      rolledBack: boolean;
+      instanceChanged: boolean;
+      snapshotId?: string;
+    };
 
 /** Plan a migration without performing it. */
 export const planVersionMigration = (instanceId: string, targetVersion: string) =>
@@ -2651,8 +2703,21 @@ export const applyLoadoutProfile = (instanceId: string, profileName: string) =>
 export const deleteLoadoutProfile = (instanceId: string, profileName: string) =>
   invoke<void>('delete_loadout_profile', { instanceId, profileName });
 
-export const importInstance = (sourcePath: string, symlinkSaves: boolean) =>
-  invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves });
+export const importInstance = (sourcePath: string, symlinkSaves: boolean, name?: string) =>
+  invoke<ImportResult>('import_instance', { sourcePath, symlinkSaves, name: name ?? null });
+
+export interface ImportNamePreview {
+  default_name: string;
+  name_taken: boolean;
+  suggested_name: string;
+}
+
+export const previewImportName = (sourcePath: string) =>
+  invoke<ImportNamePreview>('preview_import_name', { sourcePath });
+
+/** The same name check for Technic and provider packs, which have no file to inspect. */
+export const previewPackInstanceName = (name: string) =>
+  invoke<ImportNamePreview>('preview_pack_instance_name', { name });
 
 export const cancelOperation = (operationId: string) =>
   invoke<boolean>('cancel_operation', { operationId });
@@ -2961,16 +3026,16 @@ export const providerInstallPreview = (
     loader: loader ?? null,
   });
 
-export const providerInstallPack = (itemId: string, versionId?: string) =>
-  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null });
+export const providerInstallPack = (itemId: string, versionId?: string, instanceName?: string) =>
+  invoke<ImportResult>('provider_install_pack', { itemId, versionId: versionId ?? null, instanceName: instanceName ?? null });
 
 /**
  * Install a catalog entry that pins one version of a provider's pack.
  * Fails with `ERR_PROVIDER_PACK_CHANGED` when the source now serves something
  * other than what was reviewed; `acceptChanged` is the user's answer to that.
  */
-export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean) =>
-  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged });
+export const installCatalogProviderPack = (itemId: string, acceptChanged: boolean, instanceName?: string) =>
+  invoke<ImportResult>('install_catalog_provider_pack', { itemId, acceptChanged, instanceName: instanceName ?? null });
 
 // --- Repair loader ---
 
@@ -3134,7 +3199,7 @@ export interface JavaRuntimeDownloadDisabledDetails {
 }
 
 /** Serialized `launch_history::LaunchResult`. */
-export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'unknown';
+export type LaunchHistoryOutcome = 'ok' | 'crashed' | 'stopped' | 'unknown';
 
 /** Serialized `launch_history::LaunchRecord`. */
 export interface LaunchRecord {

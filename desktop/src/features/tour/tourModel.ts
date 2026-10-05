@@ -208,12 +208,20 @@ export const TOUR_STEPS: readonly TourStep[] = [
   {
     id: 'install-pick-instance',
     title: 'Choose where it goes',
-    body: 'Pick the instance you want this mod installed into.',
+    body:
+      'Pick the instance you want this mod installed into. If the right one is already selected, '
+      + 'the tour moves straight on.',
     anchors: ['install-instance-select'],
     gate: 'install-panel',
     advance: {
       kind: 'any',
-      of: [{ kind: 'change' }, { kind: 'appear', anchor: 'install-version-list' }],
+      of: [
+        { kind: 'change' },
+        // The picker preselects the instance you came from, and re-picking the
+        // same option fires no change event; an instance being chosen is enough.
+        { kind: 'appear', anchor: 'install-instance-chosen' },
+        { kind: 'appear', anchor: 'install-version-list' },
+      ],
     },
     waitingHint: 'Select your instance from the list.',
     offTrackHint: 'Reopen “Install to Instance” to continue.',
@@ -222,7 +230,9 @@ export const TOUR_STEPS: readonly TourStep[] = [
   {
     id: 'install-next-version',
     title: 'Then pick a version',
-    body: 'Agora only offers versions that fit the instance’s Minecraft version and loader.',
+    body:
+      'Agora lists every version it knows of, with the ones that fit the instance’s Minecraft '
+      + 'version and loader first. Anything that may not fit is tucked away under “Other versions”.',
     anchors: ['install-next-version'],
     gate: 'install-panel',
     advance: { kind: 'appear', anchor: 'install-version-list' },
@@ -232,8 +242,11 @@ export const TOUR_STEPS: readonly TourStep[] = [
   },
   {
     id: 'install-choose-version',
-    title: 'Take the newest compatible one',
-    body: 'Newest first. Compatible releases are marked, so the top of the list is usually the one you want.',
+    title: 'Take the newest one that fits',
+    body:
+      'Versions that fit your instance come first — releases, then betas, newest first — and are '
+      + 'marked “compatible”. The top entry is usually the one you want; “Other versions (may not '
+      + 'work)” stays collapsed unless you open it.',
     anchors: ['install-version-first', 'install-version-list'],
     gate: 'install-panel',
     advance: { kind: 'appear', anchor: 'install-confirm' },

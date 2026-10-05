@@ -25,6 +25,7 @@ import {
   type InstanceRow,
 } from '../lib/tauri';
 import { takeOfferedBrowseContext } from '../lib/browseContextHandoff';
+import { contentTypeUnavailableReason, loaderFilterApplies } from '../lib/browseFilters';
 import { useRegistryState } from '../lib/useRegistryState';
 import { loadPreference } from '../features/interactive/live/presentationPreference';
 import { RegistryStatusView } from '../components/registry-status-view';
@@ -378,7 +379,7 @@ function RegistryRecoveryShell({
   );
 }
 
-export function Browse({ onSelectMod, onOpenInstance, initialInstanceId, initialContentType }: { onSelectMod?: (id: string, instanceId?: string) => void; onOpenInstance?: (instanceId: string) => void; initialInstanceId?: string; initialContentType?: string }) {
+export function Browse({ onSelectMod, onOpenInstance, initialInstanceId, initialContentType }: { onSelectMod?: (id: string, instanceId?: string, contentType?: string) => void; onOpenInstance?: (instanceId: string) => void; initialInstanceId?: string; initialContentType?: string }) {
   // Catalog availability — show the recovery panel when there is nothing left
   // to browse. These are the ONLY hook calls in this component, and both are
   // unconditional, so the hook count is stable.
@@ -435,7 +436,7 @@ function BrowseContent({
   registryError: regError,
   registryActions: regActions,
 }: {
-  onSelectMod?: (id: string, instanceId?: string) => void;
+  onSelectMod?: (id: string, instanceId?: string, contentType?: string) => void;
   onOpenInstance?: (instanceId: string) => void;
   initialInstanceId?: string;
   initialContentType?: string;
@@ -481,7 +482,12 @@ function BrowseContent({
   const [category, setCategory] = useState<string | null>(null);
   const [contentType, setContentType] = useState<string | null>(initialContentType ?? 'mod');
   const [mcVersion, setMcVersion] = useState<string | null>(null);
-  const [loader, setLoader] = useState<string | null>(null);
+  // The loader the user (or the instance context) chose. What the search
+  // actually uses is `loader`: mod loaders only mean something for mods, so
+  // "Add Resource Pack" from a Fabric instance must not hide every pack that
+  // is not tagged fabric.
+  const [modLoader, setLoader] = useState<string | null>(null);
+  const loader = loaderFilterApplies(contentType) ? modLoader : null;
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebounce(query, 250);
   const [layout, setLayout] = useState<'list' | 'grid'>(() => {
@@ -611,6 +617,7 @@ function BrowseContent({
         ? 'curated'
         : isProviderItemId(item.id) ? 'provider' : 'modrinth',
       itemId: item.id,
+      ...(item.contentType && item.contentType !== 'mod' ? { contentType: item.contentType } : {}),
     }));
     return {
       action: { type: 'batch-install', items: batchItems },
@@ -698,7 +705,10 @@ function BrowseContent({
     // App also saves `main`'s scrollTop for the standard list, but the Bazaar
     // reaches the detail page through the same handler and was never covered.
     parkBrowseSnapshot(document.querySelector('main')?.scrollTop ?? 0);
-    onSelectMod?.(id, activeInstanceId || undefined);
+    // The type being browsed rides along: a mod with a companion data pack is
+    // typed "mod" on Modrinth, so the page cannot tell which format was
+    // wanted unless told.
+    onSelectMod?.(id, activeInstanceId || undefined, contentType ?? undefined);
   };
 
   const handleInstallSelected = () => {
@@ -1464,17 +1474,19 @@ function BrowseContent({
             <option key={v} value={v}>MC {v}</option>
           ))}
         </select>
-        <select
-          value={loader ?? ''}
-          onChange={(e) => setLoader(e.target.value || null)}
-          className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
-          title="Filter by modloader"
-        >
-          <option value="">Any loader</option>
-          {loaders.map((l) => (
-            <option key={l} value={l}>{l}</option>
-          ))}
-        </select>
+        {loaderFilterApplies(contentType) && (
+          <select
+            value={loader ?? ''}
+            onChange={(e) => setLoader(e.target.value || null)}
+            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+            title="Filter by modloader"
+          >
+            <option value="">Any loader</option>
+            {loaders.map((l) => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
+        )}
         <select
           value={sort}
           onChange={(e) => handleSortChange(e.target.value as SortOption)}
@@ -1561,7 +1573,7 @@ function BrowseContent({
             ))}
             {!metaLoading && visibleProviderCategories.length === 0 && (
               <span className="self-center text-xs text-muted-foreground">
-                No source categories are available for this content type.
+                {contentTypeUnavailableReason(contentType) ? 'Categories are not available for this content type.' : 'No source categories are available for this content type.'}
               </span>
             )}
           </div>
@@ -1679,7 +1691,12 @@ function BrowseContent({
       ) : items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-card p-6 text-center">
           <p className="text-muted-foreground">No items to display.</p>
-          {hasActiveFilters && (
+          {contentTypeUnavailableReason(contentType) && (
+            <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
+              {contentTypeUnavailableReason(contentType)}
+            </p>
+          )}
+          {hasActiveFilters && !contentTypeUnavailableReason(contentType) && (
             <button
               onClick={clearFilters}
               className="mt-2 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"

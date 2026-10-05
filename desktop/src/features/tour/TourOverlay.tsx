@@ -11,7 +11,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { acceptsContinue, watchedAnchors, type TourStep } from './tourModel';
-import { findAnchor, isAnchorDisabled, isAnchorPresent, prefersReducedMotion } from './tourDom';
+import { findAnchor, isAnchorDisabled, isAnchorPresent, isFullyInView, prefersReducedMotion } from './tourDom';
 import { useTour, type TourContextValue } from './TourProvider';
 import './tour.css';
 
@@ -178,8 +178,7 @@ function TourLayer({ tour, step }: { tour: TourContextValue; step: TourStep }) {
     if (!primaryAnchor) return;
     const element = findAnchor(primaryAnchor);
     if (!element) return;
-    const rect = element.getBoundingClientRect();
-    if (rect.top >= 0 && rect.bottom <= window.innerHeight) return;
+    if (isFullyInView(element)) return;
     element.scrollIntoView({
       block: 'center',
       behavior: prefersReducedMotion() ? 'auto' : 'smooth',

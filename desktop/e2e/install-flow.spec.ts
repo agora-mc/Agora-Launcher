@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { TOUR_STEPS } from '../src/features/tour/tourModel';
 
 // ---------------------------------------------------------------------------
 // Types for the install call queue
@@ -163,6 +164,8 @@ interface MockOptions {
   modrinthProject?: Record<string, unknown>;
   /** Override for get_dependency_graph responses (filename edges). */
   dependencyGraph?: Array<{ from_filename: string; to_filename: string; requirement: 'required' | 'optional' }>;
+  /** Override for the curated version list list_mod_versions returns. */
+  versions?: unknown[];
 }
 
 async function installFlowMock(page: Page, opts: MockOptions = {}) {
@@ -170,10 +173,11 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
   const effectiveRegistryItems = registryItems ?? { 'test-mod': CURATED_MOD, 'bridged-mod': MODRINTH_BRIDGE_MOD };
   const modrinthProject = opts.modrinthProject ?? { 'modrinth-abc': MODRINTH_PROJECT };
   const dependencyGraph = opts.dependencyGraph ?? [];
+  const versions = opts.versions ?? null;
 
   await page.addInitScript(
-    (params: { mrEnabled: boolean; items: Record<string, unknown>; mrProject: Record<string, unknown>; dependencyGraph: Array<{ from_filename: string; to_filename: string; requirement: 'required' | 'optional' }> }) => {
-      const { mrEnabled, items, mrProject, dependencyGraph } = params;
+    (params: { mrEnabled: boolean; items: Record<string, unknown>; mrProject: Record<string, unknown>; dependencyGraph: Array<{ from_filename: string; to_filename: string; requirement: 'required' | 'optional' }>; versions: unknown[] | null }) => {
+      const { mrEnabled, items, mrProject, dependencyGraph, versions } = params;
 
       const installCalls: InstallCall[] = [];
 
@@ -287,7 +291,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
           if (command === 'is_modrinth_enabled') return Promise.resolve(mrEnabled);
           if (command === 'list_mod_versions') {
             return Promise.resolve({
-              items: [
+              items: versions ?? [
                 { version: '1.0.0', filename: 'test-mod-1.0.0.jar', mc_version: '1.20.1', loader: 'fabric', version_compat: 'compatible', release_date: '2026-06-01', sha256: 'abc123def456' },
                 { version: '0.9.0', filename: 'test-mod-0.9.0.jar', mc_version: '1.20.1', loader: 'fabric', version_compat: 'major_match', release_date: '2026-05-01', sha256: 'def789abc012' },
               ],
@@ -335,7 +339,7 @@ async function installFlowMock(page: Page, opts: MockOptions = {}) {
         __installCalls: installCalls,
       });
     },
-    { mrEnabled: modrinthEnabled, items: effectiveRegistryItems, mrProject: modrinthProject, dependencyGraph } as any,
+    { mrEnabled: modrinthEnabled, items: effectiveRegistryItems, mrProject: modrinthProject, dependencyGraph, versions } as any,
   );
 }
 
@@ -664,8 +668,8 @@ test.describe('Release C3 — Install flow entry points', () => {
 
     await page.getByText('Test Instance').first().waitFor();
 
-    // The button sits next to Import Mod in the Mods panel and counts distinct
-    // recommended targets.
+    // The button sits next to Import Mod in the Mods panel and counts the
+    // entries the overlay lists (mods that recommend add-ons).
     await page.getByRole('button', { name: 'Optional dependencies (1)' }).click();
 
     const dialog = page.getByRole('dialog');
@@ -926,5 +930,56 @@ test.describe('Release C3 — Install flow behaviors', () => {
     // Error view shows the failure with Close (no Retry for non-retryable errors)
     await expectErrorView(page, 'Corrupt download: SHA-256 mismatch');
     await expect(page.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+  });
+});
+
+test.describe('Guided install version order', () => {
+  test('versions that fit come first and incompatible ones sit in a collapsed group', async ({ page }) => {
+    // A 1.21.2 instance: nine newer 1.21.3 releases do not fit, the 1.21.2 beta does.
+    const newer = Array.from({ length: 9 }, (_, i) => ({
+      version: `0.6.${9 - i}`, filename: `sodium-0.6.${9 - i}.jar`, mc_version: '1.21.3', loader: 'fabric',
+      version_compat: '', release_date: `2026-08-${String(20 - i).padStart(2, '0')}`,
+    }));
+    const fitting = [
+      { version: '0.6.0-beta.3', filename: 'sodium-0.6.0-beta.3.jar', mc_version: '1.21.2', loader: 'fabric', version_compat: 'compatible', release_date: '2026-05-01', is_prerelease: true },
+      { version: '0.5.11', filename: 'sodium-0.5.11.jar', mc_version: '1.21.2', loader: 'fabric', version_compat: 'compatible', release_date: '2026-04-01' },
+    ];
+    // Backend order is deliberately the wrong one: the picker must not trust it.
+    await installFlowMock(page, { versions: [...newer, ...fitting] });
+    await page.goto('/');
+    await browseToModDetail(page);
+    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await pickFirstInstanceSelect(page, 'test-instance');
+    await page.getByRole('button', { name: 'Next: Choose Version' }).click();
+
+    const list = page.locator('[data-tour="install-version-list"]');
+    await expect(list).toBeVisible();
+    // The stable fitting release leads, then the fitting beta; nothing that does not fit is above them.
+    const rows = list.locator('li[role="button"]:visible');
+    await expect(rows.first()).toContainText('0.5.11');
+    await expect(rows.nth(1)).toContainText('0.6.0-beta.3');
+    await expect(rows).toHaveCount(2);
+    // The tour's "top entry" anchor is the first fitting version.
+    await expect(page.locator('[data-tour="install-version-first"]:visible')).toContainText('0.5.11');
+
+    const other = list.locator('details');
+    await expect(other).toContainText('Other versions (may not work)');
+    await expect(other).not.toHaveAttribute('open', '');
+    await other.locator('summary').click();
+    await expect(other.locator('li[role="button"]')).toHaveCount(9);
+  });
+
+  test('the destination step moves on when the right instance is already selected', async ({ page }) => {
+    const stepIndex = TOUR_STEPS.findIndex((step) => step.id === 'install-pick-instance');
+    await page.addInitScript((index) => {
+      localStorage.setItem('agora-tour', JSON.stringify({ version: 1, status: 'running', index, completed: false }));
+      window.history.replaceState({ __agora: { type: 'mod-detail', itemId: 'test-mod', browseInstanceId: 'test-instance' } }, '');
+    }, stepIndex - 1);
+    await installFlowMock(page);
+    await page.goto('/');
+    // Opening the panel puts the tour on the destination step; the instance is
+    // preselected, so it must advance by itself to "Then pick a version".
+    await page.getByRole('button', { name: 'Install to Instance' }).click();
+    await expect(page.getByRole('dialog', { name: 'Guided tour' }).getByText('Then pick a version')).toBeVisible();
   });
 });

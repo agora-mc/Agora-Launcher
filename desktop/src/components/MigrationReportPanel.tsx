@@ -50,12 +50,18 @@ export function MigrationReportPanel({
   instanceId,
   currentVersion,
   loader,
+  onMigrated,
+  onMigratingChange,
 }: {
   instanceId: string;
   currentVersion: string;
   /** The instance's loader, so the target list only offers versions it has a
    *  build for. Omitted falls back to every known version. */
   loader?: string;
+  /** Called once a migration has been applied, so the editor can reload. */
+  onMigrated?: () => void;
+  /** True while a migration is being applied, so the editor can hold Play and Lock. */
+  onMigratingChange?: (migrating: boolean) => void;
 }) {
   const { confirm } = useConfirm();
   const [target, setTarget] = useState('');
@@ -110,21 +116,27 @@ export function MigrationReportPanel({
   const migrate = async () => {
     if (!plan) return;
     const leaving = plan.blockers;
+    const downgrade = compareVersionsDescending(plan.targetVersion, currentVersion) > 0;
+    const downgradeNote = downgrade
+      ? `${plan.targetVersion} is older than ${currentVersion}: worlds saved on the newer version may not open.`
+      : '';
     const confirmed = leaving.length === 0
       ? await confirm({
-        title: `Move this instance to ${plan.targetVersion}?`,
-        body: 'A snapshot is taken first, and a failed migration rolls back.',
+        title: `${downgrade ? 'Downgrade' : 'Move'} this instance to ${plan.targetVersion}?`,
+        body: `A snapshot is taken first, and a failed migration rolls back.${downgradeNote ? ` ${downgradeNote}` : ''}`,
         confirmLabel: 'Migrate',
       })
       : await confirm({
         title: `Move to ${plan.targetVersion} and leave ${leaving.length} item${leaving.length === 1 ? '' : 's'} at the current version?`,
-        body: leaving.map((reason) => `• ${reason.message}`).join('\n'),
+        body: leaving.map((reason) => `• ${reason.message}`).join('\n')
+          + (downgradeNote ? `\n\n${downgradeNote}` : ''),
         confirmLabel: 'Migrate',
       });
     if (!confirmed) return;
 
     setBusy(true);
     setError(null);
+    onMigratingChange?.(true);
     try {
       const outcome = await runVersionMigration(instanceId, plan.targetVersion, leaving.length > 0);
       switch (outcome.type) {
@@ -132,6 +144,7 @@ export function MigrationReportPanel({
           setStatus(`Now on ${outcome.toVersion}. ${outcome.replaced.length} item(s) replaced. Recovery snapshot: ${outcome.snapshotId}`);
           setReport(null);
           setPlan(null);
+          onMigrated?.();
           break;
         case 'blocked':
           setError(outcome.reasons.map((reason) => reason.message).join('; '));
@@ -140,16 +153,26 @@ export function MigrationReportPanel({
           setError(`Migration failed during ${outcome.phase} and was rolled back — the instance is as it was. ${outcome.error}`);
           break;
         case 'failed':
+          if (!outcome.instanceChanged) {
+            // Stopped while preparing (loader, downloads, checks): nothing in
+            // the instance was touched, so there is nothing to undo.
+            setError(`Migration stopped before changing anything: ${outcome.error}`);
+            break;
+          }
           setError(outcome.rolledBack
             ? `Migration failed during ${outcome.phase} and was undone. ${outcome.error}`
             : `Migration failed during ${outcome.phase} and could NOT be undone automatically. ${outcome.error}`
               + (outcome.snapshotId ? ` Restore snapshot ${outcome.snapshotId} from the Snapshots tab.` : ''));
+          // A failure that was not undone may have left the instance partly
+          // changed; the editor must show what is actually on disk.
+          if (!outcome.rolledBack) onMigrated?.();
           break;
       }
     } catch (e) {
       setError(formatError(e));
     } finally {
       setBusy(false);
+      onMigratingChange?.(false);
     }
   };
 
@@ -157,8 +180,7 @@ export function MigrationReportPanel({
     (report?.mods ?? []).filter((entry) => entry.status === status);
 
   // Both directions are supported, so split the list rather than hide one of
-  // them — an instance on the newest release otherwise showed only older
-  // versions under a heading that promised newer ones.
+  // them, and say which way each group moves.
   const newer = versions.filter((version) => compareVersionsDescending(version, currentVersion) < 0);
   const older = versions.filter((version) => compareVersionsDescending(version, currentVersion) > 0);
 
@@ -192,12 +214,12 @@ export function MigrationReportPanel({
             {versions.length === 0 ? 'No other versions available' : 'Choose a version…'}
           </option>
           {newer.length > 0 && (
-            <optgroup label="Newer">
+            <optgroup label="Upgrade (newer Minecraft)">
               {newer.map((version) => <option key={version} value={version}>{version}</option>)}
             </optgroup>
           )}
           {older.length > 0 && (
-            <optgroup label="Older">
+            <optgroup label="Downgrade (older Minecraft)">
               {older.map((version) => <option key={version} value={version}>{version}</option>)}
             </optgroup>
           )}
@@ -277,7 +299,21 @@ export function MigrationReportPanel({
                 <ul className="mt-1 space-y-1">
                   {entries.map((entry) => (
                     <li key={entry.filename} className="text-sm">
-                      <span>{entry.display_name}</span>
+                      <span
+                        title={entry.target_build
+                          ? `${entry.filename} → ${entry.target_build.filename}`
+                          : entry.filename}
+                      >
+                        {entry.display_name}
+                      </span>
+                      {entry.target_build && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          {entry.installed_version
+                            ? `${entry.installed_version} → ${entry.target_build.version_number}`
+                            : `→ ${entry.target_build.version_number}`}
+                          {entry.target_build.is_prerelease ? ' (pre-release)' : ''}
+                        </span>
+                      )}
                       {entry.successor?.replacement_name && (
                         <span className="ml-2 text-xs text-muted-foreground">
                           → {entry.successor.replacement_name}

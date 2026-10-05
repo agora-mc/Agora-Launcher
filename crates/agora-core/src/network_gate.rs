@@ -109,6 +109,8 @@ fn endpoint_setting(category: ClientCategory) -> Option<&'static str> {
         // These carry content the user has separately consented to; the
         // consent check lives at the call site. Lockdown still applies.
         ClientCategory::PinnedArtifact | ClientCategory::ConsentedContent => None,
+        // Decoration on a page the user opened; Lockdown alone governs it.
+        ClientCategory::CommunityImage => None,
     }
 }
 

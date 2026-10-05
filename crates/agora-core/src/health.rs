@@ -668,7 +668,17 @@ fn resolve_capability_providers(
             )
         }));
         for (id, version, is_nested) in ids {
-            let canonical = aliases.resolve_or_self(id).to_lowercase();
+            // A bundled (jar-in-jar) module is only the module it declares. The
+            // curated alias map folds every Fabric API module id into the
+            // umbrella `fabric-api`, which is right for the outer jar that
+            // ships them, but a Sodium/Mod Menu that merely bundles
+            // `fabric-api-base` must not stand in for a missing `fabric-api`:
+            // the loader asks for the umbrella id and fails.
+            let canonical = if is_nested {
+                id.to_lowercase()
+            } else {
+                aliases.resolve_or_self(id).to_lowercase()
+            };
             let entries = providers.entry(canonical).or_insert_with(Vec::new);
             if !entries
                 .iter()
@@ -1201,6 +1211,9 @@ fn health_from_inventory(
             let dep_resolved = aliases.resolve_or_self(dep).to_lowercase();
             let dep_present = capability_providers.contains_key(&dep_resolved)
                 || dependency_presence_keys.contains(&dependency_id_key(&dep_resolved))
+                // A bundled module is registered under its own id (see
+                // `resolve_capability_providers`), so ask for the id as written.
+                || dependency_presence_keys.contains(&dependency_id_key(dep))
                 || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
@@ -1550,6 +1563,9 @@ fn health_from_inventory(
             let dep_resolved = aliases.resolve_or_self(dep).to_lowercase();
             let dep_present = capability_providers.contains_key(&dep_resolved)
                 || dependency_presence_keys.contains(&dependency_id_key(&dep_resolved))
+                // A bundled module is registered under its own id (see
+                // `resolve_capability_providers`), so ask for the id as written.
+                || dependency_presence_keys.contains(&dependency_id_key(dep))
                 || (connector_bridge_present && is_fabric_api_module(&dep_resolved));
             if !dep_present {
                 let display_name = if dep_resolved != dep.to_lowercase() {
@@ -2685,6 +2701,70 @@ mandatory=true
             .find(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
             .expect("disabled provider must leave a missing dependency blocker");
         assert_eq!(dependency_blocker.filename.as_deref(), Some("consumer.jar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mods such as Sodium and Mod Menu bundle individual Fabric API modules.
+    /// The curated alias map folds those ids into `fabric-api`, but a bundled
+    /// `fabric-api-base` is not the umbrella mod the loader asks for.
+    #[test]
+    fn bundled_fabric_api_modules_do_not_stand_in_for_a_removed_fabric_api() {
+        let dir = fresh_instance("bundled_fabric_api_modules");
+        let mods_dir = dir.join("mods");
+        let base = jar_bytes(&[(
+            "fabric.mod.json",
+            br#"{"id":"fabric-api-base","version":"1.0.0"}"#,
+        )]);
+        write_binary_jar(
+            &mods_dir,
+            "sodium.jar",
+            &[
+                (
+                    "fabric.mod.json",
+                    br#"{"id":"sodium","version":"1.0","jars":[{"file":"META-INF/jars/base.jar"}]}"#,
+                ),
+                ("META-INF/jars/base.jar", &base),
+            ],
+        );
+        write_jar(
+            &mods_dir,
+            "entityculling.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"entityculling","version":"1.0","depends":{"fabric-api":"*"}}"#,
+            )],
+        );
+        write_jar(
+            &mods_dir,
+            "module-consumer.jar",
+            &[(
+                "fabric.mod.json",
+                r#"{"id":"module_consumer","version":"1.0","depends":{"fabric-api-base":"*"}}"#,
+            )],
+        );
+        let reg_path = dir.join("registry.db");
+        build_alias_registry(&reg_path, &[("fabric-api", "fabric-api-base")]);
+        let manifest = tracked_manifest(&[
+            ("sodium.jar", "sodium"),
+            ("entityculling.jar", "entityculling"),
+            ("module-consumer.jar", "module_consumer"),
+        ]);
+
+        let report = health(&dir, &manifest, Some(&reg_path));
+
+        let missing: Vec<_> = report
+            .blockers
+            .iter()
+            .filter(|blocker| blocker.kind == BlockerKind::MissingRequiredDependency)
+            .collect();
+        assert_eq!(missing.len(), 1, "{:?}", report.blockers);
+        assert_eq!(missing[0].filename.as_deref(), Some("entityculling.jar"));
+        assert_eq!(missing[0].mod_id.as_deref(), Some("fabric-api"));
+        // The bundled module still satisfies a dependency on that exact module.
+        assert!(report
+            .blockers
+            .iter()
+            .all(|blocker| blocker.filename.as_deref() != Some("module-consumer.jar")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

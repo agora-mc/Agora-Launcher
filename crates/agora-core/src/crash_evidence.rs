@@ -49,6 +49,9 @@ pub enum EvidenceSourceKind {
     LatestLog,
     DebugLog,
     JvmFatalErrorLog,
+    /// Java stdout/stderr Agora captured from the last launch that exited
+    /// abnormally (shown in the instance Console).
+    LaunchOutput,
     UserAdded,
     UserPasted,
 }
@@ -240,6 +243,15 @@ impl CrashEvidenceService {
             automatic.push(Candidate {
                 path: hs_path,
                 kind: EvidenceSourceKind::JvmFatalErrorLog,
+                supplementary: false,
+                modified_at,
+            });
+        }
+
+        if let Some((path, modified_at)) = failed_launch_output(&logs_dir) {
+            automatic.push(Candidate {
+                path,
+                kind: EvidenceSourceKind::LaunchOutput,
                 supplementary: false,
                 modified_at,
             });
@@ -619,6 +631,24 @@ fn find_newest_file(dir: &Path, extension: &str) -> Option<(PathBuf, SystemTime)
 }
 
 /// Find the newest `hs_err_pid*.log` file in a directory.
+/// The captured launch output, but only when that launch ended abnormally
+/// (non-zero or unknown exit code) and was not a user-requested stop. A clean
+/// exit's output is not crash evidence.
+fn failed_launch_output(logs_dir: &Path) -> Option<(PathBuf, SystemTime)> {
+    let path = logs_dir.join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+    let modified_at = file_modified_at(&path)?;
+    let text = String::from_utf8_lossy(&read_bounded(&path, 64 * 1024, 0)).into_owned();
+    let header: Vec<&str> = text.lines().filter(|l| l.starts_with("# ")).collect();
+    if header.iter().any(|l| l.trim() == "# user_stopped=true") {
+        return None;
+    }
+    let exit_code = header
+        .iter()
+        .find_map(|l| l.strip_prefix("# exit_code="))
+        .map(str::trim)?;
+    (exit_code != "0").then_some((path, modified_at))
+}
+
 fn find_hs_err_file(dir: &Path) -> Option<(PathBuf, SystemTime)> {
     let entries = std::fs::read_dir(dir).ok()?;
     entries
@@ -651,10 +681,11 @@ fn evidence_priority(kind: &EvidenceSourceKind) -> u8 {
     match kind {
         EvidenceSourceKind::CrashReport => 0,
         EvidenceSourceKind::JvmFatalErrorLog => 1,
-        EvidenceSourceKind::LatestLog => 2,
-        EvidenceSourceKind::DebugLog => 3,
-        EvidenceSourceKind::UserAdded => 4,
-        EvidenceSourceKind::UserPasted => 5,
+        EvidenceSourceKind::LaunchOutput => 2,
+        EvidenceSourceKind::LatestLog => 3,
+        EvidenceSourceKind::DebugLog => 4,
+        EvidenceSourceKind::UserAdded => 5,
+        EvidenceSourceKind::UserPasted => 6,
     }
 }
 
@@ -671,6 +702,63 @@ fn system_time_to_rfc3339(t: SystemTime) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn failed_launch_output_is_collected_but_clean_or_stopped_is_not() {
+        let fx = TestFixture::new();
+        let logs = fx.logs_dir();
+        let file = logs.join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+        let svc = CrashEvidenceService::new();
+
+        std::fs::write(
+            &file,
+            "# Agora captured Java output\n# exit_code=1\n# runtime_ms=900\n[stderr] duplicate ASM classes found on classpath\n",
+        )
+        .unwrap();
+        let ev = svc.collect(&fx.path, &[]);
+        assert_eq!(ev.sources.len(), 1);
+        assert_eq!(ev.sources[0].meta.kind, EvidenceSourceKind::LaunchOutput);
+        assert!(ev.sources[0].text.contains("duplicate ASM classes"));
+        assert_ne!(ev.failure_category, FailureCategory::NoEvidence);
+
+        std::fs::write(&file, "# exit_code=0\n# runtime_ms=9000\n[stdout] ok\n").unwrap();
+        assert!(svc.collect(&fx.path, &[]).sources.is_empty());
+
+        std::fs::write(&file, "# exit_code=1\n[stderr] killed\n").unwrap();
+        crate::launch_planner::mark_captured_launch_output_user_stopped(&fx.path);
+        assert!(svc.collect(&fx.path, &[]).sources.is_empty());
+    }
+
+    #[test]
+    fn failed_launch_output_with_a_fabric_resolution_error_gets_a_specific_diagnosis() {
+        let fx = TestFixture::new();
+        let file = fx
+            .logs_dir()
+            .join(crate::launch_planner::CAPTURED_LAUNCH_OUTPUT_FILE);
+        std::fs::write(
+            &file,
+            "# Agora captured Java output (sanitized, last 200 lines)\n# exit_code=1\n# runtime_ms=40111\n\
+[stderr] net.fabricmc.loader.impl.FormattedException: net.fabricmc.loader.impl.discovery.ModResolutionException: Mod resolution encountered an incompatible mod set!\n\
+[stderr] A potential solution has been determined, this may resolve your problem:\n\
+[stderr] \t - Install fabric-api, any version.\n\
+[stderr] Unmet dependency listing:\n\
+[stderr] \t - Mod 'Entity Culling' (entityculling) 1.11.2 requires any version of fabric-api, which is missing!\n",
+        )
+        .unwrap();
+        let evidence = CrashEvidenceService::new().collect(&fx.path, &[]);
+        let text: String = evidence
+            .sources
+            .iter()
+            .map(|source| format!("\n===== {} =====\n{}", source.meta.basename, source.text))
+            .collect();
+        let triage = crate::crash_diagnostics::triage(&text);
+        assert_eq!(
+            triage.signature_name.as_deref(),
+            Some("Missing Required Mod")
+        );
+        let markdown = triage.solution_markdown.unwrap();
+        assert!(markdown.contains("`fabric-api`") && markdown.contains("`entityculling`"));
+    }
 
     struct TestFixture {
         _dir: tempfile::TempDir,

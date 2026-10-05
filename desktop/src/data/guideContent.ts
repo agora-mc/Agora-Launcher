@@ -80,7 +80,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
             'Open Browse and filter the content type to Pack.',
             'Open a pack, read its description and its Versions tab, then choose Create Instance from Pack.',
             'Keep Pack release selected: it installs the exact mod builds the curator tested. Flexible lets you pick another Minecraft version, but mods without a build for it are left out, and the install stops if a required one is missing.',
-            'Choose Check pack to see exactly what will be installed before anything is created.',
+            'Set the instance name, then choose Check pack. It lists the Minecraft version and loader, how many mods will be installed, anything left out or missing, and each mod with its version. It does not show memory or download size; adjust memory afterwards in the instance editor.',
             'Launch the new instance. Resolve any health warnings before selecting Launch Anyway.',
             'Play for at least 60 seconds so Agora can establish a Last Known Good recovery point.',
           ],
@@ -470,7 +470,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Install from a detail page',
-          body: 'Select Install to Instance, choose the target, select a compatible project version, and review the plan. Packs use Create Instance from Pack because they define a complete starting instance.',
+          body: 'Select Install to Instance, choose the target, select a compatible project version, and review the plan. Packs use Create Instance from Pack because they define a complete starting instance: its form asks for a name and release, and Check pack previews the mods and versions before anything is created. Modrinth packs ask for a pack version and then open the normal install review.',
           steps: [
             'Confirm the target instance, Minecraft version, and loader.',
             'Choose an exact-compatible file when available.',
@@ -490,7 +490,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Check for updates',
-          body: 'From My Instances, select Check for Updates. Review the updates per unlocked instance, deselect anything you want to postpone, then review and apply the batch plan. Update All applies every remaining update in one reviewed batch.',
+          body: 'On My Instances, select Edit on the instance, open its Mods tab (Resource Packs, Shaders and Data Packs have the same control), and select Check for updates. Update an item from its row, or use Update All to review one plan for every update in that tab. Locked instances cannot be updated until you unlock them.',
           bullets: [
             'Locked instances are skipped.',
             'A newer version is not automatically compatible with every other mod.',
@@ -499,7 +499,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Results are remembered, and badges count them',
-          body: 'Once checked, results are stored, so they survive navigating away and restarting Agora. Each instance card shows how many updates are waiting, and Agora re-checks quietly in the background on an interval you can change in Settings.',
+          body: 'Once checked, results are stored, so they survive navigating away and restarting Agora. Waiting updates show up in the instance editor, and Agora re-checks quietly in the background on an interval you can change in Settings.',
           callout: {
             tone: 'note',
             title: 'Only offered when a build actually fits',
@@ -580,6 +580,16 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         {
           title: 'Enable and disable for testing',
           body: 'Disabling is useful when diagnosing a conflict or keeping optional features available for later. Relaunch after changing enabled state; Minecraft cannot unload most mods from a running game.',
+        },
+        {
+          title: 'How data packs reach your worlds',
+          body: 'Minecraft only loads data packs from inside each world, not from the instance. Agora keeps the Data Packs list of the instance as the source of truth and copies every enabled data pack into your worlds: before each launch, and right after you install, remove, enable, disable, or change a data pack.',
+          bullets: [
+            'By default a data pack goes to all worlds. Select Worlds… on its row to pick specific worlds instead.',
+            'The row shows where it is, for example All worlds (3) or 2 of 3 worlds.',
+            'A world created while you play gets your data packs at the next sync, so a brand-new world has them from its second session. Select Sync now on the Data Packs tab to add them sooner.',
+            'Agora only ever removes or replaces data pack files it placed itself. If a world already has a different file with the same name, Agora leaves it alone and says so.',
+          ],
         },
         {
           title: 'Import a local file',
@@ -753,7 +763,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Collect direct-launch evidence',
-          body: 'Use the Console tab to filter INFO, WARN, ERROR, or DEBUG output, then copy the relevant sequence. Preserve the earliest error and its surrounding context; the last line is often only a consequence. Pair console output with the generated crash report when available.',
+          body: 'Use the Console tab to filter between All, Warnings+, and Errors, and switch to Raw to see the original lines, then copy the relevant sequence. Preserve the earliest error and its surrounding context; the last line is often only a consequence. Pair console output with the generated crash report when available.',
         },
       ],
     },
@@ -829,8 +839,8 @@ export const GUIDE_TOPICS: GuideTopic[] = [
           body: 'Include the exact Minecraft and loader versions, mod file names, crash fingerprint or report, steps to reproduce, whether a clean world also fails, and the suspect tests already completed. Use a reproduction lockfile when sharing the exact file state is important.',
           callout: {
             tone: 'note',
-            title: 'AI analysis leaves the machine',
-            text: 'Explain with AI sends crash context to the configured AI provider. Review the Privacy guidance before using it with logs that may contain personal paths or server details.',
+            title: 'Sharing a report with an AI leaves the machine',
+            text: 'Agora has no built-in chat assistant. Copy crash report produces a redacted report you can paste into an AI assistant or the Agora Discord, and an AI tool you connect through the MCP server can read crash context itself. Either way the data goes to that tool\'s provider, so check the report for personal paths or server details first.',
           },
         },
       ],
@@ -924,10 +934,10 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       sections: [
         {
           title: 'Import a pack',
-          body: 'Use Import Pack from the instance area or Import in the editor. Select a .mrpack or supported Agora pack file. Agora prepares the loader and required content before promoting the new instance.',
+          body: 'Open an instance with Edit, then use the Import tab (Select File & Import, for a .mrpack or Prism .zip) or Import Pack on the Mods tab (.mrpack or Agora pack file). A .mrpack opens a short review where you can rename the new instance before it is created. Agora prepares the loader and required content before promoting the new instance.',
           steps: [
             'Choose the pack file from a trusted source.',
-            'Review the new instance name and target location.',
+            'Check the instance name. If one with that name already exists, Agora suggests a numbered copy such as "Name (2)"; edit it if you like. The existing instance is never overwritten.',
             'Leave save symlinking off unless you understand how shared save paths behave.',
             'Wait for preparation and health validation to finish.',
             'Launch once and verify the pack before adding more content.',
@@ -1253,7 +1263,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Protect shared diagnostics',
-          body: 'Logs can contain local paths, usernames, server addresses, or chat context. Lockfiles intentionally omit private configuration contents, but you should still review sources and instance names before sharing. AI analysis sends selected context to its provider.',
+          body: 'Logs can contain local paths, usernames, server addresses, or chat context. Lockfiles intentionally omit private configuration contents, but you should still review sources and instance names before sharing. Pasting a report into an AI assistant, or letting an MCP-connected tool read crash context, sends it to that tool\'s provider.',
           callout: {
             tone: 'note',
             title: 'No telemetry does not mean no network',
@@ -1330,7 +1340,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
     title: 'Moving an instance to a new Minecraft version',
     shortTitle: 'Version migration',
     category: 'Manage',
-    description: 'Check whether every mod has a build for a newer version, then move across in one confirmed step.',
+    description: 'Check whether every mod has a build for another Minecraft version, then move across in one confirmed step.',
     keywords: ['migration', 'minecraft version', 'upgrade', 'move version', 'abandoned mod', 'successor'],
     basic: {
       summary: 'Moving to a new Minecraft version usually fails on one or two mods rather than all of them. Agora checks first, tells you which, and only moves when you say so.',
@@ -1363,7 +1373,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Make the move',
-          body: 'When you move, Agora takes a snapshot first, swaps every mod it can for its build on the target version, and updates the instance. If anything fails partway, the instance is returned to how it was rather than left half-migrated.',
+          body: 'When you move, Agora first prepares everything it needs (the loader, the replacement mods) without touching the instance, then takes a snapshot, swaps every mod it can for its build on the target version, and updates the instance. If something fails while preparing, the instance was never changed and the message says so. If it fails after the swap begins, Agora undoes the changes and restores the instance to how it was; only if that undo itself fails is the snapshot named so you can restore it by hand.',
         },
       ],
     },
@@ -1660,7 +1670,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
       ],
       sections: [
         {
-          title: 'Choose integrated AI or MCP',
+          title: 'Choose copy and paste or MCP',
           body: 'Copy a crash report from Crash Doctor for one-off questions. Use MCP when you already operate an external AI client and want it to inspect instances, read bounded crash evidence, search local knowledge, or request supported enable/disable actions through Agora\'s tool interface.',
         },
         {
@@ -1703,7 +1713,7 @@ export const GUIDE_TOPICS: GuideTopic[] = [
         },
         {
           title: 'Troubleshoot methodically',
-          body: 'Check that the server status is running, the URL uses 127.0.0.1 and port 39741, the client transport is SSE, the token is current, and local security software is not blocking the process. Do not disable system security or bind the server broadly to solve a client configuration error.',
+          body: 'Check that the server status is running, the URL uses 127.0.0.1 and port 39741, the client transport matches the URL (streamable HTTP for /mcp, SSE for /sse), the token is current, and local security software is not blocking the process. Do not disable system security or bind the server broadly to solve a client configuration error.',
           callout: {
             tone: 'note',
             title: 'Preserve Agora\'s safety rails',

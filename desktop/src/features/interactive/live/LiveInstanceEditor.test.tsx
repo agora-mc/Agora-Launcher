@@ -162,3 +162,51 @@ describe('LiveInstanceEditor dependency curves', () => {
     expect(dragStart.defaultPrevented).toBe(true);
   });
 });
+
+describe('LiveInstanceEditor running state', () => {
+  const crash = {
+    incidentLabel: 'Crash evidence',
+    evidenceSources: [],
+    hypotheses: [],
+    experiment: { phase: 'read-only', recoveryReady: false, summary: '' },
+    privacyNote: '',
+  };
+
+  function renderRunning(launchState: 'idle' | 'running', onStop?: () => void) {
+    const scene = sceneWith('lib.jar', []);
+    (scene.instance as { launchState: string }).launchState = launchState;
+    const data = { ...hostData(scene), crashEvidence: { status: 'ok', value: crash } } as unknown as LiveHostData;
+    return render(
+      <LiveInstanceEditor
+        data={data}
+        capabilities={{} as never}
+        selection={null}
+        onSelect={vi.fn()}
+        onIntent={vi.fn()}
+        onUseStandardView={vi.fn()}
+        onLaunch={vi.fn()}
+        onStop={onStop}
+      />,
+    );
+  }
+
+  it('offers a working Stop control while the game is running', () => {
+    const onStop = vi.fn();
+    const { getByLabelText } = renderRunning('running', onStop);
+    fireEvent.click(getByLabelText('Stop this instance'));
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no Stop control when idle', () => {
+    const { queryByLabelText } = renderRunning('idle', vi.fn());
+    expect(queryByLabelText('Stop this instance')).toBeNull();
+  });
+
+  it('does not claim the game stopped last time while it is running', () => {
+    const idle = renderRunning('idle', vi.fn());
+    expect(idle.container.textContent).toContain('Your game stopped last time');
+    idle.unmount();
+    const running = renderRunning('running', vi.fn());
+    expect(running.container.textContent).not.toContain('Your game stopped last time');
+  });
+});

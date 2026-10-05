@@ -190,6 +190,12 @@ enum Commands {
         url: Option<String>,
         #[arg(long, help = "Symlink saves instead of copying")]
         symlink_saves: bool,
+        #[arg(
+            long,
+            conflicts_with = "url",
+            help = "Name for the imported instance (use when the source's own name is already taken)"
+        )]
+        name: Option<String>,
     },
     /// Launch an instance directly through Agora core.
     Launch {
@@ -552,6 +558,12 @@ enum ModsCmd {
         replace_conflicts: bool,
         #[arg(long, help = "Abort on any unresolved conflict")]
         abort_conflicts: bool,
+        #[arg(
+            long,
+            conflicts_with = "abort_conflicts",
+            help = "Remove the file even if an installed mod still requires it (those mods will show a health alert)"
+        )]
+        remove_anyway: bool,
         #[arg(long, help = "Resolve plan and print it without executing")]
         dry_run: bool,
     },
@@ -623,6 +635,26 @@ enum ModsCmd {
     Disable {
         instance: String,
         file: String,
+    },
+    /// Choose which worlds a data pack is copied into (default: all worlds).
+    Worlds {
+        instance: String,
+        /// The installed data pack file, for example veinminer-1.3.4.zip.
+        file: String,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            conflicts_with = "all",
+            required_unless_present = "all",
+            help = "Only these world folders (comma-separated)"
+        )]
+        worlds: Option<Vec<String>>,
+        #[arg(long, help = "Sync into every world, including ones created later")]
+        all: bool,
+    },
+    /// Copy the enabled data packs into the instance's worlds now.
+    SyncDatapacks {
+        instance: String,
     },
 }
 
@@ -2382,6 +2414,7 @@ async fn run_command(
                 skip_health_scan,
                 replace_conflicts,
                 abort_conflicts,
+                remove_anyway,
                 dry_run,
             } => {
                 let svc = InstallService::new(ctx.clone());
@@ -2408,11 +2441,12 @@ async fn run_command(
                     target_instance: instance.clone(),
                     optional_deps: agora_core::install_pipeline::OptionalDepsPolicy::ExcludeAll,
                     requested_by: agora_core::install_pipeline::RequestSource::CLI,
-                    overrides: agora_core::install_pipeline::PlanOverrides {
+                    overrides: remove_overrides(
+                        &target_filename,
                         allow_replace,
                         skip_health_scan,
-                        ..Default::default()
-                    },
+                        remove_anyway,
+                    ),
                 };
 
                 let reporter = SilentReporter;
@@ -2422,6 +2456,18 @@ async fn run_command(
 
                 // Apply --replace-conflicts / --abort-conflicts override
                 apply_conflict_overrides(&mut plan, replace_conflicts, abort_conflicts)?;
+
+                // --remove-anyway: the core already resolved the broken
+                // dependency conflict as RemoveAnyway; say what that means.
+                if remove_anyway && !json {
+                    for warning in plan
+                        .warnings
+                        .iter()
+                        .filter(|warning| warning.code == "WARN_BROKEN_REVERSE_DEP")
+                    {
+                        eprintln!("[WARN] {}", warning.message);
+                    }
+                }
 
                 // Dry-run: print the plan and exit
                 if dry_run {
@@ -2700,6 +2746,21 @@ async fn run_command(
                 } else {
                     println!("Disabled {} in '{}'", file, instance);
                 }
+            }
+            ModsCmd::Worlds {
+                instance,
+                file,
+                worlds,
+                all,
+            } => {
+                let worlds = if all { None } else { worlds };
+                let report =
+                    agora_core::datapack_sync::set_world_scope(ctx, &instance, &file, worlds)?;
+                print_datapack_sync(&instance, &report, json)?;
+            }
+            ModsCmd::SyncDatapacks { instance } => {
+                let report = agora_core::datapack_sync::sync_instance(ctx, &instance)?;
+                print_datapack_sync(&instance, &report, json)?;
             }
             ModsCmd::UpdateAll {
                 instance,
@@ -3056,9 +3117,12 @@ async fn run_command(
                 if !instance_dir.exists() {
                     anyhow::bail!("Instance '{}' not found", instance);
                 }
-                let snapshot =
-                    agora_core::snapshot::create_snapshot(&instance_dir, label.as_deref())
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let snapshot = agora_core::snapshot::create_snapshot_with_origin(
+                    &instance_dir,
+                    label.as_deref(),
+                    agora_core::snapshot::SnapshotOrigin::User,
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&snapshot)?);
                 } else {
@@ -3137,6 +3201,7 @@ async fn run_command(
             path,
             url,
             symlink_saves,
+            name,
         } => {
             let svc = agora_core::import_service::ImportService::new(ctx.clone());
             if let Some(url) = url {
@@ -3172,7 +3237,23 @@ async fn run_command(
                 source: import_source,
                 symlink_saves,
             };
-            let result = svc.run_import(request).await?;
+            let result = svc
+                .run_import_named(
+                    request,
+                    name,
+                    ctx.progress_sink.clone(),
+                    agora_core::event_sink::CancellationToken::new(),
+                )
+                .await
+                .map_err(|error| {
+                    if error.code() == "ERR_INSTANCE_EXISTS" {
+                        anyhow::anyhow!(
+                            "{error} Re-run with --name \"<new name>\" to import it as a copy."
+                        )
+                    } else {
+                        anyhow::Error::from(error)
+                    }
+                })?;
             wait_for_initial_snapshot(ctx, &result.instance_id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -4037,6 +4118,35 @@ async fn run_command(
     Ok(())
 }
 
+fn print_datapack_sync(
+    instance: &str,
+    report: &agora_core::datapack_sync::DatapackSyncReport,
+    json: bool,
+) -> anyhow::Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "synced",
+                "instanceId": instance,
+                "worlds": report.worlds,
+                "copied": report.copied,
+                "removed": report.removed,
+                "warnings": report.warnings,
+            })
+        );
+    } else {
+        println!(
+            "Data packs in '{instance}': {} world(s), {} added or updated, {} removed.",
+            report.worlds, report.copied, report.removed
+        );
+        for warning in &report.warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
+    Ok(())
+}
+
 /// Resolve optional deps policy from CLI flags.
 fn resolve_optional_deps(
     include: Option<String>,
@@ -4054,6 +4164,29 @@ fn resolve_optional_deps(
         return agora_core::install_pipeline::OptionalDepsPolicy::Include { deps };
     }
     agora_core::install_pipeline::OptionalDepsPolicy::Prompt
+}
+
+/// Overrides for `mod remove`. `--remove-anyway` pre-selects RemoveAnyway for
+/// the broken-required-dependency conflict of the file being removed, and for
+/// no other conflict.
+fn remove_overrides(
+    target_filename: &str,
+    allow_replace: bool,
+    skip_health_scan: bool,
+    remove_anyway: bool,
+) -> agora_core::install_pipeline::PlanOverrides {
+    let mut overrides = agora_core::install_pipeline::PlanOverrides {
+        allow_replace,
+        skip_health_scan,
+        ..Default::default()
+    };
+    if remove_anyway {
+        overrides.force_conflict_resolution.insert(
+            format!("broken-dependency:{target_filename}"),
+            agora_core::install_pipeline::ConflictResolution::RemoveAnyway,
+        );
+    }
+    overrides
 }
 
 /// Apply --replace-conflicts / --abort-conflicts to a resolved plan.
@@ -5151,6 +5284,29 @@ mod tests {
     }
 
     #[test]
+    fn mod_worlds_parses_a_chosen_set_or_all() {
+        let cli = Cli::try_parse_from([
+            "agora", "mod", "worlds", "inst", "vm.zip", "--worlds", "A,B",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Mods {
+                action: ModsCmd::Worlds { worlds, all, .. },
+            } => {
+                assert_eq!(worlds, Some(vec!["A".to_string(), "B".to_string()]));
+                assert!(!all);
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert!(Cli::try_parse_from(["agora", "mod", "worlds", "inst", "vm.zip", "--all"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["agora", "mod", "worlds", "inst", "vm.zip"]).is_err(),
+            "choosing nothing is not a scope"
+        );
+        assert!(Cli::try_parse_from(["agora", "mod", "sync-datapacks", "inst"]).is_ok());
+    }
+
+    #[test]
     fn mod_disable_parses() {
         let cli = Cli::try_parse_from(["agora", "mod", "disable", "my-instance", "sodium.jar"])
             .expect("should parse");
@@ -5411,6 +5567,54 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn mod_remove_with_remove_anyway_parses_and_excludes_abort() {
+        let cli = Cli::try_parse_from([
+            "agora",
+            "mod",
+            "remove",
+            "fabric-api",
+            "my-instance",
+            "--remove-anyway",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Mods {
+                action: ModsCmd::Remove { remove_anyway, .. },
+            } => assert!(remove_anyway),
+            _ => panic!("wrong variant"),
+        }
+        assert!(Cli::try_parse_from([
+            "agora",
+            "mod",
+            "remove",
+            "fabric-api",
+            "my-instance",
+            "--remove-anyway",
+            "--abort-conflicts",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn remove_anyway_only_selects_the_broken_dependency_conflict() {
+        use agora_core::install_pipeline::ConflictResolution;
+        let overrides = super::remove_overrides("fabric-api.jar", false, true, true);
+        assert_eq!(overrides.force_conflict_resolution.len(), 1);
+        assert_eq!(
+            overrides
+                .force_conflict_resolution
+                .get("broken-dependency:fabric-api.jar"),
+            Some(&ConflictResolution::RemoveAnyway)
+        );
+        assert!(overrides.skip_health_scan);
+        assert!(
+            super::remove_overrides("fabric-api.jar", false, false, false)
+                .force_conflict_resolution
+                .is_empty()
+        );
     }
 
     #[test]

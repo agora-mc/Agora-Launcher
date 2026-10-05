@@ -700,7 +700,7 @@ function healthBench(host: HTMLElement, onWin: () => void, reduce: boolean): voi
       applyBtn.disabled = false;
     }
   };
-  moreInfo(host, 'A <code>blocker</code> stops launch. A <code>warning</code> needs a choice. A <code>recommendation</code> never blocks. The bars say likely, maybe, unlikely — never a percentage.');
+  moreInfo(host, 'A <code>blocker</code> is a serious problem Agora warns you about before launch. A <code>warning</code> needs a choice. A <code>recommendation</code> is only advice. The bars say likely, maybe, unlikely — never a percentage.');
 }
 
 /* ── Going offline: offlineBench ── */
@@ -890,7 +890,7 @@ const BENCHES: WorkshopBenchWithBuild[] = [
             '<h4>What happens if they don\'t</h4>' +
             '<p>The game usually stops during startup and writes a <b>crash report</b> naming what it couldn\'t find. That\'s the bench next door.</p>' +
             '<h4>What Agora does about it</h4>' +
-            '<p>It won\'t let you build the mismatched combination in the first place, and the health check runs before launch rather than after.</p>',
+            '<p>The health check runs before launch rather than after. If it finds a mismatched combination it warns you and shows what to fix; launching anyway is still your call.</p>',
             done, GUIDE_TOPIC.build, openGuide);
         },
       },
@@ -1004,7 +1004,7 @@ const BENCHES: WorkshopBenchWithBuild[] = [
         build: (host, done) => {
           askStep(host, {
             options: [
-              { t: 'Any loader will do — the health check is just a suggestion.', why: 'A blocker stops launch. The check is the gate, not advice.' },
+              { t: 'Any loader will do — the health check is just a suggestion.', why: 'A blocker is the check\'s most serious finding. You can still choose to launch anyway, but a mismatch like this usually ends in a crash at startup — so it is a warning to act on, not decoration.' },
               { t: 'Only a proven-compatible loader clears it; an unknown one needs review first.', right: true, why: 'Proven-compatible is different from needs-review. An indeterminate loader can\'t clear a blocker until someone checks which loaders each mod supports.' },
               { t: 'Keep the current loader and hope it works.', why: 'The check already knows it doesn\'t fit — "hope" is not a compatibility answer.' },
             ],
@@ -1039,7 +1039,7 @@ const BENCHES: WorkshopBenchWithBuild[] = [
             manage.disabled = false;
             done();
           };
-          moreInfo(host, 'Blockers stop launch. Warnings need a decision. Recommendations are advice. The bars say likely, maybe, unlikely — never a percentage.');
+          moreInfo(host, 'Blockers are serious problems Agora warns about before launch. Warnings need a decision. Recommendations are advice. The bars say likely, maybe, unlikely — never a percentage.');
         },
       },
       {
@@ -1048,11 +1048,11 @@ const BENCHES: WorkshopBenchWithBuild[] = [
         build: (host, done, _reduce, openGuide) => {
           explainStep(host,
             '<h4>Three kinds of finding</h4>' +
-            '<p>A <b>blocker</b> stops launch until it is resolved. A <b>warning</b> needs your decision — keeping it is a valid choice, but it stays. A <b>recommendation</b> never blocks; it is advice.</p>' +
+            '<p>A <b>blocker</b> is a serious problem: Agora warns you before launch and you choose whether to fix it or launch anyway. A <b>warning</b> needs your decision — keeping it is a valid choice, but it stays. A <b>recommendation</b> is advice.</p>' +
             '<h4>Proven vs needs-review</h4>' +
-            '<p>A loader is <b>proven-compatible</b> when every installed mod\'s own metadata agrees. It is <b>indeterminate</b> when some mods have not declared support — which is not a "no", but it is not a yes either. A blocker cannot be cleared by an indeterminate answer.</p>' +
+            '<p>A loader is <b>proven-compatible</b> when every installed mod\'s own metadata agrees. It is <b>indeterminate</b> when some mods have not declared support — which is not a "no", but it is not a yes either. An indeterminate answer does not clear a blocker.</p>' +
             '<h4>Why the check runs before launch</h4>' +
-            '<p>Every mismatch this finds is one that would otherwise surface as a crash at startup — with a report to read and a bench to sit at. The check is the earlier, cheaper place to catch it.</p>',
+            '<p>Every mismatch this finds is one that could otherwise surface as a crash at startup — with a report to read and a bench to sit at. The check is the earlier, cheaper place to catch it. It warns and lets you choose; it does not guarantee a launch will work.</p>',
             done, GUIDE_TOPIC.heal, openGuide);
         },
       },

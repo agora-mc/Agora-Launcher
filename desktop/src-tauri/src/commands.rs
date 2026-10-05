@@ -975,6 +975,36 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
         );
     }
 
+    fn java_progress(&self, message: &str, percent: Option<f64>) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "launch-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "phase": "provisioning-java",
+                "message": message,
+                "percent": percent,
+            }),
+        );
+    }
+
+    fn files(&self, progress: &agora_core::launch_stage::FileProgress) {
+        use tauri::Emitter;
+        let _ = self.app.emit(
+            "launch-progress",
+            serde_json::json!({
+                "instance_id": self.instance_id,
+                "phase": "materializing",
+                "message": format!("Verifying {}", progress.kind.as_str()),
+                "files": {
+                    "kind": progress.kind.as_str(),
+                    "done": progress.done,
+                    "total": progress.total,
+                },
+            }),
+        );
+    }
+
     fn started(&self, started: &agora_core::launch_service::LaunchStarted) {
         use tauri::Emitter;
         let sender = self.started.lock().ok().and_then(|mut value| value.take());
@@ -1072,9 +1102,8 @@ impl agora_core::launch_service::LaunchProgress for TauriLaunchProgress {
                         agora_core::launch_history::LaunchResult::Ok
                     }
                     LaunchOutcome::Crash => agora_core::launch_history::LaunchResult::Crashed,
-                    LaunchOutcome::Cancelled | LaunchOutcome::Unknown => {
-                        agora_core::launch_history::LaunchResult::Unknown
-                    }
+                    LaunchOutcome::Cancelled => agora_core::launch_history::LaunchResult::Stopped,
+                    LaunchOutcome::Unknown => agora_core::launch_history::LaunchResult::Unknown,
                 };
                 let _ = agora_core::launch_history::finish_launch(
                     &conn,
@@ -1975,6 +2004,58 @@ pub async fn enable_instance_mod(
     check_not_locked(&app, &instance_id)?;
     tokio::task::spawn_blocking(move || {
         mod_install::enable_instance_mod(&app, &instance_id, &filename)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Choose which worlds a data pack is synced into (`worlds: None` = all worlds)
+/// and sync now. Allowed on locked instances: it is a preference, not content.
+#[tauri::command]
+pub async fn set_datapack_worlds(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+    filename: String,
+    worlds: Option<Vec<String>>,
+) -> LauncherResult<agora_core::datapack_sync::DatapackSyncReport> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::datapack_sync::set_world_scope(&ctx, &instance_id, &filename, worlds)
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Existing worlds of an instance (folders under `saves/` with a `level.dat`).
+#[tauri::command]
+pub async fn list_instance_worlds(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<Vec<String>> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        let id = agora_core::paths::sanitize_id(&instance_id);
+        Ok(agora_core::datapack_sync::list_worlds(
+            &ctx.paths.instance_dir(&id)?,
+        ))
+    })
+    .await
+    .map_err(|_| LauncherError::LocalStateFailed)?
+}
+
+/// Copy the instance's enabled data packs into its worlds now (for worlds
+/// created since the last sync).
+#[tauri::command]
+pub async fn sync_instance_datapacks(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    instance_id: String,
+) -> LauncherResult<agora_core::datapack_sync::DatapackSyncReport> {
+    let ctx = crate::core_context(&app)?;
+    tokio::task::spawn_blocking(move || {
+        agora_core::datapack_sync::sync_instance(&ctx, &instance_id)
     })
     .await
     .map_err(|_| LauncherError::LocalStateFailed)?
@@ -3343,6 +3424,9 @@ pub fn compute_gc_args(
 pub struct SnapshotView {
     #[serde(flatten)]
     pub snapshot: agora_core::snapshot::Snapshot,
+    /// The recorded origin, or for older snapshots the one inferred from the
+    /// label, so the UI never has to guess.
+    pub effective_origin: agora_core::snapshot::SnapshotOrigin,
     pub is_lkg: bool,
     pub is_current_lkg: bool,
     pub is_pre_restore: bool,
@@ -3374,6 +3458,7 @@ pub async fn list_snapshots(
                         .as_deref()
                         .is_some_and(|label| label.starts_with("pre-restore-"));
                     SnapshotView {
+                        effective_origin: snapshot.effective_origin(),
                         snapshot,
                         is_lkg,
                         is_current_lkg,
@@ -4813,6 +4898,7 @@ pub async fn import_instance(
     _state: tauri::State<'_, LauncherState>,
     source_path: String,
     symlink_saves: bool,
+    name: Option<String>,
 ) -> LauncherResult<agora_core::import::ImportResult> {
     let ctx = crate::core_context(&app)?;
     let source = std::path::PathBuf::from(&source_path);
@@ -4834,12 +4920,37 @@ pub async fn import_instance(
         app,
         event_name: "operation-progress",
     });
-    svc.run_import_with_sink(
+    svc.run_import_named(
         request,
+        name,
         sink,
         agora_core::event_sink::CancellationToken::new(),
     )
     .await
+}
+
+/// Name an import would get, whether it is taken, and a free suggestion.
+#[tauri::command]
+pub async fn preview_import_name(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    source_path: String,
+) -> LauncherResult<agora_core::import_service::ImportNamePreview> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::import_service::ImportService::new(ctx)
+        .preview_import_name(std::path::Path::new(&source_path))
+}
+
+/// The same name check for packs that have no file to inspect (Technic and
+/// provider packs): is `name` taken, and what free name would be suggested.
+#[tauri::command]
+pub async fn preview_pack_instance_name(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, LauncherState>,
+    name: String,
+) -> LauncherResult<agora_core::import_service::ImportNamePreview> {
+    let ctx = crate::core_context(&app)?;
+    agora_core::import_service::ImportService::new(ctx).preview_name(&name)
 }
 
 struct TauriCoreProgressSink {
@@ -6002,6 +6113,7 @@ pub async fn import_lockfile(
             source_type,
             item_id,
             candidate_version: artifact.version.clone(),
+            content_type: Some(artifact.content_type.clone()),
         });
     }
     let intent = InstallIntent {
@@ -7623,4 +7735,14 @@ mod command_helper_tests {
             incompatible_deps: vec![],
         }
     }
+}
+
+/// An image linked from community-written About text, as a `data:` URL.
+/// Core fetches it from any public host and confirms from its bytes that it is
+/// an image before the page can display it; see `agora_core::community_image`.
+#[tauri::command]
+pub async fn fetch_community_image(app: tauri::AppHandle, url: String) -> LauncherResult<String> {
+    let ctx = crate::core_context(&app)?;
+    let image = agora_core::community_image::fetch(&ctx, &url).await?;
+    Ok(image.to_data_url())
 }

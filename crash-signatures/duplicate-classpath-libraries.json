@@ -1,0 +1,10 @@
+{
+  "id": "duplicate-classpath-libraries",
+  "name": "Duplicate Libraries on the Classpath",
+  "regex_pattern": "duplicate ASM classes found on classpath|duplicate classes found on classpath",
+  "solution_markdown": "The game was started with two versions of the same library (for example two ASM jars) on its classpath, which Fabric refuses to run with. This is a launcher problem, not a mod problem: update Agora, then launch again. If it still happens, use Repair on the loader to rebuild the launch profile.",
+  "action_button": {
+    "label": "Open Console",
+    "mod_id": null
+  }
+}

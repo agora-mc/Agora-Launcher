@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
   CircleCheck,
@@ -32,6 +33,7 @@ import {
 } from '../lib/tauri';
 import { emitTourSignal } from '../features/tour/tourSignals';
 import { LoaderChooser } from './LoaderChooser';
+import { DatapackWorldsNote } from './DatapackWorldsNote';
 import { useControllerLayer } from '@/features/controller/useControllerLayer';
 import { cn } from '@/lib/utils';
 
@@ -523,6 +525,18 @@ export function InstallFlow({
     onCancel: handleCancel,
   });
 
+  // A review opens at its title. Anything that scrolled the frame or its body
+  // beforehand (focus moving to a button further down, the guided tour
+  // bringing its target into view) must not leave the header out of sight.
+  useLayoutEffect(() => {
+    if (!awaitingUser) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.scrollTop = 0;
+    const body = panel.querySelector<HTMLElement>('[data-install-review-body]');
+    if (body) body.scrollTop = 0;
+  }, [awaitingUser]);
+
   const renderContent = () => {
     switch (state.phase) {
       case 'resolving':
@@ -639,8 +653,12 @@ export function InstallFlow({
     </div>
   );
 
+  // Both surfaces are portalled to <body>. They are `fixed`, but a fixed box is
+  // positioned against its nearest transformed or filtered ancestor rather than
+  // the window, so rendering in place tied the modal to wherever the page
+  // beneath it happened to be scrolled.
   if (awaitingUser) {
-    return (
+    return createPortal(
       <div className="fixed inset-0 z-[61] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
         <section
           ref={panelRef}
@@ -651,18 +669,19 @@ export function InstallFlow({
           aria-labelledby="install-review-title"
         >
           {header}
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div data-install-review-body className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
             {renderContent()}
           </div>
         </section>
-      </div>
+      </div>,
+      document.body,
     );
   }
 
   // z-[61] keeps it above the pack-indicator stacking context when both are
   // visible; pack progress remains readable alongside via vertical stacking.
   // `aria-modal="false"` states that the rest of the app stays live behind it.
-  return (
+  return createPortal(
     <aside
       className="fixed bottom-4 right-4 z-[61] flex max-h-[85vh] w-[min(36rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       data-tour="install-review-dialog"
@@ -675,7 +694,8 @@ export function InstallFlow({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {renderContent()}
       </div>
-    </aside>
+    </aside>,
+    document.body,
   );
 }
 
@@ -753,7 +773,7 @@ function ReviewView({
     ...plan.filesToRemove.map((file) => ({
       kind: 'remove' as const,
       filename: file.filename,
-      tag: 'removed',
+      tag: 'will be removed',
       isNew: false,
     })),
     ...plan.filesToDisable.map((file) => ({
@@ -790,13 +810,13 @@ function ReviewView({
       {/* Blockers come first: nothing further down is actionable until they clear */}
       {plan.blockingErrors.length > 0 && (
         <section className="rounded-xl border border-destructive/40 bg-destructive/10 p-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-destructive">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-red-700 dark:text-red-300">
             <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
             {plan.blockingErrors.length === 1
               ? 'This change cannot be applied yet'
               : `${plan.blockingErrors.length} problems block this change`}
           </h3>
-          <ul className="mt-2 space-y-1 text-xs text-destructive">
+          <ul className="mt-2 space-y-1 text-xs text-red-700 dark:text-red-300">
             {plan.blockingErrors.map((e, i) => <li key={i}>{e.message}</li>)}
           </ul>
         </section>
@@ -832,7 +852,9 @@ function ReviewView({
           title={plan.conflicts.length === 1
             ? 'One overlap to sort out'
             : `${plan.conflicts.length} overlaps to sort out`}
-          hint="These mods cannot both stay as they are. Pick what should happen to each."
+          hint={plan.conflicts.some((c) => c.kind === 'broken-reverse-dep')
+            ? 'Something that stays installed still needs a file you are removing. Cancel, or remove it anyway and repair it from the instance health alert later.'
+            : 'These mods cannot both stay as they are. Pick what should happen to each.'}
         >
           {plan.conflicts.map((c, i) => (
             <ConflictRow
@@ -854,7 +876,7 @@ function ReviewView({
               <ChangeChip icon={PackagePlus} tone="add" label={`${addCount} ${pluralFiles(addCount)} added`} />
             )}
             {removeCount > 0 && (
-              <ChangeChip icon={PackageMinus} tone="remove" label={`${removeCount} ${pluralFiles(removeCount)} removed`} />
+              <ChangeChip icon={PackageMinus} tone="remove" label={`${removeCount} ${pluralFiles(removeCount)} will be removed`} />
             )}
             {disableCount > 0 && (
               <ChangeChip icon={PowerOff} tone="neutral" label={`${disableCount} ${pluralFiles(disableCount)} turned off`} />
@@ -893,6 +915,9 @@ function ReviewView({
               </li>
             ))}
           </ul>
+        )}
+        {operationArtifacts(plan.operation).some((artifact) => artifact.metadata.contentType === 'datapack') && (
+          <DatapackWorldsNote instanceId={plan.intent.targetInstance} />
         )}
       </section>
 
@@ -995,7 +1020,7 @@ function ReviewView({
             <p>{plan.snapshot.label} ({formatBytes(plan.snapshot.estimatedBytes)})</p>
           </div>
           <FileList title="Files added" files={plan.filesToAdd.map((file) => file.targetFilename)} />
-          <FileList title="Files removed" files={plan.filesToRemove.map((file) => file.filename)} />
+          <FileList title="Files to be removed" files={plan.filesToRemove.map((file) => file.filename)} />
           <FileList title="Files turned off" files={plan.filesToDisable.map((file) => file.filename)} />
           {satisfiedRequired.length > 0 && (
             <FileList
@@ -1075,7 +1100,7 @@ function ChangeChip({ icon: Icon, label, tone }: {
   const toneClass = tone === 'add'
     ? 'border-green-600/30 bg-green-500/10 text-green-700 dark:text-green-300'
     : tone === 'remove'
-      ? 'border-destructive/30 bg-destructive/10 text-destructive'
+      ? 'border-destructive/30 bg-destructive/10 text-red-700 dark:text-red-300'
       : 'border-border bg-background text-muted-foreground';
   return (
     <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', toneClass)}>
@@ -1176,7 +1201,7 @@ function depStatus(dep: ResolvedDep): { label: string; tone: string } {
     case 'excluded':
       return { label: 'Not included', tone: 'text-muted-foreground' };
     case 'unresolved':
-      return { label: `Could not be found — ${dep.disposition.reason}`, tone: 'text-destructive' };
+      return { label: `Could not be found — ${dep.disposition.reason}`, tone: 'text-red-700 dark:text-red-300' };
     default:
       return { label: '', tone: 'text-muted-foreground' };
   }
@@ -1208,6 +1233,7 @@ const RESOLUTION_LABELS: Record<string, string> = {
   skip: 'Keep what is installed',
   'disable-existing': 'Turn off the installed one',
   abort: 'Cancel this change',
+  'remove-anyway': 'Remove anyway (leaves a health alert)',
 };
 
 function ConflictRow({ conflict, selected, onSelect }: { conflict: DepConflict; selected?: string; onSelect: (r: string) => void }) {
@@ -1364,7 +1390,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
               <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
                 {outcome.healthReport.blockers.map((b, i) => (
                   <div key={i} className="rounded border border-destructive bg-destructive/10 p-2 text-sm">
-                    <p className="text-destructive">{b.message}</p>
+                    <p className="text-red-700 dark:text-red-300">{b.message}</p>
                     {b.suggested_action && <p className="mt-1 text-xs text-muted-foreground">{b.suggested_action}</p>}
                     {b.filename && <p className="mt-1 text-xs text-muted-foreground font-mono">{b.filename}</p>}
                   </div>
@@ -1387,7 +1413,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
       )}
       {outcome.type === 'failed' && (
         <>
-          <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{outcome.error}</div>
+          <div className="rounded-lg bg-destructive/10 p-3 text-sm text-red-700 dark:text-red-300">{outcome.error}</div>
           {outcome.rollbackPerformed && (
             <p className="text-xs text-muted-foreground">The recovery snapshot was restored automatically.</p>
           )}
@@ -1408,7 +1434,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
         </div>
       )}
       {rollbackError && (
-        <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+        <div className="rounded-lg bg-destructive/10 p-3 text-sm text-red-700 dark:text-red-300">
           Restore failed: {rollbackError}
         </div>
       )}
@@ -1420,7 +1446,7 @@ function ResultView({ outcome, instanceId, onOpenInstance, onClose }: {
           <button
             onClick={() => { void rollback(); }}
             disabled={rollbackState === 'restoring'}
-            className="rounded-lg border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            className="rounded-lg border border-destructive/40 px-4 py-2 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-destructive/10 disabled:opacity-50"
           >
             {rollbackState === 'restoring' ? 'Restoring…' : 'Roll Back'}
           </button>
@@ -1447,7 +1473,7 @@ function ErrorView({ message, retryable, onRetry, canTryClosest, onTryClosest, c
 }) {
   return (
     <div className="space-y-4 py-4">
-      <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{message}</div>
+      <div className="rounded-lg bg-destructive/10 p-3 text-sm text-red-700 dark:text-red-300">{message}</div>
       <div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-lg border border-input px-4 py-2 text-sm font-medium hover:bg-accent">Close</button>
         {canTryClosest && (

@@ -103,6 +103,7 @@ const snapshot: Snapshot = {
   size_estimate: 4 * 1024 * 1024,
   is_lkg: false,
   is_current_lkg: false,
+  effective_origin: 'user',
   is_pre_restore: false,
 };
 

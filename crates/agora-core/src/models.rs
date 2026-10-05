@@ -645,7 +645,8 @@ mod tests {
         }
         .to_args_for_java(25);
         assert!(args.contains("-XX:+UseZGC"));
-        assert!(args.contains("-XX:+ZGenerational"));
+        // Removed in Java 24: passing it only makes the JVM print a warning.
+        assert!(!args.contains("ZGenerational"));
     }
 
     #[test]

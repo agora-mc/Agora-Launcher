@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   checkAllInstanceHealth,
+  checkInstanceHealth,
   type HealthReport,
 } from './tauri';
 
@@ -23,10 +24,16 @@ export function useInstanceHealthMonitor(enabled = true) {
   const [reports, setReports] = useState<InstanceHealthReports>({});
   const [errors, setErrors] = useState<InstanceHealthErrors>({});
   const refreshInFlight = useRef<Promise<void> | null>(null);
+  const refreshAgain = useRef(false);
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
-    if (refreshInFlight.current) return refreshInFlight.current;
+    if (refreshInFlight.current) {
+      // A scan that started before the caller's change cannot see it. Run one
+      // more pass when it finishes instead of handing back its stale result.
+      refreshAgain.current = true;
+      return refreshInFlight.current;
+    }
     const task = (async () => {
       try {
         const results = await checkAllInstanceHealth();
@@ -63,6 +70,10 @@ export function useInstanceHealthMonitor(enabled = true) {
     } finally {
       if (refreshInFlight.current === task) refreshInFlight.current = null;
     }
+    if (refreshAgain.current) {
+      refreshAgain.current = false;
+      await refresh();
+    }
   }, []);
 
   const updateReport = useCallback((instanceId: string, report: HealthReport) => {
@@ -73,6 +84,16 @@ export function useInstanceHealthMonitor(enabled = true) {
       return next;
     });
   }, []);
+
+  /** Re-scan one instance right after something changed its files. */
+  const refreshInstance = useCallback(async (instanceId: string) => {
+    try {
+      const report = await checkInstanceHealth(instanceId);
+      if (mounted.current) updateReport(instanceId, report);
+    } catch {
+      // Keep the last known report; launch-time health stays authoritative.
+    }
+  }, [updateReport]);
 
   useEffect(() => {
     if (!enabled) return undefined;
@@ -90,5 +111,5 @@ export function useInstanceHealthMonitor(enabled = true) {
     };
   }, [enabled, refresh]);
 
-  return { reports, errors, refresh, updateReport };
+  return { reports, errors, refresh, refreshInstance, updateReport };
 }

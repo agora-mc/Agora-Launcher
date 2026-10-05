@@ -55,9 +55,12 @@
 //!   verifiably restored the pre-migration state (files, manifest, DB row).
 //!   A post-commit health failure lands here.
 //!
-//! Only [`MigrationOutcome::Failed`] with `rolled_back == false` means "state
-//! may need manual recovery"; the recovery snapshot id is always surfaced in
-//! that case.
+//! Only [`MigrationOutcome::Failed`] with `instance_changed == true` and
+//! `rolled_back == false` means "state may need manual recovery"; the recovery
+//! snapshot id is always surfaced in that case. `instance_changed == false`
+//! is a failure before anything in the instance was touched (precondition,
+//! lock, loader-provision, staging, verification, snapshot), so there is
+//! nothing to undo.
 //!
 //! # Refusal rules (no silent skips)
 //!
@@ -253,6 +256,10 @@ impl MigrationRejection {
     }
 }
 
+fn default_instance_changed() -> bool {
+    true
+}
+
 /// Typed outcome of a migration attempt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
@@ -289,13 +296,20 @@ pub enum MigrationOutcome {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         health_report: Option<HealthReport>,
     },
-    /// Failure. `rolled_back == true` means the undo completed; `false` means
-    /// the instance may be mid-state and the `snapshot_id` (when present) is
-    /// the recovery point.
+    /// Failure. `instance_changed == false` means it stopped before the
+    /// instance's files, manifest or database row were touched, so there is
+    /// nothing to undo. Otherwise `rolled_back == true` means the undo
+    /// completed; `false` means the instance may be mid-state and the
+    /// `snapshot_id` (when present) is the recovery point.
     Failed {
         phase: String,
         error: String,
         rolled_back: bool,
+        /// Whether anything in the instance was modified before the failure.
+        /// Defaults to `true` (the cautious reading) for outcomes recorded
+        /// before this field existed.
+        #[serde(default = "default_instance_changed")]
+        instance_changed: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot_id: Option<String>,
     },
@@ -611,10 +625,14 @@ pub async fn execute_migration(
             report: Some(plan.report.clone()),
         };
     }
+    // Every `failed(..)` return below happens before the instance's files,
+    // manifest or DB row are touched (staging lives under `.agora/staging`
+    // and is cleaned up), so the instance is unchanged.
     let failed = |phase: &str, error: String| MigrationOutcome::Failed {
         phase: phase.to_string(),
         error,
         rolled_back: false,
+        instance_changed: false,
         snapshot_id: None,
     };
 
@@ -758,12 +776,13 @@ pub async fn execute_migration(
     }
 
     // 4. Mandatory recovery snapshot of the pre-migration state.
-    let snapshot = match crate::snapshot::create_snapshot(
+    let snapshot = match crate::snapshot::create_snapshot_with_origin(
         &instance_dir,
         Some(&format!(
             "migration-{}",
             &plan.fingerprint[..16.min(plan.fingerprint.len())]
         )),
+        crate::snapshot::SnapshotOrigin::Migration,
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -816,6 +835,7 @@ pub async fn execute_migration(
                 phase: "apply".into(),
                 error: format!("Apply failed ({error}) and undo did not complete cleanly ({undo_error}); restore snapshot {snapshot_id} to recover"),
                 rolled_back: false,
+                instance_changed: true,
                 snapshot_id: Some(snapshot_id),
             },
         };
@@ -851,6 +871,7 @@ pub async fn execute_migration(
                 phase: "db-commit".into(),
                 error: format!("DB commit failed ({error}) and undo did not complete cleanly ({undo_error}); restore snapshot {snapshot_id} to recover"),
                 rolled_back: false,
+                instance_changed: true,
                 snapshot_id: Some(snapshot_id),
             },
         };
@@ -890,6 +911,7 @@ pub async fn execute_migration(
                         report.blockers.iter().map(|b| b.message.clone()).collect::<Vec<_>>().join("; ")
                     ),
                     rolled_back: false,
+                    instance_changed: true,
                     snapshot_id: Some(snapshot_id),
                 };
             }
@@ -921,6 +943,7 @@ pub async fn execute_migration(
                         "Instance files were restored but the database row could not be reverted ({other:?}); repair the instance tuple before launching"
                     ),
                     rolled_back: true,
+                    instance_changed: true,
                     snapshot_id: Some(snapshot_id),
                 },
             };
@@ -1011,14 +1034,34 @@ impl VersionMigrationService {
         target_version: &str,
     ) -> Result<MigrationPlan, MigrationRejection> {
         let checker = crate::migration_report::LiveModrinthChecker::new(self.ctx.clone());
-        plan_migration(
+        let mut plan = plan_migration(
             &self.ctx,
             instance_id,
             target_version,
             &checker,
             self.successors.as_ref(),
         )
-        .await
+        .await?;
+        // Display-only (the fingerprint excludes the report), so it is done
+        // here rather than inside the pure planner.
+        if let Ok(manifest) = self
+            .ctx
+            .paths
+            .instance_manifest(&plan.instance_id)
+            .and_then(|path| crate::helpers::read_manifest(&path))
+        {
+            let installed: Vec<InstalledMod> = manifest
+                .mods
+                .iter()
+                .chain(manifest.resourcepacks.iter())
+                .chain(manifest.shaders.iter())
+                .chain(manifest.datapacks.iter())
+                .cloned()
+                .collect();
+            crate::migration_report::apply_friendly_names(&self.ctx, &installed, &mut plan.report)
+                .await;
+        }
+        Ok(plan)
     }
 
     /// `accept_blockers` is the user's answer to the plan's `blockers` list:
@@ -2305,13 +2348,20 @@ mod tests {
         )
         .await;
         let MigrationOutcome::Failed {
-            phase, rolled_back, ..
+            phase,
+            rolled_back,
+            instance_changed,
+            ..
         } = outcome
         else {
             panic!("expected Failed, got {outcome:?}");
         };
         assert_eq!(phase, "loader-provision");
         assert!(!rolled_back);
+        assert!(
+            !instance_changed,
+            "a loader-provision failure happens before anything in the instance changes"
+        );
         assert!(fetcher.calls.lock().unwrap().is_empty());
         assert_untouched(&ctx, "provfail");
         assert_eq!(

@@ -192,6 +192,15 @@ describe('the shipped script', () => {
     }
   });
 
+  it('does not stall the destination step when the instance is already chosen', () => {
+    const index = TOUR_STEPS.findIndex((step) => step.id === 'install-pick-instance');
+    expect(index).toBeGreaterThan(-1);
+    const state = { status: 'running' as const, index, manual: false };
+    // The picker preselects the instance; no change event ever fires for it.
+    expect(tourReducer(state, { type: 'anchor-present', anchor: 'install-instance-chosen' }))
+      .toEqual({ status: 'running', index: index + 1, manual: false });
+  });
+
   it('reaches the end by performing every step in order', () => {
     // A walk-through of the whole script: each step is satisfied by the event
     // its own condition names, so a step that can never be completed (a typo'd
