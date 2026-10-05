@@ -82,6 +82,12 @@ pub struct DatapackSyncReport {
 struct ManagedRecord {
     #[serde(default)]
     version: u32,
+    /// The instance that placed these files. A world copied in from another
+    /// instance carries that instance's record, and its files are not ours to
+    /// remove. Records written before this field existed have none and are
+    /// taken as this instance's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
     #[serde(default)]
     files: Vec<ManagedFile>,
 }
@@ -256,36 +262,64 @@ fn atomic_copy_verified(source: &Path, dest: &Path, expected_sha256: &str) -> Re
     result
 }
 
-fn read_record(path: &Path, warnings: &mut Vec<String>, world: &str) -> BTreeMap<String, String> {
+/// What this instance placed in a world, and whether the record on disk
+/// belongs to another instance (and so must be replaced, not acted on).
+fn read_record(
+    path: &Path,
+    warnings: &mut Vec<String>,
+    world: &str,
+    instance_id: &str,
+) -> (BTreeMap<String, String>, bool) {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (BTreeMap::new(), false)
+        }
         Err(error) => {
             warnings.push(format!(
                 "World '{world}': could not read Agora's data pack record ({error}); \
                  nothing was removed there."
             ));
-            return BTreeMap::new();
+            return (BTreeMap::new(), false);
         }
     };
     match serde_json::from_str::<ManagedRecord>(&text) {
-        Ok(record) => record
-            .files
-            .into_iter()
-            .filter(|file| safe_name(&file.filename))
-            .map(|file| (file.filename, file.sha256))
-            .collect(),
+        Ok(record)
+            if record
+                .instance_id
+                .as_deref()
+                .is_some_and(|owner| owner != instance_id) =>
+        {
+            warnings.push(format!(
+                "World '{world}' came from another instance; the data packs Agora placed \
+                 there for it are now treated as yours and left alone."
+            ));
+            (BTreeMap::new(), true)
+        }
+        Ok(record) => (
+            record
+                .files
+                .into_iter()
+                .filter(|file| safe_name(&file.filename))
+                .map(|file| (file.filename, file.sha256))
+                .collect(),
+            false,
+        ),
         Err(error) => {
             warnings.push(format!(
                 "World '{world}': Agora's data pack record is unreadable ({error}); \
                  data packs already there are treated as yours and left alone."
             ));
-            BTreeMap::new()
+            (BTreeMap::new(), false)
         }
     }
 }
 
-fn write_record(path: &Path, files: &BTreeMap<String, String>) -> Result<(), String> {
+fn write_record(
+    path: &Path,
+    files: &BTreeMap<String, String>,
+    instance_id: &str,
+) -> Result<(), String> {
     if files.is_empty() {
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -295,6 +329,7 @@ fn write_record(path: &Path, files: &BTreeMap<String, String>) -> Result<(), Str
     }
     let record = ManagedRecord {
         version: 1,
+        instance_id: Some(instance_id.to_string()),
         files: files
             .iter()
             .map(|(filename, sha256)| ManagedFile {
@@ -315,13 +350,15 @@ fn write_record(path: &Path, files: &BTreeMap<String, String>) -> Result<(), Str
 fn sync_world(
     saves: &Path,
     world: &str,
+    instance_id: &str,
     desired: &BTreeMap<String, Desired>,
     unreadable: &BTreeSet<String>,
     report: &mut DatapackSyncReport,
 ) {
     let datapacks_dir = saves.join(world).join("datapacks");
     let record_path = datapacks_dir.join(MANAGED_RECORD_FILE);
-    let previous = read_record(&record_path, &mut report.warnings, world);
+    let (previous, foreign_record) =
+        read_record(&record_path, &mut report.warnings, world, instance_id);
     let mut next: BTreeMap<String, String> = BTreeMap::new();
 
     // 1. Remove what Agora placed and no longer wants here.
@@ -422,11 +459,13 @@ fn sync_world(
         }
     }
 
-    if next != previous {
+    // A foreign record is always replaced (or removed when nothing here is
+    // ours), so its warning is given once rather than on every sync.
+    if next != previous || foreign_record {
         let result = if next.is_empty() && !datapacks_dir.is_dir() {
             Ok(())
         } else {
-            write_record(&record_path, &next)
+            write_record(&record_path, &next, instance_id)
         };
         if let Err(error) = result {
             report.warnings.push(format!(
@@ -484,7 +523,14 @@ pub fn sync_instance_datapacks(
 
     let saves = instance_dir.join("saves");
     for world in &worlds {
-        sync_world(&saves, world, &desired, &unreadable, &mut report);
+        sync_world(
+            &saves,
+            world,
+            &manifest.instance_id,
+            &desired,
+            &unreadable,
+            &mut report,
+        );
     }
     report
 }
@@ -614,6 +660,32 @@ mod tests {
             b"pack-bytes"
         );
         assert!(fx.in_world("Alpha", MANAGED_RECORD_FILE).is_file());
+    }
+
+    #[test]
+    fn a_world_from_another_instance_keeps_its_packs() {
+        let fx = Fixture::new();
+        fx.world("Imported");
+        let datapacks = fx.root.join("saves").join("Imported").join("datapacks");
+        fs::create_dir_all(&datapacks).unwrap();
+        fs::write(datapacks.join("vm.zip"), b"pack-bytes").unwrap();
+        let foreign = serde_json::json!({
+            "version": 1,
+            "instance_id": "other-instance",
+            "files": [{"filename": "vm.zip", "sha256": hex::encode(Sha256::digest(b"pack-bytes"))}],
+        });
+        fs::write(datapacks.join(MANAGED_RECORD_FILE), foreign.to_string()).unwrap();
+
+        // This instance does not list vm.zip, so it must not remove it.
+        let report = sync_instance_datapacks(&fx.root, &manifest(vec![]));
+        assert_eq!(report.removed, 0);
+        assert!(fx.in_world("Imported", "vm.zip").is_file());
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        // The foreign record is released, so the next sync is quiet.
+        assert!(!fx.in_world("Imported", MANAGED_RECORD_FILE).exists());
+        let again = sync_instance_datapacks(&fx.root, &manifest(vec![]));
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        assert!(fx.in_world("Imported", "vm.zip").is_file());
     }
 
     #[test]
