@@ -1188,6 +1188,42 @@ fn excluded_paths_in_build_and_verify() {
     );
 }
 
+/// Asking for a Copied base must never be answered with an existing Linked one:
+/// the caller wanted no hardlinks into the store install.
+#[test]
+fn a_copied_base_is_not_answered_by_a_linked_one() {
+    let tmp = TempDir::new().unwrap();
+    let (paths, _install_dir, install) = built(&tmp, Some("9"));
+    let def = test_definition();
+    let root = tmp.path().join("AgoraBases");
+    let build = |mode| {
+        build_base(
+            &paths,
+            &install,
+            &def,
+            mode,
+            Some(&root),
+            BuildOptions::default(),
+            &|_| {},
+        )
+        .unwrap()
+    };
+
+    let linked = build(BaseMode::Linked);
+    let copied = build(BaseMode::Copied);
+    assert!(
+        matches!(copied, BuildOutcome::Built { .. }),
+        "not short-circuited by the linked base"
+    );
+    assert_eq!(copied.manifest().mode, BaseMode::Copied);
+    assert_ne!(linked.manifest().base_id, copied.manifest().base_id);
+
+    let again = build(BaseMode::Copied);
+    assert!(matches!(again, BuildOutcome::Existing(_)));
+    assert_eq!(again.manifest().mode, BaseMode::Copied);
+    assert_eq!(build(BaseMode::Linked).manifest().mode, BaseMode::Linked);
+}
+
 /// Default and unfiltered bases of one runtime hold different files, so each
 /// gets its own id, and an unfiltered base still verifies the excluded files
 /// it recorded.

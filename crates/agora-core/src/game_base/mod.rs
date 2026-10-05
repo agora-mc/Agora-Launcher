@@ -464,13 +464,17 @@ pub fn build_base(
         }
     };
 
-    // An unfiltered base holds different files from the default one for the
-    // same runtime, so it gets its own id rather than whichever was built first.
-    let base_id = if options.include_excluded {
-        format!("{}_unfiltered", make_base_id(runtime))
-    } else {
-        make_base_id(runtime)
-    };
+    // A Copied base stores the same files differently from a Linked one (no
+    // hardlinks into the store install), and an unfiltered base holds different
+    // files from the default one, so each gets its own id rather than being
+    // answered by whichever was built first.
+    let mut base_id = make_base_id(runtime);
+    if mode == BaseMode::Copied {
+        base_id.push_str("_copied");
+    }
+    if options.include_excluded {
+        base_id.push_str("_unfiltered");
+    }
     let manifest_path = paths.base_manifest_path(&base_id);
 
     // 2. Existing manifest -> return without touching anything
