@@ -268,6 +268,12 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "base", "list"],
     &["games", "base", "verify"],
     &["games", "base", "remove"],
+    &["games", "content"],
+    &["games", "content", "add"],
+    &["games", "content", "list"],
+    &["games", "content", "show"],
+    &["games", "content", "verify"],
+    &["games", "content", "remove"],
     &["games", "instance"],
     &["games", "instance", "create"],
     &["games", "instance", "list"],
@@ -3085,4 +3091,72 @@ fn games_base_cli_list_verify_remove() {
     // 5. Launch with nonexistent base -> error
     let output_launch = run_agora(&data_dir, &["games", "launch", "nonexistent-base"]);
     assert!(!output_launch.status.success());
+}
+
+#[test]
+fn games_content_cli_lifecycle() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. List when empty
+    let output = run_agora(&data_dir, &["games", "content", "list"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No content items found"));
+
+    let output_json = run_agora_json(&data_dir, &["games", "content", "list"]);
+    assert!(output_json.status.success());
+    let json_val: serde_json::Value =
+        serde_json::from_slice(&output_json.stdout).expect("valid json array");
+    assert_eq!(json_val, serde_json::json!([]));
+
+    // 2. Add folder
+    let mod_dir = tempfile::tempdir().unwrap();
+    std::fs::write(mod_dir.path().join("readme.txt"), b"mod content").unwrap();
+    let mod_dir_str = mod_dir.path().to_str().unwrap();
+
+    let output_add = run_agora(
+        &data_dir,
+        &["games", "content", "add", mod_dir_str, "--name", "test-mod"],
+    );
+    assert!(output_add.status.success());
+    let add_stdout = String::from_utf8_lossy(&output_add.stdout);
+    assert!(add_stdout.contains("Added item"));
+
+    // 3. List
+    let output_list = run_agora(&data_dir, &["games", "content", "list"]);
+    assert!(output_list.status.success());
+    let list_stdout = String::from_utf8_lossy(&output_list.stdout);
+    assert!(list_stdout.contains("test-mod"));
+
+    let output_list_json = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&output_list_json.stdout).expect("valid json list");
+    let item_id = list_json[0]["item_id"].as_str().unwrap().to_string();
+    let prefix = &item_id[..8];
+
+    // 4. Show
+    let output_show = run_agora(&data_dir, &["games", "content", "show", prefix]);
+    assert!(output_show.status.success());
+    let show_stdout = String::from_utf8_lossy(&output_show.stdout);
+    assert!(show_stdout.contains("readme.txt"));
+
+    // 5. Verify clean
+    let output_verify = run_agora(&data_dir, &["games", "content", "verify", prefix]);
+    assert!(output_verify.status.success());
+    let verify_stdout = String::from_utf8_lossy(&output_verify.stdout);
+    assert!(verify_stdout.contains("verified clean"));
+
+    // 6. Remove
+    let output_remove = run_agora(&data_dir, &["games", "content", "remove", prefix]);
+    assert!(output_remove.status.success());
+    let remove_stdout = String::from_utf8_lossy(&output_remove.stdout);
+    assert!(remove_stdout.contains("removed"));
+
+    // 7. Verify nonexistent fails
+    let output_ver_err = run_agora(&data_dir, &["games", "content", "verify", prefix]);
+    assert!(!output_ver_err.status.success());
+
+    // 8. Remove nonexistent fails
+    let output_rem_err = run_agora(&data_dir, &["games", "content", "remove", prefix]);
+    assert!(!output_rem_err.status.success());
 }

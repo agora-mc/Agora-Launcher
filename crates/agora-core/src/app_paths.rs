@@ -197,6 +197,41 @@ impl AppPaths {
         self.base_manifests_dir().join(format!("{base_id}.json"))
     }
 
+    /// Root directory for the content store (`content/`).
+    pub fn content_root(&self) -> PathBuf {
+        self.root.join("content")
+    }
+
+    /// Root directory for content objects (`content/objects/`).
+    pub fn content_objects_dir(&self) -> PathBuf {
+        self.content_root().join("objects")
+    }
+
+    /// Path to a specific content object (`content/objects/<hh>/<sha256>`).
+    pub fn content_object_path(&self, sha256: &str) -> PathBuf {
+        let prefix = if sha256.len() >= 2 {
+            &sha256[..2]
+        } else {
+            "xx"
+        };
+        self.content_objects_dir().join(prefix).join(sha256)
+    }
+
+    /// Root directory for content item manifests (`content/items/`).
+    pub fn content_items_dir(&self) -> PathBuf {
+        self.content_root().join("items")
+    }
+
+    /// Path to a specific content item manifest (`content/items/<item_id>.json`).
+    pub fn content_item_path(&self, item_id: &str) -> PathBuf {
+        self.content_items_dir().join(format!("{item_id}.json"))
+    }
+
+    /// Root directory for content extraction staging (`content/staging/`).
+    pub fn content_staging_dir(&self) -> PathBuf {
+        self.content_root().join("staging")
+    }
+
     /// Root directory for the Agora-owned Minecraft runtime (`minecraft-runtime/`).
     pub fn minecraft_runtime_root(&self) -> PathBuf {
         self.root.join("minecraft-runtime")

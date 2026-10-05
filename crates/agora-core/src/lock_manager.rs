@@ -167,6 +167,8 @@ pub enum LockResource {
     Materialization,
     /// Per-instance lock for install/remove/update operations.
     Instance(String),
+    /// Exclusive access to the content store for adding or removing items.
+    ContentStore,
 }
 
 impl LockResource {
@@ -193,6 +195,7 @@ impl LockResource {
                 app_paths::validate_path_component(id)?;
                 Ok(format!("instance-{id}"))
             }
+            LockResource::ContentStore => Ok("content-store".into()),
         }
     }
 }
@@ -748,6 +751,12 @@ mod tests {
     fn test_lock_name_accepts_valid_instance() {
         let r = LockResource::Instance("my-instance".into());
         assert_eq!(r.lock_name().unwrap(), "instance-my-instance");
+    }
+
+    #[test]
+    fn test_lock_name_accepts_content_store() {
+        let r = LockResource::ContentStore;
+        assert_eq!(r.lock_name().unwrap(), "content-store");
     }
 
     #[test]

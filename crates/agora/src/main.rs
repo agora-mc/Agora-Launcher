@@ -292,6 +292,11 @@ enum GamesCmd {
         #[command(subcommand)]
         action: BaseCmd,
     },
+    /// Manage content store for mod assets.
+    Content {
+        #[command(subcommand)]
+        action: ContentCmd,
+    },
     /// Manage game instances.
     Instance {
         #[command(subcommand)]
@@ -376,6 +381,38 @@ enum BaseCmd {
     Remove {
         /// Base ID to remove.
         base_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContentCmd {
+    /// Add an archive or folder to the content store.
+    Add {
+        /// Path to the zip archive or folder.
+        path: PathBuf,
+        /// Optional name for the content item.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List all items in the content store.
+    List,
+    /// Show files in a content item.
+    Show {
+        /// Item ID or unique prefix.
+        item: String,
+    },
+    /// Verify integrity of content items.
+    Verify {
+        /// Item ID or unique prefix to verify (verifies all items if omitted).
+        item: Option<String>,
+        /// Run full verification (re-hash all objects).
+        #[arg(long)]
+        full: bool,
+    },
+    /// Remove an item from the content store.
+    Remove {
+        /// Item ID or unique prefix to remove.
+        item: String,
     },
 }
 
@@ -4569,6 +4606,228 @@ async fn run_command(
                     }
                 }
             },
+            GamesCmd::Content { action } => match action {
+                ContentCmd::Add { path, name } => {
+                    let outcome = if path.is_dir() {
+                        agora_core::content_store::add_folder(ctx, &path, name.as_deref())
+                    } else {
+                        agora_core::content_store::add_archive(ctx, &path, name.as_deref())
+                    };
+                    match outcome {
+                        Ok(outcome) => {
+                            if json {
+                                println!("{}", serde_json::to_string_pretty(&outcome)?);
+                            } else {
+                                let item = outcome.item();
+                                let short_id = &item.item_id[..12.min(item.item_id.len())];
+                                match &outcome {
+                                    agora_core::content_store::AddOutcome::Added { .. } => println!(
+                                        "Added item {short_id} ({} files, {} bytes, {} new objects).",
+                                        item.files.len(),
+                                        item.total_size,
+                                        outcome.objects_new()
+                                    ),
+                                    agora_core::content_store::AddOutcome::Existing { .. } => println!(
+                                        "Already stored as item {short_id} ({} files); {} objects restored.",
+                                        item.files.len(),
+                                        outcome.objects_restored()
+                                    ),
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": e.to_string(),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                ContentCmd::List => {
+                    let items = agora_core::content_store::list_items(ctx)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&items)?);
+                    } else if items.is_empty() {
+                        println!("No content items found.");
+                    } else {
+                        for item in items {
+                            let short_id = &item.item_id[..12.min(item.item_id.len())];
+                            let sources_str = item
+                                .sources
+                                .iter()
+                                .map(|s| match s {
+                                    agora_core::content_store::ContentSource::Archive {
+                                        path,
+                                        ..
+                                    } => format!("archive:{path}"),
+                                    agora_core::content_store::ContentSource::Folder {
+                                        path,
+                                        ..
+                                    } => format!("folder:{path}"),
+                                    _ => "other".to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            println!(
+                                "{} ({}, {} files, {} bytes, sources: [{}])",
+                                item.name,
+                                short_id,
+                                item.files.len(),
+                                item.total_size,
+                                sources_str
+                            );
+                        }
+                    }
+                }
+                ContentCmd::Show { item } => {
+                    match agora_core::content_store::get_item(ctx, &item) {
+                        Ok(it) => {
+                            if json {
+                                println!("{}", serde_json::to_string_pretty(&it)?);
+                            } else {
+                                let short_id = &it.item_id[..12.min(it.item_id.len())];
+                                println!(
+                                    "Item {} ({}, {} files, {} bytes):",
+                                    it.name,
+                                    short_id,
+                                    it.files.len(),
+                                    it.total_size
+                                );
+                                for f in &it.files {
+                                    println!(
+                                        "  {} ({} bytes, sha256: {})",
+                                        f.path, f.size, f.sha256
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": e.to_string(),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                ContentCmd::Verify { item, full } => {
+                    let depth = if full {
+                        agora_core::content_store::VerifyDepth::Full
+                    } else {
+                        agora_core::content_store::VerifyDepth::Quick
+                    };
+                    if let Some(prefix) = item {
+                        match agora_core::content_store::verify_item(ctx, &prefix, depth) {
+                            Ok(ver) => {
+                                if json {
+                                    println!("{}", serde_json::to_string_pretty(&ver)?);
+                                } else if ver.problems.is_empty() {
+                                    let short_id = &ver.item_id[..12.min(ver.item_id.len())];
+                                    println!(
+                                        "Item '{short_id}' verified clean (checked {}, hashed {}).",
+                                        ver.checked, ver.hashed
+                                    );
+                                } else {
+                                    let short_id = &ver.item_id[..12.min(ver.item_id.len())];
+                                    eprintln!(
+                                        "Item '{short_id}' has {} problem(s):",
+                                        ver.problems.len()
+                                    );
+                                    print_content_problems(&ver.problems);
+                                }
+                                if !ver.problems.is_empty() {
+                                    std::process::exit(1);
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "error": e.to_string(),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        match agora_core::content_store::verify_all(ctx, depth) {
+                            Ok(report) => {
+                                if json {
+                                    println!("{}", serde_json::to_string_pretty(&report)?);
+                                } else if report.problems.is_empty() {
+                                    println!(
+                                        "All content items verified clean (checked {} items, {} files, hashed {}).",
+                                        report.checked_items, report.checked_files, report.hashed_files
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "Content store has {} problem(s) across {} item(s):",
+                                        report.problems.len(),
+                                        report.checked_items
+                                    );
+                                    print_content_problems(&report.problems);
+                                }
+                                if !report.problems.is_empty() {
+                                    std::process::exit(1);
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "error": e.to_string(),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+                ContentCmd::Remove { item } => {
+                    match agora_core::content_store::remove_item(ctx, &item) {
+                        Ok(()) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "removed",
+                                    "item": item,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!("Content item '{item}' removed.");
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": e.to_string(),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            },
             GamesCmd::Instance { action } => match action {
                 GameInstanceCmd::Create {
                     install_id,
@@ -5438,6 +5697,34 @@ fn print_base_problems(problems: &[agora_core::game_base::BaseProblem]) {
         eprintln!(
             "Warning: a file hardlinked to the store install changed, so the store install changed with it. Until Agora's write layer exists, declare files the game writes in its definition, or use a Copied base. A store's verify/repair restores the original."
         );
+    }
+}
+
+fn print_content_problems(problems: &[agora_core::content_store::ContentProblem]) {
+    for p in problems {
+        match &p.kind {
+            agora_core::content_store::ProblemKind::Missing => {
+                eprintln!("  [{}] {}: missing from object store", p.item_id, p.path);
+            }
+            agora_core::content_store::ProblemKind::SizeMismatch { expected, actual } => {
+                eprintln!(
+                    "  [{}] {}: size mismatch (expected {expected} bytes, found {actual})",
+                    p.item_id, p.path
+                );
+            }
+            agora_core::content_store::ProblemKind::HashMismatch { expected, actual } => {
+                eprintln!(
+                    "  [{}] {}: hash mismatch (expected {expected}, found {actual})",
+                    p.item_id, p.path
+                );
+            }
+            agora_core::content_store::ProblemKind::Unprotected => {
+                eprintln!("  [{}] {}: object is unprotected", p.item_id, p.path);
+            }
+            agora_core::content_store::ProblemKind::CorruptManifest { error } => {
+                eprintln!("  [{}] manifest corrupt or unreadable: {error}", p.item_id);
+            }
+        }
     }
 }
 
