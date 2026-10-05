@@ -6,6 +6,7 @@ import { PluginSurface } from '../features/plugins/PluginSurface';
 import { ConsoleView } from '../components/ConsoleView';
 import { takeRequestedEditorTab } from '../lib/editorDeepLink';
 import { InstallFlow } from '../components/InstallFlow';
+import { LaunchFailedBanner } from '../components/LaunchFailedBanner';
 import { LauncherImportWizard } from '../components/LauncherImportWizard';
 import { DependencyPrompt } from '../components/DependencyPrompt';
 import { PackInstallProgressBar, usePackInstall } from '../components/PackInstallProgress';
@@ -261,7 +262,7 @@ function previewJavaMajor(version: string | undefined): number {
   return 8;
 }
 
-export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth, onRefreshHealth }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void; onRefreshHealth?: (instanceId: string) => Promise<void> | void }) {
+export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpenModDetail, onOpenBrowseForInstance, onLaunch, onInvestigate, processLogs, processState, onKillProcess, healthReport, onReviewHealth, onRefreshHealth, launchFailure, onDismissLaunchFailure }: { instanceId: string; onBack: () => void; onOpenInstanceEditor?: (instanceId: string) => void; onOpenModDetail?: (itemId: string) => void; onOpenBrowseForInstance?: (instanceId: string, contentType?: string) => void; onLaunch?: (instanceId: string) => Promise<boolean>; onInvestigate?: (instanceId: string) => void; processLogs?: import('../lib/useProcessController').LogLine[]; processState?: import('../lib/useProcessController').ProcessState; onKillProcess?: () => Promise<void>; healthReport?: HealthReport | null; onReviewHealth?: (instanceId: string, instanceName: string, report: HealthReport) => void; onRefreshHealth?: (instanceId: string) => Promise<void> | void; launchFailure?: { exitCode: number | null } | null; onDismissLaunchFailure?: (instanceId: string) => void }) {
   const [detail, setDetail] = useState<InstanceDetail | null>(null);
   const detailRef = useRef<InstanceDetail | null>(null);
   detailRef.current = detail;
@@ -342,6 +343,9 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
   const [instanceJavaSaving, setInstanceJavaSaving] = useState(false);
   const [playBusy, setPlayBusy] = useState(false);
 
+  // A Minecraft version migration is being applied (reported by the migrate tab,
+  // which can be left while it runs).
+  const [migrationBusy, setMigrationBusy] = useState(false);
   const [canonicalOperation, setCanonicalOperation] = useState<{
     intent: InstallIntent;
     instanceName: string;
@@ -1434,9 +1438,6 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     return targets.size;
   }, [optionalEdges]);
   const packInstall = getTaskForInstance(instanceId);
-  const recoveryBlocked = (
-    detail?.snapshot_readiness !== undefined && detail.snapshot_readiness !== 'ready'
-  ) || packInstall?.status === 'running';
   const isCurrentProcess = processState?.instanceId === instanceId;
   const processLaunching = isCurrentProcess && processState?.phase === 'launching';
   const processStopping = isCurrentProcess && processState?.phase === 'stopping';
@@ -1446,9 +1447,27 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
     && processState?.instanceId !== undefined
     && ['launching', 'running', 'stopping', 'delegated'].includes(processState.phase)
     && !isCurrentProcess;
-  const playDisabled = playBusy || recoveryBlocked || processLaunching || processStopping || processDelegated || anotherProcessActive;
+  const gameActive = processLaunching || processStopping || processRunning || processDelegated;
+  // Why an operation is holding this instance, or null. Core refuses concurrent
+  // changes anyway; this says so up front instead of leaving a dead control.
+  const operationHoldReason: string | null = migrationBusy
+    ? 'A Minecraft version change is in progress. This clears when it finishes.'
+    : packInstall?.status === 'running'
+      ? `${packInstall.label} is still in progress. This clears when it finishes.`
+      : detail?.snapshot_readiness === 'pending'
+        ? 'Agora is saving a recovery snapshot of this instance. This clears when it finishes.'
+        : detail?.snapshot_readiness === 'failed'
+          ? 'The recovery snapshot failed. Retry it before changing this instance.'
+          : null;
+  const mutationBlockReason: string | null = operationHoldReason
+    ?? (gameActive ? 'Minecraft is running with this instance. Close the game before changing it.' : null);
+  // Every control that changes the instance. Play and Kill use the narrower
+  // `operationHeld`: a running game must not block Kill.
+  const recoveryBlocked = mutationBlockReason !== null;
+  const operationHeld = operationHoldReason !== null;
+  const playDisabled = playBusy || operationHeld || processLaunching || processStopping || processDelegated || anotherProcessActive;
   const recoveryPending = detail?.snapshot_readiness === 'pending';
-  const snapshotOperationPending = recoveryPending || packInstall?.status === 'running';
+  const snapshotOperationPending = recoveryPending || packInstall?.status === 'running' || migrationBusy || gameActive;
   const healthIssueCount = healthReport
     ? healthReport.blockers.length + healthReport.warnings.length
     : 0;
@@ -1773,7 +1792,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                     disabled={recoveryBlocked || Boolean(row?.is_locked)}
                     className="underline text-primary hover:text-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
                     title={recoveryBlocked
-                      ? 'Wait for the recovery snapshot to finish.'
+                      ? mutationBlockReason ?? undefined
                       : row?.is_locked
                         ? 'Unlock the instance to change the loader version.'
                         : 'Change the loader version for this instance.'}
@@ -1931,6 +1950,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
           {packInstall && <PackInstallProgressBar task={packInstall} />}
 
+          {launchFailure && !processRunning && !processLaunching && (
+            <LaunchFailedBanner
+              exitCode={launchFailure.exitCode}
+              onOpenConsole={() => setActiveTab('console')}
+              onInvestigate={() => onInvestigate?.(instanceId)}
+              onDismiss={() => onDismissLaunchFailure?.(instanceId)}
+            />
+          )}
+
           {(processLaunching || processRunning) && processState?.launchProgress && (
             <LaunchProgressPanel
               className="mt-4"
@@ -2010,7 +2038,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
         <InstalledContentPanel
           contentType="mod"
           rows={displayedContentRows.filter((content) => content.content_type === 'mod')}
-          locked={!!row?.is_locked || recoveryBlocked}
+          locked={!!row?.is_locked || recoveryBlocked} lockedReason={recoveryBlocked ? mutationBlockReason : null}
           addLabel="Import Mod"
           onAdd={handleImportMod}
           onToggle={handleToggleMod}
@@ -2041,15 +2069,15 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
       )}
 
       {activeTab === 'resourcepacks' && (
-        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="resourcepack" rows={displayedContentRows.filter((content) => content.content_type === 'resourcepack')} locked={!!row?.is_locked || recoveryBlocked} lockedReason={recoveryBlocked ? mutationBlockReason : null} addLabel="+ Add Resource Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'resourcepack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'shaders' && (
-        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="shader" rows={displayedContentRows.filter((content) => content.content_type === 'shader')} locked={!!row?.is_locked || recoveryBlocked} lockedReason={recoveryBlocked ? mutationBlockReason : null} addLabel="+ Add Shader" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'shader')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'datapacks' && (
-        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
+        <InstalledContentPanel contentType="datapack" rows={displayedContentRows.filter((content) => content.content_type === 'datapack')} locked={!!row?.is_locked || recoveryBlocked} lockedReason={recoveryBlocked ? mutationBlockReason : null} addLabel="+ Add Data Pack" onAdd={() => onOpenBrowseForInstance?.(instanceId, 'datapack')} onToggle={handleToggleMod} onBulkToggle={handleBulkToggle} onBulkRemove={handleBulkRemove} onRemove={(content) => handleRemove(content.filename)} onOpenDetails={handleOpenInstalledMod} onRevealFile={handleRevealInstalledContent} onCheckUpdates={() => checkInstanceUpdates(instanceId)} onApplyUpdate={handleApplyUpdate} onUpdateAll={handleUpdateAll} onTogglePin={handleTogglePin} onExplainPresence={setExplainTarget} modGroups={modGroups} onChooseGroup={setGroupTarget} initialUpdates={cachedUpdates} onError={setError} />
       )}
 
       {activeTab === 'mods' && (
@@ -2206,6 +2234,11 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
 
       {activeTab === 'snapshots' && (
         <section className="rounded-xl border border-border bg-card p-4 space-y-4">
+          {snapshotOperationPending && (
+            <p className="rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-foreground" role="status">
+              {mutationBlockReason ?? 'Snapshot actions are unavailable right now.'} Create, import and restore are unavailable until then.
+            </p>
+          )}
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-sm">Snapshots</h3>
             <div className="flex gap-2">
@@ -2552,6 +2585,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
             currentVersion={detail?.row.minecraft_version ?? 'an unknown version'}
             loader={detail?.row.loader}
             onMigrated={() => { void reloadInstance().catch((cause) => setError(formatError(cause))); }}
+            onMigratingChange={setMigrationBusy}
           />
         </div>
       )}
@@ -2806,7 +2840,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
                 <button
                   onClick={() => void handleRepairLockfile()}
                   disabled={lockfileBusy !== null || Boolean(row?.is_locked) || recoveryBlocked}
-                  title={recoveryBlocked ? 'Wait for the recovery snapshot to finish.' : row?.is_locked ? 'Unlock this instance before repairing drift.' : undefined}
+                  title={recoveryBlocked ? mutationBlockReason ?? undefined : row?.is_locked ? 'Unlock this instance before repairing drift.' : undefined}
                   className="rounded-lg border border-input bg-background hover:bg-accent px-3 py-1.5 text-sm font-medium disabled:opacity-50"
                 >
                   {lockfileBusy === 'repair' ? 'Repairing…' : 'Repair'}

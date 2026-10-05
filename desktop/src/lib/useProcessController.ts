@@ -70,8 +70,21 @@ export interface ProcessState {
 // Controller hook — intended to live at App level and survive page navigation.
 // ---------------------------------------------------------------------------
 
+/** A game that exited abnormally, remembered per instance until it is dealt with. */
+export interface LaunchFailure {
+  exitCode: number | null;
+  exitedAt: string;
+}
+
 export interface ProcessController {
   state: ProcessState;
+  /**
+   * Abnormal exits by instance id. Unlike `state` (one focused session), an
+   * entry stays until that instance launches again or the user dismisses it,
+   * so starting another instance does not erase it.
+   */
+  launchFailures: Record<string, LaunchFailure>;
+  dismissLaunchFailure: (instanceId: string) => void;
   /** Every tracked session, not just the focused one. */
   liveSessions: RunningProcess[];
   /** Bounded log buffer for the tracked instance. */
@@ -190,6 +203,14 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
    */
   const [liveSessions, setLiveSessions] = useState<RunningProcess[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [launchFailures, setLaunchFailures] = useState<Record<string, LaunchFailure>>({});
+  const dismissLaunchFailure = useCallback((instanceId: string) => {
+    setLaunchFailures((current) => {
+      if (!(instanceId in current)) return current;
+      const { [instanceId]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -241,6 +262,15 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
     }>(
       'game-exited',
       (event) => {
+        if (event.payload.outcome === 'crash') {
+          setLaunchFailures((existing) => ({
+            ...existing,
+            [event.payload.instance_id]: {
+              exitCode: event.payload.exit_code,
+              exitedAt: new Date().toISOString(),
+            },
+          }));
+        }
         const current = stateRef.current;
         if (
           current.instanceId === event.payload.instance_id &&
@@ -269,6 +299,11 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // A new launch of an instance answers its earlier failure.
+  useEffect(() => {
+    if (state.phase === 'launching' && state.instanceId) dismissLaunchFailure(state.instanceId);
+  }, [state.phase, state.instanceId, dismissLaunchFailure]);
 
   // Delegated launches cannot reliably detect when the Mojang-owned game
   // process exits, so return the pack to normal shortly after handoff.
@@ -846,6 +881,8 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
 
   return {
     state,
+    launchFailures,
+    dismissLaunchFailure,
     logs,
     liveSessions,
     startLaunch,

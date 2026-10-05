@@ -557,6 +557,8 @@ function AppContent() {
   // Render the HealthDialog at the App level so it survives page navigation.
   const {
     state: processState,
+    launchFailures,
+    dismissLaunchFailure,
     liveSessions,
     logs: processLogs,
     startLaunch,
@@ -981,6 +983,8 @@ function AppContent() {
                     onUseDelegatedLaunch={useDelegatedLaunch}
                     onRestartMojangLauncher={restartMojangLauncherAndRetry}
                     onClearError={clearError}
+                    launchFailures={launchFailures}
+                    onDismissLaunchFailure={dismissLaunchFailure}
                     healthReports={healthMonitor.reports}
                     healthErrors={healthMonitor.errors}
                     onReviewHealth={openHealthReview}
@@ -1045,6 +1049,8 @@ function AppContent() {
                   processState={processState}
                   onKillProcess={killProcess}
                   onInvestigate={handleInstanceEditorInvestigate}
+                  launchFailure={launchFailures[instanceEditorId] ?? null}
+                  onDismissLaunchFailure={dismissLaunchFailure}
                   processLogs={processLogs}
                   healthReport={healthMonitor.reports[instanceEditorId] ?? null}
                   onReviewHealth={openHealthReview}
