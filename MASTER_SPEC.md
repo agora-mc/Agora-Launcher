@@ -3581,35 +3581,78 @@ Only layers 4 and 5 are ever written. Deleting a path that exists in a lower lay
 | Strategy | For | How |
 |---|---|---|
 | **Redirect** | Games or frameworks that can be pointed at another folder: Factorio (`--mod-directory`), BepInEx and Unity Doorstop, Paradox mod descriptors, Minecraft | Agora builds the mod folder per instance and points the game at it. Nothing touches the game. |
-| **Virtual file system** | Games that load mods only from their own folder: Creation Engine, REDengine, many Unreal games | The stack is mounted over layer 1 at launch. Windows: usvfs used as a library. Linux: overlayfs (`fuse-overlayfs` without root). |
+| **Virtual file system** | Games that load mods only from their own folder: Creation Engine, REDengine, many Unreal games | The stack is mounted over layer 1 at launch. Windows: Agora's own copy-on-write VFS, or link deployment where a DLL cannot be injected (below). Linux: overlayfs (`fuse-overlayfs` without root). |
 | **Journaled swap** | Per-user files a Redirect game reads from fixed places | See *Per-user files* below. |
 
 **Copy-on-write is a requirement, not an option.** Layers 1–3 are shared or must stay exactly as
 recorded. A tool that edits a file in its own mod folder (BodySlide's config, Nemesis's `nemesis.ini`,
 F4), or a game that rewrites a log in its root (F2), must write a copy into layer 4 or 5, never the
-lower file. overlayfs does this natively (copy-up). usvfs, as MO2 uses it, writes existing files in
-place (F4).
+lower file. overlayfs does this natively (copy-up).
 
-**The Windows write-isolation gate comes before the layer contract is fixed** (Spike 2, §26.13).
-It tests usvfs against both content and base files for: writing an existing file, replacing it by
-rename, deleting it, creating a new one, and all four from a child process the game or tool starts.
-The outcomes, in order of preference:
+**Write isolation on Windows, as decided by Spike 2** (2026-10-04, with the user;
+`scripts/spikes/game-support/write-isolation/`, whose `FINDINGS.md` has the measurements). Three
+mechanisms, each covering what the one before cannot:
 
-1. usvfs copies on write, or can be extended to (it is a separate library from MO2; extending it
-   is a fork of a small component, not of MO2).
-2. **Fail closed, with copies per mod.** If copy-on-write cannot be made reliable, shared files are
-   marked read-only on disk, so an unexpected write fails visibly instead of changing a shared file.
-   Copies are then made a mod at a time, which matches what the spike saw: both observed writes were
-   a tool editing its *own* mod folder (F4).
-   - A mod that contains a tool the instance runs gets its own writable copy in that instance
-     automatically.
-   - Any other mod can be given one: offered at the moment of a blocked write if usvfs can report
-     it (Spike 2 finds out), and always available from the mod's menu.
-   - "Reset to original" drops the instance's copy.
-   - Paths a game is declared to write (logs, INIs in its root) are materialised before launch.
+1. **Agora's own copy-on-write VFS** (`agvfs`, Rust), not usvfs. usvfs has no copy-on-write (its
+   header lists it as "maybe"; no fork has it): of 30 changes to existing lower files in the spike's
+   matrix, 24 changed the real file, through a hardlink into the store install too, and handle-based
+   rename and `ReplaceFileW` bypass it entirely. Forking it would mean rewriting its write path, its
+   least developed part, while keeping its C++/Boost toolchain and its per-file-link model, which has
+   no place for layers or whiteouts. agvfs is built around the layer stack instead:
+   - It is a DLL injected into the game (and, through a `CreateProcessInternalW` hook, every process
+     the game starts) that hooks the NT calls every Win32 file API funnels through: `NtCreateFile`,
+     `NtOpenFile`, `NtSetInformationFile`, `NtQueryAttributesFile`, `NtQueryFullAttributesFile`,
+     `NtQueryInformationByName` (Windows 11 24H2's `GetFileAttributes*`), `NtQueryDirectoryFile(Ex)`,
+     `NtClose`.
+   - A lower file is never opened with write or delete rights. Writing to it copies it to layer 4
+     first; a whole-file rewrite (`OVERWRITE`, `SUPERSEDE`) needs no copy. Deleting it records a
+     whiteout, a marker file in layer 4 (`.agvfs-wh\<path>.wh`). Renaming it copies it to the new name
+     and whites out the old one. Folder listings merge every layer, the higher hiding the lower,
+     whiteouts hidden.
+   - Relative names arrive relative to a directory handle (usually the current directory, opened
+     before the hooks existed), so a handle's path is looked up when it is not one agvfs opened.
+   - **Every `.exe` and `.dll` is physically present at its path in the launch folder**, hardlinked
+     from the base's own copies (§26.4 already copies them). Windows maps a process's image, and the
+     loader resolves its static imports, before any hook exists: with them only virtual, Skyrim
+     exits `STATUS_DLL_NOT_FOUND` and Satisfactory's launcher cannot start its game.
+   - Measured: the matrix (ten ways to change a file, three lower layers, game and child process)
+     changes no shared file and fails no operation, and what the game can open, list and query is
+     always the same set. Skyrim SE and Witcher 3 ran to the menu and into play from their bases,
+     Skyrim opening the same 177 files as under usvfs; Witcher 3's `metadata.store` rewrite landed in
+     layer 4 with no copy. RimWorld, Slay the Spire, Balatro and Satisfactory ran from their store
+     installs as the lower layer, each install unchanged afterwards.
+   - Still to build before Phase 3 relies on it (usvfs hooks 47 functions, agvfs 12): virtual current
+     directories, handle-name queries (`NtQueryInformationFile`'s name classes, `NtQueryObject`),
+     `GetModuleFileName` for binaries loaded from a lower layer, 32-bit processes,
+     `FILE_OPEN_BY_FILE_ID`, the newer listing classes, and per-user files mapped through the VFS
+     (below). The spike's matrix and real-game runs become its conformance tests.
+2. **ACL deny on everything Agora owns and shares**: the content store, and the files of Copied
+   bases. Files are denied `WriteData`, `AppendData`, `WriteExtendedAttributes` and `Delete` for the
+   user; folders `CreateFiles`, `CreateDirectories` and `DeleteSubdirectoriesAndFiles`. Windows itself
+   then refuses any change, whatever opened the file, inside a game or outside Agora; agvfs's copy-up
+   only ever reads, so the two stack (the matrix is unchanged with both). `WriteAttributes` stays open
+   because creating a hardlink needs it, and deny entries must not include `SYNCHRONIZE` (`icacls
+   /deny` adds it, which denies every open, reads included). An ACL or a read-only attribute belongs
+   to the file, not the link, so neither can protect a base file hardlinked to the store install
+   without changing the store's file: those are protected by agvfs alone, and post-session
+   verification (§26.4) stays as detection. Agora removes its deny entries before deleting its own
+   files, including on uninstall.
+3. **Link deployment, for games that cannot take an injected DLL** (anti-cheat, or agvfs not yet
+   compatible): the instance's game folder is a real folder of hardlinks, the content over the base,
+   and the game runs on it directly. With the ACLs, an in-place edit of a deployed file fails closed
+   and nothing shared changes. Agora grants the user delete-child on the deployment folder it creates,
+   so deleting or renaming a deployed file removes only that instance's link (measured: with it, only
+   the 12 in-place edits of the 62 fail; without it, all 62). Switching instances re-links, which is
+   fast but not free, and the content store must be on the instance's volume.
 
-Either way, a write can never silently reach a shared file. Hash checks after a session (the
-content store, §26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
+**When a write is refused** (link deployment, or a path agvfs cannot redirect), copies are made a mod
+at a time, which matches what the spike saw: both observed writes were a tool editing its *own* mod
+folder (F4). A mod that contains a tool the instance runs gets its own writable copy in that instance
+automatically; any other mod can be given one from its menu; "Reset to original" drops the copy; paths
+a game is declared to write (logs, INIs in its root) are materialised before launch.
+
+A write can never silently reach a shared file. Hash checks after a session (the content store,
+§26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
 
 **Per-user files.** Skyrim AE rewrites `plugins.txt` at launch (F2), and a game's INIs live in the
 user's profile, shared by every instance of that game.
@@ -3634,10 +3677,11 @@ through the game's own setting where it has one (`sLocalSavePath` for Creation E
 MO2's "local saves" works). Switching offers to copy or move the existing saves. Loading a save made
 with different content is a launch-time warning, not a block.
 
-**Components are fetched, not bundled.** usvfs and its 32/64-bit proxies are a runtime component
-downloaded and hash-verified the first time a game needs a VFS, through the same machinery that
+**Components are fetched, not bundled,** when they are someone else's: a runtime component is
+downloaded and hash-verified the first time a game needs it, through the same machinery that
 provisions Java runtimes (`runtime_catalog`, `runtime_manager`), generalised from "Java runtime" to
-"runtime component". A Minecraft-only install never fetches it.
+"runtime component". agvfs is Agora's own code, built and signed with Agora, so it ships with it (a
+Minecraft-only install carries it unused).
 
 ### 26.6 Content, Frameworks and Compatibility
 
@@ -4052,7 +4096,7 @@ least one tracer from another family use it.**
 | Phase | Delivers | Done when |
 |---|---|---|
 | **0. Spike** | `scripts/spikes/game-support/` | Done (F1–F8). |
-| **0b. Spike 2: write isolation** | usvfs against content and base files: write an existing file, replace by rename, delete, create, and each from a child process; an archive in a Linked base changed in place | Runs alongside Phase 1. Its result picks copy-on-write or fail-closed (§26.5) **before** Phase 3 fixes the layer contract. |
+| **0b. Spike 2: write isolation** | usvfs against content and base files: write an existing file, replace by rename, delete, create, and each from a child process; an archive in a Linked base changed in place | Done (2026-10-04): usvfs has no copy-on-write; Agora builds its own copy-on-write VFS, with ACLs on what it owns and link deployment as the fallback (§26.5). |
 | **1. Game interface** | `agora-game-api` with `GamePackage` and `GameHost`; the dependency direction above; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass; migration tests cover interruption, re-running, and a manifest from a newer Agora. `agora-core` contains no Minecraft; `agora-game-minecraft` may still use core within its shrinking budget (§26.12, *as built*). |
 | **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; Linked and Copied bases with verification; generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. A base archive changed in place is detected and the instance refuses to launch on it, naming the files. Tracers, **as external packages through the plugin path**: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store. The generic halves of the instance and launch services exist and serve both Minecraft and Skyrim. The Minecraft package's `agora-core` budget has fallen with every generic service built (it reaches zero in Phase 5). |
 | **3. Deployment** | Content store, archives, FOMOD, the layer stack, Redirect, VFS (Windows) with the isolation Spike 2 chose, per-user files | A Skyrim instance with SKSE and twenty mods runs; switching instances needs no redeploy. **Failure gates:** an unexpected write by a game or tool never changes a content or base file; two launches of one game contend on `GameUserFiles` and the second is told why; a failed launch restores per-user files; Agora killed while the game runs, then restarted, restores nothing under the running game; a file edited externally before recovery is kept, not overwritten. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
@@ -4082,8 +4126,12 @@ support, themes and plugin views carry over, since they are app-wide already (§
 
 ### 26.15 Open Questions
 
-- **usvfs copy-on-write** (§26.5): Spike 2, before Phase 3; decides copy-on-write or fail-closed.
-  usvfs's licence must also be confirmed compatible with GPL-3.0-only before it is distributed.
+- **Tools that edit in place** (BodySlide, Nemesis: F4) under agvfs: how often copy-on-open copies
+  bytes, and how large. The games measured so far never needed a copy except Slay the Spire
+  appending to its log. usvfs's own question is settled (§26.5); it is not distributed, and its
+  licence (GPL-3.0-or-later with a FOSS exception) would allow porting code from it with its notice.
+- **Anti-cheat and link deployment**: no game with anti-cheat has been run from a link deployment
+  yet; the one installed (PlanetSide 2, BattlEye) is online-only.
 - **CK3 without its launcher** (F7): `ck3.exe` started directly most likely loads either no mods or
   the playset last set in the launcher. Checked in Phase 5, together with whether Agora can supply
   the list itself (playset database or `dlc_load.json`).
