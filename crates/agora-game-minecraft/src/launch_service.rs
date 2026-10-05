@@ -79,6 +79,11 @@ pub trait LaunchProgress: Send + Sync {
     fn phase_completed(&self, _name: &str, _duration_ms: u128) {}
     fn started(&self, _started: &LaunchStarted) {}
     fn log(&self, _stream: &str, _line: &str) {}
+    /// Verified-file counts while the `materializing` phase runs.
+    fn files(&self, _progress: &crate::launch_stage::FileProgress) {}
+    /// Managed Java provisioning progress while `provisioning-java` runs:
+    /// a status message and 0–100 for the whole provisioning step.
+    fn java_progress(&self, _message: &str, _percent: Option<f64>) {}
     fn finished(&self, _result: &LaunchResult) {}
     /// Called when a delegated launch is ready. The adapter must invoke
     /// the external Mojang launcher and return `Ok(())`. The default
@@ -89,6 +94,59 @@ pub trait LaunchProgress: Send + Sync {
             message: "Delegated launch not supported by this adapter.".into(),
         })
     }
+}
+
+/// Provision a managed Java runtime on a blocking thread, forwarding its
+/// progress to the launch's [`LaunchProgress`]. The provisioner runs off the
+/// async task and the launch progress is only borrowed, so its reports travel
+/// over a channel and are delivered here while the provisioning future runs.
+async fn provision_java_reporting(
+    ctx: &agora_core::ctx::Ctx,
+    runtimes_root: std::path::PathBuf,
+    major: u32,
+    policy: agora_core::network::NetworkPolicy,
+    progress: &dyn LaunchProgress,
+) -> LauncherResult<crate::java::JavaInstallation> {
+    struct ChannelProgress(tokio::sync::mpsc::UnboundedSender<(String, Option<f64>)>);
+    impl RuntimeProgress for ChannelProgress {
+        fn on_progress(&self, message: &str, percent: Option<f64>) {
+            let _ = self.0.send((message.to_string(), percent));
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    let (sender, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let catalog = crate::context::runtime_catalog(ctx).snapshot();
+    let lock_manager = ctx.lock_manager.clone();
+    let task = ctx
+        .task_scheduler
+        .run_blocking(BlockingPriority::Launch, move || {
+            let reporter = ChannelProgress(sender);
+            crate::runtime_manager::ensure_runtime(
+                &runtimes_root,
+                major,
+                &catalog,
+                &policy,
+                Some(&reporter as &dyn RuntimeProgress),
+                Some(&lock_manager),
+            )
+        });
+    tokio::pin!(task);
+    let joined = loop {
+        tokio::select! {
+            joined = &mut task => break joined,
+            Some((message, percent)) = reports.recv() => progress.java_progress(&message, percent),
+        }
+    };
+    while let Ok((message, percent)) = reports.try_recv() {
+        progress.java_progress(&message, percent);
+    }
+    joined.map_err(|error| LauncherError::Generic {
+        code: "ERR_JAVA_PROVISION".into(),
+        message: format!("Java provisioning task failed: {error}"),
+    })?
 }
 
 /// No-op progress implementation for callers that only need the result.
@@ -228,25 +286,7 @@ impl LaunchService {
                 let policy = agora_core::network::NetworkPolicy::from_ctx(&self.ctx)?;
                 policy.check(agora_core::network::NetworkCategory::JavaRuntime)?;
                 let runtimes_root = self.ctx.paths.java_runtimes_root();
-                let catalog = crate::context::runtime_catalog(&self.ctx).snapshot();
-                let lock_manager = self.ctx.lock_manager.clone();
-                self.ctx
-                    .task_scheduler
-                    .run_blocking(BlockingPriority::Launch, move || {
-                        crate::runtime_manager::ensure_runtime(
-                            &runtimes_root,
-                            major,
-                            &catalog,
-                            &policy,
-                            None::<&dyn crate::runtime_manager::RuntimeProgress>,
-                            Some(&lock_manager),
-                        )
-                    })
-                    .await
-                    .map_err(|error| LauncherError::Generic {
-                        code: "ERR_JAVA_PROVISION".into(),
-                        message: format!("Java provisioning task failed: {error}"),
-                    })??;
+                provision_java_reporting(&self.ctx, runtimes_root, major, policy, progress).await?;
             }
             LaunchRecoveryAction::RepairLoader => {
                 progress.phase("recovery", "Repairing loader installation");
@@ -380,6 +420,51 @@ impl LaunchService {
         })
     }
 
+    /// Copy the instance's enabled data packs into its worlds (MASTER_SPEC §20.6).
+    ///
+    /// Runs *after* the pre-launch snapshot and before the process (or the
+    /// official-launcher handoff) starts. Order matters for recovery: the
+    /// pre-launch snapshot deliberately excludes `saves/` and this step only
+    /// writes under `saves/<world>/datapacks/`, so the snapshot still describes
+    /// the instance exactly (its O(1) reuse is unaffected), and a snapshot that
+    /// fails never leaves half-synced worlds behind. A later restore of that
+    /// snapshot rolls the instance-level `datapacks/` back; the next launch's
+    /// sync then reconciles the worlds, which is why the sync is derived state
+    /// rather than something a snapshot must capture.
+    ///
+    /// Never fails the launch: problems are logged as warnings.
+    async fn sync_world_datapacks(&self, request: &LaunchInputs, progress: &dyn LaunchProgress) {
+        let game_dir = request.game_dir.clone();
+        let manifest = request.manifest.clone();
+        let outcome = self
+            .ctx
+            .task_scheduler
+            .run_blocking(BlockingPriority::Launch, move || {
+                crate::datapack_sync::sync_instance_datapacks(&game_dir, &manifest)
+            })
+            .await;
+        let lines = match outcome {
+            Ok(report) => {
+                let mut lines = report.warnings;
+                if report.copied > 0 || report.removed > 0 {
+                    lines.insert(
+                        0,
+                        format!(
+                            "Data packs synced into {} world(s): {} added or updated, {} removed.",
+                            report.worlds, report.copied, report.removed
+                        ),
+                    );
+                }
+                lines
+            }
+            Err(error) => vec![format!("Data pack sync did not run: {error}")],
+        };
+        for line in lines {
+            eprintln!("[launch] data packs for {}: {line}", request.instance_id);
+            progress.log("stdout", &format!("[Agora] {line}"));
+        }
+    }
+
     async fn launch_inputs(
         &self,
         request: LaunchInputs,
@@ -459,6 +544,7 @@ impl LaunchService {
                     message: format!("Pre-launch snapshot task failed: {error}"),
                 })??;
             progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
+            self.sync_world_datapacks(&request, progress).await;
             let operation_id = _op_handle.id().clone();
 
             progress.phase("handoff", "Handing off to external launcher");
@@ -506,7 +592,13 @@ impl LaunchService {
             return Ok(result);
         }
 
-        progress.phase("resolving", "Resolving Minecraft metadata and Java");
+        // The loader profile is adopted inside the same resolve step that picks
+        // Java, so name the loader in the label instead of inventing a split.
+        let resolve_message = match request.manifest.loader.as_str() {
+            "" | "vanilla" | "none" => "Preparing Java and Minecraft".to_string(),
+            loader => format!("Preparing Java and the {loader} mod loader"),
+        };
+        progress.phase("resolving", &resolve_message);
         let resolve_started = Instant::now();
         // An explicit Java override is authoritative. Do not scan unrelated
         // system/Mojang runtimes first: on macOS, Java shims can block while
@@ -559,28 +651,14 @@ impl LaunchService {
                 request
                     .network_policy
                     .check(agora_core::network::NetworkCategory::JavaRuntime)?;
-                let runtime_root = request.runtimes_root.clone();
-                let network_policy = request.network_policy.clone();
-                let catalog = crate::context::runtime_catalog(&self.ctx).snapshot();
-                let lock_manager = self.ctx.lock_manager.clone();
-                let ensured = self
-                    .ctx
-                    .task_scheduler
-                    .run_blocking(BlockingPriority::Launch, move || {
-                        crate::runtime_manager::ensure_runtime(
-                            &runtime_root,
-                            major,
-                            &catalog,
-                            &network_policy,
-                            None::<&dyn RuntimeProgress>,
-                            Some(&lock_manager),
-                        )
-                    })
-                    .await
-                    .map_err(|error| LauncherError::Generic {
-                        code: "ERR_JAVA_PROVISION".into(),
-                        message: format!("Java provisioning task failed: {error}"),
-                    })??;
+                let ensured = provision_java_reporting(
+                    &self.ctx,
+                    request.runtimes_root.clone(),
+                    major,
+                    request.network_policy.clone(),
+                    progress,
+                )
+                .await?;
                 let mut refreshed = java_candidates.clone();
                 refreshed.push(JavaInstallation {
                     path: ensured.path,
@@ -612,7 +690,31 @@ impl LaunchService {
             agora_core::lock_manager::LockResource::Materialization,
             "launch-materialize",
         )?;
-        let materialized = crate::launch_planner::materialize(resolved).await?;
+        // Asset verification can report thousands of updates in a second; keep
+        // the first, last and roughly ten per second so adapters stay cheap.
+        let last_files_report = Mutex::new(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
+        let on_files = |update: crate::launch_stage::FileProgress| {
+            let finished = update.done >= update.total;
+            let due = last_files_report
+                .lock()
+                .map(|mut last| {
+                    let due = last.elapsed() >= Duration::from_millis(100);
+                    if due {
+                        *last = Instant::now();
+                    }
+                    due
+                })
+                .unwrap_or(true);
+            if finished || due {
+                progress.files(&update);
+            }
+        };
+        let materialized =
+            crate::launch_planner::materialize_with_progress(resolved, Some(&on_files)).await?;
         progress.phase_completed("materializing", materialize_started.elapsed().as_millis());
         let java_path = materialized.resolved.java.path.clone();
         let gc_args = crate::gc::compute_gc(
@@ -656,6 +758,7 @@ impl LaunchService {
                 message: format!("Pre-launch snapshot task failed: {error}"),
             })??;
         progress.phase_completed("snapshot", snapshot_started.elapsed().as_millis());
+        self.sync_world_datapacks(&request, progress).await;
         let operation_id = _op_handle.id().clone();
 
         // -- Direct mode: spawn Java and attach --
@@ -723,9 +826,19 @@ impl LaunchService {
                 pid: Some(pid),
             });
 
-        progress.phase("running", "Waiting for Minecraft to exit");
+        progress.phase("running", "Minecraft is running and still loading");
         let secret = request.identity.access_token.as_str();
-        let output_progress = |stream: &str, line: &str| progress.log(stream, line);
+        let readiness = std::sync::Mutex::new(crate::launch_stage::ReadinessDetector::new());
+        let output_progress = |stream: &str, line: &str| {
+            progress.log(stream, line);
+            let became_ready = readiness
+                .lock()
+                .map(|mut detector| detector.observe(line))
+                .unwrap_or(false);
+            if became_ready {
+                progress.phase("ready", "Minecraft has finished loading");
+            }
+        };
         let outcome = crate::launch_planner::wait_and_classify_with_progress(
             child,
             &request.game_dir,
@@ -736,6 +849,14 @@ impl LaunchService {
         .inspect_err(|_| {
             self.ctx.process_session_manager.remove(session_id);
         })?;
+        // A process the user stopped with Agora's Stop/Kill exits non-zero;
+        // record that as a user-requested stop rather than a crash.
+        let outcome = if self.ctx.process_session_manager.take_user_stop(session_id) {
+            crate::launch_planner::mark_captured_launch_output_user_stopped(&request.game_dir);
+            LaunchOutcome::Cancelled
+        } else {
+            outcome
+        };
 
         // The game has exited, so release the instance. On the error path
         // above the lease is deliberately left in place: we no longer know
@@ -1398,5 +1519,46 @@ mod tests {
             agora_core::snapshot::list_snapshots(&inst).unwrap().len(),
             1
         );
+    }
+    /// World data pack sync runs after the pre-launch snapshot and must not
+    /// disturb it: the snapshot scope excludes `saves/`, so syncing into a world
+    /// leaves the snapshot reusable and the snapshot never contains the copies.
+    #[test]
+    fn world_datapack_sync_after_prelaunch_snapshot_keeps_snapshot_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = tmp.path().join("instance");
+        std::fs::create_dir_all(inst.join("datapacks")).unwrap();
+        std::fs::write(inst.join("datapacks").join("vm.zip"), b"pack").unwrap();
+        std::fs::create_dir_all(inst.join("saves").join("world1")).unwrap();
+        std::fs::write(inst.join("saves").join("world1").join("level.dat"), b"w").unwrap();
+        std::fs::write(inst.join("instance_manifest.json"), b"{}").unwrap();
+        let manifest: InstanceManifest = serde_json::from_value(serde_json::json!({
+            "instance_id": "t", "name": "t", "minecraft_version": "1.21",
+            "loader": "fabric", "loader_version": "0.1", "mods": [],
+            "datapacks": [{
+                "filename": "vm.zip", "source": "local", "sha256": "x",
+                "installed_at": "2024-01-01T00:00:00Z", "content_type": "datapack"
+            }],
+        }))
+        .unwrap();
+
+        let first = create_or_reuse_snapshot(&inst).unwrap();
+        let lkg = agora_core::lkg::LkgState {
+            current_lkg_snapshot_id: Some(first.clone()),
+            ..Default::default()
+        };
+        std::fs::write(inst.join("lkg.json"), serde_json::to_vec(&lkg).unwrap()).unwrap();
+
+        let report = crate::datapack_sync::sync_instance_datapacks(&inst, &manifest);
+        assert_eq!(report.copied, 1);
+        assert!(inst.join("saves/world1/datapacks/vm.zip").is_file());
+
+        let second = create_or_reuse_snapshot(&inst).unwrap();
+        assert_eq!(
+            first, second,
+            "sync must not invalidate the pre-launch snapshot"
+        );
+        let index = agora_core::snapshot::snapshot_file_index(&inst, &first).unwrap();
+        assert!(index.iter().all(|entry| !entry.path.starts_with("saves/")));
     }
 }

@@ -876,6 +876,33 @@ pub fn update_instance_loader_version(
     Ok(affected as u64)
 }
 
+/// Overwrite the manifest-derived columns of an instance row (Minecraft
+/// version, loader, loader version, locked flag) with the manifest's values.
+///
+/// For paths that replace `instance_manifest.json` wholesale (snapshot
+/// restore): the row caches these fields, so without this the editor and
+/// library keep showing the pre-restore version. Returns the affected rows
+/// (0 when the instance has no row).
+pub fn sync_instance_row_from_manifest(
+    conn: &Connection,
+    instance_id: &str,
+    manifest: &crate::models::InstanceManifest,
+) -> anyhow::Result<u64> {
+    let affected = conn.execute(
+        "UPDATE user_instances
+         SET minecraft_version = ?1, loader = ?2, loader_version = ?3, is_locked = ?4
+         WHERE instance_id = ?5",
+        rusqlite::params![
+            manifest.minecraft_version,
+            manifest.loader,
+            manifest.loader_version,
+            manifest.is_locked,
+            instance_id
+        ],
+    )?;
+    Ok(affected as u64)
+}
+
 /// Persist the relative path of an Agora-owned custom instance icon.
 pub fn set_instance_icon_path(
     conn: &Connection,

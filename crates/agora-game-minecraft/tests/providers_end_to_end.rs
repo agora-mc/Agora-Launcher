@@ -368,10 +368,16 @@ async fn a_curated_provider_pack_installs_only_the_plan_the_curators_pinned() {
     // A different pin means the source no longer serves what was reviewed:
     // refused before anything is downloaded, with a code the UI can offer to
     // override.
-    let changed =
-        install::install_curated_pack(&world.ctx, &registry, identifier, &"0".repeat(64), false)
-            .await
-            .unwrap_err();
+    let changed = install::install_curated_pack(
+        &world.ctx,
+        &registry,
+        identifier,
+        &"0".repeat(64),
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
     assert!(changed.to_string().contains("different"), "{changed}");
     assert!(format!("{changed:?}").contains("ERR_PROVIDER_PACK_CHANGED"));
 }

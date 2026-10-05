@@ -866,7 +866,7 @@ impl MigrationService {
         enrich_with_registry(&self.ctx, &mut mods);
 
         let checker = LiveModrinthChecker::new(self.ctx.clone());
-        let report = generate_migration_report(
+        let mut report = generate_migration_report(
             instance_id,
             &source_version,
             target_version,
@@ -876,6 +876,7 @@ impl MigrationService {
             self.successor_lookup.as_ref(),
         )
         .await;
+        apply_friendly_names(&self.ctx, &mods, &mut report).await;
 
         Ok(report)
     }
@@ -898,7 +899,7 @@ impl MigrationService {
         enrich_with_registry(&self.ctx, &mut mods);
 
         let checker = LiveModrinthChecker::new(self.ctx.clone());
-        generate_migration_report(
+        let mut report = generate_migration_report(
             instance_id,
             &manifest.minecraft_version,
             target_version,
@@ -907,7 +908,117 @@ impl MigrationService {
             &checker,
             self.successor_lookup.as_ref(),
         )
-        .await
+        .await;
+        apply_friendly_names(&self.ctx, &mods, &mut report).await;
+        report
+    }
+}
+
+/// Replace the identifier-based `display_name` fallback (a registry slug or a
+/// Modrinth project id such as `NNAgCjsB`) with a name a person can read.
+///
+/// Best-effort and display-only: nothing here feeds classification or the plan
+/// fingerprint. Order: the curated registry's name, the cached Modrinth
+/// project title (the same cache the Installed tab fills), one batched
+/// Modrinth lookup for the rest when the privacy gates allow it, and finally
+/// the filename stem.
+pub(crate) async fn apply_friendly_names(
+    ctx: &Ctx,
+    installed: &[InstalledMod],
+    report: &mut MigrationReport,
+) {
+    let by_filename: HashMap<&str, &InstalledMod> = installed
+        .iter()
+        .map(|entry| (entry.filename.as_str(), entry))
+        .collect();
+
+    let registry_ids: Vec<String> = report
+        .mods
+        .iter()
+        .filter_map(|entry| entry.registry_id.clone())
+        .collect();
+    let registry_names: HashMap<String, String> = if registry_ids.is_empty() {
+        HashMap::new()
+    } else {
+        agora_core::registry::RegistryService::new(ctx.clone())
+            .get_items_by_ids(&registry_ids)
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|(id, item)| (id, item.name))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // Entries the registry could not name, but that have a Modrinth identity.
+    let mut keyed: Vec<(String, String)> = Vec::new(); // (cache key, project id)
+    for entry in &report.mods {
+        let named = entry
+            .registry_id
+            .as_ref()
+            .is_some_and(|id| registry_names.contains_key(id));
+        if named {
+            continue;
+        }
+        if let (Some(project_id), Some(installed)) = (
+            entry
+                .modrinth_id
+                .as_deref()
+                .filter(|id| !id.trim().is_empty()),
+            by_filename.get(entry.filename.as_str()),
+        ) {
+            keyed.push((
+                crate::installed_content::content_key(installed),
+                project_id.to_string(),
+            ));
+        }
+    }
+    let cache_keys: Vec<String> = keyed.iter().map(|(key, _)| key.clone()).collect();
+    let cached =
+        crate::modrinth::load_cached_project_metadata(ctx, &cache_keys).unwrap_or_default();
+    let mut titles: HashMap<String, String> = HashMap::new(); // by project id
+    let mut missing: Vec<String> = Vec::new();
+    for (key, project_id) in &keyed {
+        match cached.get(key).filter(|hit| hit.project_id == *project_id) {
+            Some(hit) => {
+                titles.insert(project_id.clone(), hit.title.clone());
+            }
+            None => {
+                if !missing.contains(project_id) {
+                    missing.push(project_id.clone());
+                }
+            }
+        }
+    }
+    if !missing.is_empty() {
+        // Gated like every other Modrinth call; failure just means the
+        // filename fallback is shown.
+        if let Ok(fetched) = crate::modrinth::ModrinthService::new(ctx.clone())
+            .fetch_project_metadata(&missing)
+            .await
+        {
+            let mut store = Vec::new();
+            for (key, project_id) in &keyed {
+                if let Some(metadata) = fetched.get(project_id) {
+                    titles.insert(project_id.clone(), metadata.title.clone());
+                    store.push((key.clone(), project_id.clone(), metadata.clone()));
+                }
+            }
+            let _ = crate::modrinth::store_cached_project_metadata(ctx, &store);
+        }
+    }
+
+    for entry in &mut report.mods {
+        let name = entry
+            .registry_id
+            .as_ref()
+            .and_then(|id| registry_names.get(id))
+            .or_else(|| entry.modrinth_id.as_ref().and_then(|id| titles.get(id)))
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| crate::installed_content::filename_display_name(&entry.filename));
+        entry.display_name = name;
     }
 }
 
@@ -1381,5 +1492,79 @@ mod tests {
                 + report.summary.unclassifiable,
             report.summary.total
         );
+    }
+
+    /// The report used to show the registry slug or Modrinth project id
+    /// ("NNAgCjsB") as the mod's name. Names now come from the cached project
+    /// title, falling back to the filename, never the identifier.
+    #[tokio::test]
+    async fn friendly_names_replace_identifiers() {
+        let root = std::env::temp_dir().join(format!(
+            "agora-migration-names-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let ctx = Ctx::for_testing(root.clone());
+        agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
+
+        let titled = test_mod(
+            "sodium-fabric-0.6.0.jar",
+            Some("AANobbMI"),
+            None,
+            "modrinth",
+        );
+        let untitled = test_mod(
+            "mystery-1.0.jar",
+            Some("NNAgCjsB"),
+            Some("fabric-api"),
+            "modrinth",
+        );
+        let mods = vec![titled.clone(), untitled];
+        crate::modrinth::store_cached_project_metadata(
+            &ctx,
+            &[(
+                crate::installed_content::content_key(&titled),
+                "AANobbMI".to_string(),
+                crate::modrinth::ModrinthProjectMetadata {
+                    title: "Sodium".to_string(),
+                    icon_url: None,
+                    author: None,
+                },
+            )],
+        )
+        .unwrap();
+
+        let checker = MockChecker::new()
+            .with_ready("AANobbMI")
+            .with_ready("NNAgCjsB");
+        let mut report = generate_migration_report(
+            "alpha",
+            "1.21",
+            "1.21.1",
+            "fabric",
+            &mods,
+            &checker,
+            &noop(),
+        )
+        .await;
+        // Before: the identifier fallbacks.
+        assert!(report.mods.iter().any(|e| e.display_name == "fabric-api"));
+
+        apply_friendly_names(&ctx, &mods, &mut report).await;
+
+        let name_of = |filename: &str| {
+            report
+                .mods
+                .iter()
+                .find(|e| e.filename == filename)
+                .unwrap()
+                .display_name
+                .clone()
+        };
+        assert_eq!(name_of("sodium-fabric-0.6.0.jar"), "Sodium");
+        // No registry row, no cached title, Modrinth disabled: the filename,
+        // not the slug or project id.
+        assert_eq!(name_of("mystery-1.0.jar"), "mystery-1.0");
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -404,6 +404,33 @@ impl LoaderService {
             "loader-install",
         )?;
 
+        let conn = match agora_core::db::local_state_connection(&self.ctx.paths.local_state_db()) {
+            Ok(c) => c,
+            Err(_) => {
+                op.fail("local state failed");
+                return Err(LauncherError::LocalStateFailed);
+            }
+        };
+        let policy = NetworkPolicy::from_db(&conn);
+        drop(conn);
+
+        // A loader profile inherits from the base Minecraft version, and
+        // validating or adopting one requires that version's JSON on disk.
+        // Launches fetch it during materialization, but a migration (or any
+        // other caller) can provision a loader for a version never prepared
+        // here, so fetch it first. Cache-first: offline only fails when the
+        // JSON is genuinely missing.
+        if let Err(e) = crate::minecraft_metadata::ensure_base_version_metadata(
+            &minecraft_root,
+            &tuple.minecraft_version,
+            &policy,
+        )
+        .await
+        {
+            op.fail(e.to_string());
+            return Err(e);
+        }
+
         let expected_sha = loader_manifests::strip_sha_prefix(&entry.sha256);
         if !force_reinstall {
             if let Ok(adopted) = installed_profile::adopt_installed_profile(
@@ -417,14 +444,6 @@ impl LoaderService {
             }
         }
 
-        let conn = match agora_core::db::local_state_connection(&self.ctx.paths.local_state_db()) {
-            Ok(c) => c,
-            Err(_) => {
-                op.fail("local state failed");
-                return Err(LauncherError::LocalStateFailed);
-            }
-        };
-        let policy = NetworkPolicy::from_db(&conn);
         if let Err(e) = policy.check(NetworkCategory::LoaderMetadataAndContent) {
             op.fail(e.to_string());
             return Err(e);
@@ -1409,6 +1428,36 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.loader_version, "0.19.0");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Regression: provisioning a Fabric profile for a Minecraft version that
+    /// was never prepared failed with "Base Minecraft version profile not
+    /// found", because only launches fetched the base version JSON. The base
+    /// fetch must come first, and honour the metadata network policy.
+    #[tokio::test]
+    async fn ensure_installed_requires_the_base_version_metadata_first() {
+        let (ctx, root) = context();
+        let entry = loader_manifests::list_versions("fabric", "1.21.1")
+            .into_iter()
+            .next()
+            .expect("catalog has a fabric entry for 1.21.1");
+        // Block both the metadata and the loader category so nothing can touch
+        // the network; the error then says which step ran first.
+        let conn = agora_core::db::local_state_connection(&ctx.paths.local_state_db()).unwrap();
+        for key in ["network_mojang_metadata_enabled", "network_loader_enabled"] {
+            agora_core::db::set_setting(&conn, key, &serde_json::Value::Bool(false)).unwrap();
+        }
+        drop(conn);
+
+        let err = LoaderService::new(ctx)
+            .ensure_installed("fabric", &entry.mc_version, &entry.loader_version, false)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, LauncherError::NetworkMojangMetadataDisabled),
+            "base version metadata must be required before the loader is touched, got {err:?}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -19,7 +19,8 @@ export type InstallAction =
   | { type: 'repair-lockfile'; contentHash: string };
 
 export interface BatchUpdateItem { itemId: string; targetVersion: string; }
-export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; }
+/** `contentType` is absent for a mod; resource packs, shaders and data packs say so, which picks their folder. */
+export interface BatchInstallItem { sourceType: SourceType; itemId: string; candidateVersion?: string; contentType?: string; }
 
 /**
  * `provider` is any content provider — Agora's official ones or a plugin's.
@@ -35,6 +36,12 @@ export interface PlanOverrides {
   allowReplace: boolean;
   skipHealthScan: boolean;
   allowClosestVersion?: boolean;
+  /**
+   * What a raw Modrinth install is (`resourcepack`, `shader`, `datapack`).
+   * Absent means a mod. Decides which Modrinth loader tags are acceptable and
+   * which folder the file installs into.
+   */
+  contentType?: string;
   skipItems?: string[];
   forceConflictResolution: Record<string, string>;
   /**
@@ -75,6 +82,40 @@ export interface ResolvedInstallPlan {
   createdAt: string;
   instanceStateHash: string;
   registryRevision: string;
+}
+
+/**
+ * What a plan does, in words, for progress and completion messages. The same
+ * background task runs installs, updates, removals and lockfile repairs, so
+ * its labels come from the plan rather than from "installing".
+ */
+export function describePlanAction(plan: ResolvedInstallPlan): {
+  /** "Removing 7 files", "Updating 3 items", "Installing 2 files". */
+  verb: string;
+  /** "Removed 7 files.", for the completion message. */
+  done: string;
+  /** Card headings: "Removal complete" / "Removal failed". */
+  noun: 'Installation' | 'Update' | 'Removal' | 'Repair';
+  /** Whether per-file download progress applies. */
+  downloadsFiles: boolean;
+} {
+  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  const added = plan.filesToAdd.length;
+  const removed = plan.filesToRemove.length;
+  const op = plan.operation.type;
+  if (op === 'remove' || op === 'batch-remove') {
+    const n = Math.max(removed, 1);
+    return { verb: `Removing ${count(n, 'file')}`, done: `Removed ${count(n, 'file')}.`, noun: 'Removal', downloadsFiles: false };
+  }
+  if (op === 'update' || op === 'batch-update') {
+    const n = op === 'batch-update' && plan.operation.type === 'batch-update' ? plan.operation.operations.length : 1;
+    return { verb: `Updating ${count(n, 'item')}`, done: `Updated ${count(n, 'item')}.`, noun: 'Update', downloadsFiles: added > 0 };
+  }
+  if (op === 'reconcile') {
+    return { verb: 'Repairing to match the lockfile', done: 'Repair complete.', noun: 'Repair', downloadsFiles: added > 0 };
+  }
+  const n = Math.max(added, 1);
+  return { verb: `Installing ${count(n, 'file')}`, done: `Installed ${count(n, 'file')}.`, noun: 'Installation', downloadsFiles: added > 0 };
 }
 
 /**
@@ -134,6 +175,8 @@ export interface ResolvedDep {
   displayName?: string | null;
   /** Canonical upstream page URL when known. */
   pageUrl?: string | null;
+  /** Selected batch items that pulled this dependency in. */
+  requestedBy?: string[];
 }
 
 export type DepDisposition =
@@ -155,7 +198,7 @@ export interface DepConflict {
 }
 
 export type ConflictKind = 'version-conflict' | 'duplicate-mod' | 'loader-mismatch' | 'game-version-mismatch' | 'incompatible-mod' | 'broken-reverse-dep';
-export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort';
+export type ConflictResolution = 'replace' | 'skip' | 'disable-existing' | 'abort' | 'remove-anyway';
 
 export interface FileAdd { targetFilename: string; stagingFilename: string; artifact: ResolvedArtifact; hashes: HashSpec; size: number; }
 export interface FileRemove { filename: string; }

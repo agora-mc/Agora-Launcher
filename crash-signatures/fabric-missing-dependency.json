@@ -1,0 +1,10 @@
+{
+  "id": "fabric-missing-dependency",
+  "name": "Missing Required Mod",
+  "regex_pattern": "which is missing!|Install [\\w.-]+, any version|Unmet dependency listing|Could not find required mod",
+  "solution_markdown": "The mod loader refused to start because a mod needs another mod that is not installed. Open the instance, use **Review & repair** on its health alert, or search Browse for the missing mod below and install it (or turn off the mod that needs it), then launch again.",
+  "action_button": {
+    "label": "Review Installed Mods",
+    "mod_id": null
+  }
+}

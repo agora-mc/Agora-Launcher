@@ -20,6 +20,12 @@ import {
   type RecoverableProfileIssue,
   type RunningProcess,
 } from './tauri';
+import {
+  applyLaunchProgressEvent,
+  STARTING_PROGRESS,
+  type LaunchProgressEventPayload,
+  type LaunchProgressInfo,
+} from './launchProgress';
 import { activeHealthWarnings, loadHealthPreferences } from './healthPreferences';
 
 // ---------------------------------------------------------------------------
@@ -56,14 +62,29 @@ export interface ProcessState {
   runtimeProgress: JavaRuntimeProgressEvent | null;
   /** Available user actions for the current recoverable issue. */
   availableActions: LauncherAction[];
+  /** Stage of the launch in flight (or of the game still loading); null otherwise. */
+  launchProgress?: LaunchProgressInfo | null;
 }
 
 // ---------------------------------------------------------------------------
 // Controller hook — intended to live at App level and survive page navigation.
 // ---------------------------------------------------------------------------
 
+/** A game that exited abnormally, remembered per instance until it is dealt with. */
+export interface LaunchFailure {
+  exitCode: number | null;
+  exitedAt: string;
+}
+
 export interface ProcessController {
   state: ProcessState;
+  /**
+   * Abnormal exits by instance id. Unlike `state` (one focused session), an
+   * entry stays until that instance launches again or the user dismisses it,
+   * so starting another instance does not erase it.
+   */
+  launchFailures: Record<string, LaunchFailure>;
+  dismissLaunchFailure: (instanceId: string) => void;
   /** Every tracked session, not just the focused one. */
   liveSessions: RunningProcess[];
   /** Bounded log buffer for the tracked instance. */
@@ -153,6 +174,7 @@ const INITIAL_STATE: ProcessState = {
   recoverableJavaIssue: null,
   runtimeProgress: null,
   availableActions: [],
+  launchProgress: null,
 };
 
 // Bounded log buffer per instance ID.
@@ -181,6 +203,14 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
    */
   const [liveSessions, setLiveSessions] = useState<RunningProcess[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [launchFailures, setLaunchFailures] = useState<Record<string, LaunchFailure>>({});
+  const dismissLaunchFailure = useCallback((instanceId: string) => {
+    setLaunchFailures((current) => {
+      if (!(instanceId in current)) return current;
+      const { [instanceId]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -232,6 +262,15 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
     }>(
       'game-exited',
       (event) => {
+        if (event.payload.outcome === 'crash') {
+          setLaunchFailures((existing) => ({
+            ...existing,
+            [event.payload.instance_id]: {
+              exitCode: event.payload.exit_code,
+              exitedAt: new Date().toISOString(),
+            },
+          }));
+        }
         const current = stateRef.current;
         if (
           current.instanceId === event.payload.instance_id &&
@@ -260,6 +299,11 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // A new launch of an instance answers its earlier failure.
+  useEffect(() => {
+    if (state.phase === 'launching' && state.instanceId) dismissLaunchFailure(state.instanceId);
+  }, [state.phase, state.instanceId, dismissLaunchFailure]);
 
   // Delegated launches cannot reliably detect when the Mojang-owned game
   // process exits, so return the pack to normal shortly after handoff.
@@ -316,6 +360,35 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
         });
       },
     );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Track the stage of the launch in flight. Begin a fresh record when the
+  // phase becomes 'launching' and drop it once the process is no longer
+  // launching or running, so nothing stale shows on the next launch.
+  const previousPhaseRef = useRef<LaunchPhase>(state.phase);
+  useEffect(() => {
+    const previous = previousPhaseRef.current;
+    previousPhaseRef.current = state.phase;
+    if (state.phase === 'launching' && previous !== 'launching') {
+      setState((prev) => ({ ...prev, launchProgress: STARTING_PROGRESS(Date.now()) }));
+    } else if (state.phase !== 'launching' && state.phase !== 'running' && state.launchProgress) {
+      setState((prev) => ({ ...prev, launchProgress: null }));
+    }
+  }, [state.phase, state.launchProgress]);
+
+  useEffect(() => {
+    const unlisten = listen<LaunchProgressEventPayload>('launch-progress', (event) => {
+      const current = stateRef.current;
+      if (current.instanceId !== event.payload.instance_id) return;
+      if (current.phase !== 'launching' && current.phase !== 'running') return;
+      setState((prev) => {
+        const next = applyLaunchProgressEvent(prev.launchProgress ?? null, event.payload, Date.now());
+        return next === (prev.launchProgress ?? null) ? prev : { ...prev, launchProgress: next };
+      });
+    });
     return () => {
       unlisten.then((fn) => fn());
     };
@@ -808,6 +881,8 @@ export function useProcessController(beforeLaunch?: (instanceId: string) => Prom
 
   return {
     state,
+    launchFailures,
+    dismissLaunchFailure,
     logs,
     liveSessions,
     startLaunch,

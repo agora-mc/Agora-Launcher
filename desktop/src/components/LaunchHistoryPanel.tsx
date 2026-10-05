@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { formatError, getLaunchHistory, type LaunchHistoryView } from '@/lib/tauri';
 
 function seconds(ms: number | null): string {
@@ -23,13 +24,33 @@ export function LaunchHistoryPanel({ instanceId }: { instanceId: string }) {
   const [view, setView] = useState<LaunchHistoryView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const mounted = useRef(true);
+
+  const load = useCallback(() => {
     getLaunchHistory(instanceId)
-      .then((result) => { if (!cancelled) setView(result); })
-      .catch((e) => { if (!cancelled) setError(formatError(e)); });
-    return () => { cancelled = true; };
+      .then((result) => { if (mounted.current) { setView(result); setError(null); } })
+      .catch((e) => { if (mounted.current) setError(formatError(e)); });
   }, [instanceId]);
+
+  useEffect(() => {
+    mounted.current = true;
+    load();
+    return () => { mounted.current = false; };
+  }, [load]);
+
+  // The backend closes the history row before it announces the exit, so a
+  // reload on those events replaces "still running" with the real outcome
+  // without leaving and reopening the Console.
+  useEffect(() => {
+    const unlisteners = (['game-started', 'game-exited'] as const).map((name) =>
+      listen<{ instance_id?: string }>(name, (event) => {
+        if (event.payload?.instance_id === instanceId) load();
+      }),
+    );
+    return () => {
+      for (const unlisten of unlisteners) void unlisten.then((fn) => fn()).catch(() => undefined);
+    };
+  }, [instanceId, load]);
 
   const stats = view?.stats;
   const recent = stats?.recent_median_prep_ms;
@@ -84,6 +105,7 @@ export function LaunchHistoryPanel({ instanceId }: { instanceId: string }) {
                 <span className={`ml-auto ${record.outcome === 'crashed' ? 'text-destructive' : 'text-muted-foreground'}`}>
                   {record.outcome === 'crashed' ? 'crashed'
                     : record.outcome === 'ok' ? 'ok'
+                    : record.outcome === 'stopped' ? 'stopped by you'
                     : record.outcome === 'unknown' ? 'unknown'
                     : 'running'}
                 </span>

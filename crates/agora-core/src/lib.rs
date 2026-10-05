@@ -11,6 +11,7 @@ pub mod artifact_receipt;
 pub mod auth;
 pub mod backup;
 pub mod bisect;
+pub mod community_image;
 pub mod crash_diagnostics;
 pub mod crash_evidence;
 pub mod crash_export;

@@ -84,6 +84,14 @@ pub struct ImportRequest {
     pub symlink_saves: bool,
 }
 
+/// What [`ImportService::preview_import_name`] reports for an import source.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImportNamePreview {
+    pub default_name: String,
+    pub name_taken: bool,
+    pub suggested_name: String,
+}
+
 /// Core-owned import service.
 ///
 /// Wraps the free functions in [`crate::import`] behind a typed API that
@@ -195,6 +203,55 @@ impl ImportService {
         sink: Arc<dyn agora_core::event_sink::ProgressSink>,
         cancel: CancellationToken,
     ) -> LauncherResult<ImportResult> {
+        self.run_import_named(request, None, sink, cancel).await
+    }
+
+    /// Inspect a `.mrpack`, Prism zip or instance folder before importing: the
+    /// name it would get, whether that name is already taken, and a free
+    /// "<name> (2)" style suggestion.  Never touches existing instances.
+    pub fn preview_import_name(
+        &self,
+        source: &std::path::Path,
+    ) -> LauncherResult<ImportNamePreview> {
+        let default_name = crate::import::default_import_name(source)?;
+        let instances_root = self.ctx.paths.instances_root();
+        let name_taken = crate::import::import_name_taken(&instances_root, &default_name)?;
+        let suggested_name =
+            crate::import::suggest_unique_import_name(&instances_root, &default_name)?;
+        Ok(ImportNamePreview {
+            default_name,
+            name_taken,
+            suggested_name,
+        })
+    }
+
+    /// The same name check for a pack that has no file to inspect (a Technic
+    /// or provider pack): its display name, whether that is taken, and a free
+    /// "<name> (2)" style suggestion.
+    pub fn preview_name(&self, default_name: &str) -> LauncherResult<ImportNamePreview> {
+        let instances_root = self.ctx.paths.instances_root();
+        Ok(ImportNamePreview {
+            default_name: default_name.to_string(),
+            name_taken: crate::import::import_name_taken(&instances_root, default_name)?,
+            suggested_name: crate::import::suggest_unique_import_name(
+                &instances_root,
+                default_name,
+            )?,
+        })
+    }
+
+    /// [`ImportService::run_import_with_sink`] with an optional user-chosen
+    /// instance name, honoured for `.mrpack`, Prism zip, directory, Technic
+    /// and provider pack imports.
+    /// A name that collides with an existing instance still fails; the
+    /// existing instance is never overwritten.
+    pub async fn run_import_named(
+        &self,
+        request: ImportRequest,
+        name_override: Option<String>,
+        sink: Arc<dyn agora_core::event_sink::ProgressSink>,
+        cancel: CancellationToken,
+    ) -> LauncherResult<ImportResult> {
         let op = self.ctx.operation_manager.register("Import instance");
         let op_id = op.id().clone();
         let is_modpack = matches!(
@@ -280,30 +337,42 @@ impl ImportService {
                     Some(blocking_operation_id),
                     origin_url,
                     override_policy,
+                    name_override.as_deref(),
                 )
             }
-            ImportSource::PrismZip(path) => {
-                crate::import::import_prism_zip(&path, &blocking_instances_root, blocking_symlink)
-            }
-            ImportSource::Directory(path) => {
-                crate::import::import_directory(&path, &blocking_instances_root, blocking_symlink)
-            }
+            ImportSource::PrismZip(path) => crate::import::import_prism_zip_named(
+                &path,
+                &blocking_instances_root,
+                blocking_symlink,
+                name_override.as_deref(),
+            ),
+            ImportSource::Directory(path) => crate::import::import_directory_named(
+                &path,
+                &blocking_instances_root,
+                blocking_symlink,
+                name_override.as_deref(),
+            ),
             ImportSource::PackManifest { .. } => Err(LauncherError::Generic {
                 code: "ERR_IMPORT_SOURCE".into(),
                 message: "PackManifest imports must use ImportService::install_pack (async)."
                     .into(),
             }),
-            ImportSource::TechnicSolder(pack) => {
-                crate::import::import_technic_solder_pack(&pack, &blocking_instances_root)
-            }
+            ImportSource::TechnicSolder(pack) => crate::import::import_technic_solder_pack(
+                &pack,
+                &blocking_instances_root,
+                name_override.as_deref(),
+            ),
             ImportSource::TechnicZip(pack) => crate::import::import_technic_zip_pack(
                 &pack,
                 &blocking_instances_root,
                 override_policy,
+                name_override.as_deref(),
             ),
-            ImportSource::ProviderPack(pack) => {
-                crate::import::import_provider_pack(&pack, &blocking_instances_root)
-            }
+            ImportSource::ProviderPack(pack) => crate::import::import_provider_pack(
+                &pack,
+                &blocking_instances_root,
+                name_override.as_deref(),
+            ),
         })
         .await
         {

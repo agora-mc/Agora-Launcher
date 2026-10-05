@@ -33,6 +33,7 @@ export interface LiveSceneViewProps {
   onUseStandardView: () => void;
   onNavigateStandard?: (destination: StandardDestination) => void;
   onLaunch?: () => Promise<void> | void;
+  onStop?: () => Promise<void> | void;
   launchAvailable?: boolean;
   reducedMotion?: boolean;
   /** Presentation: `simple` hides the decorative flourish. */

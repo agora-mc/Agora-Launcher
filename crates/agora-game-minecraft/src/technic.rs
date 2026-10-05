@@ -687,6 +687,7 @@ async fn resolve_solder_build_http(
 pub async fn install_solder_pack(
     ctx: &Ctx,
     pack: crate::import::TechnicSolderPack,
+    name_override: Option<String>,
 ) -> LauncherResult<crate::import::ImportResult> {
     let conn = db::local_state_connection(&ctx.paths.local_state_db()).map_err(|error| {
         LauncherError::Generic {
@@ -697,10 +698,15 @@ pub async fn install_solder_pack(
     consent_for_tier(&conn, TechnicTier::Solder)?;
     drop(conn);
     let svc = crate::import_service::ImportService::new(ctx.clone());
-    svc.run_import(crate::import_service::ImportRequest {
-        source: crate::import_service::ImportSource::TechnicSolder(pack),
-        symlink_saves: false,
-    })
+    svc.run_import_named(
+        crate::import_service::ImportRequest {
+            source: crate::import_service::ImportSource::TechnicSolder(pack),
+            symlink_saves: false,
+        },
+        name_override,
+        ctx.progress_sink.clone(),
+        agora_core::event_sink::CancellationToken::new(),
+    )
     .await
 }
 
@@ -710,6 +716,7 @@ pub async fn install_solder_pack(
 pub async fn install_zip_pack(
     ctx: &Ctx,
     pack: crate::import::TechnicZipPack,
+    name_override: Option<String>,
 ) -> LauncherResult<crate::import::ImportResult> {
     let conn = db::local_state_connection(&ctx.paths.local_state_db()).map_err(|error| {
         LauncherError::Generic {
@@ -720,10 +727,15 @@ pub async fn install_zip_pack(
     consent_for_tier(&conn, TechnicTier::Zip)?;
     drop(conn);
     let svc = crate::import_service::ImportService::new(ctx.clone());
-    svc.run_import(crate::import_service::ImportRequest {
-        source: crate::import_service::ImportSource::TechnicZip(pack),
-        symlink_saves: false,
-    })
+    svc.run_import_named(
+        crate::import_service::ImportRequest {
+            source: crate::import_service::ImportSource::TechnicZip(pack),
+            symlink_saves: false,
+        },
+        name_override,
+        ctx.progress_sink.clone(),
+        agora_core::event_sink::CancellationToken::new(),
+    )
     .await
 }
 

@@ -1536,6 +1536,31 @@ fn disabled_resolve_request(tmp: &tempfile::TempDir) -> launch_planner::ResolveR
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn materialize_reports_file_counts_ending_complete() {
+    use agora_game_minecraft::launch_stage::{FileKind, FileProgress};
+    let tmp = tempfile::TempDir::new().unwrap();
+    let request = prepare_offline_fixtures(&tmp, b"fake client jar for progress test");
+    let resolved = launch_planner::resolve(request).await.expect("resolve");
+
+    let seen = std::sync::Mutex::new(Vec::<FileProgress>::new());
+    let on_files = |update: FileProgress| seen.lock().unwrap().push(update);
+    launch_planner::materialize_with_progress(resolved, Some(&on_files))
+        .await
+        .expect("materialize");
+
+    let seen = seen.into_inner().unwrap();
+    assert!(seen
+        .iter()
+        .any(|p| p.kind == FileKind::ClientJar && p.done == 1));
+    let last_libraries = seen
+        .iter()
+        .rev()
+        .find(|p| p.kind == FileKind::Libraries)
+        .expect("library progress reported");
+    assert_eq!(last_libraries.done, last_libraries.total);
+}
+
+#[tokio::test]
 async fn full_offline_pipeline_with_all_disabled() {
     let tmp = tempfile::TempDir::new().unwrap();
     let client_jar_content = b"fake client jar for offline pipeline test";

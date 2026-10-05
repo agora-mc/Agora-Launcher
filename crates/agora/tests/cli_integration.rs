@@ -362,6 +362,10 @@ fn critical_command_flags_remain_in_help() {
                 "--skip-health-scan",
             ][..],
         ),
+        (
+            &["mod", "remove"][..],
+            &["--remove-anyway", "--abort-conflicts"][..],
+        ),
         (&["mcp", "serve"][..], &["--stdio"][..]),
     ] {
         let mut args = command.to_vec();
@@ -393,6 +397,7 @@ fn documentation_examples_use_public_command_names() {
         "--exclude-optional",
         "--replace-conflicts",
         "--abort-conflicts",
+        "--remove-anyway",
         "--allow-replace",
         "--skip-health-scan",
         "--stdio",

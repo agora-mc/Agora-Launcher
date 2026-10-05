@@ -222,6 +222,8 @@ agora mod update <INSTANCE> <ITEM>
 agora mod update-all <INSTANCE>
 agora mod enable <INSTANCE> <FILE>
 agora mod disable <INSTANCE> <FILE>
+agora mod worlds <INSTANCE> <FILE> --worlds <A,B> | --all
+agora mod sync-datapacks <INSTANCE>
 ```
 
 Common planning options:
@@ -233,14 +235,19 @@ Common planning options:
 | `--exclude-optional` | Exclude all optional dependencies |
 | `--replace-conflicts` | Choose replacement for every resolvable conflict |
 | `--abort-conflicts` | Abort when any conflict remains |
+| `--remove-anyway` | `mod remove` only: remove the file even though an installed mod still requires it |
 | `--allow-replace` | Permit replacement of existing files |
 | `--skip-health-scan` | Skip the post-operation health gate |
 
 `--replace-conflicts` is broad. Review a dry-run first, especially on an established instance.
 
+`mod remove` stops when the file is a required dependency of another installed mod. `--remove-anyway` accepts that for the file being removed (and nothing else), prints a warning naming the mods that lose their dependency, and leaves the instance with a health alert until the dependency is restored. It cannot be combined with `--abort-conflicts`.
+
 The default source is Agora's curated strategy. Use `--source modrinth` only when the optional Modrinth integration and its network permissions are enabled.
 
 `mod enable` and `mod disable` fail with a clear error and a nonzero exit when the named file does not exist. Confirm the filename with `mod list` if the error is unexpected.
+
+Minecraft only loads data packs from inside a world, so Agora copies enabled data packs into the instance's worlds before each launch and after installs and removals. `mod worlds` limits one data pack to the named world folders (or `--all` to go back to every world), and `mod sync-datapacks` runs the copy now, for example for a world created since the last launch. Agora only removes or replaces data pack files it placed itself.
 
 ### Packs, import, and export
 

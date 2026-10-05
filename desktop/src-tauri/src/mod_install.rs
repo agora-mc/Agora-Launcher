@@ -264,26 +264,24 @@ pub async fn remove_mod_from_instance(
     Ok(())
 }
 
-/// Disable artifact via core CrashService.
+/// Disable an artifact; a data pack's worlds follow at once.
 pub fn disable_instance_mod(
     app: &tauri::AppHandle,
     instance_id: &str,
     filename: &str,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::crash_service::CrashService::new(ctx);
-    svc.disable_artifact(instance_id, filename)
+    agora_game_minecraft::datapack_sync::set_artifact_enabled(&ctx, instance_id, filename, false)
 }
 
-/// Enable artifact via core CrashService.
+/// Enable an artifact; a data pack's worlds follow at once.
 pub fn enable_instance_mod(
     app: &tauri::AppHandle,
     instance_id: &str,
     filename: &str,
 ) -> LauncherResult<()> {
     let ctx = crate::core_context(app)?;
-    let svc = agora_core::crash_service::CrashService::new(ctx);
-    svc.enable_artifact(instance_id, filename)
+    agora_game_minecraft::datapack_sync::set_artifact_enabled(&ctx, instance_id, filename, true)
 }
 
 /// Add manual .jar via core InstallService.

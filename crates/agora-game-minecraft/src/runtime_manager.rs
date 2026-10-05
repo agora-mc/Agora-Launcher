@@ -792,6 +792,13 @@ fn resolve_archive_cache(
 // Archive download with verification
 // ---------------------------------------------------------------------------
 
+/// Overall provisioning percent for a given archive-download percent: the
+/// download is the 20–50% band, between "Downloading JRE archive" and
+/// "Archive downloaded and verified".
+fn download_band_percent(archive_percent: u64) -> f64 {
+    20.0 + archive_percent.min(100) as f64 * 0.3
+}
+
 /// Download a file from `url`, write it to `path`, verify SHA-256 and size.
 ///
 /// # URL safety
@@ -859,6 +866,7 @@ fn download_archive_verified(
 
         let mut hasher = Sha256::new();
         let mut downloaded: u64 = 0;
+        let mut reported_percent: Option<u64> = None;
         let mut buffer = [0u8; 8192];
         let mut reader = std::io::BufReader::new(response);
 
@@ -885,6 +893,19 @@ fn download_archive_verified(
                     code: "ERR_ARCHIVE_WRITE".into(),
                     message: format!("Failed to write archive: {e}"),
                 })?;
+            // Report each whole percent of the archive, not every 8 KiB chunk.
+            let archive_percent = downloaded.saturating_mul(100) / expected_size.max(1);
+            if reported_percent != Some(archive_percent) {
+                reported_percent = Some(archive_percent);
+                progress.on_progress(
+                    &format!(
+                        "Downloading Java {major}: {} of {} MB",
+                        downloaded / 1_000_000,
+                        expected_size / 1_000_000
+                    ),
+                    Some(download_band_percent(archive_percent)),
+                );
+            }
         }
 
         if downloaded != expected_size {
@@ -2402,6 +2423,14 @@ mod tests {
     // -----------------------------------------------------------------------
     // End-to-end fixture tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn download_progress_maps_into_the_download_band() {
+        assert_eq!(download_band_percent(0), 20.0);
+        assert_eq!(download_band_percent(50), 35.0);
+        assert_eq!(download_band_percent(100), 50.0);
+        assert_eq!(download_band_percent(250), 50.0);
+    }
 
     #[test]
     fn test_ensure_runtime_succeeds_with_zip_fixture() {

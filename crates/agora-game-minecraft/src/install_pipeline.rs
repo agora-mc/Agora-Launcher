@@ -33,7 +33,7 @@
 //! atomically and roll back together.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use agora_core::task_scheduler::{BlockingPriority, TaskScheduler};
@@ -302,6 +302,17 @@ pub struct ResolvedDep {
     /// URL). Absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_url: Option<String>,
+    /// Selected batch items that pulled this dependency in. Empty when the
+    /// dependency was not resolved for a batch. Used to name the culprits when
+    /// two items need incompatible files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_by: Vec<String>,
+    /// Exact upstream version id the requesting parent declared for this
+    /// dependency (a Modrinth `version_id`), when the pin could be honoured.
+    /// Absent when the parent accepts any version. Registry manifests declare
+    /// dependencies by id only, so curated dependencies never carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_version: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +352,10 @@ pub enum ConflictResolution {
     Skip,
     DisableExisting,
     Abort,
+    /// Remove a file although an installed item still requires it. The
+    /// instance health report keeps flagging the missing dependency until it
+    /// is repaired.
+    RemoveAnyway,
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +539,11 @@ pub struct PlanOverrides {
     /// using the nearest available candidate after explicit user approval.
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_closest_version: bool,
+    /// What kind of content a raw Modrinth install is (`resourcepack`,
+    /// `shader`, `datapack`, ...). Absent means a mod. Decides which Modrinth
+    /// version `loaders` tags are acceptable and where the file is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
     /// Root batch items explicitly skipped after a version-resolution failure.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_items: Vec<String>,
@@ -639,6 +659,12 @@ pub struct BatchInstallItem {
     pub source_type: SourceType,
     pub item_id: String,
     pub candidate_version: Option<String>,
+    /// What kind of content this item is (`resourcepack`, `shader`,
+    /// `datapack`, ...). Absent means a mod. Decides which Modrinth version
+    /// `loaders` tags are acceptable and which folder the file lands in.
+    /// Curated and provider items take their type from their own metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 /// Pure input — what the user wants to do.
@@ -898,6 +924,16 @@ impl InstallPipeline {
                 message: "A closest available version was selected where the exact compatible version was unavailable. Verify the instance after installation.".into(),
             });
         }
+        if let ResolvedOperation::Install { artifact } = &operation {
+            if artifact_metadata(artifact).content_type == "shader"
+                && !crate::resolver::manifest_has_shader_loader(&manifest)
+            {
+                warnings.push(PlanWarning {
+                    code: "WARN_SHADER_LOADER_MISSING".into(),
+                    message: "This instance has no shader loader (such as Iris or OptiFine), so the shader pack will not do anything until one is installed.".into(),
+                });
+            }
+        }
         if manifest.is_locked {
             blocking_errors.push(PlanError {
                 code: "ERR_INSTANCE_LOCKED".into(),
@@ -914,6 +950,7 @@ impl InstallPipeline {
             });
         }
 
+        collapse_duplicate_dependencies(&mut dependencies, &mut warnings);
         apply_optional_policy(
             &intent.optional_deps,
             &mut dependencies,
@@ -991,43 +1028,22 @@ impl InstallPipeline {
                 reverse_dependents,
                 content_type: hint_content_type,
             } => {
-                if validate_filename(target_filename).is_err() {
-                    blocking_errors.push(PlanError {
-                        code: "ERR_UNSAFE_FILENAME".into(),
-                        message: format!("Unsafe removal filename: {target_filename}"),
-                    });
-                } else if installed
-                    .iter()
-                    .any(|item| item.filename == *target_filename)
-                    || instance_dir.join("mods").join(target_filename).is_file()
-                {
-                    let ct = hint_content_type.clone().or_else(|| {
-                        installed
-                            .iter()
-                            .find(|item| item.filename == *target_filename)
-                            .map(|item| item.content_type.clone())
-                    });
-                    files_to_remove.push(FileRemove {
-                        filename: target_filename.clone(),
-                        content_type: ct,
-                    });
-                } else {
-                    blocking_errors.push(PlanError {
-                        code: "ERR_NOT_INSTALLED".into(),
-                        message: format!("{target_filename} is not installed in this instance."),
-                    });
-                }
-                for dependent in reverse_dependents {
-                    if dependent.requirement == Requirement::Required {
-                        blocking_errors.push(PlanError {
-                            code: "ERR_BROKEN_REVERSE_DEP".into(),
-                            message: format!(
-                                "Removing {target_filename} would break required dependency for {}.",
-                                dependent.mod_jar_id
-                            ),
-                        });
-                    }
-                }
+                let removing = removal_filename_set(std::slice::from_ref(&operation));
+                plan_removal(
+                    target_filename,
+                    reverse_dependents,
+                    hint_content_type.as_deref(),
+                    &removing,
+                    true,
+                    &installed,
+                    instance_dir,
+                    &intent,
+                    &mut files_to_remove,
+                    &mut conflicts,
+                    &mut pending_choices,
+                    &mut blocking_errors,
+                    &mut warnings,
+                );
             }
             ResolvedOperation::BatchUpdate { operations } => {
                 if operations.is_empty() {
@@ -1066,53 +1082,28 @@ impl InstallPipeline {
                         message: "No content was selected for removal.".into(),
                     });
                 }
+                let removing = removal_filename_set(operations);
                 for operation in operations {
                     match operation {
                         ResolvedOperation::Remove {
                             target_filename,
                             reverse_dependents,
                             content_type: hint_content_type,
-                        } => {
-                            if validate_filename(target_filename).is_err() {
-                                blocking_errors.push(PlanError {
-                                    code: "ERR_UNSAFE_FILENAME".into(),
-                                    message: format!("Unsafe removal filename: {target_filename}"),
-                                });
-                            } else if installed
-                                .iter()
-                                .any(|item| item.filename == *target_filename)
-                                || instance_dir.join("mods").join(target_filename).is_file()
-                            {
-                                let ct = hint_content_type.clone().or_else(|| {
-                                    installed
-                                        .iter()
-                                        .find(|item| item.filename == *target_filename)
-                                        .map(|item| item.content_type.clone())
-                                });
-                                files_to_remove.push(FileRemove {
-                                    filename: target_filename.clone(),
-                                    content_type: ct,
-                                });
-                            } else {
-                                blocking_errors.push(PlanError {
-                                    code: "ERR_NOT_INSTALLED".into(),
-                                    message: format!(
-                                        "{target_filename} is not installed in this instance."
-                                    ),
-                                });
-                            }
-                            for dependent in reverse_dependents {
-                                if dependent.requirement == Requirement::Required {
-                                    blocking_errors.push(PlanError {
-                                        code: "ERR_BROKEN_REVERSE_DEP".into(),
-                                        message: format!(
-                                            "Removing {target_filename} would break required dependency for {}.",
-                                            dependent.mod_jar_id
-                                        ),
-                                    });
-                                }
-                            }
-                        }
+                        } => plan_removal(
+                            target_filename,
+                            reverse_dependents,
+                            hint_content_type.as_deref(),
+                            &removing,
+                            true,
+                            &installed,
+                            instance_dir,
+                            &intent,
+                            &mut files_to_remove,
+                            &mut conflicts,
+                            &mut pending_choices,
+                            &mut blocking_errors,
+                            &mut warnings,
+                        ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_BATCH_OPERATION".into(),
                             message: "A batch-remove plan contained a non-remove operation.".into(),
@@ -1158,6 +1149,7 @@ impl InstallPipeline {
                         message: "The instance already matches this lockfile.".into(),
                     });
                 }
+                let removing = removal_filename_set(operations);
                 for operation in operations {
                     match operation {
                         ResolvedOperation::Install { artifact } => plan_artifact_change(
@@ -1192,36 +1184,21 @@ impl InstallPipeline {
                             target_filename,
                             reverse_dependents,
                             content_type: hint_content_type,
-                        } => {
-                            if validate_filename(target_filename).is_err() {
-                                blocking_errors.push(PlanError {
-                                    code: "ERR_UNSAFE_FILENAME".into(),
-                                    message: format!("Unsafe removal filename: {target_filename}"),
-                                });
-                            } else {
-                                let ct = hint_content_type.clone().or_else(|| {
-                                    installed
-                                        .iter()
-                                        .find(|item| item.filename == *target_filename)
-                                        .map(|item| item.content_type.clone())
-                                });
-                                files_to_remove.push(FileRemove {
-                                    filename: target_filename.clone(),
-                                    content_type: ct,
-                                });
-                            }
-                            for dependent in reverse_dependents {
-                                if dependent.requirement == Requirement::Required {
-                                    blocking_errors.push(PlanError {
-                                        code: "ERR_BROKEN_REVERSE_DEP".into(),
-                                        message: format!(
-                                            "Removing {target_filename} would break required dependency for {}.",
-                                            dependent.mod_jar_id
-                                        ),
-                                    });
-                                }
-                            }
-                        }
+                        } => plan_removal(
+                            target_filename,
+                            reverse_dependents,
+                            hint_content_type.as_deref(),
+                            &removing,
+                            false,
+                            &installed,
+                            instance_dir,
+                            &intent,
+                            &mut files_to_remove,
+                            &mut conflicts,
+                            &mut pending_choices,
+                            &mut blocking_errors,
+                            &mut warnings,
+                        ),
                         _ => blocking_errors.push(PlanError {
                             code: "ERR_INVALID_RECONCILE_OPERATION".into(),
                             message: "A lockfile repair contained an unsupported nested operation."
@@ -1263,19 +1240,12 @@ impl InstallPipeline {
         }
 
         files_to_add.sort_by(|a, b| a.target_filename.cmp(&b.target_filename));
-        for pair in files_to_add.windows(2) {
-            if pair[0].target_filename == pair[1].target_filename
-                && hash_serializable(&pair[0].artifact)? != hash_serializable(&pair[1].artifact)?
-            {
-                blocking_errors.push(PlanError {
-                    code: "ERR_DUPLICATE_TARGET".into(),
-                    message: format!(
-                        "Multiple different artifacts resolve to {}.",
-                        pair[0].target_filename
-                    ),
-                });
-            }
-        }
+        report_duplicate_targets(
+            &files_to_add,
+            &operation,
+            &dependencies,
+            &mut blocking_errors,
+        );
         files_to_add.dedup_by(|a, b| a.target_filename == b.target_filename);
 
         let loader_change = apply_loader_change_policy(
@@ -1737,6 +1707,8 @@ impl InstallPipeline {
                 // loader switch, or manual rollback) instead of silently
                 // reverting to the pre-install snapshot.
                 cleanup_staging_dir(scheduler, &staging_dir).await;
+                let mut warnings = plan.warnings.clone();
+                warnings.extend(sync_world_datapacks_after_install(scheduler, instance_dir).await);
                 reporter.report(ProgressEvent {
                     plan_id: plan.fingerprint.clone(),
                     phase: ProgressPhase::Done,
@@ -1749,13 +1721,15 @@ impl InstallPipeline {
                 return InstallOutcome::HealthRollback {
                     health_report: report,
                     snapshot_id: snapshot.id,
-                    warnings: plan.warnings.clone(),
+                    warnings,
                 };
             }
             HealthOutcome::Completed { report }
         };
 
         cleanup_staging_dir(scheduler, &staging_dir).await;
+        let mut warnings = plan.warnings.clone();
+        warnings.extend(sync_world_datapacks_after_install(scheduler, instance_dir).await);
         reporter.report(ProgressEvent {
             plan_id: plan.fingerprint.clone(),
             phase: ProgressPhase::Done,
@@ -1779,7 +1753,7 @@ impl InstallPipeline {
                     _ => None,
                 })
                 .collect(),
-            warnings: plan.warnings.clone(),
+            warnings,
             health,
             snapshot_id: snapshot.id,
         }
@@ -1806,6 +1780,31 @@ where
             .map_err(|error| format!("{label} worker failed: {error}"))?,
         None => task(),
     }
+}
+
+/// Data packs reach worlds by sync (MASTER_SPEC §20.6): after an install,
+/// update or removal has committed, bring the instance's worlds in line with its
+/// data pack list. Runs after the recovery snapshot and the health gate, so a
+/// rolled-back install never leaves worlds changed. Problems are warnings; the
+/// install has already succeeded.
+async fn sync_world_datapacks_after_install(
+    scheduler: Option<&TaskScheduler>,
+    instance_dir: &Path,
+) -> Vec<PlanWarning> {
+    let dir = instance_dir.to_path_buf();
+    run_blocking_phase(scheduler, "world data pack sync", move || {
+        let manifest = agora_core::helpers::read_manifest(&dir.join("instance_manifest.json"))
+            .map_err(|error| error.to_string())?;
+        Ok(crate::datapack_sync::sync_instance_datapacks(&dir, &manifest).warnings)
+    })
+    .await
+    .unwrap_or_else(|error| vec![format!("Data pack sync did not run: {error}")])
+    .into_iter()
+    .map(|message| PlanWarning {
+        code: "WARN_DATAPACK_SYNC".into(),
+        message,
+    })
+    .collect()
 }
 
 async fn cleanup_staging_dir(scheduler: Option<&TaskScheduler>, staging_dir: &Path) {
@@ -1944,6 +1943,10 @@ fn conflict_resolution_option(resolution: &ConflictResolution) -> ConflictResolu
             "Keep the existing item installed but disable it before adding the new one.",
         ),
         ConflictResolution::Abort => ("Abort", "Do not make any changes."),
+        ConflictResolution::RemoveAnyway => (
+            "Remove anyway",
+            "Remove the file even though an installed mod still requires it. The instance will show a health alert until the dependency is restored.",
+        ),
     };
     ConflictResolutionOption {
         resolution: resolution.clone(),
@@ -2340,6 +2343,441 @@ fn plan_artifact_change(
         size: artifact_size(artifact),
         installed_as_dependency,
     });
+}
+
+/// Filenames (normalized) that one removal operation, or a batch of them,
+/// deletes. Reverse-dependency checks validate against what remains after
+/// the whole operation, not against the instance as it is now.
+fn removal_filename_set(operations: &[ResolvedOperation]) -> HashSet<String> {
+    operations
+        .iter()
+        .filter_map(|operation| match operation {
+            ResolvedOperation::Remove {
+                target_filename, ..
+            } => Some(normalized_removal_name(target_filename)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn normalized_removal_name(filename: &str) -> String {
+    filename
+        .strip_suffix(".disabled")
+        .unwrap_or(filename)
+        .to_ascii_lowercase()
+}
+
+/// Plan one file removal. Shared by single removal, batch removal and
+/// lockfile repair so all three judge dependents the same way: a required
+/// dependent that is itself being removed does not count, and one that stays
+/// behind raises a decision (`RemoveAnyway` / `Abort`) rather than a dead end.
+#[allow(clippy::too_many_arguments)]
+fn plan_removal(
+    target_filename: &str,
+    reverse_dependents: &[ReverseDepInfo],
+    hint_content_type: Option<&str>,
+    removing: &HashSet<String>,
+    require_installed: bool,
+    installed: &[&agora_core::models::InstalledMod],
+    instance_dir: &Path,
+    intent: &InstallIntent,
+    files_to_remove: &mut Vec<FileRemove>,
+    conflicts: &mut Vec<DepConflict>,
+    pending_choices: &mut Vec<PendingChoice>,
+    blocking_errors: &mut Vec<PlanError>,
+    warnings: &mut Vec<PlanWarning>,
+) {
+    if validate_filename(target_filename).is_err() {
+        blocking_errors.push(PlanError {
+            code: "ERR_UNSAFE_FILENAME".into(),
+            message: format!("Unsafe removal filename: {target_filename}"),
+        });
+    } else if !require_installed
+        || installed
+            .iter()
+            .any(|item| item.filename == target_filename)
+        || instance_dir.join("mods").join(target_filename).is_file()
+    {
+        let content_type = hint_content_type.map(str::to_string).or_else(|| {
+            installed
+                .iter()
+                .find(|item| item.filename == target_filename)
+                .map(|item| item.content_type.clone())
+        });
+        files_to_remove.push(FileRemove {
+            filename: target_filename.to_string(),
+            content_type,
+        });
+    } else {
+        blocking_errors.push(PlanError {
+            code: "ERR_NOT_INSTALLED".into(),
+            message: format!("{target_filename} is not installed in this instance."),
+        });
+    }
+
+    let mut remaining: Vec<&str> = reverse_dependents
+        .iter()
+        .filter(|dependent| dependent.requirement == Requirement::Required)
+        .filter(|dependent| !removing.contains(&normalized_removal_name(&dependent.filename)))
+        .map(|dependent| dependent.mod_jar_id.as_str())
+        .collect();
+    remaining.sort_unstable();
+    remaining.dedup();
+    if remaining.is_empty() {
+        return;
+    }
+    let message = format!(
+        "Removing {target_filename} would break required dependency for {}.",
+        remaining.join(", ")
+    );
+    let conflict_id = format!("broken-dependency:{target_filename}");
+    let chosen = intent
+        .overrides
+        .force_conflict_resolution
+        .get(&conflict_id)
+        .filter(|choice| {
+            matches!(
+                **choice,
+                ConflictResolution::RemoveAnyway | ConflictResolution::Abort
+            )
+        })
+        .cloned();
+    match chosen {
+        Some(ConflictResolution::RemoveAnyway) => warnings.push(PlanWarning {
+            code: "WARN_BROKEN_REVERSE_DEP".into(),
+            message: format!(
+                "{message} It was removed at your request; the instance will show a health alert until the dependency is restored."
+            ),
+        }),
+        Some(_) => blocking_errors.push(PlanError {
+            code: "ERR_BROKEN_REVERSE_DEP".into(),
+            message: message.clone(),
+        }),
+        None => pending_choices.push(PendingChoice::Conflict {
+            choice_id: format!("conflict:{conflict_id}"),
+            conflict_id: conflict_id.clone(),
+            options: [ConflictResolution::RemoveAnyway, ConflictResolution::Abort]
+                .iter()
+                .map(conflict_resolution_option)
+                .collect(),
+        }),
+    }
+    conflicts.push(DepConflict {
+        conflict_id,
+        kind: ConflictKind::BrokenReverseDep,
+        existing_mod_jar_id: target_filename.to_string(),
+        incoming_mod_jar_id: remaining.join(", "),
+        message,
+        blocking: true,
+        resolution_options: vec![ConflictResolution::RemoveAnyway, ConflictResolution::Abort],
+        chosen,
+    });
+}
+
+/// The artifact a dependency would add, when it has one.
+fn dependency_candidate(dependency: &ResolvedDep) -> Option<&ResolvedArtifact> {
+    match &dependency.disposition {
+        DepDisposition::InstallCandidate { artifact } => Some(artifact),
+        _ => None,
+    }
+}
+
+/// Two artifacts are the same file when a hash they both publish agrees, or,
+/// lacking any shared algorithm, when they come from the same source. The
+/// surrounding provenance (registry id vs Modrinth id, version label) says how
+/// the artifact was reached, not what it is, so it is deliberately ignored.
+fn same_artifact_content(a: &ResolvedArtifact, b: &ResolvedArtifact) -> bool {
+    let mut compared = false;
+    for left in &artifact_hashes(a).values {
+        for right in &artifact_hashes(b).values {
+            if left.algorithm == right.algorithm {
+                compared = true;
+                if !left.value.eq_ignore_ascii_case(&right.value) {
+                    return false;
+                }
+            }
+        }
+    }
+    if compared {
+        return true;
+    }
+    match (a, b) {
+        (ResolvedArtifact::Download(x), ResolvedArtifact::Download(y)) => {
+            matches!((&x.source, &y.source),
+                (ArtifactSource::Download { url: u1 }, ArtifactSource::Download { url: u2 }) if u1 == u2)
+        }
+        (ResolvedArtifact::LocalFile(x), ResolvedArtifact::LocalFile(y)) => {
+            x.source_path == y.source_path
+        }
+        _ => false,
+    }
+}
+
+fn same_project(a: &ResolvedArtifact, b: &ResolvedArtifact) -> bool {
+    let (ma, mb) = (artifact_metadata(a), artifact_metadata(b));
+    let eq = |x: &Option<String>, y: &Option<String>| match (x, y) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        _ => false,
+    };
+    eq(&ma.registry_id, &mb.registry_id)
+        || eq(&ma.modrinth_id, &mb.modrinth_id)
+        || artifact_item_id(a).eq_ignore_ascii_case(artifact_item_id(b))
+}
+
+/// Collapse dependency entries that would install the same thing.
+///
+/// Two batch items can reach one project under different identities (a
+/// curated registry id from one parent, a Modrinth project id from another),
+/// so the resolver keeps two entries that install one and the same file. They
+/// become one entry. When the entries are different files of the same project
+/// (two parents wanting different versions) one file is chosen for all of
+/// them: a version every parent accepts (a parent that pinned a version
+/// accepts only that one; the rest accept any), the newest such. Every entry
+/// was already compatible with the instance's Minecraft version and loader.
+/// Only when no single version satisfies every pin is one kept anyway (the
+/// first in stable order) with a warning naming the parents that disagree.
+/// Two different files that share a filename are left alone so the
+/// duplicate-target check blocks them with a message naming the parents.
+fn collapse_duplicate_dependencies(
+    dependencies: &mut Vec<ResolvedDep>,
+    warnings: &mut Vec<PlanWarning>,
+) {
+    let mut kept: Vec<ResolvedDep> = Vec::with_capacity(dependencies.len());
+    for dependency in std::mem::take(dependencies) {
+        let same_file = dependency_candidate(&dependency).and_then(|artifact| {
+            let filename = artifact_filename(artifact);
+            kept.iter().position(|existing| {
+                dependency_candidate(existing).is_some_and(|other| {
+                    artifact_filename(other) == filename && same_artifact_content(other, artifact)
+                })
+            })
+        });
+        match same_file {
+            Some(index) => merge_dependency(&mut kept[index], dependency),
+            None => kept.push(dependency),
+        }
+    }
+
+    // Group the remaining entries by project. A group member must differ in
+    // filename from the others; same-name files stay standalone.
+    let mut groups: Vec<Vec<ResolvedDep>> = Vec::new();
+    for dependency in kept {
+        let slot = dependency_candidate(&dependency).and_then(|artifact| {
+            let filename = artifact_filename(artifact);
+            groups.iter().position(|group| {
+                group.iter().all(|member| {
+                    dependency_candidate(member).is_some_and(|other| {
+                        artifact_filename(other) != filename && same_project(other, artifact)
+                    })
+                })
+            })
+        });
+        match slot {
+            Some(index) => groups[index].push(dependency),
+            None => groups.push(vec![dependency]),
+        }
+    }
+
+    for group in groups {
+        dependencies.push(choose_dependency_version(group, warnings));
+    }
+}
+
+fn dependency_version_label(dependency: &ResolvedDep) -> String {
+    dependency_candidate(dependency)
+        .map(|artifact| {
+            artifact_metadata(artifact)
+                .version
+                .clone()
+                .unwrap_or_else(|| artifact_version_id(artifact).to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Pick the single file to install from several entries for one project.
+fn choose_dependency_version(
+    mut group: Vec<ResolvedDep>,
+    warnings: &mut Vec<PlanWarning>,
+) -> ResolvedDep {
+    if group.len() == 1 {
+        return group.remove(0);
+    }
+    let pins: Vec<&str> = group
+        .iter()
+        .filter_map(|member| member.pinned_version.as_deref())
+        .collect();
+    let accepted = |member: &ResolvedDep| {
+        dependency_candidate(member)
+            .is_some_and(|artifact| pins.iter().all(|pin| *pin == artifact_version_id(artifact)))
+    };
+    // The newest acceptable version; ties keep the earlier entry.
+    let mut chosen: Option<usize> = None;
+    for (index, member) in group.iter().enumerate() {
+        if !accepted(member) {
+            continue;
+        }
+        let newer = chosen.is_none_or(|current| {
+            agora_core::version_match::compare_versions(
+                &dependency_version_label(member),
+                &dependency_version_label(&group[current]),
+            ) == std::cmp::Ordering::Greater
+        });
+        if newer {
+            chosen = Some(index);
+        }
+    }
+    let satisfied = chosen.is_some();
+    let chosen = chosen.unwrap_or(0);
+
+    let name = group[chosen]
+        .display_name
+        .clone()
+        .unwrap_or_else(|| group[chosen].mod_jar_id.clone());
+    let chosen_file = dependency_candidate(&group[chosen])
+        .map(|artifact| artifact_filename(artifact).to_string())
+        .unwrap_or_default();
+    let message = if satisfied {
+        format!(
+            "Selected mods need different versions of {name}; using {chosen_file}, which every one of them accepts."
+        )
+    } else {
+        let wants = group
+            .iter()
+            .map(|member| {
+                let who = if member.requested_by.is_empty() {
+                    "another selected mod".to_string()
+                } else {
+                    member.requested_by.join(", ")
+                };
+                format!("{who} needs {}", dependency_version_label(member))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Selected mods need versions of {name} that cannot be installed together ({wants}); using {chosen_file} for all of them. Some of them may not work."
+        )
+    };
+    warnings.push(PlanWarning {
+        code: "WARN_DEPENDENCY_VERSION_CHOSEN".into(),
+        message,
+    });
+
+    let mut result = group.remove(chosen);
+    for other in group {
+        merge_dependency(&mut result, other);
+    }
+    result
+}
+
+fn merge_dependency(target: &mut ResolvedDep, incoming: ResolvedDep) {
+    if incoming.requirement == Requirement::Required {
+        target.requirement = Requirement::Required;
+    }
+    for requester in incoming.requested_by {
+        if !target.requested_by.contains(&requester) {
+            target.requested_by.push(requester);
+        }
+    }
+}
+
+fn operation_artifacts<'a>(operation: &'a ResolvedOperation, out: &mut Vec<&'a ResolvedArtifact>) {
+    match operation {
+        ResolvedOperation::Install { artifact } => out.push(artifact),
+        ResolvedOperation::Update { new_artifact, .. } => out.push(new_artifact),
+        ResolvedOperation::BatchUpdate { operations }
+        | ResolvedOperation::BatchInstall { operations }
+        | ResolvedOperation::Reconcile { operations } => {
+            for nested in operations {
+                operation_artifacts(nested, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Block when one target filename would receive different content, naming
+/// which selected items pulled in each variant. Identical content reached by
+/// several routes is not a conflict.
+fn report_duplicate_targets(
+    files_to_add: &[FileAdd],
+    operation: &ResolvedOperation,
+    dependencies: &[ResolvedDep],
+    blocking_errors: &mut Vec<PlanError>,
+) {
+    let mut roots = Vec::new();
+    operation_artifacts(operation, &mut roots);
+    let mut start = 0;
+    while start < files_to_add.len() {
+        let filename = &files_to_add[start].target_filename;
+        let mut end = start + 1;
+        while end < files_to_add.len() && &files_to_add[end].target_filename == filename {
+            end += 1;
+        }
+        let mut variants: Vec<&ResolvedArtifact> = Vec::new();
+        for file in &files_to_add[start..end] {
+            if !variants
+                .iter()
+                .any(|known| same_artifact_content(known, &file.artifact))
+            {
+                variants.push(&file.artifact);
+            }
+        }
+        if variants.len() > 1 {
+            let described = variants
+                .iter()
+                .map(|variant| {
+                    let mut requesters: Vec<String> = roots
+                        .iter()
+                        .filter(|root| {
+                            artifact_filename(root) == filename.as_str()
+                                && same_artifact_content(root, variant)
+                        })
+                        .map(|root| format!("{} (selected)", artifact_item_id(root)))
+                        .collect();
+                    for dependency in dependencies {
+                        if dependency_candidate(dependency).is_some_and(|candidate| {
+                            artifact_filename(candidate) == filename.as_str()
+                                && same_artifact_content(candidate, variant)
+                        }) {
+                            if dependency.requested_by.is_empty() {
+                                requesters.push(format!(
+                                    "a dependency on {}",
+                                    dependency
+                                        .display_name
+                                        .as_deref()
+                                        .unwrap_or(&dependency.mod_jar_id)
+                                ));
+                            } else {
+                                requesters.extend(dependency.requested_by.iter().cloned());
+                            }
+                        }
+                    }
+                    requesters.sort();
+                    requesters.dedup();
+                    let hash = artifact_hash_value(variant, HashAlgorithm::Sha256)
+                        .map(|hash| format!(", sha256 {}", &hash[..hash.len().min(8)]))
+                        .unwrap_or_default();
+                    format!(
+                        "version {}{hash} needed by {}",
+                        artifact_version_id(variant),
+                        if requesters.is_empty() {
+                            "an unknown item".to_string()
+                        } else {
+                            requesters.join(", ")
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            blocking_errors.push(PlanError {
+                code: "ERR_DUPLICATE_TARGET".into(),
+                message: format!(
+                    "Multiple different artifacts resolve to {filename}: {described}."
+                ),
+            });
+        }
+        start = end;
+    }
 }
 
 fn all_installed(
@@ -3528,6 +3966,8 @@ mod tests {
                 ),
             },
             dependencies: vec![ResolvedDep {
+                requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "required-dep".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -3644,6 +4084,8 @@ mod tests {
             },
             dependencies: vec![
                 ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: "required-dep".into(),
                     requirement: Requirement::Required,
                     source: DepSource::Manifest,
@@ -3662,6 +4104,8 @@ mod tests {
                     },
                 },
                 ResolvedDep {
+                    requested_by: Vec::new(),
+                    pinned_version: None,
                     mod_jar_id: "optional-dep".into(),
                     requirement: Requirement::Optional,
                     source: DepSource::Manifest,
@@ -3718,6 +4162,8 @@ mod tests {
                 ),
             },
             dependencies: vec![ResolvedDep {
+                requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "fabric-api".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -3820,6 +4266,8 @@ mod tests {
                 }],
             },
             dependencies: vec![ResolvedDep {
+                requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "terrablender".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -3878,6 +4326,8 @@ mod tests {
                 ),
             },
             dependencies: vec![ResolvedDep {
+                requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "missing-required".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -4152,6 +4602,8 @@ mod tests {
                 ),
             },
             dependencies: vec![ResolvedDep {
+                requested_by: Vec::new(),
+                pinned_version: None,
                 mod_jar_id: "missing-dep".into(),
                 requirement: Requirement::Required,
                 source: DepSource::Manifest,
@@ -4463,6 +4915,102 @@ mod tests {
         );
         assert!(!instance_dir.join("mods/alpha-2.jar").exists());
         assert!(!instance_dir.join("mods/beta-2.jar").exists());
+    }
+
+    #[test]
+    fn batch_install_item_content_type_defaults_to_mod_and_round_trips() {
+        let item: BatchInstallItem = serde_json::from_str(
+            r#"{"sourceType":"modrinth","itemId":"x","candidateVersion":null}"#,
+        )
+        .unwrap();
+        assert_eq!(item.content_type, None);
+        let json = serde_json::to_string(&BatchInstallItem {
+            content_type: Some("resourcepack".into()),
+            ..item
+        })
+        .unwrap();
+        assert!(json.contains(r#""contentType":"resourcepack""#), "{json}");
+    }
+
+    #[test]
+    fn batch_install_mixing_a_mod_and_other_content_lands_in_each_folder() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let files = [
+            ("sodium", "sodium-1.jar", "mod", &b"mod bytes"[..]),
+            (
+                "faithful",
+                "faithful.zip",
+                "resourcepack",
+                &b"pack bytes"[..],
+            ),
+            ("bsl", "bsl.zip", "shader", &b"shader bytes"[..]),
+        ];
+        let mut operations = Vec::new();
+        let mut items = Vec::new();
+        for (id, filename, content_type, bytes) in files {
+            let source = tmp.path().join(filename);
+            std::fs::write(&source, bytes).unwrap();
+            let mut artifact = test_artifact_with_version(
+                id,
+                filename,
+                "1.0",
+                agora_core::download::sha256_hex(bytes),
+                ArtifactSource::LocalFile {
+                    path: source.to_string_lossy().into_owned(),
+                },
+                SourceType::Curated,
+            );
+            if let ResolvedArtifact::Download(download) = &mut artifact {
+                download.metadata.content_type = content_type.into();
+            }
+            operations.push(ResolvedOperation::Install { artifact });
+            items.push(BatchInstallItem {
+                source_type: SourceType::Curated,
+                item_id: id.into(),
+                candidate_version: None,
+                content_type: Some(content_type.into()),
+            });
+        }
+        let mut intent = local_intent("sodium");
+        intent.action = InstallAction::BatchInstall { items };
+        intent.overrides.skip_health_scan = true;
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchInstall { operations },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let plan = runtime
+            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .unwrap();
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        let outcome = runtime.block_on(InstallPipeline.execute_plan(
+            &plan,
+            &instance_dir,
+            "registry-rev",
+            &NoopReporter,
+            &CancellationToken::new(),
+        ));
+        assert!(
+            matches!(outcome, InstallOutcome::Success { .. }),
+            "{outcome:?}"
+        );
+        assert!(instance_dir.join("mods/sodium-1.jar").is_file());
+        assert!(instance_dir.join("resourcepacks/faithful.zip").is_file());
+        assert!(instance_dir.join("shaderpacks/bsl.zip").is_file());
+        assert!(!instance_dir.join("mods/faithful.zip").exists());
+        let manifest =
+            agora_core::helpers::read_manifest(&instance_dir.join("instance_manifest.json"))
+                .unwrap();
+        assert_eq!(manifest.mods.len(), 1);
+        assert_eq!(manifest.resourcepacks.len(), 1);
+        assert_eq!(manifest.shaders.len(), 1);
     }
 
     #[test]
@@ -5413,6 +5961,547 @@ mod tests {
         assert_eq!(manifest.loader, "fabric");
         assert_eq!(manifest.loader_version, "0.16.0");
         assert!(manifest.mods.is_empty());
+    }
+
+    fn shared_dep_artifact(
+        registry_id: Option<&str>,
+        modrinth_id: Option<&str>,
+        version_id: &str,
+        filename: &str,
+        sha256: &str,
+        source_type: SourceType,
+    ) -> ResolvedArtifact {
+        ResolvedArtifact::Download(ResolvedDownload {
+            item_id: registry_id.or(modrinth_id).unwrap().into(),
+            version_id: version_id.into(),
+            source: ArtifactSource::Download {
+                url: format!("https://cdn.example/{version_id}/{filename}"),
+            },
+            hashes: HashSpec {
+                values: vec![HashedValue {
+                    algorithm: HashAlgorithm::Sha256,
+                    value: sha256.into(),
+                }],
+            },
+            size: 1,
+            filename: filename.into(),
+            metadata: ArtifactMetadata {
+                provider: None,
+                source_type,
+                registry_id: registry_id.map(Into::into),
+                modrinth_id: modrinth_id.map(Into::into),
+                content_type: "mod".into(),
+                version: None,
+                download_strategy: None,
+                pinned_host: None,
+            },
+        })
+    }
+
+    fn candidate_dep(id: &str, requested_by: &str, artifact: ResolvedArtifact) -> ResolvedDep {
+        ResolvedDep {
+            requested_by: vec![requested_by.into()],
+            pinned_version: None,
+            mod_jar_id: id.into(),
+            requirement: Requirement::Required,
+            source: DepSource::Manifest,
+            disposition: DepDisposition::InstallCandidate {
+                artifact: Box::new(artifact),
+            },
+            display_name: Some("Fabric API".into()),
+            page_url: None,
+        }
+    }
+
+    fn resolve_shared_dependency_batch(deps: Vec<ResolvedDep>) -> ResolvedInstallPlan {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        let root = |id: &str| ResolvedOperation::Install {
+            artifact: shared_dep_artifact(
+                Some(id),
+                None,
+                "1",
+                &format!("{id}.jar"),
+                &"b".repeat(64),
+                SourceType::Curated,
+            ),
+        };
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchInstall {
+                operations: vec![root("sodium"), root("lithium")],
+            },
+            dependencies: deps,
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        let mut intent = local_intent("sodium");
+        intent.action = InstallAction::BatchInstall {
+            items: vec![
+                BatchInstallItem {
+                    source_type: SourceType::Curated,
+                    item_id: "sodium".into(),
+                    candidate_version: None,
+                    content_type: None,
+                },
+                BatchInstallItem {
+                    source_type: SourceType::Curated,
+                    item_id: "lithium".into(),
+                    candidate_version: None,
+                    content_type: None,
+                },
+            ],
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(intent, &instance_dir, prepared, &NoopReporter))
+            .unwrap()
+    }
+
+    #[test]
+    fn shared_dependency_reached_under_two_identities_is_one_file_and_one_entry() {
+        // The same Fabric API jar, reached from Sodium as a curated registry
+        // item and from Lithium as a raw Modrinth project. The provenance
+        // differs; the content does not.
+        let api = "a".repeat(64);
+        let plan = resolve_shared_dependency_batch(vec![
+            candidate_dep(
+                "fabric-api",
+                "sodium",
+                shared_dep_artifact(
+                    Some("fabric-api"),
+                    None,
+                    "0.161.0+26.2",
+                    "fabric-api-0.161.0+26.2.jar",
+                    &api,
+                    SourceType::Curated,
+                ),
+            ),
+            candidate_dep(
+                "P7dR8mSH",
+                "lithium",
+                shared_dep_artifact(
+                    None,
+                    Some("P7dR8mSH"),
+                    "abcd1234",
+                    "fabric-api-0.161.0+26.2.jar",
+                    &api.to_uppercase(),
+                    SourceType::Modrinth,
+                ),
+            ),
+        ]);
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert_eq!(plan.dependencies.len(), 1);
+        let mut requesters = plan.dependencies[0].requested_by.clone();
+        requesters.sort();
+        assert_eq!(requesters, ["lithium", "sodium"]);
+        assert_eq!(
+            plan.files_to_add
+                .iter()
+                .filter(|file| file.target_filename == "fabric-api-0.161.0+26.2.jar")
+                .count(),
+            1
+        );
+        assert_eq!(plan.files_to_add.len(), 3);
+    }
+
+    #[test]
+    fn different_versions_of_one_project_keep_a_single_coherent_file() {
+        let plan = resolve_shared_dependency_batch(vec![
+            candidate_dep(
+                "fabric-api",
+                "sodium",
+                shared_dep_artifact(
+                    Some("fabric-api"),
+                    Some("P7dR8mSH"),
+                    "0.161.0",
+                    "fabric-api-0.161.0.jar",
+                    &"a".repeat(64),
+                    SourceType::Curated,
+                ),
+            ),
+            candidate_dep(
+                "p7dR8mSH",
+                "lithium",
+                shared_dep_artifact(
+                    None,
+                    Some("P7dR8mSH"),
+                    "0.160.0",
+                    "fabric-api-0.160.0.jar",
+                    &"c".repeat(64),
+                    SourceType::Modrinth,
+                ),
+            ),
+        ]);
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert_eq!(plan.dependencies.len(), 1);
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.161.0.jar"));
+        assert!(!plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.160.0.jar"));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "WARN_DEPENDENCY_VERSION_CHOSEN"));
+    }
+
+    fn pinned_to(mut dep: ResolvedDep, version_id: &str) -> ResolvedDep {
+        dep.pinned_version = Some(version_id.into());
+        dep
+    }
+
+    fn fabric_api(requested_by: &str, version: &str, sha: &str, pin: Option<&str>) -> ResolvedDep {
+        let dep = candidate_dep(
+            "p7dR8mSH",
+            requested_by,
+            shared_dep_artifact(
+                None,
+                Some("P7dR8mSH"),
+                version,
+                &format!("fabric-api-{version}.jar"),
+                &sha.repeat(64),
+                SourceType::Modrinth,
+            ),
+        );
+        match pin {
+            Some(pin) => pinned_to(dep, pin),
+            None => dep,
+        }
+    }
+
+    #[test]
+    fn a_pinned_older_version_wins_over_a_parent_that_accepts_any() {
+        let plan = resolve_shared_dependency_batch(vec![
+            fabric_api("sodium", "0.161.0", "a", None),
+            fabric_api("lithium", "0.160.0", "c", Some("0.160.0")),
+        ]);
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert_eq!(plan.dependencies.len(), 1);
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.160.0.jar"));
+        assert!(!plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.161.0.jar"));
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "WARN_DEPENDENCY_VERSION_CHOSEN")
+            .expect("version choice is reported");
+        assert!(warning.message.contains("accepts"), "{}", warning.message);
+    }
+
+    #[test]
+    fn unpinned_parents_get_the_newest_version_regardless_of_order() {
+        let plan = resolve_shared_dependency_batch(vec![
+            fabric_api("lithium", "0.160.0", "c", None),
+            fabric_api("sodium", "0.161.0", "a", None),
+        ]);
+        assert!(plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.161.0.jar"));
+        assert!(!plan
+            .files_to_add
+            .iter()
+            .any(|file| file.target_filename == "fabric-api-0.160.0.jar"));
+    }
+
+    #[test]
+    fn incompatible_pins_warn_and_name_both_parents() {
+        let plan = resolve_shared_dependency_batch(vec![
+            fabric_api("sodium", "0.161.0", "a", Some("0.161.0")),
+            fabric_api("lithium", "0.160.0", "c", Some("0.160.0")),
+        ]);
+        assert_eq!(plan.dependencies.len(), 1);
+        let warning = plan
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "WARN_DEPENDENCY_VERSION_CHOSEN")
+            .expect("conflict is reported");
+        assert!(warning.message.contains("sodium"), "{}", warning.message);
+        assert!(warning.message.contains("lithium"), "{}", warning.message);
+        assert!(warning.message.contains("0.160.0") && warning.message.contains("0.161.0"));
+    }
+
+    #[test]
+    fn same_filename_with_different_content_still_blocks_and_names_the_parents() {
+        let plan = resolve_shared_dependency_batch(vec![
+            candidate_dep(
+                "fabric-api",
+                "sodium",
+                shared_dep_artifact(
+                    Some("fabric-api"),
+                    None,
+                    "0.161.0",
+                    "fabric-api.jar",
+                    &"a".repeat(64),
+                    SourceType::Curated,
+                ),
+            ),
+            candidate_dep(
+                "other-api",
+                "lithium",
+                shared_dep_artifact(
+                    Some("other-api"),
+                    None,
+                    "9.9.9",
+                    "fabric-api.jar",
+                    &"d".repeat(64),
+                    SourceType::Curated,
+                ),
+            ),
+        ]);
+        let error = plan
+            .blocking_errors
+            .iter()
+            .find(|error| error.code == "ERR_DUPLICATE_TARGET")
+            .expect("different content under one filename must block");
+        assert!(error.message.contains("sodium"), "{}", error.message);
+        assert!(error.message.contains("lithium"), "{}", error.message);
+        assert!(error.message.contains("fabric-api.jar"));
+    }
+
+    fn removal_plan(
+        filenames: &[&str],
+        dependents: &[(&str, &[&str])],
+        overrides: PlanOverrides,
+    ) -> ResolvedInstallPlan {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        for name in ["fabric-api", "xaero", "entityculling"] {
+            seed_installed_mod(
+                &instance_dir,
+                name,
+                &format!("{name}.jar"),
+                "1.0",
+                name.as_bytes(),
+            );
+        }
+        let overrides = PlanOverrides {
+            skip_health_scan: true,
+            ..overrides
+        };
+        removal_plan_for(&instance_dir, filenames, dependents, overrides)
+    }
+
+    fn removal_plan_for(
+        instance_dir: &Path,
+        filenames: &[&str],
+        dependents: &[(&str, &[&str])],
+        overrides: PlanOverrides,
+    ) -> ResolvedInstallPlan {
+        let operations = filenames
+            .iter()
+            .map(|file| ResolvedOperation::Remove {
+                target_filename: (*file).into(),
+                reverse_dependents: dependents
+                    .iter()
+                    .filter(|(target, _)| format!("{target}.jar") == *file)
+                    .flat_map(|(_, parents)| parents.iter())
+                    .map(|parent| ReverseDepInfo {
+                        mod_jar_id: (*parent).into(),
+                        filename: format!("{parent}.jar"),
+                        requirement: Requirement::Required,
+                        impact: None,
+                    })
+                    .collect(),
+                content_type: None,
+            })
+            .collect();
+        let mut intent = batch_update_intent();
+        intent.action = InstallAction::BatchRemove {
+            filenames: filenames.iter().map(|file| (*file).into()).collect(),
+        };
+        intent.overrides = overrides;
+        let prepared = PreparedPlan {
+            operation: ResolvedOperation::BatchRemove { operations },
+            dependencies: vec![],
+            conflicts: vec![],
+            registry_revision: "registry-rev".into(),
+        };
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(InstallPipeline.resolve_plan(intent, instance_dir, prepared, &NoopReporter))
+            .unwrap()
+    }
+
+    const API_DEPENDENTS: &[(&str, &[&str])] = &[("fabric-api", &["xaero", "entityculling"])];
+
+    #[test]
+    fn removing_a_dependency_together_with_all_its_dependents_is_allowed() {
+        let plan = removal_plan(
+            &["fabric-api.jar", "xaero.jar", "entityculling.jar"],
+            API_DEPENDENTS,
+            PlanOverrides::default(),
+        );
+        assert!(
+            plan.blocking_errors.is_empty(),
+            "{:?}",
+            plan.blocking_errors
+        );
+        assert!(plan.pending_choices.is_empty());
+        assert!(plan.is_fully_resolved());
+        assert_eq!(plan.files_to_remove.len(), 3);
+    }
+
+    #[test]
+    fn removing_a_dependency_while_a_dependent_stays_needs_a_decision() {
+        let plan = removal_plan(
+            &["fabric-api.jar", "xaero.jar"],
+            API_DEPENDENTS,
+            PlanOverrides::default(),
+        );
+        assert!(!plan.is_fully_resolved());
+        let conflict = plan
+            .conflicts
+            .iter()
+            .find(|conflict| conflict.kind == ConflictKind::BrokenReverseDep)
+            .expect("a dependent that stays must be reported");
+        assert!(conflict.message.contains("entityculling"));
+        assert!(!conflict.message.contains("xaero"));
+        assert!(matches!(
+            plan.pending_choices.as_slice(),
+            [PendingChoice::Conflict { .. }]
+        ));
+    }
+
+    #[test]
+    fn removing_only_the_dependency_can_proceed_after_explicit_override() {
+        let conflict_id = "broken-dependency:fabric-api.jar".to_string();
+        let plan = removal_plan(
+            &["fabric-api.jar"],
+            API_DEPENDENTS,
+            PlanOverrides {
+                force_conflict_resolution: BTreeMap::from([(
+                    conflict_id.clone(),
+                    ConflictResolution::RemoveAnyway,
+                )]),
+                ..PlanOverrides::default()
+            },
+        );
+        assert!(plan.is_fully_resolved(), "{:?}", plan.pending_choices);
+        assert_eq!(plan.files_to_remove.len(), 1);
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "WARN_BROKEN_REVERSE_DEP"));
+
+        let aborted = removal_plan(
+            &["fabric-api.jar"],
+            API_DEPENDENTS,
+            PlanOverrides {
+                force_conflict_resolution: BTreeMap::from([(
+                    conflict_id,
+                    ConflictResolution::Abort,
+                )]),
+                ..PlanOverrides::default()
+            },
+        );
+        assert!(aborted
+            .blocking_errors
+            .iter()
+            .any(|error| error.code == "ERR_BROKEN_REVERSE_DEP"));
+    }
+
+    /// Removing a dependency on purpose (`RemoveAnyway`) must still leave the
+    /// instance reporting the missing dependency, on the removal itself and on
+    /// every later health read.
+    #[test]
+    fn remove_anyway_of_a_dependency_leaves_a_missing_dependency_blocker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instance_dir = make_instance(&tmp);
+        for (id, filename, depends) in [
+            ("fabric-api", "fabric-api.jar", serde_json::json!({})),
+            (
+                "entityculling",
+                "entityculling.jar",
+                serde_json::json!({ "fabric-api": "*" }),
+            ),
+        ] {
+            let source = tmp.path().join(filename);
+            write_fabric_test_jar(
+                &source,
+                serde_json::json!({
+                    "schemaVersion": 1, "id": id, "version": "1.0.0", "depends": depends
+                }),
+            );
+            seed_installed_mod(
+                &instance_dir,
+                id,
+                filename,
+                "1.0",
+                &std::fs::read(&source).unwrap(),
+            );
+        }
+        // A warm report from before the removal must not survive it.
+        let manifest =
+            agora_core::helpers::read_manifest(&instance_dir.join("instance_manifest.json"))
+                .unwrap();
+        let before = crate::health::cached_health(&instance_dir, &manifest, None, None);
+        assert!(before.blockers.is_empty(), "{:?}", before.blockers);
+
+        let mut plan = removal_plan_for(
+            &instance_dir,
+            &["fabric-api.jar"],
+            API_DEPENDENTS,
+            PlanOverrides {
+                force_conflict_resolution: BTreeMap::from([(
+                    "broken-dependency:fabric-api.jar".to_string(),
+                    ConflictResolution::RemoveAnyway,
+                )]),
+                skip_health_scan: false,
+                ..PlanOverrides::default()
+            },
+        );
+        plan.fingerprint = compute_plan_fingerprint(&plan).unwrap();
+        let outcome =
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(InstallPipeline.execute_plan(
+                    &plan,
+                    &instance_dir,
+                    "registry-rev",
+                    &NoopReporter,
+                    &CancellationToken::new(),
+                ));
+        match outcome {
+            InstallOutcome::HealthRollback { health_report, .. } => {
+                assert!(health_report.blockers.iter().any(|blocker| {
+                    blocker.kind == crate::health::BlockerKind::MissingRequiredDependency
+                        && blocker.mod_id.as_deref() == Some("fabric-api")
+                        && blocker.filename.as_deref() == Some("entityculling.jar")
+                }));
+            }
+            other => panic!("expected the removal to report a health blocker, got {other:?}"),
+        }
+        assert!(!instance_dir.join("mods/fabric-api.jar").exists());
+
+        let manifest =
+            agora_core::helpers::read_manifest(&instance_dir.join("instance_manifest.json"))
+                .unwrap();
+        let after = crate::health::cached_health(&instance_dir, &manifest, None, None);
+        assert!(after
+            .blockers
+            .iter()
+            .any(|blocker| blocker.kind == crate::health::BlockerKind::MissingRequiredDependency));
     }
 
     fn test_plan() -> ResolvedInstallPlan {

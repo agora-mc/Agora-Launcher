@@ -2525,6 +2525,55 @@ does not yet let a player untick optional mods before installing.
 
 ---
 
+### 20.5 About-Text Images Come From Any Public Host, Confirmed as Images
+
+Community-written project descriptions link images from anywhere (badge
+services, personal hosts). The webview's CSP `img-src` stays limited to
+first-party hosts; every other HTTPS image is fetched by core under
+`ClientCategory::CommunityImage` with `HostPolicy::AnyPublicHost`, which is
+valid for that category only. Every other request gate still applies (HTTPS,
+port 443, no IP literals, no private or loopback addresses, per-hop redirect
+checks, Lockdown), responses are capped at 5 MiB, and the bytes must carry a
+known image signature (PNG, JPEG, GIF, WebP, AVIF, BMP, ICO, or an SVG root
+element) before the page receives them as a `data:` URL. SVG is accepted
+because it is displayed through `<img>`, where its scripts and external
+references do not run. Anything else is dropped and the image is hidden.
+
+### 20.6 Data Packs Reach Worlds by Sync
+
+Minecraft loads data packs only from `<instance>/saves/<world>/datapacks/`; the instance-root
+`datapacks/` folder is never read. An installed data pack therefore does nothing until it is
+copied into a world. The instance's data pack list (`datapacks/` plus `manifest.datapacks`) stays
+the source of truth, and `datapack_sync` in core mirrors it into worlds:
+
+- **Scope.** Each data pack goes to all worlds (default) or a chosen set of existing worlds. The
+  choice is stored in `manifest.user_preferences.datapack_world_scopes`, keyed by the pack's
+  catalog identity (registry or Modrinth id, else filename) so an update that renames the file
+  keeps it. Absent means all worlds, so existing manifests need no migration. It is a
+  per-instance preference, not content: it may be changed on pack-managed (locked) instances.
+- **Sync.** Every enabled data pack is copied (temp file, hash check, rename) into every
+  in-scope world; copies Agora placed earlier are removed when the pack is disabled, removed or
+  out of scope. A world is a folder under `saves/` containing `level.dat`.
+- **Only Agora's own files.** Each world keeps `<world>/datapacks/.agora-managed.json` (filename
+  and SHA-256 of what Agora placed). A file is removed or replaced only if it is recorded and
+  still has the recorded hash. A same-named file the user placed, or an Agora copy the user
+  edited, is left alone and reported as a warning. The record lives beside the files so a
+  restore of `saves/` brings both back together.
+- **When.** After the pre-launch snapshot and before the process or official-launcher handoff
+  starts; after an install, update or removal commits (after its health gate); after enabling or
+  disabling a data pack; and after a scope change or an explicit "sync now". Pre-launch snapshots
+  exclude `saves/`, so syncing neither invalidates their reuse nor enters them; full snapshots
+  that include `saves/` capture copies and record together, and the next sync reconciles after
+  any restore. Failures are warnings and never block a launch. Sync is skipped while the game
+  runs.
+- **New worlds.** A world created during a session receives the packs at the next sync, normally
+  the next launch (its second session); the UI says so.
+- **Pack instances.** Modpack-shipped data packs are inventoried into `manifest.datapacks` and
+  synced the same way. Sync does not change the instance's declared content, so locking does not
+  block it.
+- **Not covered.** Data packs that are directories, and files Agora did not install, are never
+  synced.
+
 ## 21. EXTENSIBILITY: PLUGINS & CONTENT PROVIDERS
 
 Community plugins and the content-provider interface built on them. Guiding principle (see AGENTS.md): modding is user customization — protect users with warnings and explicit opt-in rather than by blocking.
@@ -3084,6 +3133,15 @@ enforce the readiness check so the UI is not the security boundary.
 
 Retention accounts for manifest and referenced object storage and removes an
 object only after no remaining snapshot manifest references it.
+
+Each snapshot records its origin: `user` (created by hand), `migration` (the
+recovery point of a Minecraft version change) or `automatic` (pre-launch,
+pre-install, pre-template, pack merge, import). Automatic snapshots rotate
+among themselves; they never evict user or migration snapshots, which are kept
+by their own count (10) and are the last to go under the storage cap.
+Snapshots written before the field existed are classified by label. A single
+shared count used to let the next launch delete a user's or a migration's
+recovery point without warning.
 
 ### 23.4 Health, Crash Doctor, Memory, Authentication, and Launch Reliability (formerly §19.19)
 
@@ -3905,7 +3963,9 @@ moves onto a `GameHost` service. Nothing is process-global any more, so `registe
 the test binaries' `ctor` registration are deleted; tests ask for `testing_context`. Instances fan
 out across every package that provides them: listing concatenates, and an operation goes to the
 backend that owns the instance, so a second game can never displace Minecraft's. The package's
-core budget fell to 1,160.
+core budget fell to 1,160. Merging master's UX fixes of September 2026 (data packs synced to
+worlds, Java provisioning progress, captured launch output) raised it to 1,206: they were written
+against core while Minecraft still lived there, and moved into the package with the merge.
 Per-store user paths (Steam's `Skyrim Special Edition` and GOG's `Skyrim Special Edition GOG`
 under Documents and AppData) cannot be expressed by `GamePath` yet; Phase 3 needs them.
 

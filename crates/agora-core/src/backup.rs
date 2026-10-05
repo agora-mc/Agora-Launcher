@@ -1247,6 +1247,7 @@ mod tests {
             created_at: created_at.to_string(),
             file_count: 1,
             size_estimate: 100,
+            origin: None,
         }
     }
 

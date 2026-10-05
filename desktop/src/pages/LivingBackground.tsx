@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Mountain, Music, Volume2, CloudRain, CloudSnow, Sun, ZoomIn, ZoomOut, Sparkles, Rainbow, ChevronDown, ChevronRight, Lock, LockOpen } from 'lucide-react';
+import { Mountain, Music, Volume2, CloudRain, CloudSnow, Sun, ZoomIn, ZoomOut, Sparkles, Rainbow, ChevronDown, ChevronRight, Lock, LockOpen, RotateCcw } from 'lucide-react';
 import { MUSIC_TRACK_CHOICES, INSTRUMENT_CHOICES } from '../features/ambience/engine/audio/trackChoices';
 import { useAmbience } from '../features/ambience/AmbienceProvider';
 
@@ -184,6 +184,22 @@ export function LivingBackground() {
     setZoomValue(clamped);
     setZoom(clamped);
   };
+  /**
+   * Put the scene back the way it starts: default zoom, both clocks free-running,
+   * the standard background visible, the companion on. The time and weather
+   * themselves are left alone (they keep cycling once unlocked).
+   */
+  const resetScene = () => {
+    setZoomValue(DEFAULT_ZOOM);
+    setZoom(DEFAULT_ZOOM);
+    setTodLockedValue(false);
+    setTodLocked(false);
+    setWeatherLockedValue(false);
+    setWeatherLocked(false);
+    setClearBackground(false);
+    setBuddyValue(true);
+    setBuddy(true);
+  };
   const toggleBuddy = () => {
     const next = !buddy;
     setBuddyValue(next);
@@ -239,6 +255,20 @@ export function LivingBackground() {
             Control panel
             <span className="ml-auto font-normal normal-case tracking-normal text-muted-foreground">Hide</span>
           </button>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              Locks stop the world changing the time of day or the weather on its own; unlocked, both keep cycling.
+            </p>
+            <button
+              type="button"
+              onClick={resetScene}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-foreground hover:bg-muted/70"
+              data-testid="living-bg-reset"
+            >
+              <RotateCcw className="h-3 w-3" aria-hidden="true" />
+              Reset scene
+            </button>
+          </div>
           <div id="living-bg-panel-body" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-1 text-sm">
               <label className="flex items-center gap-3">
@@ -353,6 +383,7 @@ export function LivingBackground() {
               <span className="inline-flex items-center gap-2 font-medium">
                 <Mountain className="h-4 w-4" aria-hidden="true" />
                 Zoom
+                <span className="text-xs font-normal text-muted-foreground" data-testid="living-bg-zoom-readout">{zoom.toFixed(1)}×</span>
               </span>
               <div className="flex items-center gap-2">
                 <button

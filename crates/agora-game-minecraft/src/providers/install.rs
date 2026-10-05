@@ -303,6 +303,8 @@ pub async fn resolve_item(
             }
         };
         dependencies.push(ResolvedDep {
+            requested_by: Vec::new(),
+            pinned_version: None,
             mod_jar_id: dep_item,
             requirement,
             source: DepSource::Manifest,
@@ -325,11 +327,12 @@ pub async fn install_pack(
     registry: &ProviderRegistry,
     item_id: &str,
     version_id: Option<&str>,
+    name_override: Option<&str>,
 ) -> LauncherResult<crate::import::ImportResult> {
     let (provider_id, project_id) =
         parse_item_id(item_id).ok_or_else(|| not_a_provider_item(item_id))?;
     let plan = resolve_pack_plan(registry, provider_id, project_id, version_id).await?;
-    install_resolved_pack(ctx, registry, provider_id, project_id, plan).await
+    install_resolved_pack(ctx, registry, provider_id, project_id, plan, name_override).await
 }
 
 async fn resolve_pack_plan(
@@ -355,6 +358,7 @@ async fn install_resolved_pack(
     provider_id: &str,
     project_id: &str,
     plan: InstallPlan,
+    name_override: Option<&str>,
 ) -> LauncherResult<crate::import::ImportResult> {
     let descriptor = registry.usable(provider_id)?.descriptor();
     let authorization = authorize_plan(ctx, &plan, &descriptor.download_hosts)?;
@@ -368,20 +372,27 @@ async fn install_resolved_pack(
         });
     };
     crate::import_service::ImportService::new(ctx.clone())
-        .run_import(crate::import_service::ImportRequest {
-            source: crate::import_service::ImportSource::ProviderPack(
-                crate::import::ProviderPackImport {
-                    provider_id: provider_id.to_string(),
-                    provider_title: descriptor.title,
-                    project_id: project_id.to_string(),
-                    plan: pack,
-                    download_hosts: descriptor.download_hosts,
-                    low_security_accepted: authorization.is_low_security(),
-                    override_policy: crate::override_sanitizer::OverridePolicy::from_settings(ctx),
-                },
-            ),
-            symlink_saves: false,
-        })
+        .run_import_named(
+            crate::import_service::ImportRequest {
+                source: crate::import_service::ImportSource::ProviderPack(
+                    crate::import::ProviderPackImport {
+                        provider_id: provider_id.to_string(),
+                        provider_title: descriptor.title,
+                        project_id: project_id.to_string(),
+                        plan: pack,
+                        download_hosts: descriptor.download_hosts,
+                        low_security_accepted: authorization.is_low_security(),
+                        override_policy: crate::override_sanitizer::OverridePolicy::from_settings(
+                            ctx,
+                        ),
+                    },
+                ),
+                symlink_saves: false,
+            },
+            name_override.map(str::to_string),
+            ctx.progress_sink.clone(),
+            agora_core::event_sink::CancellationToken::new(),
+        )
         .await
 }
 
@@ -454,6 +465,7 @@ pub async fn install_catalog_pack(
     registry: &ProviderRegistry,
     item_id: &str,
     accept_changed: bool,
+    name_override: Option<&str>,
 ) -> LauncherResult<crate::import::ImportResult> {
     let item = agora_core::registry::RegistryService::new(ctx.clone())
         .get_item_by_id(item_id)?
@@ -482,6 +494,7 @@ pub async fn install_catalog_pack(
         &item.source_identifier,
         &item.sha256,
         accept_changed,
+        name_override,
     )
     .await
 }
@@ -499,6 +512,7 @@ pub async fn install_curated_pack(
     identifier: &str,
     pinned_digest: &str,
     accept_changed: bool,
+    name_override: Option<&str>,
 ) -> LauncherResult<crate::import::ImportResult> {
     let pin = parse_curated(identifier)?;
     let plan = resolve_pack_plan(
@@ -526,7 +540,15 @@ pub async fn install_curated_pack(
             },
         });
     }
-    install_resolved_pack(ctx, registry, &pin.provider_id, &pin.project_id, plan).await
+    install_resolved_pack(
+        ctx,
+        registry,
+        &pin.provider_id,
+        &pin.project_id,
+        plan,
+        name_override,
+    )
+    .await
 }
 
 /// A dry run of what installing an item would involve, for the review

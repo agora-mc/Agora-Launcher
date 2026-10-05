@@ -60,6 +60,9 @@ pub struct InstalledContentRow {
     pub agora_score: Option<i64>,
     pub modrinth_downloads: Option<i64>,
     pub metadata_status: MetadataStatus,
+    /// Which worlds a data pack is synced into. Present only on data pack rows
+    /// (MASTER_SPEC §20.6).
+    pub world_sync: Option<crate::datapack_sync::DatapackWorldStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +119,15 @@ pub fn list_installed_content(
         })
         .unwrap_or_default();
 
+    let worlds = if entries
+        .iter()
+        .any(|entry| normalize_content_type(&entry.content_type) == "datapack")
+    {
+        crate::datapack_sync::list_worlds(instance_dir)
+    } else {
+        Vec::new()
+    };
+
     entries
         .into_iter()
         .map(|entry| {
@@ -134,7 +146,11 @@ pub fn list_installed_content(
                 .as_ref()
                 .and_then(|id| authors.get(id))
                 .cloned();
-            build_row(instance_dir, entry, registry_item, item_categories, author)
+            let mut row = build_row(instance_dir, entry, registry_item, item_categories, author);
+            if row.content_type == "datapack" {
+                row.world_sync = Some(crate::datapack_sync::world_status(manifest, entry, &worlds));
+            }
+            row
         })
         .collect()
 }
@@ -184,12 +200,7 @@ fn build_row(
         .unwrap_or_else(|| filename_display_name(&entry.filename));
 
     InstalledContentRow {
-        key: format!(
-            "{}:{}:{}",
-            normalize_content_type(&entry.content_type),
-            entry.filename,
-            entry.sha256
-        ),
+        key: content_key(entry),
         filename: entry.filename.clone(),
         display_name,
         version: entry.version.clone(),
@@ -223,6 +234,7 @@ fn build_row(
         agora_score: registry_item.map(|item| item.net_score),
         modrinth_downloads: None,
         metadata_status,
+        world_sync: None,
     }
 }
 
@@ -262,7 +274,18 @@ fn safe_filename(filename: &str) -> bool {
         && !filename.contains('\0')
 }
 
-fn filename_display_name(filename: &str) -> String {
+/// Stable identity of one installed entry; also the key of the Modrinth
+/// project-metadata cache, so every consumer of that cache must build it here.
+pub(crate) fn content_key(entry: &InstalledMod) -> String {
+    format!(
+        "{}:{}:{}",
+        normalize_content_type(&entry.content_type),
+        entry.filename,
+        entry.sha256
+    )
+}
+
+pub(crate) fn filename_display_name(filename: &str) -> String {
     Path::new(filename)
         .file_stem()
         .and_then(|value| value.to_str())

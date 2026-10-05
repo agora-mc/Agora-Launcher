@@ -224,6 +224,7 @@
   box-shadow: 0 0 40px -8px hsl(var(--primary) / 0.7), 0 14px 30px -12px rgba(0, 0, 0, 0.8);
   animation: inst-breathe 3.2s ease-in-out infinite;
 }
+.inst-play-wrap { display: flex; flex-direction: column; align-items: stretch; gap: 10px; }
 .inst-play:disabled { opacity: 0.6; cursor: not-allowed; animation: none; }
 @keyframes inst-breathe {
   0%,100% { box-shadow: 0 0 34px -10px var(--inst-play), 0 14px 30px -12px rgba(0,0,0,.8); }
@@ -964,7 +965,8 @@
 }
 @media (max-width: 800px) {
   .inst-hero { grid-template-columns: auto 1fr; }
-  .inst-play { grid-column: 1 / -1; justify-content: center; }
+  .inst-play-wrap { grid-column: 1 / -1; }
+  .inst-play { justify-content: center; }
   .inst-detail { width: 100%; }
 }
 

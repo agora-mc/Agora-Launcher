@@ -16,8 +16,12 @@ import {
 export async function installTechnicPack(
   slug: string,
   allowUnverifiedPacks: boolean,
-): Promise<ImportResult> {
+  /** Resolves the new instance's name once the pack's title is known; `null` cancels. */
+  chooseName?: (title: string) => Promise<string | undefined | null>,
+): Promise<ImportResult | null> {
   const detail = await technicPackDetail(slug);
+  const instanceName = chooseName ? await chooseName(detail.title) : undefined;
+  if (instanceName === null) return null;
 
   if (detail.tier === 'solder') {
     const solder = detail.solder;
@@ -25,7 +29,7 @@ export async function installTechnicPack(
     if (!solder || !build) {
       throw new Error('This Solder pack does not report a usable build to install.');
     }
-    return installTechnicSolderPack(detail.slug, solder, build);
+    return installTechnicSolderPack(detail.slug, solder, build, instanceName);
   }
 
   if (!allowUnverifiedPacks) {
@@ -42,5 +46,6 @@ export async function installTechnicPack(
     detail.minecraft ?? '',
     '',
     '',
+    instanceName,
   );
 }

@@ -38,7 +38,15 @@ import {
   type InteractionPreference,
 } from '../features/interactive/live/presentationPreference';
 import { pinnedMotion } from '../components/presentation-capabilities';
+import { motionAfterPinEnds, rememberMotionBeforePin, takeMotionBeforePin } from '../components/motion-before-pin';
 import { useConfirm } from '@/components/ui/confirm';
+
+/**
+ * Every step's Back/Continue row. Sticky inside the card's scroll area: at
+ * large text sizes a step's content is taller than the window, and a footer in
+ * normal flow starts below the visible area.
+ */
+const STEP_FOOTER = 'sticky bottom-0 -mx-6 sm:-mx-8 -mb-6 sm:-mb-8 mt-8 flex justify-between border-t border-border bg-card px-6 sm:px-8 py-4';
 
 type Step = 'welcome' | 'appearance' | 'services' | 'launch' | 'java' | 'github' | 'registry' | 'import';
 
@@ -281,7 +289,7 @@ function ImportStep({ onFinish, onBack }: { onFinish: () => void; onBack: () => 
           Finish and start the tour
         </button>
       </div>
-      <div className="mt-8 flex justify-between">
+      <div className={STEP_FOOTER}>
         <button
           onClick={onBack}
           className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
@@ -349,7 +357,13 @@ function AppearanceStep({
     // continuously, but onboarding runs before the user reaches Settings, so
     // applying it here makes the choice visible on the very next screen.
     const pin = pinnedMotion(value);
-    if (pin) setPreferences({ motion: pin });
+    if (pin) {
+      rememberMotionBeforePin(preferences.motion);
+      setPreferences({ motion: pin });
+    } else {
+      const saved = takeMotionBeforePin();
+      if (saved !== null) setPreferences({ motion: motionAfterPinEnds(preferences.motion, 'reduced', saved) });
+    }
   };
 
   return (
@@ -436,7 +450,7 @@ function AppearanceStep({
 
       {/* Sticky: this step exists to enlarge the text, and at large scales
           the controls above push Continue out of the first screenful. */}
-      <div className="sticky bottom-0 -mx-6 sm:-mx-8 -mb-6 sm:-mb-8 mt-8 flex justify-between border-t border-border bg-card px-6 sm:px-8 py-4">
+      <div className={STEP_FOOTER}>
         <button
           onClick={onBack}
           className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
@@ -635,7 +649,7 @@ function ServicesStep({
 
       {error && <p className="mt-4 text-xs text-destructive">{error}</p>}
 
-      <div className="mt-8 flex justify-between">
+      <div className={STEP_FOOTER}>
         <button
           onClick={onBack}
           className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
@@ -845,7 +859,7 @@ function JavaStep({
         </div>
       )}
 
-      <div className="mt-8 flex justify-between">
+      <div className={STEP_FOOTER}>
         <button
           onClick={onBack}
           disabled={busy}
@@ -1043,7 +1057,7 @@ function LaunchStep({
       )}
       {error && <p className="mt-4 text-xs text-destructive">{error}</p>}
 
-      <div className="mt-8 flex justify-between">
+      <div className={STEP_FOOTER}>
         <button
           onClick={onBack}
           className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:underline"
@@ -1151,7 +1165,7 @@ function GithubStep({
       {result && <p className="mb-4 text-sm text-primary">{result}</p>}
       {error && <p className="mb-4 text-xs text-destructive">{error}</p>}
 
-      <div className="flex justify-between">
+      <div className={STEP_FOOTER}>
         <button
           onClick={() => {
             // Invalidate the polling session before navigating away so
@@ -1237,7 +1251,7 @@ function RegistryStep({
         missingWarning="The catalog is required to browse curated content. You can continue, but there will be nothing curated to browse until it is downloaded."
       />
 
-      <div className="mt-8 flex justify-between">
+      <div className={STEP_FOOTER}>
         <button
           onClick={onBack}
           disabled={loading}

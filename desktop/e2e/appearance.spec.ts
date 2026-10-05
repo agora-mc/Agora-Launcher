@@ -236,3 +236,11 @@ test('appearance presets apply grouped preferences and Agora Blue remains availa
   await expect(page.getByLabel('Information density')).toHaveValue('comfortable');
   await expect(page.getByLabel('Interface font')).toHaveValue('system');
 });
+
+test('custom colors say they override the color mode and can be reset to the theme', async ({ page }) => {
+  await page.getByLabel('Color mode').selectOption('light');
+  const note = page.getByTestId('custom-colors-note');
+  await expect(note).toContainText('override the Light color mode');
+  await note.getByRole('button', { name: 'Reset colors to theme' }).click();
+  await expect(note).toHaveCount(0);
+});

@@ -33325,6 +33325,38 @@
       },
       {
         "mc_version": "1.21.1",
+        "loader_version": "21.1.245",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.245/neoforge-21.1.245-installer.jar",
+        "sha256": "5b5903bd35be23b7efbd2612467fbb6833560279a54d88fed5ec38b28d9b0e86",
+        "file_name": "neoforge-21.1.245-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "41fd1140b785e6780ace4526f9c84e7ed13fc24466481733a00406717ef2b696",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.1.245",
+          "javafml": "4.0.43",
+          "lowcodefml": "4.0.43"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.246",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.246/neoforge-21.1.246-installer.jar",
+        "sha256": "abe4ff6bd19c6dd414722b63ba7c7f81307ee840961acb15c1d85a5ade94a2f4",
+        "file_name": "neoforge-21.1.246-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "99caab3766ca3f71de17ebb10508b3f6d003bf564f9bba3a3fd0fe9bb74e84e3",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.1.246",
+          "javafml": "4.0.43",
+          "lowcodefml": "4.0.43"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
         "loader_version": "21.1.247",
         "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.247/neoforge-21.1.247-installer.jar",
         "sha256": "6fa14629491a796d75a39bc31b6e65eb3636b6ba2e1368577c061ba0591e8be4",
@@ -33766,6 +33798,22 @@
         "installer_spec": 1,
         "provided_versions": {
           "neoforge": "21.4.157",
+          "javafml": "6.0.18",
+          "lowcodefml": "6.0.18"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.4",
+        "loader_version": "21.4.158",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.4.158/neoforge-21.4.158-installer.jar",
+        "sha256": "f392445f5f5c4523d5ba8f6481c14e83a6167d7ea16438d92ea7bfcd5a0e125a",
+        "file_name": "neoforge-21.4.158-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "a53df7c95693c24399757c99e018b7f18bcdd9f81c55c8956eb50c261e8acabc",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.4.158",
           "javafml": "6.0.18",
           "lowcodefml": "6.0.18"
         },
@@ -46374,6 +46422,38 @@
         "installer_spec": 1,
         "provided_versions": {
           "forge": "66.0.6",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.8",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.8/forge-26.3-66.0.8-installer.jar",
+        "sha256": "4d9b709c42f82220871672529afbda102c58289b3be5b02a19da7734039564df",
+        "file_name": "forge-26.3-66.0.8-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "33bd1f8c31131b34ff88ecdfd30ef30ddc427c713c12c335eba15a36fee9b224",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.8",
+          "javafml": "66",
+          "lowcodefml": "66"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "26.3",
+        "loader_version": "66.0.9",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/26.3-66.0.9/forge-26.3-66.0.9-installer.jar",
+        "sha256": "0ef95a8a9ceea98e6c789e130d9061ed35a6dae3ad7599b5d66e30b0f7ad18cf",
+        "file_name": "forge-26.3-66.0.9-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "d0c5319f39d3937568380f4a2e4e075607e23bebee761b488861e7d1d8883f29",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "66.0.9",
           "javafml": "66",
           "lowcodefml": "66"
         },

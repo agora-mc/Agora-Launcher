@@ -307,6 +307,18 @@ function AppContent() {
   const healthMonitor = useInstanceHealthMonitor(onboardingComplete === true);
   const registry = useRegistryState();
 
+  // The background interval is only a backstop. Content changes made anywhere
+  // (an install in Browse, a removal in the editor) must show up the moment
+  // the library or an editor is on screen, so re-scan on arrival.
+  const refreshHealth = healthMonitor.refresh;
+  const healthViewKey = destination.type === 'instance-detail'
+    ? `instance-detail:${destination.instanceId}`
+    : destination.type === 'tab' && destination.tab === 'instances' ? 'instances' : null;
+  useEffect(() => {
+    if (onboardingComplete !== true || !healthViewKey) return;
+    void refreshHealth();
+  }, [healthViewKey, onboardingComplete, refreshHealth]);
+
   // Fetch the latest signed catalog at launch so the app always starts on a
   // fresh one. Skipped when catalog sync is disabled in Privacy settings
   // (the backend errors on that case; a launch-time alert would nag every start).
@@ -349,6 +361,11 @@ function AppContent() {
       && previous.type === 'mod-detail'
       && modDetailOriginRef.current?.type === 'instance-detail';
 
+    if (destination.type === 'mod-detail' && previous.type !== 'mod-detail') {
+      // Remember where a project page was opened from so the sidebar can keep
+      // highlighting that section.
+      modDetailOriginRef.current = previous;
+    }
     if (destination.type === 'mod-detail' && (cameFromBrowse || cameFromInstanceEditor)) {
       modDetailOriginRef.current = previous;
       mainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
@@ -492,6 +509,19 @@ function AppContent() {
   // already prevents invalid Destination types at compile time.
   const isKnownDestType = KNOWN_DEST_TYPES.has(destination.type);
 
+  // A project page belongs to the section it was opened from (Browse, Home or
+  // an instance), not to Home. On the first render the ref below still holds the
+  // previous destination; afterwards the origin recorded by the effect.
+  const sidebarTab: Tab = (() => {
+    if (destination.type !== 'mod-detail') return effectiveTab;
+    const origin = previousDestinationRef.current.type !== 'mod-detail'
+      ? previousDestinationRef.current
+      : modDetailOriginRef.current;
+    if (origin?.type === 'tab') return origin.tab;
+    if (origin?.type === 'instance-detail') return 'instances';
+    return 'browse';
+  })();
+
   const showModDetail = destination.type === 'mod-detail';
   const previousDestination = previousDestinationRef.current;
   const shouldRenderBrowse =
@@ -527,6 +557,8 @@ function AppContent() {
   // Render the HealthDialog at the App level so it survives page navigation.
   const {
     state: processState,
+    launchFailures,
+    dismissLaunchFailure,
     liveSessions,
     logs: processLogs,
     startLaunch,
@@ -752,9 +784,9 @@ function AppContent() {
     }
   };
 
-  const handleBrowseSelectMod = (id: string, instanceId?: string) => {
+  const handleBrowseSelectMod = (id: string, instanceId?: string, contentType?: string) => {
     browseScrollTopRef.current = mainRef.current?.scrollTop ?? 0;
-    navigateToModDetail(id, instanceId);
+    navigateToModDetail(id, instanceId, contentType);
   };
 
   const handleInstanceEditorOpenMod = (id: string) => {
@@ -819,7 +851,7 @@ function AppContent() {
           activePluginPage={destination.type === 'plugin-page' ? destination.contributionId : null}
           onSelectPluginPage={navigateToPluginPage}
           tabs={tabs}
-          activeTab={effectiveTab}
+          activeTab={sidebarTab}
           onSelectTab={navigateToTab}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           collapsed={shellLayout.sidebar.collapsed}
@@ -911,6 +943,7 @@ function AppContent() {
                 <ModDetail
                   itemId={destination.itemId}
                   initialInstanceId={modDetailBrowseInstanceId}
+                  requestedContentType={destination.browseContentType}
                   onBack={handleModDetailBack}
                   onOpenInstanceEditor={(id) => {
                     navigateToInstanceDetail(id);
@@ -950,6 +983,8 @@ function AppContent() {
                     onUseDelegatedLaunch={useDelegatedLaunch}
                     onRestartMojangLauncher={restartMojangLauncherAndRetry}
                     onClearError={clearError}
+                    launchFailures={launchFailures}
+                    onDismissLaunchFailure={dismissLaunchFailure}
                     healthReports={healthMonitor.reports}
                     healthErrors={healthMonitor.errors}
                     onReviewHealth={openHealthReview}
@@ -1014,9 +1049,12 @@ function AppContent() {
                   processState={processState}
                   onKillProcess={killProcess}
                   onInvestigate={handleInstanceEditorInvestigate}
+                  launchFailure={launchFailures[instanceEditorId] ?? null}
+                  onDismissLaunchFailure={dismissLaunchFailure}
                   processLogs={processLogs}
                   healthReport={healthMonitor.reports[instanceEditorId] ?? null}
                   onReviewHealth={openHealthReview}
+                  onRefreshHealth={healthMonitor.refreshInstance}
                 />
               </div>
             )}

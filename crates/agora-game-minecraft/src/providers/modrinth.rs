@@ -206,6 +206,44 @@ async fn fetch_versions(
     http_client::checked_get_json(&ctx.http_clients, ClientCategory::Modrinth, &url).await
 }
 
+/// Loader tags Modrinth gives non-mod content: resource packs, data packs and
+/// shaders are never tagged with the instance's mod loader.
+const NON_MOD_LOADERS: &[&str] = &[
+    "minecraft",
+    "datapack",
+    "iris",
+    "optifine",
+    "canvas",
+    "vanilla",
+];
+
+fn is_non_mod_version(version: &ModrinthVersion) -> bool {
+    let loaders = version.loaders.as_deref().unwrap_or_default();
+    !loaders.is_empty()
+        && loaders
+            .iter()
+            .all(|l| NON_MOD_LOADERS.contains(&l.as_str()))
+}
+
+/// Versions for an instance target. The loader filter suits mods; when it
+/// finds nothing, the project may be resource-pack/shader/data-pack content
+/// whose versions carry no mod loader, so look again without it and keep only
+/// those.
+async fn fetch_versions_for_target(
+    ctx: &Ctx,
+    project_id: &str,
+    minecraft_version: Option<&str>,
+    loader: Option<&str>,
+) -> LauncherResult<Vec<ModrinthVersion>> {
+    let versions = fetch_versions(ctx, project_id, minecraft_version, loader).await?;
+    if !versions.is_empty() || loader.is_none_or(str::is_empty) {
+        return Ok(versions);
+    }
+    let mut unfiltered = fetch_versions(ctx, project_id, minecraft_version, None).await?;
+    unfiltered.retain(is_non_mod_version);
+    Ok(unfiltered)
+}
+
 #[async_trait]
 impl ContentProvider for ModrinthProvider {
     fn descriptor(&self) -> ProviderDescriptor {
@@ -347,7 +385,7 @@ impl ContentProvider for ModrinthProvider {
 
     async fn versions(&self, request: VersionsRequest) -> LauncherResult<VersionsResponse> {
         self.require_usable()?;
-        let raw = fetch_versions(
+        let raw = fetch_versions_for_target(
             &self.ctx,
             &request.project_id,
             request.minecraft_version.as_deref(),
@@ -361,7 +399,7 @@ impl ContentProvider for ModrinthProvider {
 
     async fn resolve(&self, request: ResolveRequest) -> LauncherResult<InstallPlan> {
         self.require_usable()?;
-        let raw = fetch_versions(
+        let raw = fetch_versions_for_target(
             &self.ctx,
             &request.project_id,
             Some(request.minecraft_version.as_str()),

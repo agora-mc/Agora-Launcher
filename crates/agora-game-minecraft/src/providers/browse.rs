@@ -250,7 +250,14 @@ pub async fn search(
         category: request.category.clone(),
         sort: request.sort.clone().unwrap_or_else(|| "net_score".into()),
         mc_version: request.mc_version.clone(),
-        loader: request.loader.clone(),
+        // A mod loader says nothing about a resource pack, shader or data
+        // pack, so it is not a filter for them.
+        loader: request.loader.clone().filter(|_| {
+            request
+                .content_type
+                .as_deref()
+                .is_none_or(crate::resolver::is_mod_content)
+        }),
         provider_filters: request.provider_filters.clone(),
     };
     let providers: Vec<String> = registry

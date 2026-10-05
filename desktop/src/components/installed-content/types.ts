@@ -59,6 +59,12 @@ export interface InstalledContentPanelProps {
   contentType: InstalledContentType;
   rows: InstalledContentRow[];
   locked: boolean;
+  /**
+   * Why the panel is locked when it is not the instance's own lock: an
+   * operation holding the instance or the game running. Shown instead of
+   * "unlock the instance".
+   */
+  lockedReason?: string | null;
   onAdd: () => void;
   addLabel: string;
   onToggle: (row: InstalledContentRow) => Promise<boolean | void>;
@@ -79,6 +85,10 @@ export interface InstalledContentPanelProps {
   onUpdateAll?: (updates: UpdateInfo[]) => void;
   /** Pin or unpin a row against updates. */
   onTogglePin?: (row: InstalledContentRow, pinned: boolean) => void;
+  /** Data packs: choose which worlds a row is synced into. */
+  onChooseWorlds?: (row: InstalledContentRow) => void;
+  /** Data packs: copy the enabled packs into the instance's worlds now. */
+  onSyncWorlds?: () => void;
   /** Open the "why is this mod here?" trace for a row. */
   onExplainPresence?: (row: InstalledContentRow) => void;
   /** User-defined groups for this instance, as group name -> filenames. */
@@ -92,6 +102,11 @@ export interface InstalledContentPanelProps {
    * re-seed on every parent render.
    */
   initialUpdates?: UpdateInfo[] | null;
+  /**
+   * True while author and display-name enrichment is still running, so rows
+   * that can still gain details show a loading state rather than "Unknown".
+   */
+  metadataLoading?: boolean;
   onError?: (message: string) => void;
   onDrop?: React.DragEventHandler<HTMLElement>;
   extraActions?: React.ReactNode;

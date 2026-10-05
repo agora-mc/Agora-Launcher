@@ -7,7 +7,7 @@ import {
   describeRestoreCoverage,
   restoreSnapshot,
 } from '../lib/tauri';
-import { applyInstallPlan, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
+import { applyInstallPlan, describePlanAction, type InstallOutcome, type ProgressEvent, type ResolvedInstallPlan } from '../lib/installFlow';
 
 export type PackInstallTask = {
   id: string;
@@ -28,6 +28,12 @@ export type PackInstallTask = {
   error: string | null;
   healthReport?: { blockers: { message: string; suggested_action: string | null; filename: string | null }[]; warnings: { message: string }[]; score: string } | null;
   snapshotId?: string | null;
+  /** Completion message for plan tasks ("Removed 7 files."). */
+  doneMessage?: string;
+  /** Heading noun for plan tasks: "Removal complete", "Update failed". */
+  actionNoun?: string;
+  /** False for plans that download nothing, e.g. removals: no "File N of M". */
+  downloadsFiles?: boolean;
 };
 
 type PackInstallProgressEvent = {
@@ -211,10 +217,14 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
       return;
     }
     const success = outcome.type === 'success';
+    // Read the task inside the updater: this runs after an await, when the
+    // render-time task map no longer includes tasks started since.
     setTaskMap((current) => updateTask(current, id, {
       status: success ? 'completed' : 'failed',
       phase: success ? 'done' : outcome.type,
-      message: success ? 'Installation completed successfully.' : 'Installation did not complete.',
+      message: success
+        ? current[id]?.doneMessage ?? 'Installation completed successfully.'
+        : 'The change did not complete.',
       progress: success ? 1 : null,
       error: success ? null : outcome.type === 'failed' ? outcome.error : 'Installation was cancelled.',
       healthReport: null,
@@ -271,9 +281,14 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
 
   const startPlan = (plan: ResolvedInstallPlan, label: string, instanceName?: string, onFailed?: (error: string, plan: ResolvedInstallPlan) => void) => {
     const id = `pack-plan-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const action = describePlanAction(plan);
     const task = {
       ...initialTask(id, label, 'plan', plan.intent.targetInstance, instanceName ?? plan.intent.targetInstance),
       planId: plan.fingerprint,
+      message: `${action.verb}…`,
+      doneMessage: action.done,
+      actionNoun: action.noun,
+      downloadsFiles: action.downloadsFiles,
     };
     setTaskMap((current) => ({ ...current, [id]: task }));
     void applyInstallPlan(plan)
@@ -307,6 +322,9 @@ export function PackInstallProvider({ children }: { children: ReactNode }) {
             instanceId: plan.intent.targetInstance,
             phase: 'staging',
             message: 'Loading files…',
+            doneMessage: describePlanAction(plan).done,
+            actionNoun: describePlanAction(plan).noun,
+            downloadsFiles: describePlanAction(plan).downloadsFiles,
           }),
         );
         void applyInstallPlan(plan)
@@ -375,7 +393,7 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
   const percent = displayPercent(task);
   const detail = task.bytesTotal > 0
     ? `${formatBytes(task.bytesDownloaded)} / ${formatBytes(task.bytesTotal)}`
-    : task.totalSteps > 0
+    : task.totalSteps > 0 && task.downloadsFiles !== false
       ? `File ${Math.min(task.step, task.totalSteps)} of ${task.totalSteps}`
       : null;
 
@@ -410,7 +428,11 @@ export function PackInstallProgressBar({ task, compact = false }: { task: PackIn
     <div className={compact ? 'mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2' : 'space-y-2'} aria-live="polite">
       <div className="flex items-center justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">
-          {task.status === 'completed' ? 'Installation complete' : task.status === 'failed' ? 'Installation failed' : phaseLabel(task.phase)}
+          {task.status === 'completed'
+            ? `${task.actionNoun ?? 'Installation'} complete`
+            : task.status === 'failed'
+              ? `${task.actionNoun ?? 'Installation'} failed`
+              : phaseLabel(task.phase)}
         </p>
         {percent !== null && <span className="shrink-0 text-xs text-muted-foreground">{percent}%</span>}
       </div>

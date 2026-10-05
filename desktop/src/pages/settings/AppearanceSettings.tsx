@@ -26,6 +26,10 @@ const selectClass = 'rounded-md border border-input bg-background px-2.5 py-1.5 
  */
 export function AppearanceThemeSettings() {
   const { preferences, setPreferences } = useUiPreferences();
+  const customColorsActive = [
+    preferences.surfaceMode, preferences.navMode, preferences.backgroundMode,
+    preferences.textMode, preferences.backgroundTextMode, preferences.borderMode,
+  ].includes('custom');
 
   return (
     <SettingsSection
@@ -98,6 +102,28 @@ export function AppearanceThemeSettings() {
             className="h-9 w-14 cursor-pointer rounded border border-input bg-background p-1"
           />
         </label>
+      )}
+
+      {customColorsActive && (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-xs"
+          data-testid="custom-colors-note"
+        >
+          <span className="text-muted-foreground">
+            Custom colors below override the {preferences.colorMode === 'light' ? 'Light' : preferences.colorMode === 'dark' ? 'Dark' : 'Light/Dark'} color mode,
+            so switching modes will not recolor the parts you customized.
+          </span>
+          <button
+            type="button"
+            onClick={() => setPreferences({
+              surfaceMode: 'theme', navMode: 'theme', backgroundMode: 'theme',
+              textMode: 'theme', backgroundTextMode: 'theme', borderMode: 'theme',
+            })}
+            className="rounded-md border border-input bg-background px-2.5 py-1 font-semibold hover:bg-accent"
+          >
+            Reset colors to theme
+          </button>
+        </div>
       )}
 
       <details className="group rounded-lg border border-border bg-muted">
@@ -204,16 +230,14 @@ export function AppearanceInterfaceSettings() {
   // clearly named interaction control — this is that control.
   const [interaction, setInteraction] = useState<InteractionPreference>(() => loadPreference());
   const applyInteraction = (value: InteractionPreference) => {
-    const previous = interaction;
     setInteraction(value);
     savePreference(value);
     // Simple and High Interaction both render the live instance view, so both
     // resume it; only Standard suspends.
     if (value === 'standard') suspendHighInteraction();
     else resumeHighInteractionView();
-    // Leaving Simple hands motion back to the user: its `reduced` pin was the
-    // mode's choice, not theirs, so follow system rather than staying pinned.
-    if (previous === 'simple' && value !== 'simple') setPreferences({ motion: 'system' });
+    // Leaving Simple hands motion back: PresentationMotionCoordinator restores
+    // the value the user had before Simple pinned it to reduced.
   };
   // Simple pins motion to `reduced` (PresentationMotionCoordinator applies it).
   // Showing the control as disabled beats letting the user pick a value that is
@@ -229,7 +253,7 @@ export function AppearanceInterfaceSettings() {
         contentClassName="space-y-4"
         data-testid="appearance-interface"
       >
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(calc(10rem*var(--font-scale)),1fr))]">
           <label className="space-y-1 text-sm">
             <span className="font-medium">Font</span>
             <select aria-label="Interface font" value={preferences.fontFamily} onChange={(event) => setPreferences({ fontFamily: event.target.value as typeof preferences.fontFamily })} className={`${selectClass} block w-full`}>
