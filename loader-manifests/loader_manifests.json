@@ -33452,6 +33452,54 @@
         "release_channel": "stable"
       },
       {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.253",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.253/neoforge-21.1.253-installer.jar",
+        "sha256": "8e8a6889b6d7ddcae5f93c4f9c90035e14ea70cdc5b74147773265809c4f9137",
+        "file_name": "neoforge-21.1.253-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "40c92fa6030ed2a304c0dbfec6e5e3c2d31cd41605df1dd30693ccd434d5a952",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.1.253",
+          "javafml": "4.0.45",
+          "lowcodefml": "4.0.45"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.254",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.254/neoforge-21.1.254-installer.jar",
+        "sha256": "ba572980568cd83aab18f1c9a90ae399853e967db306a9f4929474b5483b98c4",
+        "file_name": "neoforge-21.1.254-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "6c1c11550405663bcc5c47d1e5c210d1a3f28f1ff81903b032f25dbb655f934f",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.1.254",
+          "javafml": "4.0.45",
+          "lowcodefml": "4.0.45"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.21.1",
+        "loader_version": "21.1.255",
+        "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.255/neoforge-21.1.255-installer.jar",
+        "sha256": "11d67a99db0ded3648b97b1eac06c5db0305899e05f657d360bec9d6741e522f",
+        "file_name": "neoforge-21.1.255-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "552da068796606c87a62b3a31c2e6610b6964a0388ee5f52cf268c73aacce700",
+        "installer_spec": 1,
+        "provided_versions": {
+          "neoforge": "21.1.255",
+          "javafml": "4.0.45",
+          "lowcodefml": "4.0.45"
+        },
+        "release_channel": "stable"
+      },
+      {
         "mc_version": "1.21.2",
         "loader_version": "21.2.0-beta",
         "source_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.2.0-beta/neoforge-21.2.0-beta-installer.jar",
@@ -42666,6 +42714,54 @@
         "installer_spec": 1,
         "provided_versions": {
           "forge": "47.4.23",
+          "javafml": "47",
+          "lowcodefml": "47"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "47.4.24",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.24/forge-1.20.1-47.4.24-installer.jar",
+        "sha256": "c015aeaa77c9dc8fc75cc63dc1cf9e4ae40c269db19e9d510a95112b5d993071",
+        "file_name": "forge-1.20.1-47.4.24-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "1952c11250fbcc048e93b38d304cb02a34ad76ccb802b57d965c44856ea419fb",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "47.4.24",
+          "javafml": "47",
+          "lowcodefml": "47"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "47.4.25",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.25/forge-1.20.1-47.4.25-installer.jar",
+        "sha256": "affd692ad124acc1be1c49fe9c2f0bd22da3304bda7793359c977a2b85e9974f",
+        "file_name": "forge-1.20.1-47.4.25-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "be6b554b1bf934315811dd2d58a9f0cb4290b4fd2c93156b2c5c984ddadd9307",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "47.4.25",
+          "javafml": "47",
+          "lowcodefml": "47"
+        },
+        "release_channel": "stable"
+      },
+      {
+        "mc_version": "1.20.1",
+        "loader_version": "47.4.26",
+        "source_url": "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.26/forge-1.20.1-47.4.26-installer.jar",
+        "sha256": "138961bc2a5f085ced0b5db2cd72c6caad20b25e22bcdccd031b4fc9182e8186",
+        "file_name": "forge-1.20.1-47.4.26-installer.jar",
+        "file_type": "installer_jar",
+        "version_json_sha256": "295fbb3ffc8676bb0abb3975880b717d53fc89bc1edc565e4e32d597c8b95fa8",
+        "installer_spec": 1,
+        "provided_versions": {
+          "forge": "47.4.26",
           "javafml": "47",
           "lowcodefml": "47"
         },
