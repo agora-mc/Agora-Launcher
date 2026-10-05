@@ -3390,6 +3390,16 @@ accepts new files (Microsoft Store: yes), and whether its game can run from outs
 install whose executables cannot be read gets no pinned base (§26.4) and no executable hash; its
 runtime identity comes from the package version.
 
+**The user decides which folder is the game** (decided with the user, 2026-10-05). Discovery only
+proposes. The user can add a folder discovery did not find (a copy on another drive, a store-less or
+portable install, a folder another manager prepared), and can change, at any time, which folder a
+game or an instance tracks. A custom folder's identity comes from its executable's version where
+readable; otherwise the user states the version, and it is shown as stated rather than detected.
+Re-pointing a pinned instance builds or picks a base from the new folder; re-pointing an unpinned or
+direct-install instance (§26.5) simply uses the new folder. This is a freedom, not a fast or
+guaranteed-safe path: Agora warns when the new folder is a different version than the instance's
+content expects, or looks modified by something else, and then does what the user chose.
+
 **Launching a game is Agora's job, not the store's.** Steam cannot express profiles, and a
 Steam-launched Skyrim loads no instance at all. Agora starts the recipe the game definition gives
 (executable or framework loader, arguments, environment, working directory) from the instance's
@@ -3653,6 +3663,43 @@ a game is declared to write (logs, INIs in its root) are materialised before lau
 
 A write can never silently reach a shared file. Hash checks after a session (the content store,
 §26.6; bases, §26.4) remain as detection of anything missed, not as the protection.
+
+**Deployment backends and graceful fallback** (decided with the user, 2026-10-05). Deployment is one
+interface in core with several backends, ordered best first. Each instance uses the best one its game
+and machine support, and says which, and why, on its page.
+
+| Rung | Backend | When | What it gives up |
+|---|---|---|---|
+| 0 | **Redirect** | The game or its framework can be pointed at a mod folder (BepInEx, Paradox, Factorio, Minecraft) | Nothing; the game definition's first choice when it applies |
+| 1 | **agvfs** | Default for games that load mods only from their own folder | — |
+| 2 | **Link deployment** | agvfs cannot run: anti-cheat, a protected process, an unsupported architecture, a failed trial | Switching instances re-links; an in-place edit of a mod file fails closed, so that mod gets a per-instance copy. Needs the base's writable files to be Agora's own (a Copied base), because an ACL cannot protect a file hardlinked to the store install |
+| 3 | **Copy deployment** | Hardlinks are impossible: the content store is on another volume, or the volume is exFAT/FAT32 or a network share | Disk space and switching time; where the file system has no ACLs, post-session verification is the only protection |
+| 4 | **Direct install into the game folder** | The game must run from its own install (some DRM and anti-cheat check the path; Microsoft Store packages), **or the user chooses it** | Agora modifies the real install. Content is copied in, never linked, so the content store stays protected; a journal records what was replaced and added, restores it after the session or when switching instance, and the user may choose to leave it deployed instead |
+
+- **Stepping down is automatic only to rungs 2 and 3, and always announced.** Rung 4 is never
+  automatic: Agora asks, says what it will change, and offers it.
+- **The user can always choose any rung for an instance, rung 4 included**, even where a better one
+  works. It does not have to be fast or safe; it has to be possible. Agora explains what is lost and
+  does what was chosen (§26.3 gives the same freedom over which game folder is tracked).
+- **Choosing the rung, cheapest evidence first:** what the game definition declares (strategies,
+  known incompatibilities, paths that must be physical, declared writes); what discovery sees
+  (anti-cheat folders, Microsoft Store packaging, 32-bit or ARM executables, volume capabilities);
+  community compatibility reports per game version in the curated catalog (§26.8), when they exist;
+  a pre-flight handshake (the game is started suspended, agvfs is injected and must confirm its hooks
+  before the game is resumed, which catches antivirus blocks and protected processes before anything
+  runs); and the first launch on a backend as a trial (an exit within seconds, `STATUS_DLL_NOT_FOUND`,
+  or calls agvfs reports it could not handle). A failed check is a launch-time finding in the usual
+  form (finding, why it matters, repair), such as offering link deployment for that instance.
+- **agvfs degrades by refusing, never by passing through.** A call it cannot handle that could change
+  a lower file is answered "access denied" and logged; a refusal is a bug report, a pass-through would
+  be corruption. The ACL floor covers its own bugs.
+- **Machine problems are pre-flight findings with a repair**: antivirus blocking injection (agvfs is
+  code-signed and uses one documented injection method), Controlled Folder Access blocking Documents,
+  Agora's folders inside a OneDrive-synced folder (cloud placeholders), Windows on ARM (needs an
+  ARM64 agvfs), and too little disk space for a copy-up or a copy deployment.
+- **Build order:** the interface and link deployment come first, because they need no injection,
+  work for any game and get Phase 3 working end to end soonest; agvfs then arrives as the upgrade
+  behind the same interface, with the fallback already exercised.
 
 **Per-user files.** Skyrim AE rewrites `plugins.txt` at launch (F2), and a game's INIs live in the
 user's profile, shared by every instance of that game.
