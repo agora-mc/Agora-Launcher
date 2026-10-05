@@ -85,6 +85,38 @@ export interface ResolvedInstallPlan {
 }
 
 /**
+ * What a plan does, in words, for progress and completion messages. The same
+ * background task runs installs, updates, removals and lockfile repairs, so
+ * its labels come from the plan rather than from "installing".
+ */
+export function describePlanAction(plan: ResolvedInstallPlan): {
+  /** "Removing 7 files", "Updating 3 items", "Installing 2 files". */
+  verb: string;
+  /** "Removed 7 files.", for the completion message. */
+  done: string;
+  /** Whether per-file download progress applies. */
+  downloadsFiles: boolean;
+} {
+  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  const added = plan.filesToAdd.length;
+  const removed = plan.filesToRemove.length;
+  const op = plan.operation.type;
+  if (op === 'remove' || op === 'batch-remove') {
+    const n = Math.max(removed, 1);
+    return { verb: `Removing ${count(n, 'file')}`, done: `Removed ${count(n, 'file')}.`, downloadsFiles: false };
+  }
+  if (op === 'update' || op === 'batch-update') {
+    const n = op === 'batch-update' && plan.operation.type === 'batch-update' ? plan.operation.operations.length : 1;
+    return { verb: `Updating ${count(n, 'item')}`, done: `Updated ${count(n, 'item')}.`, downloadsFiles: added > 0 };
+  }
+  if (op === 'reconcile') {
+    return { verb: 'Repairing to match the lockfile', done: 'Repair complete.', downloadsFiles: added > 0 };
+  }
+  const n = Math.max(added, 1);
+  return { verb: `Installing ${count(n, 'file')}`, done: `Installed ${count(n, 'file')}.`, downloadsFiles: added > 0 };
+}
+
+/**
  * Clean plans can be applied without an interactive review. Anything that
  * adds a dependency, reports a warning/error, presents a conflict, or
  * changes an existing file stays in the focused review flow.

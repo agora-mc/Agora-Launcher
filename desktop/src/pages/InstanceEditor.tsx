@@ -21,7 +21,7 @@ import {
 import { openBridge } from '../features/interactive/live/operationBridges';
 import type { LiveReviewRoute } from '../features/interactive/live/operationBridges';
 import type { StandardDestination } from '../features/interactive/domain/intents';
-import type { BatchInstallItem, InstallIntent } from '../lib/installFlow';
+import { describePlanAction, type BatchInstallItem, type InstallIntent } from '../lib/installFlow';
 import {
   getInstanceDetail,
   listInstanceContent,
@@ -3384,7 +3384,7 @@ export function InstanceEditor({ instanceId, onBack, onOpenInstanceEditor, onOpe
           intent={canonicalOperation.intent}
           instanceName={canonicalOperation.instanceName}
           background
-          onBackgroundStart={(plan) => startPlan(plan, `Installing pack in ${canonicalOperation.instanceName}`, canonicalOperation.instanceName)}
+          onBackgroundStart={(plan) => startPlan(plan, `${describePlanAction(plan).verb} in ${canonicalOperation.instanceName}`, canonicalOperation.instanceName)}
           onOpenInstance={onOpenInstanceEditor}
           onSuccess={(targetId) => {
             // Invalidate the view: the cache lists updates that were just
