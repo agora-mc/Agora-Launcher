@@ -352,6 +352,73 @@ enum GameInstanceCmd {
         /// Instance ID to delete.
         instance_id: String,
     },
+    /// Manage content layers in a game instance.
+    Content {
+        #[command(subcommand)]
+        action: InstanceContentCmd,
+    },
+    /// Deploy content and base files to the game instance runtime folder.
+    Deploy {
+        /// Instance ID to deploy.
+        instance_id: String,
+        /// Copy all files instead of hardlinking.
+        #[arg(long)]
+        copies: bool,
+    },
+    /// Undeploy content, harvest writes back to writable layer, and remove game folder.
+    Undeploy {
+        /// Instance ID to undeploy.
+        instance_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstanceContentCmd {
+    /// Add a content item to an instance.
+    Add {
+        /// Instance ID to add content to.
+        instance_id: String,
+        /// Content item ID or prefix.
+        item_id: String,
+        /// Subdirectory in game folder to mount content under.
+        #[arg(long)]
+        into: Option<String>,
+    },
+    /// List content items in an instance in priority order.
+    List {
+        /// Instance ID to list content for.
+        instance_id: String,
+    },
+    /// Remove a content item from an instance.
+    Remove {
+        /// Instance ID to remove content from.
+        instance_id: String,
+        /// Content item ID or prefix.
+        item_id: String,
+    },
+    /// Enable a content item in an instance.
+    Enable {
+        /// Instance ID.
+        instance_id: String,
+        /// Content item ID or prefix.
+        item_id: String,
+    },
+    /// Disable a content item in an instance.
+    Disable {
+        /// Instance ID.
+        instance_id: String,
+        /// Content item ID or prefix.
+        item_id: String,
+    },
+    /// Move a content item to a new position (1-based, lowest priority first).
+    Move {
+        /// Instance ID.
+        instance_id: String,
+        /// Content item ID or prefix.
+        item_id: String,
+        /// Target 1-based position.
+        position: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5079,6 +5146,35 @@ async fn run_command(
                         }
                     };
 
+                    if let Some(deploy_outcome) = &prepared.deploy_outcome {
+                        if !json {
+                            match deploy_outcome {
+                                agora_core::game_deploy::DeployOutcome::UpToDate => {
+                                    println!("Deployment is up to date.");
+                                }
+                                agora_core::game_deploy::DeployOutcome::Built {
+                                    linked,
+                                    copied,
+                                    copied_bytes,
+                                    harvest,
+                                } => {
+                                    println!(
+                                        "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes)."
+                                    );
+                                    if let Some(h) = harvest {
+                                        if !h.is_empty() {
+                                            println!(
+                                                "Harvested: {} copied to writable, {} whiteouts added.",
+                                                h.copied_to_writable.len(),
+                                                h.whiteouts_added.len()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let mut launched = match agora_core::game_launch::launch(&prepared) {
                         Ok(l) => l,
                         Err(e) => {
@@ -5272,6 +5368,425 @@ async fn run_command(
                         Err(e) => {
                             if json {
                                 let out = serde_json::json!({
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                GameInstanceCmd::Content { action } => match action {
+                    InstanceContentCmd::Add {
+                        instance_id,
+                        item_id,
+                        into,
+                    } => {
+                        match agora_core::game_deploy::add_content(
+                            ctx,
+                            &instance_id,
+                            &item_id,
+                            into.as_deref(),
+                        ) {
+                            Ok(layer) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "added",
+                                        "instance_id": instance_id,
+                                        "item_id": item_id,
+                                        "layer_id": layer.id.as_str(),
+                                        "mount_path": layer.mount_path.as_str(),
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    println!(
+                                        "Added content '{item_id}' to instance '{instance_id}' (mount: '{}').",
+                                        layer.mount_path.as_str()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    InstanceContentCmd::List { instance_id } => {
+                        let manifest =
+                            match agora_core::game_instance::get_manifest(ctx, &instance_id) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "status": "error",
+                                            "error": format!("{e}"),
+                                            "exitCode": 1,
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else {
+                                        eprintln!("Error: {e}");
+                                    }
+                                    std::process::exit(1);
+                                }
+                            };
+
+                        let mut items = Vec::new();
+                        for (idx, layer) in manifest
+                            .layers
+                            .layers()
+                            .iter()
+                            .filter(|l| {
+                                matches!(l.source, agora_game_api::LayerSource::Content { .. })
+                            })
+                            .enumerate()
+                        {
+                            if let agora_game_api::LayerSource::Content { content } = &layer.source
+                            {
+                                items.push(serde_json::json!({
+                                    "position": idx + 1,
+                                    "item_id": content,
+                                    "layer_id": layer.id.as_str(),
+                                    "enabled": layer.enabled,
+                                    "mount_path": layer.mount_path.as_str(),
+                                }));
+                            }
+                        }
+
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&items)?);
+                        } else if items.is_empty() {
+                            println!("No content items found for instance '{instance_id}'.");
+                        } else {
+                            println!("{:<4} {:<18} {:<10} Mount Path", "#", "Item ID", "Enabled");
+                            for it in &items {
+                                let pos = it["position"].as_u64().unwrap_or(0);
+                                let item_id = it["item_id"].as_str().unwrap_or("");
+                                let short_id = if item_id.len() > 16 {
+                                    &item_id[..16]
+                                } else {
+                                    item_id
+                                };
+                                let enabled = if it["enabled"].as_bool().unwrap_or(false) {
+                                    "yes"
+                                } else {
+                                    "no"
+                                };
+                                let mount = it["mount_path"].as_str().unwrap_or("");
+                                println!("{:<4} {:<18} {:<10} {}", pos, short_id, enabled, mount);
+                            }
+                        }
+                    }
+                    InstanceContentCmd::Remove {
+                        instance_id,
+                        item_id,
+                    } => {
+                        match agora_core::game_deploy::remove_content(ctx, &instance_id, &item_id) {
+                            Ok(()) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "removed",
+                                        "instance_id": instance_id,
+                                        "item_id": item_id,
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    println!(
+                                        "Removed content '{item_id}' from instance '{instance_id}'."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    InstanceContentCmd::Enable {
+                        instance_id,
+                        item_id,
+                    } => {
+                        match agora_core::game_deploy::set_content_enabled(
+                            ctx,
+                            &instance_id,
+                            &item_id,
+                            true,
+                        ) {
+                            Ok(()) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "enabled",
+                                        "instance_id": instance_id,
+                                        "item_id": item_id,
+                                        "enabled": true,
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    println!(
+                                        "Enabled content '{item_id}' in instance '{instance_id}'."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    InstanceContentCmd::Disable {
+                        instance_id,
+                        item_id,
+                    } => {
+                        match agora_core::game_deploy::set_content_enabled(
+                            ctx,
+                            &instance_id,
+                            &item_id,
+                            false,
+                        ) {
+                            Ok(()) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "disabled",
+                                        "instance_id": instance_id,
+                                        "item_id": item_id,
+                                        "enabled": false,
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    println!(
+                                        "Disabled content '{item_id}' in instance '{instance_id}'."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    InstanceContentCmd::Move {
+                        instance_id,
+                        item_id,
+                        position,
+                    } => {
+                        if position == 0 {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": "position must be 1 or greater",
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: position must be 1 or greater");
+                            }
+                            std::process::exit(1);
+                        }
+                        let new_index = position - 1;
+                        match agora_core::game_deploy::move_content(
+                            ctx,
+                            &instance_id,
+                            &item_id,
+                            new_index,
+                        ) {
+                            Ok(()) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "moved",
+                                        "instance_id": instance_id,
+                                        "item_id": item_id,
+                                        "position": position,
+                                    });
+                                    println!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    println!(
+                                        "Moved content '{item_id}' to position {position} in instance '{instance_id}'."
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                },
+                GameInstanceCmd::Deploy {
+                    instance_id,
+                    copies,
+                } => {
+                    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+                        Some(r) => r,
+                        None => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("Instance '{instance_id}' not found."),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: Instance '{instance_id}' not found.");
+                            }
+                            std::process::exit(1);
+                        }
+                    };
+
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+
+                    let mode = if copies {
+                        agora_core::game_deploy::DeployMode::Copies
+                    } else {
+                        agora_core::game_deploy::DeployMode::Links
+                    };
+
+                    match agora_core::game_deploy::deploy(ctx, &instance_id, game_def, mode) {
+                        Ok(agora_core::game_deploy::DeployOutcome::UpToDate) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "up_to_date",
+                                    "instance_id": instance_id,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!("Deployment for instance '{instance_id}' is up to date.");
+                            }
+                        }
+                        Ok(agora_core::game_deploy::DeployOutcome::Built {
+                            linked,
+                            copied,
+                            copied_bytes,
+                            harvest,
+                        }) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "built",
+                                    "instance_id": instance_id,
+                                    "linked": linked,
+                                    "copied": copied,
+                                    "copied_bytes": copied_bytes,
+                                    "harvest": harvest,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!(
+                                    "Deployed instance '{instance_id}': {linked} linked, {copied} copied ({copied_bytes} bytes)."
+                                );
+                                if let Some(h) = harvest {
+                                    if !h.is_empty() {
+                                        println!(
+                                            "Harvested previous deployment: {} copied to writable, {} base files changed, {} whiteouts added, {} writable files removed.",
+                                            h.copied_to_writable.len(),
+                                            h.base_files_changed.len(),
+                                            h.whiteouts_added.len(),
+                                            h.writable_files_removed.len()
+                                        );
+                                        for b in &h.base_files_changed {
+                                            println!(
+                                                "  base file changed: {} (linked to store: {})",
+                                                b.path, b.linked_to_store
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                GameInstanceCmd::Undeploy { instance_id } => {
+                    match agora_core::game_deploy::undeploy(ctx, &instance_id) {
+                        Ok(harvest) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "undeployed",
+                                    "instance_id": instance_id,
+                                    "harvest": harvest,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                println!(
+                                    "Undeployed instance '{instance_id}': {} copied to writable, {} base files changed, {} whiteouts added, {} writable files removed.",
+                                    harvest.copied_to_writable.len(),
+                                    harvest.base_files_changed.len(),
+                                    harvest.whiteouts_added.len(),
+                                    harvest.writable_files_removed.len()
+                                );
+                                if !harvest.base_files_changed.is_empty() {
+                                    println!("Warning: base files were changed:");
+                                    for b in &harvest.base_files_changed {
+                                        println!(
+                                            "  {} (linked to store: {})",
+                                            b.path, b.linked_to_store
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
                                     "error": format!("{e}"),
                                     "exitCode": 1,
                                 });

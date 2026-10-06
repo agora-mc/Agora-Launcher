@@ -26,12 +26,12 @@ mod imp {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::{
         GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, DENY_ACCESS,
-        EXPLICIT_ACCESS_W, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
+        EXPLICIT_ACCESS_W, GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
     };
     use windows_sys::Win32::Security::{
         CopySid, DeleteAce, EqualSid, GetAce, GetLengthSid, GetTokenInformation, TokenUser,
-        ACCESS_DENIED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
-        PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+        ACCESS_DENIED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+        NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -285,6 +285,70 @@ mod imp {
             Ok(Protection::Unprotected)
         }
     }
+
+    pub fn grant_delete_child(path: &Path) -> Result<(), std::io::Error> {
+        let user_sid = get_current_user_sid()?;
+        let wide_path = to_wide_null(path);
+
+        let mut p_sec_desc: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut p_dacl: *mut ACL = std::ptr::null_mut();
+
+        let ret = unsafe {
+            GetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut p_dacl,
+                std::ptr::null_mut(),
+                &mut p_sec_desc,
+            )
+        };
+        if ret != 0 {
+            return Err(std::io::Error::from_raw_os_error(ret as i32));
+        }
+
+        let mut ea: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+        ea.grfAccessPermissions = windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+        ea.grfAccessMode = GRANT_ACCESS;
+        ea.grfInheritance = CONTAINER_INHERIT_ACE;
+        ea.Trustee.pMultipleTrustee = std::ptr::null_mut();
+        ea.Trustee.MultipleTrusteeOperation = 0;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        ea.Trustee.ptstrName = user_sid.as_ptr() as *mut u16;
+
+        let mut p_new_dacl: *mut ACL = std::ptr::null_mut();
+        let ret = unsafe { SetEntriesInAclW(1, &ea, p_dacl, &mut p_new_dacl) };
+        if ret != 0 {
+            unsafe { LocalFree(p_sec_desc as _) };
+            return Err(std::io::Error::from_raw_os_error(ret as i32));
+        }
+
+        let ret = unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr() as *mut u16,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                p_new_dacl,
+                std::ptr::null_mut(),
+            )
+        };
+
+        unsafe {
+            LocalFree(p_new_dacl as _);
+            LocalFree(p_sec_desc as _);
+        }
+
+        if ret != 0 {
+            return Err(std::io::Error::from_raw_os_error(ret as i32));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -314,6 +378,10 @@ mod imp {
             Ok(Protection::Unprotected)
         }
     }
+
+    pub fn grant_delete_child(_path: &Path) -> Result<(), std::io::Error> {
+        Ok(())
+    }
 }
 
 pub fn protect(path: &Path) -> Result<(), std::io::Error> {
@@ -326,4 +394,8 @@ pub fn unprotect(path: &Path) -> Result<(), std::io::Error> {
 
 pub fn protection(path: &Path) -> Result<Protection, std::io::Error> {
     imp::protection(path)
+}
+
+pub fn grant_delete_child(path: &Path) -> Result<(), std::io::Error> {
+    imp::grant_delete_child(path)
 }

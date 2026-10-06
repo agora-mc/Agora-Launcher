@@ -107,6 +107,8 @@ pub enum InstanceError {
     #[error(transparent)]
     LaunchError(#[from] LaunchError),
     #[error(transparent)]
+    Deploy(#[from] crate::game_deploy::DeployError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -568,19 +570,103 @@ pub fn prepare_launch_with_discovery(
     discover_fn: &dyn Fn() -> DiscoveryReport,
 ) -> Result<PreparedLaunch, InstanceError> {
     let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
+    let manifest = get_manifest(ctx, id)?;
     match record.base {
         BaseReference::Pinned { id: base_id, .. } => {
-            let manifest_path = ctx.paths.base_manifest_path(&base_id);
-            if !manifest_path.exists() {
-                return Err(InstanceError::BaseNotFound(base_id));
+            let has_deployment_layers = manifest.layers.iter().any(|l| {
+                (matches!(l.source, agora_game_api::LayerSource::Content { .. }) && l.enabled)
+                    || matches!(l.source, agora_game_api::LayerSource::Writable { .. })
+            });
+
+            if has_deployment_layers {
+                let outcome = crate::game_deploy::deploy(
+                    ctx,
+                    id,
+                    definition,
+                    crate::game_deploy::DeployMode::Links,
+                )?;
+
+                let game_dir = crate::game_deploy::deployment_dir(ctx, id)?.ok_or_else(|| {
+                    InstanceError::Other("deployed game directory not found".into())
+                })?;
+
+                let manifest_path = ctx.paths.base_manifest_path(&base_id);
+                if !manifest_path.exists() {
+                    return Err(InstanceError::BaseNotFound(base_id));
+                }
+                let content = std::fs::read_to_string(&manifest_path)?;
+                let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
+
+                let ver = crate::game_base::verify_base(
+                    &base_manifest,
+                    crate::game_base::VerifyDepth::Quick,
+                    &|p| definition.is_declared_write(p),
+                    &|p| definition.is_excluded(p),
+                );
+                if !ver.problems.is_empty() && !launch_anyway {
+                    return Err(crate::game_launch::LaunchError::BaseDamaged {
+                        problems: ver.problems,
+                    }
+                    .into());
+                }
+                let warnings = ver.problems;
+
+                let roots = LaunchRoots {
+                    runtime: game_dir,
+                    install: Some(base_manifest.source_location.clone()),
+                    base: Some(base_manifest.location.clone()),
+                };
+                let Some(recipe) = &definition.launch else {
+                    return Err(LaunchError::NoRecipe.into());
+                };
+                let mut resolved = crate::game_launch::resolve_recipe(recipe, &roots)?;
+                if base_manifest.runtime.store.as_str() == "steam" {
+                    let product = base_manifest.source_product.as_deref().or_else(|| {
+                        definition
+                            .stores
+                            .iter()
+                            .find(|s| s.store == base_manifest.runtime.store)
+                            .map(|s| s.product.as_str())
+                    });
+                    if let Some(prod) = product {
+                        resolved
+                            .env
+                            .insert("SteamAppId".to_string(), std::ffi::OsString::from(prod));
+                        resolved
+                            .env
+                            .insert("SteamGameId".to_string(), std::ffi::OsString::from(prod));
+                    }
+                }
+                Ok(PreparedLaunch {
+                    resolved,
+                    warnings,
+                    deploy_outcome: Some(outcome),
+                })
+            } else {
+                let manifest_path = ctx.paths.base_manifest_path(&base_id);
+                if !manifest_path.exists() {
+                    return Err(InstanceError::BaseNotFound(base_id));
+                }
+                let content = std::fs::read_to_string(&manifest_path)?;
+                let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
+                let prepared = crate::game_launch::prepare_base_launch(
+                    &base_manifest,
+                    definition,
+                    launch_anyway,
+                )?;
+                Ok(prepared)
             }
-            let content = std::fs::read_to_string(&manifest_path)?;
-            let manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
-            let prepared =
-                crate::game_launch::prepare_base_launch(&manifest, definition, launch_anyway)?;
-            Ok(prepared)
         }
         BaseReference::Unpinned { install, .. } => {
+            let has_content = manifest
+                .layers
+                .iter()
+                .any(|l| matches!(l.source, agora_game_api::LayerSource::Content { .. }));
+            if has_content {
+                return Err(
+                    crate::game_deploy::DeployError::UnpinnedInstance(id.to_string()).into(),
+                );
+            }
             let report = discover_fn();
             let matching = report.installs.iter().find(|discovered| {
                 crate::game_registry::make_install_id(&discovered.store, &discovered.product)
@@ -620,6 +706,7 @@ pub fn prepare_launch_with_discovery(
             Ok(PreparedLaunch {
                 resolved,
                 warnings: Vec::new(),
+                deploy_outcome: None,
             })
         }
     }

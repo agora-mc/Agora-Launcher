@@ -164,6 +164,8 @@ pub enum ContentError {
     EntryExceedsDeclaredSize { path: String, declared: u64 },
     #[error("insufficient disk space: need {required} bytes (including 1 GiB headroom), but only {available} bytes available")]
     InsufficientSpace { required: u64, available: u64 },
+    #[error("cannot remove item {item_id}: in use by instance(s): {instances}")]
+    InUse { item_id: String, instances: String },
     #[error("cannot remove item {item_id}: manifest '{manifest}' is unreadable: {error}")]
     UnreadableManifest {
         item_id: String,
@@ -1131,11 +1133,12 @@ pub fn verify_all(
 
 /// Remove a content item and any objects that no remaining item references.
 ///
-/// Under the lock, every other manifest is read and validated first; if any
-/// manifest cannot be read or parsed, removal refuses and deletes nothing to
-/// prevent sweeping objects that an unreadable item still needs.
-///
-/// Instances will reference items in slice 2, which adds that check.
+/// Under the lock, every instance manifest is checked first; if any instance
+/// references the item, removal refuses naming the instances. If any instance
+/// manifest cannot be read or parsed, removal refuses too (fail closed).
+/// Then every other content manifest is read and validated; if any cannot be read
+/// or parsed, removal refuses and deletes nothing to prevent sweeping objects that
+/// an unreadable item still needs.
 pub fn remove_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<(), ContentError> {
     let _lock = ctx
         .lock_manager
@@ -1146,6 +1149,42 @@ pub fn remove_item(ctx: &Ctx, item_id_or_prefix: &str) -> Result<(), ContentErro
 
     if !target_manifest_path.exists() {
         return Err(ContentError::NotFound(item_id));
+    }
+
+    // 0. Check every generic game instance first; refuse if one uses the item, or if any of them
+    //    cannot be listed or read (fail closed). Minecraft instances share the instances folder
+    //    and the manifest file name in their own format, and never hold content layers, so they
+    //    are found through the generic instance table rather than by parsing every folder.
+    let mut using_instances = Vec::new();
+    let records =
+        crate::game_instance::list(ctx).map_err(|e| ContentError::UnreadableManifest {
+            item_id: item_id.clone(),
+            manifest: "game instance list".into(),
+            error: e.to_string(),
+        })?;
+    for record in records {
+        let manifest =
+            crate::game_instance::get_manifest(ctx, &record.instance_id).map_err(|e| {
+                ContentError::UnreadableManifest {
+                    item_id: item_id.clone(),
+                    manifest: format!("instance {}", record.instance_id),
+                    error: e.to_string(),
+                }
+            })?;
+        let uses_item = manifest.layers.layers().iter().any(|layer| {
+            matches!(&layer.source, agora_game_api::LayerSource::Content { content } if content == &item_id)
+        });
+        if uses_item {
+            using_instances.push(manifest.instance_id.clone());
+        }
+    }
+
+    if !using_instances.is_empty() {
+        using_instances.sort();
+        return Err(ContentError::InUse {
+            item_id,
+            instances: using_instances.join(", "),
+        });
     }
 
     // The target's own manifest is not parsed: the sweep below works from the remaining items, so

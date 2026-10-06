@@ -58,6 +58,7 @@ pub enum LaunchError {
 pub struct PreparedLaunch {
     pub resolved: ResolvedLaunch,
     pub warnings: Vec<BaseProblem>,
+    pub deploy_outcome: Option<crate::game_deploy::DeployOutcome>,
 }
 
 /// A spawned game process and its captured OS identity.
@@ -284,7 +285,11 @@ pub fn prepare_base_launch(
         }
     }
 
-    Ok(PreparedLaunch { resolved, warnings })
+    Ok(PreparedLaunch {
+        resolved,
+        warnings,
+        deploy_outcome: None,
+    })
 }
 
 // ---------------------------------------------------------------------------

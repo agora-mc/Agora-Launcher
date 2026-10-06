@@ -180,6 +180,14 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games instance list` | List all game instances, Minecraft included |
 | `agora games instance launch <id> [--wait] [--launch-anyway]` | Launch a game instance |
 | `agora games instance delete <id>` | Delete a game instance and its folder |
+| `agora games instance content add <instance> <item> [--into <path>]` | Add a content item to an instance's layer stack |
+| `agora games instance content list <instance>` | List content layers on an instance in priority order |
+| `agora games instance content remove <instance> <item>` | Remove a content layer from an instance |
+| `agora games instance content enable <instance> <item>` | Enable a content layer on an instance |
+| `agora games instance content disable <instance> <item>` | Disable a content layer on an instance |
+| `agora games instance content move <instance> <item> <position>` | Move a content layer to a 1-based position |
+| `agora games instance deploy <instance> [--copies]` | Deploy an instance's content layers to its game folder |
+| `agora games instance undeploy <instance>` | Harvest game writes and tear down an instance deployment |
 
 ### Catalog
 

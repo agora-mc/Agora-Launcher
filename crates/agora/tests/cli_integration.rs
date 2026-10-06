@@ -279,6 +279,15 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "instance", "list"],
     &["games", "instance", "launch"],
     &["games", "instance", "delete"],
+    &["games", "instance", "content"],
+    &["games", "instance", "content", "add"],
+    &["games", "instance", "content", "list"],
+    &["games", "instance", "content", "remove"],
+    &["games", "instance", "content", "enable"],
+    &["games", "instance", "content", "disable"],
+    &["games", "instance", "content", "move"],
+    &["games", "instance", "deploy"],
+    &["games", "instance", "undeploy"],
     &["games", "launch"],
 ];
 
@@ -3159,4 +3168,31 @@ fn games_content_cli_lifecycle() {
     // 8. Remove nonexistent fails
     let output_rem_err = run_agora(&data_dir, &["games", "content", "remove", prefix]);
     assert!(!output_rem_err.status.success());
+}
+
+#[test]
+fn games_instance_content_and_deploy_cli() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. Nonexistent instance errors
+    let out = run_agora(
+        &data_dir,
+        &["games", "instance", "content", "list", "no-such-inst"],
+    );
+    assert!(!out.status.success());
+
+    let out_json = run_agora_json(
+        &data_dir,
+        &["games", "instance", "content", "list", "no-such-inst"],
+    );
+    assert!(!out_json.status.success());
+
+    let out_deploy = run_agora(&data_dir, &["games", "instance", "deploy", "no-such-inst"]);
+    assert!(!out_deploy.status.success());
+
+    let out_undeploy = run_agora(
+        &data_dir,
+        &["games", "instance", "undeploy", "no-such-inst"],
+    );
+    assert!(!out_undeploy.status.success());
 }
