@@ -1,6 +1,6 @@
 use crate::id::{FrameworkId, GameId, InstallId, LayerId, RelPath, StoreId, ToolId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeIdentity {
@@ -297,6 +297,29 @@ pub struct LaunchRecipe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentLayout {
+    pub data_path: RelPath, // "Data" for Skyrim, "" when content goes in the game root
+    pub data_markers: Vec<String>, // globs on top-level names that mean "this is data-folder content"
+    pub root_markers: Vec<String>, // globs on top-level names that mean "this is game-root content"
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Suggestion {
+    Place {
+        source_path: RelPath,
+        mount_path: RelPath,
+        reason: String,
+    },
+    Installer {
+        reason: String,
+    },
+    Unknown {
+        top_level: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClassificationRule {
     pub source_pattern: String,
     pub destination: RelPath,
@@ -311,6 +334,8 @@ pub struct GameDefinition {
     pub version_sources: Vec<VersionSource>,
     pub deployment: DeploymentStrategy,
     pub content_rules: Vec<ClassificationRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_layout: Option<ContentLayout>,
     pub native_code_patterns: Vec<RelPath>,
     pub framework_ids: Vec<FrameworkId>,
     pub tool_ids: Vec<ToolId>,
@@ -382,7 +407,148 @@ impl GameDefinition {
     }
 }
 
-fn glob_match(pattern: &str, path: &str) -> bool {
+pub fn suggest_placement(files: &[RelPath], layout: &ContentLayout) -> Suggestion {
+    let mut current_source_components: Vec<String> = Vec::new();
+
+    for level in 0..=8 {
+        let mut files_at_level = BTreeSet::new();
+        let mut folders_at_level = BTreeSet::new();
+
+        for f in files {
+            let comps: Vec<&str> = f.as_str().split('/').filter(|s| !s.is_empty()).collect();
+            if comps.len() <= current_source_components.len() {
+                continue;
+            }
+            let mut prefix_match = true;
+            for (sc, fc) in current_source_components.iter().zip(comps.iter()) {
+                if !sc.eq_ignore_ascii_case(fc) {
+                    prefix_match = false;
+                    break;
+                }
+            }
+            if !prefix_match {
+                continue;
+            }
+
+            let rem = &comps[current_source_components.len()..];
+            if rem.len() == 1 {
+                files_at_level.insert(rem[0].to_string());
+            } else if rem.len() > 1 {
+                folders_at_level.insert(rem[0].to_string());
+            }
+        }
+
+        let mut top_level_names: Vec<String> = files_at_level
+            .iter()
+            .cloned()
+            .chain(folders_at_level.iter().cloned())
+            .collect();
+        top_level_names.sort();
+        top_level_names.dedup();
+
+        if top_level_names.is_empty() {
+            return Suggestion::Unknown { top_level: vec![] };
+        }
+
+        let unwrapped_prefix = if current_source_components.is_empty() {
+            String::new()
+        } else {
+            format!("unwrapped `{}/`; ", current_source_components.join("/"))
+        };
+
+        let current_source_rel =
+            RelPath::new(current_source_components.join("/")).unwrap_or_default();
+
+        // 1. A fomod folder at that level (case-insensitive): Installer
+        if folders_at_level
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case("fomod"))
+        {
+            return Suggestion::Installer {
+                reason: format!("{unwrapped_prefix}archive contains a FOMOD installer (`fomod/`)"),
+            };
+        }
+
+        // 2. Else, if any top-level name equals data_path (when data_path is not empty) or matches a root marker: Place { mount_path: "" }
+        let mut root_match: Option<String> = None;
+        for name in &top_level_names {
+            if !layout.data_path.as_str().is_empty()
+                && name.eq_ignore_ascii_case(layout.data_path.as_str())
+            {
+                root_match = Some(name.clone());
+                break;
+            }
+            if layout
+                .root_markers
+                .iter()
+                .any(|m| glob_match(&m.to_ascii_lowercase(), &name.to_ascii_lowercase()))
+            {
+                root_match = Some(name.clone());
+                break;
+            }
+        }
+
+        if let Some(m) = root_match {
+            let reason = if !layout.data_path.as_str().is_empty()
+                && m.eq_ignore_ascii_case(layout.data_path.as_str())
+            {
+                format!("{unwrapped_prefix}`{m}` matches data folder, so it goes in game root")
+            } else {
+                format!("{unwrapped_prefix}`{m}` is game-root content, so it goes in game root")
+            };
+            return Suggestion::Place {
+                source_path: current_source_rel,
+                mount_path: RelPath::default(),
+                reason,
+            };
+        }
+
+        // 3. Else, if any matches a data marker: Place { mount_path: data_path }
+        let mut data_match: Option<String> = None;
+        for name in &top_level_names {
+            if layout
+                .data_markers
+                .iter()
+                .any(|m| glob_match(&m.to_ascii_lowercase(), &name.to_ascii_lowercase()))
+            {
+                data_match = Some(name.clone());
+                break;
+            }
+        }
+
+        if let Some(m) = data_match {
+            let reason = if layout.data_path.as_str().is_empty() {
+                format!("{unwrapped_prefix}`{m}` is data-folder content, so it goes in game root")
+            } else {
+                format!(
+                    "{unwrapped_prefix}`{m}` is data-folder content, so it goes in `{}`",
+                    layout.data_path.as_str()
+                )
+            };
+            return Suggestion::Place {
+                source_path: current_source_rel,
+                mount_path: layout.data_path.clone(),
+                reason,
+            };
+        }
+
+        // 4. Else, if the level holds exactly one folder and no files, descend into it and repeat (at most 8 levels)
+        if files_at_level.is_empty() && folders_at_level.len() == 1 && level < 8 {
+            let only_folder = folders_at_level.into_iter().next().unwrap();
+            current_source_components.push(only_folder);
+            continue;
+        }
+
+        // 5. Else Unknown
+        return Suggestion::Unknown {
+            top_level: top_level_names,
+        };
+    }
+
+    Suggestion::Unknown { top_level: vec![] }
+}
+
+pub fn glob_match(pattern: &str, path: &str) -> bool {
     if !pattern.contains('*') && !pattern.is_empty() {
         let prefix = pattern.trim_end_matches('/');
         return path == prefix || path.starts_with(&format!("{prefix}/"));
@@ -560,6 +726,7 @@ mod tests {
             version_sources: vec![],
             deployment: DeploymentStrategy::VirtualFileSystem,
             content_rules: vec![],
+            content_layout: None,
             native_code_patterns: vec![
                 RelPath::new("Data/SKSE/Plugins/*.dll").unwrap(),
                 RelPath::new("mods/**/*.dll").unwrap(),
@@ -607,6 +774,7 @@ mod tests {
             version_sources: vec![],
             deployment: DeploymentStrategy::VirtualFileSystem,
             content_rules: vec![],
+            content_layout: None,
             native_code_patterns: vec![],
             framework_ids: vec![],
             tool_ids: vec![],
@@ -650,6 +818,7 @@ mod tests {
             version_sources: vec![],
             deployment: DeploymentStrategy::VirtualFileSystem,
             content_rules: vec![],
+            content_layout: None,
             native_code_patterns: vec![],
             framework_ids: vec![],
             tool_ids: vec![],
@@ -683,6 +852,7 @@ mod tests {
             version_sources: vec![],
             deployment: DeploymentStrategy::VirtualFileSystem,
             content_rules: vec![],
+            content_layout: None,
             native_code_patterns: vec![],
             framework_ids: vec![],
             tool_ids: vec![],
@@ -701,5 +871,192 @@ mod tests {
         assert!(def.is_excluded("DATA\\SSEEDIT BACKUPS\\SUB\\Y.ESM.BACKUP"));
         assert!(!def.is_excluded("Data/Skyrim.esm"));
         assert!(!def.is_excluded("SkyrimSE.exe"));
+    }
+
+    #[test]
+    fn test_suggest_placement_skyrim_and_cyberpunk() {
+        let skyrim = ContentLayout {
+            data_path: RelPath::new("Data").unwrap(),
+            data_markers: vec![
+                "*.esp".into(),
+                "*.esm".into(),
+                "*.esl".into(),
+                "*.bsa".into(),
+                "textures".into(),
+                "meshes".into(),
+                "scripts".into(),
+                "interface".into(),
+                "sound".into(),
+                "music".into(),
+                "skse".into(),
+                "strings".into(),
+                "video".into(),
+                "materials".into(),
+                "lodsettings".into(),
+                "seq".into(),
+                "grass".into(),
+                "shadersfx".into(),
+                "facegen".into(),
+                "lod".into(),
+                "terrain".into(),
+                "dyndolod".into(),
+                "nemesis_engine".into(),
+                "calientetools".into(),
+                "tools".into(),
+                "source".into(),
+                "platform".into(),
+            ],
+            root_markers: vec![
+                "*.exe".into(),
+                "*.dll".into(),
+                "enbseries".into(),
+                "enb*.ini".into(),
+                "reshade-shaders".into(),
+            ],
+        };
+
+        // 1. Loose MyMod.esp + textures/a.dds -> Data
+        let files = vec![
+            RelPath::new("MyMod.esp").unwrap(),
+            RelPath::new("textures/a.dds").unwrap(),
+        ];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                reason,
+            } => {
+                assert_eq!(source_path.as_str(), "");
+                assert_eq!(mount_path.as_str(), "Data");
+                assert!(reason.contains("Data"));
+            }
+            other => panic!("expected Place, got {other:?}"),
+        }
+
+        // 2. Data/MyMod.esp -> root
+        let files = vec![RelPath::new("Data/MyMod.esp").unwrap()];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                ..
+            } => {
+                assert_eq!(source_path.as_str(), "");
+                assert_eq!(mount_path.as_str(), "");
+            }
+            other => panic!("expected Place at root, got {other:?}"),
+        }
+
+        // 3. MyMod v1.2/textures/a.dds -> Data from MyMod v1.2
+        let files = vec![RelPath::new("MyMod v1.2/textures/a.dds").unwrap()];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                reason,
+            } => {
+                assert_eq!(source_path.as_str(), "MyMod v1.2");
+                assert_eq!(mount_path.as_str(), "Data");
+                assert_eq!(
+                    reason,
+                    "unwrapped `MyMod v1.2/`; `textures` is data-folder content, so it goes in `Data`"
+                );
+            }
+            other => panic!("expected Place, got {other:?}"),
+        }
+
+        // 4. skse64_2_02_06/skse64_loader.exe + skse64_2_02_06/Data/Scripts/x.pex -> root from skse64_2_02_06
+        let files = vec![
+            RelPath::new("skse64_2_02_06/skse64_loader.exe").unwrap(),
+            RelPath::new("skse64_2_02_06/Data/Scripts/x.pex").unwrap(),
+        ];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                ..
+            } => {
+                assert_eq!(source_path.as_str(), "skse64_2_02_06");
+                assert_eq!(mount_path.as_str(), "");
+            }
+            other => panic!("expected Place at root, got {other:?}"),
+        }
+
+        // 5. two nested wrappers
+        let files = vec![RelPath::new("Wrap1/Wrap2/textures/a.dds").unwrap()];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                ..
+            } => {
+                assert_eq!(source_path.as_str(), "Wrap1/Wrap2");
+                assert_eq!(mount_path.as_str(), "Data");
+            }
+            other => panic!("expected Place, got {other:?}"),
+        }
+
+        // 6. TEXTURES/a.dds (case)
+        let files = vec![RelPath::new("TEXTURES/a.dds").unwrap()];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                ..
+            } => {
+                assert_eq!(source_path.as_str(), "");
+                assert_eq!(mount_path.as_str(), "Data");
+            }
+            other => panic!("expected Place, got {other:?}"),
+        }
+
+        // 7. fomod/ModuleConfig.xml -> Installer
+        let files = vec![RelPath::new("fomod/ModuleConfig.xml").unwrap()];
+        assert!(matches!(
+            suggest_placement(&files, &skyrim),
+            Suggestion::Installer { .. }
+        ));
+
+        // 8. readme.txt alone -> Unknown
+        let files = vec![RelPath::new("readme.txt").unwrap()];
+        match suggest_placement(&files, &skyrim) {
+            Suggestion::Unknown { top_level } => {
+                assert_eq!(top_level, vec!["readme.txt"]);
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+
+        // 9. nine nested wrappers -> Unknown
+        let files = vec![RelPath::new("w1/w2/w3/w4/w5/w6/w7/w8/w9/textures/a.dds").unwrap()];
+        assert!(matches!(
+            suggest_placement(&files, &skyrim),
+            Suggestion::Unknown { .. }
+        ));
+
+        // Cyberpunk: archive/pc/mod/x.archive -> root
+        let cyberpunk = ContentLayout {
+            data_path: RelPath::default(),
+            data_markers: vec![],
+            root_markers: vec![
+                "archive".into(),
+                "bin".into(),
+                "r6".into(),
+                "red4ext".into(),
+                "engine".into(),
+                "mods".into(),
+            ],
+        };
+        let files = vec![RelPath::new("archive/pc/mod/x.archive").unwrap()];
+        match suggest_placement(&files, &cyberpunk) {
+            Suggestion::Place {
+                source_path,
+                mount_path,
+                ..
+            } => {
+                assert_eq!(source_path.as_str(), "");
+                assert_eq!(mount_path.as_str(), "");
+            }
+            other => panic!("expected Place at root, got {other:?}"),
+        }
     }
 }

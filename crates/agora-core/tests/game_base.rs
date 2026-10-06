@@ -96,6 +96,7 @@ fn test_definition() -> GameDefinition {
         ],
         declared_writes: vec![],
         excluded_paths: vec![],
+        content_layout: None,
     }
 }
 

@@ -84,6 +84,7 @@ fn make_test_definition() -> GameDefinition {
         linked_archive_patterns: vec!["Data/*.bsa".into()],
         declared_writes: vec!["writeable_base.txt".into()],
         excluded_paths: vec![],
+        content_layout: None,
     }
 }
 
@@ -191,9 +192,9 @@ fn test_priority_and_reordering_and_mount_path() {
     let item3_id = add_content_folder(&ctx, "Mod3", &[("mounted.txt", b"in Data")]);
 
     // Add in order: item1, item2, item3
-    let l1 = add_content(&ctx, &inst.instance_id, &item1_id, None).unwrap();
-    let l2 = add_content(&ctx, &inst.instance_id, &item2_id, None).unwrap();
-    let _l3 = add_content(&ctx, &inst.instance_id, &item3_id, Some("Data")).unwrap();
+    let l1 = add_content(&ctx, &inst.instance_id, &item1_id, None, None).unwrap();
+    let l2 = add_content(&ctx, &inst.instance_id, &item2_id, None, None).unwrap();
+    let _l3 = add_content(&ctx, &inst.instance_id, &item3_id, Some("Data"), None).unwrap();
 
     // 1. Check plan: item 2 overrides item 1 on conflict.txt
     let p = plan(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
@@ -262,8 +263,8 @@ fn test_case_insensitivity_override() {
     let item1 = add_content_folder(&ctx, "Layer1", &[("data/file.txt", b"lowercase")]);
     let item2 = add_content_folder(&ctx, "Layer2", &[("DATA/FILE.TXT", b"UPPERCASE")]);
 
-    let _l1 = add_content(&ctx, &inst.instance_id, &item1, None).unwrap();
-    let _l2 = add_content(&ctx, &inst.instance_id, &item2, None).unwrap();
+    let _l1 = add_content(&ctx, &inst.instance_id, &item1, None, None).unwrap();
+    let _l2 = add_content(&ctx, &inst.instance_id, &item2, None, None).unwrap();
 
     let p = plan(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     // The winning layer's casing should be kept: DATA/FILE.TXT
@@ -297,8 +298,8 @@ fn test_file_folder_conflict_across_layers() {
     let item1 = add_content_folder(&ctx, "FileLayer", &[("Data/x", b"file content")]);
     let item2 = add_content_folder(&ctx, "FolderLayer", &[("Data/x/y", b"child content")]);
 
-    add_content(&ctx, &inst.instance_id, &item1, None).unwrap();
-    add_content(&ctx, &inst.instance_id, &item2, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item1, None, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item2, None, None).unwrap();
 
     let err = plan(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap_err();
     match err {
@@ -330,7 +331,7 @@ fn test_links_vs_copies_placement() {
     let inst = create_pinned_instance(&ctx, &install, &def, "PlacementTest");
 
     let item1 = add_content_folder(&ctx, "ModContent", &[("mod_file.txt", b"mod content")]);
-    add_content(&ctx, &inst.instance_id, &item1, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item1, None, None).unwrap();
 
     // 1. Plan in Links mode
     let plan_links = plan(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
@@ -423,7 +424,7 @@ fn test_harvest_lifecycle() {
     let inst = create_pinned_instance(&ctx, &install, &def, "HarvestTest");
 
     let item1 = add_content_folder(&ctx, "ModContent", &[("mod_item.txt", b"mod 1")]);
-    add_content(&ctx, &inst.instance_id, &item1, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item1, None, None).unwrap();
 
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game_dir = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
@@ -550,7 +551,7 @@ fn test_rebuilding_uptodate_and_delta() {
     let inst = create_pinned_instance(&ctx, &install, &def, "RebuildTest");
 
     let item1 = add_content_folder(&ctx, "ModContent", &[("mod_item.txt", b"mod 1")]);
-    add_content(&ctx, &inst.instance_id, &item1, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item1, None, None).unwrap();
 
     // First deploy: Built
     let outcome1 = deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
@@ -562,7 +563,7 @@ fn test_rebuilding_uptodate_and_delta() {
 
     // Add content: should rebuild
     let item2 = add_content_folder(&ctx, "ModContent2", &[("mod_item2.txt", b"mod 2")]);
-    add_content(&ctx, &inst.instance_id, &item2, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item2, None, None).unwrap();
 
     let outcome3 = deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     assert!(matches!(outcome3, DeployOutcome::Built { .. }));
@@ -581,7 +582,7 @@ fn test_undeploy_safety_checks() {
     let inst = create_pinned_instance(&ctx, &install, &def, "SafetyTest");
 
     let item1 = add_content_folder(&ctx, "ModContent", &[("mod_item.txt", b"mod 1")]);
-    add_content(&ctx, &inst.instance_id, &item1, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item1, None, None).unwrap();
 
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game_dir = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
@@ -616,7 +617,7 @@ fn test_content_removal_refused_when_in_use() {
     let inst = create_pinned_instance(&ctx, &install, &def, "InUseTest");
 
     let item_id = add_content_folder(&ctx, "InUseMod", &[("mod.txt", b"data")]);
-    add_content(&ctx, &inst.instance_id, &item_id, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item_id, None, None).unwrap();
 
     // 1. Content removal refused naming instance
     let err = agora_core::content_store::remove_item(&ctx, &item_id).unwrap_err();
@@ -663,7 +664,7 @@ fn test_launch_deployment_integration() {
     let inst = create_pinned_instance(&ctx, &install, &def, "LaunchTest");
 
     let item_id = add_content_folder(&ctx, "LaunchMod", &[("mod.txt", b"mod data")]);
-    add_content(&ctx, &inst.instance_id, &item_id, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item_id, None, None).unwrap();
 
     let report = DiscoveryReport {
         installs: vec![install.discovered.clone()],
@@ -709,7 +710,7 @@ fn test_launch_deployment_integration() {
     assert_eq!(unpinned_prep.resolved.cwd, install_dir);
 
     // Unpinned instance with content returns deploy error
-    add_content(&ctx, &unpinned_inst.instance_id, &item_id, None).unwrap();
+    add_content(&ctx, &unpinned_inst.instance_id, &item_id, None, None).unwrap();
     let err = prepare_launch_with_discovery(&ctx, &unpinned_inst.instance_id, &def, false, &|| {
         unpinned_report.clone()
     })
@@ -724,4 +725,74 @@ fn test_launch_deployment_integration() {
     // Direct plan call on unpinned instance with content also returns UnpinnedInstance
     let plan_err = plan(&ctx, &unpinned_inst.instance_id, &def, DeployMode::Links).unwrap_err();
     assert!(matches!(plan_err, DeployError::UnpinnedInstance(_)));
+}
+
+#[test]
+fn test_deploy_source_path_filtering_and_boundary() {
+    let tmp = TempDir::new().unwrap();
+    let def = make_test_definition();
+    let ctx = create_test_context(&tmp, &def);
+
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(&install_dir).unwrap();
+    setup_fake_install(&install_dir);
+    let install = make_test_install(&install_dir, true, true);
+    let inst = create_pinned_instance(&ctx, &install, &def, "SourcePathTest");
+
+    // Item with files under MyMod, MyModX, and top-level
+    let item_id = add_content_folder(
+        &ctx,
+        "ModWithSubfolder",
+        &[
+            ("MyMod/textures/a.dds", b"dds bytes"),
+            ("MyMod/meshes/b.nif", b"nif bytes"),
+            ("MyModX/c.dds", b"other bytes"),
+            ("readme.txt", b"docs"),
+        ],
+    );
+
+    // 1. Layer with source_path: "MyMod", mount_path: "Data"
+    let _layer = add_content(
+        &ctx,
+        &inst.instance_id,
+        &item_id,
+        Some("Data"),
+        Some("MyMod"),
+    )
+    .unwrap();
+
+    let p = plan(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
+    // Only MyMod files should be deployed, stripped under mount_path "Data"
+    assert!(p
+        .files
+        .iter()
+        .any(|f| f.path.as_str() == "Data/textures/a.dds"));
+    assert!(p
+        .files
+        .iter()
+        .any(|f| f.path.as_str() == "Data/meshes/b.nif"));
+    // MyModX/c.dds must NOT match MyMod
+    assert!(!p.files.iter().any(|f| f.path.as_str().contains("c.dds")));
+    assert!(!p
+        .files
+        .iter()
+        .any(|f| f.path.as_str().contains("readme.txt")));
+
+    // 2. Layer with source_path matching nothing deploys nothing and records a warning
+    let item_id2 = add_content_folder(&ctx, "ModEmptyMatch", &[("other/file.txt", b"data")]);
+    let layer2 = add_content(
+        &ctx,
+        &inst.instance_id,
+        &item_id2,
+        Some("Data"),
+        Some("NonExistentFolder"),
+    )
+    .unwrap();
+
+    let p2 = plan(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
+    assert!(
+        p2.warnings.iter().any(|w| w.contains(layer2.id.as_str())),
+        "warnings must name the layer: {:?}",
+        p2.warnings
+    );
 }

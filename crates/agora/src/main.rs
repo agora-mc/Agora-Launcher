@@ -383,6 +383,9 @@ enum InstanceContentCmd {
         /// Subdirectory in game folder to mount content under.
         #[arg(long)]
         into: Option<String>,
+        /// Subfolder of the item to deploy.
+        #[arg(long)]
+        from: Option<String>,
     },
     /// List content items in an instance in priority order.
     List {
@@ -5384,12 +5387,154 @@ async fn run_command(
                         instance_id,
                         item_id,
                         into,
+                        from,
                     } => {
+                        let (target_mount, target_source) = if into.is_some() || from.is_some() {
+                            (into, from)
+                        } else {
+                            let manifest =
+                                match agora_core::game_instance::get_manifest(ctx, &instance_id) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        if json {
+                                            let out = serde_json::json!({
+                                                "status": "error",
+                                                "error": format!("{e}"),
+                                                "exitCode": 1,
+                                            });
+                                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                        } else {
+                                            eprintln!("Error: {e}");
+                                        }
+                                        std::process::exit(1);
+                                    }
+                                };
+                            let game_def = ctx.games.game(&manifest.game);
+                            let Some(game_def) = game_def else {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("Game definition not found for {}", manifest.game),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!(
+                                        "Error: Game definition not found for {}",
+                                        manifest.game
+                                    );
+                                }
+                                std::process::exit(1);
+                            };
+                            let Some(layout) = &game_def.content_layout else {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": "Game definition has no content layout. Specify --into (and --from).",
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: Game definition '{}' has no content layout. Specify --into (and --from).", game_def.id);
+                                }
+                                std::process::exit(1);
+                            };
+
+                            let item = match agora_core::content_store::get_item(ctx, &item_id) {
+                                Ok(it) => it,
+                                Err(e) => {
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "status": "error",
+                                            "error": format!("{e}"),
+                                            "exitCode": 1,
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else {
+                                        eprintln!("Error: {e}");
+                                    }
+                                    std::process::exit(1);
+                                }
+                            };
+
+                            let file_paths: Vec<agora_game_api::RelPath> =
+                                item.files.iter().map(|f| f.path.clone()).collect();
+                            let suggestion = agora_game_api::suggest_placement(&file_paths, layout);
+
+                            match suggestion {
+                                agora_game_api::Suggestion::Place {
+                                    source_path,
+                                    mount_path,
+                                    reason,
+                                } => {
+                                    if !json {
+                                        println!("{reason}");
+                                    }
+                                    let mount_opt = if mount_path.as_str().is_empty() {
+                                        None
+                                    } else {
+                                        Some(mount_path.as_str().to_string())
+                                    };
+                                    let source_opt = if source_path.as_str().is_empty() {
+                                        None
+                                    } else {
+                                        Some(source_path.as_str().to_string())
+                                    };
+                                    (mount_opt, source_opt)
+                                }
+                                agora_game_api::Suggestion::Installer { reason } => {
+                                    let mut top_level: Vec<String> = item
+                                        .files
+                                        .iter()
+                                        .filter_map(|f| {
+                                            f.path.as_str().split('/').next().map(|s| s.to_string())
+                                        })
+                                        .collect();
+                                    top_level.sort();
+                                    top_level.dedup();
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "status": "error",
+                                            "error": format!("Cannot automatically place content: {reason}"),
+                                            "reason": reason,
+                                            "top_level": top_level,
+                                            "exitCode": 1,
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else {
+                                        eprintln!(
+                                            "Error: Cannot automatically place content: {reason}"
+                                        );
+                                        eprintln!("Top-level entries: {}", top_level.join(", "));
+                                        eprintln!("Specify --into (and --from) to place manually.");
+                                    }
+                                    std::process::exit(1);
+                                }
+                                agora_game_api::Suggestion::Unknown { top_level } => {
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "status": "error",
+                                            "error": "Cannot determine placement for content",
+                                            "top_level": top_level,
+                                            "exitCode": 1,
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else {
+                                        eprintln!("Error: Cannot determine placement for content.");
+                                        eprintln!("Top-level entries: {}", top_level.join(", "));
+                                        eprintln!("Specify --into (and --from) to place manually.");
+                                    }
+                                    std::process::exit(1);
+                                }
+                            }
+                        };
+
                         match agora_core::game_deploy::add_content(
                             ctx,
                             &instance_id,
                             &item_id,
-                            into.as_deref(),
+                            target_mount.as_deref(),
+                            target_source.as_deref(),
                         ) {
                             Ok(layer) => {
                                 if json {
@@ -5399,11 +5544,17 @@ async fn run_command(
                                         "item_id": item_id,
                                         "layer_id": layer.id.as_str(),
                                         "mount_path": layer.mount_path.as_str(),
+                                        "source_path": layer.source_path.as_str(),
                                     });
                                     println!("{}", serde_json::to_string_pretty(&out)?);
                                 } else {
+                                    let from_note = if layer.source_path.as_str().is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" (from '{}')", layer.source_path.as_str())
+                                    };
                                     println!(
-                                        "Added content '{item_id}' to instance '{instance_id}' (mount: '{}').",
+                                        "Added content '{item_id}' to instance '{instance_id}' (mount: '{}'{from_note}).",
                                         layer.mount_path.as_str()
                                     );
                                 }
@@ -5460,6 +5611,7 @@ async fn run_command(
                                     "layer_id": layer.id.as_str(),
                                     "enabled": layer.enabled,
                                     "mount_path": layer.mount_path.as_str(),
+                                    "source_path": layer.source_path.as_str(),
                                 }));
                             }
                         }
@@ -5484,7 +5636,18 @@ async fn run_command(
                                     "no"
                                 };
                                 let mount = it["mount_path"].as_str().unwrap_or("");
-                                println!("{:<4} {:<18} {:<10} {}", pos, short_id, enabled, mount);
+                                let source = it["source_path"].as_str().unwrap_or("");
+                                let mount_display = if source.is_empty() {
+                                    mount.to_string()
+                                } else if mount.is_empty() {
+                                    format!("(from {source})")
+                                } else {
+                                    format!("{mount} (from {source})")
+                                };
+                                println!(
+                                    "{:<4} {:<18} {:<10} {}",
+                                    pos, short_id, enabled, mount_display
+                                );
                             }
                         }
                     }
@@ -8257,5 +8420,38 @@ mod tests {
             exit_code_from_launcher_error(&LauncherError::UserDecisionRequired),
             71
         );
+    }
+
+    #[test]
+    fn games_instance_content_add_parses_into_and_from() {
+        use crate::{GameInstanceCmd, GamesCmd, InstanceContentCmd};
+        let cli = Cli::try_parse_from([
+            "agora", "games", "instance", "content", "add", "my-inst", "item123", "--into", "Data",
+            "--from", "MyMod",
+        ])
+        .expect("should parse");
+        match cli.command {
+            Commands::Games {
+                action:
+                    GamesCmd::Instance {
+                        action:
+                            GameInstanceCmd::Content {
+                                action:
+                                    InstanceContentCmd::Add {
+                                        instance_id,
+                                        item_id,
+                                        into,
+                                        from,
+                                    },
+                            },
+                    },
+            } => {
+                assert_eq!(instance_id, "my-inst");
+                assert_eq!(item_id, "item123");
+                assert_eq!(into.as_deref(), Some("Data"));
+                assert_eq!(from.as_deref(), Some("MyMod"));
+            }
+            _ => panic!("wrong command variant"),
+        }
     }
 }

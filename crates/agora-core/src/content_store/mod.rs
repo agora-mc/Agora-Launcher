@@ -5,7 +5,7 @@
 
 pub mod protect;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -172,6 +172,10 @@ pub enum ContentError {
         manifest: String,
         error: String,
     },
+    #[error("unsupported archive format: supported formats are zip, 7z")]
+    UnsupportedArchiveFormat,
+    #[error("archive is password-protected: password-protected archives are not supported")]
+    PasswordProtected,
     #[error("corrupt archive: {0}")]
     CorruptArchive(String),
     #[error("lock error: {0}")]
@@ -369,21 +373,24 @@ fn object_is_trustworthy(path: &Path, size: u64, sha256: &str) -> Result<bool, C
     Ok(hash_file_path(path)? == sha256)
 }
 
-struct StagingGuard<'a> {
-    path: &'a Path,
+struct StagingGuard {
+    path: PathBuf,
     active: bool,
 }
 
-impl<'a> StagingGuard<'a> {
-    fn new(path: &'a Path) -> Self {
-        Self { path, active: true }
+impl StagingGuard {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            active: true,
+        }
     }
 }
 
-impl<'a> Drop for StagingGuard<'a> {
+impl Drop for StagingGuard {
     fn drop(&mut self) {
         if self.active && self.path.exists() {
-            let _ = std::fs::remove_dir_all(self.path);
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }
@@ -480,109 +487,310 @@ pub fn add_archive(
     let archive_sha256 = hash_file_path(archive_path)?;
     let archive_display_path = archive_path.to_string_lossy().to_string();
 
-    let file = std::fs::File::open(archive_path)?;
-    let mut zip =
-        zip::ZipArchive::new(file).map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
-
-    // 1. First pass: validate entry names, types, and collect declared sizes
-    let mut declared_total_size: u64 = 0;
-    let mut validated_paths = Vec::new();
-    let mut file_indices = Vec::new();
-
-    for i in 0..zip.len() {
-        let entry = zip
-            .by_index(i)
-            .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
-
-        // Folder entries are ignored; only files count
-        if entry.is_dir() || entry.name().ends_with('/') {
-            continue;
-        }
-
-        // Refuse zip symlink entries (unix mode S_IFLNK)
-        if let Some(mode) = entry.unix_mode() {
-            if (mode & 0o170000) == 0o120000 {
-                return Err(ContentError::InvalidPath {
-                    path: entry.name().to_string(),
-                    reason: "zip symlink entry is not allowed".into(),
-                });
-            }
-        }
-
-        let rel_path = validate_entry_path(entry.name())?;
-        declared_total_size = declared_total_size.saturating_add(entry.size());
-        validated_paths.push(rel_path);
-        file_indices.push(i);
+    enum ArchiveFormat {
+        Zip,
+        SevenZ,
     }
 
-    // Refuse empty items (no files) and collisions across paths
-    validate_path_set(&validated_paths)?;
+    let format = {
+        let mut f = std::fs::File::open(archive_path)?;
+        let mut magic = [0u8; 6];
+        let n = f.read(&mut magic)?;
+        if n >= 4 && (&magic[..4] == b"PK\x03\x04" || &magic[..4] == b"PK\x05\x06") {
+            ArchiveFormat::Zip
+        } else if n >= 6 && magic == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
+            ArchiveFormat::SevenZ
+        } else {
+            return Err(ContentError::UnsupportedArchiveFormat);
+        }
+    };
 
-    // 2. Untrusted sizes: check free disk space
-    let content_root = ctx.paths.content_root();
-    std::fs::create_dir_all(&content_root)?;
-    let required = declared_total_size.saturating_add(ONE_GIB);
-    if let Some(available) = disk_free_space(&content_root) {
-        if available < required {
-            return Err(ContentError::InsufficientSpace {
-                required,
-                available,
+    let (staged_entries, mut guard, staging_dir) = match format {
+        ArchiveFormat::Zip => {
+            let file = std::fs::File::open(archive_path)?;
+            let mut zip = zip::ZipArchive::new(file)
+                .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
+
+            // 1. First pass: validate entry names, types, and collect declared sizes
+            let mut declared_total_size: u64 = 0;
+            let mut validated_paths = Vec::new();
+            let mut file_indices = Vec::new();
+
+            for i in 0..zip.len() {
+                let entry = zip
+                    .by_index(i)
+                    .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
+
+                // Folder entries are ignored; only files count
+                if entry.is_dir() || entry.name().ends_with('/') {
+                    continue;
+                }
+
+                // Refuse zip symlink entries (unix mode S_IFLNK)
+                if let Some(mode) = entry.unix_mode() {
+                    if (mode & 0o170000) == 0o120000 {
+                        return Err(ContentError::InvalidPath {
+                            path: entry.name().to_string(),
+                            reason: "zip symlink entry is not allowed".into(),
+                        });
+                    }
+                }
+
+                let rel_path = validate_entry_path(entry.name())?;
+                declared_total_size = declared_total_size.saturating_add(entry.size());
+                validated_paths.push(rel_path);
+                file_indices.push(i);
+            }
+
+            // Refuse empty items (no files) and collisions across paths
+            validate_path_set(&validated_paths)?;
+
+            // 2. Untrusted sizes: check free disk space
+            let content_root = ctx.paths.content_root();
+            std::fs::create_dir_all(&content_root)?;
+            let required = declared_total_size.saturating_add(ONE_GIB);
+            if let Some(available) = disk_free_space(&content_root) {
+                if available < required {
+                    return Err(ContentError::InsufficientSpace {
+                        required,
+                        available,
+                    });
+                }
+            }
+
+            // 3. Staging directory setup
+            let staging_root = ctx.paths.content_staging_dir();
+            std::fs::create_dir_all(&staging_root)?;
+            let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
+            let staging_dir = staging_root.join(&unique);
+            std::fs::create_dir_all(&staging_dir)?;
+            let guard = StagingGuard::new(&staging_dir);
+
+            // 4. Extract and stream-hash each file
+            let mut staged_entries = Vec::with_capacity(file_indices.len());
+            for (idx, &file_idx) in file_indices.iter().enumerate() {
+                let mut entry = zip
+                    .by_index(file_idx)
+                    .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
+                let rel_path = validated_paths[idx].clone();
+                let declared_size = entry.size();
+
+                let staged_file_path = staging_dir.join(format!("obj_{idx}"));
+                use std::io::Write;
+                let mut staged_out = std::fs::File::create(&staged_file_path)?;
+
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; HASH_BUFFER_SIZE];
+                let mut bytes_written = 0u64;
+                let mut limited = (&mut entry).take(declared_size + 1);
+
+                loop {
+                    let n = limited.read(&mut buf).map_err(|e| {
+                        ContentError::CorruptArchive(format!(
+                            "failed reading entry '{}': {e}",
+                            rel_path
+                        ))
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    bytes_written += n as u64;
+                    if bytes_written > declared_size {
+                        return Err(ContentError::EntryExceedsDeclaredSize {
+                            path: rel_path.to_string(),
+                            declared: declared_size,
+                        });
+                    }
+                    staged_out.write_all(&buf[..n])?;
+                    hasher.update(&buf[..n]);
+                }
+
+                let sha256 = format!("{:x}", hasher.finalize());
+                staged_entries.push(StagedEntry {
+                    rel_path,
+                    staged_path: staged_file_path,
+                    size: bytes_written,
+                    sha256,
+                });
+            }
+
+            (staged_entries, guard, staging_dir)
+        }
+        ArchiveFormat::SevenZ => {
+            let file = std::fs::File::open(archive_path)?;
+            let archive = match sevenz_rust2::Archive::read(
+                &mut std::fs::File::open(archive_path)?,
+                &sevenz_rust2::Password::empty(),
+            ) {
+                Ok(a) => a,
+                Err(
+                    sevenz_rust2::Error::PasswordRequired
+                    | sevenz_rust2::Error::MaybeBadPassword(_),
+                ) => {
+                    return Err(ContentError::PasswordProtected);
+                }
+                Err(e) => return Err(ContentError::CorruptArchive(format!("{e}"))),
+            };
+
+            for block in &archive.blocks {
+                for coder in &block.coders {
+                    if coder.encoder_method_id() == [0x06, 0xF1, 0x07, 0x01] {
+                        return Err(ContentError::PasswordProtected);
+                    }
+                }
+            }
+
+            let mut declared_total_size: u64 = 0;
+            let mut validated_paths = Vec::new();
+            let mut file_names = Vec::new();
+
+            for entry in &archive.files {
+                if entry.is_directory || entry.name.ends_with('/') || entry.is_anti_item {
+                    continue;
+                }
+
+                if entry.has_windows_attributes {
+                    let attrs = entry.windows_attributes;
+                    let is_reparse_point = (attrs & 0x0400) != 0;
+                    let unix_mode = (attrs >> 16) as u16;
+                    let is_unix_symlink = (unix_mode & 0o170000) == 0o120000;
+                    if is_reparse_point || is_unix_symlink {
+                        return Err(ContentError::InvalidPath {
+                            path: entry.name.clone(),
+                            reason: "symlinks or reparse points are not allowed".into(),
+                        });
+                    }
+                }
+
+                let rel_path = validate_entry_path(&entry.name)?;
+                declared_total_size = declared_total_size.saturating_add(entry.size);
+                validated_paths.push(rel_path);
+                file_names.push(entry.name.clone());
+            }
+
+            validate_path_set(&validated_paths)?;
+
+            let content_root = ctx.paths.content_root();
+            std::fs::create_dir_all(&content_root)?;
+            let required = declared_total_size.saturating_add(ONE_GIB);
+            if let Some(available) = disk_free_space(&content_root) {
+                if available < required {
+                    return Err(ContentError::InsufficientSpace {
+                        required,
+                        available,
+                    });
+                }
+            }
+
+            let staging_root = ctx.paths.content_staging_dir();
+            std::fs::create_dir_all(&staging_root)?;
+            let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
+            let staging_dir = staging_root.join(&unique);
+            std::fs::create_dir_all(&staging_dir)?;
+            let guard = StagingGuard::new(&staging_dir);
+
+            let name_to_idx: HashMap<String, usize> = file_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| (name.clone(), i))
+                .collect();
+
+            let mut staged_entries: Vec<Option<StagedEntry>> =
+                (0..file_names.len()).map(|_| None).collect();
+
+            let mut reader =
+                match sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty()) {
+                    Ok(r) => r,
+                    Err(
+                        sevenz_rust2::Error::PasswordRequired
+                        | sevenz_rust2::Error::MaybeBadPassword(_),
+                    ) => {
+                        return Err(ContentError::PasswordProtected);
+                    }
+                    Err(e) => return Err(ContentError::CorruptArchive(format!("{e}"))),
+                };
+
+            let extract_res = reader.for_each_entries(|entry, entry_reader| {
+                if entry.is_directory || entry.name.ends_with('/') || entry.is_anti_item {
+                    return Ok(true);
+                }
+                let Some(&idx) = name_to_idx.get(&entry.name) else {
+                    return Ok(true);
+                };
+
+                let rel_path = validated_paths[idx].clone();
+                let declared_size = entry.size;
+                let staged_file_path = staging_dir.join(format!("obj_{idx}"));
+                let mut staged_out =
+                    std::fs::File::create(&staged_file_path).map_err(sevenz_rust2::Error::from)?;
+
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; HASH_BUFFER_SIZE];
+                let mut bytes_written = 0u64;
+                let mut limited = entry_reader.take(declared_size + 1);
+
+                use std::io::Write;
+                loop {
+                    let n = limited.read(&mut buf).map_err(|e| {
+                        sevenz_rust2::Error::Other(format!("READ_ERROR:{e}").into())
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    bytes_written += n as u64;
+                    if bytes_written > declared_size {
+                        return Err(sevenz_rust2::Error::Other(
+                            format!("EXCEEDS_DECLARED_SIZE:{}:{}", rel_path, declared_size).into(),
+                        ));
+                    }
+                    staged_out
+                        .write_all(&buf[..n])
+                        .map_err(sevenz_rust2::Error::from)?;
+                    hasher.update(&buf[..n]);
+                }
+
+                let sha256 = format!("{:x}", hasher.finalize());
+                staged_entries[idx] = Some(StagedEntry {
+                    rel_path,
+                    staged_path: staged_file_path,
+                    size: bytes_written,
+                    sha256,
+                });
+
+                Ok(true)
             });
-        }
-    }
 
-    // 3. Staging directory setup
-    let staging_root = ctx.paths.content_staging_dir();
-    std::fs::create_dir_all(&staging_root)?;
-    let unique = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
-    let staging_dir = staging_root.join(&unique);
-    std::fs::create_dir_all(&staging_dir)?;
-    let mut guard = StagingGuard::new(&staging_dir);
-
-    // 4. Extract and stream-hash each file
-    let mut staged_entries = Vec::with_capacity(file_indices.len());
-    for (idx, &file_idx) in file_indices.iter().enumerate() {
-        let mut entry = zip
-            .by_index(file_idx)
-            .map_err(|e| ContentError::CorruptArchive(format!("{e}")))?;
-        let rel_path = validated_paths[idx].clone();
-        let declared_size = entry.size();
-
-        let staged_file_path = staging_dir.join(format!("obj_{idx}"));
-        use std::io::Write;
-        let mut staged_out = std::fs::File::create(&staged_file_path)?;
-
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; HASH_BUFFER_SIZE];
-        let mut bytes_written = 0u64;
-        let mut limited = (&mut entry).take(declared_size + 1);
-
-        loop {
-            let n = limited.read(&mut buf).map_err(|e| {
-                ContentError::CorruptArchive(format!("failed reading entry '{}': {e}", rel_path))
-            })?;
-            if n == 0 {
-                break;
+            match extract_res {
+                Ok(()) => {}
+                Err(
+                    sevenz_rust2::Error::PasswordRequired
+                    | sevenz_rust2::Error::MaybeBadPassword(_),
+                ) => {
+                    return Err(ContentError::PasswordProtected);
+                }
+                Err(e) => {
+                    let s = e.to_string();
+                    if let Some(pos) = s.find("EXCEEDS_DECLARED_SIZE:") {
+                        let rest = &s[pos + "EXCEEDS_DECLARED_SIZE:".len()..];
+                        let parts: Vec<&str> = rest.split(':').collect();
+                        let path = parts[0].to_string();
+                        let declared = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+                        return Err(ContentError::EntryExceedsDeclaredSize { path, declared });
+                    }
+                    return Err(ContentError::CorruptArchive(s));
+                }
             }
-            bytes_written += n as u64;
-            if bytes_written > declared_size {
-                return Err(ContentError::EntryExceedsDeclaredSize {
-                    path: rel_path.to_string(),
-                    declared: declared_size,
-                });
-            }
-            staged_out.write_all(&buf[..n])?;
-            hasher.update(&buf[..n]);
-        }
 
-        let sha256 = format!("{:x}", hasher.finalize());
-        staged_entries.push(StagedEntry {
-            rel_path,
-            staged_path: staged_file_path,
-            size: bytes_written,
-            sha256,
-        });
-    }
+            let entries: Vec<StagedEntry> = staged_entries.into_iter().flatten().collect();
+            if entries.len() != file_names.len() {
+                return Err(ContentError::CorruptArchive(
+                    "not all declared files were extracted from archive".into(),
+                ));
+            }
+
+            (entries, guard, staging_dir)
+        }
+    };
 
     // 5. Store objects, record counts, compute item ID
     let item_name = name

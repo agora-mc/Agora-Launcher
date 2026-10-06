@@ -147,6 +147,7 @@ fn test_layer_stack_serde_validation() {
             id: LayerId::new("c").unwrap(),
             enabled: true,
             mount_path: RelPath::default(),
+            source_path: RelPath::default(),
             source: LayerSource::Content {
                 content: "h".into(),
             },
@@ -156,6 +157,7 @@ fn test_layer_stack_serde_validation() {
             id: LayerId::new("w").unwrap(),
             enabled: true,
             mount_path: RelPath::default(),
+            source_path: RelPath::default(),
             source: LayerSource::Writable {
                 path: RelPath::default(),
             },

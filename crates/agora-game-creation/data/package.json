@@ -28,6 +28,45 @@
       ],
       "deployment": "virtual_file_system",
       "content_rules": [],
+      "content_layout": {
+        "data_path": "Data",
+        "data_markers": [
+          "*.esp",
+          "*.esm",
+          "*.esl",
+          "*.bsa",
+          "textures",
+          "meshes",
+          "scripts",
+          "interface",
+          "sound",
+          "music",
+          "skse",
+          "strings",
+          "video",
+          "materials",
+          "lodsettings",
+          "seq",
+          "grass",
+          "shadersfx",
+          "facegen",
+          "lod",
+          "terrain",
+          "dyndolod",
+          "nemesis_engine",
+          "calientetools",
+          "tools",
+          "source",
+          "platform"
+        ],
+        "root_markers": [
+          "*.exe",
+          "*.dll",
+          "enbseries",
+          "enb*.ini",
+          "reshade-shaders"
+        ]
+      },
       "native_code_patterns": [
         "Data/SKSE/Plugins/*.dll"
       ],

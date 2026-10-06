@@ -106,6 +106,8 @@ pub struct Layer {
     pub id: LayerId,
     pub enabled: bool,
     pub mount_path: RelPath,
+    #[serde(default, skip_serializing_if = "RelPath::is_empty")]
+    pub source_path: RelPath,
     pub source: LayerSource,
     /// Relative paths hidden from lower layers; lower bytes are never deleted.
     #[serde(default)]
@@ -306,6 +308,7 @@ mod tests {
             id: LayerId::new(id).unwrap(),
             enabled: true,
             mount_path: RelPath::default(),
+            source_path: RelPath::default(),
             source,
             whiteouts: Vec::new(),
         }

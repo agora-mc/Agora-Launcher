@@ -87,6 +87,7 @@ fn make_test_definition() -> GameDefinition {
         linked_archive_patterns: vec!["Data/*.bsa".into()],
         declared_writes: vec!["writeable_base.txt".into()],
         excluded_paths: vec![],
+        content_layout: None,
     }
 }
 
@@ -195,7 +196,7 @@ fn probe_tampered_writable_source_path_cannot_delete_outside_the_instance() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
-    add_content(&ctx, &inst.instance_id, &item, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, None, None).unwrap();
     // Get a writable layer by harvesting a new file.
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
@@ -231,7 +232,7 @@ fn probe_tampered_record_path_cannot_escape() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
-    add_content(&ctx, &inst.instance_id, &item, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, None, None).unwrap();
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let victim = tmp.path().join("victim2.txt");
     std::fs::write(&victim, b"keep me").unwrap();
@@ -256,7 +257,7 @@ fn probe_failed_harvest_keeps_the_games_writes() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
-    add_content(&ctx, &inst.instance_id, &item, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, None, None).unwrap();
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
     std::fs::write(game.join("save-like.txt"), b"precious").unwrap();
@@ -280,7 +281,7 @@ fn probe_record_for_another_instance_is_refused() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
-    add_content(&ctx, &inst.instance_id, &item, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, None, None).unwrap();
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
     let rp = record_path(&ctx, &inst.instance_id);
@@ -297,7 +298,7 @@ fn probe_changed_copy_survives_a_redeploy() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
-    add_content(&ctx, &inst.instance_id, &item, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, None, None).unwrap();
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
     std::fs::write(
@@ -318,7 +319,7 @@ fn probe_base_write_through_link_is_reported_and_kept() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
-    add_content(&ctx, &inst.instance_id, &item, None).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, None, None).unwrap();
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
     std::fs::write(
@@ -348,7 +349,7 @@ fn probe_deleting_a_deployed_mod_file_in_a_subfolder_keeps_the_object() {
     let tmp = TempDir::new().unwrap();
     let (ctx, def, inst) = setup(&tmp);
     let item = add_content_folder(&ctx, "M", &[("textures/deep/x.dds", b"pixels")]);
-    add_content(&ctx, &inst.instance_id, &item, Some("Data")).unwrap();
+    add_content(&ctx, &inst.instance_id, &item, Some("Data"), None).unwrap();
     deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
     let game = deployment_dir(&ctx, &inst.instance_id).unwrap().unwrap();
     let f = game.join("Data/textures/deep/x.dds");
@@ -375,7 +376,7 @@ fn probe_empty_item_prefix_is_refused() {
     add_content_folder(&ctx, "M", &[("a.txt", b"a")]);
     for p in ["", " ", "*"] {
         assert!(
-            add_content(&ctx, &inst.instance_id, p, None).is_err(),
+            add_content(&ctx, &inst.instance_id, p, None, None).is_err(),
             "prefix {p:?} accepted"
         );
     }

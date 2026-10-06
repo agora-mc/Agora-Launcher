@@ -557,3 +557,170 @@ fn test_readd_restores_deleted_object() {
         Protection::Protected
     );
 }
+
+// ---------------------------------------------------------------------------
+// 8. 7z archive support & security tests
+// ---------------------------------------------------------------------------
+
+fn create_7z(path: &Path, entries: &[(&str, &[u8])]) {
+    let mut sz = sevenz_rust2::ArchiveWriter::create(path).unwrap();
+    for (name, content) in entries {
+        let entry = sevenz_rust2::ArchiveEntry::new_file(name);
+        sz.push_archive_entry(entry, Some(std::io::Cursor::new(*content)))
+            .unwrap();
+    }
+    sz.finish().unwrap();
+}
+
+fn create_7z_with_symlink(path: &Path) {
+    let mut sz = sevenz_rust2::ArchiveWriter::create(path).unwrap();
+    let mut entry = sevenz_rust2::ArchiveEntry::new_file("link.txt");
+    entry.has_windows_attributes = true;
+    entry.windows_attributes = 0x400; // FILE_ATTRIBUTE_REPARSE_POINT
+    sz.push_archive_entry(entry, Some(std::io::Cursor::new(b"target")))
+        .unwrap();
+    sz.finish().unwrap();
+}
+
+fn staging_is_empty(ctx: &Ctx) -> bool {
+    let staging_root = ctx.paths.content_staging_dir();
+    if !staging_root.exists() {
+        return true;
+    }
+    std::fs::read_dir(&staging_root)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(true)
+}
+
+#[test]
+fn test_7z_and_zip_identical_content_have_same_item_id() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let files = &[
+        ("data/file1.txt", b"hello world" as &[u8]),
+        ("folder/sub/file2.bin", b"some binary data \x00\x01\x02"),
+    ];
+
+    let zip_path = work.path().join("content.zip");
+    create_zip(&zip_path, files);
+
+    let sz_path = work.path().join("content.7z");
+    create_7z(&sz_path, files);
+
+    let out_zip = add_archive(&ctx, &zip_path, Some("FromZip")).unwrap();
+    assert_eq!(out_zip.objects_new(), 2);
+
+    let out_7z = add_archive(&ctx, &sz_path, Some("From7z")).unwrap();
+    assert!(matches!(out_7z, AddOutcome::Existing { .. }));
+    assert_eq!(out_7z.objects_new(), 0);
+    assert_eq!(out_zip.item().item_id, out_7z.item().item_id);
+    assert_eq!(out_7z.item().sources.len(), 2);
+}
+
+#[test]
+fn test_7z_refusal_parent_dir_leaves_no_staging() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let sz_path = work.path().join("escape.7z");
+    create_7z(&sz_path, &[("../escape.txt", b"evil")]);
+
+    let res = add_archive(&ctx, &sz_path, None);
+    assert!(matches!(res, Err(ContentError::InvalidPath { .. })));
+    assert!(staging_is_empty(&ctx));
+}
+
+#[test]
+fn test_7z_refusal_device_name_leaves_no_staging() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let sz_path = work.path().join("device.7z");
+    create_7z(&sz_path, &[("COM1", b"device")]);
+
+    let res = add_archive(&ctx, &sz_path, None);
+    assert!(matches!(res, Err(ContentError::InvalidPath { .. })));
+    assert!(staging_is_empty(&ctx));
+}
+
+#[test]
+fn test_7z_refusal_case_collision_leaves_no_staging() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let sz_path = work.path().join("collision.7z");
+    create_7z(&sz_path, &[("File.txt", b"a"), ("file.txt", b"b")]);
+
+    let res = add_archive(&ctx, &sz_path, None);
+    assert!(matches!(res, Err(ContentError::InvalidPath { .. })));
+    assert!(staging_is_empty(&ctx));
+}
+
+#[test]
+fn test_7z_refusal_truncated_leaves_no_staging() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let sz_path = work.path().join("truncated.7z");
+    create_7z(
+        &sz_path,
+        &[("file.txt", b"some long data for testing truncation")],
+    );
+
+    let bytes = std::fs::read(&sz_path).unwrap();
+    std::fs::write(&sz_path, &bytes[..20]).unwrap();
+
+    let res = add_archive(&ctx, &sz_path, None);
+    assert!(matches!(res, Err(ContentError::CorruptArchive(_))));
+    assert!(staging_is_empty(&ctx));
+}
+
+#[test]
+fn test_7z_refusal_password_protected_leaves_no_staging() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let src_dir = work.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(src_dir.join("secret.txt"), b"top secret data").unwrap();
+
+    let sz_path = work.path().join("encrypted.7z");
+    sevenz_rust2::compress_to_path_encrypted(
+        &src_dir,
+        &sz_path,
+        sevenz_rust2::Password::from("password123"),
+    )
+    .unwrap();
+
+    let res = add_archive(&ctx, &sz_path, None);
+    assert!(matches!(res, Err(ContentError::PasswordProtected)));
+    assert!(staging_is_empty(&ctx));
+}
+
+#[test]
+fn test_7z_refusal_symlink_leaves_no_staging() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    let sz_path = work.path().join("symlink.7z");
+    create_7z_with_symlink(&sz_path);
+
+    let res = add_archive(&ctx, &sz_path, None);
+    assert!(matches!(res, Err(ContentError::InvalidPath { .. })));
+    assert!(staging_is_empty(&ctx));
+}
+
+#[test]
+fn test_7z_spoofed_extension_imported_as_7z() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+
+    // File name ends in .zip, but contents are valid 7z
+    let spoofed_path = work.path().join("fake_zip.zip");
+    create_7z(&spoofed_path, &[("legit.txt", b"actual 7z payload")]);
+
+    let out = add_archive(&ctx, &spoofed_path, Some("Spoofed7z")).unwrap();
+    assert_eq!(out.item().files.len(), 1);
+    assert_eq!(out.item().files[0].path.as_str(), "legit.txt");
+}

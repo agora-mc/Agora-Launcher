@@ -452,6 +452,7 @@ impl InstanceManifest {
                     id: format!("minecraft:{kind}").try_into().unwrap(),
                     enabled: true,
                     mount_path: path.try_into().unwrap(),
+                    source_path: agora_game_api::RelPath::default(),
                     source: agora_game_api::LayerSource::InstanceContent {
                         path: path.try_into().unwrap(),
                         content_kind: kind.into(),

@@ -34,6 +34,7 @@ fn dummy_package_def(game_id: &str) -> PackageDefinition {
             linked_archive_patterns: vec![],
             declared_writes: vec![],
             excluded_paths: vec![],
+            content_layout: None,
         }],
         frameworks: vec![],
         tools: vec![],

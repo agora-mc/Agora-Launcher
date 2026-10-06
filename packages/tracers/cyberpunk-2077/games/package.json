@@ -24,6 +24,18 @@
       ],
       "deployment": "virtual_file_system",
       "content_rules": [],
+      "content_layout": {
+        "data_path": "",
+        "data_markers": [],
+        "root_markers": [
+          "archive",
+          "bin",
+          "r6",
+          "red4ext",
+          "engine",
+          "mods"
+        ]
+      },
       "native_code_patterns": [],
       "framework_ids": [],
       "tool_ids": [],

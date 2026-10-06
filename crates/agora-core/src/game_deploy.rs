@@ -31,6 +31,8 @@ pub struct DeploymentPlan {
     pub files: Vec<PlannedFile>,
     pub overrides: Vec<Override>,
     pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +325,7 @@ pub fn plan(
     let game_dir = deployment_dir.join("game");
 
     let mut layers = Vec::new();
+    let mut warnings = Vec::new();
 
     // 1. Base layer files
     {
@@ -355,33 +358,69 @@ pub fn plan(
         if let LayerSource::Content { content: item_id } = &layer.source {
             let item = crate::content_store::get_item(ctx, item_id)
                 .map_err(|_| DeployError::ContentNotFound(item_id.clone()))?;
-            let mut content_files = Vec::with_capacity(item.files.len());
+            let mut content_files = Vec::new();
+            let src_path = layer.source_path.as_str().trim_matches('/');
+            let src_parts: Vec<&str> = if src_path.is_empty() {
+                Vec::new()
+            } else {
+                src_path.split('/').filter(|s| !s.is_empty()).collect()
+            };
+
             for cf in &item.files {
-                let full_rel_str = if layer.mount_path.as_str().is_empty() {
-                    cf.path.as_str().to_string()
+                let cf_parts: Vec<&str> = cf
+                    .path
+                    .as_str()
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let stripped_rel = if src_parts.is_empty() {
+                    Some(cf.path.as_str().to_string())
+                } else if cf_parts.len() > src_parts.len()
+                    && src_parts
+                        .iter()
+                        .zip(cf_parts.iter())
+                        .all(|(sp, cp)| sp.eq_ignore_ascii_case(cp))
+                {
+                    Some(cf_parts[src_parts.len()..].join("/"))
                 } else {
-                    format!(
-                        "{}/{}",
-                        layer.mount_path.as_str().trim_end_matches('/'),
-                        cf.path.as_str().trim_start_matches('/')
-                    )
+                    None
                 };
-                let rel_path = RelPath::new(full_rel_str)
-                    .map_err(|e| DeployError::Other(format!("invalid mounted path: {e}")))?;
-                content_files.push(LayerFileEntry {
-                    path: rel_path,
-                    source: FileSource::Content {
-                        item_id: item_id.clone(),
-                        sha256: cf.sha256.clone(),
-                    },
-                    size: cf.size,
-                    modified_unix_ms: 0,
+
+                if let Some(rel) = stripped_rel {
+                    let full_rel_str = if layer.mount_path.as_str().is_empty() {
+                        rel
+                    } else {
+                        format!(
+                            "{}/{}",
+                            layer.mount_path.as_str().trim_end_matches('/'),
+                            rel.trim_start_matches('/')
+                        )
+                    };
+                    let rel_path = RelPath::new(full_rel_str)
+                        .map_err(|e| DeployError::Other(format!("invalid mounted path: {e}")))?;
+                    content_files.push(LayerFileEntry {
+                        path: rel_path,
+                        source: FileSource::Content {
+                            item_id: item_id.clone(),
+                            sha256: cf.sha256.clone(),
+                        },
+                        size: cf.size,
+                        modified_unix_ms: 0,
+                    });
+                }
+            }
+
+            if content_files.is_empty() {
+                warnings.push(format!(
+                    "layer '{}': source_path '{}' matches no files",
+                    layer.id, layer.source_path
+                ));
+            } else {
+                layers.push(LayerContribution {
+                    layer_id: layer.id.as_str().to_string(),
+                    files: content_files,
                 });
             }
-            layers.push(LayerContribution {
-                layer_id: layer.id.as_str().to_string(),
-                files: content_files,
-            });
         }
     }
 
@@ -583,6 +622,7 @@ pub fn plan(
         files: planned_files,
         overrides,
         fingerprint,
+        warnings,
     })
 }
 
@@ -1071,6 +1111,7 @@ fn harvest_internal(
                 id: LayerId::new("writable").map_err(DeployError::Id)?,
                 enabled: true,
                 mount_path: RelPath::default(),
+                source_path: RelPath::default(),
                 source: LayerSource::Writable {
                     path: RelPath::new("writable")
                         .map_err(|e| DeployError::Other(format!("invalid rel path: {e}")))?,
@@ -1109,6 +1150,7 @@ pub fn add_content(
     instance_id: &str,
     item_id_or_prefix: &str,
     mount_path: Option<&str>,
+    source_path: Option<&str>,
 ) -> Result<Layer, DeployError> {
     let _lock = ctx.lock_manager.acquire(
         LockResource::Instance(instance_id.to_string()),
@@ -1142,10 +1184,18 @@ pub fn add_content(
         _ => RelPath::default(),
     };
 
+    let source_rel = match source_path {
+        Some(p) if !p.trim().is_empty() => {
+            RelPath::new(p).map_err(|e| DeployError::Other(format!("invalid source path: {e}")))?
+        }
+        _ => RelPath::default(),
+    };
+
     let new_layer = Layer {
         id: layer_id,
         enabled: true,
         mount_path: mount_rel,
+        source_path: source_rel,
         source: LayerSource::Content { content: item_id },
         whiteouts: Vec::new(),
     };
