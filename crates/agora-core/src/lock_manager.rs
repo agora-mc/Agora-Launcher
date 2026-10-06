@@ -21,6 +21,7 @@
 use crate::app_paths;
 use crate::error::{LauncherError, LauncherResult};
 use crate::event_sink::CancellationToken;
+use agora_game_api::{GameId, StoreId};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -169,6 +170,8 @@ pub enum LockResource {
     Instance(String),
     /// Exclusive access to the content store for adding or removing items.
     ContentStore,
+    /// Exclusive access for per-user game files journaled swap.
+    GameUserFiles(GameId, StoreId),
 }
 
 impl LockResource {
@@ -196,6 +199,15 @@ impl LockResource {
                 Ok(format!("instance-{id}"))
             }
             LockResource::ContentStore => Ok("content-store".into()),
+            LockResource::GameUserFiles(game, store) => {
+                app_paths::validate_path_component(game.as_str())?;
+                app_paths::validate_path_component(store.as_str())?;
+                Ok(format!(
+                    "game-user-files-{}-{}",
+                    game.as_str(),
+                    store.as_str()
+                ))
+            }
         }
     }
 }
@@ -757,6 +769,15 @@ mod tests {
     fn test_lock_name_accepts_content_store() {
         let r = LockResource::ContentStore;
         assert_eq!(r.lock_name().unwrap(), "content-store");
+    }
+
+    #[test]
+    fn test_lock_name_accepts_game_user_files() {
+        let r = LockResource::GameUserFiles(
+            GameId::new("skyrim-se").unwrap(),
+            StoreId::new("steam").unwrap(),
+        );
+        assert_eq!(r.lock_name().unwrap(), "game-user-files-skyrim-se-steam");
     }
 
     #[test]

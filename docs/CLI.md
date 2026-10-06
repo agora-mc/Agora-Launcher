@@ -188,6 +188,8 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games instance content move <instance> <item> <position>` | Move a content layer to a 1-based position |
 | `agora games instance deploy <instance> [--copies]` | Deploy an instance's content layers to its game folder |
 | `agora games instance undeploy <instance>` | Harvest game writes and tear down an instance deployment |
+| `agora games user-files status [<game>]` | List per-user file swap sessions in progress |
+| `agora games user-files restore <game> <store>` | Restore original per-user files from a finished session |
 
 ### Catalog
 

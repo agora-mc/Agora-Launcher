@@ -289,6 +289,9 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "instance", "deploy"],
     &["games", "instance", "undeploy"],
     &["games", "launch"],
+    &["games", "user-files"],
+    &["games", "user-files", "status"],
+    &["games", "user-files", "restore"],
 ];
 
 // ---------------------------------------------------------------------------
@@ -3195,4 +3198,38 @@ fn games_instance_content_and_deploy_cli() {
         &["games", "instance", "undeploy", "no-such-inst"],
     );
     assert!(!out_undeploy.status.success());
+}
+
+#[test]
+fn games_user_files_cli_status_and_restore() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 1. Status with no sessions should succeed and be empty
+    let out = run_agora(&data_dir, &["games", "user-files", "status"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("No user-file swap sessions"));
+
+    let out_json = run_agora_json(&data_dir, &["games", "user-files", "status"]);
+    assert!(out_json.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out_json.stdout)).unwrap();
+    assert_eq!(parsed, serde_json::json!([]));
+
+    // 2. Status with game filter
+    let out_game = run_agora(&data_dir, &["games", "user-files", "status", "skyrim-se"]);
+    assert!(out_game.status.success());
+
+    // 3. Restore with nonexistent session errors
+    let out_restore = run_agora(
+        &data_dir,
+        &["games", "user-files", "restore", "skyrim-se", "steam"],
+    );
+    assert!(!out_restore.status.success());
+
+    let out_restore_json = run_agora_json(
+        &data_dir,
+        &["games", "user-files", "restore", "skyrim-se", "steam"],
+    );
+    assert!(!out_restore_json.status.success());
 }

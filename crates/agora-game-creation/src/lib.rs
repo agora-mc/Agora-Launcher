@@ -99,13 +99,42 @@ mod tests {
         assert!(launch.arguments.is_empty());
         assert!(launch.environment.is_empty());
 
+        // User files
+        assert_eq!(game.user_files.len(), 8);
+        assert_eq!(
+            game.user_files[0].source,
+            GamePath::UserData {
+                location: agora_game_api::UserDataLocation::LocalAppData,
+                path: RelPath::new("Skyrim Special Edition/Plugins.txt").unwrap(),
+            }
+        );
+        assert_eq!(game.user_files[0].instance_path, "user/Plugins.txt");
+        assert_eq!(
+            game.user_files[0].strategy,
+            agora_game_api::UserFileStrategy::JournaledSwap
+        );
+        assert_eq!(game.user_files[0].stores, vec![StoreId::steam()]);
+
+        assert_eq!(
+            game.user_files[4].source,
+            GamePath::UserData {
+                location: agora_game_api::UserDataLocation::LocalAppData,
+                path: RelPath::new("Skyrim Special Edition GOG/Plugins.txt").unwrap(),
+            }
+        );
+        assert_eq!(game.user_files[4].instance_path, "user/Plugins.txt");
+        assert_eq!(
+            game.user_files[4].strategy,
+            agora_game_api::UserFileStrategy::JournaledSwap
+        );
+        assert_eq!(game.user_files[4].stores, vec![StoreId::gog()]);
+
         // Empty lists
         assert!(game.content_rules.is_empty());
         assert!(game.framework_ids.is_empty());
         assert!(game.tool_ids.is_empty());
         assert!(game.log_paths.is_empty());
         assert!(game.crash_paths.is_empty());
-        assert!(game.user_files.is_empty());
         assert!(game.save_paths.is_empty());
     }
 }

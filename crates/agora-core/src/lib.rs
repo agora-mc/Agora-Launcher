@@ -31,6 +31,7 @@ pub mod game_hooks;
 pub mod game_instance;
 pub mod game_launch;
 pub mod game_registry;
+pub mod game_user_files;
 pub mod github_ratelimit;
 pub mod governance;
 pub mod helpers;

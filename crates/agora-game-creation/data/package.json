@@ -86,7 +86,104 @@
       },
       "log_paths": [],
       "crash_paths": [],
-      "user_files": [],
+      "user_files": [
+        {
+          "source": {
+            "root": "user_data",
+            "location": "local_app_data",
+            "path": "Skyrim Special Edition/Plugins.txt"
+          },
+          "instance_path": "user/Plugins.txt",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/Skyrim.ini"
+          },
+          "instance_path": "user/Skyrim.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/SkyrimPrefs.ini"
+          },
+          "instance_path": "user/SkyrimPrefs.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition/SkyrimCustom.ini"
+          },
+          "instance_path": "user/SkyrimCustom.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "steam"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "local_app_data",
+            "path": "Skyrim Special Edition GOG/Plugins.txt"
+          },
+          "instance_path": "user/Plugins.txt",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/Skyrim.ini"
+          },
+          "instance_path": "user/Skyrim.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/SkyrimPrefs.ini"
+          },
+          "instance_path": "user/SkyrimPrefs.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        },
+        {
+          "source": {
+            "root": "user_data",
+            "location": "documents",
+            "path": "My Games/Skyrim Special Edition GOG/SkyrimCustom.ini"
+          },
+          "instance_path": "user/SkyrimCustom.ini",
+          "strategy": "journaled_swap",
+          "stores": [
+            "gog"
+          ]
+        }
+      ],
       "save_paths": [],
       "linked_archive_patterns": [
         "Data/*.bsa",

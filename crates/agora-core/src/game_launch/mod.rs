@@ -132,13 +132,7 @@ fn resolve_game_path(path: &GamePath, roots: &LaunchRoots) -> Result<PathBuf, La
             }
         }
         GamePath::UserData { location, path } => {
-            let dir = match location {
-                UserDataLocation::Documents => dirs::document_dir(),
-                UserDataLocation::RoamingAppData => dirs::data_dir(),
-                UserDataLocation::LocalAppData => dirs::data_local_dir(),
-                UserDataLocation::Home => dirs::home_dir(),
-            };
-            let Some(base) = dir else {
+            let Some(base) = crate::game_user_files::user_data_root(location) else {
                 return Err(LaunchError::UserDataNotFound(location.clone()));
             };
             let rel = path.as_str();

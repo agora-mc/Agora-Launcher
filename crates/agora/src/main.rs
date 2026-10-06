@@ -313,6 +313,28 @@ enum GamesCmd {
         #[arg(long)]
         launch_anyway: bool,
     },
+    /// Manage per-user game files and journaled swap sessions.
+    #[command(name = "user-files")]
+    UserFiles {
+        #[command(subcommand)]
+        action: UserFilesCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserFilesCmd {
+    /// Show user-file swap sessions in progress.
+    Status {
+        /// Optional game ID to filter sessions.
+        game: Option<String>,
+    },
+    /// Restore user files from a finished session.
+    Restore {
+        /// Game ID of the session to restore.
+        game: String,
+        /// Store ID of the session to restore (e.g. steam, gog).
+        store: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5178,9 +5200,73 @@ async fn run_command(
                         }
                     }
 
+                    let (store, running_from) = match &record.base {
+                        agora_game_api::BaseReference::Pinned { id: base_id, .. } => {
+                            let manifest_path = ctx.paths.base_manifest_path(base_id);
+                            let text = std::fs::read_to_string(&manifest_path)?;
+                            let base_manifest: agora_core::game_base::BaseManifest =
+                                serde_json::from_str(&text)?;
+                            let store = base_manifest.runtime.store.clone();
+                            let running_from = if prepared.deploy_outcome.is_some() {
+                                agora_core::game_deploy::deployment_dir(ctx, &instance_id)?
+                                    .unwrap_or_else(|| base_manifest.location.clone())
+                            } else {
+                                base_manifest.location.clone()
+                            };
+                            (store, running_from)
+                        }
+                        agora_game_api::BaseReference::Unpinned { install, .. } => {
+                            let report = agora_core::game_discovery::discover_all();
+                            let matching = report.installs.iter().find(|discovered| {
+                                agora_core::game_registry::make_install_id(
+                                    &discovered.store,
+                                    &discovered.product,
+                                ) == *install
+                            });
+                            let Some(discovered) = matching else {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "error": format!("Install '{install}' not found."),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: Install '{install}' not found.");
+                                }
+                                std::process::exit(1);
+                            };
+                            (discovered.store.clone(), discovered.location.clone())
+                        }
+                    };
+
+                    if let Err(e) = agora_core::game_user_files::swap_in(
+                        ctx,
+                        &instance_id,
+                        game_def,
+                        &store,
+                        &running_from,
+                    ) {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": format!("{e}"),
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            eprintln!("Error: {e}");
+                        }
+                        std::process::exit(1);
+                    }
+
                     let mut launched = match agora_core::game_launch::launch(&prepared) {
                         Ok(l) => l,
                         Err(e) => {
+                            report_user_files_restore(
+                                agora_core::game_user_files::restore(ctx, game_def, &store),
+                                game_def.id.as_str(),
+                                store.as_str(),
+                            );
                             if json {
                                 let out = serde_json::json!({
                                     "status": "error",
@@ -5194,6 +5280,13 @@ async fn run_command(
                             std::process::exit(1);
                         }
                     };
+
+                    let _ = agora_core::game_user_files::record_process(
+                        ctx,
+                        &record.game,
+                        &store,
+                        launched.identity.clone(),
+                    );
 
                     let _ = agora_core::game_instance::record_launch(ctx, &instance_id);
 
@@ -5264,6 +5357,11 @@ async fn run_command(
                             &mut launched,
                             std::time::Duration::from_millis(250),
                             std::time::Duration::from_secs(5),
+                        );
+                        report_user_files_restore(
+                            agora_core::game_user_files::restore(ctx, game_def, &store),
+                            game_def.id.as_str(),
+                            store.as_str(),
                         );
                         let after = base_manifest.as_ref().map(|m| {
                             agora_core::game_base::verify_base(
@@ -6171,6 +6269,96 @@ async fn run_command(
                     }
                 }
             }
+            GamesCmd::UserFiles { action } => match action {
+                UserFilesCmd::Status { game } => {
+                    let game_id = game
+                        .as_deref()
+                        .map(agora_game_api::GameId::new)
+                        .transpose()
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let statuses =
+                        agora_core::game_user_files::list_statuses(ctx, game_id.as_ref())?;
+                    if json {
+                        let json_list: Vec<serde_json::Value> = statuses
+                            .into_iter()
+                            .map(|(g, s, st)| {
+                                serde_json::json!({
+                                    "game": g,
+                                    "store": s,
+                                    "instance": st.instance,
+                                    "running": st.running,
+                                    "files": st.files,
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&json_list)?);
+                    } else if statuses.is_empty() {
+                        println!("No user-file swap sessions in progress.");
+                    } else {
+                        println!("Active user-file swap sessions ({}):", statuses.len());
+                        for (g, s, st) in statuses {
+                            println!("\nGame:     {g}");
+                            println!("Store:    {s}");
+                            println!("Instance: {}", st.instance);
+                            println!("Running:  {}", if st.running { "yes" } else { "no" });
+                            println!("Files ({}):", st.files.len());
+                            for f in &st.files {
+                                println!("  - {} (swapped: {})", f.real_path.display(), f.swapped);
+                            }
+                        }
+                    }
+                }
+                UserFilesCmd::Restore { game, store } => {
+                    let game_id =
+                        agora_game_api::GameId::new(&game).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let store_id =
+                        agora_game_api::StoreId::new(&store).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let game_def = ctx.games.game(&game_id).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", game_id)
+                    })?;
+                    match agora_core::game_user_files::restore(ctx, game_def, &store_id) {
+                        Ok(report) => {
+                            if json {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&serde_json::json!({
+                                        "status": "restored",
+                                        "game": report.game,
+                                        "store": report.store,
+                                        "instance": report.instance_id,
+                                        "files": report.files,
+                                    }))?
+                                );
+                            } else {
+                                println!(
+                                    "Restored user files for {} ({}) from instance {}:",
+                                    report.game, report.store, report.instance_id
+                                );
+                                for f in &report.files {
+                                    println!(
+                                        "  - {} ({})",
+                                        f.real_path.display(),
+                                        if f.changed { "changed" } else { "unchanged" }
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            },
         },
     }
 
@@ -6890,6 +7078,31 @@ fn open_url_in_browser(url: &str) -> anyhow::Result<()> {
 
     command.spawn()?;
     Ok(())
+}
+
+/// Say what happened to the per-user files after a session: a failed restore leaves them swapped
+/// (the journal keeps everything needed), and the user must hear that and how to finish it.
+fn report_user_files_restore(
+    result: Result<
+        agora_core::game_user_files::RestoreReport,
+        agora_core::game_user_files::UserFilesError,
+    >,
+    game: &str,
+    store: &str,
+) {
+    match result {
+        Ok(report) if report.files.is_empty() => {}
+        Ok(report) => {
+            let changed = report.files.iter().filter(|f| f.changed).count();
+            println!(
+                "Restored {} per-user file(s); {changed} changed during the session and were kept in the instance.",
+                report.files.len()
+            );
+        }
+        Err(e) => eprintln!(
+            "Warning: the per-user files could not be restored ({e}); they are still swapped in.              Run `agora games user-files restore {game} {store}` once the game has closed."
+        ),
+    }
 }
 
 #[cfg(test)]

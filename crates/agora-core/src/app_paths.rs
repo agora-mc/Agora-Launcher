@@ -232,6 +232,26 @@ impl AppPaths {
         self.content_root().join("staging")
     }
 
+    /// Root directory for user-file journaled swaps (`user-files/`).
+    pub fn user_files_root(&self) -> PathBuf {
+        self.root.join("user-files")
+    }
+
+    /// Session directory for a specific game and store (`user-files/<game>_<store>/`).
+    pub fn user_files_dir(&self, game: &str, store: &str) -> PathBuf {
+        self.user_files_root().join(format!("{game}_{store}"))
+    }
+
+    /// Journal path for a specific game and store (`user-files/<game>_<store>/journal.json`).
+    pub fn user_files_journal_path(&self, game: &str, store: &str) -> PathBuf {
+        self.user_files_dir(game, store).join("journal.json")
+    }
+
+    /// Backup directory for a specific game and store (`user-files/<game>_<store>/backup/`).
+    pub fn user_files_backup_dir(&self, game: &str, store: &str) -> PathBuf {
+        self.user_files_dir(game, store).join("backup")
+    }
+
     /// Root directory for the Agora-owned Minecraft runtime (`minecraft-runtime/`).
     pub fn minecraft_runtime_root(&self) -> PathBuf {
         self.root.join("minecraft-runtime")
@@ -604,6 +624,19 @@ mod tests {
         assert_eq!(p.snapshots_root(), Path::new("/base/snapshots"));
         assert_eq!(p.locks_root(), Path::new("/base/locks"));
         assert_eq!(p.staging_root(), Path::new("/base/staging"));
+        assert_eq!(p.user_files_root(), Path::new("/base/user-files"));
+        assert_eq!(
+            p.user_files_dir("skyrim-se", "steam"),
+            Path::new("/base/user-files/skyrim-se_steam")
+        );
+        assert_eq!(
+            p.user_files_journal_path("skyrim-se", "steam"),
+            Path::new("/base/user-files/skyrim-se_steam/journal.json")
+        );
+        assert_eq!(
+            p.user_files_backup_dir("skyrim-se", "steam"),
+            Path::new("/base/user-files/skyrim-se_steam/backup")
+        );
     }
 
     // ------------------------------------------------------------------

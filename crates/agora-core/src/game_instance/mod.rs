@@ -6,7 +6,7 @@ use rusqlite::OptionalExtension;
 
 use agora_game_api::{
     BaseMode, BaseReference, GameDefinition, GameId, InstalledFramework, LayerStack,
-    RuntimeIdentity,
+    RuntimeIdentity, StoreId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +108,8 @@ pub enum InstanceError {
     LaunchError(#[from] LaunchError),
     #[error(transparent)]
     Deploy(#[from] crate::game_deploy::DeployError),
+    #[error(transparent)]
+    UserFiles(#[from] crate::game_user_files::UserFilesError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -710,6 +712,107 @@ pub fn prepare_launch_with_discovery(
             })
         }
     }
+}
+
+/// A spawned game process with its prepared launch and swap context.
+pub struct LaunchedInstance {
+    pub launched: crate::game_launch::LaunchedGame,
+    pub prepared: PreparedLaunch,
+    pub store: StoreId,
+    pub running_from: PathBuf,
+}
+
+/// Launch a generic game instance: deploy -> swap_in -> spawn.
+/// If spawning fails, restores user files immediately.
+pub fn launch(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+) -> Result<LaunchedInstance, InstanceError> {
+    launch_with_discovery(
+        ctx,
+        id,
+        definition,
+        launch_anyway,
+        &crate::game_discovery::discover_all,
+    )
+}
+
+/// Launch with a custom discovery function.
+pub fn launch_with_discovery(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+    discover_fn: &dyn Fn() -> DiscoveryReport,
+) -> Result<LaunchedInstance, InstanceError> {
+    let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
+
+    // 1. Prepare launch (which performs deployment if needed)
+    let prepared = prepare_launch_with_discovery(ctx, id, definition, launch_anyway, discover_fn)?;
+
+    // 2. Determine store and running_from
+    let (store, running_from) = match &record.base {
+        BaseReference::Pinned { id: base_id, .. } => {
+            let manifest_path = ctx.paths.base_manifest_path(base_id);
+            if !manifest_path.exists() {
+                return Err(InstanceError::BaseNotFound(base_id.clone()));
+            }
+            let text = std::fs::read_to_string(&manifest_path)?;
+            let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&text)?;
+            let store = base_manifest.runtime.store.clone();
+            let running_from = if prepared.deploy_outcome.is_some() {
+                crate::game_deploy::deployment_dir(ctx, id)?
+                    .unwrap_or_else(|| base_manifest.location.clone())
+            } else {
+                base_manifest.location.clone()
+            };
+            (store, running_from)
+        }
+        BaseReference::Unpinned { install, .. } => {
+            let report = discover_fn();
+            let matching = report.installs.iter().find(|discovered| {
+                crate::game_registry::make_install_id(&discovered.store, &discovered.product)
+                    == *install
+            });
+            let Some(discovered) = matching else {
+                return Err(InstanceError::InstallNotFound(install.to_string()));
+            };
+            (discovered.store.clone(), discovered.location.clone())
+        }
+    };
+
+    // 3. Swap in user files
+    crate::game_user_files::swap_in(ctx, id, definition, &store, &running_from)?;
+
+    // 4. Spawn game process
+    let launched = match crate::game_launch::launch(&prepared) {
+        Ok(l) => l,
+        Err(e) => {
+            // "If spawning fails, restore immediately."
+            let _ = crate::game_user_files::restore(ctx, definition, &store);
+            return Err(e.into());
+        }
+    };
+
+    // 5. Record spawned process identity in journal
+    let _ = crate::game_user_files::record_process(
+        ctx,
+        &definition.id,
+        &store,
+        launched.identity.clone(),
+    );
+
+    // 6. Record launch
+    let _ = record_launch(ctx, id);
+
+    Ok(LaunchedInstance {
+        launched,
+        prepared,
+        store,
+        running_from,
+    })
 }
 
 /// List all instances across all games, including Minecraft.

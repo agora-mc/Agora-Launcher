@@ -214,6 +214,28 @@ pub struct UserFileMapping {
     pub source: GamePath,
     pub instance_path: RelPath,
     pub strategy: UserFileStrategy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stores: Vec<StoreId>,
+}
+
+impl UserFileMapping {
+    pub fn new(source: GamePath, instance_path: RelPath, strategy: UserFileStrategy) -> Self {
+        Self {
+            source,
+            instance_path,
+            strategy,
+            stores: Vec::new(),
+        }
+    }
+
+    pub fn with_stores(mut self, stores: Vec<StoreId>) -> Self {
+        self.stores = stores;
+        self
+    }
+
+    pub fn applies_to_store(&self, store: &StoreId) -> bool {
+        self.stores.is_empty() || self.stores.contains(store)
+    }
 }
 
 /// Host-resolved roots. Every `path` is relative to its root and checked by core.
