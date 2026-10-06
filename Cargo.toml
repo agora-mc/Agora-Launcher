@@ -25,6 +25,7 @@ members = [
     "crates/agora-plugin-host",
     "desktop/src-tauri",
     "crates/agora",
+    "crates/agora-vfs",
 ]
 
 [workspace.package]
