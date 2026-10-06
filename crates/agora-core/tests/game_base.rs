@@ -96,6 +96,8 @@ fn test_definition() -> GameDefinition {
         ],
         declared_writes: vec![],
         excluded_paths: vec![],
+        plugin_list: None,
+        launch_alternatives: Vec::new(),
         content_layout: None,
     }
 }

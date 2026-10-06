@@ -129,6 +129,31 @@ mod tests {
         );
         assert_eq!(game.user_files[4].stores, vec![StoreId::gog()]);
 
+        // Plugin activation: masters, then light plugins, then plain plugins
+        let rule = game
+            .plugin_list
+            .as_ref()
+            .expect("Skyrim keeps a plugin list");
+        assert_eq!(rule.user_file, "user/Plugins.txt");
+        assert_eq!(rule.plugin_folder, "Data");
+        assert_eq!(rule.patterns, vec!["*.esm", "*.esl", "*.esp"]);
+        assert_eq!(rule.active_prefix, "*");
+        assert_eq!(rule.header.len(), 2);
+        assert!(rule.header.iter().all(|l| l.starts_with('#')));
+
+        // Framework loaders
+        assert_eq!(game.launch_alternatives.len(), 1);
+        let skse = &game.launch_alternatives[0];
+        assert_eq!(skse.id, "skse");
+        assert_eq!(skse.when_present, "skse64_loader.exe");
+        assert_eq!(
+            skse.executable,
+            GamePath::Runtime {
+                path: RelPath::new("skse64_loader.exe").unwrap()
+            }
+        );
+        assert!(!skse.reason.is_empty());
+
         // Empty lists
         assert!(game.content_rules.is_empty());
         assert!(game.framework_ids.is_empty());

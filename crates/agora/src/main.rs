@@ -312,6 +312,9 @@ enum GamesCmd {
         /// Launch even if the base fails verification.
         #[arg(long)]
         launch_anyway: bool,
+        /// Start the game's own executable, not a framework loader such as SKSE's.
+        #[arg(long)]
+        plain: bool,
     },
     /// Manage per-user game files and journaled swap sessions.
     #[command(name = "user-files")]
@@ -368,6 +371,9 @@ enum GameInstanceCmd {
         /// Launch even if the base fails verification.
         #[arg(long)]
         launch_anyway: bool,
+        /// Start the game's own executable, not a framework loader such as SKSE's.
+        #[arg(long)]
+        plain: bool,
     },
     /// Delete a game instance.
     Delete {
@@ -391,6 +397,32 @@ enum GameInstanceCmd {
     Undeploy {
         /// Instance ID to undeploy.
         instance_id: String,
+    },
+    /// Show or change which plugins an instance's plugin list activates.
+    #[command(args_conflicts_with_subcommands = true)]
+    Plugins {
+        /// Instance whose plugin list to show.
+        instance_id: Option<String>,
+        #[command(subcommand)]
+        action: Option<InstancePluginsCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstancePluginsCmd {
+    /// Activate a plugin in an instance's plugin list.
+    Enable {
+        /// Instance ID.
+        instance_id: String,
+        /// Plugin file name, e.g. SkyUI_SE.esp.
+        name: String,
+    },
+    /// Deactivate a plugin in an instance's plugin list (it stays listed).
+    Disable {
+        /// Instance ID.
+        instance_id: String,
+        /// Plugin file name, e.g. SkyUI_SE.esp.
+        name: String,
     },
 }
 
@@ -5080,6 +5112,7 @@ async fn run_command(
                     instance_id,
                     wait,
                     launch_anyway,
+                    plain,
                 } => {
                     let in_mc = agora_core::game_instance::is_minecraft_instance(ctx, &instance_id);
                     if in_mc {
@@ -5115,11 +5148,13 @@ async fn run_command(
                         anyhow::anyhow!("Game definition not found for {}", record.game)
                     })?;
 
-                    let prepared = match agora_core::game_instance::prepare_launch(
+                    let prepared = match agora_core::game_instance::prepare_launch_with(
                         ctx,
                         &instance_id,
                         game_def,
                         launch_anyway,
+                        plain,
+                        &agora_core::game_discovery::discover_all,
                     ) {
                         Ok(p) => p,
                         Err(agora_core::game_instance::InstanceError::LaunchError(
@@ -5174,7 +5209,7 @@ async fn run_command(
                     if let Some(deploy_outcome) = &prepared.deploy_outcome {
                         if !json {
                             match deploy_outcome {
-                                agora_core::game_deploy::DeployOutcome::UpToDate => {
+                                agora_core::game_deploy::DeployOutcome::UpToDate { .. } => {
                                     println!("Deployment is up to date.");
                                 }
                                 agora_core::game_deploy::DeployOutcome::Built {
@@ -5182,6 +5217,7 @@ async fn run_command(
                                     copied,
                                     copied_bytes,
                                     harvest,
+                                    ..
                                 } => {
                                     println!(
                                         "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes)."
@@ -5197,6 +5233,15 @@ async fn run_command(
                                     }
                                 }
                             }
+                            if let Some(report) = deploy_outcome.plugins() {
+                                print_plugin_sync(report);
+                            }
+                        }
+                    }
+                    if !json {
+                        if let Some(alt) = &prepared.alternative {
+                            println!("Starting through '{}': {}.", alt.id, alt.reason);
+                            println!("(Use --plain to start the game's own executable instead.)");
                         }
                     }
 
@@ -5313,6 +5358,8 @@ async fn run_command(
                                 "cwd": prepared.resolved.cwd,
                                 "env": env_map,
                                 "warnings": prepared.warnings,
+                                "alternative": prepared.alternative,
+                                "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
                             });
                             println!("{}", serde_json::to_string_pretty(&out)?);
                         } else {
@@ -5347,10 +5394,10 @@ async fn run_command(
                             }
                             agora_game_api::BaseReference::Unpinned { .. } => None,
                         };
-                        let watch_dir = base_manifest
-                            .as_ref()
-                            .map(|m| m.location.clone())
-                            .unwrap_or_else(|| prepared.resolved.cwd.clone());
+                        // The game that matters is whatever runs from the runtime folder: a
+                        // framework loader starts the game and exits, so the loader's own
+                        // process is not what to wait for.
+                        let watch_dir = running_from.clone();
 
                         let exit_report = agora_core::game_launch::wait_for_exit(
                             &watch_dir,
@@ -5375,6 +5422,8 @@ async fn run_command(
                         if json {
                             let out = serde_json::json!({
                                 "status": "exited",
+                                "alternative": prepared.alternative,
+                                "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
                                 "instance_id": instance_id,
                                 "base_id": base_id,
                                 "pid": launched.pid(),
@@ -5950,15 +5999,19 @@ async fn run_command(
                     };
 
                     match agora_core::game_deploy::deploy(ctx, &instance_id, game_def, mode) {
-                        Ok(agora_core::game_deploy::DeployOutcome::UpToDate) => {
+                        Ok(agora_core::game_deploy::DeployOutcome::UpToDate { plugins }) => {
                             if json {
                                 let out = serde_json::json!({
                                     "status": "up_to_date",
                                     "instance_id": instance_id,
+                                    "plugins": plugins,
                                 });
                                 println!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
                                 println!("Deployment for instance '{instance_id}' is up to date.");
+                                if let Some(report) = &plugins {
+                                    print_plugin_sync(report);
+                                }
                             }
                         }
                         Ok(agora_core::game_deploy::DeployOutcome::Built {
@@ -5966,6 +6019,7 @@ async fn run_command(
                             copied,
                             copied_bytes,
                             harvest,
+                            plugins,
                         }) => {
                             if json {
                                 let out = serde_json::json!({
@@ -5975,6 +6029,7 @@ async fn run_command(
                                     "copied": copied,
                                     "copied_bytes": copied_bytes,
                                     "harvest": harvest,
+                                    "plugins": plugins,
                                 });
                                 println!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
@@ -5997,6 +6052,9 @@ async fn run_command(
                                             );
                                         }
                                     }
+                                }
+                                if let Some(report) = &plugins {
+                                    print_plugin_sync(report);
                                 }
                             }
                         }
@@ -6059,11 +6117,107 @@ async fn run_command(
                         }
                     }
                 }
+                GameInstanceCmd::Plugins {
+                    instance_id,
+                    action,
+                } => {
+                    let (instance_id, toggle) = match (instance_id, action) {
+                        (Some(id), None) => (id, None),
+                        (None, Some(InstancePluginsCmd::Enable { instance_id, name })) => {
+                            (instance_id, Some((name, true)))
+                        }
+                        (None, Some(InstancePluginsCmd::Disable { instance_id, name })) => {
+                            (instance_id, Some((name, false)))
+                        }
+                        _ => {
+                            eprintln!(
+                                "Error: name an instance: agora games instance plugins <instance>"
+                            );
+                            std::process::exit(2);
+                        }
+                    };
+                    let fail = |message: String| -> ! {
+                        if json {
+                            let out = serde_json::json!({
+                                "status": "error",
+                                "error": message,
+                                "exitCode": 1,
+                            });
+                            eprintln!("{}", serde_json::to_string_pretty(&out).unwrap_or(message));
+                        } else {
+                            eprintln!("Error: {message}");
+                        }
+                        std::process::exit(1);
+                    };
+                    let record = match agora_core::game_instance::get(ctx, &instance_id)? {
+                        Some(r) => r,
+                        None => fail(format!("Instance '{instance_id}' not found.")),
+                    };
+                    let game_def = ctx.games.game(&record.game).ok_or_else(|| {
+                        anyhow::anyhow!("Game definition not found for {}", record.game)
+                    })?;
+                    match toggle {
+                        None => match agora_core::game_plugins::list(ctx, &instance_id, game_def) {
+                            Ok(list) => {
+                                if json {
+                                    println!("{}", serde_json::to_string_pretty(&list)?);
+                                } else if !list.exists {
+                                    println!(
+                                            "Instance '{instance_id}' has no plugin list yet; it is created when the instance is deployed."
+                                        );
+                                } else if list.entries.is_empty() {
+                                    println!("Instance '{instance_id}' plugin list is empty.");
+                                } else {
+                                    for e in &list.entries {
+                                        println!(
+                                            "{}\t{}\t{}",
+                                            if e.active { "active" } else { "inactive" },
+                                            if e.managed { "managed" } else { "yours" },
+                                            e.name
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => fail(e.to_string()),
+                        },
+                        Some((name, active)) => {
+                            match agora_core::game_plugins::set_active(
+                                ctx,
+                                &instance_id,
+                                game_def,
+                                &name,
+                                active,
+                            ) {
+                                Ok(changed) => {
+                                    let state = if active { "active" } else { "inactive" };
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "status": "ok",
+                                            "instance_id": instance_id,
+                                            "plugin": name,
+                                            "active": active,
+                                            "changed": changed,
+                                        });
+                                        println!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else if changed {
+                                        println!(
+                                            "'{name}' is now {state} in instance '{instance_id}'."
+                                        );
+                                    } else {
+                                        println!("'{name}' was already {state} in instance '{instance_id}'.");
+                                    }
+                                }
+                                Err(e) => fail(e.to_string()),
+                            }
+                        }
+                    }
+                }
             },
             GamesCmd::Launch {
                 base_id,
                 wait,
                 launch_anyway,
+                plain,
             } => {
                 let manifest_path = ctx.paths.base_manifest_path(&base_id);
                 if !manifest_path.exists() {
@@ -6084,10 +6238,11 @@ async fn run_command(
                     anyhow::anyhow!("Game definition not found for {}", manifest.runtime.game)
                 })?;
 
-                let prepared = match agora_core::game_launch::prepare_base_launch(
+                let prepared = match agora_core::game_launch::prepare_base_launch_with(
                     &manifest,
                     game_def,
                     launch_anyway,
+                    plain,
                 ) {
                     Ok(p) => p,
                     Err(agora_core::game_launch::LaunchError::BaseDamaged { problems }) => {
@@ -6159,10 +6314,18 @@ async fn run_command(
                     .map(|(k, v)| (k.clone(), v.to_string_lossy().to_string()))
                     .collect();
 
+                if !json {
+                    if let Some(alt) = &prepared.alternative {
+                        println!("Starting through '{}': {}.", alt.id, alt.reason);
+                        println!("(Use --plain to start the game's own executable instead.)");
+                    }
+                }
+
                 if !wait {
                     if json {
                         let out = serde_json::json!({
                             "status": "launched",
+                            "alternative": prepared.alternative,
                             "base_id": base_id,
                             "pid": launched.pid(),
                             "program": prepared.resolved.program,
@@ -6536,6 +6699,19 @@ fn print_games_list(
     );
     for u in &inventory.unsupported {
         println!("  - {}", u.name);
+    }
+}
+
+/// Say what a deploy changed in the instance's plugin list.
+fn print_plugin_sync(report: &agora_core::game_plugins::PluginSyncReport) {
+    if !report.added.is_empty() {
+        println!("Plugin list: activated {}.", report.added.join(", "));
+    }
+    if !report.removed.is_empty() {
+        println!("Plugin list: removed {}.", report.removed.join(", "));
+    }
+    for w in &report.warnings {
+        eprintln!("Warning: {w}");
     }
 }
 

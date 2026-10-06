@@ -84,6 +84,8 @@ fn make_test_definition() -> GameDefinition {
         linked_archive_patterns: vec!["Data/*.bsa".into()],
         declared_writes: vec!["writeable_base.txt".into()],
         excluded_paths: vec![],
+        plugin_list: None,
+        launch_alternatives: Vec::new(),
         content_layout: None,
     }
 }
@@ -559,7 +561,7 @@ fn test_rebuilding_uptodate_and_delta() {
 
     // Second deploy without changes: UpToDate
     let outcome2 = deploy(&ctx, &inst.instance_id, &def, DeployMode::Links).unwrap();
-    assert!(matches!(outcome2, DeployOutcome::UpToDate));
+    assert!(matches!(outcome2, DeployOutcome::UpToDate { .. }));
 
     // Add content: should rebuild
     let item2 = add_content_folder(&ctx, "ModContent2", &[("mod_item2.txt", b"mod 2")]);

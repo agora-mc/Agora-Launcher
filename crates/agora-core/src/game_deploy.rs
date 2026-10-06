@@ -76,13 +76,31 @@ pub struct Override {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DeployOutcome {
-    UpToDate,
+    UpToDate {
+        /// What changed in the plugin list; `None` when the game keeps none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plugins: Option<crate::game_plugins::PluginSyncReport>,
+    },
     Built {
         linked: usize,
         copied: usize,
         copied_bytes: u64,
         harvest: Option<HarvestReport>,
+        /// What changed in the plugin list; `None` when the game keeps none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plugins: Option<crate::game_plugins::PluginSyncReport>,
     },
+}
+
+impl DeployOutcome {
+    /// What this deploy changed in the instance's plugin list, if the game keeps one.
+    pub fn plugins(&self) -> Option<&crate::game_plugins::PluginSyncReport> {
+        match self {
+            DeployOutcome::UpToDate { plugins } | DeployOutcome::Built { plugins, .. } => {
+                plugins.as_ref()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +184,8 @@ pub enum DeployError {
     Json(#[from] serde_json::Error),
     #[error("content error: {0}")]
     Content(#[from] crate::content_store::ContentError),
+    #[error("plugin list: {0}")]
+    Plugins(#[from] crate::game_plugins::PluginListError),
     #[error("{0}")]
     Other(String),
 }
@@ -772,7 +792,15 @@ pub fn deploy(
                         }
                     }
                     if up_to_date {
-                        return Ok(DeployOutcome::UpToDate);
+                        let plugins = activate_plugins(
+                            ctx,
+                            instance_id,
+                            definition,
+                            &manifest,
+                            &base_manifest,
+                            &current_plan,
+                        )?;
+                        return Ok(DeployOutcome::UpToDate { plugins });
                     }
                 }
             }
@@ -860,7 +888,7 @@ pub fn deploy(
         instance_id: instance_id.to_string(),
         base_id,
         mode,
-        fingerprint: current_plan.fingerprint,
+        fingerprint: current_plan.fingerprint.clone(),
         files: recorded_files,
         deployed_at_unix_ms: now_unix_ms(),
     };
@@ -869,12 +897,60 @@ pub fn deploy(
     std::fs::write(&tmp_record_path, record_bytes)?;
     std::fs::rename(&tmp_record_path, &record_path)?;
 
+    // The deployment is in place; now the game's plugin list has to name its plugins.
+    let plugins = activate_plugins(
+        ctx,
+        instance_id,
+        definition,
+        &manifest,
+        &base_manifest,
+        &current_plan,
+    )?;
+
     Ok(DeployOutcome::Built {
         linked: linked_count,
         copied: copied_count,
         copied_bytes,
         harvest,
+        plugins,
     })
+}
+
+/// Name the plugins the content layers deploy in the instance's plugin list (when the game
+/// declares one), before the list is swapped in for a launch. Runs under the instance lock.
+fn activate_plugins(
+    ctx: &Ctx,
+    instance_id: &str,
+    definition: &GameDefinition,
+    manifest: &crate::game_instance::GameInstanceManifest,
+    base_manifest: &BaseManifest,
+    plan: &DeploymentPlan,
+) -> Result<Option<crate::game_plugins::PluginSyncReport>, DeployError> {
+    let Some(rule) = &definition.plugin_list else {
+        return Ok(None);
+    };
+    let content_layer_items: Vec<String> = manifest
+        .layers
+        .layers()
+        .iter()
+        .filter_map(|l| match &l.source {
+            LayerSource::Content { content } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    let desired = crate::game_plugins::desired_plugins(
+        rule,
+        &content_layer_items,
+        plan,
+        base_manifest.files.iter().map(|f| f.path.as_str()),
+    );
+    Ok(crate::game_plugins::sync_locked(
+        ctx,
+        instance_id,
+        definition,
+        &base_manifest.runtime.store,
+        &desired,
+    )?)
 }
 
 pub fn undeploy(ctx: &Ctx, instance_id: &str) -> Result<HarvestReport, DeployError> {

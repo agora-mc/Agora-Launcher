@@ -196,6 +196,31 @@
       ],
       "excluded_paths": [
         "Data/SSEEdit Backups/**"
+      ],
+      "plugin_list": {
+        "user_file": "user/Plugins.txt",
+        "plugin_folder": "Data",
+        "patterns": [
+          "*.esm",
+          "*.esl",
+          "*.esp"
+        ],
+        "active_prefix": "*",
+        "header": [
+          "# This file is used by Skyrim to keep track of your downloaded content.",
+          "# Please do not modify this file."
+        ]
+      },
+      "launch_alternatives": [
+        {
+          "id": "skse",
+          "when_present": "skse64_loader.exe",
+          "executable": {
+            "root": "runtime",
+            "path": "skse64_loader.exe"
+          },
+          "reason": "SKSE is installed, so the game starts through its loader"
+        }
       ]
     }
   ],

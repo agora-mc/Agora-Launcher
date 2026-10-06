@@ -288,6 +288,9 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "instance", "content", "move"],
     &["games", "instance", "deploy"],
     &["games", "instance", "undeploy"],
+    &["games", "instance", "plugins"],
+    &["games", "instance", "plugins", "enable"],
+    &["games", "instance", "plugins", "disable"],
     &["games", "launch"],
     &["games", "user-files"],
     &["games", "user-files", "status"],
@@ -3198,6 +3201,50 @@ fn games_instance_content_and_deploy_cli() {
         &["games", "instance", "undeploy", "no-such-inst"],
     );
     assert!(!out_undeploy.status.success());
+
+    // The plugin list commands fail closed on an instance that is not there.
+    for args in [
+        &["games", "instance", "plugins", "no-such-inst"][..],
+        &[
+            "games",
+            "instance",
+            "plugins",
+            "enable",
+            "no-such-inst",
+            "A.esp",
+        ][..],
+        &[
+            "games",
+            "instance",
+            "plugins",
+            "disable",
+            "no-such-inst",
+            "A.esp",
+        ][..],
+    ] {
+        let out = run_agora(&data_dir, args);
+        assert!(!out.status.success(), "{args:?} should fail");
+        let out_json = run_agora_json(&data_dir, args);
+        assert!(!out_json.status.success(), "{args:?} --json should fail");
+    }
+    // Naming no instance is a usage error, not an empty list.
+    let out = run_agora(&data_dir, &["games", "instance", "plugins"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn games_launch_commands_offer_plain_to_skip_a_framework_loader() {
+    let (_tmp, data_dir) = temp_data_dir();
+    for command in [
+        &["games", "launch"][..],
+        &["games", "instance", "launch"][..],
+    ] {
+        let mut args = command.to_vec();
+        args.push("--help");
+        let out = run_agora(&data_dir, &args);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("--plain"));
+    }
 }
 
 #[test]

@@ -54,6 +54,8 @@ fn make_test_definition() -> GameDefinition {
         linked_archive_patterns: vec!["Data/*.bsa".into()],
         declared_writes: vec![],
         excluded_paths: vec![],
+        plugin_list: None,
+        launch_alternatives: Vec::new(),
         content_layout: None,
     }
 }

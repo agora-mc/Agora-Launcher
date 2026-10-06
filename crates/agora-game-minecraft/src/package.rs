@@ -39,6 +39,8 @@ pub fn game_package() -> Arc<dyn GamePackage> {
                     linked_archive_patterns: Vec::new(),
                     declared_writes: Vec::new(),
                     excluded_paths: Vec::new(),
+                    plugin_list: None,
+                    launch_alternatives: Vec::new(),
                     content_layout: None,
                 }],
                 frameworks: Vec::new(),

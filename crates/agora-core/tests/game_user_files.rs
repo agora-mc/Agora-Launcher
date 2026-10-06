@@ -131,6 +131,8 @@ fn test_skyrim_definition() -> GameDefinition {
         linked_archive_patterns: vec![],
         declared_writes: vec![],
         excluded_paths: vec![],
+        plugin_list: None,
+        launch_alternatives: Vec::new(),
         content_layout: None,
     }
 }

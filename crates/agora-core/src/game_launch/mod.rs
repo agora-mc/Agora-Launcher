@@ -59,6 +59,16 @@ pub struct PreparedLaunch {
     pub resolved: ResolvedLaunch,
     pub warnings: Vec<BaseProblem>,
     pub deploy_outcome: Option<crate::game_deploy::DeployOutcome>,
+    /// The launch alternative that replaced the recipe's executable, if one did.
+    pub alternative: Option<AppliedAlternative>,
+}
+
+/// A launch alternative (a framework's loader) that was used instead of the recipe's own
+/// executable, and the reason the game definition gives for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedAlternative {
+    pub id: String,
+    pub reason: String,
 }
 
 /// A spawned game process and its captured OS identity.
@@ -224,6 +234,42 @@ pub fn resolve_recipe(
     })
 }
 
+/// Replace the recipe's executable with the first launch alternative of the game whose
+/// `when_present` file exists in the runtime root (a framework's loader, for example).
+///
+/// Arguments, environment and working directory stay the recipe's, and the executable rule of
+/// [`resolve_recipe`] still applies: the program must be a file inside the runtime, base or
+/// install folder. An alternative that matches but cannot be started is an error, never a
+/// quiet fall back to the plain executable. Callers skip this entirely for a plain launch.
+pub fn apply_launch_alternative(
+    definition: &GameDefinition,
+    roots: &LaunchRoots,
+    resolved: &mut ResolvedLaunch,
+) -> Result<Option<AppliedAlternative>, LaunchError> {
+    for alternative in &definition.launch_alternatives {
+        let marker = join_rel(&roots.runtime, alternative.when_present.as_str());
+        if !marker.is_file() {
+            continue;
+        }
+        if !matches!(
+            alternative.executable,
+            GamePath::Runtime { .. } | GamePath::Base { .. } | GamePath::Install { .. }
+        ) {
+            return Err(LaunchError::ExecutableOutsideGame);
+        }
+        let program = resolve_game_path(&alternative.executable, roots)?;
+        if !program.is_file() {
+            return Err(LaunchError::ProgramMissing { path: program });
+        }
+        resolved.program = program;
+        return Ok(Some(AppliedAlternative {
+            id: alternative.id.clone(),
+            reason: alternative.reason.clone(),
+        }));
+    }
+    Ok(None)
+}
+
 // ---------------------------------------------------------------------------
 // Base launch preparation
 // ---------------------------------------------------------------------------
@@ -233,6 +279,17 @@ pub fn prepare_base_launch(
     manifest: &BaseManifest,
     definition: &GameDefinition,
     launch_anyway: bool,
+) -> Result<PreparedLaunch, LaunchError> {
+    prepare_base_launch_with(manifest, definition, launch_anyway, false)
+}
+
+/// Like [`prepare_base_launch`]; `plain` skips the game's launch alternatives and starts
+/// the recipe's own executable.
+pub fn prepare_base_launch_with(
+    manifest: &BaseManifest,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+    plain: bool,
 ) -> Result<PreparedLaunch, LaunchError> {
     let Some(recipe) = &definition.launch else {
         return Err(LaunchError::NoRecipe);
@@ -258,6 +315,11 @@ pub fn prepare_base_launch(
     };
 
     let mut resolved = resolve_recipe(recipe, &roots)?;
+    let alternative = if plain {
+        None
+    } else {
+        apply_launch_alternative(definition, &roots, &mut resolved)?
+    };
 
     // Store launch environment:
     // for runtime.store == "steam", set SteamAppId and SteamGameId to the store product.
@@ -283,6 +345,7 @@ pub fn prepare_base_launch(
         resolved,
         warnings,
         deploy_outcome: None,
+        alternative,
     })
 }
 

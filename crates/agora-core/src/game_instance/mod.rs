@@ -111,6 +111,8 @@ pub enum InstanceError {
     #[error(transparent)]
     UserFiles(#[from] crate::game_user_files::UserFilesError),
     #[error(transparent)]
+    Plugins(#[from] crate::game_plugins::PluginListError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -571,6 +573,19 @@ pub fn prepare_launch_with_discovery(
     launch_anyway: bool,
     discover_fn: &dyn Fn() -> DiscoveryReport,
 ) -> Result<PreparedLaunch, InstanceError> {
+    prepare_launch_with(ctx, id, definition, launch_anyway, false, discover_fn)
+}
+
+/// Prepare a launch. With `plain`, the game's launch alternatives (a framework's loader,
+/// for example) are skipped and the recipe's own executable is used.
+pub fn prepare_launch_with(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+    plain: bool,
+    discover_fn: &dyn Fn() -> DiscoveryReport,
+) -> Result<PreparedLaunch, InstanceError> {
     let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
     let manifest = get_manifest(ctx, id)?;
     match record.base {
@@ -622,6 +637,11 @@ pub fn prepare_launch_with_discovery(
                     return Err(LaunchError::NoRecipe.into());
                 };
                 let mut resolved = crate::game_launch::resolve_recipe(recipe, &roots)?;
+                let alternative = if plain {
+                    None
+                } else {
+                    crate::game_launch::apply_launch_alternative(definition, &roots, &mut resolved)?
+                };
                 if base_manifest.runtime.store.as_str() == "steam" {
                     let product = base_manifest.source_product.as_deref().or_else(|| {
                         definition
@@ -643,6 +663,7 @@ pub fn prepare_launch_with_discovery(
                     resolved,
                     warnings,
                     deploy_outcome: Some(outcome),
+                    alternative,
                 })
             } else {
                 let manifest_path = ctx.paths.base_manifest_path(&base_id);
@@ -651,10 +672,18 @@ pub fn prepare_launch_with_discovery(
                 }
                 let content = std::fs::read_to_string(&manifest_path)?;
                 let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
-                let prepared = crate::game_launch::prepare_base_launch(
+                // Layers removed since the last deploy take their plugin lines with them.
+                crate::game_plugins::sync_without_content(
+                    ctx,
+                    id,
+                    definition,
+                    &base_manifest.runtime.store,
+                )?;
+                let prepared = crate::game_launch::prepare_base_launch_with(
                     &base_manifest,
                     definition,
                     launch_anyway,
+                    plain,
                 )?;
                 Ok(prepared)
             }
@@ -691,6 +720,11 @@ pub fn prepare_launch_with_discovery(
                 return Err(LaunchError::NoRecipe.into());
             };
             let mut resolved = crate::game_launch::resolve_recipe(recipe, &roots)?;
+            let alternative = if plain {
+                None
+            } else {
+                crate::game_launch::apply_launch_alternative(definition, &roots, &mut resolved)?
+            };
             if discovered.store.as_str() == "steam" {
                 let product = definition
                     .stores
@@ -709,6 +743,7 @@ pub fn prepare_launch_with_discovery(
                 resolved,
                 warnings: Vec::new(),
                 deploy_outcome: None,
+                alternative,
             })
         }
     }
@@ -747,10 +782,22 @@ pub fn launch_with_discovery(
     launch_anyway: bool,
     discover_fn: &dyn Fn() -> DiscoveryReport,
 ) -> Result<LaunchedInstance, InstanceError> {
+    launch_with(ctx, id, definition, launch_anyway, false, discover_fn)
+}
+
+/// Launch with a custom discovery function; `plain` skips the game's launch alternatives.
+pub fn launch_with(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    launch_anyway: bool,
+    plain: bool,
+    discover_fn: &dyn Fn() -> DiscoveryReport,
+) -> Result<LaunchedInstance, InstanceError> {
     let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
 
     // 1. Prepare launch (which performs deployment if needed)
-    let prepared = prepare_launch_with_discovery(ctx, id, definition, launch_anyway, discover_fn)?;
+    let prepared = prepare_launch_with(ctx, id, definition, launch_anyway, plain, discover_fn)?;
 
     // 2. Determine store and running_from
     let (store, running_from) = match &record.base {

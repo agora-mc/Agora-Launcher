@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agora_game_api::{
-    FrameworkId, GameDefinition, GameId, GameInstall, GamePackage, InstallId, InstallKind, RelPath,
-    RuntimeIdentity, StoreId, ToolId, GAME_API_VERSION,
+    FrameworkId, GameDefinition, GameId, GameInstall, GamePackage, GamePath, InstallId,
+    InstallKind, RelPath, RuntimeIdentity, StoreId, ToolId, UserFileStrategy, GAME_API_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,12 @@ pub enum GameRegistryError {
     },
     #[error("tool {tool_id} names undefined game {game_id}")]
     UndefinedGameInTool { tool_id: ToolId, game_id: GameId },
+    #[error("game {game_id} plugin_list.user_file '{user_file}' names no user_files mapping")]
+    PluginListUserFileNotFound { game_id: GameId, user_file: RelPath },
+    #[error("game {game_id} has an invalid plugin_list: {reason}")]
+    InvalidPluginList { game_id: GameId, reason: String },
+    #[error("game {game_id} has an invalid launch alternative: {reason}")]
+    InvalidLaunchAlternative { game_id: GameId, reason: String },
 }
 
 pub struct GameRegistry {
@@ -169,6 +175,67 @@ impl GameRegistryBuilder {
                     tool_id: tool.id.clone(),
                     game_id: tool.game.clone(),
                 });
+            }
+        }
+
+        // 7. A plugin list rule must be able to work, or it would silently do nothing
+        for game in &def.games {
+            if let Some(rule) = &game.plugin_list {
+                let matches_user_file = game.user_files.iter().any(|uf| {
+                    uf.instance_path == rule.user_file
+                        && uf.strategy == UserFileStrategy::JournaledSwap
+                });
+                if !matches_user_file {
+                    return Err(GameRegistryError::PluginListUserFileNotFound {
+                        game_id: game.id.clone(),
+                        user_file: rule.user_file.clone(),
+                    });
+                }
+                if rule.patterns.iter().all(|p| p.trim().is_empty()) {
+                    return Err(GameRegistryError::InvalidPluginList {
+                        game_id: game.id.clone(),
+                        reason: "patterns names no plugin file".to_string(),
+                    });
+                }
+                if rule.active_prefix.chars().any(|c| c.is_whitespace()) {
+                    return Err(GameRegistryError::InvalidPluginList {
+                        game_id: game.id.clone(),
+                        reason: "active_prefix must not contain whitespace".to_string(),
+                    });
+                }
+            }
+        }
+
+        // 8. Launch alternatives must be well-formed and start a program inside the game
+        for game in &def.games {
+            let mut seen = BTreeSet::new();
+            for alt in &game.launch_alternatives {
+                let reason = if alt.id.trim().is_empty() {
+                    Some("an alternative has an empty id".to_string())
+                } else if !seen.insert(alt.id.clone()) {
+                    Some(format!("alternative '{}' is declared twice", alt.id))
+                } else if alt.when_present.as_str().is_empty() {
+                    Some(format!(
+                        "alternative '{}' has an empty when_present",
+                        alt.id
+                    ))
+                } else if !matches!(
+                    alt.executable,
+                    GamePath::Runtime { .. } | GamePath::Base { .. } | GamePath::Install { .. }
+                ) {
+                    Some(format!(
+                        "alternative '{}' must start a program inside the game's runtime, base or install folder",
+                        alt.id
+                    ))
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    return Err(GameRegistryError::InvalidLaunchAlternative {
+                        game_id: game.id.clone(),
+                        reason,
+                    });
+                }
             }
         }
 
@@ -556,6 +623,8 @@ pub mod test_support {
                 declared_writes: Vec::new(),
                 excluded_paths: Vec::new(),
                 content_layout: None,
+                plugin_list: None,
+                launch_alternatives: Vec::new(),
             }],
             frameworks: Vec::new(),
             tools: Vec::new(),

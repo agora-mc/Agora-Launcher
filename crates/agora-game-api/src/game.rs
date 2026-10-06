@@ -377,6 +377,27 @@ pub struct GameDefinition {
     pub declared_writes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_list: Option<PluginListRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub launch_alternatives: Vec<LaunchAlternative>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginListRule {
+    pub user_file: RelPath,
+    pub plugin_folder: RelPath,
+    pub patterns: Vec<String>,
+    pub active_prefix: String,
+    pub header: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchAlternative {
+    pub id: String,
+    pub when_present: RelPath,
+    pub executable: GamePath,
+    pub reason: String,
 }
 
 impl GameDefinition {
@@ -772,6 +793,8 @@ mod tests {
             linked_archive_patterns: vec![],
             declared_writes: vec![],
             excluded_paths: vec![],
+            plugin_list: None,
+            launch_alternatives: Vec::new(),
         };
 
         // Normal valid paths
@@ -813,6 +836,8 @@ mod tests {
             ],
             declared_writes: vec![],
             excluded_paths: vec![],
+            plugin_list: None,
+            launch_alternatives: Vec::new(),
         };
 
         // Matches exact and mixed cases
@@ -852,6 +877,8 @@ mod tests {
             linked_archive_patterns: vec![],
             declared_writes: vec!["d3dx9_42.log".into(), "logs/*.log".into()],
             excluded_paths: vec![],
+            plugin_list: None,
+            launch_alternatives: Vec::new(),
         };
 
         assert!(def.is_declared_write("d3dx9_42.log"));
@@ -886,6 +913,8 @@ mod tests {
             linked_archive_patterns: vec![],
             declared_writes: vec![],
             excluded_paths: vec!["Data/SSEEdit Backups/**".into()],
+            plugin_list: None,
+            launch_alternatives: Vec::new(),
         };
 
         assert!(def.is_excluded("Data/SSEEdit Backups/x.esm.backup"));
