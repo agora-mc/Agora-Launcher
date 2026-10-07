@@ -288,6 +288,7 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "instance", "content", "move"],
     &["games", "instance", "deploy"],
     &["games", "instance", "undeploy"],
+    &["games", "instance", "set-deployment"],
     &["games", "instance", "plugins"],
     &["games", "instance", "plugins", "enable"],
     &["games", "instance", "plugins", "disable"],
@@ -3201,6 +3202,32 @@ fn games_instance_content_and_deploy_cli() {
         &["games", "instance", "undeploy", "no-such-inst"],
     );
     assert!(!out_undeploy.status.success());
+
+    let out_set = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "set-deployment",
+            "no-such-inst",
+            "virtual",
+        ],
+    );
+    assert!(!out_set.status.success());
+
+    // A mode name nobody knows is refused before anything is touched.
+    let out_bad = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "set-deployment",
+            "no-such-inst",
+            "fastest",
+        ],
+    );
+    assert!(!out_bad.status.success());
+    assert!(String::from_utf8_lossy(&out_bad.stderr).contains("unknown deployment"));
 
     // The plugin list commands fail closed on an instance that is not there.
     for args in [

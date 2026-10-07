@@ -5,16 +5,17 @@ use std::path::PathBuf;
 use rusqlite::OptionalExtension;
 
 use agora_game_api::{
-    BaseMode, BaseReference, GameDefinition, GameId, InstalledFramework, LayerStack,
-    RuntimeIdentity, StoreId,
+    BaseMode, BaseReference, DeploymentStrategy, GameDefinition, GameId, InstalledFramework,
+    LayerStack, RuntimeIdentity, StoreId,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::app_paths::AppPaths;
 use crate::ctx::Ctx;
 use crate::game_base::{BuildOutcome, BuildProgress};
+use crate::game_deploy::DeployMode;
 use crate::game_discovery::DiscoveryReport;
-use crate::game_launch::{LaunchError, LaunchRoots, PreparedLaunch};
+use crate::game_launch::{LaunchError, LaunchRoots, Launcher, PreparedLaunch, SystemLauncher};
 use crate::game_registry::{IdentifiedInstall, RuntimeResolution};
 
 /// A generic instance manifest stored at `<instances_root>/<id>/instance_manifest.json`.
@@ -28,6 +29,10 @@ pub struct GameInstanceManifest {
     pub base: BaseReference,
     pub frameworks: Vec<InstalledFramework>,
     pub layers: LayerStack,
+    /// The deployment rung the user chose for this instance. `None` leaves the choice to the game
+    /// definition and the machine, which may step down (announced); a chosen rung never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<crate::game_deploy::DeployMode>,
 }
 
 impl GameInstanceManifest {
@@ -47,6 +52,7 @@ impl GameInstanceManifest {
             base,
             frameworks: Vec::new(),
             layers: LayerStack::default(),
+            deployment: None,
         }
     }
 }
@@ -106,6 +112,8 @@ pub enum InstanceError {
     BaseError(#[from] crate::game_base::BaseError),
     #[error(transparent)]
     LaunchError(#[from] LaunchError),
+    #[error("the virtual file system could not start: {reason}. You chose it for instance '{instance_id}', so Agora did not switch; run `agora games instance set-deployment {instance_id} links` (or launch with `--deployment links`) to run from linked files")]
+    VfsUnavailable { instance_id: String, reason: String },
     #[error(transparent)]
     Deploy(#[from] crate::game_deploy::DeployError),
     #[error(transparent)]
@@ -297,6 +305,7 @@ pub fn create_with_options(
         base: base_ref.clone(),
         frameworks: Vec::new(),
         layers: LayerStack::default(),
+        deployment: None,
     };
 
     let manifest_path = instance_dir.join("instance_manifest.json");
@@ -549,6 +558,59 @@ pub fn record_launch(ctx: &Ctx, id: &str) -> Result<(), InstanceError> {
     Ok(())
 }
 
+/// Choices for one launch.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LaunchOptions {
+    /// Launch even if the base fails verification.
+    pub launch_anyway: bool,
+    /// Skip the game's launch alternatives (a framework's loader, for example) and start the
+    /// recipe's own executable.
+    pub plain: bool,
+    /// Use this deployment rung for this launch only, instead of the instance's own choice.
+    pub deployment: Option<DeployMode>,
+}
+
+/// The rung a game definition starts from when nobody has chosen one (MASTER_SPEC §26.5).
+fn default_deploy_mode(definition: &GameDefinition) -> DeployMode {
+    match definition.deployment {
+        DeploymentStrategy::VirtualFileSystem => DeployMode::Virtual,
+        DeploymentStrategy::Redirect => DeployMode::Links,
+    }
+}
+
+fn vfs_fallback_notice(reason: &str) -> String {
+    format!("the virtual file system could not start: {reason}; running from linked files instead")
+}
+
+/// How an instance with deployed content will be run.
+struct Rung {
+    mode: DeployMode,
+    /// The user chose it, so it never falls back.
+    chosen: bool,
+    /// `agora_vfs.dll`, when `mode` is `Virtual`.
+    vfs_dll: Option<PathBuf>,
+    notice: Option<String>,
+}
+
+/// The mode `agora games instance deploy` builds: `requested`, else the instance's own choice,
+/// else what a launch would run (the game's default, stepping down to links when the virtual
+/// file system's DLL cannot be found).
+pub fn deploy_mode_for(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    requested: Option<DeployMode>,
+    launcher: &dyn Launcher,
+) -> Result<DeployMode, InstanceError> {
+    if let Some(mode) = requested.or(get_manifest(ctx, id)?.deployment) {
+        return Ok(mode);
+    }
+    Ok(match default_deploy_mode(definition) {
+        DeployMode::Virtual if launcher.locate_vfs_dll().is_err() => DeployMode::Links,
+        mode => mode,
+    })
+}
+
 /// Prepare launch for a generic game instance.
 pub fn prepare_launch(
     ctx: &Ctx,
@@ -573,18 +635,31 @@ pub fn prepare_launch_with_discovery(
     launch_anyway: bool,
     discover_fn: &dyn Fn() -> DiscoveryReport,
 ) -> Result<PreparedLaunch, InstanceError> {
-    prepare_launch_with(ctx, id, definition, launch_anyway, false, discover_fn)
+    prepare_launch_with(
+        ctx,
+        id,
+        definition,
+        LaunchOptions {
+            launch_anyway,
+            plain: false,
+            deployment: None,
+        },
+        discover_fn,
+        &SystemLauncher,
+    )
 }
 
-/// Prepare a launch. With `plain`, the game's launch alternatives (a framework's loader,
-/// for example) are skipped and the recipe's own executable is used.
+/// Prepare launch, choosing the deployment rung (MASTER_SPEC §26.5).
+///
+/// The rung is the launch's override, else the instance's own choice, else the game
+/// definition's default. Only a default steps down, and says so in the result's `notice`.
 pub fn prepare_launch_with(
     ctx: &Ctx,
     id: &str,
     definition: &GameDefinition,
-    launch_anyway: bool,
-    plain: bool,
+    options: LaunchOptions,
     discover_fn: &dyn Fn() -> DiscoveryReport,
+    launcher: &dyn Launcher,
 ) -> Result<PreparedLaunch, InstanceError> {
     let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
     let manifest = get_manifest(ctx, id)?;
@@ -594,77 +669,46 @@ pub fn prepare_launch_with(
                 (matches!(l.source, agora_game_api::LayerSource::Content { .. }) && l.enabled)
                     || matches!(l.source, agora_game_api::LayerSource::Writable { .. })
             });
+            let chosen = options.deployment.or(manifest.deployment);
 
-            if has_deployment_layers {
-                let outcome = crate::game_deploy::deploy(
-                    ctx,
-                    id,
-                    definition,
-                    crate::game_deploy::DeployMode::Links,
-                )?;
-
-                let game_dir = crate::game_deploy::deployment_dir(ctx, id)?.ok_or_else(|| {
-                    InstanceError::Other("deployed game directory not found".into())
-                })?;
-
-                let manifest_path = ctx.paths.base_manifest_path(&base_id);
-                if !manifest_path.exists() {
-                    return Err(InstanceError::BaseNotFound(base_id));
-                }
-                let content = std::fs::read_to_string(&manifest_path)?;
-                let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
-
-                let ver = crate::game_base::verify_base(
-                    &base_manifest,
-                    crate::game_base::VerifyDepth::Quick,
-                    &|p| definition.is_declared_write(p),
-                    &|p| definition.is_excluded(p),
-                );
-                if !ver.problems.is_empty() && !launch_anyway {
-                    return Err(crate::game_launch::LaunchError::BaseDamaged {
-                        problems: ver.problems,
-                    }
-                    .into());
-                }
-                let warnings = ver.problems;
-
-                let roots = LaunchRoots {
-                    runtime: game_dir,
-                    install: Some(base_manifest.source_location.clone()),
-                    base: Some(base_manifest.location.clone()),
+            // A game that needs the virtual file system runs under it even with nothing deployed
+            // on top of its base: on a linked base only the VFS keeps its writes out of the
+            // store install. Other games with no content run from their base, unless the user
+            // chose a rung.
+            if has_deployment_layers
+                || chosen.is_some()
+                || default_deploy_mode(definition) == DeployMode::Virtual
+            {
+                let wanted = chosen.unwrap_or_else(|| default_deploy_mode(definition));
+                let rung = match wanted {
+                    DeployMode::Virtual => match launcher.locate_vfs_dll() {
+                        Ok(dll) => Rung {
+                            mode: wanted,
+                            chosen: chosen.is_some(),
+                            vfs_dll: Some(dll),
+                            notice: None,
+                        },
+                        Err(reason) if chosen.is_some() => {
+                            return Err(InstanceError::VfsUnavailable {
+                                instance_id: id.to_string(),
+                                reason,
+                            });
+                        }
+                        Err(reason) => Rung {
+                            mode: DeployMode::Links,
+                            chosen: false,
+                            vfs_dll: None,
+                            notice: Some(vfs_fallback_notice(&reason)),
+                        },
+                    },
+                    mode => Rung {
+                        mode,
+                        chosen: chosen.is_some(),
+                        vfs_dll: None,
+                        notice: None,
+                    },
                 };
-                let Some(recipe) = &definition.launch else {
-                    return Err(LaunchError::NoRecipe.into());
-                };
-                let mut resolved = crate::game_launch::resolve_recipe(recipe, &roots)?;
-                let alternative = if plain {
-                    None
-                } else {
-                    crate::game_launch::apply_launch_alternative(definition, &roots, &mut resolved)?
-                };
-                if base_manifest.runtime.store.as_str() == "steam" {
-                    let product = base_manifest.source_product.as_deref().or_else(|| {
-                        definition
-                            .stores
-                            .iter()
-                            .find(|s| s.store == base_manifest.runtime.store)
-                            .map(|s| s.product.as_str())
-                    });
-                    if let Some(prod) = product {
-                        resolved
-                            .env
-                            .insert("SteamAppId".to_string(), std::ffi::OsString::from(prod));
-                        resolved
-                            .env
-                            .insert("SteamGameId".to_string(), std::ffi::OsString::from(prod));
-                    }
-                }
-                Ok(PreparedLaunch {
-                    resolved,
-                    warnings,
-                    deploy_outcome: Some(outcome),
-                    alternative,
-                })
+                prepare_deployed(ctx, id, definition, &options, &base_id, rung)
             } else {
                 let manifest_path = ctx.paths.base_manifest_path(&base_id);
                 if !manifest_path.exists() {
@@ -682,8 +726,8 @@ pub fn prepare_launch_with(
                 let prepared = crate::game_launch::prepare_base_launch_with(
                     &base_manifest,
                     definition,
-                    launch_anyway,
-                    plain,
+                    options.launch_anyway,
+                    options.plain,
                 )?;
                 Ok(prepared)
             }
@@ -720,7 +764,7 @@ pub fn prepare_launch_with(
                 return Err(LaunchError::NoRecipe.into());
             };
             let mut resolved = crate::game_launch::resolve_recipe(recipe, &roots)?;
-            let alternative = if plain {
+            let alternative = if options.plain {
                 None
             } else {
                 crate::game_launch::apply_launch_alternative(definition, &roots, &mut resolved)?
@@ -739,13 +783,154 @@ pub fn prepare_launch_with(
                     .env
                     .insert("SteamGameId".to_string(), std::ffi::OsString::from(product));
             }
-            Ok(PreparedLaunch {
+            Ok(PreparedLaunch::undeployed(
                 resolved,
-                warnings: Vec::new(),
-                deploy_outcome: None,
+                Vec::new(),
                 alternative,
+            ))
+        }
+    }
+}
+
+/// Deploy a pinned instance on `rung` and resolve its launch from the deployed folder.
+fn prepare_deployed(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    options: &LaunchOptions,
+    base_id: &str,
+    rung: Rung,
+) -> Result<PreparedLaunch, InstanceError> {
+    let outcome = crate::game_deploy::deploy(ctx, id, definition, rung.mode)?;
+
+    let game_dir = crate::game_deploy::deployment_dir(ctx, id)?
+        .ok_or_else(|| InstanceError::Other("deployed game directory not found".into()))?;
+
+    let manifest_path = ctx.paths.base_manifest_path(base_id);
+    if !manifest_path.exists() {
+        return Err(InstanceError::BaseNotFound(base_id.to_string()));
+    }
+    let content = std::fs::read_to_string(&manifest_path)?;
+    let base_manifest: crate::game_base::BaseManifest = serde_json::from_str(&content)?;
+
+    let ver = crate::game_base::verify_base(
+        &base_manifest,
+        crate::game_base::VerifyDepth::Quick,
+        &|p| definition.is_declared_write(p),
+        &|p| definition.is_excluded(p),
+    );
+    if !ver.problems.is_empty() && !options.launch_anyway {
+        return Err(crate::game_launch::LaunchError::BaseDamaged {
+            problems: ver.problems,
+        }
+        .into());
+    }
+    let warnings = ver.problems;
+
+    let roots = LaunchRoots {
+        runtime: game_dir.clone(),
+        install: Some(base_manifest.source_location.clone()),
+        base: Some(base_manifest.location.clone()),
+    };
+    let Some(recipe) = &definition.launch else {
+        return Err(LaunchError::NoRecipe.into());
+    };
+    let mut resolved = crate::game_launch::resolve_recipe(recipe, &roots)?;
+    let alternative = if options.plain {
+        None
+    } else {
+        crate::game_launch::apply_launch_alternative(definition, &roots, &mut resolved)?
+    };
+    if base_manifest.runtime.store.as_str() == "steam" {
+        let product = base_manifest.source_product.as_deref().or_else(|| {
+            definition
+                .stores
+                .iter()
+                .find(|s| s.store == base_manifest.runtime.store)
+                .map(|s| s.product.as_str())
+        });
+        if let Some(prod) = product {
+            resolved
+                .env
+                .insert("SteamAppId".to_string(), std::ffi::OsString::from(prod));
+            resolved
+                .env
+                .insert("SteamGameId".to_string(), std::ffi::OsString::from(prod));
+        }
+    }
+
+    // Under the VFS the farm is mounted over itself and the writable layer is the upper layer.
+    let vfs = match rung.vfs_dll {
+        Some(dll) => {
+            let instance_dir = ctx
+                .paths
+                .instance_dir(id)
+                .map_err(|e| InstanceError::Other(e.to_string()))?;
+            Some(crate::game_launch::VfsLaunch {
+                dll,
+                mount: game_dir.clone(),
+                upper: instance_dir.join("writable"),
+                lowers: vec![game_dir],
+                config_path: instance_dir.join("vfs").join("config.json"),
+                log: instance_dir.join("logs").join("vfs.log"),
             })
         }
+        None => None,
+    };
+
+    Ok(PreparedLaunch {
+        resolved,
+        warnings,
+        deploy_outcome: Some(outcome),
+        deployment: Some(rung.mode),
+        deployment_chosen: rung.chosen,
+        vfs,
+        notice: rung.notice,
+        alternative,
+    })
+}
+
+/// Start a prepared launch. When it runs under the virtual file system and that cannot start,
+/// an instance whose rung nobody chose is deployed as links and launched from those, and the
+/// returned launch says so; a chosen rung fails with the reason instead.
+pub fn spawn_prepared(
+    ctx: &Ctx,
+    id: &str,
+    definition: &GameDefinition,
+    prepared: PreparedLaunch,
+    options: LaunchOptions,
+    launcher: &dyn Launcher,
+) -> Result<(crate::game_launch::LaunchedGame, PreparedLaunch), InstanceError> {
+    match launcher.launch(&prepared) {
+        Ok(launched) => Ok((launched, prepared)),
+        Err(LaunchError::VfsUnavailable { reason }) => {
+            if prepared.deployment_chosen {
+                return Err(InstanceError::VfsUnavailable {
+                    instance_id: id.to_string(),
+                    reason,
+                });
+            }
+            let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
+            let BaseReference::Pinned { id: base_id, .. } = record.base else {
+                return Err(LaunchError::VfsUnavailable { reason }.into());
+            };
+            let fallback = prepare_deployed(
+                ctx,
+                id,
+                definition,
+                &options,
+                &base_id,
+                Rung {
+                    mode: DeployMode::Links,
+                    chosen: false,
+                    vfs_dll: None,
+                    notice: Some(vfs_fallback_notice(&reason)),
+                },
+            )?;
+            let launched = launcher.launch(&fallback)?;
+            Ok((launched, fallback))
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -782,22 +967,33 @@ pub fn launch_with_discovery(
     launch_anyway: bool,
     discover_fn: &dyn Fn() -> DiscoveryReport,
 ) -> Result<LaunchedInstance, InstanceError> {
-    launch_with(ctx, id, definition, launch_anyway, false, discover_fn)
+    launch_with(
+        ctx,
+        id,
+        definition,
+        LaunchOptions {
+            launch_anyway,
+            plain: false,
+            deployment: None,
+        },
+        discover_fn,
+        &SystemLauncher,
+    )
 }
 
-/// Launch with a custom discovery function; `plain` skips the game's launch alternatives.
+/// Launch with explicit options, discovery and launcher.
 pub fn launch_with(
     ctx: &Ctx,
     id: &str,
     definition: &GameDefinition,
-    launch_anyway: bool,
-    plain: bool,
+    options: LaunchOptions,
     discover_fn: &dyn Fn() -> DiscoveryReport,
+    launcher: &dyn Launcher,
 ) -> Result<LaunchedInstance, InstanceError> {
     let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
 
     // 1. Prepare launch (which performs deployment if needed)
-    let prepared = prepare_launch_with(ctx, id, definition, launch_anyway, plain, discover_fn)?;
+    let prepared = prepare_launch_with(ctx, id, definition, options, discover_fn, launcher)?;
 
     // 2. Determine store and running_from
     let (store, running_from) = match &record.base {
@@ -834,14 +1030,15 @@ pub fn launch_with(
     crate::game_user_files::swap_in(ctx, id, definition, &store, &running_from)?;
 
     // 4. Spawn game process
-    let launched = match crate::game_launch::launch(&prepared) {
-        Ok(l) => l,
-        Err(e) => {
-            // "If spawning fails, restore immediately."
-            let _ = crate::game_user_files::restore(ctx, definition, &store);
-            return Err(e.into());
-        }
-    };
+    let (launched, prepared) =
+        match spawn_prepared(ctx, id, definition, prepared, options, launcher) {
+            Ok(l) => l,
+            Err(e) => {
+                // "If spawning fails, restore immediately."
+                let _ = crate::game_user_files::restore(ctx, definition, &store);
+                return Err(e);
+            }
+        };
 
     // 5. Record spawned process identity in journal
     let _ = crate::game_user_files::record_process(

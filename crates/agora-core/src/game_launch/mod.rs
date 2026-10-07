@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::game_base::{verify_base, BaseManifest, BaseProblem, VerifyDepth};
 use crate::process_identity::{self, ProcessIdentity};
 
+mod vfs;
+pub use vfs::{launch_under_vfs, locate_dll, VfsLaunch};
+
 /// Host-resolved roots for recipe resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRoots {
@@ -49,6 +52,9 @@ pub enum LaunchError {
     UserDataNotFound(UserDataLocation),
     #[error("process capture failed: {0}")]
     ProcessCapture(String),
+    /// The game was not started: the virtual file system could not be put under it.
+    #[error("the virtual file system could not start: {reason}")]
+    VfsUnavailable { reason: String },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -59,8 +65,38 @@ pub struct PreparedLaunch {
     pub resolved: ResolvedLaunch,
     pub warnings: Vec<BaseProblem>,
     pub deploy_outcome: Option<crate::game_deploy::DeployOutcome>,
+    /// How the instance was deployed, when it was.
+    pub deployment: Option<crate::game_deploy::DeployMode>,
+    /// The user chose `deployment` (for the instance or for this launch), so it is never
+    /// replaced by a fallback.
+    pub deployment_chosen: bool,
+    /// Set when the game is to run under the virtual file system.
+    pub vfs: Option<VfsLaunch>,
+    /// Something the user should be told about how this launch will run, such as a step down
+    /// from the virtual file system.
+    pub notice: Option<String>,
     /// The launch alternative that replaced the recipe's executable, if one did.
     pub alternative: Option<AppliedAlternative>,
+}
+
+impl PreparedLaunch {
+    /// A launch with no deployment: the game runs from the folder the recipe names.
+    pub fn undeployed(
+        resolved: ResolvedLaunch,
+        warnings: Vec<BaseProblem>,
+        alternative: Option<AppliedAlternative>,
+    ) -> Self {
+        Self {
+            resolved,
+            warnings,
+            deploy_outcome: None,
+            deployment: None,
+            deployment_chosen: false,
+            vfs: None,
+            notice: None,
+            alternative,
+        }
+    }
 }
 
 /// A launch alternative (a framework's loader) that was used instead of the recipe's own
@@ -69,6 +105,28 @@ pub struct PreparedLaunch {
 pub struct AppliedAlternative {
     pub id: String,
     pub reason: String,
+}
+
+/// How a prepared launch is started. The real implementation is [`SystemLauncher`]; tests
+/// substitute their own so no process has to be injected.
+pub trait Launcher {
+    /// Find `agora_vfs.dll`, or say why it cannot be used.
+    fn locate_vfs_dll(&self) -> Result<PathBuf, String>;
+    /// Start the game: under the virtual file system when `prepared.vfs` is set.
+    fn launch(&self, prepared: &PreparedLaunch) -> Result<LaunchedGame, LaunchError>;
+}
+
+/// Starts real processes.
+pub struct SystemLauncher;
+
+impl Launcher for SystemLauncher {
+    fn locate_vfs_dll(&self) -> Result<PathBuf, String> {
+        locate_dll()
+    }
+
+    fn launch(&self, prepared: &PreparedLaunch) -> Result<LaunchedGame, LaunchError> {
+        launch(prepared)
+    }
 }
 
 /// A spawned game process and its captured OS identity.
@@ -341,20 +399,19 @@ pub fn prepare_base_launch_with(
         }
     }
 
-    Ok(PreparedLaunch {
-        resolved,
-        warnings,
-        deploy_outcome: None,
-        alternative,
-    })
+    Ok(PreparedLaunch::undeployed(resolved, warnings, alternative))
 }
 
 // ---------------------------------------------------------------------------
 // Spawning and process watching
 // ---------------------------------------------------------------------------
 
-/// Spawn the game process according to a prepared launch.
+/// Spawn the game process according to a prepared launch, under the virtual file system when the
+/// preparation asked for it.
 pub fn launch(prepared: &PreparedLaunch) -> Result<LaunchedGame, LaunchError> {
+    if let Some(vfs) = &prepared.vfs {
+        return launch_under_vfs(&prepared.resolved, vfs);
+    }
     let mut cmd = std::process::Command::new(&prepared.resolved.program);
     cmd.args(&prepared.resolved.args);
     cmd.current_dir(&prepared.resolved.cwd);

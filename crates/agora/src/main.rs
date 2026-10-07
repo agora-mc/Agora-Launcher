@@ -371,9 +371,22 @@ enum GameInstanceCmd {
         /// Launch even if the base fails verification.
         #[arg(long)]
         launch_anyway: bool,
+        /// Run this launch from one deployment: virtual, links, copies, or auto (the
+        /// instance's own choice). A mode you name never falls back to another.
+        #[arg(long)]
+        deployment: Option<String>,
         /// Start the game's own executable, not a framework loader such as SKSE's.
         #[arg(long)]
         plain: bool,
+    },
+    /// Choose how an instance's game folder is deployed and run: virtual (under the virtual file
+    /// system), links, copies, or auto (let Agora pick and announce any step down).
+    #[command(name = "set-deployment")]
+    SetDeployment {
+        /// Instance ID.
+        instance_id: String,
+        /// virtual, links, copies or auto.
+        mode: String,
     },
     /// Delete a game instance.
     Delete {
@@ -389,9 +402,13 @@ enum GameInstanceCmd {
     Deploy {
         /// Instance ID to deploy.
         instance_id: String,
-        /// Copy all files instead of hardlinking.
-        #[arg(long)]
+        /// Copy all files instead of hardlinking (same as `--deployment copies`).
+        #[arg(long, conflicts_with = "deployment")]
         copies: bool,
+        /// Deploy as virtual, links or copies. Without it the instance's own choice applies,
+        /// else the mode a launch would use.
+        #[arg(long)]
+        deployment: Option<String>,
     },
     /// Undeploy content, harvest writes back to writable layer, and remove game folder.
     Undeploy {
@@ -5108,12 +5125,72 @@ async fn run_command(
                         }
                     }
                 }
+                GameInstanceCmd::SetDeployment { instance_id, mode } => {
+                    let chosen = match parse_deployment_arg(&mode) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    };
+                    match agora_core::game_deploy::set_deployment(ctx, &instance_id, chosen) {
+                        Ok(()) => {
+                            let shown = chosen.map(|m| m.as_str()).unwrap_or("auto");
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "ok",
+                                    "instance_id": instance_id,
+                                    "deployment": shown,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
+                            } else if chosen.is_some() {
+                                println!(
+                                    "Instance '{instance_id}' will always deploy and run as '{shown}'; Agora will not step down from it."
+                                );
+                            } else {
+                                println!(
+                                    "Instance '{instance_id}' will use the game's default; Agora announces any step down."
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "error",
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 GameInstanceCmd::Launch {
                     instance_id,
                     wait,
                     launch_anyway,
+                    deployment,
                     plain,
                 } => {
+                    let launch_options = match deployment.as_deref().map(parse_deployment_arg) {
+                        None => agora_core::game_instance::LaunchOptions {
+                            launch_anyway,
+                            plain,
+                            deployment: None,
+                        },
+                        Some(Ok(deployment)) => agora_core::game_instance::LaunchOptions {
+                            launch_anyway,
+                            plain,
+                            deployment,
+                        },
+                        Some(Err(e)) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    };
                     let in_mc = agora_core::game_instance::is_minecraft_instance(ctx, &instance_id);
                     if in_mc {
                         if json {
@@ -5152,9 +5229,9 @@ async fn run_command(
                         ctx,
                         &instance_id,
                         game_def,
-                        launch_anyway,
-                        plain,
+                        launch_options,
                         &agora_core::game_discovery::discover_all,
+                        &agora_core::game_launch::SystemLauncher,
                     ) {
                         Ok(p) => p,
                         Err(agora_core::game_instance::InstanceError::LaunchError(
@@ -5304,7 +5381,16 @@ async fn run_command(
                         std::process::exit(1);
                     }
 
-                    let mut launched = match agora_core::game_launch::launch(&prepared) {
+                    // The launch may step down from the virtual file system, which replaces
+                    // `prepared` with the one that actually ran.
+                    let (mut launched, prepared) = match agora_core::game_instance::spawn_prepared(
+                        ctx,
+                        &instance_id,
+                        game_def,
+                        prepared,
+                        launch_options,
+                        &agora_core::game_launch::SystemLauncher,
+                    ) {
                         Ok(l) => l,
                         Err(e) => {
                             report_user_files_restore(
@@ -5325,6 +5411,11 @@ async fn run_command(
                             std::process::exit(1);
                         }
                     };
+                    if !json {
+                        if let Some(notice) = &prepared.notice {
+                            eprintln!("Notice: {notice}");
+                        }
+                    }
 
                     let _ = agora_core::game_user_files::record_process(
                         ctx,
@@ -5358,6 +5449,8 @@ async fn run_command(
                                 "cwd": prepared.resolved.cwd,
                                 "env": env_map,
                                 "warnings": prepared.warnings,
+                                "deployment": prepared.deployment.map(|m| m.as_str()),
+                                "notice": prepared.notice,
                                 "alternative": prepared.alternative,
                                 "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
                             });
@@ -5372,6 +5465,9 @@ async fn run_command(
                             }
                             println!("Program:           {}", prepared.resolved.program.display());
                             println!("Working Directory: {}", prepared.resolved.cwd.display());
+                            if let Some(mode) = prepared.deployment {
+                                println!("Deployment:        {mode}");
+                            }
                             println!("PID:               {}", launched.pid());
                             if !prepared.resolved.env.is_empty() {
                                 println!("Environment:");
@@ -5422,6 +5518,8 @@ async fn run_command(
                         if json {
                             let out = serde_json::json!({
                                 "status": "exited",
+                                "deployment": prepared.deployment.map(|m| m.as_str()),
+                                "notice": prepared.notice,
                                 "alternative": prepared.alternative,
                                 "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
                                 "instance_id": instance_id,
@@ -5431,6 +5529,8 @@ async fn run_command(
                                 "cwd": prepared.resolved.cwd,
                                 "env": env_map,
                                 "warnings": prepared.warnings,
+                                "deployment": prepared.deployment.map(|m| m.as_str()),
+                                "notice": prepared.notice,
                                 "processes": exit_report.processes,
                                 "relaunched_outside": exit_report.relaunched_outside,
                                 "game_writes": after.as_ref().map(|v| &v.game_writes),
@@ -5971,6 +6071,7 @@ async fn run_command(
                 GameInstanceCmd::Deploy {
                     instance_id,
                     copies,
+                    deployment,
                 } => {
                     let record = match agora_core::game_instance::get(ctx, &instance_id)? {
                         Some(r) => r,
@@ -5992,12 +6093,43 @@ async fn run_command(
                         anyhow::anyhow!("Game definition not found for {}", record.game)
                     })?;
 
-                    let mode = if copies {
-                        agora_core::game_deploy::DeployMode::Copies
+                    let requested = if copies {
+                        Some(agora_core::game_deploy::DeployMode::Copies)
                     } else {
-                        agora_core::game_deploy::DeployMode::Links
+                        match deployment.as_deref().map(parse_deployment_arg) {
+                            None | Some(Ok(None)) => None,
+                            Some(Ok(mode)) => mode,
+                            Some(Err(e)) => {
+                                eprintln!("Error: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    };
+                    let mode = match agora_core::game_instance::deploy_mode_for(
+                        ctx,
+                        &instance_id,
+                        game_def,
+                        requested,
+                        &agora_core::game_launch::SystemLauncher,
+                    ) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            if json {
+                                let out = serde_json::json!({
+                                    "error": format!("{e}"),
+                                    "exitCode": 1,
+                                });
+                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                            } else {
+                                eprintln!("Error: {e}");
+                            }
+                            std::process::exit(1);
+                        }
                     };
 
+                    if !json {
+                        println!("Deploying as '{mode}'.");
+                    }
                     match agora_core::game_deploy::deploy(ctx, &instance_id, game_def, mode) {
                         Ok(agora_core::game_deploy::DeployOutcome::UpToDate { plugins }) => {
                             if json {
@@ -6717,6 +6849,16 @@ fn print_plugin_sync(report: &agora_core::game_plugins::PluginSyncReport) {
 
 /// Print base problems one per line, and say plainly when any of them is on a
 /// file hardlinked to the store install: that change happened there too.
+/// Parse a deployment mode name: `virtual`, `links`, `copies`, or `auto` (no choice).
+fn parse_deployment_arg(s: &str) -> Result<Option<agora_core::game_deploy::DeployMode>, String> {
+    if s.trim().eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    agora_core::game_deploy::DeployMode::parse(s)
+        .map(Some)
+        .ok_or_else(|| format!("unknown deployment '{s}': use virtual, links, copies or auto"))
+}
+
 fn print_base_problems(problems: &[agora_core::game_base::BaseProblem]) {
     use agora_core::game_base::ProblemKind;
     for p in problems {

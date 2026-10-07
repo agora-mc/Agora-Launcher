@@ -178,7 +178,8 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games launch <base-id> [--wait] [--launch-anyway] [--plain]` | Launch a game from its pinned base (`--plain` skips a framework loader such as SKSE's and starts the game's own executable) |
 | `agora games instance create <install-id> [--name N] [--id ID] [--mode linked\|copied]` | Create an instance for a game from an identified install |
 | `agora games instance list` | List all game instances, Minecraft included |
-| `agora games instance launch <id> [--wait] [--launch-anyway] [--plain]` | Launch a game instance; it starts through a framework loader (SKSE's `skse64_loader.exe`) when one is installed, and says so (`--plain` starts the game's own executable instead) |
+| `agora games instance launch <id> [--wait] [--launch-anyway] [--plain] [--deployment virtual\|links\|copies\|auto]` | Launch a game instance; it starts through a framework loader (SKSE's `skse64_loader.exe`) when one is installed, and says so (`--plain` starts the game's own executable instead). `--deployment` overrides the instance's rung for this launch; a mode you name never falls back to another |
+| `agora games instance set-deployment <id> virtual\|links\|copies\|auto` | Choose how an instance is deployed and run: under the virtual file system, from hardlinks, or from copies. `auto` clears the choice, and then a step down from the virtual file system is automatic and announced |
 | `agora games instance delete <id>` | Delete a game instance and its folder |
 | `agora games instance content add <instance> <item> [--into <path>]` | Add a content item to an instance's layer stack |
 | `agora games instance content list <instance>` | List content layers on an instance in priority order |
@@ -186,7 +187,7 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games instance content enable <instance> <item>` | Enable a content layer on an instance |
 | `agora games instance content disable <instance> <item>` | Disable a content layer on an instance |
 | `agora games instance content move <instance> <item> <position>` | Move a content layer to a 1-based position |
-| `agora games instance deploy <instance> [--copies]` | Deploy an instance's content layers to its game folder |
+| `agora games instance deploy <instance> [--copies\|--deployment virtual\|links\|copies]` | Deploy an instance's content layers to its game folder, as the instance's chosen rung, else the mode a launch would use |
 | `agora games instance undeploy <instance>` | Harvest game writes and tear down an instance deployment |
 | `agora games instance plugins <instance>` | List the instance's plugin list: each plugin's state, and whether Agora manages it (a content layer deploys it) or you wrote the line |
 | `agora games instance plugins enable <instance> <plugin>` | Activate a plugin in the instance's plugin list |

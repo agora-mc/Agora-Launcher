@@ -10,8 +10,9 @@ use agora_core::game_deploy::{
     add_content, deploy, remove_content, set_content_enabled, DeployMode, DeployOutcome,
 };
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
-use agora_core::game_instance::{create, prepare_launch_with, GameInstanceRecord};
+use agora_core::game_instance::{create, prepare_launch_with, GameInstanceRecord, LaunchOptions};
 use agora_core::game_launch::LaunchError;
+use agora_core::game_launch::SystemLauncher;
 use agora_core::game_plugins::{list, set_active, PluginListError};
 use agora_core::game_registry::{
     GameRegistry, GameRegistryError, IdentifiedInstall, PackageSource, RuntimeResolution,
@@ -287,9 +288,12 @@ impl Harness {
             &self.ctx,
             &inst.instance_id,
             &self.def,
-            false,
-            plain,
+            LaunchOptions {
+                plain,
+                ..Default::default()
+            },
             &|| report.clone(),
+            &SystemLauncher,
         )
     }
 }
@@ -816,7 +820,9 @@ fn a_loader_in_the_base_is_used_by_an_instance_without_content() {
     // The base is built after the loader was installed.
     let inst = h.instance("base-loader");
     let prepared = h.prepare(&inst, false).unwrap();
-    assert!(prepared.deploy_outcome.is_none());
+    // A game that needs the virtual file system runs from a farm of its base even with no
+    // content on top, and the loader is found in that farm.
+    assert!(prepared.deploy_outcome.is_some());
     assert_eq!(prepared.resolved.program.file_name().unwrap(), "loader.exe");
     assert_eq!(prepared.alternative.as_ref().unwrap().id, "loader");
     let plain = h.prepare(&inst, true).unwrap();

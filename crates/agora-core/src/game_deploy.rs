@@ -22,9 +22,45 @@ use crate::lock_manager::LockResource;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeployMode {
+    /// Hardlinks into the game folder (rung 2): safe for content, writes land in the folder.
     Links,
+    /// Real copies (rung 3).
     Copies,
+    /// The same link farm as `Links`, run under `agora_vfs.dll` (rung 1): every write lands in
+    /// the instance's writable layer, which the VFS shows on top, so the farm holds neither the
+    /// writable layer nor private copies of declared-write files.
+    Virtual,
 }
+
+impl DeployMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeployMode::Links => "links",
+            DeployMode::Copies => "copies",
+            DeployMode::Virtual => "virtual",
+        }
+    }
+
+    /// Parse a user-facing mode name (`virtual`, `links`, `copies`).
+    pub fn parse(s: &str) -> Option<DeployMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "virtual" => Some(DeployMode::Virtual),
+            "links" => Some(DeployMode::Links),
+            "copies" => Some(DeployMode::Copies),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for DeployMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The folder in the writable layer holding the VFS's whiteout markers (`.agvfs-wh\<path>.wh`).
+const WHITEOUT_DIR: &str = ".agvfs-wh";
+const WHITEOUT_SUFFIX: &str = ".wh";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeploymentPlan {
@@ -213,7 +249,7 @@ fn is_reparse_point_or_symlink(metadata: &std::fs::Metadata) -> bool {
     }
 }
 
-fn write_instance_manifest_atomic(
+pub(crate) fn write_instance_manifest_atomic(
     ctx: &Ctx,
     instance_id: &str,
     manifest: &crate::game_instance::GameInstanceManifest,
@@ -450,7 +486,9 @@ pub fn plan(
         .instance_dir(instance_id)
         .map_err(|e| DeployError::Other(e.to_string()))?;
     let writable_dir = instance_dir.join("writable");
-    if writable_dir.exists() {
+    // Under the VFS the writable layer is shown on top of the farm, not placed in it, so the
+    // farm (and its fingerprint) does not change when the game writes.
+    if mode != DeployMode::Virtual && writable_dir.exists() {
         let mut writable_files = Vec::new();
         walk_writable_dir(&writable_dir, Path::new(""), &mut writable_files)?;
         if !writable_files.is_empty() {
@@ -548,6 +586,15 @@ pub fn plan(
             }
         }
     }
+    // The VFS records a deletion as a marker in the writable layer; it hides lower files in every
+    // mode. A writable file that is still there (the game recreated the path) is not hidden.
+    for marker in read_whiteout_markers(&writable_dir)? {
+        let prefix = format!("{marker}/");
+        candidates.retain(|key, cand| {
+            matches!(cand.source, FileSource::Writable { .. })
+                || !(*key == marker || key.starts_with(&prefix))
+        });
+    }
 
     // 7. Determine placement & compute fingerprint
     let detector = VolumeDetector::new();
@@ -560,8 +607,10 @@ pub fn plan(
     for (_key, cand) in candidates {
         let placement = match mode {
             DeployMode::Copies => Placement::Copy,
-            DeployMode::Links => {
-                if definition.is_declared_write(cand.path.as_str()) {
+            DeployMode::Links | DeployMode::Virtual => {
+                // Under the VFS a declared-write path is protected like any other, so it is
+                // linked; without it the game must be given a private copy to write to.
+                if mode == DeployMode::Links && definition.is_declared_write(cand.path.as_str()) {
                     Placement::Copy
                 } else {
                     match &cand.source {
@@ -667,6 +716,14 @@ fn walk_writable_dir(
             continue;
         }
         let file_name = entry.file_name();
+        if rel.as_os_str().is_empty()
+            && file_name
+                .to_string_lossy()
+                .eq_ignore_ascii_case(WHITEOUT_DIR)
+        {
+            // The VFS's whiteout markers are bookkeeping, never game files.
+            continue;
+        }
         let child_rel = rel.join(&file_name);
         if meta.is_dir() {
             walk_writable_dir(root, &child_rel, out)?;
@@ -686,6 +743,53 @@ fn walk_writable_dir(
         }
     }
     Ok(())
+}
+
+/// The paths (lower-cased, `/`-separated) the VFS has recorded as deleted in `writable_dir`.
+fn read_whiteout_markers(writable_dir: &Path) -> Result<Vec<String>, DeployError> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), DeployError> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let meta = std::fs::symlink_metadata(entry.path())?;
+            if is_reparse_point_or_symlink(&meta) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            if meta.is_dir() {
+                walk(&entry.path(), &child, out)?;
+            } else if meta.is_file() {
+                if let Some(path) = child.strip_suffix(WHITEOUT_SUFFIX) {
+                    if !path.is_empty() {
+                        out.push(path.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let dir = writable_dir.join(WHITEOUT_DIR);
+    let mut out = Vec::new();
+    if dir.is_dir() {
+        walk(&dir, "", &mut out)?;
+    }
+    Ok(out)
+}
+
+/// Remove the VFS's whiteout marker for `rel`, because a file now exists there in the writable
+/// layer (a marker would hide it again under the VFS).
+fn clear_whiteout_marker(writable_dir: &Path, rel: &RelPath) {
+    let mut marker = writable_dir
+        .join(WHITEOUT_DIR)
+        .join(rel.as_str())
+        .into_os_string();
+    marker.push(WHITEOUT_SUFFIX);
+    let _ = std::fs::remove_file(PathBuf::from(marker));
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1200,7 @@ fn harvest_internal(
                             std::fs::create_dir_all(parent)?;
                         }
                         std::fs::copy(&cur_file.abs_path, &dest)?;
+                        clear_whiteout_marker(&writable_dir, &cur_file.rel_path);
                         report.copied_to_writable.push(cur_file.rel_path.clone());
                     }
                 }
@@ -1112,6 +1217,7 @@ fn harvest_internal(
                                 std::fs::create_dir_all(parent)?;
                             }
                             std::fs::copy(&cur_file.abs_path, &dest)?;
+                            clear_whiteout_marker(&writable_dir, &cur_file.rel_path);
                             report.copied_to_writable.push(cur_file.rel_path.clone());
                             report.base_files_changed.push(BaseFileChanged {
                                 path: cur_file.rel_path.clone(),
@@ -1128,6 +1234,7 @@ fn harvest_internal(
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::copy(&cur_file.abs_path, &dest)?;
+            clear_whiteout_marker(&writable_dir, &cur_file.rel_path);
             report.copied_to_writable.push(cur_file.rel_path.clone());
         }
     }
@@ -1287,6 +1394,27 @@ pub fn add_content(
     write_instance_manifest_atomic(ctx, instance_id, &manifest)?;
 
     Ok(new_layer)
+}
+
+/// Choose (or, with `None`, stop choosing) how an instance is deployed and run. A chosen mode is
+/// never replaced by a fallback; `None` leaves the choice to the game definition and the machine.
+pub fn set_deployment(
+    ctx: &Ctx,
+    instance_id: &str,
+    mode: Option<DeployMode>,
+) -> Result<(), DeployError> {
+    let _lock = ctx.lock_manager.acquire(
+        LockResource::Instance(instance_id.to_string()),
+        "set-deployment",
+    )?;
+
+    let mut manifest =
+        crate::game_instance::get_manifest(ctx, instance_id).map_err(|e| match e {
+            crate::game_instance::InstanceError::NotFound(id) => DeployError::InstanceNotFound(id),
+            other => DeployError::Other(other.to_string()),
+        })?;
+    manifest.deployment = mode;
+    write_instance_manifest_atomic(ctx, instance_id, &manifest)
 }
 
 pub fn remove_content(
