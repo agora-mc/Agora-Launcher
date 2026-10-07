@@ -1263,6 +1263,7 @@ mod instance {
                 data_path: RelPath::new("Data").unwrap(),
                 data_markers: vec![],
                 root_markers: vec![],
+                thunderstore_bepinex: false,
             }),
             copy_patterns: Vec::new(),
         }

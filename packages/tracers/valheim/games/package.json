@@ -20,6 +20,12 @@
       ],
       "deployment": "redirect",
       "content_rules": [],
+      "content_layout": {
+        "data_path": "",
+        "data_markers": [],
+        "root_markers": [],
+        "thunderstore_bepinex": true
+      },
       "native_code_patterns": [],
       "framework_ids": [],
       "tool_ids": [],
@@ -39,7 +45,12 @@
       "crash_paths": [],
       "user_files": [],
       "save_paths": [],
-      "linked_archive_patterns": [],
+      "linked_archive_patterns": [
+        "valheim_Data/*.assets",
+        "valheim_Data/*.resS",
+        "valheim_Data/*.resource",
+        "valheim_Data/StreamingAssets/**/*.bundle"
+      ],
       "declared_writes": [
         "BepInEx/config/**"
       ],

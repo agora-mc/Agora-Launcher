@@ -3439,3 +3439,168 @@ fn games_user_files_cli_status_and_restore() {
     );
     assert!(!out_restore_json.status.success());
 }
+
+#[test]
+fn games_instance_content_add_thunderstore_and_fallback_to_suggest_placement() {
+    let (_tmp, data_dir) = temp_data_dir();
+
+    // 0. Enable plugins
+    let out_set = run_agora(&data_dir, &["settings", "set", "plugins_enabled", "true"]);
+    assert!(out_set.status.success());
+
+    // 1. Install Valheim tracer plugin so valheim game definition is available
+    let valheim_pkg =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/tracers/valheim");
+    let valheim_pkg_str = valheim_pkg.to_string_lossy().to_string();
+    let out_plugin = run_agora(
+        &data_dir,
+        &[
+            "plugin",
+            "install",
+            "--yes",
+            "development",
+            valheim_pkg_str.as_str(),
+        ],
+    );
+    assert!(
+        out_plugin.status.success(),
+        "failed to install valheim plugin: {}",
+        String::from_utf8_lossy(&out_plugin.stderr)
+    );
+
+    // 2. Create Valheim instance manifest directly in instances/valheim-test
+    let inst_dir = data_dir.join("instances").join("valheim-test");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    let manifest_json = serde_json::json!({
+        "manifest_version": 3,
+        "game": "valheim",
+        "instance_id": "valheim-test",
+        "name": "Valheim Test",
+        "base": {
+            "kind": "unpinned",
+            "install": "steam:892970",
+            "reason": "testing"
+        },
+        "frameworks": [],
+        "layers": []
+    });
+    std::fs::write(
+        inst_dir.join("instance_manifest.json"),
+        serde_json::to_string_pretty(&manifest_json).unwrap(),
+    )
+    .unwrap();
+
+    // 3. Add a non-Thunderstore folder to content store
+    let non_ts_dir = tempdir();
+    std::fs::write(non_ts_dir.path().join("readme.txt"), b"not a ts package").unwrap();
+    let out_add_content = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            non_ts_dir.path().to_str().unwrap(),
+            "--name",
+            "non-ts-mod",
+        ],
+    );
+    assert!(out_add_content.status.success());
+    let list_out = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list_json: serde_json::Value = serde_json::from_slice(&list_out.stdout).unwrap();
+    let non_ts_item_id = list_json[0]["item_id"].as_str().unwrap().to_string();
+
+    // 4. Try `games instance content add` without flags on non-Thunderstore item:
+    // It falls back to suggest_placement, which fails with Suggestion::Unknown
+    let out_place_unknown = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            "valheim-test",
+            &non_ts_item_id,
+        ],
+    );
+    assert!(!out_place_unknown.status.success());
+    let stderr = String::from_utf8_lossy(&out_place_unknown.stderr);
+    assert!(
+        stderr.contains("Cannot determine placement for content")
+            || stderr.contains("Specify --into"),
+        "stderr should mention placement failure: {stderr}"
+    );
+
+    // 5. Specifying --into works on non-Thunderstore item
+    let out_place_manual = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            "valheim-test",
+            &non_ts_item_id,
+            "--into",
+            "BepInEx/plugins",
+        ],
+    );
+    assert!(
+        out_place_manual.status.success(),
+        "manual --into should succeed: {}",
+        String::from_utf8_lossy(&out_place_manual.stderr)
+    );
+
+    // 6. Now add a Thunderstore package (with manifest.json)
+    let ts_dir = tempdir();
+    std::fs::write(
+        ts_dir.path().join("manifest.json"),
+        r#"{"name": "MyMod", "version_number": "1.0.0", "dependencies": ["Author-OtherMod-1.0.0"]}"#,
+    )
+    .unwrap();
+    std::fs::write(ts_dir.path().join("MyMod.dll"), b"assembly").unwrap();
+    let out_add_ts = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            ts_dir.path().to_str().unwrap(),
+            "--name",
+            "Author-MyMod-1.0.0.zip",
+        ],
+    );
+    assert!(out_add_ts.status.success());
+    let list_out2 = run_agora_json(&data_dir, &["games", "content", "list"]);
+    let list_json2: serde_json::Value = serde_json::from_slice(&list_out2.stdout).unwrap();
+    let ts_item_id = list_json2
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"].as_str().unwrap_or("").contains("MyMod"))
+        .unwrap()["item_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 7. Add Thunderstore item without flags: places itself automatically and warns missing dependency!
+    let out_place_ts = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "instance",
+            "content",
+            "add",
+            "valheim-test",
+            &ts_item_id,
+        ],
+    );
+    assert!(
+        out_place_ts.status.success(),
+        "thunderstore add should succeed: {}",
+        String::from_utf8_lossy(&out_place_ts.stderr)
+    );
+    let stdout_ts = String::from_utf8_lossy(&out_place_ts.stdout);
+    let stderr_ts = String::from_utf8_lossy(&out_place_ts.stderr);
+    assert!(stdout_ts.contains("Thunderstore package Author-MyMod 1.0.0:"));
+    assert!(stderr_ts.contains("Warning: MyMod needs Author-OtherMod; it is not in this instance"));
+}

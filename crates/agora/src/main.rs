@@ -4852,6 +4852,11 @@ async fn run_command(
                                         from_item,
                                         ..
                                     } => format!("fomod:{}", &from_item[..12.min(from_item.len())]),
+                                    agora_core::content_store::ContentSource::Thunderstore {
+                                        package,
+                                        version,
+                                        ..
+                                    } => format!("thunderstore:{package}@{version}"),
                                     _ => "other".to_string(),
                                 })
                                 .collect::<Vec<_>>()
@@ -5746,6 +5751,73 @@ async fn run_command(
                                 }
                                 std::process::exit(1);
                             };
+
+                            if layout.thunderstore_bepinex {
+                                if let Ok(Some(manifest)) =
+                                    agora_core::content_thunderstore::parse_manifest(ctx, &item_id)
+                                {
+                                    match agora_core::content_thunderstore::install_thunderstore(
+                                        ctx,
+                                        &instance_id,
+                                        &item_id,
+                                    ) {
+                                        Ok(outcome) => {
+                                            if !json {
+                                                println!(
+                                                    "Thunderstore package {} {}: {}",
+                                                    outcome.package_id,
+                                                    outcome.version,
+                                                    outcome.summary
+                                                );
+                                                println!(
+                                                    "Added content '{}' to instance '{instance_id}' (mount: '').",
+                                                    outcome.derived_item.item_id
+                                                );
+                                            }
+                                            for dep in &outcome.missing_dependencies {
+                                                eprintln!(
+                                                    "Warning: {} needs {}; it is not in this instance",
+                                                    manifest.name, dep
+                                                );
+                                            }
+                                            if json {
+                                                let out = serde_json::json!({
+                                                    "status": "added",
+                                                    "instance_id": instance_id,
+                                                    "item_id": outcome.derived_item.item_id,
+                                                    "layer_id": outcome.layer.id.as_str(),
+                                                    "mount_path": outcome.layer.mount_path.as_str(),
+                                                    "source_path": outcome.layer.source_path.as_str(),
+                                                    "thunderstore": {
+                                                        "package": outcome.package_id,
+                                                        "version": outcome.version,
+                                                        "summary": outcome.summary,
+                                                        "missing_dependencies": outcome.missing_dependencies,
+                                                    }
+                                                });
+                                                println!("{}", serde_json::to_string_pretty(&out)?);
+                                            }
+                                            return Ok(());
+                                        }
+                                        Err(e) => {
+                                            if json {
+                                                let out = serde_json::json!({
+                                                    "status": "error",
+                                                    "error": format!("{e}"),
+                                                    "exitCode": 1,
+                                                });
+                                                eprintln!(
+                                                    "{}",
+                                                    serde_json::to_string_pretty(&out)?
+                                                );
+                                            } else {
+                                                eprintln!("Error: {e}");
+                                            }
+                                            std::process::exit(1);
+                                        }
+                                    }
+                                }
+                            }
 
                             let item = match agora_core::content_store::get_item(ctx, &item_id) {
                                 Ok(it) => it,

@@ -52,6 +52,12 @@ pub enum ContentSource {
         choices: Vec<crate::content_fomod::Choice>,
         added_at_unix_ms: i64,
     },
+    Thunderstore {
+        from_item: String,
+        package: String,
+        version: String,
+        added_at_unix_ms: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1105,6 +1111,22 @@ fn commit_manifest(
                         choices: c,
                         ..
                     } if f == from_item && c == choices
+                )
+            }),
+            ContentSource::Thunderstore {
+                from_item,
+                package,
+                version,
+                ..
+            } => !existing_item.sources.iter().any(|s| {
+                matches!(
+                    s,
+                    ContentSource::Thunderstore {
+                        from_item: f,
+                        package: p,
+                        version: v,
+                        ..
+                    } if f == from_item && p == package && v == version
                 )
             }),
         };

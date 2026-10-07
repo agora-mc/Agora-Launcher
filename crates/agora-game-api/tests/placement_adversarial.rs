@@ -24,6 +24,7 @@ fn skyrim() -> ContentLayout {
             .iter()
             .map(|s| s.to_string())
             .collect(),
+        thunderstore_bepinex: false,
     }
 }
 
@@ -118,6 +119,7 @@ fn an_empty_data_path_layout_never_unwraps_into_nothing() {
             .iter()
             .map(|s| s.to_string())
             .collect(),
+        thunderstore_bepinex: false,
     };
     match suggest_placement(&paths(&["MyMod v2/archive/pc/mod/x.archive"]), &cyberpunk) {
         Suggestion::Place {

@@ -318,11 +318,13 @@ pub struct LaunchRecipe {
     pub working_directory: GamePath,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentLayout {
     pub data_path: RelPath, // "Data" for Skyrim, "" when content goes in the game root
     pub data_markers: Vec<String>, // globs on top-level names that mean "this is data-folder content"
     pub root_markers: Vec<String>, // globs on top-level names that mean "this is game-root content"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thunderstore_bepinex: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,6 +677,214 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
         }
     }
     cur.ends_with(parts[parts.len() - 1])
+}
+
+// ---------------------------------------------------------------------------
+// Thunderstore Package Support (BepInEx)
+// ---------------------------------------------------------------------------
+
+/// The fields of a Thunderstore `manifest.json` that placement needs. Parsing it is the caller's
+/// job (core, with a parser that bounds nesting); other fields are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThunderstoreManifest {
+    pub name: String,
+    pub version_number: String,
+    pub dependencies: Vec<String>,
+}
+
+/// Thunderstore's rule for a namespace or package name: ASCII letters, digits and underscores.
+/// Anything else (a `/`, a `..`, an empty name) never becomes part of a destination path.
+pub fn is_thunderstore_name(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ThunderstoreMappingError {
+    #[error("not a Thunderstore package")]
+    NotPackage,
+    #[error("destination path collision: {0}")]
+    Collision(String),
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
+}
+
+pub fn extract_thunderstore_package_id(
+    file_stem_or_name: &str,
+    manifest_name: &str,
+    version: &str,
+) -> String {
+    let mut stem = file_stem_or_name;
+    if let Some(s) = stem.strip_suffix(".zip") {
+        stem = s;
+    }
+    let version_suffix = format!("-{version}");
+    let base = if let Some(prefix) = stem.strip_suffix(&version_suffix) {
+        prefix
+    } else {
+        stem
+    };
+
+    let name_suffix = format!("-{manifest_name}");
+    if let Some(ns) = base.strip_suffix(&name_suffix) {
+        if is_thunderstore_name(ns) {
+            return format!("{ns}-{manifest_name}");
+        }
+    }
+    manifest_name.to_string()
+}
+
+pub fn map_thunderstore_bepinex(
+    paths: &[RelPath],
+    pkg: &str,
+) -> Result<Vec<(RelPath, RelPath)>, ThunderstoreMappingError> {
+    let has_manifest = paths
+        .iter()
+        .any(|p| p.as_str().eq_ignore_ascii_case("manifest.json"));
+    if !has_manifest {
+        return Err(ThunderstoreMappingError::NotPackage);
+    }
+    // The id becomes a folder name: `Namespace-Name` or `Name`, in Thunderstore's characters only.
+    if !pkg.split('-').all(is_thunderstore_name) || pkg.split('-').count() > 2 {
+        return Err(ThunderstoreMappingError::InvalidPath(format!(
+            "'{pkg}' is not a Thunderstore package id"
+        )));
+    }
+
+    let is_preloader = |parts: &[&str]| {
+        parts.len() == 3
+            && parts[0].eq_ignore_ascii_case("BepInEx")
+            && parts[1].eq_ignore_ascii_case("core")
+            && parts[2].eq_ignore_ascii_case("BepInEx.Preloader.dll")
+    };
+    // A BepInEx pack: the folder holding `BepInEx/core/BepInEx.Preloader.dll`, which is usually a
+    // top-level folder (`BepInExPack_Valheim/`) and sometimes the package itself (`Some("")`).
+    let mut pack_folder: Option<String> = None;
+    for p in paths {
+        let parts: Vec<&str> = p.as_str().split('/').filter(|s| !s.is_empty()).collect();
+        if is_preloader(&parts) {
+            pack_folder = Some(String::new());
+            break;
+        }
+        if parts.len() == 4 && is_preloader(&parts[1..]) {
+            pack_folder = Some(parts[0].to_string());
+            break;
+        }
+    }
+
+    let mut mappings = Vec::new();
+
+    if pack_folder.as_deref() == Some("") {
+        // The package is the pack: everything but Thunderstore's own top-level files goes to the
+        // game root.
+        for p in paths {
+            let parts: Vec<&str> = p.as_str().split('/').filter(|s| !s.is_empty()).collect();
+            let thunderstore_file = parts.len() == 1
+                && ["manifest.json", "icon.png", "readme.md", "changelog.md"]
+                    .contains(&parts[0].to_ascii_lowercase().as_str());
+            if !parts.is_empty() && !thunderstore_file {
+                mappings.push((p.clone(), p.clone()));
+            }
+        }
+    } else if let Some(folder) = pack_folder {
+        for p in paths {
+            let parts: Vec<&str> = p.as_str().split('/').filter(|s| !s.is_empty()).collect();
+            if parts.is_empty() {
+                continue;
+            }
+            if parts[0].eq_ignore_ascii_case(&folder) {
+                let rel = parts[1..].join("/");
+                if !rel.is_empty() {
+                    let dest = RelPath::new(&rel)
+                        .map_err(|e| ThunderstoreMappingError::InvalidPath(e.to_string()))?;
+                    mappings.push((p.clone(), dest));
+                }
+            }
+        }
+    } else {
+        for p in paths {
+            let parts: Vec<&str> = p.as_str().split('/').filter(|s| !s.is_empty()).collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let top = parts[0].to_ascii_lowercase();
+            let dest_str = match top.as_str() {
+                "plugins" => {
+                    let sub = parts[1..].join("/");
+                    if sub.is_empty() {
+                        format!("BepInEx/plugins/{pkg}")
+                    } else {
+                        format!("BepInEx/plugins/{pkg}/{sub}")
+                    }
+                }
+                "patchers" => {
+                    let sub = parts[1..].join("/");
+                    if sub.is_empty() {
+                        format!("BepInEx/patchers/{pkg}")
+                    } else {
+                        format!("BepInEx/patchers/{pkg}/{sub}")
+                    }
+                }
+                "monomod" => {
+                    let sub = parts[1..].join("/");
+                    if sub.is_empty() {
+                        format!("BepInEx/monomod/{pkg}")
+                    } else {
+                        format!("BepInEx/monomod/{pkg}/{sub}")
+                    }
+                }
+                "config" => {
+                    let sub = parts[1..].join("/");
+                    if sub.is_empty() {
+                        "BepInEx/config".to_string()
+                    } else {
+                        format!("BepInEx/config/{sub}")
+                    }
+                }
+                "core" => {
+                    let sub = parts[1..].join("/");
+                    if sub.is_empty() {
+                        "BepInEx/core".to_string()
+                    } else {
+                        format!("BepInEx/core/{sub}")
+                    }
+                }
+                _ => {
+                    format!("BepInEx/plugins/{pkg}/{}", p.as_str())
+                }
+            };
+            let dest = RelPath::new(&dest_str)
+                .map_err(|e| ThunderstoreMappingError::InvalidPath(e.to_string()))?;
+            mappings.push((p.clone(), dest));
+        }
+    }
+
+    if mappings.is_empty() {
+        return Err(ThunderstoreMappingError::NotPackage);
+    }
+
+    let mut seen_lower = std::collections::HashSet::with_capacity(mappings.len());
+    for (_, dest) in &mappings {
+        let lower = dest.as_str().to_ascii_lowercase();
+        if !seen_lower.insert(lower) {
+            return Err(ThunderstoreMappingError::Collision(format!(
+                "equals another destination path case-insensitively: '{dest}'"
+            )));
+        }
+    }
+
+    for (_, dest) in &mappings {
+        let parts: Vec<&str> = dest.as_str().split('/').collect();
+        for i in 1..parts.len() {
+            let prefix = parts[..i].join("/").to_ascii_lowercase();
+            if seen_lower.contains(&prefix) {
+                return Err(ThunderstoreMappingError::Collision(format!(
+                    "prefix folder '{prefix}' matches another file"
+                )));
+            }
+        }
+    }
+
+    Ok(mappings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1048,6 +1258,7 @@ mod tests {
                 "enb*.ini".into(),
                 "reshade-shaders".into(),
             ],
+            thunderstore_bepinex: false,
         };
 
         // 1. Loose MyMod.esp + textures/a.dds -> Data
@@ -1180,6 +1391,7 @@ mod tests {
                 "engine".into(),
                 "mods".into(),
             ],
+            thunderstore_bepinex: false,
         };
         let files = vec![RelPath::new("archive/pc/mod/x.archive").unwrap()];
         match suggest_placement(&files, &cyberpunk) {
