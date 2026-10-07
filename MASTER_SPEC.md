@@ -3672,8 +3672,14 @@ and machine support, and says which, and why, on its page.
 | 3 | **Copy deployment** | Hardlinks are impossible: the content store is on another volume, or the volume is exFAT/FAT32 or a network share | Disk space and switching time; where the file system has no ACLs, post-session verification is the only protection |
 | 4 | **Direct install into the game folder** | The game must run from its own install (some DRM and anti-cheat check the path; Microsoft Store packages), **or the user chooses it** | Agora modifies the real install. Content is copied in, never linked, so the content store stays protected; a journal records what was replaced and added, restores it after the session or when switching instance, and the user may choose to leave it deployed instead |
 
-- **Stepping down is automatic only to rungs 2 and 3, and always announced.** Rung 4 is never
-  automatic: Agora asks, says what it will change, and offers it.
+- **Stepping down is never silent, and never to rung 4 on its own.** When rung 1 cannot start
+  (agvfs missing, injection refused, the process ended before it confirmed its hooks), core
+  reports `VfsUnavailable` with the next rung (`DeployMode::next_fallback`: agvfs to links, links to
+  copies) and launches nothing, whether or not the user chose the rung; the front end says what
+  failed and why, what the next rung gives up, and asks. Yes runs that launch from the next rung
+  for this launch only, and the way to keep it (`set-deployment`) is printed. `--fall-back` is the
+  yes given in advance (`VfsFailure::FallBack`). Rung 4 is never offered by that question: Agora
+  asks separately, says what it will change, and offers it.
 - **The user can always choose any rung for an instance, rung 4 included**, even where a better one
   works. It does not have to be fast or safe; it has to be possible. Agora explains what is lost and
   does what was chosen (§26.3 gives the same freedom over which game folder is tracked).
@@ -4140,7 +4146,8 @@ there, and the Minecraft budget, which moved to Phase 5. Phase 2 is closed.
   beside the base (`<bases root>/deployments/<instance>/`) as links, copies, or links under the VFS
   (rungs 3, 2 and 1). Harvest returns a link or copy deployment's writes to the writable layer; under
   the VFS they land there directly. The rung is the user's choice per instance or launch, else the
-  game's default, stepping down (announced) when the DLL is missing or cannot be injected.
+  game's default; when the DLL is missing or cannot be injected the launch reports it and asks
+  whether to step down (§26.5; slice 13).
 - **The VFS** (`crates/agora-vfs`): the Spike 2 prototype as product code, with the write matrix as
   its conformance test in three topologies, including the product's link farm mounted over itself.
 - **Per-user files** (`agora_core::game_user_files`): swapped in by a journal that survives Agora
@@ -4210,7 +4217,13 @@ ordinal 1, which is how Detours names it.
   with its file.
 - Core resumes the game, then waits for the ready event or for the process to end, and kills it on
   timeout or early exit. A DLL that cannot read its configuration (one was named) or install its hooks
-  ends its own process at once (`0xA6F50001`), so a failure costs a start-up, not a timeout.
+  ends its own process at once (`0xA6F50001`), so a failure costs a start-up, not a timeout. For
+  the game itself that is a `VfsUnavailable` the user is asked about (slice 13). For a child the game
+  starts it would be silent, so before ending a process the DLL logs `[pid] ending the process
+  <exe>: <why>` (to `AGORA_VFS_LOG` when it could not read the configuration that names the log), and
+  after a `--wait` session under agvfs the CLI reads what was appended
+  (`game_launch::processes_ended_since`), names each program and why, and offers to start the game
+  again from linked files.
 - A child process the game starts is injected the same way, so SKSE's loader's `SkyrimSE.exe` is
   covered. A child started with its own environment block has no configuration to find and runs
   unhooked, as before.

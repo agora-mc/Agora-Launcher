@@ -41,6 +41,26 @@ impl DeployMode {
         }
     }
 
+    /// The rung below this one, which a failed launch can offer (MASTER_SPEC §26.5): the virtual
+    /// file system steps down to linked files, links to copies. Copies have none, and direct
+    /// install (rung 4) is never offered as a fallback.
+    pub fn next_fallback(self) -> Option<DeployMode> {
+        match self {
+            DeployMode::Virtual => Some(DeployMode::Links),
+            DeployMode::Links => Some(DeployMode::Copies),
+            DeployMode::Copies => None,
+        }
+    }
+
+    /// What the mode is called to a person: "linked files", not "links".
+    pub fn plain_name(self) -> &'static str {
+        match self {
+            DeployMode::Virtual => "the virtual file system",
+            DeployMode::Links => "linked files",
+            DeployMode::Copies => "copied files",
+        }
+    }
+
     /// Parse a user-facing mode name (`virtual`, `links`, `copies`).
     pub fn parse(s: &str) -> Option<DeployMode> {
         match s.trim().to_ascii_lowercase().as_str() {

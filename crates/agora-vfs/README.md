@@ -38,7 +38,9 @@ When injected into a process:
    end, and kills the process on a timeout. With the fallback it resumes only after the event.)
    If `AGORA_VFS_CONFIG` names a configuration that cannot be loaded, or the hooks cannot be installed,
    the DLL ends its own process (exit code `0xA6F50001`) rather than let it run unprotected. With no
-   `AGORA_VFS_CONFIG` at all it does nothing.
+   `AGORA_VFS_CONFIG` at all it does nothing. Before it ends a process it logs one line,
+   `[pid] ending the process <exe>: <why>` (to `AGORA_VFS_LOG` when its own configuration, and so its
+   log path, could not be read), so a program the game started that disappears can be named.
 4. Any attempt to write or truncate a file located in a lower layer copies the file up to the `upper`
    directory first (or skips copy for full file rewrites).
 5. Any delete of a lower layer records a whiteout marker (`<upper>\.agvfs-wh\<rel>.wh`).

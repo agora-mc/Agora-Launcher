@@ -3604,3 +3604,263 @@ fn games_instance_content_add_thunderstore_and_fallback_to_suggest_placement() {
     assert!(stdout_ts.contains("Thunderstore package Author-MyMod 1.0.0:"));
     assert!(stderr_ts.contains("Warning: MyMod needs Author-OtherMod; it is not in this instance"));
 }
+
+// ---------------------------------------------------------------------------
+// The virtual file system cannot start: say so, and ask before stepping down
+// ---------------------------------------------------------------------------
+
+/// A pinned Skyrim SE instance in a disposable data root, built from a fake install whose
+/// `SkyrimSE.exe` is a copy of `cmd.exe` (so a launch that runs ends at once). Nothing here reads
+/// or writes the machine's real Skyrim, its Documents or its AppData.
+struct VfsFixture {
+    _tmp: TempDir,
+    data_dir: PathBuf,
+    user_data: PathBuf,
+    missing_dll: PathBuf,
+    instance_id: String,
+}
+
+fn vfs_fixture() -> VfsFixture {
+    use agora_core::game_discovery::{DiscoveredInstall, InstallCapabilities};
+    use agora_core::game_registry::{GameRegistry, IdentifiedInstall, PackageSource};
+    use agora_game_api::{GameId, InstallId, InstallKind, RuntimeIdentity, StoreId};
+
+    let tmp = tempdir();
+    let data_dir = tmp.path().join("app_data");
+    let install_dir = tmp.path().join("install");
+    std::fs::create_dir_all(install_dir.join("Data")).unwrap();
+    if cfg!(windows) {
+        std::fs::copy(
+            r"C:\Windows\System32\cmd.exe",
+            install_dir.join("SkyrimSE.exe"),
+        )
+        .unwrap();
+    } else {
+        std::fs::write(install_dir.join("SkyrimSE.exe"), b"fake game binary").unwrap();
+    }
+    std::fs::write(install_dir.join("Data").join("Skyrim.esm"), b"ESM").unwrap();
+
+    let mut builder = GameRegistry::builder();
+    builder
+        .add(
+            PackageSource::Compiled {
+                crate_name: "agora-game-creation".to_string(),
+            },
+            agora_game_creation::game_package(),
+        )
+        .expect("register the Creation Engine package");
+    let ctx = agora_core::ctx::CoreContext::for_testing(data_dir.clone())
+        .with_games(std::sync::Arc::new(builder.build()));
+    agora_core::db::init_local_state_db(&ctx.paths.local_state_db()).unwrap();
+
+    let store = StoreId::new("steam").unwrap();
+    let runtime = RuntimeIdentity {
+        game: GameId::new("skyrim-se").unwrap(),
+        store: store.clone(),
+        version: "1.6.1170".into(),
+        build: None,
+    };
+    let volume =
+        agora_core::game_discovery::volume::VolumeDetector::new().get_volume_info(&install_dir);
+    let install = IdentifiedInstall {
+        game: runtime.game.clone(),
+        install_id: InstallId::new("steam:489830").unwrap(),
+        discovered: DiscoveredInstall {
+            store,
+            product: "489830".into(),
+            name: "Skyrim Special Edition".into(),
+            kind: InstallKind::BaseGame,
+            parent_product: None,
+            location: install_dir.clone(),
+            store_version: Some(runtime.version.clone()),
+            store_build: None,
+            executables: vec!["SkyrimSE.exe".into()],
+            capabilities: InstallCapabilities {
+                executables_readable: true,
+                accepts_new_files: true,
+                relocatable: true,
+            },
+            volume,
+        },
+        add_ons: vec![],
+        runtime: agora_core::game_registry::RuntimeResolution::Identified {
+            runtime,
+            source: "executable".into(),
+        },
+    };
+    let definition = ctx
+        .games
+        .game(&GameId::new("skyrim-se").unwrap())
+        .expect("the Skyrim SE definition")
+        .clone();
+    let record = agora_core::game_instance::create(
+        &ctx,
+        &install,
+        &definition,
+        "Vfs Fallback",
+        Some("vfs-fallback".to_string()),
+        agora_core::game_base::BaseMode::Linked,
+        &|_| {},
+    )
+    .expect("create the instance");
+
+    let user_data = tmp.path().join("user_data");
+    let missing_dll = tmp.path().join("no-such-dir").join("agora_vfs.dll");
+    VfsFixture {
+        _tmp: tmp,
+        data_dir,
+        user_data,
+        missing_dll,
+        instance_id: record.instance_id,
+    }
+}
+
+/// Run the CLI against the fixture with no agora_vfs.dll to be found and per-user files redirected
+/// into the fixture. Standard input is not a terminal, so nothing can be asked.
+fn run_vfs_fixture(fixture: &VfsFixture, args: &[&str]) -> std::process::Output {
+    let mut cmd = agora_command(&fixture.data_dir, args);
+    cmd.env("AGORA_VFS_DLL", &fixture.missing_dll);
+    cmd.env("AGORA_TEST_USER_DATA_ROOT", &fixture.user_data);
+    run_command(cmd, args)
+}
+
+#[test]
+fn a_launch_that_cannot_start_the_vfs_says_why_and_prints_both_ways_to_run_from_links() {
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+    let launch_cmd = format!("agora games instance launch {id} --deployment links");
+    let keep_cmd = format!("agora games instance set-deployment {id} links");
+
+    // Nobody chose a rung: it still asks (here: reports and exits) rather than stepping down.
+    let out = run_vfs_fixture(&fixture, &["games", "instance", "launch", &id]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    println!(
+        "--- stderr ---\n{stderr}--- stdout ---\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("the virtual file system could not start"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("AGORA_VFS_DLL") || stderr.contains("only available on Windows"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Linked files cannot catch writes"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&launch_cmd), "{stderr}");
+    assert!(stderr.contains(&keep_cmd), "{stderr}");
+    // No prompt without a terminal.
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("[y/N]"));
+    assert!(!stderr.contains("[y/N]"));
+
+    // The same when the user chose the virtual rung for the instance.
+    let set = run_vfs_fixture(
+        &fixture,
+        &["games", "instance", "set-deployment", &id, "virtual"],
+    );
+    assert!(set.status.success());
+    let out = run_vfs_fixture(&fixture, &["games", "instance", "launch", &id]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&launch_cmd) && stderr.contains(&keep_cmd),
+        "{stderr}"
+    );
+
+    // --json never prompts: the error object names the next rung and the two commands.
+    let out = run_vfs_fixture(&fixture, &["--json", "games", "instance", "launch", &id]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // Other warnings may precede the object on stderr.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error: serde_json::Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..])
+        .expect("the error is one JSON object");
+    assert_eq!(error["status"], "error");
+    assert_eq!(error["exitCode"], 1);
+    assert_eq!(error["nextDeployment"], "links");
+    assert_eq!(error["retry"], serde_json::json!([launch_cmd, keep_cmd]));
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("the virtual file system could not start"));
+}
+
+#[test]
+fn the_fall_back_flag_runs_from_linked_files_without_asking() {
+    let fixture = vfs_fixture();
+    let id = fixture.instance_id.clone();
+
+    let out = run_vfs_fixture(
+        &fixture,
+        &["games", "instance", "launch", &id, "--fall-back", "--wait"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    println!("--- stderr ---\n{stderr}--- stdout ---\n{stdout}");
+    assert!(!stdout.contains("[y/N]") && !stderr.contains("[y/N]"));
+    if !cfg!(windows) {
+        // The fake game only runs on Windows; elsewhere the flag still must not ask.
+        return;
+    }
+    assert!(
+        stderr.contains("Notice: the virtual file system could not start")
+            && stderr.contains("running from linked files instead"),
+        "{stderr}"
+    );
+    assert!(stdout.contains("Program:"), "{stdout}");
+    // Nothing is remembered: the next launch asks again.
+    let after = run_vfs_fixture(&fixture, &["games", "instance", "launch", &id]);
+    assert_eq!(after.status.code(), Some(1));
+
+    // --json carries the same facts.
+    let out = run_vfs_fixture(
+        &fixture,
+        &[
+            "--json",
+            "games",
+            "instance",
+            "launch",
+            &id,
+            "--fall-back",
+            "--wait",
+        ],
+    );
+    // A restore report line may precede the object on stdout.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(
+        &stdout[stdout
+            .find(
+                "{
+",
+            )
+            .unwrap()..],
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "stdout must end in a JSON object: {e}
+{stdout}"
+        )
+    });
+    assert_eq!(value["status"], "exited");
+    assert_eq!(value["deployment"], "links");
+    assert!(value["notice"]
+        .as_str()
+        .unwrap()
+        .contains("running from linked files instead"));
+}
+
+#[test]
+fn launch_help_offers_fall_back() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let out = run_agora(&data_dir, &["games", "instance", "launch", "--help"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("--fall-back"));
+}

@@ -4,8 +4,8 @@ use agora_core::ctx::CoreContext;
 use agora_core::game_base::{remove_base, BaseError, BaseMode, BuildOutcome};
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
 use agora_core::game_instance::{
-    create, delete, get, get_manifest, prepare_launch, prepare_launch_with_discovery,
-    record_launch, GameInstanceManifest, InstanceError,
+    create, delete, get, get_manifest, prepare_launch_with_discovery, record_launch,
+    GameInstanceManifest, InstanceError,
 };
 use agora_core::game_launch::LaunchError;
 use agora_core::game_registry::{IdentifiedInstall, RuntimeResolution};
@@ -381,7 +381,7 @@ fn tampered_pinned_instance_launch_is_refused_naming_file_and_record_launch_sets
     std::fs::write(&base_file, b"corrupted bytes different length").unwrap();
 
     // Launch should be refused naming the file
-    let err = prepare_launch(&ctx, &rec.instance_id, &def, false).unwrap_err();
+    let err = prepare_falling_back(&ctx, &rec.instance_id, &def, false).unwrap_err();
     match err {
         InstanceError::LaunchError(LaunchError::BaseDamaged { problems }) => {
             assert!(
@@ -393,7 +393,7 @@ fn tampered_pinned_instance_launch_is_refused_naming_file_and_record_launch_sets
     }
 
     // Launch anyway should succeed with warning
-    let prepared = prepare_launch(&ctx, &rec.instance_id, &def, true).unwrap();
+    let prepared = prepare_falling_back(&ctx, &rec.instance_id, &def, true).unwrap();
     assert!(!prepared.warnings.is_empty());
 
     // Record launch sets last_launched_at
@@ -402,6 +402,28 @@ fn tampered_pinned_instance_launch_is_refused_naming_file_and_record_launch_sets
 
     let updated = get(&ctx, &rec.instance_id).unwrap().unwrap();
     assert!(updated.last_launched_at.is_some());
+}
+
+/// `prepare_launch`, but allowed to step down to linked files: the test machine has no
+/// `agora_vfs.dll` beside the test executable, and these tests are about something else.
+fn prepare_falling_back(
+    ctx: &CoreContext,
+    id: &str,
+    def: &GameDefinition,
+    launch_anyway: bool,
+) -> Result<agora_core::game_launch::PreparedLaunch, InstanceError> {
+    agora_core::game_instance::prepare_launch_with(
+        ctx,
+        id,
+        def,
+        agora_core::game_instance::LaunchOptions {
+            launch_anyway,
+            on_vfs_failure: agora_core::game_instance::VfsFailure::FallBack,
+            ..Default::default()
+        },
+        &agora_core::game_discovery::discover_all,
+        &agora_core::game_launch::SystemLauncher,
+    )
 }
 
 fn fresh(tmp: &TempDir) -> (CoreContext, IdentifiedInstall, GameDefinition) {

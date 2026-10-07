@@ -112,8 +112,15 @@ pub enum InstanceError {
     BaseError(#[from] crate::game_base::BaseError),
     #[error(transparent)]
     LaunchError(#[from] LaunchError),
-    #[error("the virtual file system could not start: {reason}. You chose it for instance '{instance_id}', so Agora did not switch; run `agora games instance set-deployment {instance_id} links` (or launch with `--deployment links`) to run from linked files")]
-    VfsUnavailable { instance_id: String, reason: String },
+    /// The virtual file system could not start. Core never decides what happens next: `next` is
+    /// the rung a retry would use, for the caller to offer to the user (or take, with
+    /// [`VfsFailure::FallBack`]). Nothing has been launched.
+    #[error("the virtual file system could not start for instance '{instance_id}': {reason}")]
+    VfsUnavailable {
+        instance_id: String,
+        reason: String,
+        next: Option<DeployMode>,
+    },
     #[error(transparent)]
     Deploy(#[from] crate::game_deploy::DeployError),
     #[error(transparent)]
@@ -558,6 +565,18 @@ pub fn record_launch(ctx: &Ctx, id: &str) -> Result<(), InstanceError> {
     Ok(())
 }
 
+/// What a launch does when the virtual file system (rung 1) cannot start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VfsFailure {
+    /// Report it as [`InstanceError::VfsUnavailable`], whether or not the rung was chosen, and
+    /// launch nothing: the caller asks the user whether to try the next rung.
+    #[default]
+    Ask,
+    /// The user said yes in advance: step down to the next rung and announce it in the launch's
+    /// `notice`, even for a rung they chose.
+    FallBack,
+}
+
 /// Choices for one launch.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LaunchOptions {
@@ -568,6 +587,8 @@ pub struct LaunchOptions {
     pub plain: bool,
     /// Use this deployment rung for this launch only, instead of the instance's own choice.
     pub deployment: Option<DeployMode>,
+    /// What to do if the virtual file system cannot start. Asks by default.
+    pub on_vfs_failure: VfsFailure,
 }
 
 /// The rung a game definition starts from when nobody has chosen one (MASTER_SPEC §26.5).
@@ -580,14 +601,40 @@ fn default_deploy_mode(definition: &GameDefinition) -> DeployMode {
     }
 }
 
-fn vfs_fallback_notice(reason: &str) -> String {
-    format!("the virtual file system could not start: {reason}; running from linked files instead")
+fn vfs_fallback_notice(reason: &str, next: DeployMode) -> String {
+    format!(
+        "the virtual file system could not start: {reason}; running from {} instead",
+        next.plain_name()
+    )
+}
+
+/// The rung `FallBack` steps down to, with the notice that says so.
+struct StepDown {
+    mode: DeployMode,
+    notice: String,
+}
+
+/// The virtual file system cannot start: with `Ask`, the error to report; with `FallBack`, the
+/// rung to run from instead.
+fn step_down(id: &str, options: &LaunchOptions, reason: String) -> Result<StepDown, InstanceError> {
+    let next = DeployMode::Virtual.next_fallback();
+    match (options.on_vfs_failure, next) {
+        (VfsFailure::FallBack, Some(mode)) => Ok(StepDown {
+            mode,
+            notice: vfs_fallback_notice(&reason, mode),
+        }),
+        _ => Err(InstanceError::VfsUnavailable {
+            instance_id: id.to_string(),
+            reason,
+            next,
+        }),
+    }
 }
 
 /// How an instance with deployed content will be run.
 struct Rung {
     mode: DeployMode,
-    /// The user chose it, so it never falls back.
+    /// The user chose it (it is not the game's default).
     chosen: bool,
     /// `agora_vfs.dll`, when `mode` is `Virtual`.
     vfs_dll: Option<PathBuf>,
@@ -645,6 +692,7 @@ pub fn prepare_launch_with_discovery(
             launch_anyway,
             plain: false,
             deployment: None,
+            on_vfs_failure: VfsFailure::default(),
         },
         discover_fn,
         &SystemLauncher,
@@ -654,7 +702,9 @@ pub fn prepare_launch_with_discovery(
 /// Prepare launch, choosing the deployment rung (MASTER_SPEC §26.5).
 ///
 /// The rung is the launch's override, else the instance's own choice, else the game
-/// definition's default. Only a default steps down, and says so in the result's `notice`.
+/// definition's default. If the virtual file system cannot start, `options.on_vfs_failure`
+/// decides: `Ask` returns [`InstanceError::VfsUnavailable`] with the next rung, `FallBack` steps
+/// down to it and says so in the result's `notice`.
 pub fn prepare_launch_with(
     ctx: &Ctx,
     id: &str,
@@ -690,18 +740,15 @@ pub fn prepare_launch_with(
                             vfs_dll: Some(dll),
                             notice: None,
                         },
-                        Err(reason) if chosen.is_some() => {
-                            return Err(InstanceError::VfsUnavailable {
-                                instance_id: id.to_string(),
-                                reason,
-                            });
+                        Err(reason) => {
+                            let next = step_down(id, &options, reason)?;
+                            Rung {
+                                mode: next.mode,
+                                chosen: chosen.is_some(),
+                                vfs_dll: None,
+                                notice: Some(next.notice),
+                            }
                         }
-                        Err(reason) => Rung {
-                            mode: DeployMode::Links,
-                            chosen: false,
-                            vfs_dll: None,
-                            notice: Some(vfs_fallback_notice(&reason)),
-                        },
                     },
                     mode => Rung {
                         mode,
@@ -893,8 +940,9 @@ fn prepare_deployed(
 }
 
 /// Start a prepared launch. When it runs under the virtual file system and that cannot start,
-/// an instance whose rung nobody chose is deployed as links and launched from those, and the
-/// returned launch says so; a chosen rung fails with the reason instead.
+/// `options.on_vfs_failure` decides: `Ask` returns [`InstanceError::VfsUnavailable`] (nothing is
+/// running; the caller restores whatever it swapped in and may ask the user), `FallBack` deploys
+/// the next rung and launches from it, and the returned launch says so.
 pub fn spawn_prepared(
     ctx: &Ctx,
     id: &str,
@@ -906,12 +954,7 @@ pub fn spawn_prepared(
     match launcher.launch(&prepared) {
         Ok(launched) => Ok((launched, prepared)),
         Err(LaunchError::VfsUnavailable { reason }) => {
-            if prepared.deployment_chosen {
-                return Err(InstanceError::VfsUnavailable {
-                    instance_id: id.to_string(),
-                    reason,
-                });
-            }
+            let next = step_down(id, &options, reason.clone())?;
             let record = get(ctx, id)?.ok_or_else(|| InstanceError::NotFound(id.to_string()))?;
             let BaseReference::Pinned { id: base_id, .. } = record.base else {
                 return Err(LaunchError::VfsUnavailable { reason }.into());
@@ -923,10 +966,10 @@ pub fn spawn_prepared(
                 &options,
                 &base_id,
                 Rung {
-                    mode: DeployMode::Links,
+                    mode: next.mode,
                     chosen: false,
                     vfs_dll: None,
-                    notice: Some(vfs_fallback_notice(&reason)),
+                    notice: Some(next.notice),
                 },
             )?;
             let launched = launcher.launch(&fallback)?;
@@ -977,6 +1020,7 @@ pub fn launch_with_discovery(
             launch_anyway,
             plain: false,
             deployment: None,
+            on_vfs_failure: VfsFailure::default(),
         },
         discover_fn,
         &SystemLauncher,

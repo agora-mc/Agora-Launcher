@@ -97,10 +97,20 @@ const EXIT_UNPROTECTED: u32 = 0xA6F5_0001;
 
 /// End the process: it was set up to run under the VFS and cannot, and running it unprotected
 /// would let it write to shared files. The launcher sees the process end before the ready signal
-/// and steps down; for a child process the game started, the game sees it fail to start.
+/// and reports it; for a child process the game started, the game sees it fail to start, so the
+/// log names the program and the reason on one line, `[pid] ending the process <exe>: <why>`,
+/// which `agora_core::game_launch::vfs::processes_ended_by_vfs` reads back.
 #[cfg(windows)]
 unsafe fn end_unprotected(why: &str) -> ! {
-    util::log(format!("ending the process: {why}"));
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unknown program)".to_string());
+    let line = format!("ending the process {exe}: {why}");
+    if maybe_cfg().is_some() {
+        util::log(line);
+    } else {
+        util::log_without_config(line);
+    }
     TerminateProcess(GetCurrentProcess(), EXIT_UNPROTECTED);
     // Not reached: the process is gone.
     std::process::abort()

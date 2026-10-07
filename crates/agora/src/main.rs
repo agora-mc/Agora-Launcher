@@ -378,6 +378,10 @@ enum GameInstanceCmd {
         /// Start the game's own executable, not a framework loader such as SKSE's.
         #[arg(long)]
         plain: bool,
+        /// If the virtual file system cannot start, run from the next fallback (linked files)
+        /// without asking.
+        #[arg(long)]
+        fall_back: bool,
     },
     /// Choose how an instance's game folder is deployed and run: virtual (under the virtual file
     /// system), links, copies, or auto (let Agora pick and announce any step down).
@@ -5221,17 +5225,25 @@ async fn run_command(
                     launch_anyway,
                     deployment,
                     plain,
+                    fall_back,
                 } => {
-                    let launch_options = match deployment.as_deref().map(parse_deployment_arg) {
+                    let on_vfs_failure = if fall_back {
+                        agora_core::game_instance::VfsFailure::FallBack
+                    } else {
+                        agora_core::game_instance::VfsFailure::Ask
+                    };
+                    let mut launch_options = match deployment.as_deref().map(parse_deployment_arg) {
                         None => agora_core::game_instance::LaunchOptions {
                             launch_anyway,
                             plain,
                             deployment: None,
+                            on_vfs_failure,
                         },
                         Some(Ok(deployment)) => agora_core::game_instance::LaunchOptions {
                             launch_anyway,
                             plain,
                             deployment,
+                            on_vfs_failure,
                         },
                         Some(Err(e)) => {
                             eprintln!("Error: {e}");
@@ -5272,50 +5284,172 @@ async fn run_command(
                         anyhow::anyhow!("Game definition not found for {}", record.game)
                     })?;
 
-                    let prepared = match agora_core::game_instance::prepare_launch_with(
-                        ctx,
-                        &instance_id,
-                        game_def,
-                        launch_options,
-                        &agora_core::game_discovery::discover_all,
-                        &agora_core::game_launch::SystemLauncher,
-                    ) {
-                        Ok(p) => p,
-                        Err(agora_core::game_instance::InstanceError::LaunchError(
-                            agora_core::game_launch::LaunchError::BaseDamaged { problems },
-                        )) => {
-                            if json {
-                                let out = serde_json::json!({
-                                    "status": "error",
-                                    "error": "base_damaged",
-                                    "instance_id": instance_id,
-                                    "problems": problems,
-                                    "exitCode": 1,
-                                });
-                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                            } else {
-                                eprintln!("Instance '{instance_id}' has base problem(s):");
-                                print_base_problems(&problems);
+                    // The rung a "yes" to the fallback question started this launch from, so the
+                    // way to keep it can be printed once the game is running.
+                    let mut retried_from: Option<agora_core::game_deploy::DeployMode> = None;
+                    'launch: loop {
+                        let prepared = match agora_core::game_instance::prepare_launch_with(
+                            ctx,
+                            &instance_id,
+                            game_def,
+                            launch_options,
+                            &agora_core::game_discovery::discover_all,
+                            &agora_core::game_launch::SystemLauncher,
+                        ) {
+                            Ok(p) => p,
+                            Err(agora_core::game_instance::InstanceError::LaunchError(
+                                agora_core::game_launch::LaunchError::BaseDamaged { problems },
+                            )) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": "base_damaged",
+                                        "instance_id": instance_id,
+                                        "problems": problems,
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Instance '{instance_id}' has base problem(s):");
+                                    print_base_problems(&problems);
+                                }
+                                std::process::exit(1);
                             }
-                            std::process::exit(1);
-                        }
-                        Err(agora_core::game_instance::InstanceError::LaunchError(
-                            agora_core::game_launch::LaunchError::NoRecipe,
-                        )) => {
-                            if json {
-                                let out = serde_json::json!({
-                                    "status": "error",
-                                    "error": "no_recipe",
-                                    "message": "Game definition has no launch recipe.",
-                                    "exitCode": 1,
-                                });
-                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                            } else {
-                                eprintln!("Error: Game definition has no launch recipe.");
+                            Err(agora_core::game_instance::InstanceError::LaunchError(
+                                agora_core::game_launch::LaunchError::NoRecipe,
+                            )) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": "no_recipe",
+                                        "message": "Game definition has no launch recipe.",
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: Game definition has no launch recipe.");
+                                }
+                                std::process::exit(1);
                             }
-                            std::process::exit(1);
+                            Err(
+                                e @ agora_core::game_instance::InstanceError::VfsUnavailable {
+                                    next: Some(next),
+                                    ..
+                                },
+                            ) => {
+                                launch_options.deployment =
+                                    Some(offer_vfs_fallback(&e, &instance_id, next, json)?);
+                                retried_from = Some(next);
+                                continue 'launch;
+                            }
+                            Err(e) => {
+                                if json {
+                                    let out = serde_json::json!({
+                                        "status": "error",
+                                        "error": format!("{e}"),
+                                        "exitCode": 1,
+                                    });
+                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                } else {
+                                    eprintln!("Error: {e}");
+                                }
+                                std::process::exit(1);
+                            }
+                        };
+
+                        if let Some(deploy_outcome) = &prepared.deploy_outcome {
+                            if !json {
+                                match deploy_outcome {
+                                    agora_core::game_deploy::DeployOutcome::UpToDate { .. } => {
+                                        println!("Deployment is up to date.");
+                                    }
+                                    agora_core::game_deploy::DeployOutcome::Built {
+                                        linked,
+                                        copied,
+                                        copied_bytes,
+                                        config_copied,
+                                        harvest,
+                                        ..
+                                    } => {
+                                        println!(
+                                        "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes)."
+                                    );
+                                        if *config_copied > 0 {
+                                            println!(
+                                            "{config_copied} small config files copied so the game can write them."
+                                        );
+                                        }
+                                        if let Some(h) = harvest {
+                                            if !h.is_empty() {
+                                                println!(
+                                                "Harvested: {} copied to writable, {} whiteouts added.",
+                                                h.copied_to_writable.len(),
+                                                h.whiteouts_added.len()
+                                            );
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(report) = deploy_outcome.plugins() {
+                                    print_plugin_sync(report);
+                                }
+                            }
                         }
-                        Err(e) => {
+                        if !json {
+                            if let Some(alt) = &prepared.alternative {
+                                println!("Starting through '{}': {}.", alt.id, alt.reason);
+                                println!(
+                                    "(Use --plain to start the game's own executable instead.)"
+                                );
+                            }
+                        }
+
+                        let (store, running_from) = match &record.base {
+                            agora_game_api::BaseReference::Pinned { id: base_id, .. } => {
+                                let manifest_path = ctx.paths.base_manifest_path(base_id);
+                                let text = std::fs::read_to_string(&manifest_path)?;
+                                let base_manifest: agora_core::game_base::BaseManifest =
+                                    serde_json::from_str(&text)?;
+                                let store = base_manifest.runtime.store.clone();
+                                let running_from = if prepared.deploy_outcome.is_some() {
+                                    agora_core::game_deploy::deployment_dir(ctx, &instance_id)?
+                                        .unwrap_or_else(|| base_manifest.location.clone())
+                                } else {
+                                    base_manifest.location.clone()
+                                };
+                                (store, running_from)
+                            }
+                            agora_game_api::BaseReference::Unpinned { install, .. } => {
+                                let report = agora_core::game_discovery::discover_all();
+                                let matching = report.installs.iter().find(|discovered| {
+                                    agora_core::game_registry::make_install_id(
+                                        &discovered.store,
+                                        &discovered.product,
+                                    ) == *install
+                                });
+                                let Some(discovered) = matching else {
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "error": format!("Install '{install}' not found."),
+                                            "exitCode": 1,
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else {
+                                        eprintln!("Error: Install '{install}' not found.");
+                                    }
+                                    std::process::exit(1);
+                                };
+                                (discovered.store.clone(), discovered.location.clone())
+                            }
+                        };
+
+                        if let Err(e) = agora_core::game_user_files::swap_in(
+                            ctx,
+                            &instance_id,
+                            game_def,
+                            &store,
+                            &running_from,
+                        ) {
                             if json {
                                 let out = serde_json::json!({
                                     "status": "error",
@@ -5328,315 +5462,274 @@ async fn run_command(
                             }
                             std::process::exit(1);
                         }
-                    };
 
-                    if let Some(deploy_outcome) = &prepared.deploy_outcome {
-                        if !json {
-                            match deploy_outcome {
-                                agora_core::game_deploy::DeployOutcome::UpToDate { .. } => {
-                                    println!("Deployment is up to date.");
-                                }
-                                agora_core::game_deploy::DeployOutcome::Built {
-                                    linked,
-                                    copied,
-                                    copied_bytes,
-                                    config_copied,
-                                    harvest,
-                                    ..
-                                } => {
-                                    println!(
-                                        "Deployed: {linked} linked, {copied} copied ({copied_bytes} bytes)."
+                        let launch_start = std::time::Instant::now();
+                        // What the VFS's log held before this launch, to read what the session adds.
+                        let vfs_log_before = prepared
+                            .vfs
+                            .as_ref()
+                            .map(|v| (v.log.clone(), agora_core::game_launch::log_len(&v.log)));
+                        // With `--fall-back` the launch may step down from the virtual file system,
+                        // which replaces `prepared` with the one that actually ran.
+                        let (mut launched, prepared) =
+                            match agora_core::game_instance::spawn_prepared(
+                                ctx,
+                                &instance_id,
+                                game_def,
+                                prepared,
+                                launch_options,
+                                &agora_core::game_launch::SystemLauncher,
+                            ) {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    report_user_files_restore(
+                                        agora_core::game_user_files::restore(ctx, game_def, &store),
+                                        game_def.id.as_str(),
+                                        store.as_str(),
                                     );
-                                    if *config_copied > 0 {
-                                        println!(
-                                            "{config_copied} small config files copied so the game can write them."
-                                        );
+                                    if let agora_core::game_instance::InstanceError::VfsUnavailable {
+                                next: Some(next),
+                                ..
+                            } = &e
+                            {
+                                let next = *next;
+                                launch_options.deployment =
+                                    Some(offer_vfs_fallback(&e, &instance_id, next, json)?);
+                                retried_from = Some(next);
+                                continue 'launch;
+                            }
+                                    if json {
+                                        let out = serde_json::json!({
+                                            "status": "error",
+                                            "error": format!("{e}"),
+                                            "exitCode": 1,
+                                        });
+                                        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                    } else {
+                                        eprintln!("Launch failed: {e}");
                                     }
-                                    if let Some(h) = harvest {
-                                        if !h.is_empty() {
-                                            println!(
-                                                "Harvested: {} copied to writable, {} whiteouts added.",
-                                                h.copied_to_writable.len(),
-                                                h.whiteouts_added.len()
-                                            );
-                                        }
-                                    }
+                                    std::process::exit(1);
                                 }
+                            };
+                        // Only a session that really ran under the VFS has anything in its log.
+                        let vfs_log_before = vfs_log_before.filter(|_| prepared.vfs.is_some());
+                        if !json {
+                            if let Some(notice) = &prepared.notice {
+                                eprintln!("Notice: {notice}");
                             }
-                            if let Some(report) = deploy_outcome.plugins() {
-                                print_plugin_sync(report);
+                            if let Some(mode) = retried_from {
+                                println!(
+                                "Running from {} for this launch only. To keep it: agora games instance set-deployment {instance_id} {mode}",
+                                mode.plain_name()
+                            );
                             }
                         }
-                    }
-                    if !json {
-                        if let Some(alt) = &prepared.alternative {
-                            println!("Starting through '{}': {}.", alt.id, alt.reason);
-                            println!("(Use --plain to start the game's own executable instead.)");
-                        }
-                    }
 
-                    let (store, running_from) = match &record.base {
-                        agora_game_api::BaseReference::Pinned { id: base_id, .. } => {
-                            let manifest_path = ctx.paths.base_manifest_path(base_id);
-                            let text = std::fs::read_to_string(&manifest_path)?;
-                            let base_manifest: agora_core::game_base::BaseManifest =
-                                serde_json::from_str(&text)?;
-                            let store = base_manifest.runtime.store.clone();
-                            let running_from = if prepared.deploy_outcome.is_some() {
-                                agora_core::game_deploy::deployment_dir(ctx, &instance_id)?
-                                    .unwrap_or_else(|| base_manifest.location.clone())
+                        let _ = agora_core::game_user_files::record_process(
+                            ctx,
+                            &record.game,
+                            &store,
+                            launched.identity.clone(),
+                        );
+
+                        let _ = agora_core::game_instance::record_launch(ctx, &instance_id);
+
+                        let env_map: std::collections::BTreeMap<String, String> = prepared
+                            .resolved
+                            .env
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.to_string_lossy().to_string()))
+                            .collect();
+
+                        let base_id = match &record.base {
+                            agora_game_api::BaseReference::Pinned { id, .. } => Some(id.clone()),
+                            agora_game_api::BaseReference::Unpinned { .. } => None,
+                        };
+
+                        if !wait {
+                            if json {
+                                let out = serde_json::json!({
+                                    "status": "launched",
+                                    "instance_id": instance_id,
+                                    "base_id": base_id,
+                                    "pid": launched.pid(),
+                                    "program": prepared.resolved.program,
+                                    "cwd": prepared.resolved.cwd,
+                                    "env": env_map,
+                                    "warnings": prepared.warnings,
+                                    "deployment": prepared.deployment.map(|m| m.as_str()),
+                                    "notice": prepared.notice,
+                                    "alternative": prepared.alternative,
+                                    "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
+                                });
+                                println!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
-                                base_manifest.location.clone()
-                            };
-                            (store, running_from)
-                        }
-                        agora_game_api::BaseReference::Unpinned { install, .. } => {
-                            let report = agora_core::game_discovery::discover_all();
-                            let matching = report.installs.iter().find(|discovered| {
-                                agora_core::game_registry::make_install_id(
-                                    &discovered.store,
-                                    &discovered.product,
-                                ) == *install
-                            });
-                            let Some(discovered) = matching else {
-                                if json {
-                                    let out = serde_json::json!({
-                                        "error": format!("Install '{install}' not found."),
-                                        "exitCode": 1,
-                                    });
-                                    eprintln!("{}", serde_json::to_string_pretty(&out)?);
-                                } else {
-                                    eprintln!("Error: Install '{install}' not found.");
+                                if !prepared.warnings.is_empty() {
+                                    eprintln!(
+                                        "Warning: Launching damaged base ({} problem(s)):",
+                                        prepared.warnings.len()
+                                    );
+                                    print_base_problems(&prepared.warnings);
                                 }
-                                std::process::exit(1);
-                            };
-                            (discovered.store.clone(), discovered.location.clone())
-                        }
-                    };
-
-                    if let Err(e) = agora_core::game_user_files::swap_in(
-                        ctx,
-                        &instance_id,
-                        game_def,
-                        &store,
-                        &running_from,
-                    ) {
-                        if json {
-                            let out = serde_json::json!({
-                                "status": "error",
-                                "error": format!("{e}"),
-                                "exitCode": 1,
-                            });
-                            eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                println!(
+                                    "Program:           {}",
+                                    prepared.resolved.program.display()
+                                );
+                                println!("Working Directory: {}", prepared.resolved.cwd.display());
+                                if let Some(mode) = prepared.deployment {
+                                    println!("Deployment:        {mode}");
+                                }
+                                println!("PID:               {}", launched.pid());
+                                if !prepared.resolved.env.is_empty() {
+                                    println!("Environment:");
+                                    for (k, v) in &prepared.resolved.env {
+                                        println!("  {k}={}", v.to_string_lossy());
+                                    }
+                                }
+                            }
                         } else {
-                            eprintln!("Error: {e}");
-                        }
-                        std::process::exit(1);
-                    }
+                            // A pinned instance is watched and re-verified through its
+                            // base; prepare_launch already loaded that manifest, so a
+                            // failure to read it now is an error, not a fallback.
+                            let base_manifest = match &record.base {
+                                agora_game_api::BaseReference::Pinned { id, .. } => {
+                                    let text =
+                                        std::fs::read_to_string(ctx.paths.base_manifest_path(id))?;
+                                    Some(
+                                        serde_json::from_str::<agora_core::game_base::BaseManifest>(
+                                            &text,
+                                        )?,
+                                    )
+                                }
+                                agora_game_api::BaseReference::Unpinned { .. } => None,
+                            };
+                            // The game that matters is whatever runs from the runtime folder: a
+                            // framework loader starts the game and exits, so the loader's own
+                            // process is not what to wait for.
+                            let watch_dir = running_from.clone();
 
-                    let launch_start = std::time::Instant::now();
-                    // The launch may step down from the virtual file system, which replaces
-                    // `prepared` with the one that actually ran.
-                    let (mut launched, prepared) = match agora_core::game_instance::spawn_prepared(
-                        ctx,
-                        &instance_id,
-                        game_def,
-                        prepared,
-                        launch_options,
-                        &agora_core::game_launch::SystemLauncher,
-                    ) {
-                        Ok(l) => l,
-                        Err(e) => {
+                            let exit_report = agora_core::game_launch::wait_for_exit(
+                                &watch_dir,
+                                &mut launched,
+                                std::time::Duration::from_millis(250),
+                                std::time::Duration::from_secs(5),
+                            );
+                            let session_duration = launch_start.elapsed();
                             report_user_files_restore(
                                 agora_core::game_user_files::restore(ctx, game_def, &store),
                                 game_def.id.as_str(),
                                 store.as_str(),
                             );
+                            let after = base_manifest.as_ref().map(|m| {
+                                agora_core::game_base::verify_base(
+                                    m,
+                                    agora_core::game_base::VerifyDepth::Quick,
+                                    &|p| game_def.is_declared_write(p),
+                                    &|p| game_def.is_excluded(p),
+                                )
+                            });
+                            // Programs the game started that the VFS ended because it could not
+                            // protect them: silent to the game, so say so here.
+                            let ended_by_vfs = vfs_log_before
+                                .as_ref()
+                                .map(|(log, from)| {
+                                    agora_core::game_launch::processes_ended_since(log, *from)
+                                })
+                                .unwrap_or_default();
+                            let ended_next = if ended_by_vfs.is_empty() {
+                                None
+                            } else {
+                                prepared.deployment.and_then(|mode| mode.next_fallback())
+                            };
+
                             if json {
                                 let out = serde_json::json!({
-                                    "status": "error",
-                                    "error": format!("{e}"),
-                                    "exitCode": 1,
+                                    "status": "exited",
+                                    "vfs_ended_processes": ended_by_vfs,
+                                    "nextDeployment": ended_next.map(|m| m.as_str()),
+                                    "retry": ended_next.map(|m| vfs_retry_commands(&instance_id, m)),
+                                    "deployment": prepared.deployment.map(|m| m.as_str()),
+                                    "notice": prepared.notice,
+                                    "alternative": prepared.alternative,
+                                    "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
+                                    "instance_id": instance_id,
+                                    "base_id": base_id,
+                                    "pid": launched.pid(),
+                                    "program": prepared.resolved.program,
+                                    "cwd": prepared.resolved.cwd,
+                                    "env": env_map,
+                                    "warnings": prepared.warnings,
+                                    "deployment": prepared.deployment.map(|m| m.as_str()),
+                                    "notice": prepared.notice,
+                                    "processes": exit_report.processes,
+                                    "relaunched_outside": exit_report.relaunched_outside,
+                                    "game_writes": after.as_ref().map(|v| &v.game_writes),
+                                    "problems": after.as_ref().map(|v| &v.problems),
                                 });
-                                eprintln!("{}", serde_json::to_string_pretty(&out)?);
+                                println!("{}", serde_json::to_string_pretty(&out)?);
                             } else {
-                                eprintln!("Launch failed: {e}");
-                            }
-                            std::process::exit(1);
-                        }
-                    };
-                    if !json {
-                        if let Some(notice) = &prepared.notice {
-                            eprintln!("Notice: {notice}");
-                        }
-                    }
-
-                    let _ = agora_core::game_user_files::record_process(
-                        ctx,
-                        &record.game,
-                        &store,
-                        launched.identity.clone(),
-                    );
-
-                    let _ = agora_core::game_instance::record_launch(ctx, &instance_id);
-
-                    let env_map: std::collections::BTreeMap<String, String> = prepared
-                        .resolved
-                        .env
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.to_string_lossy().to_string()))
-                        .collect();
-
-                    let base_id = match &record.base {
-                        agora_game_api::BaseReference::Pinned { id, .. } => Some(id.clone()),
-                        agora_game_api::BaseReference::Unpinned { .. } => None,
-                    };
-
-                    if !wait {
-                        if json {
-                            let out = serde_json::json!({
-                                "status": "launched",
-                                "instance_id": instance_id,
-                                "base_id": base_id,
-                                "pid": launched.pid(),
-                                "program": prepared.resolved.program,
-                                "cwd": prepared.resolved.cwd,
-                                "env": env_map,
-                                "warnings": prepared.warnings,
-                                "deployment": prepared.deployment.map(|m| m.as_str()),
-                                "notice": prepared.notice,
-                                "alternative": prepared.alternative,
-                                "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
-                            });
-                            println!("{}", serde_json::to_string_pretty(&out)?);
-                        } else {
-                            if !prepared.warnings.is_empty() {
-                                eprintln!(
-                                    "Warning: Launching damaged base ({} problem(s)):",
-                                    prepared.warnings.len()
+                                println!(
+                                    "Program:           {}",
+                                    prepared.resolved.program.display()
                                 );
-                                print_base_problems(&prepared.warnings);
-                            }
-                            println!("Program:           {}", prepared.resolved.program.display());
-                            println!("Working Directory: {}", prepared.resolved.cwd.display());
-                            if let Some(mode) = prepared.deployment {
-                                println!("Deployment:        {mode}");
-                            }
-                            println!("PID:               {}", launched.pid());
-                            if !prepared.resolved.env.is_empty() {
-                                println!("Environment:");
-                                for (k, v) in &prepared.resolved.env {
-                                    println!("  {k}={}", v.to_string_lossy());
-                                }
-                            }
-                        }
-                    } else {
-                        // A pinned instance is watched and re-verified through its
-                        // base; prepare_launch already loaded that manifest, so a
-                        // failure to read it now is an error, not a fallback.
-                        let base_manifest = match &record.base {
-                            agora_game_api::BaseReference::Pinned { id, .. } => {
-                                let text =
-                                    std::fs::read_to_string(ctx.paths.base_manifest_path(id))?;
-                                Some(serde_json::from_str::<agora_core::game_base::BaseManifest>(
-                                    &text,
-                                )?)
-                            }
-                            agora_game_api::BaseReference::Unpinned { .. } => None,
-                        };
-                        // The game that matters is whatever runs from the runtime folder: a
-                        // framework loader starts the game and exits, so the loader's own
-                        // process is not what to wait for.
-                        let watch_dir = running_from.clone();
-
-                        let exit_report = agora_core::game_launch::wait_for_exit(
-                            &watch_dir,
-                            &mut launched,
-                            std::time::Duration::from_millis(250),
-                            std::time::Duration::from_secs(5),
-                        );
-                        let session_duration = launch_start.elapsed();
-                        report_user_files_restore(
-                            agora_core::game_user_files::restore(ctx, game_def, &store),
-                            game_def.id.as_str(),
-                            store.as_str(),
-                        );
-                        let after = base_manifest.as_ref().map(|m| {
-                            agora_core::game_base::verify_base(
-                                m,
-                                agora_core::game_base::VerifyDepth::Quick,
-                                &|p| game_def.is_declared_write(p),
-                                &|p| game_def.is_excluded(p),
-                            )
-                        });
-
-                        if json {
-                            let out = serde_json::json!({
-                                "status": "exited",
-                                "deployment": prepared.deployment.map(|m| m.as_str()),
-                                "notice": prepared.notice,
-                                "alternative": prepared.alternative,
-                                "plugins": prepared.deploy_outcome.as_ref().and_then(|o| o.plugins()),
-                                "instance_id": instance_id,
-                                "base_id": base_id,
-                                "pid": launched.pid(),
-                                "program": prepared.resolved.program,
-                                "cwd": prepared.resolved.cwd,
-                                "env": env_map,
-                                "warnings": prepared.warnings,
-                                "deployment": prepared.deployment.map(|m| m.as_str()),
-                                "notice": prepared.notice,
-                                "processes": exit_report.processes,
-                                "relaunched_outside": exit_report.relaunched_outside,
-                                "game_writes": after.as_ref().map(|v| &v.game_writes),
-                                "problems": after.as_ref().map(|v| &v.problems),
-                            });
-                            println!("{}", serde_json::to_string_pretty(&out)?);
-                        } else {
-                            println!("Program:           {}", prepared.resolved.program.display());
-                            println!("PID:               {}", launched.pid());
-                            println!("Processes running from game directory:");
-                            if exit_report.processes.is_empty() {
-                                println!("  (none)");
-                            } else {
-                                for p in &exit_report.processes {
-                                    println!("  - PID {}: {}", p.pid, p.exe.display());
-                                }
-                            }
-                            if exit_report.relaunched_outside {
-                                eprintln!("Warning: A process with the game's executable name ran outside the game directory (possible relaunch from store).");
-                            }
-                            if let Some(ver) = &after {
-                                if !ver.game_writes.is_empty() {
-                                    println!("Game writes ({}):", ver.game_writes.len());
-                                    for w in &ver.game_writes {
-                                        println!("  - {w}");
+                                println!("PID:               {}", launched.pid());
+                                println!("Processes running from game directory:");
+                                if exit_report.processes.is_empty() {
+                                    println!("  (none)");
+                                } else {
+                                    for p in &exit_report.processes {
+                                        println!("  - PID {}: {}", p.pid, p.exe.display());
                                     }
                                 }
-                                if ver.problems.is_empty() {
-                                    println!("Base verified clean after launch.");
-                                } else {
-                                    eprintln!(
-                                        "Base has {} problem(s) after launch:",
-                                        ver.problems.len()
-                                    );
-                                    print_base_problems(&ver.problems);
+                                if exit_report.relaunched_outside {
+                                    eprintln!("Warning: A process with the game's executable name ran outside the game directory (possible relaunch from store).");
+                                }
+                                if let Some(ver) = &after {
+                                    if !ver.game_writes.is_empty() {
+                                        println!("Game writes ({}):", ver.game_writes.len());
+                                        for w in &ver.game_writes {
+                                            println!("  - {w}");
+                                        }
+                                    }
+                                    if ver.problems.is_empty() {
+                                        println!("Base verified clean after launch.");
+                                    } else {
+                                        eprintln!(
+                                            "Base has {} problem(s) after launch:",
+                                            ver.problems.len()
+                                        );
+                                        print_base_problems(&ver.problems);
+                                    }
+                                }
+                                if prepared.deployment
+                                    == Some(agora_core::game_deploy::DeployMode::Links)
+                                    && session_duration < std::time::Duration::from_secs(30)
+                                {
+                                    println!();
+                                    println!("The session ended quickly. Under linked files a mod that edits its own files is refused.");
+                                    println!("Remedies:");
+                                    println!("  agora games instance launch {instance_id} --deployment virtual");
+                                    println!("  agora games instance content own-copy {instance_id} <item> on");
                                 }
                             }
-                            if prepared.deployment
-                                == Some(agora_core::game_deploy::DeployMode::Links)
-                                && session_duration < std::time::Duration::from_secs(30)
-                            {
-                                println!();
-                                println!("The session ended quickly. Under linked files a mod that edits its own files is refused.");
-                                println!("Remedies:");
-                                println!("  agora games instance launch {instance_id} --deployment virtual");
-                                println!("  agora games instance content own-copy {instance_id} <item> on");
+                            if !json && !ended_by_vfs.is_empty() {
+                                if let Some(next) = ended_next {
+                                    if offer_restart_after_vfs_ended(
+                                        &ended_by_vfs,
+                                        &instance_id,
+                                        next,
+                                    )? {
+                                        launch_options.deployment = Some(next);
+                                        retried_from = Some(next);
+                                        continue 'launch;
+                                    }
+                                }
+                            }
+                            if after.as_ref().is_some_and(|v| !v.problems.is_empty()) {
+                                std::process::exit(1);
                             }
                         }
-                        if after.as_ref().is_some_and(|v| !v.problems.is_empty()) {
-                            std::process::exit(1);
-                        }
+                        break 'launch;
                     }
                 }
                 GameInstanceCmd::Delete { instance_id } => {
@@ -7074,6 +7167,115 @@ fn parse_deployment_arg(s: &str) -> Result<Option<agora_core::game_deploy::Deplo
     agora_core::game_deploy::DeployMode::parse(s)
         .map(Some)
         .ok_or_else(|| format!("unknown deployment '{s}': use virtual, links, copies or auto"))
+}
+
+/// The two ways to run an instance from `next`: for this launch, and for good.
+fn vfs_retry_commands(instance_id: &str, next: agora_core::game_deploy::DeployMode) -> Vec<String> {
+    vec![
+        format!("agora games instance launch {instance_id} --deployment {next}"),
+        format!("agora games instance set-deployment {instance_id} {next}"),
+    ]
+}
+
+/// What running from `next` instead of the virtual file system gives up, for this game.
+fn vfs_tradeoff_lines(next: agora_core::game_deploy::DeployMode) -> Vec<&'static str> {
+    use agora_core::game_deploy::DeployMode;
+    match next {
+        DeployMode::Links => vec![
+            "Linked files cannot catch writes: a mod that edits its own files in place may be refused.",
+            "Small config files are copies, so most mods still work.",
+        ],
+        DeployMode::Copies => vec![
+            "Copied files take more disk space and longer to switch between instances.",
+            "Every file can be written, but only in this instance's own copy.",
+        ],
+        DeployMode::Virtual => Vec::new(),
+    }
+}
+
+/// Ask a yes/no question on the terminal; anything but yes is no.
+fn ask_yes_no(prompt: &str) -> anyhow::Result<bool> {
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+/// The virtual file system could not start and nothing was launched: say what happened and what
+/// the next rung means, and in a terminal ask whether to try it. Returns `next` on yes. Any other
+/// answer, no terminal, or `--json` (which never prompts) prints how to run from `next` and exits
+/// 1.
+fn offer_vfs_fallback(
+    error: &agora_core::game_instance::InstanceError,
+    instance_id: &str,
+    next: agora_core::game_deploy::DeployMode,
+    json: bool,
+) -> anyhow::Result<agora_core::game_deploy::DeployMode> {
+    let retry = vfs_retry_commands(instance_id, next);
+    if json {
+        let out = serde_json::json!({
+            "status": "error",
+            "error": format!("{error}"),
+            "exitCode": 1,
+            "nextDeployment": next.as_str(),
+            "retry": retry,
+        });
+        eprintln!("{}", serde_json::to_string_pretty(&out)?);
+        std::process::exit(1);
+    }
+    eprintln!("Error: {error}");
+    for line in vfs_tradeoff_lines(next) {
+        eprintln!("{line}");
+    }
+    if std::io::stdin().is_terminal()
+        && ask_yes_no(&format!("Try again from {}? [y/N]: ", next.plain_name()))?
+    {
+        return Ok(next);
+    }
+    eprintln!("To run from {} instead:", next.plain_name());
+    eprintln!("  {}    (this launch only)", retry[0]);
+    eprintln!("  {}    (every launch)", retry[1]);
+    std::process::exit(1);
+}
+
+/// A session under the virtual file system ended programs the game started. Say which and why;
+/// in a terminal ask whether to start the game again from `next` now. Returns whether to.
+fn offer_restart_after_vfs_ended(
+    ended: &[agora_core::game_launch::EndedProcess],
+    instance_id: &str,
+    next: agora_core::game_deploy::DeployMode,
+) -> anyhow::Result<bool> {
+    eprintln!(
+        "The virtual file system stopped {} program(s) the game started, because it could not protect them:",
+        ended.len()
+    );
+    for process in ended {
+        eprintln!(
+            "  - {} (pid {}): {}",
+            process.exe, process.pid, process.reason
+        );
+    }
+    eprintln!("Something the game needed from them may not have worked.");
+    for line in vfs_tradeoff_lines(next) {
+        eprintln!("{line}");
+    }
+    if std::io::stdin().is_terminal()
+        && ask_yes_no(&format!(
+            "Start the game again from {} now? [y/N]: ",
+            next.plain_name()
+        ))?
+    {
+        return Ok(true);
+    }
+    let retry = vfs_retry_commands(instance_id, next);
+    eprintln!("To run from {} instead:", next.plain_name());
+    eprintln!("  {}    (this launch only)", retry[0]);
+    eprintln!("  {}    (every launch)", retry[1]);
+    Ok(false)
 }
 
 fn print_base_problems(problems: &[agora_core::game_base::BaseProblem]) {

@@ -65,9 +65,21 @@ fn wait_for_exit(child: &mut Child, limit: Duration) -> Option<i32> {
 
 /// Start the fixture suspended, make the DLL its first import, and let it run.
 fn run_with_dll_as_first_import(config: Option<&str>) -> Option<i32> {
+    run_with_dll_as_first_import_logging(config, None)
+}
+
+/// As [`run_with_dll_as_first_import`], naming the log the launcher would (`AGORA_VFS_LOG`).
+fn run_with_dll_as_first_import_logging(
+    config: Option<&str>,
+    log: Option<&std::path::Path>,
+) -> Option<i32> {
     let (dll, exe) = artifacts();
     let mut cmd = Command::new(exe);
     cmd.env_remove("AGORA_VFS_CONFIG");
+    cmd.env_remove("AGORA_VFS_LOG");
+    if let Some(log) = log {
+        cmd.env("AGORA_VFS_LOG", log);
+    }
     if let Some(config) = config {
         cmd.env("AGORA_VFS_CONFIG", config);
     }
@@ -94,6 +106,36 @@ fn run_with_dll_as_first_import(config: Option<&str>) -> Option<i32> {
 fn an_unreadable_configuration_ends_the_process_before_it_runs() {
     let code = run_with_dll_as_first_import(Some(r"C:\no\such\agora-vfs-config.json"));
     assert_eq!(code, Some(EXIT_UNPROTECTED), "the process was not ended");
+}
+
+/// The process the DLL ends is named in the log, with the reason, on one line a launcher can parse
+/// (`agora_core::game_launch::processes_ended_by_vfs`), even when the configuration that would
+/// have named the log is the thing that could not be read.
+#[test]
+#[ignore = "starts a suspended process under agora_vfs.dll"]
+fn an_ended_process_is_named_in_the_log() {
+    let dir = std::env::temp_dir().join(format!("agora-vfs-ended-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("vfs.log");
+    let _ = std::fs::remove_file(&log);
+    let code =
+        run_with_dll_as_first_import_logging(Some(r"C:\no\such\agora-vfs-config.json"), Some(&log));
+    assert_eq!(code, Some(EXIT_UNPROTECTED), "the process was not ended");
+    let text = std::fs::read_to_string(&log).expect("the DLL logged why it ended the process");
+    let (_, exe) = artifacts();
+    let line = text
+        .lines()
+        .find(|l| l.contains("ending the process "))
+        .unwrap_or_else(|| panic!("no ending line in {text:?}"));
+    assert!(line.starts_with('['), "{line}");
+    assert!(
+        line.ends_with(&format!(
+            "ending the process {}: the configuration could not be loaded",
+            exe.display()
+        )),
+        "{line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// No configuration at all (a child started with its own environment block): nothing to

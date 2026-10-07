@@ -10,6 +10,7 @@ use agora_core::game_deploy::{
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
 use agora_core::game_instance::{
     create, get_manifest, prepare_launch_with_discovery, GameInstanceRecord, InstanceError,
+    VfsFailure,
 };
 use agora_core::game_registry::{
     GameRegistry, IdentifiedInstall, PackageSource, RuntimeResolution,
@@ -674,10 +675,21 @@ fn test_launch_deployment_integration() {
         warnings: vec![],
     };
 
-    // 1. Pinned instance with content auto-deploys
-    let prepared =
-        prepare_launch_with_discovery(&ctx, &inst.instance_id, &def, false, &|| report.clone())
-            .expect("prepare launch should succeed");
+    // 1. Pinned instance with content auto-deploys. The test machine has no agora_vfs.dll beside
+    // the test executable, so say the launch may fall back to links (this test is about the
+    // deployment, not about the choice).
+    let prepared = agora_core::game_instance::prepare_launch_with(
+        &ctx,
+        &inst.instance_id,
+        &def,
+        agora_core::game_instance::LaunchOptions {
+            on_vfs_failure: VfsFailure::FallBack,
+            ..Default::default()
+        },
+        &|| report.clone(),
+        &agora_core::game_launch::SystemLauncher,
+    )
+    .expect("prepare launch should succeed");
     assert!(
         prepared.deploy_outcome.is_some(),
         "deploy_outcome must be returned"
@@ -1114,11 +1126,23 @@ fn rung_fixture(name: &str, def: &GameDefinition) -> (TempDir, CoreContext, Game
     (tmp, ctx, inst)
 }
 
+/// A launch that asks (the default) when the virtual file system cannot start.
 fn launch_with_fake(
     ctx: &CoreContext,
     id: &str,
     def: &GameDefinition,
     deployment: Option<DeployMode>,
+    launcher: &FakeLauncher,
+) -> Result<agora_core::game_instance::LaunchedInstance, InstanceError> {
+    launch_with_fake_policy(ctx, id, def, deployment, VfsFailure::Ask, launcher)
+}
+
+fn launch_with_fake_policy(
+    ctx: &CoreContext,
+    id: &str,
+    def: &GameDefinition,
+    deployment: Option<DeployMode>,
+    on_vfs_failure: VfsFailure,
     launcher: &FakeLauncher,
 ) -> Result<agora_core::game_instance::LaunchedInstance, InstanceError> {
     agora_core::game_instance::launch_with(
@@ -1129,6 +1153,7 @@ fn launch_with_fake(
             launch_anyway: false,
             plain: false,
             deployment,
+            on_vfs_failure,
         },
         &DiscoveryReport::default,
         launcher,
@@ -1172,13 +1197,60 @@ fn a_vfs_game_runs_under_the_vfs_by_default() {
     assert_eq!(vfs.log, instance_dir.join("logs").join("vfs.log"));
 }
 
+/// The virtual file system cannot start, and the launch asks: the error names the reason and the
+/// next rung, nothing is launched, and a second launch behaves the same.
 #[test]
-fn a_missing_dll_steps_down_to_links_and_says_why() {
+fn asking_reports_a_missing_dll_with_the_next_rung_and_launches_nothing() {
     let def = make_test_definition();
-    let (_tmp, ctx, inst) = rung_fixture("NoDll", &def);
+    let (_tmp, ctx, inst) = rung_fixture("NoDllAsk", &def);
+    let id = &inst.instance_id;
     let launcher = FakeLauncher::new(Err("agora_vfs.dll was not found at 'X'".into()), None);
 
-    let mut launched = launch_with_fake(&ctx, &inst.instance_id, &def, None, &launcher).unwrap();
+    // The rung is nobody's choice, then the instance's, then one launch's: the same answer.
+    for round in 0..3 {
+        match round {
+            1 => agora_core::game_deploy::set_deployment(&ctx, id, Some(DeployMode::Virtual))
+                .unwrap(),
+            2 => agora_core::game_deploy::set_deployment(&ctx, id, None).unwrap(),
+            _ => {}
+        }
+        let chosen = (round == 2).then_some(DeployMode::Virtual);
+        for _ in 0..2 {
+            let err = launch_with_fake(&ctx, id, &def, chosen, &launcher)
+                .err()
+                .expect("asking must not step down");
+            match &err {
+                InstanceError::VfsUnavailable {
+                    instance_id,
+                    reason,
+                    next,
+                } => {
+                    assert_eq!(instance_id, id);
+                    assert!(reason.contains("not found at 'X'"), "{reason}");
+                    assert_eq!(*next, Some(DeployMode::Links));
+                }
+                other => panic!("expected VfsUnavailable, got {other:?}"),
+            }
+            let text = err.to_string();
+            assert!(
+                text.contains("virtual file system could not start") && text.contains("'X'"),
+                "{text}"
+            );
+        }
+    }
+    assert!(launcher.attempts().is_empty());
+    assert!(deployment_dir(&ctx, id).unwrap().is_none());
+}
+
+#[test]
+fn falling_back_steps_down_from_a_missing_dll_and_says_why() {
+    let def = make_test_definition();
+    let (_tmp, ctx, inst) = rung_fixture("NoDllFallBack", &def);
+    let id = &inst.instance_id;
+    let launcher = FakeLauncher::new(Err("agora_vfs.dll was not found at 'X'".into()), None);
+
+    let mut launched =
+        launch_with_fake_policy(&ctx, id, &def, None, VfsFailure::FallBack, &launcher).unwrap();
     let _ = launched.launched.child.wait();
 
     assert_eq!(launcher.attempts(), vec![(Some(DeployMode::Links), false)]);
@@ -1191,19 +1263,80 @@ fn a_missing_dll_steps_down_to_links_and_says_why() {
              running from linked files instead"
         )
     );
-    assert_eq!(recorded_mode(&ctx, &inst.instance_id), DeployMode::Links);
+    assert_eq!(recorded_mode(&ctx, id), DeployMode::Links);
+
+    // A chosen rung steps down too: naming the policy is the choice.
+    agora_core::game_deploy::set_deployment(&ctx, id, Some(DeployMode::Virtual)).unwrap();
+    let mut launched =
+        launch_with_fake_policy(&ctx, id, &def, None, VfsFailure::FallBack, &launcher).unwrap();
+    let _ = launched.launched.child.wait();
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
+    assert!(launched.prepared.deployment_chosen);
+    assert!(launched.prepared.notice.is_some());
 }
 
 #[test]
-fn a_dll_that_cannot_start_steps_down_to_links_and_says_why() {
+fn asking_reports_a_dll_that_cannot_start_and_nothing_stays_running() {
     let def = make_test_definition();
-    let (_tmp, ctx, inst) = rung_fixture("VfsRefused", &def);
+    let (_tmp, ctx, inst) = rung_fixture("VfsRefusedAsk", &def);
+    let id = &inst.instance_id;
     let launcher = FakeLauncher::new(
         Ok("C:/Agora/agora_vfs.dll".into()),
         Some("the game process could not load agora_vfs.dll"),
     );
 
-    let mut launched = launch_with_fake(&ctx, &inst.instance_id, &def, None, &launcher).unwrap();
+    // Unchosen, then chosen for the instance, then for one launch: the same error each time, and
+    // links are never tried.
+    for round in 0..3 {
+        let chosen = match round {
+            1 => {
+                agora_core::game_deploy::set_deployment(&ctx, id, Some(DeployMode::Virtual))
+                    .unwrap();
+                None
+            }
+            2 => {
+                set_instance_auto(&ctx, id);
+                Some(DeployMode::Virtual)
+            }
+            _ => None,
+        };
+        let err = launch_with_fake(&ctx, id, &def, chosen, &launcher)
+            .err()
+            .expect("asking must not step down");
+        match &err {
+            InstanceError::VfsUnavailable { reason, next, .. } => {
+                assert!(reason.contains("could not load agora_vfs.dll"), "{reason}");
+                assert_eq!(*next, Some(DeployMode::Links));
+            }
+            other => panic!("expected VfsUnavailable, got {other:?}"),
+        }
+    }
+    // Each round tried the VFS once and nothing else.
+    assert_eq!(
+        launcher.attempts(),
+        vec![(Some(DeployMode::Virtual), true); 3]
+    );
+
+    // Answering yes is a second launch from the next rung, which runs.
+    let working = FakeLauncher::new(Ok("C:/Agora/agora_vfs.dll".into()), None);
+    let mut launched = launch_with_fake(&ctx, id, &def, Some(DeployMode::Links), &working).unwrap();
+    let _ = launched.launched.child.wait();
+    assert_eq!(working.attempts(), vec![(Some(DeployMode::Links), false)]);
+    assert_eq!(recorded_mode(&ctx, id), DeployMode::Links);
+}
+
+#[test]
+fn falling_back_steps_down_from_a_dll_that_cannot_start_and_says_why() {
+    let def = make_test_definition();
+    let (_tmp, ctx, inst) = rung_fixture("VfsRefusedFallBack", &def);
+    let id = &inst.instance_id;
+    let launcher = FakeLauncher::new(
+        Ok("C:/Agora/agora_vfs.dll".into()),
+        Some("the game process could not load agora_vfs.dll"),
+    );
+
+    let mut launched =
+        launch_with_fake_policy(&ctx, id, &def, None, VfsFailure::FallBack, &launcher).unwrap();
     let _ = launched.launched.child.wait();
 
     // Tried the VFS first, then started again from links.
@@ -1227,64 +1360,22 @@ fn a_dll_that_cannot_start_steps_down_to_links_and_says_why() {
         "{notice}"
     );
     // The farm was rebuilt for the rung that ran.
-    assert_eq!(recorded_mode(&ctx, &inst.instance_id), DeployMode::Links);
+    assert_eq!(recorded_mode(&ctx, id), DeployMode::Links);
+
+    // A chosen rung steps down the same way when the user said yes in advance.
+    agora_core::game_deploy::set_deployment(&ctx, id, Some(DeployMode::Virtual)).unwrap();
+    let mut launched =
+        launch_with_fake_policy(&ctx, id, &def, None, VfsFailure::FallBack, &launcher).unwrap();
+    let _ = launched.launched.child.wait();
+    assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
+    assert!(launched.prepared.notice.is_some());
 }
 
 #[test]
-fn a_chosen_virtual_rung_fails_with_the_reason_instead_of_falling_back() {
-    let def = make_test_definition();
-    let (_tmp, ctx, inst) = rung_fixture("ChosenVirtual", &def);
-    let id = &inst.instance_id;
-    agora_core::game_deploy::set_deployment(&ctx, id, Some(DeployMode::Virtual)).unwrap();
-    assert_eq!(
-        get_manifest(&ctx, id).unwrap().deployment,
-        Some(DeployMode::Virtual)
-    );
-
-    // No DLL: refused before anything is deployed.
-    let launcher = FakeLauncher::new(Err("agora_vfs.dll was not found at 'X'".into()), None);
-    let err = launch_with_fake(&ctx, id, &def, None, &launcher)
-        .err()
-        .expect("must not fall back");
-    match &err {
-        InstanceError::VfsUnavailable {
-            instance_id,
-            reason,
-        } => {
-            assert_eq!(instance_id, id);
-            assert!(reason.contains("not found"));
-        }
-        other => panic!("expected VfsUnavailable, got {other:?}"),
-    }
-    let text = err.to_string();
-    assert!(text.contains("not found at 'X'"), "{text}");
-    assert!(
-        text.contains("set-deployment") && text.contains("links"),
-        "{text}"
-    );
-    assert!(launcher.attempts().is_empty());
-    assert!(deployment_dir(&ctx, id).unwrap().is_none());
-
-    // A DLL that refuses at launch fails the same way, and links are not tried.
-    let launcher = FakeLauncher::new(Ok("C:/Agora/agora_vfs.dll".into()), Some("blocked"));
-    let err = launch_with_fake(&ctx, id, &def, None, &launcher)
-        .err()
-        .expect("must not fall back");
-    assert!(
-        matches!(err, InstanceError::VfsUnavailable { .. }),
-        "{err:?}"
-    );
-    assert_eq!(launcher.attempts(), vec![(Some(DeployMode::Virtual), true)]);
-
-    // The same for a one-launch override.
-    set_instance_auto(&ctx, id);
-    let err = launch_with_fake(&ctx, id, &def, Some(DeployMode::Virtual), &launcher)
-        .err()
-        .expect("must not fall back");
-    assert!(
-        matches!(err, InstanceError::VfsUnavailable { .. }),
-        "{err:?}"
-    );
+fn the_next_rung_down_the_ladder() {
+    assert_eq!(DeployMode::Virtual.next_fallback(), Some(DeployMode::Links));
+    assert_eq!(DeployMode::Links.next_fallback(), Some(DeployMode::Copies));
+    assert_eq!(DeployMode::Copies.next_fallback(), None);
 }
 
 fn set_instance_auto(ctx: &CoreContext, id: &str) {
@@ -1348,7 +1439,7 @@ fn a_chosen_rung_is_used_and_auto_clears_the_choice() {
 }
 
 #[test]
-fn a_redirect_game_defaults_to_virtual_and_steps_down_to_links_when_dll_missing() {
+fn a_redirect_game_defaults_to_virtual_and_asks_or_falls_back_to_links_when_dll_missing() {
     let mut def = make_test_definition();
     def.deployment = DeploymentStrategy::Redirect;
     let (tmp, ctx, inst) = rung_fixture("RedirectGame", &def);
@@ -1361,9 +1452,25 @@ fn a_redirect_game_defaults_to_virtual_and_steps_down_to_links_when_dll_missing(
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
     assert!(launched.prepared.notice.is_none());
 
-    // Missing DLL: steps down to Links with notice
+    // Missing DLL: asking reports it, falling back steps down to Links with a notice
     let launcher = FakeLauncher::new(Err("no dll".into()), None);
-    let mut launched = launch_with_fake(&ctx, &inst.instance_id, &def, None, &launcher).unwrap();
+    assert!(matches!(
+        launch_with_fake(&ctx, &inst.instance_id, &def, None, &launcher),
+        Err(InstanceError::VfsUnavailable {
+            next: Some(DeployMode::Links),
+            ..
+        })
+    ));
+    assert!(launcher.attempts().is_empty());
+    let mut launched = launch_with_fake_policy(
+        &ctx,
+        &inst.instance_id,
+        &def,
+        None,
+        VfsFailure::FallBack,
+        &launcher,
+    )
+    .unwrap();
     let _ = launched.launched.child.wait();
     assert_eq!(launcher.attempts(), vec![(Some(DeployMode::Links), false)]);
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
@@ -1410,7 +1517,7 @@ fn bare_fixture(name: &str, def: &GameDefinition) -> (TempDir, CoreContext, Game
 }
 
 #[test]
-fn a_vfs_game_with_no_content_still_runs_under_the_vfs_and_steps_down_the_same_way() {
+fn a_vfs_game_with_no_content_still_runs_under_the_vfs_and_asks_the_same_way() {
     let def = make_test_definition();
     let (_tmp, ctx, inst) = bare_fixture("BareVfs", &def);
     let id = &inst.instance_id;
@@ -1423,9 +1530,14 @@ fn a_vfs_game_with_no_content_still_runs_under_the_vfs_and_steps_down_the_same_w
     assert!(launched.prepared.vfs.is_some());
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
 
-    // Without the DLL it runs from a farm of links, and says so.
+    // Without the DLL it asks; told to fall back, it runs from a farm of links and says so.
     let launcher = FakeLauncher::new(Err("agora_vfs.dll was not found".into()), None);
-    let mut launched = launch_with_fake(&ctx, id, &def, None, &launcher).unwrap();
+    assert!(matches!(
+        launch_with_fake(&ctx, id, &def, None, &launcher),
+        Err(InstanceError::VfsUnavailable { .. })
+    ));
+    let mut launched =
+        launch_with_fake_policy(&ctx, id, &def, None, VfsFailure::FallBack, &launcher).unwrap();
     let _ = launched.launched.child.wait();
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
     assert!(launched.prepared.notice.is_some());
@@ -1456,7 +1568,7 @@ fn a_vfs_game_with_no_content_still_runs_under_the_vfs_and_steps_down_the_same_w
 }
 
 #[test]
-fn a_redirect_game_with_no_content_runs_under_the_vfs_and_steps_down_the_same_way() {
+fn a_redirect_game_with_no_content_runs_under_the_vfs_and_asks_the_same_way() {
     let mut def = make_test_definition();
     def.deployment = DeploymentStrategy::Redirect;
     let (_tmp, ctx, inst) = bare_fixture("BareRedirect", &def);
@@ -1469,9 +1581,14 @@ fn a_redirect_game_with_no_content_runs_under_the_vfs_and_steps_down_the_same_wa
     assert!(launched.prepared.vfs.is_some());
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
 
-    // Without the DLL it steps down to links and says so
+    // Without the DLL it asks; told to fall back, it steps down to links and says so
     let launcher = FakeLauncher::new(Err("agora_vfs.dll was not found".into()), None);
-    let mut launched = launch_with_fake(&ctx, id, &def, None, &launcher).unwrap();
+    assert!(matches!(
+        launch_with_fake(&ctx, id, &def, None, &launcher),
+        Err(InstanceError::VfsUnavailable { .. })
+    ));
+    let mut launched =
+        launch_with_fake_policy(&ctx, id, &def, None, VfsFailure::FallBack, &launcher).unwrap();
     let _ = launched.launched.child.wait();
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
     assert!(launched.prepared.notice.is_some());
@@ -1549,7 +1666,7 @@ fn real_injection_a_write_to_a_deployed_file_lands_in_the_writable_layer() {
     let id = &inst.instance_id;
     let launcher = RealDllLauncher(built_dll());
 
-    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher, VfsFailure::Ask);
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
     assert!(
         launched.prepared.vfs.is_some(),
@@ -1599,7 +1716,7 @@ fn real_injection_a_delete_of_a_deployed_file_leaves_a_whiteout() {
     let id = &inst.instance_id;
     let launcher = RealDllLauncher(built_dll());
 
-    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher, VfsFailure::Ask);
     assert!(
         launched.prepared.vfs.is_some(),
         "{:?}",
@@ -1687,7 +1804,7 @@ fn real_injection_loads_the_vfs_before_the_games_own_imports() {
         .collect();
     let launcher = RealDllLauncher(built_dll());
 
-    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher, VfsFailure::Ask);
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Virtual));
     assert!(
         launched.prepared.vfs.is_some() && launched.prepared.notice.is_none(),
@@ -1756,7 +1873,7 @@ fn real_injection_leaves_the_games_headers_as_they_were_on_disk() {
     let id = &inst.instance_id;
     let launcher = RealDllLauncher(built_dll());
 
-    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher, VfsFailure::Ask);
     assert!(
         launched.prepared.vfs.is_some() && launched.prepared.notice.is_none(),
         "{:?}",
@@ -1808,6 +1925,7 @@ fn real_injection_a_32_bit_game_is_refused_cleanly() {
             launch_anyway: false,
             plain: false,
             deployment: Some(DeployMode::Virtual),
+            on_vfs_failure: VfsFailure::Ask,
         },
         &DiscoveryReport::default,
         &launcher,
@@ -1853,6 +1971,7 @@ fn launch_with_fake_real(
     id: &str,
     def: &GameDefinition,
     launcher: &RealDllLauncher,
+    on_vfs_failure: VfsFailure,
 ) -> agora_core::game_instance::LaunchedInstance {
     agora_core::game_instance::launch_with(
         ctx,
@@ -1862,6 +1981,7 @@ fn launch_with_fake_real(
             launch_anyway: false,
             plain: false,
             deployment: None,
+            on_vfs_failure,
         },
         &DiscoveryReport::default,
         launcher,
@@ -1882,7 +2002,8 @@ fn real_injection_a_bad_dll_ends_the_suspended_game_and_steps_down_or_fails() {
     std::fs::write(&bogus, b"this is not a dll").unwrap();
     let launcher = RealDllLauncher(bogus);
 
-    // Chosen: a failure naming the reason, and no process left behind.
+    // Asking, chosen or not: a failure naming the reason and the next rung, and no process left
+    // behind.
     let err = agora_core::game_instance::launch_with(
         &ctx,
         id,
@@ -1891,6 +2012,7 @@ fn real_injection_a_bad_dll_ends_the_suspended_game_and_steps_down_or_fails() {
             launch_anyway: false,
             plain: false,
             deployment: Some(DeployMode::Virtual),
+            on_vfs_failure: VfsFailure::Ask,
         },
         &DiscoveryReport::default,
         &launcher,
@@ -1899,7 +2021,13 @@ fn real_injection_a_bad_dll_ends_the_suspended_game_and_steps_down_or_fails() {
     .expect("a chosen rung must fail");
     println!("chosen virtual, bad dll: {err}");
     assert!(
-        matches!(err, InstanceError::VfsUnavailable { .. }),
+        matches!(
+            err,
+            InstanceError::VfsUnavailable {
+                next: Some(DeployMode::Links),
+                ..
+            }
+        ),
         "{err:?}"
     );
     let game_dir = deployment_dir(&ctx, id).unwrap().unwrap();
@@ -1914,8 +2042,30 @@ fn real_injection_a_bad_dll_ends_the_suspended_game_and_steps_down_or_fails() {
         "a suspended game was left behind"
     );
 
-    // Not chosen: steps down to links, announced, and the game runs from there.
-    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher);
+    // Not chosen, asking: the same, and nothing runs.
+    let err = agora_core::game_instance::launch_with(
+        &ctx,
+        id,
+        &def,
+        agora_core::game_instance::LaunchOptions::default(),
+        &DiscoveryReport::default,
+        &launcher,
+    )
+    .err()
+    .expect("asking must not launch");
+    assert!(
+        matches!(
+            err,
+            InstanceError::VfsUnavailable {
+                next: Some(DeployMode::Links),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+
+    // Falling back, announced: the game runs from links.
+    let mut launched = launch_with_fake_real(&ctx, id, &def, &launcher, VfsFailure::FallBack);
     println!("default, bad dll: {:?}", launched.prepared.notice);
     assert_eq!(launched.prepared.deployment, Some(DeployMode::Links));
     assert!(launched

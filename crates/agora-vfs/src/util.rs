@@ -29,16 +29,27 @@ pub fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
 pub fn log(msg: impl AsRef<str>) {
     if let Some(cfg) = crate::maybe_cfg() {
         if let Some(path) = &cfg.log {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                // One write, so lines from several processes (and the launcher) do not interleave.
-                let _ =
-                    f.write_all(format!("[{}] {}\n", std::process::id(), msg.as_ref()).as_bytes());
-            }
+            append_line(path, msg.as_ref());
         }
+    }
+}
+
+/// Like [`log`], for a process whose configuration could not be loaded and so does not know its
+/// log's path: the launcher also names it in `AGORA_VFS_LOG`.
+pub fn log_without_config(msg: impl AsRef<str>) {
+    if let Some(path) = std::env::var_os("AGORA_VFS_LOG") {
+        append_line(std::path::Path::new(&path), msg.as_ref());
+    }
+}
+
+fn append_line(path: &std::path::Path, msg: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        // One write, so lines from several processes (and the launcher) do not interleave.
+        let _ = f.write_all(format!("[{}] {}\n", std::process::id(), msg).as_bytes());
     }
 }
 

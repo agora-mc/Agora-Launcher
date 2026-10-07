@@ -10,7 +10,9 @@ use agora_core::game_deploy::{
     add_content, deploy, remove_content, set_content_enabled, DeployMode, DeployOutcome,
 };
 use agora_core::game_discovery::{DiscoveredInstall, DiscoveryReport, InstallCapabilities};
-use agora_core::game_instance::{create, prepare_launch_with, GameInstanceRecord, LaunchOptions};
+use agora_core::game_instance::{
+    create, prepare_launch_with, GameInstanceRecord, LaunchOptions, VfsFailure,
+};
 use agora_core::game_launch::LaunchError;
 use agora_core::game_launch::SystemLauncher;
 use agora_core::game_plugins::{list, set_active, PluginListError};
@@ -289,8 +291,11 @@ impl Harness {
             &self.ctx,
             &inst.instance_id,
             &self.def,
+            // The test machine has no agora_vfs.dll beside the test executable; these tests are
+            // about the plugin list and the launch alternative, so let it step down to links.
             LaunchOptions {
                 plain,
+                on_vfs_failure: VfsFailure::FallBack,
                 ..Default::default()
             },
             &|| report.clone(),

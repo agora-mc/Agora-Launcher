@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use super::{LaunchError, LaunchedGame, ResolvedLaunch};
 
 /// Everything needed to run one launch under the VFS.
@@ -70,6 +72,63 @@ fn locate_dll_from(
             beside.display()
         ))
     }
+}
+
+/// A program the VFS's DLL ended because it was meant to run protected and could not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EndedProcess {
+    pub pid: u32,
+    /// The program's path.
+    pub exe: String,
+    /// Why the DLL could not protect it, in the DLL's words.
+    pub reason: String,
+}
+
+/// The length of the VFS's log now, to read what a session appends afterwards. A log that does
+/// not exist yet is empty.
+pub fn log_len(log: &Path) -> u64 {
+    std::fs::metadata(log).map(|m| m.len()).unwrap_or(0)
+}
+
+/// The programs the DLL ended during whatever was appended to `log` after its first `from` bytes
+/// (a [`log_len`] taken before the session). A missing or unreadable log, or one with nothing new,
+/// has none; a log shorter than `from` was replaced, so all of it is new.
+pub fn processes_ended_since(log: &Path, from: u64) -> Vec<EndedProcess> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(log) else {
+        return Vec::new();
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = if len < from { 0 } else { from };
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    processes_ended_by_vfs(&String::from_utf8_lossy(&bytes))
+}
+
+/// Read the lines `agora_vfs.dll` writes when it ends a process, `[pid] ending the process
+/// <exe>: <why>`, out of log text. Every other line, the DLL's or the launcher's, is ignored. The
+/// reason holds no `": "`, so the last one splits it from a path that may.
+pub fn processes_ended_by_vfs(appended: &str) -> Vec<EndedProcess> {
+    appended
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix('[')?;
+            let (pid, rest) = rest.split_once("] ")?;
+            let pid = pid.parse().ok()?;
+            let rest = rest.strip_prefix("ending the process ")?;
+            let (exe, reason) = rest.trim_end().rsplit_once(": ")?;
+            if exe.is_empty() || reason.is_empty() {
+                return None;
+            }
+            Some(EndedProcess {
+                pid,
+                exe: exe.to_string(),
+                reason: reason.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// The VFS's JSON configuration (`crates/agora-vfs/README.md`).
@@ -185,6 +244,8 @@ mod windows {
         cmd.current_dir(&resolved.cwd);
         cmd.envs(&resolved.env);
         cmd.env("AGORA_VFS_CONFIG", &vfs.config_path);
+        // For a process that cannot read its configuration and so does not know where to log.
+        cmd.env("AGORA_VFS_LOG", &vfs.log);
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
         cmd.creation_flags(CREATE_SUSPENDED);
@@ -394,6 +455,88 @@ mod tests {
         assert_eq!(json["dll"], "C:/Agora/agora_vfs.dll");
         assert_eq!(json["log"], "C:/Data/instances/inst/logs/vfs.log");
         assert_eq!(json["ready_event"], "Local\\agora-vfs-1-abc");
+    }
+
+    #[test]
+    fn the_log_parser_finds_the_program_and_the_reason() {
+        let text = [
+            r"[10] hooks installed in C:\Games\Game.exe",
+            "[agora] injected by the import table",
+            r"[42] ending the process C:\Games\Tool: v2\Helper.exe: its hooks could not be installed",
+            r"[43] ending the process D:\x\y.exe: the configuration could not be loaded",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(
+            processes_ended_by_vfs(&text),
+            vec![
+                EndedProcess {
+                    pid: 42,
+                    exe: r"C:\Games\Tool: v2\Helper.exe".into(),
+                    reason: "its hooks could not be installed".into(),
+                },
+                EndedProcess {
+                    pid: 43,
+                    exe: r"D:\x\y.exe".into(),
+                    reason: "the configuration could not be loaded".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_log_parser_ignores_ordinary_lines_that_mention_ending() {
+        let text = [
+            "[7] ending the session",
+            r"[7] pending the process C:\a.exe: nope",
+            r"[agora] ending the process C:\a.exe: nope",
+            r"[x] ending the process C:\a.exe: nope",
+            r"ending the process C:\a.exe: nope",
+            r"[7] hooks installed in a path ending the process C:\a.exe: no",
+            "[7] ending the process without a reason",
+            "[7] ending the process : ",
+            r"[7] ending the process C:\a.exe: ",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(processes_ended_by_vfs(&text), Vec::new());
+        assert_eq!(processes_ended_by_vfs(""), Vec::new());
+    }
+
+    #[test]
+    fn only_what_was_appended_since_the_recorded_length_is_read() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("logs").join("vfs.log");
+        // No log yet: nothing, and a length of zero.
+        assert_eq!(log_len(&log), 0);
+        assert!(processes_ended_since(&log, 0).is_empty());
+
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(
+            &log,
+            "[1] ending the process C:\\old.exe: its hooks could not be installed\n",
+        )
+        .unwrap();
+        let before = log_len(&log);
+        assert!(processes_ended_since(&log, before).is_empty());
+        // From the start, the old line is found.
+        assert_eq!(processes_ended_since(&log, 0).len(), 1);
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        f.write_all(
+            b"[2] hooks installed in C:\\g.exe\n\
+              [3] ending the process C:\\new.exe: the configuration could not be loaded\n",
+        )
+        .unwrap();
+        let ended = processes_ended_since(&log, before);
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].pid, 3);
+        assert_eq!(ended[0].exe, r"C:\new.exe");
+
+        // A log that was replaced by a shorter one is all new.
+        std::fs::write(&log, "[9] ending the process C:\\z.exe: why\n").unwrap();
+        assert_eq!(processes_ended_since(&log, 10_000).len(), 1);
     }
 
     #[cfg(windows)]
