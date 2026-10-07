@@ -175,6 +175,8 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games content show <item>` | Show files in a content item |
 | `agora games content verify [<item>] [--full]` | Verify integrity of content items |
 | `agora games content remove <item>` | Delete an item from the content store |
+| `agora games content fomod show <item>` | Show the steps, groups and options of the FOMOD installer in an archive item |
+| `agora games content fomod install <item> [--instance <id>] [--choose "Step/Group/Plugin"]... [--defaults]` | Run an archive item's FOMOD installer into a new content item (the archive's objects are shared, the choices are recorded); with `--instance`, check the installer's file conditions against that instance and add the result to it |
 | `agora games launch <base-id> [--wait] [--launch-anyway] [--plain]` | Launch a game from its pinned base (`--plain` skips a framework loader such as SKSE's and starts the game's own executable) |
 | `agora games instance create <install-id> [--name N] [--id ID] [--mode linked\|copied]` | Create an instance for a game from an identified install |
 | `agora games instance list` | List all game instances, Minecraft included |

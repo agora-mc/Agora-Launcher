@@ -555,6 +555,34 @@ enum ContentCmd {
         /// Item ID or unique prefix to remove.
         item: String,
     },
+    /// Show or run the FOMOD installer inside an archive item.
+    Fomod {
+        #[command(subcommand)]
+        action: FomodCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum FomodCmd {
+    /// Show an installer's steps, groups and options.
+    Show {
+        /// Archive item ID or unique prefix.
+        item: String,
+    },
+    /// Install an archive item through its FOMOD installer into a new content item.
+    Install {
+        /// Archive item ID or unique prefix.
+        item: String,
+        /// Instance whose files answer the installer's file checks; the installed item is added to it.
+        #[arg(long)]
+        instance: Option<String>,
+        /// An option to select, as "Step/Group/Plugin" (repeatable). Replaces the defaults of its group.
+        #[arg(long = "choose", value_name = "STEP/GROUP/PLUGIN")]
+        choose: Vec<String>,
+        /// Select every option the installer requires or recommends (and a first usable option where a group needs one).
+        #[arg(long)]
+        defaults: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4811,6 +4839,10 @@ async fn run_command(
                                         path,
                                         ..
                                     } => format!("folder:{path}"),
+                                    agora_core::content_store::ContentSource::FomodInstall {
+                                        from_item,
+                                        ..
+                                    } => format!("fomod:{}", &from_item[..12.min(from_item.len())]),
                                     _ => "other".to_string(),
                                 })
                                 .collect::<Vec<_>>()
@@ -4968,6 +5000,7 @@ async fn run_command(
                         }
                     }
                 }
+                ContentCmd::Fomod { action } => run_fomod_command(ctx, action, json)?,
             },
             GamesCmd::Instance { action } => match action {
                 GameInstanceCmd::Create {
@@ -5739,21 +5772,29 @@ async fn run_command(
                                         .collect();
                                     top_level.sort();
                                     top_level.dedup();
+                                    let command = format!(
+                                        "agora games content fomod install {item_id} --instance {instance_id}"
+                                    );
                                     if json {
                                         let out = serde_json::json!({
                                             "status": "error",
-                                            "error": format!("Cannot automatically place content: {reason}"),
+                                            "error": format!(
+                                                "This archive has a FOMOD installer: {reason}. Run `{command} --defaults`, or pick options with `--choose \"Step/Group/Plugin\"` (see `agora games content fomod show {item_id}`)."
+                                            ),
                                             "reason": reason,
                                             "top_level": top_level,
+                                            "installer_command": command,
                                             "exitCode": 1,
                                         });
                                         eprintln!("{}", serde_json::to_string_pretty(&out)?);
                                     } else {
                                         eprintln!(
-                                            "Error: Cannot automatically place content: {reason}"
+                                            "Error: this archive has a FOMOD installer: {reason}."
                                         );
-                                        eprintln!("Top-level entries: {}", top_level.join(", "));
-                                        eprintln!("Specify --into (and --from) to place manually.");
+                                        eprintln!("Install it with: {command} --defaults");
+                                        eprintln!(
+                                            "or pick options with --choose \"Step/Group/Plugin\" (see `agora games content fomod show {item_id}`)."
+                                        );
                                     }
                                     std::process::exit(1);
                                 }
@@ -7154,6 +7195,290 @@ fn print_plan(
         }
     }
     Ok(())
+}
+
+/// Print an error the way the other `games content` commands do, and exit 1.
+fn exit_with_error(json: bool, message: &str) -> ! {
+    if json {
+        let out = serde_json::json!({
+            "status": "error",
+            "error": message,
+            "exitCode": 1,
+        });
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| message.to_string())
+        );
+    } else {
+        eprintln!("Error: {message}");
+    }
+    std::process::exit(1);
+}
+
+fn describe_plugin_type(td: &agora_core::content_fomod::TypeDescriptor) -> String {
+    use agora_core::content_fomod::TypeDescriptor;
+    match td {
+        TypeDescriptor::Simple { plugin_type } => format!("{plugin_type:?}"),
+        TypeDescriptor::Dependent { default, patterns } => {
+            let mut s = format!("{default:?} by default");
+            for (cond, t) in patterns {
+                s.push_str(&format!("; {t:?} when {}", cond.describe()));
+            }
+            s
+        }
+    }
+}
+
+/// `agora games content fomod ...`: a thin adapter over `agora_core::content_fomod`.
+fn run_fomod_command(
+    ctx: &agora_core::ctx::Ctx,
+    action: FomodCmd,
+    json: bool,
+) -> anyhow::Result<()> {
+    use agora_core::content_fomod as fomod;
+    match action {
+        FomodCmd::Show { item } => {
+            let item_id = match agora_core::content_store::resolve_item_id(ctx, &item) {
+                Ok(id) => id,
+                Err(e) => exit_with_error(json, &e.to_string()),
+            };
+            let installer = match fomod::parse(ctx, &item_id) {
+                Ok(i) => i,
+                Err(e) => exit_with_error(json, &e.to_string()),
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&installer)?);
+                return Ok(());
+            }
+            let title = if installer.module_name.is_empty() {
+                "(unnamed installer)"
+            } else {
+                installer.module_name.as_str()
+            };
+            println!(
+                "{title} (item {}, installer in '{}')",
+                &item_id[..12.min(item_id.len())],
+                installer.root
+            );
+            if let Some(info) = &installer.info {
+                let parts: Vec<String> = [
+                    info.version.as_ref().map(|v| format!("version {v}")),
+                    info.author.as_ref().map(|a| format!("by {a}")),
+                    info.website.clone(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !parts.is_empty() {
+                    println!("  {}", parts.join(", "));
+                }
+            }
+            if let Some(deps) = &installer.module_dependencies {
+                println!("Requires: {}", deps.describe());
+            }
+            if !installer.required_files.is_empty() {
+                println!(
+                    "Always installed: {} file/folder entries",
+                    installer.required_files.len()
+                );
+            }
+            for (i, step) in installer.steps.iter().enumerate() {
+                match &step.visible {
+                    Some(c) => println!(
+                        "Step {}: {} (shown when {})",
+                        i + 1,
+                        step.name,
+                        c.describe()
+                    ),
+                    None => println!("Step {}: {}", i + 1, step.name),
+                }
+                for group in &step.groups {
+                    println!("  Group: {} ({})", group.name, group.group_type.rule());
+                    for plugin in &group.plugins {
+                        println!(
+                            "    - {} [{}]",
+                            plugin.name,
+                            describe_plugin_type(&plugin.type_descriptor)
+                        );
+                        if !plugin.description.is_empty() {
+                            let first = plugin.description.lines().next().unwrap_or("");
+                            println!("        {first}");
+                        }
+                        if !plugin.flags.is_empty() {
+                            let flags: Vec<String> = plugin
+                                .flags
+                                .iter()
+                                .map(|f| format!("{}={}", f.name, f.value))
+                                .collect();
+                            println!("        sets: {}", flags.join(", "));
+                        }
+                        println!(
+                            "        choose with: --choose \"{}/{}/{}\"",
+                            step.name, group.name, plugin.name
+                        );
+                    }
+                }
+            }
+            for ci in &installer.conditional_installs {
+                println!(
+                    "Also installed when {}: {} file/folder entries",
+                    ci.condition.describe(),
+                    ci.files.len()
+                );
+            }
+            Ok(())
+        }
+        FomodCmd::Install {
+            item,
+            instance,
+            choose,
+            defaults,
+        } => {
+            let item_id = match agora_core::content_store::resolve_item_id(ctx, &item) {
+                Ok(id) => id,
+                Err(e) => exit_with_error(json, &e.to_string()),
+            };
+            let installer = match fomod::parse(ctx, &item_id) {
+                Ok(i) => i,
+                Err(e) => exit_with_error(json, &e.to_string()),
+            };
+
+            // The instance answers the installer's file checks, and says where the result goes.
+            let mut context = None;
+            let mut mount: Option<String> = None;
+            if let Some(instance_id) = &instance {
+                context = match fomod::instance_context(ctx, instance_id) {
+                    Ok(c) => Some(c),
+                    Err(e) => exit_with_error(json, &e.to_string()),
+                };
+                let manifest = match agora_core::game_instance::get_manifest(ctx, instance_id) {
+                    Ok(m) => m,
+                    Err(e) => exit_with_error(json, &e.to_string()),
+                };
+                let layout = ctx
+                    .games
+                    .game(&manifest.game)
+                    .and_then(|g| g.content_layout.as_ref());
+                mount = match layout {
+                    Some(l) if !l.data_path.as_str().is_empty() => {
+                        Some(l.data_path.as_str().to_string())
+                    }
+                    Some(_) => None,
+                    None => exit_with_error(
+                        json,
+                        &format!(
+                            "game '{}' has no content layout, so Agora does not know where an installer's files go",
+                            manifest.game
+                        ),
+                    ),
+                };
+            }
+
+            let mut explicit = Vec::new();
+            for spec in &choose {
+                match installer.resolve_choice(spec) {
+                    Ok(c) => explicit.push(c),
+                    Err(e) => exit_with_error(json, &e.to_string()),
+                }
+            }
+            let choices = if defaults {
+                match fomod::defaults_over(&installer, &explicit, context.as_ref()) {
+                    Ok(c) => c,
+                    Err(e) => exit_with_error(json, &e.to_string()),
+                }
+            } else {
+                fomod::merge_choices(Vec::new(), explicit)
+            };
+
+            let (_, plan, outcome) = match fomod::install(ctx, &item_id, &choices, context.as_ref())
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let hint = if defaults || !choose.is_empty() {
+                        ""
+                    } else {
+                        " (pick options with --choose \"Step/Group/Plugin\", or use --defaults)"
+                    };
+                    exit_with_error(json, &format!("{e}{hint}"))
+                }
+            };
+            let derived = outcome.item();
+
+            let mut layer = None;
+            if let Some(instance_id) = &instance {
+                match agora_core::game_deploy::add_content(
+                    ctx,
+                    instance_id,
+                    &derived.item_id,
+                    mount.as_deref(),
+                    None,
+                ) {
+                    Ok(l) => layer = Some(l),
+                    Err(e) => exit_with_error(
+                        json,
+                        &format!(
+                            "installed item {} but could not add it to instance '{instance_id}': {e}",
+                            derived.item_id
+                        ),
+                    ),
+                }
+            }
+
+            if json {
+                let files: Vec<serde_json::Value> = plan
+                    .files
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "destination": f.destination.as_str(),
+                            "source": f.source.as_str(),
+                            "size": f.size,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({
+                    "status": "installed",
+                    "item_id": derived.item_id,
+                    "name": derived.name,
+                    "from_item": item_id,
+                    "files": files,
+                    "choices": plan.choices,
+                    "notes": plan.notes,
+                    "instance_id": instance,
+                    "layer_id": layer.as_ref().map(|l| l.id.as_str().to_string()),
+                    "mount_path": layer.as_ref().map(|l| l.mount_path.as_str().to_string()),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!(
+                    "Installed item {} ({}, {} files, {} bytes; no new objects stored).",
+                    derived.item_id,
+                    derived.name,
+                    derived.files.len(),
+                    derived.total_size
+                );
+                for f in &plan.files {
+                    println!("  {}", f.destination);
+                }
+                if !plan.choices.is_empty() {
+                    println!("Choices:");
+                    for c in &plan.choices {
+                        println!("  {}/{}: {}", c.step, c.group, c.plugins.join(", "));
+                    }
+                }
+                for note in &plan.notes {
+                    println!("Note: {note}");
+                }
+                if let (Some(instance_id), Some(layer)) = (&instance, &layer) {
+                    println!(
+                        "Added to instance '{instance_id}' (mount: '{}').",
+                        layer.mount_path.as_str()
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn run_launch_service(

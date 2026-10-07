@@ -52,6 +52,7 @@ semver = { workspace = true }
 thiserror = { workspace = true }
 tar = "0.4"
 flate2 = "1"
+roxmltree = "0.20"
 
 # MicrosoftGame.config, read by Microsoft Store game discovery.
 quick-xml = "0.39"

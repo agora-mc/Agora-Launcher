@@ -12,6 +12,7 @@ pub mod auth;
 pub mod backup;
 pub mod bisect;
 pub mod community_image;
+pub mod content_fomod;
 pub mod content_store;
 pub mod crash_diagnostics;
 pub mod crash_evidence;

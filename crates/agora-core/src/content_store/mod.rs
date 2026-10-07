@@ -44,6 +44,13 @@ pub enum ContentSource {
         path: String,
         added_at_unix_ms: i64,
     },
+    /// Derived from another item by a FOMOD installer (`content_fomod`): the chosen options are
+    /// recorded so that a reinstall replays them.
+    FomodInstall {
+        from_item: String,
+        choices: Vec<crate::content_fomod::Choice>,
+        added_at_unix_ms: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,7 +202,7 @@ pub enum ContentError {
 const ONE_GIB: u64 = 1024 * 1024 * 1024;
 const HASH_BUFFER_SIZE: usize = 128 * 1024;
 
-fn now_unix_ms() -> i64 {
+pub(crate) fn now_unix_ms() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => d.as_millis() as i64,
         Err(e) => -(e.duration().as_millis() as i64),
@@ -1025,6 +1032,33 @@ fn finish_adding(
         });
     }
 
+    let (item, existed) = commit_manifest(ctx, item_name, files, total_size, source)?;
+    if existed {
+        // If objects were created on disk for an existing manifest, they were restored
+        if objects_new > 0 {
+            objects_restored = objects_new;
+            objects_new = 0;
+        }
+        Ok(AddOutcome::Existing {
+            item,
+            objects_new,
+            objects_restored,
+            objects_present,
+        })
+    } else {
+        Ok(AddOutcome::Added { item, objects_new })
+    }
+}
+
+/// Write the manifest for `files`, or append `source` to the manifest an identical item already
+/// has. Returns the item and whether it already existed.
+fn commit_manifest(
+    ctx: &Ctx,
+    item_name: &str,
+    mut files: Vec<ContentFile>,
+    total_size: u64,
+    source: ContentSource,
+) -> Result<(ContentItem, bool), ContentError> {
     files.sort_by(|a, b| a.path.as_str().cmp(b.path.as_str()));
     let item_id = compute_canonical_item_id(&files);
     let manifest_path = ctx.paths.content_item_path(&item_id);
@@ -1032,12 +1066,6 @@ fn finish_adding(
     if manifest_path.exists() {
         let content = std::fs::read_to_string(&manifest_path)?;
         let mut existing_item: ContentItem = serde_json::from_str(&content)?;
-
-        // If objects were created on disk for an existing manifest, they were restored
-        if objects_new > 0 {
-            objects_restored = objects_new;
-            objects_new = 0;
-        }
 
         // Append source if it is new
         let is_new_source = match &source {
@@ -1057,6 +1085,18 @@ fn finish_adding(
                     ContentSource::Folder { path: p, .. } if p == path
                 )
             }),
+            ContentSource::FomodInstall {
+                from_item, choices, ..
+            } => !existing_item.sources.iter().any(|s| {
+                matches!(
+                    s,
+                    ContentSource::FomodInstall {
+                        from_item: f,
+                        choices: c,
+                        ..
+                    } if f == from_item && c == choices
+                )
+            }),
         };
 
         if is_new_source {
@@ -1064,12 +1104,7 @@ fn finish_adding(
             write_manifest_atomic(&ctx.paths, &existing_item)?;
         }
 
-        Ok(AddOutcome::Existing {
-            item: existing_item,
-            objects_new,
-            objects_restored,
-            objects_present,
-        })
+        Ok((existing_item, true))
     } else {
         let item = ContentItem {
             item_id,
@@ -1080,7 +1115,73 @@ fn finish_adding(
             added_at_unix_ms: now_unix_ms(),
         };
         write_manifest_atomic(&ctx.paths, &item)?;
-        Ok(AddOutcome::Added { item, objects_new })
+        Ok((item, false))
+    }
+}
+
+/// Create an item from some of another item's files, under new paths, without extracting
+/// anything again: the new manifest points at the objects `from_item` already holds. A FOMOD
+/// install is the first user. `files` pairs each new path with the sha256 of an object `from_item`
+/// contains.
+pub fn derive_item(
+    ctx: &Ctx,
+    from_item: &str,
+    files: Vec<(RelPath, String)>,
+    name: &str,
+    source: ContentSource,
+) -> Result<AddOutcome, ContentError> {
+    let _lock = ctx
+        .lock_manager
+        .acquire(LockResource::ContentStore, "content-derive")?;
+
+    let from = get_item(ctx, from_item)?;
+    let mut known: HashMap<&str, u64> = HashMap::with_capacity(from.files.len());
+    for f in &from.files {
+        known.insert(f.sha256.as_str(), f.size);
+    }
+
+    let mut content_files = Vec::with_capacity(files.len());
+    let mut paths = Vec::with_capacity(files.len());
+    let mut total_size = 0u64;
+    let mut present = HashSet::new();
+    for (path, sha256) in files {
+        let path = validate_entry_path(path.as_str())?;
+        let Some(&size) = known.get(sha256.as_str()) else {
+            return Err(ContentError::Other(format!(
+                "'{path}' refers to an object that item {} does not contain",
+                from.item_id
+            )));
+        };
+        let obj_path = ctx.paths.content_object_path(&sha256);
+        match std::fs::metadata(&obj_path) {
+            Ok(m) if m.len() == size => {}
+            _ => {
+                return Err(ContentError::Other(format!(
+                    "the stored object for '{path}' is missing or the wrong size; verify item {}",
+                    from.item_id
+                )));
+            }
+        }
+        total_size += size;
+        present.insert(sha256.clone());
+        paths.push(path.clone());
+        content_files.push(ContentFile { path, size, sha256 });
+    }
+    validate_path_set(&paths)?;
+
+    let (item, existed) = commit_manifest(ctx, name, content_files, total_size, source)?;
+    if existed {
+        Ok(AddOutcome::Existing {
+            item,
+            objects_new: 0,
+            objects_restored: 0,
+            objects_present: present.len(),
+        })
+    } else {
+        Ok(AddOutcome::Added {
+            item,
+            objects_new: 0,
+        })
     }
 }
 

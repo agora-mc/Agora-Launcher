@@ -274,6 +274,9 @@ const NESTED_COMMANDS: &[&[&str]] = &[
     &["games", "content", "show"],
     &["games", "content", "verify"],
     &["games", "content", "remove"],
+    &["games", "content", "fomod"],
+    &["games", "content", "fomod", "show"],
+    &["games", "content", "fomod", "install"],
     &["games", "instance"],
     &["games", "instance", "create"],
     &["games", "instance", "list"],
@@ -3175,6 +3178,135 @@ fn games_content_cli_lifecycle() {
     // 8. Remove nonexistent fails
     let output_rem_err = run_agora(&data_dir, &["games", "content", "remove", prefix]);
     assert!(!output_rem_err.status.success());
+}
+
+#[test]
+fn games_content_fomod_cli_show_and_install() {
+    let (_tmp, data_dir) = temp_data_dir();
+    let mod_dir = tempfile::tempdir().unwrap();
+    let root = mod_dir.path();
+    std::fs::create_dir_all(root.join("fomod")).unwrap();
+    std::fs::create_dir_all(root.join("Core")).unwrap();
+    std::fs::create_dir_all(root.join("Heavy")).unwrap();
+    std::fs::create_dir_all(root.join("Light")).unwrap();
+    std::fs::write(root.join("Core").join("core.esp"), b"core").unwrap();
+    std::fs::write(root.join("Heavy").join("armor.nif"), b"heavy").unwrap();
+    std::fs::write(root.join("Light").join("armor.nif"), b"light").unwrap();
+    std::fs::write(
+        root.join("fomod").join("ModuleConfig.xml"),
+        r#"<config>
+  <moduleName>CLI Mod</moduleName>
+  <requiredInstallFiles><folder source="Core" destination=""/></requiredInstallFiles>
+  <installSteps order="Explicit"><installStep name="Armor"><optionalFileGroups>
+    <group name="Weight" type="SelectExactlyOne"><plugins>
+      <plugin name="Heavy"><files><folder source="Heavy" destination="meshes"/></files>
+        <typeDescriptor><type name="Recommended"/></typeDescriptor></plugin>
+      <plugin name="Light"><files><folder source="Light" destination="meshes"/></files></plugin>
+    </plugins></group>
+  </optionalFileGroups></installStep></installSteps>
+</config>"#,
+    )
+    .unwrap();
+
+    let add = run_agora_json(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "add",
+            root.to_str().unwrap(),
+            "--name",
+            "cli-mod",
+        ],
+    );
+    assert!(add.status.success());
+    let added: serde_json::Value = serde_json::from_slice(&add.stdout).unwrap();
+    let item_id = added["item"]["item_id"].as_str().unwrap().to_string();
+    let prefix = &item_id[..12];
+
+    // show: human and JSON.
+    let show = run_agora(&data_dir, &["games", "content", "fomod", "show", prefix]);
+    assert!(show.status.success());
+    let text = String::from_utf8_lossy(&show.stdout);
+    assert!(text.contains("CLI Mod"));
+    assert!(text.contains("Group: Weight (select exactly one)"));
+    assert!(text.contains("--choose \"Armor/Weight/Heavy\""));
+    let show_json = run_agora_json(&data_dir, &["games", "content", "fomod", "show", prefix]);
+    let installer: serde_json::Value = serde_json::from_slice(&show_json.stdout).unwrap();
+    assert_eq!(
+        installer["steps"][0]["groups"][0]["group_type"],
+        "select_exactly_one"
+    );
+
+    // install without choices names the group and its rule.
+    let none = run_agora(&data_dir, &["games", "content", "fomod", "install", prefix]);
+    assert!(!none.status.success());
+    let err = String::from_utf8_lossy(&none.stderr);
+    assert!(
+        err.contains("Armor/Weight") && err.contains("select exactly one"),
+        "{err}"
+    );
+
+    // An unknown option is an error too.
+    let bad = run_agora(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "fomod",
+            "install",
+            prefix,
+            "--choose",
+            "Armor/Weight/Nope",
+        ],
+    );
+    assert!(!bad.status.success());
+
+    // --choose installs one option; --defaults picks the recommended one.
+    let light = run_agora_json(
+        &data_dir,
+        &[
+            "games",
+            "content",
+            "fomod",
+            "install",
+            prefix,
+            "--choose",
+            "armor/weight/light",
+        ],
+    );
+    assert!(
+        light.status.success(),
+        "{}",
+        String::from_utf8_lossy(&light.stderr)
+    );
+    let light: serde_json::Value = serde_json::from_slice(&light.stdout).unwrap();
+    let dests: Vec<&str> = light["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["destination"].as_str().unwrap())
+        .collect();
+    assert_eq!(dests, ["core.esp", "meshes/armor.nif"]);
+
+    let heavy = run_agora_json(
+        &data_dir,
+        &["games", "content", "fomod", "install", prefix, "--defaults"],
+    );
+    assert!(heavy.status.success());
+    let heavy: serde_json::Value = serde_json::from_slice(&heavy.stdout).unwrap();
+    assert_eq!(heavy["choices"][0]["plugins"][0], "Heavy");
+    assert_ne!(heavy["item_id"], light["item_id"]);
+
+    // Both derived items are listed with their provenance, and verify clean.
+    let list = run_agora(&data_dir, &["games", "content", "list"]);
+    let list_text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        list_text.contains("CLI Mod (FOMOD)") && list_text.contains("fomod:"),
+        "{list_text}"
+    );
+    let verify = run_agora(&data_dir, &["games", "content", "verify", "--full"]);
+    assert!(verify.status.success());
 }
 
 #[test]
