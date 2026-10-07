@@ -608,9 +608,12 @@ pub fn plan(
         let placement = match mode {
             DeployMode::Copies => Placement::Copy,
             DeployMode::Links | DeployMode::Virtual => {
-                // Under the VFS a declared-write path is protected like any other, so it is
-                // linked; without it the game must be given a private copy to write to.
-                if mode == DeployMode::Links && definition.is_declared_write(cand.path.as_str()) {
+                // A declared-write path gets the instance's own copy in every mode. Under the VFS
+                // too: DLLs Windows loads while starting the game run before the VFS's hooks exist
+                // (measured: Engine Fixes' preloader `d3dx9_42.dll` rewrote `d3dx9_42.log` through
+                // the farm's hardlink into the base), so a link would let that early write reach
+                // the base, and through a Linked base the store install.
+                if definition.is_declared_write(cand.path.as_str()) {
                     Placement::Copy
                 } else {
                     match &cand.source {
@@ -886,6 +889,14 @@ pub fn deploy(
                 {
                     let mut up_to_date = true;
                     for f in &record.files {
+                        // The instance's own copy of a path the game is declared to write is
+                        // expected to change (an early write under the VFS lands in it); that
+                        // is the game's state, not a damaged deployment.
+                        if f.placement == Placement::Copy
+                            && definition.is_declared_write(f.path.as_str())
+                        {
+                            continue;
+                        }
                         let path = game_dir.join(f.path.as_str());
                         match std::fs::metadata(&path) {
                             Ok(m) if m.len() == f.size => {}

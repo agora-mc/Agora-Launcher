@@ -823,7 +823,7 @@ fn find<'a>(
 }
 
 #[test]
-fn virtual_plan_links_declared_writes_and_leaves_the_writable_layer_out() {
+fn virtual_plan_copies_declared_writes_and_leaves_the_writable_layer_out() {
     let tmp = TempDir::new().unwrap();
     let def = make_test_definition();
     let ctx = create_test_context(&tmp, &def);
@@ -842,10 +842,11 @@ fn virtual_plan_links_declared_writes_and_leaves_the_writable_layer_out() {
     write_file(&writable.join("base_file.txt"), b"game's own version");
 
     let virt = plan(&ctx, id, &def, DeployMode::Virtual).unwrap();
-    // A declared write is linked: the VFS, not a private copy, protects it.
+    // A declared write is the instance's own copy even under the VFS: DLLs loaded while the game
+    // starts write before the hooks exist, and through a link that write would reach the base.
     assert_eq!(
         find(&virt, "writeable_base.txt").unwrap().placement,
-        Placement::Link
+        Placement::Copy
     );
     assert_eq!(
         find(&virt, "mod_file.txt").unwrap().placement,
@@ -988,7 +989,8 @@ fn changing_the_mode_rebuilds_and_the_virtual_farm_survives_writes() {
         DeployOutcome::UpToDate { plugins: None }
     );
 
-    // A deployed farm is a farm of links: the declared write is the base's own file.
+    // A declared write is the instance's own copy, not a link to the base: a DLL the game loads
+    // at start writes before the VFS's hooks exist (Engine Fixes' d3dx9_42.dll and its log).
     let base_id = match &inst.base {
         BaseReference::Pinned { id, .. } => id.clone(),
         _ => panic!("expected pinned base"),
@@ -997,10 +999,24 @@ fn changing_the_mode_rebuilds_and_the_virtual_farm_survives_writes() {
         &std::fs::read_to_string(ctx.paths.base_manifest_path(&base_id)).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        get_file_identity(&base_manifest.location.join("writeable_base.txt")).unwrap(),
+    let base_copy = base_manifest.location.join("writeable_base.txt");
+    assert_ne!(
+        get_file_identity(&base_copy).unwrap(),
         get_file_identity(&game_dir.join("writeable_base.txt")).unwrap(),
-        "under the VFS a declared write is linked, not copied"
+        "under the VFS a declared write is still copied"
+    );
+    // That early write changes the instance's copy: the base is untouched and switching back
+    // to the instance is still no rebuild.
+    let base_before = std::fs::read(&base_copy).unwrap();
+    std::fs::write(
+        game_dir.join("writeable_base.txt"),
+        b"written before the hooks existed",
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&base_copy).unwrap(), base_before);
+    assert_eq!(
+        deploy(&ctx, id, &def, DeployMode::Virtual).unwrap(),
+        DeployOutcome::UpToDate { plugins: None }
     );
 
     // Switching mode rebuilds, and the link farm now holds the writable layer.
