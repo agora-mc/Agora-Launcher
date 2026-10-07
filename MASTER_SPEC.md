@@ -4126,6 +4126,44 @@ is not installed there; its definition waits for Phase 3. What the tracers taugh
 **Phase 2 status.** Its done-when is met on the spike machine except Valheim, which is not installed
 there, and the Minecraft budget, which moved to Phase 5. Phase 2 is closed.
 
+**Deployment, as built (Phase 3, slices 1-8, 2026-10-05/06).** Shown by `agora games content …` and
+`agora games instance content|deploy|undeploy|plugins|set-deployment|launch`:
+- **Content store** (`agora_core::content_store`): items are file trees stored once by content hash,
+  their id defined by their content (a zip and a folder of the same files are one item); zip and 7z,
+  chosen by the file's bytes; untrusted paths, sizes and Windows-only collisions refused; objects
+  ACL-protected as §26.5 decides; verification; removal that fails closed. RAR is not supported (the
+  only mature library is not GPL-compatible; Windows' own `tar` reads RAR, which remains an option).
+- **Placement** (`ContentLayout`, `suggest_placement`): wrapper folders are unwrapped until a marker
+  decides between the data folder and the game root; a content layer can deploy a subfolder of its
+  item (`Layer.source_path`).
+- **FOMOD** (`agora_core::content_fomod`): installers become content items derived from the
+  archive's objects, recording their choices so a reinstall replays them.
+- **Deployment** (`agora_core::game_deploy`): the instance's `LayerStack` over its base, deployed
+  beside the base (`<bases root>/deployments/<instance>/`) as links, copies, or links under the VFS
+  (rungs 3, 2 and 1). Harvest returns a link or copy deployment's writes to the writable layer; under
+  the VFS they land there directly. The rung is the user's choice per instance or launch, else the
+  game's default, stepping down (announced) when the DLL is missing or cannot be injected.
+- **The VFS** (`crates/agora-vfs`): the Spike 2 prototype as product code, with the write matrix as
+  its conformance test in three topologies, including the product's link farm mounted over itself.
+- **Per-user files** (`agora_core::game_user_files`): swapped in by a journal that survives Agora
+  being killed; restore derives every path itself rather than trusting the journal.
+- **Plugins and loaders** (`agora_core::game_plugins`, `launch_alternatives`): plugins deployed from
+  content are activated in the instance's list (layer order; LOOT sorting is Phase 4); SKSE's loader
+  replaces the executable when present, with `--plain` to opt out.
+
+What reality changed: Skyrim appends plugins it finds in `Data` to `Plugins.txt` itself, inactive, so
+an inactive line Agora never managed is the game's and is activated when Agora starts managing it;
+the managed set lives in the instance (`plugin_list_state.json`), because `deployment.json` is
+deleted by every undeploy; `--wait` must watch the folder the game runs from, not the base. Measured
+on the spike machine with GOG Skyrim: a 7z mod written by another tool was unwrapped into `Data` and
+deployed; the profile files were swapped and restored byte-for-byte; and the game ran under
+`agora_vfs.dll` from its deployment, its new folders landing in the writable layer and the base
+verifying clean.
+
+**Phase 3 status: in progress.** Not yet met: a Skyrim instance with SKSE and twenty real mods (needs
+real archives), Valheim with BepInEx through Redirect (not installed), per-user files mapped through
+the VFS instead of swapped, and the desktop app's views of all of this.
+
 ### 26.13 Phases
 
 Each phase ends with a run on a real Windows machine, because that is where every surprise in the
