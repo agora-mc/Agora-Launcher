@@ -4129,10 +4129,12 @@ there, and the Minecraft budget, which moved to Phase 5. Phase 2 is closed.
 **Deployment, as built (Phase 3, slices 1-8, 2026-10-05/06).** Shown by `agora games content …` and
 `agora games instance content|deploy|undeploy|plugins|set-deployment|launch`:
 - **Content store** (`agora_core::content_store`): items are file trees stored once by content hash,
-  their id defined by their content (a zip and a folder of the same files are one item); zip and 7z,
-  chosen by the file's bytes; untrusted paths, sizes and Windows-only collisions refused; objects
-  ACL-protected as §26.5 decides; verification; removal that fails closed. RAR is not supported (the
-  only mature library is not GPL-compatible; Windows' own `tar` reads RAR, which remains an option).
+  their id defined by their content (a zip and a folder of the same files are one item); zip, 7z
+  and RAR, chosen by the file's bytes; untrusted paths, sizes and Windows-only collisions refused;
+  objects ACL-protected as §26.5 decides; verification; removal that fails closed. RAR is read
+  through Windows' own `tar.exe` (libarchive, run by absolute path), never a bundled library (the
+  only mature one is not GPL-compatible): the listing is checked by the same rules before anything
+  is extracted, and the extracted tree must match it exactly.
 - **Placement** (`ContentLayout`, `suggest_placement`): wrapper folders are unwrapped until a marker
   decides between the data folder and the game root; a content layer can deploy a subfolder of its
   item (`Layer.source_path`).

@@ -529,7 +529,7 @@ enum BaseCmd {
 enum ContentCmd {
     /// Add an archive or folder to the content store.
     Add {
-        /// Path to the zip archive or folder.
+        /// Path to the zip, 7z or RAR archive, or a folder.
         path: PathBuf,
         /// Optional name for the content item.
         #[arg(long)]

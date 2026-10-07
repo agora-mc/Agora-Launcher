@@ -724,3 +724,210 @@ fn test_7z_spoofed_extension_imported_as_7z() {
     assert_eq!(out.item().files.len(), 1);
     assert_eq!(out.item().files[0].path.as_str(), "legit.txt");
 }
+
+// ---------------------------------------------------------------------------
+// 9. RAR archives, read through Windows' own tar.exe
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unrecognised_format_names_the_supported_ones() {
+    let (_tmp, ctx) = test_ctx();
+    let work = tempfile::tempdir().unwrap();
+    let path = work.path().join("not_an_archive.rar");
+    std::fs::write(&path, b"this is plain text, whatever the extension says").unwrap();
+
+    let err = add_archive(&ctx, &path, None).expect_err("refused");
+    assert!(matches!(err, ContentError::UnsupportedArchiveFormat));
+    assert!(err.to_string().contains("zip, 7z, rar"), "{err}");
+    assert_store_empty(&ctx);
+}
+
+#[cfg(windows)]
+mod rar {
+    use super::*;
+    use agora_core::content_store::{list_items, ContentItem, ContentSource};
+    use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+
+    fn vortex_dir() -> PathBuf {
+        std::env::var_os("AGORA_TEST_RAR_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA"))
+                    .join("Vortex/downloads/skyrimse")
+            })
+    }
+
+    fn real_rar(name: &str) -> PathBuf {
+        let path = vortex_dir().join(name);
+        assert!(path.is_file(), "missing test archive {}", path.display());
+        path
+    }
+
+    // RAR4: Riverside Lodge, JS Armored Circlets. RAR5: Conditional Expressions, EmbersXD (one
+    // file), Bifrost (names with spaces and a non-ASCII character).
+    const RAR4_SMALL: &str = "Riverside Lodge v.1.1.0-9567-1-1-0.rar";
+    const RAR4_OTHER: &str = "JS Armored Circlets SE - ESL-2140-1-1-1674444196.rar";
+    const RAR5_SMALL: &str = "Conditional Expressions-45148-1-29-1755293339.rar";
+    const RAR5_ONE_FILE: &str = "EmbersXD - Campfire Patch-50883-1-3-1638287753.rar";
+    const RAR5_UNICODE: &str = "Bifrost-88152-1-1-1680307451.rar";
+
+    fn tar_exe() -> PathBuf {
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("tar.exe")
+    }
+
+    fn sha256_of(path: &Path) -> String {
+        format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
+    }
+
+    fn assert_imported_and_verified(ctx: &Ctx, rar: &Path) -> ContentItem {
+        let out = add_archive(ctx, rar, None).unwrap_or_else(|e| panic!("{}: {e}", rar.display()));
+        assert!(matches!(out, AddOutcome::Added { .. }));
+        let item = out.item().clone();
+        assert!(!item.files.is_empty());
+        assert_eq!(
+            item.total_size,
+            item.files.iter().map(|f| f.size).sum::<u64>()
+        );
+        match &item.sources[..] {
+            [ContentSource::Archive { path, sha256, .. }] => {
+                assert_eq!(path, &rar.to_string_lossy());
+                assert_eq!(sha256, &sha256_of(rar));
+            }
+            other => panic!("unexpected sources {other:?}"),
+        }
+        let report = verify_item(ctx, &item.item_id, VerifyDepth::Full).unwrap();
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        assert_eq!(report.checked, item.files.len());
+        assert!(staging_is_empty(ctx));
+        item
+    }
+
+    #[test]
+    fn test_rar_garbage_after_the_signature_is_refused_and_leaves_nothing() {
+        for magic in [&b"Rar!\x1a\x07\x00"[..], b"Rar!\x1a\x07\x01\x00"] {
+            let (_tmp, ctx) = test_ctx();
+            let work = tempfile::tempdir().unwrap();
+            let path = work.path().join("fake.rar");
+            let mut bytes = magic.to_vec();
+            bytes.extend_from_slice(&[0xAB; 300]);
+            std::fs::write(&path, bytes).unwrap();
+
+            let res = add_archive(&ctx, &path, None);
+            assert!(
+                matches!(res, Err(ContentError::CorruptArchive(_))),
+                "{res:?}"
+            );
+            assert_store_empty(&ctx);
+        }
+    }
+
+    #[test]
+    #[ignore = "imports real RAR files from the Vortex downloads folder"]
+    fn test_real_rar4_and_rar5_import_and_verify_full() {
+        for name in [RAR4_SMALL, RAR4_OTHER, RAR5_SMALL, RAR5_ONE_FILE] {
+            let (_tmp, ctx) = test_ctx();
+            let item = assert_imported_and_verified(&ctx, &real_rar(name));
+            println!(
+                "{name}: {} files, {} bytes",
+                item.files.len(),
+                item.total_size
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "imports a real RAR file from the Vortex downloads folder"]
+    fn test_real_rar_with_spaces_and_non_ascii_names() {
+        let (_tmp, ctx) = test_ctx();
+        let item = assert_imported_and_verified(&ctx, &real_rar(RAR5_UNICODE));
+        assert!(item.files.iter().any(|f| f.path.as_str().contains(' ')));
+        assert!(item.files.iter().any(|f| !f.path.as_str().is_ascii()));
+    }
+
+    fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect_files(root, &path, out);
+            } else {
+                let rel = path.strip_prefix(root).unwrap();
+                out.push((
+                    rel.to_string_lossy().replace('\\', "/"),
+                    std::fs::read(&path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "imports real RAR files from the Vortex downloads folder"]
+    fn test_real_rar_and_zip_of_the_same_files_are_one_item() {
+        for name in [RAR4_SMALL, RAR5_SMALL] {
+            let (_tmp, ctx) = test_ctx();
+            let work = tempfile::tempdir().unwrap();
+            let rar = real_rar(name);
+
+            let extracted = work.path().join("extracted");
+            std::fs::create_dir_all(&extracted).unwrap();
+            let status = std::process::Command::new(tar_exe())
+                .arg("-xf")
+                .arg(&rar)
+                .arg("-C")
+                .arg(&extracted)
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let mut files = Vec::new();
+            collect_files(&extracted, &extracted, &mut files);
+            assert!(files.len() > 1);
+            let entries: Vec<(&str, &[u8])> = files
+                .iter()
+                .map(|(n, b)| (n.as_str(), b.as_slice()))
+                .collect();
+            let zip_path = work.path().join("same_files.zip");
+            create_zip(&zip_path, &entries);
+
+            let from_rar = add_archive(&ctx, &rar, None).unwrap();
+            assert!(matches!(from_rar, AddOutcome::Added { .. }));
+            let from_zip = add_archive(&ctx, &zip_path, None).unwrap();
+            assert!(matches!(from_zip, AddOutcome::Existing { .. }), "{name}");
+            assert_eq!(from_zip.objects_new(), 0);
+            assert_eq!(from_rar.item().item_id, from_zip.item().item_id);
+            assert_eq!(from_zip.item().sources.len(), 2);
+            assert_eq!(list_items(&ctx).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    #[ignore = "reads real RAR files from the Vortex downloads folder"]
+    fn test_real_rar_truncated_is_refused_and_leaves_nothing() {
+        for (name, keep_percent) in [
+            (RAR4_SMALL, 60),
+            (RAR4_SMALL, 99),
+            (RAR5_SMALL, 60),
+            (RAR5_SMALL, 99),
+            (RAR5_UNICODE, 50),
+        ] {
+            let (_tmp, ctx) = test_ctx();
+            let work = tempfile::tempdir().unwrap();
+            let bytes = std::fs::read(real_rar(name)).unwrap();
+            let truncated = work.path().join("truncated.rar");
+            std::fs::write(&truncated, &bytes[..bytes.len() * keep_percent / 100]).unwrap();
+
+            let res = add_archive(&ctx, &truncated, None);
+            match &res {
+                Err(ContentError::CorruptArchive(msg)) => {
+                    println!("{name} at {keep_percent}%: {msg}");
+                }
+                other => {
+                    panic!("{name} at {keep_percent}%: expected CorruptArchive, got {other:?}")
+                }
+            }
+            assert_store_empty(&ctx);
+        }
+    }
+}

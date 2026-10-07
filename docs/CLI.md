@@ -170,7 +170,7 @@ classified as a base game, add-on or tool (MASTER_SPEC §26.3), and manages pinn
 | `agora games base list` | List all pinned bases and their availability |
 | `agora games base verify <base-id> [--full]` | Verify base integrity (quick cheap check by default, full hashes all files) |
 | `agora games base remove <base-id>` | Delete a pinned base and its manifest |
-| `agora games content add <path> [--name N]` | Add a zip archive or folder to the content store |
+| `agora games content add <path> [--name N]` | Add a zip, 7z or RAR archive (RAR is read through Windows' own tar) or a folder to the content store |
 | `agora games content list` | List all items in the content store |
 | `agora games content show <item>` | Show files in a content item |
 | `agora games content verify [<item>] [--full]` | Verify integrity of content items |

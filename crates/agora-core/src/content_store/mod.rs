@@ -4,6 +4,7 @@
 //! and verifiable. Nothing deploys content to a game yet (slice 2).
 
 pub mod protect;
+mod rar;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -179,7 +180,7 @@ pub enum ContentError {
         manifest: String,
         error: String,
     },
-    #[error("unsupported archive format: supported formats are zip, 7z")]
+    #[error("unsupported archive format: supported formats are zip, 7z, rar")]
     UnsupportedArchiveFormat,
     #[error("archive is password-protected: password-protected archives are not supported")]
     PasswordProtected,
@@ -473,6 +474,10 @@ struct StagedEntry {
     sha256: String,
 }
 
+/// Add a zip, 7z or RAR archive as a content item. The format is chosen by the file's first bytes,
+/// never its extension. Zip and 7z are read in process; RAR is read through Windows' own
+/// `tar.exe` (`rar.rs`), because the only mature RAR library is not GPL-compatible. All three go
+/// through the same path, size and free-space rules and leave nothing behind when refused.
 pub fn add_archive(
     ctx: &Ctx,
     archive_path: &Path,
@@ -497,16 +502,20 @@ pub fn add_archive(
     enum ArchiveFormat {
         Zip,
         SevenZ,
+        /// Read through Windows' own `tar.exe`; see `rar.rs`.
+        Rar,
     }
 
     let format = {
         let mut f = std::fs::File::open(archive_path)?;
-        let mut magic = [0u8; 6];
+        let mut magic = [0u8; 8];
         let n = f.read(&mut magic)?;
         if n >= 4 && (&magic[..4] == b"PK\x03\x04" || &magic[..4] == b"PK\x05\x06") {
             ArchiveFormat::Zip
-        } else if n >= 6 && magic == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
+        } else if n >= 6 && magic[..6] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
             ArchiveFormat::SevenZ
+        } else if rar::is_rar_magic(&magic[..n]) {
+            ArchiveFormat::Rar
         } else {
             return Err(ContentError::UnsupportedArchiveFormat);
         }
@@ -623,6 +632,7 @@ pub fn add_archive(
 
             (staged_entries, guard, staging_dir)
         }
+        ArchiveFormat::Rar => rar::stage_rar(ctx, archive_path)?,
         ArchiveFormat::SevenZ => {
             let file = std::fs::File::open(archive_path)?;
             let archive = match sevenz_rust2::Archive::read(
