@@ -40,7 +40,9 @@
       "user_files": [],
       "save_paths": [],
       "linked_archive_patterns": [],
-      "declared_writes": [],
+      "declared_writes": [
+        "BepInEx/config/**"
+      ],
       "excluded_paths": []
     }
   ],
