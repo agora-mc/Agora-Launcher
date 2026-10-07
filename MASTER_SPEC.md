@@ -4162,9 +4162,42 @@ deployed; the profile files were swapped and restored byte-for-byte; and the gam
 `agora_vfs.dll` from its deployment, its new folders landing in the writable layer and the base
 verifying clean.
 
-**Phase 3 status: in progress.** Not yet met: a Skyrim instance with SKSE and twenty real mods (needs
-real archives), Valheim with BepInEx through Redirect (not installed), per-user files mapped through
-the VFS instead of swapped, and the desktop app's views of all of this.
+**Phase 3's done-test, measured (2026-10-06, Steam Skyrim 1.6.1170 and Valheim, a data dir on the
+games' drive so everything links):**
+- **Skyrim with SKSE and 23 mods runs.** Seven archives (zip and 7z), XP32 through its real FOMOD
+  installer with chosen options, and fifteen extracted folders from an MO2 setup, each placed by
+  `suggest_placement`. The deployment was 1,984 links and no copies, built in 1.3 s, with ten
+  plugins activated. The game started through SKSE's loader under `agora_vfs.dll`; SKSE 2.2.6
+  loaded all 17 of its plugins from the deployment, and `kDataLoaded` was dispatched. The SKSE
+  plugins' rewrites of their own INIs landed in the writable layer, the content store re-hashed
+  clean, the base verified clean, and the Steam profile files were restored byte-for-byte.
+- **Switching instances needs no redeploy:** modded, vanilla and modded launches of one base, the
+  last one reusing its deployment.
+- **Valheim with BepInEx runs.** BepInEx 5.4.2351 with Jotunn, PlantEverything and AzuClock loaded
+  all three, both from link deployment and under the VFS. Valheim's definition says Redirect; until
+  a Redirect backend exists, that rung is link deployment, which leaves the game untouched just the
+  same.
+- The failure gates (an unexpected write never changes a shared file; two launches contend; a failed
+  launch restores; a killed Agora restores nothing under a running game; an external edit is kept)
+  are tests, and the real runs above exercised the first and the restores.
+
+What the done-test changed:
+- **DLLs Windows loads while starting a game run before the VFS's hooks.** Engine Fixes' preloader
+  rewrote its log through a farm link into the base. Declared writes are now the instance's copy in
+  every mode; the general fix is import-table injection (Detours-style), so the DLL loads before
+  the game's own imports.
+- **BepInEx rewrites its own config at start.** Under link deployment the protected link refused it,
+  as designed, and BepInEx stopped. Valheim's definition now declares `BepInEx/config/**`.
+- **The plugin system must be on for community game packages to load** in a fresh data dir; the
+  tracers were invisible until it was.
+
+**Phase 3 status: done-when met**, with follow-ups:
+- import-table injection;
+- Thunderstore's package layout, so BepInEx packs and mods place themselves (they were placed with
+  `--from`/`--into`);
+- linked archive patterns for Valheim's base (it copied 4.3 GB);
+- per-user files mapped through the VFS rather than swapped;
+- the desktop app's views of all of this.
 
 ### 26.13 Phases
 
@@ -4186,7 +4219,7 @@ least one tracer from another family use it.**
 | **0b. Spike 2: write isolation** | usvfs against content and base files: write an existing file, replace by rename, delete, create, and each from a child process; an archive in a Linked base changed in place | Done (2026-10-04): usvfs has no copy-on-write; Agora builds its own copy-on-write VFS, with ACLs on what it owns and link deployment as the fallback (§26.5). |
 | **1. Game interface** | `agora-game-api` with `GamePackage` and `GameHost`; the dependency direction above; Minecraft behind it; manifest migration; architecture rules | Every existing test passes; a Minecraft user sees no change; the new rules pass; migration tests cover interruption, re-running, and a manifest from a newer Agora. `agora-core` contains no Minecraft; `agora-game-minecraft` may still use core within its shrinking budget (§26.12, *as built*). |
 | **2. Discovery, bases, launch** | Store adapters with classification; runtime identity; Linked and Copied bases with verification; generic launch recipe and process tracking | Agora lists the machine's games correctly, builds bases for Steam and GOG Skyrim, and launches vanilla Skyrim from them with the store install unchanged afterwards. A base archive changed in place is detected and the instance refuses to launch on it, naming the files. Tracers, **as external packages through the plugin path**: every reference game is discovered and launches vanilla, including CK3 from the Microsoft Store. The generic halves of the instance and launch services exist and serve both Minecraft and Skyrim. The Minecraft package's `agora-core` budget has fallen with every generic service built (it reaches zero in Phase 5). |
-| **3. Deployment** | Content store, archives, FOMOD, the layer stack, Redirect, VFS (Windows) with the isolation Spike 2 chose, per-user files | A Skyrim instance with SKSE and twenty mods runs; switching instances needs no redeploy. **Failure gates:** an unexpected write by a game or tool never changes a content or base file; two launches of one game contend on `GameUserFiles` and the second is told why; a failed launch restores per-user files; Agora killed while the game runs, then restarted, restores nothing under the running game; a file edited externally before recovery is kept, not overwritten. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
+| **3. Deployment** | Content store, archives, FOMOD, the layer stack, Redirect, VFS (Windows) with the isolation Spike 2 chose, per-user files (done 2026-10-06; §26.12, as built) | A Skyrim instance with SKSE and twenty mods runs; switching instances needs no redeploy. **Failure gates:** an unexpected write by a game or tool never changes a content or base file; two launches of one game contend on `GameUserFiles` and the second is told why; a failed launch restores per-user files; Agora killed while the game runs, then restarted, restores nothing under the running game; a file edited externally before recovery is kept, not overwritten. Tracer: a Valheim instance with BepInEx mods runs through Redirect. |
 | **4. Creation Engine (Skyrim complete)** | Load order (LOOT crates as a host service); framework and Address Library checks; per-profile INIs; save choice; tools with staging and generated layers; MO2 import including `overwrite` and both orders; the catalog for Skyrim (§26.8) | The 214,592-file salvage pack imports with its bytes, both orders and its Nemesis output (inputs unknown), and plays; changing a mod marks Nemesis output stale; rebuilding and rolling back both change the bytes the game reads; curated Skyrim mods install from a `github_release` and a `direct_hash` entry with verified hashes. |
 | **5. Plugin API 0.2** | Game packages, family parents, new capabilities, `GameTarget` providers, `nxm://` routing, published game-definition spec; the Minecraft package reaches core only through `GameHost` | The tracers become finished support written as plugins: Valheim (BepInEx) and Satisfactory (Unreal), then CK3 (Paradox, Microsoft Store) and Cyberpunk (REDengine). The Minecraft package's `agora-core` budget is zero, so nothing a compiled package does is beyond a community one. |
 | **6. Breadth** | Linux overlayfs backend and Proton; Vortex import; Wabbajack recognition; companion-process scripts when a package needs them | Each backed by a real run, like everything above. |
